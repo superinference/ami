@@ -1,0 +1,23 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (85, 21)
+
+First 5 rows of filtered data:
+      psp_reference                  merchant  ... aci  acquirer_country
+558     19768575538  Martinis_Fine_Steakhouse  ...   G                FR
+1041    62663308963  Martinis_Fine_Steakhouse  ...   G                FR
+4770    12170959345  Martinis_Fine_Steakhouse  ...   G                FR
+7099    14366266265  Martinis_Fine_Steakhouse  ...   G                FR
+8236    67643672703  Martinis_Fine_Steakhouse  ...   G                FR
+
+[5 rows x 21 columns]
+
+Unique Card Schemes in filtered data:
+['NexPay' 'GlobalCard' 'SwiftCharge' 'TransactPlus']
+
+Unique ACIs in filtered data:
+['G']

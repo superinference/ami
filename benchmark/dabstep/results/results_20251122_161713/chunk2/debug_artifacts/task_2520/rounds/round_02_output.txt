@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Target Fee ID: 276
+Original Rate: 75
+New Rate: 99
+Transactions for Rafa_AI in 2023: 27696
+Matching Transactions: 161
+Total Matching Amount: 17874.16
+42.89798400000001

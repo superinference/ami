@@ -1,0 +1,25 @@
+{
+  "total_prompt_tokens": 19283,
+  "total_output_tokens": 307,
+  "total_tokens": 22338,
+  "by_agent": {
+    "coder_initial": {
+      "calls": 1,
+      "prompt_tokens": 15146,
+      "output_tokens": 165,
+      "total_tokens": 17367
+    },
+    "verifier": {
+      "calls": 1,
+      "prompt_tokens": 1485,
+      "output_tokens": 60,
+      "total_tokens": 1876
+    },
+    "finalizer": {
+      "calls": 1,
+      "prompt_tokens": 2652,
+      "output_tokens": 82,
+      "total_tokens": 3095
+    }
+  }
+}

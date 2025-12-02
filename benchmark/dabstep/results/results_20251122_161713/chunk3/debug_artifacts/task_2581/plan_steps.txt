@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the `merchant` is 'Golfclub_Baron_Friso' and the `day_of_year` is between 1 and 31 (representing January).
+Step 2: Calculate the monthly total volume and fraud rate for 'Golfclub_Baron_Friso' in January, retrieve the merchant's attributes from 'merchant_data.json', and apply the fee rules from 'fees.json' to each transaction to find the card scheme with the highest average fee.

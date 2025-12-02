@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows in original dataframe: 138236
+Rows with fraudulent disputes: 10765
+
+First 5 rows of fraudulent transactions:
+     psp_reference                  merchant  ... aci  acquirer_country
+5      74453982452            Crossfit_Hanna  ...   G                NL
+34     33722951254                   Rafa_AI  ...   G                NL
+97     61931506150      Golfclub_Baron_Friso  ...   G                IT
+105    11785147176            Crossfit_Hanna  ...   G                NL
+112    68618046935  Martinis_Fine_Steakhouse  ...   G                FR
+
+[5 rows x 21 columns]

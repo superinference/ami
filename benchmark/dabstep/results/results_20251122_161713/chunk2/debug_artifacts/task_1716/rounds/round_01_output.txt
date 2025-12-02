@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 36
+       psp_reference               merchant  ... aci  acquirer_country
+6403     56798652025  Belles_cookbook_store  ...   G                US
+7279     46908302729  Belles_cookbook_store  ...   F                US
+7863     64218591269  Belles_cookbook_store  ...   D                US
+16171    64254156114  Belles_cookbook_store  ...   D                US
+32250    16026281635  Belles_cookbook_store  ...   D                US
+
+[5 rows x 21 columns]

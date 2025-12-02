@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions in dataset: 138236
+Transactions matching criteria (Belles_cookbook_store, 2023, Fraud): 1071
+
+Sample of filtered transactions:
+     psp_reference               merchant  year  has_fraudulent_dispute aci  eur_amount
+123    63627896845  Belles_cookbook_store  2023                    True   G       31.86
+179    40659575538  Belles_cookbook_store  2023                    True   G      104.32
+209    70020523348  Belles_cookbook_store  2023                    True   G       82.71
+227    22754232210  Belles_cookbook_store  2023                    True   G       22.82
+569    44872108128  Belles_cookbook_store  2023                    True   G       24.66
+
+Filtered data saved to: belles_fraud_2023.csv

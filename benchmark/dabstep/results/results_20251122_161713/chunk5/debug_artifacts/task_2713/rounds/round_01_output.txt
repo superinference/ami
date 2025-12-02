@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered transactions shape: (349, 21)
+      psp_reference        merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+576     25293903444  Crossfit_Hanna      NexPay  2023           17               2          114       True       73.86         FR              FR         iOS  dAnQRGksyAT3vEtRfvTguw  MpyqaPV7BYkGanLxGfxOUA  XK1FL0_ccs7IHHUTJfH-bQ           Ecommerce      4571                    True                False   G               NL
+778     50539435613  Crossfit_Hanna      NexPay  2023           14               7          111       True       22.74         SE              SE     Android                     NaN  Yp8Lg4aQa6mRmsE-qRZ3YA  cHMkEMpRvaq5WILet1A3pQ           Ecommerce      4236                    True                False   G               NL
+955     45912602849  Crossfit_Hanna      NexPay  2023            6              16          106       True       21.24         ES              IT       Other  Y1ER-03kQBSYnVGblT8dtw  avbf0o-ydoJS4wYLB48URg  aUyrIX48WXtFJ-urWVSxnA           Ecommerce      4556                    True                False   G               NL
+960     89716855248  Crossfit_Hanna  GlobalCard  2023           17               0          109       True       50.56         NL              BE     Windows  iyaGwZj8z1WbEcFVWc-_hw  TCC0OLTpm59xoWmnLdvOZA  e_jimHofZQ4YJDcXLwEWuQ           Ecommerce      4916                    True                False   G               NL
+1013    75093529960  Crossfit_Hanna  GlobalCard  2023           16               4          115       True       79.32         SE              IT       MacOS  qDQCdDiWGBXP8o1CKoKtAA  VK-rR9IyriCbnHb1Qo98aQ  vUsb4LItAT_quI6rK7tu9w           Ecommerce      4645                    True                False   G               NL

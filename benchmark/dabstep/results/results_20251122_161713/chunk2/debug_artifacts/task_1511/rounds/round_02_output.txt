@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average fee per scheme for 500 EUR transaction:
+card_scheme
+GlobalCard      2.661284
+TransactPlus    2.806986
+SwiftCharge     2.828704
+NexPay          2.840314
+Name: fee, dtype: float64
+------------------------------
+GlobalCard

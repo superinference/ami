@@ -1,0 +1,28 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+First 5 rows of fees dataframe:
+   ID   card_scheme  fixed_amount  rate
+0   1  TransactPlus          0.10    19
+1   2    GlobalCard          0.13    86
+2   3  TransactPlus          0.09    16
+3   4        NexPay          0.11    25
+4   5    GlobalCard          0.13    69
+
+Unique card schemes found:
+['TransactPlus' 'GlobalCard' 'NexPay' 'SwiftCharge']
+
+Data types:
+card_scheme      object
+fixed_amount    float64
+rate              int64
+dtype: object
+
+Null values in key columns:
+card_scheme     0
+fixed_amount    0
+rate            0
+dtype: int64

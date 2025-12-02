@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame.
+Step 2: Filter the loaded `payments` DataFrame for rows where `merchant` is 'Rafa_AI', `card_scheme` is 'SwiftCharge', and `day_of_year` is between 121 and 181 (inclusive), representing May and June 2023. Then, group the filtered data by `shopper_interaction` and calculate the mean of the `eur_amount` column.

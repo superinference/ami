@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Rafa_AI
+March Volume: €222,892.37
+March Fraud Rate: 7.7944%
+Profile -> MCC: 7372, Account: D, Delay: 7
+
+Estimated Fees by Scheme:
+  TransactPlus: €2,280.91
+
+Recommended Scheme: TransactPlus

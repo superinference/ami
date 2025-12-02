@@ -1,0 +1,10 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing 1000 fee rules for Scheme: SwiftCharge, Account Type: F...
+Found 219 applicable rules.
+Calculated fees sample: [2.9915999999999996, 4.946, 9.191600000000001, 9.655199999999999, 8.141]...
+6.862225

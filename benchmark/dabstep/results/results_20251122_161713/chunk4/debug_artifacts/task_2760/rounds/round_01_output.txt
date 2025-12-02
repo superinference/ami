@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Metrics for Crossfit_Hanna in 2023 ---
+Total Transaction Count: 55139
+Total Volume: 5076636.90
+Average Transaction Amount: 92.07
+Monthly Transaction Volume (Avg): 423053.07
+Total Fraud Volume: 452223.08
+Fraud Rate (Volume-based): 8.9079%
+Fraud Rate (Raw): 0.089079

@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average transaction value (EUR) by IP Country:
+BE: 110.11
+ES: 126.92
+FR: 88.59
+GR: 70.70
+IT: 94.94
+LU: 84.36
+NL: 108.81
+SE: 83.80

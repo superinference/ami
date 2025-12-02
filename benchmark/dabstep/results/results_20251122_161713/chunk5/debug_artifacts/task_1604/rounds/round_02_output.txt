@@ -1,0 +1,9 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchants with Account Type 'H': ['Martinis_Fine_Steakhouse', 'Eggnest', 'Gourmet_Bites', 'Sunny_Side_Cafe', 'The_Steakhouse', 'Urban_Eats', 'Sunny_Nest', 'Culinary_Creations', 'Brunch_Bliss', 'Crafty_Cuisine', 'Cafe_Centrale']
+Found 3507 TransactPlus transactions for Account Type H.
+Average Fee for 1000 EUR: 8.247680 EUR

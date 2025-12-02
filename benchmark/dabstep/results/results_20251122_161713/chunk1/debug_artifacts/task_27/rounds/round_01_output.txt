@@ -1,0 +1,8 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Mean of eur_amount: 91.85232110304118
+Standard Deviation of eur_amount: 121.73051424575894

@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions loaded: 138236
+Transactions for Rafa_AI in December 2023: 2396
+
+First 5 rows of filtered data:
+     psp_reference merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+62     12075623213  Rafa_AI  GlobalCard  2023           21              15          340       True      356.14         ES              NL       Other                     NaN  3z4khr2q-o8tJe41rc0byg  USi4H8XZDyPtbvAYupAlhw           Ecommerce      4916                   False                False   E               NL
+142    16711044830  Rafa_AI      NexPay  2023           16              54          335       True       88.28         IT              IT     Android  hrxZ7kAb4S5z-jYFL8EE6w  6JH8kf1Hq0Sm3PAQIrdOEQ  QhfOONok-r47sce5X6X66A                 POS      4556                   False                False   C               NL
+311    84174910496  Rafa_AI      NexPay  2023            1              43          356       True       36.53         NL              NL     Windows  z52OyUeBOzjt6Vswunv16A  fNHVsJhQqelracIW7Kkqlg  sTiW0eScb9u3nX1mt_3Nzw           Ecommerce      4920                   False                False   E               NL
+325    77365566967  Rafa_AI      NexPay  2023           15               5          337      False       88.12         IT              IT       MacOS  Np9pJ2C2CVbd4kfiNKp81Q  IZbbO2g1Vujz_jdBsp7aOw  qBR03w_Tu-p9oBUod4vPvg           Ecommerce      4571                   False                False   E               NL
+352    72544997083  Rafa_AI  GlobalCard  2023            1              45          339       True       19.73         SE              SE       MacOS  Se9Hc9XdyYmPnXV8HQknCA                     NaN  PO4j6xXuD6vwe7NpS6svuw           Ecommerce      4920                   False                False   E               NL

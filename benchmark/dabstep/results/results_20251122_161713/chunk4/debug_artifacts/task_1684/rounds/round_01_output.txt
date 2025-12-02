@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 34
+       psp_reference               merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+3958     84584511768  Belles_cookbook_store        NexPay  2023           10              27          200       True       52.02         SE              NL         iOS  tud1d9FsQMyQXl3Tp2Fjxg  8_DThhXacUfXxpG4CUBELg  ys3IQu3c_jX-ix5Ya1aEoQ           Ecommerce      4622                   False                False   D               US
+10612    13557893796  Belles_cookbook_store  TransactPlus  2023           17              12          200       True       96.37         GR              GR       Other  9d_SU2Lqcyolb_Ym9K0wHg  wv9yE-2m7oH-jvgaicUX6A  lr6JV6aXuLEuoGAz4hSkqQ           Ecommerce      4916                   False                False   D               US
+15182    15631135436  Belles_cookbook_store        NexPay  2023           11              30          200      False      113.16         BE              BE     Android  QAJc3TBKsT9qV0Nc0ufBdQ  mq9sJUtj54-Ae6qSASS1NQ  ho8LS_PSFWdnKgAKZi-9YQ           Ecommerce      4017                   False                False   F               US
+29258    10261355218  Belles_cookbook_store  TransactPlus  2023           15               8          200       True      259.00         NL              NL         iOS  ndwHWIvKW1wcCTmPgZ8WXg  Q1vZfL0keDRyxoYaSJgImQ  Hlp5tbS5fEL_ZGKVi6M_PA           Ecommerce      4133                   False                False   D               US
+33965    75136976048  Belles_cookbook_store        NexPay  2023            9              15          200       True       88.76         NL              NL       MacOS  gcH_H8IquhrvhjNMjlLcNQ  wAxEmzG2UxZjbwr03ZQk6w  96RX2D4wGb1PSCTpXp3E9w           Ecommerce      4556                   False                False   D               US

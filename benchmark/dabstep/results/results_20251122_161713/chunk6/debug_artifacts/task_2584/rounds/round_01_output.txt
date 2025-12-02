@@ -1,0 +1,12 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Transaction Profile for Martinis_Fine_Steakhouse (January):
+Total Transactions: 1238
+Average EUR Amount: 95.41600161550888
+Credit Proportion: 0.7415185783521809
+Debit Proportion: 0.25848142164781907
+Domestic Proportion: 0.10096930533117932

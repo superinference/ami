@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows to include only transactions where the `merchant` is 'Crossfit_Hanna' and the `day_of_year` is between 182 and 273 (representing Q3 of 2023).
+Step 2: Calculate the total transaction volume (sum of `eur_amount`) and the fraudulent transaction volume (sum of `eur_amount` where `has_fraudulent_dispute` is True) from the filtered data, then divide the fraudulent volume by the total volume to determine the fraud rate.

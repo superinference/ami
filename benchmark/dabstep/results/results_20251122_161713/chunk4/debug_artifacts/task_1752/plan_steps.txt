@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Belles_cookbook_store' that occurred in February 2023 (Year 2023, Day of Year between 32 and 59).
+Step 2: Load `fees.json` and filter for rules applicable to 'Belles_cookbook_store' based on the calculated statistics (Volume: 92,061.11 EUR, Fraud Rate: 6.10%, MCC: 5942, Account Type: 'R', Capture Delay: '1' (matches '<3')) and the observed unique transaction attributes (combinations of card_scheme, is_credit, aci, intracountry) to identify all applicable Fee IDs.

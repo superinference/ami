@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Golfclub_Baron_Friso' in the year 2023.
+Step 2: Load `fees.json` and `merchant_data.json`, then find the fee rule with `ID=65` and the merchant details for 'Golfclub_Baron_Friso' to identify the matching criteria (MCC, account type, etc.).

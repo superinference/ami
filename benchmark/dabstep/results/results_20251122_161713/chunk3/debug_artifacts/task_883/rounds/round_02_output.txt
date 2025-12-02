@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average transaction value grouped by aci for Crossfit_Hanna (GlobalCard, Jan-Feb 2023):
+aci
+A     87.910241
+B    131.714255
+C     75.702045
+D     88.100543
+F     89.398697
+G     93.747152

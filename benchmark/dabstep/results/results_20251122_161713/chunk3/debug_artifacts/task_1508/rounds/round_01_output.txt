@@ -1,0 +1,30 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Columns in fees.json:
+['ID', 'card_scheme', 'account_type', 'capture_delay', 'monthly_fraud_level', 'monthly_volume', 'merchant_category_code', 'is_credit', 'aci', 'fixed_amount', 'rate', 'intracountry']
+
+First 5 rows of fees.json:
+   ID   card_scheme  fixed_amount  rate account_type                            merchant_category_code
+0   1  TransactPlus          0.10    19           []  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]
+1   2    GlobalCard          0.13    86           []  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]
+2   3  TransactPlus          0.09    16           []  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]
+3   4        NexPay          0.11    25           []        [8062, 8011, 8021, 7231, 7298, 7991, 8049]
+4   5    GlobalCard          0.13    69           []  [5411, 5412, 5499, 5912, 5812, 5813, 5911, 5983]
+
+Unique Card Schemes:
+['TransactPlus' 'GlobalCard' 'NexPay' 'SwiftCharge']
+
+Fee Structure Summary (Fixed Amount and Rate):
+       fixed_amount         rate
+count   1000.000000  1000.000000
+mean       0.068620    54.263000
+std        0.042887    25.225347
+min        0.000000    10.000000
+25%        0.030000    32.000000
+50%        0.070000    54.000000
+75%        0.110000    76.000000
+max        0.140000    99.000000

@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing Fee ID: 141
+Original Rate: 98
+New Rate: 99
+Merchant Attributes: {'merchant_category_code': 7372, 'account_type': 'D', 'capture_delay': '7', 'monthly_volume_val': np.float64(211282.43), 'monthly_fraud_rate': np.float64(8.571725533448285)}
+Fee 141 Criteria: {'ID': 141, 'card_scheme': 'GlobalCard', 'account_type': ['H', 'D'], 'capture_delay': None, 'monthly_fraud_level': None, 'monthly_volume': '100k-1m', 'merchant_category_code': [], 'is_credit': True, 'aci': ['A', 'B'], 'fixed_amount': 0.0, 'rate': 98, 'intracountry': 1.0}
+Matching Transactions: 4
+Matching Volume: 156.66
+Delta Calculation: (99 - 98) * 156.66 / 10000
+0.01566600000000

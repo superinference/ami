@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Martinis_Fine_Steakhouse
+Transactions: 1212
+Monthly Volume: €109,147.70
+Monthly Fraud Level: 7.2232% (Vol: 7883.989999999999)
+Matched Transactions: 688
+Unmatched Transactions: 524
+Total Fees Paid: 471.97417399999961
+471.97

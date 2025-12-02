@@ -1,0 +1,17 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total fees rules: 1000
+NexPay rules: 191
+Filtered rules (NexPay + Account H/Wildcard): 162
+
+Sample of filtered data:
+    ID card_scheme     account_type  fixed_amount  rate
+3    4      NexPay               []          0.11    25
+8    9      NexPay               []          0.05    23
+33  34      NexPay  [R, D, H, F, S]          0.08    86
+52  53      NexPay               []          0.07    95
+53  54      NexPay               []          0.13    68

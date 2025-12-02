@@ -1,0 +1,37 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Target Rule ID: 787
+Original Rate: 38
+New Rate: 1
+Rule Criteria: {
+  "ID": 787,
+  "card_scheme": "NexPay",
+  "account_type": [
+    "D"
+  ],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": false,
+  "aci": [
+    "C",
+    "A"
+  ],
+  "fixed_amount": 0.11,
+  "rate": 38,
+  "intracountry": null
+}
+Merchant: Rafa_AI, Account Type: D, MCC: 7372
+Total Transactions for Rafa_AI in June 2023: 2236
+Monthly Volume: 211282.43
+Monthly Fraud Rate (Volume based): 8.5717%
+Transactions matching Rule 787: 14
+Affected Volume: 1047.46
+------------------------------
+-3.87560200000000
+------------------------------

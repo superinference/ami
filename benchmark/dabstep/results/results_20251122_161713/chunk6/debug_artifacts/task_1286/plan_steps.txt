@@ -1,0 +1,4 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where `card_scheme` is 'NexPay' and `is_credit` is True.
+Step 2: Based on the previous result of `2.49723450479233`, which appears to be the calculated weighted average fee in EUR for the specified transactions, the next step is to format and present this result.
+
+Output the calculated average fee of 2.50 EUR for NexPay credit transactions with a value of 500 EUR.

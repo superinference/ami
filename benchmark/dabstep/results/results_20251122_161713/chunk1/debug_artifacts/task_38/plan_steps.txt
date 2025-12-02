@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and group the data by `merchant` to calculate the sum of `eur_amount` for each merchant, sorting the results in descending order to identify the top 2 merchants by volume.
+Step 2: Calculate the percentage of transactions for the top 2 merchants by summing their transaction counts (55,139 for Crossfit_Hanna and 27,748 for Golfclub_Baron_Friso) and dividing by the total number of transactions (138,236).

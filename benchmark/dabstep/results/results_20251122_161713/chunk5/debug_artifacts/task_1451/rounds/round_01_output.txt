@@ -1,0 +1,152 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee rules for GlobalCard Credit Transactions:
+      ID card_scheme is_credit        aci  fixed_amount  rate
+1      2  GlobalCard      None        [B]          0.13    86
+9     10  GlobalCard      None        [B]          0.12    59
+24    25  GlobalCard      True  [A, B, C]          0.14    57
+36    37  GlobalCard      True        [F]          0.09    16
+46    47  GlobalCard      True     [C, A]          0.12    44
+51    52  GlobalCard      None        [E]          0.10    38
+70    71  GlobalCard      True        [B]          0.12    40
+73    74  GlobalCard      None        [B]          0.02    17
+77    78  GlobalCard      True         []          0.14    37
+90    91  GlobalCard      True        [B]          0.13    64
+91    92  GlobalCard      True        [E]          0.03    82
+108  109  GlobalCard      True        [A]          0.00    72
+129  130  GlobalCard      True        [C]          0.08    34
+139  140  GlobalCard      True        [F]          0.13    98
+140  141  GlobalCard      True     [A, B]          0.00    98
+145  146  GlobalCard      True  [A, B, C]          0.07    54
+156  157  GlobalCard      True        [B]          0.11    90
+157  158  GlobalCard      True  [A, B, C]          0.14    39
+160  161  GlobalCard      True         []          0.07    32
+171  172  GlobalCard      True        [A]          0.05    49
+175  176  GlobalCard      True  [A, B, C]          0.12    69
+183  184  GlobalCard      True  [A, B, C]          0.13    70
+187  188  GlobalCard      True        [F]          0.07    64
+189  190  GlobalCard      True     [A, B]          0.09    70
+191  192  GlobalCard      True        [E]          0.11    25
+203  204  GlobalCard      True        [E]          0.00    71
+219  220  GlobalCard      True  [A, B, C]          0.13    17
+239  240  GlobalCard      True        [B]          0.04    77
+243  244  GlobalCard      True     [C, B]          0.01    73
+245  246  GlobalCard      True        [C]          0.07    54
+248  249  GlobalCard      True        [A]          0.13    29
+253  254  GlobalCard      True        [E]          0.02    40
+258  259  GlobalCard      True        [E]          0.04    49
+266  267  GlobalCard      True        [F]          0.14    75
+274  275  GlobalCard      True     [C, A]          0.02    22
+275  276  GlobalCard      True        [B]          0.04    75
+277  278  GlobalCard      True     [A, B]          0.01    40
+279  280  GlobalCard      True     [C, A]          0.07    26
+285  286  GlobalCard      True     [C, B]          0.10    35
+292  293  GlobalCard      None     [C, B]          0.04    15
+295  296  GlobalCard      None     [A, B]          0.09    57
+322  323  GlobalCard      None        [B]          0.13    43
+329  330  GlobalCard      True        [C]          0.07    72
+334  335  GlobalCard      True     [C, A]          0.11    35
+336  337  GlobalCard      True     [C, A]          0.11    85
+340  341  GlobalCard      True        [B]          0.06    23
+344  345  GlobalCard      True        [B]          0.08    60
+347  348  GlobalCard      True     [C, A]          0.03    53
+348  349  GlobalCard      True  [A, B, C]          0.04    81
+349  350  GlobalCard      True     [C, A]          0.10    52
+351  352  GlobalCard      True     [A, B]          0.08    19
+357  358  GlobalCard      None        [C]          0.07    34
+378  379  GlobalCard      True     [A, B]          0.11    58
+385  386  GlobalCard      True        [E]          0.00    19
+390  391  GlobalCard      True     [C, B]          0.02    42
+394  395  GlobalCard      True         []          0.11    13
+400  401  GlobalCard      True     [A, B]          0.00    19
+402  403  GlobalCard      None        [A]          0.02    94
+411  412  GlobalCard      True        [F]          0.13    10
+416  417  GlobalCard      True        [F]          0.00    51
+420  421  GlobalCard      True        [B]          0.07    27
+426  427  GlobalCard      True     [C, A]          0.14    76
+439  440  GlobalCard      True        [B]          0.01    95
+441  442  GlobalCard      None        [B]          0.13    36
+452  453  GlobalCard      True  [A, B, C]          0.05    65
+455  456  GlobalCard      True        [F]          0.03    41
+460  461  GlobalCard      None     [A, B]          0.13    64
+468  469  GlobalCard      True     [C, A]          0.09    15
+471  472  GlobalCard      None        [D]          0.04    31
+475  476  GlobalCard      True  [A, B, C]          0.01    28
+476  477  GlobalCard      True  [A, B, C]          0.12    54
+479  480  GlobalCard      True  [A, B, C]          0.03    42
+483  484  GlobalCard      None        [C]          0.14    70
+491  492  GlobalCard      True     [C, A]          0.08    30
+501  502  GlobalCard      True        [F]          0.03    52
+507  508  GlobalCard      True  [A, B, C]          0.09    23
+510  511  GlobalCard      True         []          0.10    18
+512  513  GlobalCard      True        [F]          0.14    12
+520  521  GlobalCard      True     [C, B]          0.07    33
+524  525  GlobalCard      True        [F]          0.07    28
+525  526  GlobalCard      True        [E]          0.05    49
+527  528  GlobalCard      True        [D]          0.00    41
+531  532  GlobalCard      True        [D]          0.09    40
+543  544  GlobalCard      True        [E]          0.09    37
+567  568  GlobalCard      True     [A, B]          0.06    78
+580  581  GlobalCard      None        [C]          0.02    84
+589  590  GlobalCard      True        [B]          0.09    40
+593  594  GlobalCard      True     [C, B]          0.01    23
+605  606  GlobalCard      True        [C]          0.04    20
+623  624  GlobalCard      True        [C]          0.14    94
+638  639  GlobalCard      True        [C]          0.11    45
+644  645  GlobalCard      True     [C, B]          0.08    32
+654  655  GlobalCard      True        [E]          0.07    35
+665  666  GlobalCard      None         []          0.14    15
+668  669  GlobalCard      None         []          0.02    44
+681  682  GlobalCard      True  [A, B, C]          0.03    84
+685  686  GlobalCard      None        [F]          0.11    65
+691  692  GlobalCard      True        [B]          0.02    69
+694  695  GlobalCard      True        [B]          0.14    90
+703  704  GlobalCard      True        [F]          0.06    43
+704  705  GlobalCard      True        [E]          0.08    32
+705  706  GlobalCard      True        [C]          0.13    53
+709  710  GlobalCard      True        [B]          0.06    55
+724  725  GlobalCard      True        [B]          0.00    19
+727  728  GlobalCard      True     [C, A]          0.10    88
+730  731  GlobalCard      True        [B]          0.02    20
+751  752  GlobalCard      True        [A]          0.02    60
+757  758  GlobalCard      True        [A]          0.09    33
+765  766  GlobalCard      True        [E]          0.08    33
+770  771  GlobalCard      True        [E]          0.05    30
+775  776  GlobalCard      True        [B]          0.13    14
+777  778  GlobalCard      True         []          0.09    28
+783  784  GlobalCard      True     [C, A]          0.07    44
+785  786  GlobalCard      True  [A, B, C]          0.08    25
+791  792  GlobalCard      True         []          0.02    83
+796  797  GlobalCard      True         []          0.14    58
+797  798  GlobalCard      True        [E]          0.01    55
+799  800  GlobalCard      True         []          0.12    76
+814  815  GlobalCard      None        [F]          0.07    72
+819  820  GlobalCard      None         []          0.06    82
+825  826  GlobalCard      True         []          0.06    27
+827  828  GlobalCard      None     [C, B]          0.05    32
+837  838  GlobalCard      True     [C, A]          0.07    74
+846  847  GlobalCard      None     [C, A]          0.11    48
+849  850  GlobalCard      True        [D]          0.05    26
+850  851  GlobalCard      True         []          0.01    63
+856  857  GlobalCard      True        [B]          0.00    68
+860  861  GlobalCard      True        [C]          0.05    17
+870  871  GlobalCard      True  [A, B, C]          0.03    36
+871  872  GlobalCard      True        [F]          0.04    71
+878  879  GlobalCard      True        [D]          0.14    49
+888  889  GlobalCard      True         []          0.07    52
+893  894  GlobalCard      True     [C, A]          0.03    42
+895  896  GlobalCard      True        [A]          0.03    91
+896  897  GlobalCard      True        [B]          0.12    75
+898  899  GlobalCard      True        [A]          0.08    90
+900  901  GlobalCard      True     [C, B]          0.03    73
+915  916  GlobalCard      True        [C]          0.10    82
+920  921  GlobalCard      True        [C]          0.02    12
+925  926  GlobalCard      True        [F]          0.02    45
+940  941  GlobalCard      True  [A, B, C]          0.10    41
+953  954  GlobalCard      True        [D]          0.08    31
+958  959  GlobalCard      True     [C, A]          0.01    10
+987  988  GlobalCard      True        [F]          0.06    44

@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame.
+Step 2: Filter the `df` DataFrame to find rows where `account_type` includes 'D' or is empty, AND `aci` includes 'A' or is empty, then extract the 'ID' column.

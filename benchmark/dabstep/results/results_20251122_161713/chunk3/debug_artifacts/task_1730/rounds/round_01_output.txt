@@ -1,0 +1,44 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions found: 36
+ card_scheme  is_credit  eur_amount aci issuing_country acquirer_country
+      NexPay      False       23.40   F              LU               FR
+  GlobalCard       True        8.40   C              NL               FR
+      NexPay       True       24.10   D              BE               FR
+  GlobalCard       True       96.37   D              GR               FR
+  GlobalCard       True       32.58   G              BE               FR
+ SwiftCharge       True       41.12   D              NL               FR
+      NexPay      False        2.88   F              IT               FR
+      NexPay       True       16.95   G              BE               FR
+  GlobalCard       True       73.88   G              BE               FR
+      NexPay       True       22.70   D              FR               FR
+  GlobalCard       True       81.07   D              BE               FR
+  GlobalCard       True       31.36   D              GR               FR
+  GlobalCard       True       56.63   G              IT               FR
+TransactPlus      False        8.70   F              IT               FR
+  GlobalCard       True      135.02   D              IT               FR
+  GlobalCard       True       46.73   D              NL               FR
+TransactPlus       True       51.05   D              NL               FR
+  GlobalCard      False       63.70   C              SE               FR
+TransactPlus       True       13.52   D              IT               FR
+      NexPay       True      227.84   D              IT               FR
+      NexPay       True       53.94   D              SE               FR
+  GlobalCard       True      157.37   D              SE               FR
+TransactPlus       True      228.30   G              SE               FR
+      NexPay       True     3014.57   D              IT               FR
+  GlobalCard       True      138.31   G              SE               FR
+TransactPlus       True      143.59   D              BE               FR
+  GlobalCard      False       55.91   F              NL               FR
+      NexPay       True       35.69   D              BE               FR
+      NexPay       True       45.49   D              NL               FR
+      NexPay       True       37.95   D              BE               FR
+TransactPlus       True      205.99   D              NL               FR
+ SwiftCharge       True       37.74   D              BE               FR
+      NexPay       True      565.99   G              NL               FR
+      NexPay       True       49.20   D              LU               FR
+      NexPay       True       33.58   D              NL               FR
+  GlobalCard       True      163.19   G              BE               FR

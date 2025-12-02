@@ -1,0 +1,29 @@
+{
+  "model_name": "SuperInference Gemini-2.5-pro",
+  "model_description": "SuperInference using Gemini 2.5 Pro",
+  "submission_timestamp": "20251122_080517",
+  "framework": "SuperInference MCP Server",
+  "total_tasks": 75,
+  "methods_used": [
+    "superinference"
+  ],
+  "avg_response_time": 297.14719305038454,
+  "avg_confidence": 0.41999999999999993,
+  "performance_summary": {
+    "overall_accuracy": 0.8933333333333333,
+    "solution_quality": 0.6880000000000002,
+    "context_relevance": 0.6130414661891619,
+    "reasoning_depth": 0.16426666666666667,
+    "code_quality": 0.8197333333333335,
+    "domain_expertise": 0.67
+  },
+  "technical_details": {
+    "architecture": "SuperInference - Supervised Inference for Partially Observable Environments",
+    "vector_embeddings": "gemini-embedding-001",
+    "critic_model": "gemini-2.5-pro",
+    "code_execution": "Server-side Python execution with safety checks",
+    "context_files": "7 DABStep context files integrated",
+    "schema_awareness": "Complete column schema provided",
+    "task_specific_hints": "Intelligent prompting based on question content"
+  }
+}

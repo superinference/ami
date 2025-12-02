@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded /output/chunk5/data/context/payments.csv with 138236 rows.
+
+Filtering for merchant 'Belles_cookbook_store' during February (Day 32-59)...
+Filtered row count: 1016
+Average Transaction Amount: 90.6113
+
+First 5 rows of filtered data:
+     psp_reference               merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+131    26899849995  Belles_cookbook_store  GlobalCard  2023           16              59           37       True      100.21         IT              IT     Android  a9rzQsoajVh4nJE8YDa9PA  uBFTrxEw-kGpyhby-MTQnA  FFiKZdOCy_sol2wxYYqRhw                 POS      4916                   False                False   C               US
+278    34066269359  Belles_cookbook_store  GlobalCard  2023           15              38           58      False      140.22         IT              IT     Windows  yQDjfFNV4hMevtlAPh34gQ  bjLVomxGDISSaIYqMpfeJg  htZGYAY5Wg58IwBRTuttLw           Ecommerce      4571                   False                False   F               US
+524    86375284646  Belles_cookbook_store  GlobalCard  2023           21              58           50       True        9.31         IT              IT     Windows  zBCALUIpu6RqRSSHwobarA  YCg_0yStUPrJU0iUhs9fCA  gXdzByYVA9ZNjhU-UX1OmQ           Ecommerce      4645                   False                False   D               US
+561    52622122266  Belles_cookbook_store  GlobalCard  2023           17              51           38       True       16.01         SE              SE     Windows  8nEPjSqWyKBaQBwPntb9Hw  nQ0LXmo3kqIH1vzEu9dgZw  SqC41tfO8eljkTMc1zNTBQ           Ecommerce      4571                   False                 True   G               US
+563    19611932981  Belles_cookbook_store      NexPay  2023            0              52           38       True       84.42         SE              SE       Other  M9wS6WTQcRNdSuXsdrI4KA  OAB_hj0hnA0KY8-vEsi09w  TqbpLqMSrUqr0vA-IzpySA           Ecommerce      4556                   False                False   G               US
+
+✅ VERIFICATION SUCCESSFUL: Data matches ground truth.

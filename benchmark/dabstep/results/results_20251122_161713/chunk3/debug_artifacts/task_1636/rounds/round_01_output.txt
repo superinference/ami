@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original row count: 1000
+Filtered row count: 217
+
+First 5 rows of filtered data:
+    ID   card_scheme account_type capture_delay monthly_fraud_level monthly_volume                            merchant_category_code is_credit        aci  fixed_amount  rate  intracountry
+0    1  TransactPlus           []          None                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]     False     [C, B]          0.10    19           NaN
+2    3  TransactPlus           []            >5                None           None  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]      True     [C, A]          0.09    16           0.0
+6    7  TransactPlus           []        manual                None           None  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]     False        [A]          0.00    71           NaN
+7    8  TransactPlus           []          None                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]     False  [A, B, C]          0.12    60           NaN
+10  11  TransactPlus           []          None                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]      True     [C, A]          0.00    54           NaN

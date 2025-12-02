@@ -1,0 +1,14 @@
+Step 1: Load the `fees.json` file into a dataframe to inspect the fee rules and their applicability to account type 'S' and card scheme 'SwiftCharge'.
+Step 2: To answer the question "For account type S, what would be the average fee that the card scheme SwiftCharge would charge for a transaction value of 4321 EUR?", I need to identify the merchants with account type 'S', find the applicable fee rules for them in `fees.json` (considering their static attributes like Merchant Category Code and Capture Delay), and then calculate the average fee for the specified transaction amount.
+
+Since the Account S merchants (`Tech_Trainers`, `AI_Pro_Labs`) do not appear in the `payments.csv` sample (which lists `Crossfit_Hanna`, `Belles_cookbook_store`, etc.), I will assume no transaction history is available for them. I will calculate the fee based on all theoretically applicable rules for these merchants.
+
+My next step is to load the merchant data and fee rules, filter for Account S and SwiftCharge, and perform the matching logic to isolate the relevant fee rules.
+
+```python
+import pandas as pd
+import json
+
+# Load data
+merchant_data = pd.read_json('merchant_data.json')
+with

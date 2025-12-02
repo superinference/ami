@@ -1,0 +1,10 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Original Rule 787: {'ID': 787, 'card_scheme': 'NexPay', 'account_type': ['D'], 'capture_delay': None, 'monthly_fraud_level': None, 'monthly_volume': None, 'merchant_category_code': [], 'is_credit': 0.0, 'aci': ['C', 'A'], 'fixed_amount': 0.11, 'rate': 38, 'intracountry': nan}
+Merchants matching Original Rule: {'Rafa_AI'}
+Merchants matching New Rule: {'Martinis_Fine_Steakhouse'}
+Affected Merchants: ['Martinis_Fine_Steakhouse', 'Rafa_AI']

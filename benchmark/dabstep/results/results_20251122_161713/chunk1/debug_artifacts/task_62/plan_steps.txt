@@ -1,0 +1,1 @@
+Step 1: Load the `manual.md` file and search for the terms "excessive retry", "retry fee", "penalty", or "fine" to determine if a specific monetary value is assigned to excessive retries.

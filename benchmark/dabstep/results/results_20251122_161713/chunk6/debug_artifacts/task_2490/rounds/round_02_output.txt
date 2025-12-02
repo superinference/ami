@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Fee 792 found. Old Rate: 83, New Rate: 99
+Processing 55139 transactions for Crossfit_Hanna in 2023...
+Matching Transactions: 13887
+Affected Volume: 1280432.67
+Delta: 2048.69227199999295

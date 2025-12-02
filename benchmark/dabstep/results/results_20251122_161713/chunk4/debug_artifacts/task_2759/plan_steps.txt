@@ -1,0 +1,13 @@
+Step 1: To answer the question about which card scheme Crossfit_Hanna should steer traffic to for maximum fees, I need to simulate the fee costs for the merchant's 2023 transactions under each available card scheme.
+
+Here is the plan:
+1.  **Load Data**: Read `merchant_data.json`, `payments.csv`, and `fees.json`.
+2.  **Filter Payments**: Select transactions for `merchant = 'Crossfit_Hanna'` and `year = 2023`.
+3.  **Determine Merchant Profile**:
+    *   Get `merchant_category_code` and `account_type` from `merchant_data.json`.
+    *   Calculate the merchant's average `monthly_volume` (Total Volume / 12) and `monthly_fraud_level` (Fraud Volume / Total Volume) from the filtered payments to match against fee rule tiers.
+4.  **Simulate Fees**:
+    *   Iterate through each unique `card_scheme` available in `fees.json` (e.g., NexPay, GlobalCard, SwiftCharge, TransactPlus).
+    *   For each scheme, calculate the total fees for the filtered transactions.
+    *   For each transaction, find the matching fee rule based on:
+        *   Fixed attributes: `card_scheme`,

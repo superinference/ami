@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is 'Belles_cookbook_store' and the `year` is 2023.
+Step 2: Load `merchant_data.json` and `fees.json` to retrieve merchant attributes and fee rules, then calculate 'Belles_cookbook_store's total volume, fraud rate, and unique transaction profiles (card_scheme, is_credit, aci, intracountry) from the filtered payments data to determine applicable fee IDs.

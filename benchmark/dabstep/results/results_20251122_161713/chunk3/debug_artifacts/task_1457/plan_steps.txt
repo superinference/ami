@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a DataFrame to access the fee rules and rates.
+Step 2: Filter the fees DataFrame for 'SwiftCharge' and credit transactions (including wildcards), expand the 'aci' column (treating empty lists as all ACIs ['A', 'B', 'C', 'D', 'E', 'F', 'G']), calculate the fee for a 1000 euro transaction for each entry using the formula `fixed_amount + (rate * 1000 / 10000)`, find the maximum fee per ACI, and identify the ACI with the highest fee (breaking ties alphabetically).

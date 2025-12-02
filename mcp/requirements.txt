@@ -1,0 +1,26 @@
+# Core web framework and MCP
+flask>=3.0.0
+flask-cors>=4.0.0
+fastmcp>=0.2.0
+fastapi>=0.109.0
+uvicorn>=0.27.0
+websockets>=12.0
+aiohttp>=3.9.0
+
+# HTTP and API clients
+requests>=2.32.0
+sseclient-py>=1.8.0
+
+# Data processing (CRITICAL - used in mcp_server.py)
+pandas>=2.0.0
+numpy>=1.26.0
+
+# Document processing (for normalize_documents_to_markdown)
+docling>=1.0.0
+
+# Data models and validation
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Async and utilities
+asyncio-throttle>=1.0.0

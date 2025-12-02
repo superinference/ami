@@ -1,0 +1,13 @@
+Step 1: Load the `merchant_category_codes.csv` file and filter the rows to find the merchant category code (mcc) corresponding to the description 'Eating Places and Restaurants'.
+Step 2: Load the `fees.json` file, filter for rules where `card_scheme` is 'TransactPlus', `account_type` contains 'H' (or is empty/null), and `merchant_category_code` contains 5812 (or is empty/null), then calculate the fee for a 10 EUR transaction for each matching rule using the formula `fee = fixed_amount + (rate * 10 / 10000)` and compute the average of these fees.
+Step 3: To ensure the answer is accurate and verified, I will perform a precise calculation using the provided data files and the fee formula.
+
+1.  **Load `merchant_category_codes.csv`** to identify the specific Merchant Category Code (MCC) for the description "Eating Places and Restaurants".
+2.  **Load `fees.json`** and iterate through all fee rules.
+3.  **Filter rules** based on the following criteria:
+    *   `card_scheme` must be 'TransactPlus'.
+    *   `account_type` must either be empty (wildcard) or contain 'H'.
+    *   `merchant_category_code` must either be empty (wildcard) or contain the MCC identified in step 1.
+4.  **Calculate the fee** for each matching rule using the formula: `fee = fixed_amount + (rate * 10 / 10000)` (where 10 is the transaction value in EUR).
+5.  **Compute the average** of these calculated fees.
+6.  **Print the final average fee** formatted to 6 decimal places.

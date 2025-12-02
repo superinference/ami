@@ -1,0 +1,19 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Belles_cookbook_store
+June Volume: €109,248.57
+June Fraud Rate: 9.4095%
+Profile: MCC=5942, Account=R, Delay=1
+
+Calculating fees per scheme...
+Scheme: GlobalCard      | Total Fee: €194.03 | Matches: 423/1162
+Scheme: NexPay          | Total Fee: €53.03 | Matches: 127/1162
+Scheme: SwiftCharge     | Total Fee: €346.39 | Matches: 607/1162
+Scheme: TransactPlus    | Total Fee: €1,097.38 | Matches: 1162/1162
+------------------------------
+Recommended Scheme: NexPay
+Minimum Fee: €53.03

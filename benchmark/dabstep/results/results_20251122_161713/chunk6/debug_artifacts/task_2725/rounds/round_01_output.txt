@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame shape: (83, 21)
+       psp_reference                  merchant  ... aci  acquirer_country
+6450     52463323269  Martinis_Fine_Steakhouse  ...   G                FR
+9833     70682751176  Martinis_Fine_Steakhouse  ...   G                FR
+10164    15823989371  Martinis_Fine_Steakhouse  ...   G                FR
+11785    30999772936  Martinis_Fine_Steakhouse  ...   G                FR
+12475    38344359950  Martinis_Fine_Steakhouse  ...   G                FR
+
+[5 rows x 21 columns]

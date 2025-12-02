@@ -1,0 +1,44 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+--- Transaction Profile for Martinis_Fine_Steakhouse (2023) ---
+Total Volume: 1260227.18
+Fraud Volume: 115108.53
+Total Transactions: 13805
+
+--- Credit Distribution ---
+is_credit
+True     10094
+False     3711
+Name: count, dtype: int64
+
+--- ACI Distribution ---
+aci
+D    6195
+F    3662
+G    2705
+C     579
+A     398
+B     266
+Name: count, dtype: int64
+
+--- Acquirer Country Distribution ---
+acquirer_country
+FR    13805
+Name: count, dtype: int64
+
+--- Merchant Metadata ---
+{
+  "merchant": "Martinis_Fine_Steakhouse",
+  "capture_delay": "immediate",
+  "acquirer": [
+    "dagoberts_geldpakhuis",
+    "bank_of_springfield"
+  ],
+  "merchant_category_code": 5812,
+  "account_type": "H"
+}

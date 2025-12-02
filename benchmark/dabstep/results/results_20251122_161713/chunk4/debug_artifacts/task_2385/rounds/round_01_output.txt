@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows in dataset: 138236
+Rows for Rafa_AI in April 2023: 2327
+
+First 5 rows of filtered data:
+     psp_reference merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+19     64327336902  Rafa_AI  TransactPlus  2023           17               7          113      False      224.39         IT              IT     Android  O0UKtRnZAaj7inLhhZaWog  h7yegJ7AShGeIt1RYjdzhA  qTFj7u69HBVUYrfFETuMRA           Ecommerce      4916                   False                False   E               NL
+78     22948949083  Rafa_AI        NexPay  2023           16              56          104      False       32.24         NL              NL       Linux  3URNh4ccGzONspbHpGpfSg  HvQ_AaLagTSEB0NM6CHWIg  tYPX_v5fAVXP3VarqcwHpQ           Ecommerce      4571                   False                False   E               NL
+113    58063899304  Rafa_AI  TransactPlus  2023           13              46          120       True       84.18         NL              NL         iOS                     NaN  a-phTQ09vNq0a5hgIzrZsw  L_2U9tyaP0mqeGdQ_8BAqg           Ecommerce      4017                   False                False   E               NL
+135    61880970123  Rafa_AI        NexPay  2023           19              21          111       True       70.39         FR              FR     Android  yhYEAuqRB2b3jUjQlF5e4g  O43Z2nMB_Akpw7sscgnxzQ  s4NqdJJZjBKNVlZqYXScRQ                 POS      4645                   False                False   C               NL
+164    85217906953  Rafa_AI  TransactPlus  2023           12               5           91       True      179.27         BE              NL       Other  3d__YZQZvEi9_bsPCOJDiw  IqB9S_oxkgcnAeQWvcCY0Q  y1IJFa04WBinLcpWbe9vgw           Ecommerce      4556                    True                False   G               NL

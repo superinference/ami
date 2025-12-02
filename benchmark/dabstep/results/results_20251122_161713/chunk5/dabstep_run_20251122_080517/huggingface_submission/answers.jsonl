@@ -1,0 +1,75 @@
+{"task_id": "682", "agent_answer": "US: 90.24", "reasoning_trace": "US: 90.24"}
+{"task_id": "1519", "agent_answer": "20.75", "reasoning_trace": "[20.75]"}
+{"task_id": "1538", "agent_answer": "5.625868", "reasoning_trace": "5.625868"}
+{"task_id": "1862", "agent_answer": "[1096.00]", "reasoning_trace": "1096.00"}
+{"task_id": "1765", "agent_answer": "[29, 36, 51, 64, 65, 89, 107, 123, 150, 163, 276, 304, 381, 384, 398, 428, 454, 473, 477, 536, 572, 595, 626, 631, 678, 680, 704, 709, 741, 792, 813, 861, 871, 884]", "reasoning_trace": "29, 36, 51, 64, 65, 89, 107, 123, 150, 163, 276, 304, 381, 384, 398, 428, 454, 473, 477, 536, 572, 595, 626, 631, 678, 680, 704, 709, 741, 792, 813, 861, 871, 884"}
+{"task_id": "2441", "agent_answer": "-2.877212", "reasoning_trace": "-2.87721200000000"}
+{"task_id": "2563", "agent_answer": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso, Martinis_Fine_Steakhouse, Rafa_AI", "reasoning_trace": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso, Martinis_Fine_Steakhouse, Rafa_AI"}
+{"task_id": "2652", "agent_answer": "142.06", "reasoning_trace": "[142.06]"}
+{"task_id": "1966", "agent_answer": "0", "reasoning_trace": "0.00000000000000"}
+{"task_id": "2569", "agent_answer": "Rafa_AI", "reasoning_trace": "[Rafa_AI]"}
+{"task_id": "1531", "agent_answer": "0.613347", "reasoning_trace": "0.613347"}
+{"task_id": "1574", "agent_answer": "27.250479", "reasoning_trace": "27.250479"}
+{"task_id": "1593", "agent_answer": "0.517646", "reasoning_trace": "0.517646"}
+{"task_id": "1451", "agent_answer": "[F]", "reasoning_trace": "'F'"}
+{"task_id": "2544", "agent_answer": "0", "reasoning_trace": "0.00000000000000"}
+{"task_id": "2491", "agent_answer": "-2.47", "reasoning_trace": "-2.47"}
+{"task_id": "2678", "agent_answer": "TransactPlus", "reasoning_trace": "[TransactPlus]"}
+{"task_id": "1289", "agent_answer": "7.708869", "reasoning_trace": "7.70886904761905"}
+{"task_id": "2713", "agent_answer": "B", "reasoning_trace": "B"}
+{"task_id": "1720", "agent_answer": "46.613703", "reasoning_trace": "46.61370300000001"}
+{"task_id": "1449", "agent_answer": "[A]", "reasoning_trace": "'A'"}
+{"task_id": "1584", "agent_answer": "23.883662", "reasoning_trace": "23.883662"}
+{"task_id": "1514", "agent_answer": "TransactPlus", "reasoning_trace": "[TransactPlus]"}
+{"task_id": "2589", "agent_answer": "TransactPlus", "reasoning_trace": "[TransactPlus]"}
+{"task_id": "2727", "agent_answer": "F", "reasoning_trace": "F"}
+{"task_id": "1875", "agent_answer": "-6.01", "reasoning_trace": "-6.01"}
+{"task_id": "2731", "agent_answer": "B", "reasoning_trace": "B"}
+{"task_id": "1448", "agent_answer": "[E]", "reasoning_trace": "'E'"}
+{"task_id": "1769", "agent_answer": "[29, 36, 51, 64, 65, 89, 107, 123, 150, 163, 276, 304, 381, 384, 428, 454, 473, 477, 536, 572, 595, 626, 631, 678, 680, 704, 709, 741, 792, 813, 861, 871, 884]", "reasoning_trace": "29, 36, 51, 64, 65, 89, 107, 123, 150, 163, 276, 304, 381, 384, 428, 454, 473, 477, 536, 572, 595, 626, 631, 678, 680, 704, 709, 741, 792, 813, 861, 871, 884"}
+{"task_id": "1868", "agent_answer": "[1123.02]", "reasoning_trace": "1123.02"}
+{"task_id": "625", "agent_answer": "Android: 83", "reasoning_trace": "Android: 83"}
+{"task_id": "2587", "agent_answer": "460.78", "reasoning_trace": "[460.78]"}
+{"task_id": "1819", "agent_answer": "[217.67]", "reasoning_trace": "217.67"}
+{"task_id": "1835", "agent_answer": "[798.45]", "reasoning_trace": "798.45"}
+{"task_id": "1931", "agent_answer": "-0.984529", "reasoning_trace": "-0.98452900000000"}
+{"task_id": "1290", "agent_answer": "4.951388", "reasoning_trace": "4.95138785942460"}
+{"task_id": "2538", "agent_answer": "2146.505939", "reasoning_trace": "2146.50593899998694"}
+{"task_id": "1489", "agent_answer": "5, 9, 20, 28, 29, 30, 48, 58, 61, 67, 76, 84, 90, 96, 101, 108, 110, 120, 122, 128, 131, 140, 152, 161, 177, 181, 188, 196, 199, 205, 209, 212, 213, 216, 223, 227, 247, 262, 267, 274, 279, 284, 290, 302, 304, 309, 314, 318, 320, 322, 339, 340, 344, 346, 353, 362, 364, 373, 381, 395, 405, 406, 407, 412, 417, 434, 449, 454, 456, 460, 491, 494, 507, 511, 513, 523, 525, 527, 536, 541, 549, 552, 555, 558, 560, 566, 572, 575, 577, 586, 602, 609, 617, 619, 641, 666, 669, 678, 686, 704, 707, 718, 734, 746, 750, 756, 763, 767, 769, 772, 775, 778, 782, 792, 796, 797, 805, 806, 813, 815, 820, 826, 832, 842, 853, 855, 865, 872, 874, 889, 891, 912, 913, 917, 918, 925, 952, 953, 957, 958, 978, 985, 988, 1000", "reasoning_trace": "5, 9, 20, 28, 29, 30, 48, 58, 61, 67, 76, 84, 90, 96, 101, 108, 110, 120, 122, 128, 131, 140, 152, 161, 177, 181, 188, 196, 199, 205, 209, 212, 213, 216, 223, 227, 247, 262, 267, 274, 279, 284, 290, 302, 304, 309, 314, 318, 320, 322, 339, 340, 344, 346, 353, 362, 364, 373, 381, 395, 405, 406, 407, 412, 417, 434, 449, 454, 456, 460, 491, 494, 507, 511, 513, 523, 525, 527, 536, 541, 549, 552, 555, 558, 560, 566, 572, 575, 577, 586, 602, 609, 617, 619, 641, 666, 669, 678, 686, 704, 707, 718, 734, 746, 750, 756, 763, 767, 769, 772, 775, 778, 782, 792, 796, 797, 805, 806, 813, 815, 820, 826, 832, 842, 853, 855, 865, 872, 874, 889, 891, 912, 913, 917, 918, 925, 952, 953, 957, 958, 978, 985, 988, 1000"}
+{"task_id": "2507", "agent_answer": "-52.669278", "reasoning_trace": "-52.66927800000001"}
+{"task_id": "1739", "agent_answer": "34.16", "reasoning_trace": "34.16"}
+{"task_id": "1438", "agent_answer": "[7231, 7298, 7991, 8011, 8021, 8049, 8062]", "reasoning_trace": "7231, 7298, 7991, 8011, 8021, 8049, 8062"}
+{"task_id": "2699", "agent_answer": "G", "reasoning_trace": "G"}
+{"task_id": "2121", "agent_answer": "-0.102696", "reasoning_trace": "-0.10269600000000"}
+{"task_id": "1300", "agent_answer": "11.415289", "reasoning_trace": "11.41528882911869"}
+{"task_id": "1822", "agent_answer": "[379.69]", "reasoning_trace": "379.69"}
+{"task_id": "2634", "agent_answer": "GlobalCard", "reasoning_trace": "[GlobalCard]"}
+{"task_id": "1454", "agent_answer": "[4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]", "reasoning_trace": "4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523"}
+{"task_id": "1456", "agent_answer": "[8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]", "reasoning_trace": "8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742"}
+{"task_id": "1358", "agent_answer": "28.495455", "reasoning_trace": "28.495455"}
+{"task_id": "2537", "agent_answer": "6814.65", "reasoning_trace": "6814.65"}
+{"task_id": "1331", "agent_answer": "7.673105", "reasoning_trace": "7.673105"}
+{"task_id": "1516", "agent_answer": "27.78", "reasoning_trace": "[27.78]"}
+{"task_id": "1701", "agent_answer": "[12, 36, 107, 150, 160, 162, 187, 280, 367, 381, 394, 431, 433, 454, 473, 477, 491, 572, 616, 626, 660, 682, 702, 709, 741, 769, 813, 888, 891, 913, 960, 980]", "reasoning_trace": "12, 36, 107, 150, 160, 162, 187, 280, 367, 381, 394, 431, 433, 454, 473, 477, 491, 572, 616, 626, 660, 682, 702, 709, 741, 769, 813, 888, 891, 913, 960, 980"}
+{"task_id": "347", "agent_answer": "105.05", "reasoning_trace": "105.05"}
+{"task_id": "1841", "agent_answer": "[820.30456799999956]", "reasoning_trace": "820.30456799999956"}
+{"task_id": "1717", "agent_answer": "78.554124", "reasoning_trace": "78.55412400000000"}
+{"task_id": "2703", "agent_answer": "B", "reasoning_trace": "B"}
+{"task_id": "1431", "agent_answer": "25.149238", "reasoning_trace": "25.149238"}
+{"task_id": "1834", "agent_answer": "[2415.48]", "reasoning_trace": "2415.48"}
+{"task_id": "1308", "agent_answer": "0.123468", "reasoning_trace": "0.123468"}
+{"task_id": "2765", "agent_answer": "GlobalCard", "reasoning_trace": "[GlobalCard]"}
+{"task_id": "1760", "agent_answer": "[36, 51, 53, 64, 65, 107, 123, 150, 154, 163, 231, 249, 276, 286, 319, 347, 381, 384, 394, 428, 470, 473, 477, 536, 556, 572, 595, 608, 626, 680, 709, 725, 741, 813, 868, 895, 939, 960]", "reasoning_trace": "36, 51, 53, 64, 65, 107, 123, 150, 154, 163, 231, 249, 276, 286, 319, 347, 381, 384, 394, 428, 470, 473, 477, 536, 556, 572, 595, 608, 626, 680, 709, 725, 741, 813, 868, 895, 939, 960"}
+{"task_id": "2506", "agent_answer": "2.00", "reasoning_trace": "2.00"}
+{"task_id": "1275", "agent_answer": "0.119815", "reasoning_trace": "0.11981532577515"}
+{"task_id": "2551", "agent_answer": "5224.75", "reasoning_trace": "5224.75"}
+{"task_id": "2606", "agent_answer": "TransactPlus", "reasoning_trace": "[TransactPlus]"}
+{"task_id": "1892", "agent_answer": "6.31", "reasoning_trace": "6.31"}
+{"task_id": "2546", "agent_answer": "2692.24", "reasoning_trace": "2692.24"}
+{"task_id": "1433", "agent_answer": "[3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]", "reasoning_trace": "3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513"}
+{"task_id": "1604", "agent_answer": "8.247680 EUR", "reasoning_trace": "8.247680 EUR"}
+{"task_id": "2764", "agent_answer": "439.55", "reasoning_trace": "[439.55]"}
+{"task_id": "1440", "agent_answer": "[7231, 7298, 7991, 8011, 8021, 8049, 8062]", "reasoning_trace": "7231, 7298, 7991, 8011, 8021, 8049, 8062"}
+{"task_id": "2561", "agent_answer": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso, Rafa_AI", "reasoning_trace": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso, Rafa_AI"}
+{"task_id": "1443", "agent_answer": "[C]", "reasoning_trace": "'C'"}
+{"task_id": "1823", "agent_answer": "[2417.41056700000308]", "reasoning_trace": "2417.41056700000308"}

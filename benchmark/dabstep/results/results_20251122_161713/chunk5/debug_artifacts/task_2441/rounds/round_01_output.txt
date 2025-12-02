@@ -1,0 +1,28 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading data files...
+Files loaded successfully.
+Filtering for merchant 'Rafa_AI' in October 2023 (Day 274-304)...
+
+Filtered Dataset Summary:
+Total transactions found: 2369
+Day of year range: 274 to 304
+
+Sample transactions (first 10):
+      card_scheme  is_credit  eur_amount issuing_country aci acquirer_country
+47     GlobalCard       True       27.04              IT   E               NL
+51   TransactPlus       True       45.61              SE   E               NL
+75     GlobalCard       True       80.14              IT   E               NL
+108        NexPay       True       60.41              SE   E               NL
+136    GlobalCard       True       56.21              BE   E               NL
+143   SwiftCharge       True       46.07              FR   G               NL
+173    GlobalCard       True       17.57              BE   E               NL
+183        NexPay      False      100.68              NL   E               NL
+365   SwiftCharge       True       43.53              FR   C               NL
+389        NexPay       True      417.13              GR   C               NL
+
+SUCCESS: Transaction count matches expected volume (2369).

@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Transactions Processed: 13848
+Actual MCC: 5942, Matched Rules: 6079
+Hypothetical MCC: 5911, Matched Rules: 7790
+Total Fee (Actual): 4144.3243
+Total Fee (Hypothetical): 4632.7413
+Fee Delta: 488.41701100000228

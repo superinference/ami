@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to access the fee rules.
+Step 2: Filter the `fees` DataFrame to include only rows where `card_scheme` is 'NexPay' and `account_type` is either empty or contains 'R', then calculate the fee for a transaction amount of 1000 EUR using the formula `fee = fixed_amount + (rate * 1000 / 10000)`, and finally calculate the average of these fees.

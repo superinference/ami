@@ -1,0 +1,11 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Metrics for Martinis_Fine_Steakhouse in May (Day 121-151):
+Transaction Count: 1194
+Total Monthly Volume: 110282.17
+Total Fraud Volume: 11171.76
+Average Transaction Amount: 92.36

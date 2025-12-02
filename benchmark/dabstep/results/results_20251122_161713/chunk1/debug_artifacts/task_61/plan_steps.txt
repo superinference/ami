@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame and filter the data to include only transactions from the year 2023.
+Step 2: Create a 'month' column from the 'day_of_year' and a 'fraud_amount' column (equal to 'eur_amount' where 'has_fraudulent_dispute' is True, else 0), then group by 'merchant' and 'month' to calculate the monthly fraud rate (sum of 'fraud_amount' divided by sum of 'eur_amount'), and finally calculate the standard deviation of these monthly rates per merchant to identify the one with the highest fluctuation.

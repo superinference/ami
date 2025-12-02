@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the dataframe to include only transactions where the `merchant` is "Martinis_Fine_Steakhouse" and the `day_of_year` corresponds to April (days 91 to 120).
+Step 2: Load `fees.json` and `merchant_data.json`, calculate the monthly transaction volume and fraud rate for "Martinis_Fine_Steakhouse" in April 2023, identify the transactions that match the criteria for fee rule ID=12, and calculate the total fee difference using the new rate of 99 compared to the original rate.

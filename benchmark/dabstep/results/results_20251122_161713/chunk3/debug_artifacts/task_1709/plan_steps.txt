@@ -1,0 +1,5 @@
+Step 1: Load the `payments.csv` file and filter for rows where the `merchant` is "Rafa_AI", the `day_of_year` is 300, and the `year` is 2023.
+Step 2: Load `merchant_data.json` to retrieve the `merchant_category_code`, `account_type`, and `capture_delay` for "Rafa_AI", and calculate the total transaction volume and fraud rate (fraudulent volume divided by total volume) for "Rafa_AI" during the month of October (days 274-304) using `payments.csv`.
+Step 3: Based on the obtained results which already list the specific Fee IDs, the next step is to present this list as the final answer.
+
+Output the final answer: The Fee IDs applicable to Rafa_AI on the 300th day of 2023 are 17, 123, 163, 183, 286, 304, 384, 427, 428, 454, 634, 701, 813.

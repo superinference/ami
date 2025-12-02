@@ -1,0 +1,19 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Found 2412 transactions for Rafa_AI in March 2023.
+Merchant Metadata: {'merchant': 'Rafa_AI', 'capture_delay': '7', 'acquirer': ['tellsons_bank'], 'merchant_category_code': 7372, 'account_type': 'D'}
+Monthly Volume: €222,892.37
+Monthly Fraud Rate: 7.7944%
+Calculating fees...
+WARNING: No rule matched for transaction: {'account_type': 'D', 'mcc': 7372, 'capture_delay': '7', 'monthly_volume': np.float64(222892.37), 'monthly_fraud_rate': np.float64(0.0779436152570481), 'card_scheme': 'GlobalCard', 'is_credit': True, 'aci': 'E', 'is_intracountry': False}
+
+Processing Complete.
+Matched Transactions: 1634
+Unmatched Transactions: 778
+Total Fees Paid by Rafa_AI in March 2023: €1186.01
+1186.01

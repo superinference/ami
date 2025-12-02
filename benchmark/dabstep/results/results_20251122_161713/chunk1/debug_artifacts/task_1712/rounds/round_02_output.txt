@@ -1,0 +1,85 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant Profile: {'merchant': 'Belles_cookbook_store', 'capture_delay': '1', 'acquirer': ['lehman_brothers'], 'merchant_category_code': 5942, 'account_type': 'R'}
+Monthly Volume (Jan): €113,260.42
+Monthly Fraud Volume: €11,680.62
+Monthly Fraud Rate: 10.3131%
+Transactions on Day 12: 34
+
+Processing Transactions...
+WARNING: No fee rule matched for Tx 16970611168
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 34246082484
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 84293963492
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 17213076353
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'A', 'intracountry': False}
+WARNING: No fee rule matched for Tx 73072492205
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'G', 'intracountry': False}
+WARNING: No fee rule matched for Tx 10356736692
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 82633018315
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 72676282891
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'F', 'intracountry': False}
+WARNING: No fee rule matched for Tx 78480451202
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 53903844060
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 28641847092
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 49674420551
+Context: {'card_scheme': 'SwiftCharge', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'G', 'intracountry': False}
+WARNING: No fee rule matched for Tx 67019023713
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'G', 'intracountry': False}
+WARNING: No fee rule matched for Tx 64613641712
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'F', 'intracountry': False}
+WARNING: No fee rule matched for Tx 19812386859
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'F', 'intracountry': False}
+WARNING: No fee rule matched for Tx 58578505712
+Context: {'card_scheme': 'SwiftCharge', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 73133649958
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 64399780456
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 60268916530
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'F', 'intracountry': False}
+WARNING: No fee rule matched for Tx 37752844560
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 38320262039
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 48771715025
+Context: {'card_scheme': 'SwiftCharge', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'F', 'intracountry': False}
+WARNING: No fee rule matched for Tx 26812203524
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 22617249661
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'G', 'intracountry': False}
+WARNING: No fee rule matched for Tx 36039472732
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 22196976995
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'F', 'intracountry': False}
+WARNING: No fee rule matched for Tx 56583304045
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 79141316363
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'G', 'intracountry': False}
+WARNING: No fee rule matched for Tx 38256684608
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 31036982110
+Context: {'card_scheme': 'TransactPlus', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'G', 'intracountry': False}
+WARNING: No fee rule matched for Tx 60695297957
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 85281722512
+Context: {'card_scheme': 'NexPay', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': False, 'aci': 'F', 'intracountry': False}
+WARNING: No fee rule matched for Tx 72623906321
+Context: {'card_scheme': 'SwiftCharge', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+WARNING: No fee rule matched for Tx 86303826709
+Context: {'card_scheme': 'GlobalCard', 'mcc': 5942, 'account_type': 'R', 'capture_delay': '1', 'monthly_volume': np.float64(113260.42), 'monthly_fraud_rate': np.float64(0.10313064352048139), 'is_credit': True, 'aci': 'D', 'intracountry': False}
+------------------------------
+Total Transactions: 34
+Matched Transactions: 0
+Total Fees: €0.00

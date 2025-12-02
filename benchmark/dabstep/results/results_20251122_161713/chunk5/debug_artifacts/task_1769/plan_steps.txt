@@ -1,0 +1,4 @@
+Step 1: Load the `payments.csv` dataset and filter for transactions where `merchant` is 'Crossfit_Hanna', `year` is 2023, and `day_of_year` is between 182 and 212 (inclusive) to isolate the relevant data for July 2023.
+Step 2: Based on the obtained results which have already calculated the monthly volume (€428,299.93), fraud ratio (9.49%), and identified the applicable fee IDs by matching transaction profiles against the fee rules, the next step is to compile and present this final list.
+
+Output the final list of applicable Fee IDs for Crossfit_Hanna in July 2023, which are: 29, 36, 51, 64, 65, 89, 107, 123, 150, 163, 276, 304, 381, 384, 428, 454, 473, 477, 536, 572, 595, 626, 631, 678, 680, 704, 709, 741, 792, 813, 861, 871, 884.

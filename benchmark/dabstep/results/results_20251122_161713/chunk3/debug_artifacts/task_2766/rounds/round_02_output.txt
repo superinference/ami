@@ -1,0 +1,19 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Filtered transactions for Rafa_AI in 2023: 27696
+Processing 237 unique transaction profiles across 4 schemes...
+------------------------------
+FEE SIMULATION RESULTS (2023)
+------------------------------
+GlobalCard: €5,855.40
+NexPay: €11,871.14
+SwiftCharge: €11,100.29
+TransactPlus: €26,080.17
+------------------------------
+Recommended Scheme: GlobalCard
+GlobalCard

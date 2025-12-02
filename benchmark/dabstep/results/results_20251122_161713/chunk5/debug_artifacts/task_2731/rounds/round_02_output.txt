@@ -1,0 +1,21 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing 181 fraudulent transactions.
+Merchant Stats - Vol: €212,217.24, Fraud Rate: 9.90%
+Static Data - MCC: 7372, Type: D, Delay: 7
+
+Results per ACI:
+ACI A: €179.07
+ACI B: €146.73
+ACI C: €131.48
+ACI D: €108.92
+ACI E: €110.77
+ACI F: €109.37
+ACI G: €96.18
+
+Preferred ACI: G
+G

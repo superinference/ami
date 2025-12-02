@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Golfclub_Baron_Friso' that occurred during the month of August (specifically, where `day_of_year` is between 213 and 243).
+Step 2: Load `merchant_data.json` to retrieve the `account_type`, `merchant_category_code`, and `capture_delay` for 'Golfclub_Baron_Friso', and using `august_transactions.csv`, calculate the `monthly_volume` and `monthly_fraud_level` (fraud amount / total amount) for August.

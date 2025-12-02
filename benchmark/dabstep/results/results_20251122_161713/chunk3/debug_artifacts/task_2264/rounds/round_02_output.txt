@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Martinis_Fine_Steakhouse
+April Volume: €102,916.05
+April Fraud Rate: 9.9154%
+Fee Rule 12 Original Rate: 40
+Fee Rule 12 New Rate: 99
+Rate Delta: 59
+Matching Transactions: 8
+Total Delta: 2.63541200000000

@@ -1,0 +1,10 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows to include only transactions where the `merchant` column is 'Rafa_AI'.
+Step 2: Load `merchant_data.json` and `fees.json` into dataframes, then process the filtered `payments` dataframe to add a `month` column (derived from `day_of_year`), an `intracountry` column (True if `issuing_country` equals `acquirer_country`), and calculate monthly aggregates (`monthly_volume` and `monthly_fraud_rate`) for 'Rafa_AI', merging these aggregates back into the dataframe to prepare for fee calculation.
+Step 3: To answer the question "What are the total fees (in euros) that Rafa_AI paid in 2023?", I need to apply the fee rules found in `fees.json` to the transactions of 'Rafa_AI' in `payments.csv`. The previous steps have prepared the data by filtering for the merchant and calculating necessary monthly aggregates (volume and fraud rate). The next logical step is to execute the complex matching logic to determine the applicable fee for each transaction and sum them up.
+
+Here is the next plan:
+
+1.  **Load and Merge Data**: Load the filtered `payments` data (for 'Rafa_AI'), `merchant_data.json`, and `fees.json`. Merge the merchant static attributes (`merchant_category_code`, `account_type`, `capture_delay`) into the payments dataframe.
+2.  **Prepare Derived Fields**: Ensure `month`, `intracountry` (issuing_country == acquirer_country), `monthly_volume`, and `monthly_fraud_rate` are calculated for the transactions.
+3.  **Map and Parse Rules**:
+    *   Map the merchant's `capture_delay` value (e.g., '1', '7') to the corresponding categories in `fees.json` (e.g., '<3', '>5

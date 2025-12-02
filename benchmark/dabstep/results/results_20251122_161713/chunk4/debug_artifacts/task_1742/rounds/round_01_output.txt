@@ -1,0 +1,26 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading /output/chunk4/data/context/payments.csv...
+Successfully filtered data for Merchant: 'Crossfit_Hanna' and Year: 2023
+Row count: 55139
+
+Sample rows:
+   psp_reference        merchant  ... aci  acquirer_country
+0    20034594130  Crossfit_Hanna  ...   F                NL
+1    36926127356  Crossfit_Hanna  ...   F                NL
+3    68442235288  Crossfit_Hanna  ...   D                NL
+4    81404384199  Crossfit_Hanna  ...   F                NL
+5    74453982452  Crossfit_Hanna  ...   G                NL
+
+[5 rows x 21 columns]
+
+--- Unique Values for Fee Matching ---
+Card Schemes: ['NexPay', 'SwiftCharge', 'TransactPlus', 'GlobalCard']
+Is Credit: [False, True]
+ACI Codes: ['F', 'D', 'G', 'B', 'C', 'A']
+Issuing Countries: ['SE', 'NL', 'LU', 'BE', 'IT', 'GR', 'FR', 'ES']
+Acquirer Countries: ['NL', 'GB']

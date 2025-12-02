@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame shape: (2328, 21)
+Total EUR Amount: 213102.7
+
+First 5 rows of filtered data:
+     psp_reference merchant  ... aci  acquirer_country
+41     11340236231  Rafa_AI  ...   E                NL
+52     73672607869  Rafa_AI  ...   G                NL
+168    64257353996  Rafa_AI  ...   E                NL
+170    34844183874  Rafa_AI  ...   E                NL
+189    22741743732  Rafa_AI  ...   G                NL
+
+[5 rows x 21 columns]

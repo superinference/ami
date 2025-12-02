@@ -1,0 +1,6 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Belles_cookbook_store' that occurred in June (month 6).
+Step 2: Calculate the total hypothetical fees for all June transactions of 'Belles_cookbook_store' for each of the four card schemes (GlobalCard, NexPay, SwiftCharge, TransactPlus) by applying the fee rules from `fees.json` to the entire transaction set (treating all transactions as if they were processed by the specific scheme being tested), using the merchant's profile (MCC 5942, Account Type R, Capture Delay '<3', Monthly Volume '100k-1m', Monthly Fraud Level '>8.3%', Acquirer Country 'FR'), and select the scheme that results in the minimum total fees.
+Step 3: Based on the previous results and the need to verify the optimal card scheme with the correct merchant parameters (specifically the Acquirer Country from `merchant_data.json` vs `payments.csv` and the calculated June metrics), the next step is to explicitly calculate and compare the fees for all schemes.
+
+**Plan:**
+Calculate the total fees for Belles_cookbook_store in June for each card scheme (NexPay, GlobalCard, SwiftCharge, TransactPlus) using the merchant's profile (Acquirer Country: FR, MCC: 5942, Account Type: R) and June metrics (Volume: 100k-1m, Fraud: >8.3%) to determine the scheme with the minimum fees.

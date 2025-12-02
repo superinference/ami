@@ -1,0 +1,93 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded 1000 fee rules from /output/chunk5/data/context/fees.json
+Number of matching rules found: 223
+
+Sample of first 3 matching rules:
+[
+  {
+    "ID": 1,
+    "card_scheme": "TransactPlus",
+    "account_type": [],
+    "capture_delay": null,
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [
+      8000,
+      8011,
+      8021,
+      8031,
+      8041,
+      7299,
+      9399,
+      8742
+    ],
+    "is_credit": false,
+    "aci": [
+      "C",
+      "B"
+    ],
+    "fixed_amount": 0.1,
+    "rate": 19,
+    "intracountry": null
+  },
+  {
+    "ID": 3,
+    "card_scheme": "TransactPlus",
+    "account_type": [],
+    "capture_delay": ">5",
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [
+      4111,
+      4121,
+      4131,
+      4411,
+      4511,
+      4789,
+      7513,
+      7523
+    ],
+    "is_credit": true,
+    "aci": [
+      "C",
+      "A"
+    ],
+    "fixed_amount": 0.09,
+    "rate": 16,
+    "intracountry": 0.0
+  },
+  {
+    "ID": 7,
+    "card_scheme": "TransactPlus",
+    "account_type": [],
+    "capture_delay": "manual",
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [
+      4111,
+      4121,
+      4131,
+      4411,
+      4511,
+      4789,
+      7513,
+      7523
+    ],
+    "is_credit": false,
+    "aci": [
+      "A"
+    ],
+    "fixed_amount": 0.0,
+    "rate": 71,
+    "intracountry": null
+  }
+]
+
+Verification - First Match ID: 1
+Card Scheme: TransactPlus
+Account Type: []

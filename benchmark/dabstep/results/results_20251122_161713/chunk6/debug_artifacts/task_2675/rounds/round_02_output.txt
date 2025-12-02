@@ -1,0 +1,17 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Rafa_AI
+October Volume: €210,706.07
+October Fraud Rate: 10.61%
+------------------------------
+Projected Total Fees by Scheme:
+NexPay: €1,006.26
+GlobalCard: €478.25
+SwiftCharge: €899.80
+TransactPlus: €2,182.84
+------------------------------
+TransactPlus

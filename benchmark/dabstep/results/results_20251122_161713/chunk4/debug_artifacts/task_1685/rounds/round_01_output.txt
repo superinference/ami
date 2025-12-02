@@ -1,0 +1,23 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of rows after filtering: 38
+
+First 5 rows of filtered data:
+       psp_reference               merchant  ... aci  acquirer_country
+6677     75845005615  Belles_cookbook_store  ...   F                US
+13038    17479485539  Belles_cookbook_store  ...   F                US
+20324    39041724573  Belles_cookbook_store  ...   D                US
+24461    58490025921  Belles_cookbook_store  ...   D                US
+34446    66120487439  Belles_cookbook_store  ...   C                US
+
+[5 rows x 21 columns]
+
+Unique attributes in filtered transactions:
+Card Schemes: ['SwiftCharge' 'TransactPlus' 'GlobalCard' 'NexPay']
+ACI codes: ['F' 'D' 'C' 'G' 'B']
+Is Credit: [False  True]
+Issuing Countries: ['IT' 'NL' 'BE' 'FR' 'ES' 'SE' 'GR' 'LU']

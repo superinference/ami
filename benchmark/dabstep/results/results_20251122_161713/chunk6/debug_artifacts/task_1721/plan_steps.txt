@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows to include only transactions where the `merchant` is 'Crossfit_Hanna', the `year` is 2023, and the `day_of_year` is 300.
+Step 2: Load `merchant_data.json` to get the merchant's attributes, calculate the monthly volume and fraud rate for October 2023 (days 274-304) from `payments.csv` for 'Crossfit_Hanna', then load `fees.json` and iterate through the transactions of day 300 to find the matching fee rule for each transaction and calculate the total fees.

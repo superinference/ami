@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and retrieve the specific rule details for the fee with ID 384 (including its card scheme, merchant category codes, and other matching criteria).
+Step 2: Load `merchant_data.json` to retrieve the account type for each merchant, and load `payments.csv` to identify merchants who processed transactions matching Fee 384's criteria (card_scheme='NexPay', is_credit=True, aci in ['C', 'B']), then filter for those merchants whose account type is NOT 'H' to determine who would be negatively affected by the restriction.

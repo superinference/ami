@@ -1,0 +1,10 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (13727, 21)
+Unique Merchants: ['Crossfit_Hanna']
+Day of Year Range: 182 - 273
+Total Transactions: 13727

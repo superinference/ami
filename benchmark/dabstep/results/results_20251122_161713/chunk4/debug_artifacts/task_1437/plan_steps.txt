@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe to analyze the fee structures and rules.
+Step 2: Load `fees.json`, explode the `merchant_category_code` column, calculate the fee for a 100 euro transaction for each rule using the formula `fixed_amount + (rate * 100 / 10000)`, identify the maximum fee, and extract the unique list of merchant category codes that correspond to this maximum fee.

@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file to retrieve the specific matching criteria (such as card scheme, merchant category codes, account types, etc.) for the fee rule with ID 1.
+Step 2: Load `fees.json` to extract the criteria for Fee ID 1, load `merchant_data.json` to map merchants to their category codes, and load `payments.csv` to filter transactions that match the fee's `card_scheme`, `is_credit`, `aci`, and the merchant's `merchant_category_code` to list the affected merchants.

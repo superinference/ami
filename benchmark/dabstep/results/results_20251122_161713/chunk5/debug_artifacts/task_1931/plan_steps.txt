@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` dataset and filter for transactions where the merchant is 'Belles_cookbook_store' and the date falls within July 2023 (specifically, `day_of_year` between 182 and 212).
+Step 2: Load `fees.json` and `merchant_data.json`, then using the filtered July 2023 transactions for 'Belles_cookbook_store', calculate the merchant's monthly volume and fraud rate to determine applicable fee rules. Finally, compute the total fees paid under the current rules versus the total fees if fee ID 384 had a rate of 1, and report the difference.

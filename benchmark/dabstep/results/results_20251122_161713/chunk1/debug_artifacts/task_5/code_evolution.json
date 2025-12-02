@@ -1,0 +1,16 @@
+[
+  {
+    "round": 1,
+    "plan_steps": 1,
+    "code_length": 2307,
+    "code": "# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef safe_get(df, column, default=None):\n    \"\"\"Safely get column from DataFrame, return default if not exists.\"\"\"\n    if isinstance(df, dict):\n        return df.get(column, default)\n    elif hasattr(df, 'columns') and column in df.columns:\n        return df[column]\n    return default\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef safe_index(array, idx, default=None):\n    \"\"\"Safely get array element at index, return default if out of bounds.\"\"\"\n    try:\n        if 0 <= idx < len(array):\n            return array[idx]\n        return default\n    except (IndexError, TypeError, AttributeError):\n        return default\n\n\nimport pandas as pd\n\ndef main():\n    # Step 1: Load the payments.csv file into a pandas DataFrame\n    file_path = '/output/chunk1/data/context/payments.csv'\n    df = pd.read_csv(file_path)\n    \n    # Step 2: Calculate the number of transactions per issuing country\n    # value_counts() sorts by count descending by default, so the first index is the highest\n    issuing_country_counts = df['issuing_country'].value_counts()\n    \n    # Step 3: Identify the issuing country with the highest number of transactions\n    highest_country = issuing_country_counts.idxmax()\n    \n    # Print the result\n    print(highest_country)\n\nif __name__ == \"__main__\":\n    main()",
+    "execution_output": "NL\n",
+    "original_error": null,
+    "debugger_used": false,
+    "verification": "sufficient",
+    "temperature": 0.1,
+    "plan_snapshot": [
+      "Load the `payments.csv` file into a pandas DataFrame."
+    ]
+  }
+]

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to retrieve all transactions associated with the merchant "Martinis_Fine_Steakhouse" for the year 2023.
+Step 2: Load `merchant_data.json` to retrieve the current MCC, account type, and capture delay for "Martinis_Fine_Steakhouse", load `fees.json` to access the fee rules, and calculate the monthly total volume and fraud rates from the transaction data to determine the applicable fee tiers for the year 2023.

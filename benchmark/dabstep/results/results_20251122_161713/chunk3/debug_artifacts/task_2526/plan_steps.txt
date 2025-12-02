@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and retrieve the specific criteria (such as card scheme, merchant category code, account type, etc.) associated with Fee ID 709.
+Step 2: Load `payments.csv`, filter the data for transactions where `card_scheme` is 'GlobalCard', `is_credit` is False, and `aci` is in ['A', 'B', 'C'], and then extract the unique merchant names from the filtered data.

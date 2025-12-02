@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where the `merchant` is "Golfclub_Baron_Friso" and the `year` is 2023 to isolate the relevant transactions.
+Step 2: Load `merchant_data.json` to retrieve the merchant details (category code, account type, capture delay) for "Golfclub_Baron_Friso" and `fees.json` to get the parameters of the fee with ID=64, then identify the transactions in the filtered data that match this fee rule and calculate the difference in total fees using the rate change (99 vs original).

@@ -1,0 +1,27 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee Rule ID 454 Details:
+{
+    "ID": 454,
+    "card_scheme": "TransactPlus",
+    "account_type": [
+        "R",
+        "D",
+        "H",
+        "F",
+        "S"
+    ],
+    "capture_delay": null,
+    "monthly_fraud_level": null,
+    "monthly_volume": "100k-1m",
+    "merchant_category_code": [],
+    "is_credit": null,
+    "aci": [],
+    "fixed_amount": 0.12,
+    "rate": 94,
+    "intracountry": null
+}

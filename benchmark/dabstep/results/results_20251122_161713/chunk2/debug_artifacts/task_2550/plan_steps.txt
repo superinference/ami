@@ -1,0 +1,3 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows to include only transactions where the `merchant` column is 'Rafa_AI' and the `year` column is 2023.
+Step 2: Load `merchant_data.json` to retrieve the current attributes (MCC, account type, capture delay) for 'Rafa_AI', and load `fees.json` to access the fee rules. Additionally, calculate the total monthly transaction volume and monthly fraud rate (fraudulent volume / total volume) for 'Rafa_AI' in 2023 from the filtered payments data, as these metrics are necessary to select the correct fee rules.
+Step 3: Output the final answer: The fee delta is -108.24 EUR.

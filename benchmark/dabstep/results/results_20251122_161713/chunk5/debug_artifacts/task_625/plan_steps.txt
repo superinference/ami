@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows where `merchant` is 'Belles_cookbook_store', `card_scheme` is 'TransactPlus', `year` is 2023, and `day_of_year` is between 60 and 120 (representing March and April).

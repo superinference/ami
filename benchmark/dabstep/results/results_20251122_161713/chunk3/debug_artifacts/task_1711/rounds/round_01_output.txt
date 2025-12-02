@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame shape: (37, 21)
+       psp_reference               merchant  ... aci  acquirer_country
+6042     69485626841  Belles_cookbook_store  ...   F                US
+7109     46676280719  Belles_cookbook_store  ...   A                US
+7961     53575716360  Belles_cookbook_store  ...   D                US
+10061    35296418978  Belles_cookbook_store  ...   G                US
+23853    28141117112  Belles_cookbook_store  ...   D                US
+
+[5 rows x 21 columns]

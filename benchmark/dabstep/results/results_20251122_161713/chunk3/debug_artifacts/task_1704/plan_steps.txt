@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is "Martinis_Fine_Steakhouse", the `day_of_year` is 365, and the `year` is 2023.
+Step 2: Load `merchant_data.json` to retrieve the account details for "Martinis_Fine_Steakhouse", calculate the merchant's total volume and fraud rate for December 2023 using `payments.csv`, and then cross-reference this information with the transaction profiles from day 365 and the rules in `fees.json` to identify all applicable Fee IDs.

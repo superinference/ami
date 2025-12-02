@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 84
+        psp_reference              merchant  ... aci  acquirer_country
+21        89410650089  Golfclub_Baron_Friso  ...   D                IT
+3951      73137808017  Golfclub_Baron_Friso  ...   D                IT
+6740      66919557398  Golfclub_Baron_Friso  ...   A                IT
+7675      38702564547  Golfclub_Baron_Friso  ...   D                IT
+9148      37273786722  Golfclub_Baron_Friso  ...   D                IT
+...               ...                   ...  ...  ..               ...
+133910    28157578516  Golfclub_Baron_Friso  ...   A                IT
+136559    69166319456  Golfclub_Baron_Friso  ...   D                IT
+137375    45831250305  Golfclub_Baron_Friso  ...   G                IT
+137464    76689580575  Golfclub_Baron_Friso  ...   G                IT
+137970    59546110675  Golfclub_Baron_Friso  ...   F                IT
+
+[84 rows x 21 columns]

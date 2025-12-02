@@ -1,0 +1,42 @@
+name: Publish VS Code Extension
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Use Rust
+        uses: actions-rs/toolchain@v1.0.6
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Prepare wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Install Dependencies
+        working-directory: ./vscode
+        run: npm install
+
+      - name: Build Extension
+        working-directory: ./vscode
+        run: npm run package
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Publish Extension
+        working-directory: ./vscode
+        run: vsce publish -p ${{ secrets.MICROSOFT_MARKETPLACE_PAT }} --allow-proposed-apis findTextInFiles

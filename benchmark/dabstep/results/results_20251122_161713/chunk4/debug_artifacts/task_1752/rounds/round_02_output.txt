@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Filtering for Belles_cookbook_store in Feb 2023...
+Total Volume: 92061.11
+Fraud Rate: 6.0968%
+Merchant Metadata - MCC: 5942, Account: R, Delay: 1
+Found 46 unique transaction profiles.
+
+Applicable Fee IDs:
+[36, 51, 53, 64, 65, 107, 123, 150, 154, 163, 231, 249, 276, 286, 319, 347, 381, 384, 394, 428, 470, 471, 473, 477, 536, 556, 572, 595, 608, 626, 680, 709, 725, 741, 813, 868, 895, 960]

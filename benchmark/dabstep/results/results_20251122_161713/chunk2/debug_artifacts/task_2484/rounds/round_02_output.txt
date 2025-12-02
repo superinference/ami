@@ -1,0 +1,28 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing Rule ID: 398
+Original Rate: 99
+Target New Rate: 99
+Rule Conditions: {
+  "card_scheme": "SwiftCharge",
+  "account_type": [],
+  "capture_delay": null,
+  "monthly_fraud_level": "7.7%-8.3%",
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": true,
+  "aci": [
+    "A",
+    "B",
+    "C"
+  ],
+  "intracountry": null
+}
+------------------------------
+Matching Transactions: 62
+Total Matching Amount: 5307.48 EUR
+Calculated Delta: 0.00000000000000

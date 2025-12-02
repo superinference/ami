@@ -1,0 +1,17 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv with 138236 rows.
+Filtered rows (TransactPlus + Credit): 25467
+Sample of filtered data:
+    psp_reference               merchant  ... aci  acquirer_country
+22    38394465378         Crossfit_Hanna  ...   D                NL
+26    27927426581  Belles_cookbook_store  ...   G                US
+32    72750934301   Golfclub_Baron_Friso  ...   D                IT
+43    57911601753         Crossfit_Hanna  ...   D                NL
+45    14819927884                Rafa_AI  ...   C                NL
+
+[5 rows x 21 columns]

@@ -1,0 +1,217 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* VSCode theme variables integration */
+:root {
+  --animation-duration: 0.2s;
+  --border-radius: 0px;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+}
+
+/* Enhanced scrollbar styles */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+  border-radius: 0px;
+  border: 1px solid transparent;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--vscode-scrollbarSlider-activeBackground);
+}
+
+/* Base component styles */
+.chat-root {
+  @apply flex flex-col h-screen bg-vscode-bg text-vscode-fg font-ui text-ui overflow-hidden;
+}
+
+.chat-header {
+  @apply flex justify-between items-center px-4 py-2 border-b border-vscode-border bg-vscode-sidebar-bg flex-shrink-0;
+}
+
+.chat-title {
+  @apply flex items-center font-semibold text-sm;
+}
+
+.title-icon {
+  @apply mr-2 text-vscode-description;
+}
+
+.header-subtitle {
+  @apply text-xs font-normal text-vscode-description ml-2;
+}
+
+.chat-controls {
+  @apply flex items-center gap-2;
+}
+
+.model-selector {
+  @apply flex items-center gap-2 text-xs;
+}
+
+.model-selector label {
+  @apply text-vscode-description;
+}
+
+/* Enhanced chat list */
+.chat-list {
+  @apply flex-1 overflow-y-auto p-4 scroll-smooth flex flex-col;
+}
+
+/* Enhanced welcome message */
+.welcome-message {
+  @apply p-6 text-center text-vscode-description opacity-80 animate-fade-in;
+}
+
+/* Enhanced message styles */
+.message {
+  @apply mb-3 animate-slide-up;
+}
+
+.message.user {
+  @apply p-3 ml-8;
+}
+
+.message.assistant {
+  @apply bg-transparent;
+}
+
+.message.system {
+  @apply bg-vscode-sidebar-bg border border-vscode-border p-2 text-xs text-vscode-description;
+}
+
+/* Enhanced input area */
+.chat-input-container {
+  @apply flex-shrink-0 border-t border-vscode-border bg-vscode-sidebar-bg p-4;
+}
+
+.chat-input-wrapper {
+  @apply relative flex flex-col bg-vscode-input-bg border border-vscode-input-border focus-within:border-vscode-focus-border transition-colors;
+}
+
+.chat-input-actions {
+  @apply flex justify-between items-center p-2 border-t border-vscode-border;
+}
+
+/* Enhanced button styles */
+.button-primary {
+  @apply bg-vscode-button-bg text-vscode-button-fg px-4 py-2 font-medium transition-colors hover:bg-vscode-button-hover focus:outline-none focus:ring-2 focus:ring-vscode-focus-border;
+}
+
+.button-secondary {
+  @apply bg-transparent text-vscode-fg border border-vscode-border px-4 py-2 font-medium transition-colors hover:bg-vscode-sidebar-bg focus:outline-none focus:ring-2 focus:ring-vscode-focus-border;
+}
+
+.button-icon {
+  @apply w-8 h-8 flex items-center justify-center transition-colors hover:bg-vscode-sidebar-bg focus:outline-none focus:ring-2 focus:ring-vscode-focus-border py-2 px-2;
+}
+
+/* Fix icon vertical centering */
+.button-icon .codicon,
+vscode-button[appearance="icon"] .codicon {
+  line-height: 0;
+  vertical-align: middle;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Enhanced code block styles */
+.code-block-container {
+  @apply relative bg-vscode-bg border border-vscode-border overflow-hidden my-2;
+}
+
+.code-block-header {
+  @apply flex justify-between items-center px-3 py-2 bg-vscode-sidebar-bg border-b border-vscode-border text-xs;
+}
+
+.code-block-content {
+  @apply overflow-x-auto;
+}
+
+.code-block-copy-button {
+  @apply absolute top-2 right-2 opacity-0 transition-opacity hover:opacity-100 bg-vscode-button-bg text-vscode-button-fg p-1 text-xs;
+}
+
+.code-block-container:hover .code-block-copy-button {
+  @apply opacity-100;
+}
+
+/* Enhanced loading states */
+.loading-spinner {
+  @apply animate-pulse-soft;
+}
+
+.typing-indicator {
+  @apply flex items-center space-x-1 text-vscode-description;
+}
+
+.typing-indicator::after {
+  content: '';
+  @apply w-1 h-1 bg-current animate-pulse;
+}
+
+/* Enhanced hover states */
+.hover-highlight {
+  @apply transition-colors hover:bg-vscode-sidebar-bg p-1;
+}
+
+/* Enhanced focus states */
+.focus-ring {
+  @apply focus:outline-none focus:ring-2 focus:ring-vscode-focus-border focus:ring-offset-1;
+}
+
+/* Enhanced tooltip styles */
+.tooltip {
+  @apply absolute z-50 bg-vscode-sidebar-bg text-vscode-fg text-xs px-2 py-1 border border-vscode-border shadow-md whitespace-nowrap;
+}
+
+/* Enhanced badge styles */
+.badge {
+  @apply inline-flex items-center px-2 py-1 text-xs font-medium;
+}
+
+.badge-success {
+  @apply bg-vscode-success text-white;
+}
+
+.badge-error {
+  @apply bg-vscode-error text-white;
+}
+
+.badge-warning {
+  @apply bg-vscode-warning text-white;
+}
+
+/* Animation utilities */
+.animate-in {
+  @apply animate-fade-in;
+}
+
+.animate-slide-in {
+  @apply animate-slide-up;
+} 

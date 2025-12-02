@@ -1,0 +1,34 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Martinis_Fine_Steakhouse
+Attributes: MCC=5812, Type=H, Delay=immediate
+Fee ID 16 found. Old Rate: 81, New Rate: 99
+Rule Criteria: {
+  "ID": 16,
+  "card_scheme": "SwiftCharge",
+  "account_type": [
+    "H"
+  ],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": false,
+  "aci": [
+    "B"
+  ],
+  "fixed_amount": 0.06,
+  "rate": 81,
+  "intracountry": null
+}
+Total transactions for merchant in 2023: 13805
+
+Matching Transactions: 8
+Affected Volume: 1109.91
+Rate Difference: 18
+Calculated Delta: 1.99783800000000
+1.99783800000000

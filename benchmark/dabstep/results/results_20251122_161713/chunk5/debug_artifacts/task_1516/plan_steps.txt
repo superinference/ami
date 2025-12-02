@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to access the fee rules, including fixed amounts and variable rates for each card scheme.
+Step 2: Calculate the fee for a 5000 EUR transaction for every rule in the `fees` DataFrame using the formula `fee = fixed_amount + (rate * 5000 / 10000)`, then group by `card_scheme` to calculate the average fee for each scheme and identify the most expensive one.

@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered transaction count: 2183
+     psp_reference merchant  ... aci  acquirer_country
+283    30451550884  Rafa_AI  ...   E                NL
+367    69839207549  Rafa_AI  ...   E                NL
+430    57529633583  Rafa_AI  ...   B                NL
+521    13802176117  Rafa_AI  ...   E                NL
+553    20925568789  Rafa_AI  ...   A                NL
+
+[5 rows x 21 columns]

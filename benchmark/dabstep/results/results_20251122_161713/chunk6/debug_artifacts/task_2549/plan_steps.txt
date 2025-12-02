@@ -1,0 +1,3 @@
+Step 1: Based on the previous execution which already calculated the fees for the original MCC (7372) as 13194.94 EUR and the new MCC (5411) as 13086.70 EUR, resulting in a delta of -108.24 EUR, the next step is to provide this final value as the answer.
+
+Answer: The amount delta in fees for the year 2023 would be **-108.24 EUR** (meaning the merchant would pay 108.24 EUR less).

@@ -1,0 +1,19 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total records: 138236
+Filtered NexPay Credit records: 30463
+    psp_reference               merchant  ... aci  acquirer_country
+3     68442235288         Crossfit_Hanna  ...   D                NL
+6     85922945139   Golfclub_Baron_Friso  ...   D                IT
+7     50996494424   Golfclub_Baron_Friso  ...   D                IT
+9     12974611380   Golfclub_Baron_Friso  ...   F                IT
+27    82045987576  Belles_cookbook_store  ...   F                US
+
+[5 rows x 21 columns]
+
+Unique card_schemes in filtered data: ['NexPay']
+Unique is_credit values in filtered data: [ True]

@@ -1,0 +1,21 @@
+Round 3 Execution Output
+============================================================
+Temperature: 0.20, Verification: sufficient
+Plan steps: 3
+============================================================
+
+Analyzing 181 fraudulent transactions.
+Merchant Stats - Vol: €212,217.24, Fraud Rate: 9.90%
+Current ACI Distribution: {'G': 181}
+
+Results per ACI:
+ACI B: €123.98
+ACI C: €135.36
+ACI E: €136.55
+ACI D: €142.99
+ACI A: €151.00
+ACI F: €157.98
+ACI G: Invalid (No matching rules)
+
+Preferred ACI (Different from G): B
+B

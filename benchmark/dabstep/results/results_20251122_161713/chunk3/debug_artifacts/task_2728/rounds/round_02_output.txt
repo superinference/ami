@@ -1,0 +1,21 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Crossfit_Hanna
+July Volume: €428,299.93
+July Fraud Rate: 9.49%
+Target Transactions Count: 364
+
+--- Simulation Results ---
+ACI B: €250.40
+ACI C: €288.16
+ACI E: €291.22
+ACI A: €348.06
+ACI F: €1,060,102.33
+ACI D: €1,060,144.82
+ACI G: €1,410,089.36
+
+Preferred ACI: B

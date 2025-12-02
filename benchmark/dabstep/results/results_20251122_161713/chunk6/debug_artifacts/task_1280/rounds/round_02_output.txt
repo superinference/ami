@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Found 25467 TransactPlus Credit transactions.
+Processing 25467 transactions against 150 relevant fee rules...
+------------------------------
+Average Fee for 50 EUR (TransactPlus Credit): 0.57394224683544
+------------------------------

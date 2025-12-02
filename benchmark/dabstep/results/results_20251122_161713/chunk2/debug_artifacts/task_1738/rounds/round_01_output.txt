@@ -1,0 +1,17 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions found for Rafa_AI on day 200: 84
+
+Sample transactions:
+      merchant   card_scheme  eur_amount issuing_country acquirer_country aci
+335    Rafa_AI   SwiftCharge      221.13              BE               NL   E
+4065   Rafa_AI  TransactPlus      329.07              NL               NL   G
+4071   Rafa_AI    GlobalCard      107.14              LU               NL   E
+7459   Rafa_AI        NexPay       76.98              GR               NL   E
+11658  Rafa_AI    GlobalCard       22.60              SE               NL   E
+
+Verification Successful: Transaction count matches ground truth (84).

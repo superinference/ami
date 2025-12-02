@@ -1,0 +1,24 @@
+Round 3 Execution Output
+============================================================
+Temperature: 0.25, Verification: sufficient
+Plan steps: 2
+============================================================
+
+DEBUG: Average Scenario Parameters:
+  Merchant: Crossfit_Hanna
+  Is Credit: True
+  ACI: D
+  Intracountry: False
+DEBUG: Merchant Specifics:
+  MCC: 7997
+  Account Type: F
+  Capture Delay: manual
+DEBUG: Merchant Stats:
+  Avg Monthly Volume: 423053.07
+  Fraud Rate: 8.9079%
+DEBUG: Scheme SwiftCharge matched rule ID 64. Fee: 25.5800
+DEBUG: Scheme GlobalCard matched rule ID 792. Fee: 41.5200
+DEBUG: Scheme NexPay has NO matching rules.
+DEBUG: Scheme TransactPlus matched rule ID 454. Fee: 47.1200
+Cheapest Scheme: SwiftCharge (Cost: 25.5800)
+SwiftCharge

@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Fees DataFrame loaded successfully.
+Shape: (1000, 12)
+   ID   card_scheme account_type  ... fixed_amount rate intracountry
+0   1  TransactPlus           []  ...         0.10   19          NaN
+1   2    GlobalCard           []  ...         0.13   86          0.0
+2   3  TransactPlus           []  ...         0.09   16          0.0
+3   4        NexPay           []  ...         0.11   25          1.0
+4   5    GlobalCard           []  ...         0.13   69          NaN
+
+[5 rows x 12 columns]
+
+--- Results ---
+Highest calculated fee for 10,000 EUR: 99.13
+Number of rules with this fee: 1
+Most expensive MCCs: [7231, 7298, 7991, 8011, 8021, 8049, 8062]

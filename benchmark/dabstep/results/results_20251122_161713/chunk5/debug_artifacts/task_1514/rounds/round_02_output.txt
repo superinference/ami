@@ -1,0 +1,22 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+--- Average Scenario Profile ---
+Merchant: Crossfit_Hanna
+Account Type: F
+MCC: 7997
+Monthly Volume: €423,053.07
+Fraud Level: 8.91%
+Is Credit: True
+ACI: D
+Intracountry: False
+--------------------------------
+Scheme: GlobalCard      | Fee: €8.3200 | Rule ID: 792
+Scheme: NexPay          | Fee: N/A (No rule matched)
+Scheme: SwiftCharge     | Fee: €5.1800 | Rule ID: 64
+Scheme: TransactPlus    | Fee: €9.5200 | Rule ID: 454
+
+TransactPlus

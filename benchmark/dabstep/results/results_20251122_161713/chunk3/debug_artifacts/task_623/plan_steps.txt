@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame and filter the data to include only transactions where the `merchant` is 'Belles_cookbook_store', the `card_scheme` is 'TransactPlus', and the `day_of_year` is between 1 and 59 (representing January and February 2023).
+Step 2: Group the filtered data by 'device_type' and calculate the mean of the 'eur_amount' column to determine the average transaction value for each device.

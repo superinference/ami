@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame to access the transaction data, including 'eur_amount' and 'email_address'.
+Step 2: Calculate the 90th percentile of 'eur_amount', identify repeat customers (emails with more than 1 transaction in the full dataset), filter for high-value transactions (amount > 90th percentile), and compute the percentage of these high-value transactions that are associated with repeat customers.

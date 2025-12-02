@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame to access the transaction data, including merchant names, card schemes, transaction amounts, dates, and IP countries.
+Step 2: Filter the data for 'Belles_cookbook_store' and 'SwiftCharge', select transactions between day 152 (June 1st) and day 304 (October 31st) of 2023, group by 'ip_country', and calculate the average 'eur_amount'.

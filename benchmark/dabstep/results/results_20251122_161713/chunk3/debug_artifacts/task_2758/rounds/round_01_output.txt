@@ -1,0 +1,25 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+Filtered data for Belles_cookbook_store in 2023. Row count: 13848
+
+--- Transaction Analysis Summary ---
+Total Transaction Volume (EUR): 1262219.80
+Total Fraud Volume (EUR): 117332.21
+Fraud Rate (by Volume): 9.30%
+Intracountry Transactions: 0
+Intercountry Transactions: 13848
+
+--- Fee Determinants Present ---
+ACI Codes: ['F', 'G', 'D', 'B', 'C', 'A']
+Credit Indicators: [np.False_, np.True_]
+Card Schemes: ['GlobalCard', 'SwiftCharge', 'TransactPlus', 'NexPay']
+
+--- Merchant Metadata ---
+Merchant Category Code (MCC): 5942
+Account Type: R
+Acquirers: ['lehman_brothers']

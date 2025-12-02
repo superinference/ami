@@ -1,0 +1,48 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered transactions shape: (40, 21)
+ card_scheme  is_credit  eur_amount issuing_country aci acquirer_country
+  GlobalCard      False       55.08              IT   F               US
+ SwiftCharge       True       11.54              SE   G               US
+TransactPlus       True      496.14              BE   D               US
+TransactPlus       True       57.17              FR   D               US
+ SwiftCharge       True       37.36              IT   G               US
+      NexPay      False      126.65              LU   F               US
+  GlobalCard       True       36.92              SE   F               US
+  GlobalCard       True      104.07              ES   D               US
+      NexPay       True       71.45              IT   D               US
+      NexPay       True       73.42              NL   D               US
+TransactPlus       True      126.53              FR   D               US
+      NexPay      False       30.93              SE   F               US
+  GlobalCard       True       55.72              ES   D               US
+TransactPlus      False       16.40              BE   F               US
+      NexPay       True       18.28              BE   G               US
+  GlobalCard       True       22.27              IT   D               US
+TransactPlus       True       54.01              NL   D               US
+TransactPlus       True      111.65              IT   B               US
+      NexPay       True       27.30              NL   B               US
+TransactPlus       True       51.07              FR   D               US
+TransactPlus       True       70.90              SE   D               US
+  GlobalCard       True       55.89              IT   A               US
+      NexPay       True        8.43              SE   D               US
+TransactPlus       True      230.80              BE   G               US
+  GlobalCard       True       32.11              SE   D               US
+  GlobalCard      False       36.51              IT   F               US
+      NexPay       True       78.32              ES   D               US
+TransactPlus       True       84.21              IT   G               US
+  GlobalCard       True       57.29              GR   D               US
+TransactPlus      False       29.96              NL   G               US
+      NexPay       True       35.62              NL   D               US
+  GlobalCard       True       37.02              ES   A               US
+  GlobalCard      False       91.78              GR   F               US
+  GlobalCard       True       88.30              SE   D               US
+      NexPay      False       51.60              FR   F               US
+      NexPay       True      634.90              BE   B               US
+ SwiftCharge       True       28.36              LU   D               US
+  GlobalCard       True       78.40              NL   D               US
+      NexPay      False       24.56              SE   F               US
+ SwiftCharge       True      129.26              GR   D               US

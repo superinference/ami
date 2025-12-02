@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe to access the fee structures and rules.
+Step 2: Filter the `fees` DataFrame to include only rows where `card_scheme` is 'SwiftCharge' and `account_type` either contains 'S' or is an empty list, then calculate the fee for each matching rule using the formula `fee = fixed_amount + (rate * 1234 / 10000)`, and finally compute the average of these calculated fees.

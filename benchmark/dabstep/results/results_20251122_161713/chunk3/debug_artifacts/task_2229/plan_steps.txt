@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` dataset and filter for transactions where the `merchant` is 'Golfclub_Baron_Friso' and the `day_of_year` is between 335 and 365 (representing December 2023).
+Step 2: Load `fees.json` and `merchant_data.json`, extract the rule with ID=595 and the merchant details for 'Golfclub_Baron_Friso', calculate the merchant's December 2023 total volume and fraud rate to check rule applicability, identify which specific transactions match the rule's criteria, and calculate the difference in total fees using the new rate (1) versus the original rate.

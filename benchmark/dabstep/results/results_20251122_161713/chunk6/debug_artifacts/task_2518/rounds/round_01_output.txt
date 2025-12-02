@@ -1,0 +1,32 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+Total transactions for Rafa_AI in 2023: 27696
+Loading fees data...
+Fee ID 787 found.
+Original Rate: 38
+Fixed Amount: 0.11
+Matching Criteria:
+  card_scheme: NexPay
+  account_type: ['D']
+  capture_delay: None
+  monthly_fraud_level: None
+  monthly_volume: None
+  merchant_category_code: []
+  is_credit: False
+  aci: ['C', 'A']
+  intracountry: None
+
+Sample of Rafa_AI transactions:
+    psp_reference merchant  ... aci  acquirer_country
+14    15954433169  Rafa_AI  ...   E                NL
+19    64327336902  Rafa_AI  ...   E                NL
+29    31882872937  Rafa_AI  ...   E                NL
+34    33722951254  Rafa_AI  ...   G                NL
+39    33017505011  Rafa_AI  ...   E                NL
+
+[5 rows x 21 columns]

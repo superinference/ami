@@ -1,0 +1,11 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Merchant: Golfclub_Baron_Friso
+Year: 2023
+Transaction Count: 27748
+Average EUR Amount: 92.0203481331988
+Metadata: {'merchant_category_code': 7993, 'account_type': 'F', 'acquirer': ['medici']}

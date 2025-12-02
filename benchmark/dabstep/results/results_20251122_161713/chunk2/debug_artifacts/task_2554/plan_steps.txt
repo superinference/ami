@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe and filter for the row where `ID` is 64 to inspect its current rule definitions (specifically looking at its current `account_type`, `card_scheme`, and other matching criteria).
+Step 2: Load `merchant_data.json` to retrieve the account type for each merchant, and load `payments.csv` to identify unique merchants who processed transactions matching Fee 64's criteria (card_scheme='SwiftCharge', is_credit=True, aci='D'); then, determine which of these merchants have an account type other than 'D'.

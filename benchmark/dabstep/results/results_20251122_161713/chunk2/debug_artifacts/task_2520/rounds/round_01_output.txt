@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv with 138236 rows.
+Filtered data contains 27696 transactions for Rafa_AI in 2023.
+
+Sample of filtered data:
+    psp_reference merchant  ... aci  acquirer_country
+14    15954433169  Rafa_AI  ...   E                NL
+19    64327336902  Rafa_AI  ...   E                NL
+29    31882872937  Rafa_AI  ...   E                NL
+34    33722951254  Rafa_AI  ...   G                NL
+39    33017505011  Rafa_AI  ...   E                NL
+
+[5 rows x 21 columns]
+
+Verification:
+Unique Merchants: ['Rafa_AI']
+Unique Years: [2023]
+
+Columns available: ['psp_reference', 'merchant', 'card_scheme', 'year', 'hour_of_day', 'minute_of_hour', 'day_of_year', 'is_credit', 'eur_amount', 'ip_country', 'issuing_country', 'device_type', 'ip_address', 'email_address', 'card_number', 'shopper_interaction', 'card_bin', 'has_fraudulent_dispute', 'is_refused_by_adyen', 'aci', 'acquirer_country']

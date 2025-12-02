@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv with 138236 rows.
+Rows matching criteria: 1394
+
+Sample of filtered data (first 5 rows):
+                  merchant  card_scheme  day_of_year  eur_amount issuing_country
+23   Belles_cookbook_store  SwiftCharge          307      374.37              ES
+91   Belles_cookbook_store  SwiftCharge          295       27.14              IT
+128  Belles_cookbook_store  SwiftCharge          142      142.56              IT
+300  Belles_cookbook_store  SwiftCharge          337       38.50              BE
+453  Belles_cookbook_store  SwiftCharge            2       64.87              SE

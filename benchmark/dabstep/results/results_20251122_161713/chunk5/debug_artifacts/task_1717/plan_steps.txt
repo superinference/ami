@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the dataframe to include only rows where the `merchant` is "Crossfit_Hanna" and the `day_of_year` is 10.
+Step 2: Load `merchant_data.json` to retrieve the merchant's attributes (MCC, account type, capture delay), calculate the total transaction volume and fraud rate for January 2023 for "Crossfit_Hanna" using `payments.csv`, and load `fees.json` to prepare for fee calculation.

@@ -1,0 +1,9 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Original MCC (7372) Fees: 13194.94
+New MCC (5411) Fees: 13086.70
+Fee Delta: -108.24332999999206

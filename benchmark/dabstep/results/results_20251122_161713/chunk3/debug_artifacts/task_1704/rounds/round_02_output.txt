@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant Info: {'merchant': 'Martinis_Fine_Steakhouse', 'capture_delay': 'immediate', 'acquirer': ['dagoberts_geldpakhuis', 'bank_of_springfield'], 'merchant_category_code': 5812, 'account_type': 'H'}
+December Stats - Volume: €96,552.67, Fraud Rate: 9.8164%
+Found 33 transactions for Day 365
+
+Applicable Fee IDs:
+[12, 51, 64, 79, 84, 134, 163, 332, 347, 381, 547, 572, 626, 637, 640, 769, 813, 863, 878, 891, 895, 913]
+
+FINAL ANSWER:
+12, 51, 64, 79, 84, 134, 163, 332, 347, 381, 547, 572, 626, 637, 640, 769, 813, 863, 878, 891, 895, 913

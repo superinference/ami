@@ -1,0 +1,17 @@
+Round 3 Execution Output
+============================================================
+Temperature: 0.25, Verification: insufficient
+Plan steps: 2
+============================================================
+
+--- Stats for Crossfit_Hanna ---
+Monthly Volume: €423,053.07
+Fraud Rate: 8.9079%
+MCC: 7997, Account: F, Delay: manual
+Scheme: GlobalCard, Total Fee: €38,201.71, Coverage: 100.0%
+Scheme: SwiftCharge discarded due to low coverage (53.6%)
+Scheme: TransactPlus, Total Fee: €52,649.84, Coverage: 100.0%
+Scheme: NexPay discarded due to low coverage (5.0%)
+
+Best Scheme: GlobalCard (Total Fee: €38,201.71)
+GlobalCard

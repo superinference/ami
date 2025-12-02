@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully filtered 2391 transactions for Golfclub_Baron_Friso in July.
+Date range in filtered data: 182 to 212
+Merchant Attributes: {'merchant': 'Golfclub_Baron_Friso', 'capture_delay': '2', 'acquirer': ['medici'], 'merchant_category_code': 7993, 'account_type': 'F'}
+Total Fee Rules Loaded: 1000
+
+Sample of filtered transactions:
+     psp_reference   card_scheme  eur_amount  day_of_year
+110    27563824483    GlobalCard       73.10          211
+304    69775419752    GlobalCard       62.43          185
+315    74473480861        NexPay      104.81          187
+334    21531900939  TransactPlus       42.17          192
+421    25274824015    GlobalCard       64.64          198

@@ -1,0 +1,9 @@
+Step 1: Load the `merchant_category_codes.csv` file into a dataframe and filter the rows where the `description` column exactly matches "Drinking Places (Alcoholic Beverages) - Bars, Taverns, Nightclubs, Cocktail Lounges, and Discotheques" to retrieve the corresponding Merchant Category Code (MCC).
+Step 2: Load the `fees.json` file into a dataframe, explode or process the list columns (`account_type`, `merchant_category_code`) to handle the matching logic, filter for rows where `card_scheme` is 'GlobalCard', `account_type` contains 'H' (or is null/empty), and `merchant_category_code` contains 5813 (or is null/empty), then calculate the fee for a 50 EUR transaction for each matching rule using the formula `fee = fixed_amount + (rate * 50 / 10000)` and compute the average of these fees.
+Step 3: To ensure the answer is accurate and formatted correctly as requested (EUR with 6 decimals), I will perform a precise calculation steps.
+
+1. Load `merchant_category_codes.csv` and filter for the description "Drinking Places (Alcoholic Beverages) - Bars, Taverns, Nightclubs, Cocktail Lounges, and Discotheques" to confirm the Merchant Category Code (MCC).
+2. Load `fees.json` and filter the rows where `card_scheme` is 'GlobalCard'.
+3. Further filter the fee rules to include only those where `account_type` contains 'H' or is empty/null (wildcard), AND where `merchant_category_code` contains the identified MCC (5813) or is empty/null (wildcard).
+4. For each applicable rule, calculate the fee for a 50 EUR transaction using the formula: `fee = fixed_amount + (rate * 50 / 10000)`.
+5. Calculate the average of these fees and print the final result formatted to 6 decimal places.

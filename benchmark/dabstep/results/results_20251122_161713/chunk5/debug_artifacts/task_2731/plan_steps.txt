@@ -1,0 +1,6 @@
+Step 1: Load the `payments.csv` file and filter the dataframe to include only rows where the merchant is 'Rafa_AI', the `day_of_year` is between 182 and 212 (representing July), and `has_fraudulent_dispute` is True.
+Step 2: Load `merchant_data.json` to get the `merchant_category_code` and `account_type` for 'Rafa_AI', load `fees.json` to understand the pricing rules, and use the previously identified fraudulent transactions from `payments.csv` (Rafa_AI, July, fraudulent) to calculate and compare the total projected fees for each possible Authorization Characteristics Indicator (ACI: A, B, C, D, E, F, G) to find the one with the lowest cost.
+Step 3: To ensure the identified lowest-cost ACI ('G') is a valid and "different" choice as requested, the next step should verify the current ACI distribution and the merchant's supported interaction types.
+
+**Plan:**
+Load `payments.csv` and filter for 'Rafa_AI' fraudulent transactions in July (days 182-212) to calculate the current frequency of each Authorization Characteristics Indicator (ACI) and the distribution of `shopper_interaction` types. Compare these findings with the previously calculated fee results to confirm that ACI 'G' is a valid option (supported by the merchant's interaction model) and represents a change from the current dominant ACI.

@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv: (138236, 21)
+Successfully loaded merchant_data.json: (30, 5)
+Successfully loaded fees.json: (1000, 12)
+
+Merged DataFrame Info:
+Shape: (138236, 25)
+Columns: ['psp_reference', 'merchant', 'card_scheme', 'year', 'hour_of_day', 'minute_of_hour', 'day_of_year', 'is_credit', 'eur_amount', 'ip_country', 'issuing_country', 'device_type', 'ip_address', 'email_address', 'card_number', 'shopper_interaction', 'card_bin', 'has_fraudulent_dispute', 'is_refused_by_adyen', 'aci', 'acquirer_country', 'capture_delay', 'acquirer', 'merchant_category_code', 'account_type']
+
+Verification: Found 28888 transactions matching Account Type 'F' and Card Scheme 'GlobalCard'.
+Sample of matching transactions:
+                merchant card_scheme  ... issuing_country acquirer_country
+11  Golfclub_Baron_Friso  GlobalCard  ...              NL               IT
+15        Crossfit_Hanna  GlobalCard  ...              IT               NL
+16  Golfclub_Baron_Friso  GlobalCard  ...              NL               IT
+17        Crossfit_Hanna  GlobalCard  ...              IT               NL
+28        Crossfit_Hanna  GlobalCard  ...              BE               NL
+
+[5 rows x 8 columns]

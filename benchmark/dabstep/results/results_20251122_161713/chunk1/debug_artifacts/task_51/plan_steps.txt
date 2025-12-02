@@ -1,0 +1,1 @@
+Step 1: Filter the `payments.csv` dataframe to include only rows where the `card_scheme` column is 'NexPay' and count the number of rows.

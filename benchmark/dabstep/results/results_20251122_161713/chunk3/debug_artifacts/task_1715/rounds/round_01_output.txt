@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered transactions shape: (38, 21)
+       psp_reference               merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+6677     75845005615  Belles_cookbook_store   SwiftCharge  2023           10               9          300      False       53.24         IT              IT     Windows  z7vKMEslNxI2ZfDqgeBl0Q  eE7piSyADvlNnHG8in9CaQ  19Qyv4vBWtaPpwlUPXrg2w           Ecommerce      4571                   False                False   F               US
+13038    17479485539  Belles_cookbook_store  TransactPlus  2023           13              45          300      False       40.84         NL              NL       Linux  UOy5SVr6BGXcuKitKl77Aw  8_9r5sfoGqMOUc5GEdfryw  bBlbvQUvN50Z9-u2BkjVWg           Ecommerce      4622                   False                False   F               US
+20324    39041724573  Belles_cookbook_store    GlobalCard  2023           14              51          300       True      479.78         BE              BE     Android                     NaN  0bmVWb7-xaiwPqYPNzZ89w  kmBFMAWL-kotG2RddS0J_g           Ecommerce      4916                   False                False   D               US
+24461    58490025921  Belles_cookbook_store   SwiftCharge  2023            9              54          300       True      231.39         SE              IT       Other  s0Bj846KP1Xcw-ZVG6m0Vw  ttcq13N07wTnBR5DL-AhSQ  0YgjD1a1zR45r_p0m6EZSA           Ecommerce      4571                   False                False   D               US
+34446    66120487439  Belles_cookbook_store    GlobalCard  2023           14              49          300       True       68.28         FR              FR         iOS  ZOLZ8VEb293XoPJlbJr03A  LgS0jILjZu186T6OEw4BNg  sJzn7rM2fXCCnGKL98l5Fw                 POS      4916                   False                False   C               US

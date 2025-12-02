@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and filter for the entry with `ID` equal to 384 to inspect its current characteristics (specifically `card_scheme`, `merchant_category_code`, and current `account_type`).
+Step 2: Load `merchant_data.json` to get the `account_type` for each merchant, then load `payments.csv` and filter for transactions that match Fee 384's criteria (`card_scheme` == 'NexPay', `is_credit` == True, and `aci` in ['C', 'B']), and finally identify which of the merchants involved in these transactions have an `account_type` other than 'S'.

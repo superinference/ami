@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Successfully loaded 'payments.csv'. Shape: (138236, 21)
+90th percentile threshold for 'eur_amount': 200.88
+Total unique emails: 46284
+Number of repeat customers (emails with > 1 tx): 28629
+Number of high-value transactions: 13823
+High-value transactions by repeat customers: 10788
+Percentage: 78.04383997685018%
+78.04383997685018

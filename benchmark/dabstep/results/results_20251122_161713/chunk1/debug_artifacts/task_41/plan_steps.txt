@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame and calculate the count of missing values for each column to identify which one has the highest number.

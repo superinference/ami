@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame.
+Step 2: Filter the DataFrame to include only rows where 'email_address' is missing (NaN), then count the occurrences of each 'card_scheme' in this filtered data to identify the most frequent one.

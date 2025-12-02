@@ -1,0 +1,32 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Data loaded successfully.
+Analyzing Fee ID 709 Criteria:
+{
+  "ID": 709,
+  "card_scheme": "GlobalCard",
+  "account_type": [],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": false,
+  "aci": [
+    "A",
+    "B",
+    "C"
+  ],
+  "fixed_amount": 0.12,
+  "rate": 17,
+  "intracountry": null
+}
+
+Found 1277 transactions matching Fee 709.
+Number of affected merchants: 5
+
+Merchants affected by Fee 709:
+Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso, Martinis_Fine_Steakhouse, Rafa_AI

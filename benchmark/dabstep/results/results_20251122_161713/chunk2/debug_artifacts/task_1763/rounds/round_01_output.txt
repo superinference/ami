@@ -1,0 +1,20 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original dataset size: 138236
+Filtered dataset size (Crossfit_Hanna, Jan 2023): 4846
+Total Volume: 431222.93
+Fraud Volume: 42617.60
+
+First 5 rows of filtered data:
+    psp_reference        merchant  ... aci  acquirer_country
+0     20034594130  Crossfit_Hanna  ...   F                NL
+8     21324863343  Crossfit_Hanna  ...   F                NL
+33    33987304310  Crossfit_Hanna  ...   F                NL
+67    65649845274  Crossfit_Hanna  ...   D                GB
+89    15786948544  Crossfit_Hanna  ...   D                NL
+
+[5 rows x 21 columns]

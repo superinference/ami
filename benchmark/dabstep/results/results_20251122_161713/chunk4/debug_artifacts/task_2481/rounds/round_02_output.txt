@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Filtering for Crossfit_Hanna in 2023...
+Target Rule 384: Old Rate = 14, New Rate = 1
+Processing transactions to find applicable fees...
+Transactions affected by Rule 384: 819
+Total Delta: -98.67508300000006

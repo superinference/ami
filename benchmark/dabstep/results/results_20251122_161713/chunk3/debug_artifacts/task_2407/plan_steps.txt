@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for transactions where the merchant is 'Rafa_AI' and the date corresponds to June 2023 (year 2023, month 6).
+Step 2: Load `fees.json` to retrieve the rule with `ID=787` and `merchant_data.json` to get Rafa_AI's attributes, then filter the June 2023 transactions to find those matching rule 787's criteria, sum their `eur_amount`, and calculate the fee difference using the formula `(1 - original_rate) * total_volume / 10000`.

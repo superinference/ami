@@ -1,0 +1,27 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee Rule 384 Details:
+{
+    "ID": 384,
+    "card_scheme": "NexPay",
+    "account_type": [],
+    "capture_delay": null,
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [],
+    "is_credit": true,
+    "aci": [
+        "C",
+        "B"
+    ],
+    "fixed_amount": 0.05,
+    "rate": 14,
+    "intracountry": null
+}
+
+Extracted Matching Criteria:
+{'ID': 384, 'card_scheme': 'NexPay', 'merchant_category_code': [], 'account_type': [], 'aci': ['C', 'B'], 'is_credit': True, 'intracountry': None}

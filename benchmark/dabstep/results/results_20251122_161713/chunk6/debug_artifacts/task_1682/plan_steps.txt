@@ -1,0 +1,2 @@
+Step 1: Load `payments.csv` and filter for rows where `merchant` is 'Belles_cookbook_store' and `day_of_year` is 12 to identify the unique transaction attributes (such as card scheme, is_credit, aci, etc.) present on that date.
+Step 2: Calculate the monthly volume and fraud rate for 'Belles_cookbook_store' in January 2023, then match the transactions from day 12 against 'fees.json' using the merchant's profile and transaction attributes to identify the applicable Fee IDs.

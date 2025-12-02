@@ -1,0 +1,10 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully filtered data for merchant 'Belles_cookbook_store' in June (Month 6).
+Transaction Count: 1162
+Total Volume: 109248.57
+Fraud Volume: 10279.70

@@ -1,0 +1,19 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered data for Belles_cookbook_store in November (Day 305-334)
+Row count: 1103
+Total Volume: 100629.89
+Fraud Volume: 9244.17
+Fraud Rate (Vol): 9.1863%
+
+Sample rows:
+     psp_reference               merchant  day_of_year  eur_amount  card_scheme  has_fraudulent_dispute
+23     79488939497  Belles_cookbook_store          307      374.37  SwiftCharge                   False
+54     30915267091  Belles_cookbook_store          326       29.69       NexPay                   False
+121    86309192153  Belles_cookbook_store          319       71.06   GlobalCard                   False
+263    42165909947  Belles_cookbook_store          312       16.00   GlobalCard                   False
+700    48180442117  Belles_cookbook_store          322       20.26       NexPay                   False

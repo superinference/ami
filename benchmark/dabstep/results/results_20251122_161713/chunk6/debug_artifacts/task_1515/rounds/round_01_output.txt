@@ -1,0 +1,43 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Average Scenario Parameters (Modes) ---
+Most Common is_credit: True
+Counts for is_credit:
+is_credit
+True     101119
+False     37117
+Name: count, dtype: int64
+
+Most Common aci: D
+Counts for aci:
+aci
+D    49642
+F    29266
+G    25463
+E    21468
+C     5807
+A     3837
+B     2753
+Name: count, dtype: int64
+
+Most Common intracountry: False
+Counts for intracountry:
+is_intracountry
+False    113577
+True      24659
+Name: count, dtype: int64
+
+Most Common Merchant: Crossfit_Hanna
+Counts for Merchant:
+merchant
+Crossfit_Hanna              55139
+Golfclub_Baron_Friso        27748
+Rafa_AI                     27696
+Belles_cookbook_store       13848
+Martinis_Fine_Steakhouse    13805
+Name: count, dtype: int64
+

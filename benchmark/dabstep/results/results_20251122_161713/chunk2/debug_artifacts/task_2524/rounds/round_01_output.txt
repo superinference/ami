@@ -1,0 +1,26 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee ID 17 Details:
+{
+    "ID": 17,
+    "card_scheme": "SwiftCharge",
+    "account_type": [],
+    "capture_delay": ">5",
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [],
+    "is_credit": true,
+    "aci": [
+        "A"
+    ],
+    "fixed_amount": 0.09,
+    "rate": 60,
+    "intracountry": null
+}
+
+Extracted Criteria for Matching:
+{'card_scheme': 'SwiftCharge', 'merchant_category_code': [], 'aci': ['A'], 'is_credit': True, 'account_type': [], 'capture_delay': '>5', 'monthly_fraud_level': None, 'monthly_volume': None, 'intracountry': None}

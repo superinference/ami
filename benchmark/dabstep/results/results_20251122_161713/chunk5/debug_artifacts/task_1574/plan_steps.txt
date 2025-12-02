@@ -1,0 +1,1 @@
+Step 1: Load the `fees.json` file and filter for all fee rules where the `card_scheme` is 'NexPay' and the `account_type` list either contains 'D' or is empty (indicating a wildcard).

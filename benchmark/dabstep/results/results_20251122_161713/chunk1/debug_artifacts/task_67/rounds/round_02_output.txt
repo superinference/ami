@@ -1,0 +1,40 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+--- Monthly Volume Analysis ---
+Correlation: 0.0598
+Average Rate by Volume (Low to High):
+vol_numeric
+50000.0      53.382979
+550000.0     53.021739
+3000000.0    55.211538
+7500000.0    56.818182
+Name: rate, dtype: float64
+
+--- Monthly Fraud Level Analysis ---
+Correlation: 0.1010
+Average Rate by Fraud Level (Low to High):
+fraud_numeric
+3.60    53.000000
+7.45    50.708333
+8.00    59.137931
+9.13    60.285714
+Name: rate, dtype: float64
+
+--- Capture Delay Analysis ---
+Correlation: -0.0533
+Average Rate by Delay (Short/0 to Long/10):
+delay_numeric
+0.0     57.890909
+1.5     55.349515
+4.0     52.596154
+6.0     57.141304
+10.0    52.670330
+Name: rate, dtype: float64
+
+--- Conclusion ---
+Factors that contribute to a cheaper fee rate if increased:
+[]

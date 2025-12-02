@@ -1,0 +1,10 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is "Golfclub_Baron_Friso" and the date corresponds to February 2023 (specifically, where `day_of_year` is between 32 and 59, as 2023 is a non-leap year).
+Step 2: To answer the question about the payment delta for "Golfclub_Baron_Friso" in February 2023 if the relative fee of ID=65 changed to 1, I need to identify the transactions that match this specific fee rule and calculate the difference in cost.
+
+Here is the plan:
+1. Load `payments.csv`, `fees.json`, and `merchant_data.json`.
+2. Filter `payments.csv` for transactions where `merchant` is "Golfclub_Baron_Friso" and `year` is 2023 and `day_of_year` is between 32 and 59 (February).
+3. Calculate the merchant's total monthly volume and fraud rate (fraudulent volume / total volume) for February 2023 to evaluate volume/fraud-based fee rules.
+4. Retrieve the fee rule with `ID=65` from `fees.json`.
+5. Filter the transactions to find those that match Rule 65's criteria (matching `card_scheme`, `is_credit`, `aci`, `issuing_country`/`acquirer_country` for intracountry status, and the merchant's `merchant_category_code`, `account_type`, `capture_delay`, `monthly_volume`, and `monthly_fraud_level`).
+6. For the matching transactions, calculate the delta using the formula: `Sum(eur_amount) * (1

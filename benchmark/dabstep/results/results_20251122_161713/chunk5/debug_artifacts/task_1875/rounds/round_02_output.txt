@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Fee ID: 398
+Old Rate: 99
+New Rate: 1
+Transactions found for Belles_cookbook_store in Jan 2023: 1201
+Monthly Volume: 113260.42
+Monthly Fraud Ratio: 0.07826810990840966
+Matching Transactions: 7
+Affected Volume: 613.0
+Delta: -6.00740000000000

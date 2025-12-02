@@ -1,0 +1,2 @@
+Step 1: To answer this question, I will first search the `merchant_category_codes.csv` file to find the specific Merchant Category Code (MCC) associated with the description "Taxicabs and Limousines".
+Step 2: Load `fees.json` and filter for rules where `card_scheme` is 'TransactPlus', `account_type` contains 'H' (or is wildcard), and `merchant_category_code` contains 4121 (or is wildcard). Then, for each matching rule, calculate the fee for a 1000 EUR transaction using the formula `fee = fixed_amount + (rate * 1000 / 10000)` and compute the average of these fees.

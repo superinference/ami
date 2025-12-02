@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where `card_scheme` is 'GlobalCard' and `is_credit` is True, then display the first 5 rows and the total count of these transactions.
+Step 2: Load `merchant_data.json` and `fees.json` into dataframes, then using the full `payments.csv` dataset, calculate the total monthly volume and monthly fraud rate (fraudulent volume / total volume) for each merchant to determine the applicable fee tiers.

@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading data from /output/chunk5/data/context/payments.csv...
+
+--- Filter Results ---
+Merchant: Golfclub_Baron_Friso
+Year: 2023
+Transaction Count: 27748
+Total Volume: 2553380.62
+
+--- First 5 Transactions ---
+    psp_reference              merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+6     85922945139  Golfclub_Baron_Friso      NexPay  2023            6              17          265       True       57.35         NL              NL       MacOS  r1qwSy2fOfqVm8GIcRwRfg  9cmOlwD4F0ymL7nRQt_3Xg  zux-2rRgzotNdbxKnLpLpw           Ecommerce      4556                   False                False   D               IT
+7     50996494424  Golfclub_Baron_Friso      NexPay  2023           20              15           54       True       34.71         SE              SE       MacOS  2nItEMNElHH14wI4yBnByg  53Dph-6X7CqoI_f7NlJa6g  0P4ieP8lxYpSqhABWmwmQg           Ecommerce      4526                   False                False   D               IT
+9     12974611380  Golfclub_Baron_Friso      NexPay  2023           21               0          242       True       13.05         SE              SE     Android  QGKOQYa1ZgWJmvLZkJtheg  RhrGjnIy09oAfASREHh0Rw  kEOtBdNv42532DCUYV4fBA           Ecommerce      4916                   False                False   F               IT
+11    25576144624  Golfclub_Baron_Friso  GlobalCard  2023           12              29          171       True       19.65         IT              NL         iOS  f-5KoLWOkAH3Kq6pdF1bQg  U5clB36PFDRdyj3CeAGiXw  FESypn6U7_vguyTAzCMg3g           Ecommerce      4916                   False                False   D               IT
+16    39644392406  Golfclub_Baron_Friso  GlobalCard  2023           11              25          297       True       94.48         NL              NL     Windows  ecRJFiZeKTQCnklgt7ldow  sWnZoKQeYuLumRHVaKAwZg  hH6dWt0enDqUFmTDu0wveA           Ecommerce      4571                   False                False   D               IT

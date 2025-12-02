@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Golfclub_Baron_Friso
+June Volume: €207,426.29
+June Fraud Rate: 6.70%
+MCC: 7993, Account Type: F
+
+Total Transactions Processed: 2283
+Matched: 1587, Unmatched: 696
+Total Fees: 1220.73

@@ -1,0 +1,38 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Martinis_Fine_Steakhouse', 'capture_delay': 'immediate', 'acquirer': ['dagoberts_geldpakhuis', 'bank_of_springfield'], 'merchant_category_code': 5812, 'account_type': 'H'}
+January Stats - Volume: €118,125.01, Fraud Level: 9.6563%
+Found 56 transactions for Day 10.
+Warning: No fee rule found for transaction 55187758878
+Warning: No fee rule found for transaction 60805697530
+Warning: No fee rule found for transaction 46283889116
+Warning: No fee rule found for transaction 54234105197
+Warning: No fee rule found for transaction 66628369418
+Warning: No fee rule found for transaction 58315536668
+Warning: No fee rule found for transaction 80075146660
+Warning: No fee rule found for transaction 81006589796
+Warning: No fee rule found for transaction 57091184759
+Warning: No fee rule found for transaction 84599430252
+Warning: No fee rule found for transaction 47693742303
+Warning: No fee rule found for transaction 30234993003
+Warning: No fee rule found for transaction 40251134714
+Warning: No fee rule found for transaction 11895348388
+Warning: No fee rule found for transaction 58352890937
+Warning: No fee rule found for transaction 82842471962
+Warning: No fee rule found for transaction 80461032692
+Warning: No fee rule found for transaction 26451964773
+Warning: No fee rule found for transaction 24780071785
+Warning: No fee rule found for transaction 48758972868
+Warning: No fee rule found for transaction 88997397106
+Warning: No fee rule found for transaction 77514607986
+Warning: No fee rule found for transaction 66218988206
+Warning: No fee rule found for transaction 18619414033
+Warning: No fee rule found for transaction 58901869478
+
+Total Fees for Martinis_Fine_Steakhouse on Day 10: €40.96
+40.96197000000000

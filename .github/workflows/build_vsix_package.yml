@@ -1,0 +1,51 @@
+name: Build VSIX Package
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20.x]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Use Rust
+      uses: actions-rs/toolchain@v1.0.6
+      with:
+        toolchain: stable
+        target: wasm32-unknown-unknown
+
+    - name: Prepare wasm-pack
+      uses: jetli/wasm-pack-action@v0.4.0
+
+    - name: Install Dependencies
+      working-directory: ./vscode
+      run: npm install
+
+    - name: Install vsce
+      run: npm install -g @vscode/vsce
+
+    - name: Build VSIX Package
+      working-directory: ./vscode
+      run: npm run build-vsix
+        
+    - name: Verify Build Output
+      working-directory: ./vscode
+      run: ls -la *.vsix
+
+    - name: Upload VSIX Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: superinference-vsix
+        path: vscode/superinference.vsix

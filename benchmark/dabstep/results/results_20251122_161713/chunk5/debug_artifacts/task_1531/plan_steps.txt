@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame and filter for rows where `card_scheme` is 'SwiftCharge' and `account_type` either contains 'R' or is an empty list (wildcard).
+Step 2: Calculate the fee for each of the 236 filtered rules using the formula `fee = fixed_amount + (rate * 100 / 10000)`, then compute the average of these fees and round the result to 6 decimal places.

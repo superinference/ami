@@ -1,0 +1,72 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments.csv...
+--- Analysis for Belles_cookbook_store (Feb 2023) ---
+Transaction Count: 1016
+Total Volume: 92061.11
+Fraud Volume: 5612.78
+Fraud Rate: 6.10%
+
+--- Merchant Metadata ---
+{
+  "merchant": "Belles_cookbook_store",
+  "capture_delay": "1",
+  "acquirer": [
+    "lehman_brothers"
+  ],
+  "merchant_category_code": 5942,
+  "account_type": "R"
+}
+
+--- Unique Transaction Attributes (for Fee Matching) ---
+ card_scheme  is_credit aci  intracountry
+  GlobalCard       True   C         False
+  GlobalCard      False   B         False
+  GlobalCard      False   D         False
+  GlobalCard       True   A         False
+  GlobalCard      False   G         False
+  GlobalCard      False   C         False
+  GlobalCard       True   F         False
+  GlobalCard       True   B         False
+  GlobalCard      False   A         False
+  GlobalCard      False   F         False
+  GlobalCard       True   D         False
+  GlobalCard       True   G         False
+      NexPay       True   F         False
+      NexPay      False   B         False
+      NexPay       True   G         False
+      NexPay      False   F         False
+      NexPay      False   C         False
+      NexPay      False   D         False
+      NexPay      False   G         False
+      NexPay      False   A         False
+      NexPay       True   D         False
+      NexPay       True   A         False
+      NexPay       True   C         False
+      NexPay       True   B         False
+ SwiftCharge      False   C         False
+ SwiftCharge       True   B         False
+ SwiftCharge       True   G         False
+ SwiftCharge       True   D         False
+ SwiftCharge      False   B         False
+ SwiftCharge      False   D         False
+ SwiftCharge       True   F         False
+ SwiftCharge      False   F         False
+ SwiftCharge       True   A         False
+ SwiftCharge       True   C         False
+ SwiftCharge      False   G         False
+TransactPlus       True   F         False
+TransactPlus      False   C         False
+TransactPlus       True   A         False
+TransactPlus       True   D         False
+TransactPlus       True   C         False
+TransactPlus       True   G         False
+TransactPlus      False   D         False
+TransactPlus      False   F         False
+TransactPlus      False   A         False
+TransactPlus       True   B         False
+TransactPlus      False   G         False

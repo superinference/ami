@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and filter for the entry where the `ID` is 64 to understand its current configuration (card scheme, existing account types, etc.).
+Step 2: Load `merchant_data.json` to create a mapping of merchants to their account types, then filter `payments.csv` for transactions matching Fee 64's criteria (`card_scheme` = 'SwiftCharge', `is_credit` = True, `aci` = 'D'), and finally identify which of the merchants processing these transactions do not have the account type 'S'.

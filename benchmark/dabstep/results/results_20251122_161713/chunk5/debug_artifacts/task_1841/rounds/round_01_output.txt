@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame shape: (2391, 21)
+First 5 rows of filtered data:
+     psp_reference              merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+110    27563824483  Golfclub_Baron_Friso    GlobalCard  2023           13              45          211      False       73.10         FR              FR       MacOS  G1YI-YQXH_xSUQg4X8QPdQ  IV4UH_x967aUARhLNEiZPA  QceiUrmlxzJSMpTpfrqNcQ           Ecommerce      4622                   False                False   F               IT
+304    69775419752  Golfclub_Baron_Friso    GlobalCard  2023            9              42          185      False       62.43         FR              FR         iOS  pEl5pvXOh8UQpIeEBVetCg  AsHObuc2-3xrukHBBPb-jA  UHi0Y_88EWsZ_Uuve3Re0w           Ecommerce      4571                   False                False   F               IT
+315    74473480861  Golfclub_Baron_Friso        NexPay  2023            9              57          187       True      104.81         FR              FR     Windows                     NaN  A_I5R5TcsgakVLzk7fYv1w  krNsY8UlZeO4Gv3_w074Kg           Ecommerce      4526                   False                 True   G               IT
+334    21531900939  Golfclub_Baron_Friso  TransactPlus  2023           16              28          192       True       42.17         GR              GR       Other  McJz2arrHTcdfv4mbYu5ow  MYC06T7Q4wp6HDrY0IVhMw  nKun_-B5aRXsaLAP7vEJrQ           Ecommerce      4526                   False                False   D               IT
+421    25274824015  Golfclub_Baron_Friso    GlobalCard  2023           13              41          198       True       64.64         IT              IT         iOS  5itjrJyCrT3bmhwLrRrVMw  IS9S_MgK_k9Lv7kCbl5tkA  TmBbaXlxn_AkclPSLANXbA           Ecommerce      4802                   False                False   D               IT

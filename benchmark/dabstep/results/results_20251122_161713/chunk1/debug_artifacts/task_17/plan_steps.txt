@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a dataframe and filter the data to include only transactions where the 'year' column is 2023.
+Step 2: Calculate the fraud rate for each merchant by dividing the sum of 'eur_amount' for transactions where 'has_fraudulent_dispute' is True by the total sum of 'eur_amount' for that merchant, then identify the minimum fraud rate.

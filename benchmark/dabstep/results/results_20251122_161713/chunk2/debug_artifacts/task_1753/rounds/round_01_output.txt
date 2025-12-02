@@ -1,0 +1,241 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered transactions for Belles_cookbook_store in March 2023:
+Total count: 1277
+
+Unique transaction attributes (card_scheme, is_credit, aci, issuing_country, acquirer_country):
+ card_scheme  is_credit aci issuing_country acquirer_country
+  GlobalCard      False   A              BE               US
+  GlobalCard      False   A              IT               US
+  GlobalCard      False   A              NL               US
+  GlobalCard      False   B              FR               US
+  GlobalCard      False   C              ES               US
+  GlobalCard      False   C              FR               US
+  GlobalCard      False   C              GR               US
+  GlobalCard      False   C              NL               US
+  GlobalCard      False   C              SE               US
+  GlobalCard      False   D              ES               US
+  GlobalCard      False   D              FR               US
+  GlobalCard      False   D              NL               US
+  GlobalCard      False   D              SE               US
+  GlobalCard      False   F              BE               US
+  GlobalCard      False   F              ES               US
+  GlobalCard      False   F              FR               US
+  GlobalCard      False   F              IT               US
+  GlobalCard      False   F              LU               US
+  GlobalCard      False   F              NL               US
+  GlobalCard      False   F              SE               US
+  GlobalCard      False   G              BE               US
+  GlobalCard      False   G              FR               US
+  GlobalCard      False   G              NL               US
+  GlobalCard      False   G              SE               US
+  GlobalCard       True   A              BE               US
+  GlobalCard       True   A              ES               US
+  GlobalCard       True   A              FR               US
+  GlobalCard       True   A              GR               US
+  GlobalCard       True   A              LU               US
+  GlobalCard       True   A              NL               US
+  GlobalCard       True   A              SE               US
+  GlobalCard       True   B              BE               US
+  GlobalCard       True   B              ES               US
+  GlobalCard       True   B              FR               US
+  GlobalCard       True   B              GR               US
+  GlobalCard       True   B              LU               US
+  GlobalCard       True   B              NL               US
+  GlobalCard       True   B              SE               US
+  GlobalCard       True   C              BE               US
+  GlobalCard       True   C              ES               US
+  GlobalCard       True   C              FR               US
+  GlobalCard       True   C              LU               US
+  GlobalCard       True   C              NL               US
+  GlobalCard       True   C              SE               US
+  GlobalCard       True   D              BE               US
+  GlobalCard       True   D              ES               US
+  GlobalCard       True   D              FR               US
+  GlobalCard       True   D              GR               US
+  GlobalCard       True   D              IT               US
+  GlobalCard       True   D              LU               US
+  GlobalCard       True   D              NL               US
+  GlobalCard       True   D              SE               US
+  GlobalCard       True   F              BE               US
+  GlobalCard       True   F              ES               US
+  GlobalCard       True   F              FR               US
+  GlobalCard       True   F              GR               US
+  GlobalCard       True   F              IT               US
+  GlobalCard       True   F              LU               US
+  GlobalCard       True   F              NL               US
+  GlobalCard       True   F              SE               US
+  GlobalCard       True   G              BE               US
+  GlobalCard       True   G              ES               US
+  GlobalCard       True   G              FR               US
+  GlobalCard       True   G              GR               US
+  GlobalCard       True   G              IT               US
+  GlobalCard       True   G              LU               US
+  GlobalCard       True   G              NL               US
+  GlobalCard       True   G              SE               US
+      NexPay      False   A              BE               US
+      NexPay      False   A              ES               US
+      NexPay      False   A              GR               US
+      NexPay      False   A              IT               US
+      NexPay      False   A              SE               US
+      NexPay      False   B              IT               US
+      NexPay      False   B              SE               US
+      NexPay      False   C              FR               US
+      NexPay      False   C              IT               US
+      NexPay      False   C              SE               US
+      NexPay      False   D              IT               US
+      NexPay      False   D              LU               US
+      NexPay      False   D              NL               US
+      NexPay      False   F              BE               US
+      NexPay      False   F              ES               US
+      NexPay      False   F              FR               US
+      NexPay      False   F              GR               US
+      NexPay      False   F              IT               US
+      NexPay      False   F              LU               US
+      NexPay      False   F              NL               US
+      NexPay      False   F              SE               US
+      NexPay      False   G              BE               US
+      NexPay      False   G              IT               US
+      NexPay      False   G              NL               US
+      NexPay      False   G              SE               US
+      NexPay       True   A              ES               US
+      NexPay       True   A              FR               US
+      NexPay       True   A              IT               US
+      NexPay       True   A              NL               US
+      NexPay       True   A              SE               US
+      NexPay       True   B              FR               US
+      NexPay       True   C              BE               US
+      NexPay       True   C              FR               US
+      NexPay       True   C              GR               US
+      NexPay       True   C              IT               US
+      NexPay       True   C              NL               US
+      NexPay       True   C              SE               US
+      NexPay       True   D              BE               US
+      NexPay       True   D              ES               US
+      NexPay       True   D              FR               US
+      NexPay       True   D              GR               US
+      NexPay       True   D              IT               US
+      NexPay       True   D              LU               US
+      NexPay       True   D              NL               US
+      NexPay       True   D              SE               US
+      NexPay       True   F              BE               US
+      NexPay       True   F              ES               US
+      NexPay       True   F              FR               US
+      NexPay       True   F              IT               US
+      NexPay       True   F              LU               US
+      NexPay       True   F              NL               US
+      NexPay       True   F              SE               US
+      NexPay       True   G              BE               US
+      NexPay       True   G              ES               US
+      NexPay       True   G              FR               US
+      NexPay       True   G              GR               US
+      NexPay       True   G              IT               US
+      NexPay       True   G              LU               US
+      NexPay       True   G              NL               US
+      NexPay       True   G              SE               US
+ SwiftCharge      False   A              IT               US
+ SwiftCharge      False   C              FR               US
+ SwiftCharge      False   C              IT               US
+ SwiftCharge      False   D              IT               US
+ SwiftCharge      False   D              NL               US
+ SwiftCharge      False   F              BE               US
+ SwiftCharge      False   F              FR               US
+ SwiftCharge      False   F              GR               US
+ SwiftCharge      False   F              IT               US
+ SwiftCharge      False   F              NL               US
+ SwiftCharge      False   F              SE               US
+ SwiftCharge      False   G              IT               US
+ SwiftCharge       True   A              FR               US
+ SwiftCharge       True   B              BE               US
+ SwiftCharge       True   B              LU               US
+ SwiftCharge       True   C              BE               US
+ SwiftCharge       True   C              ES               US
+ SwiftCharge       True   C              FR               US
+ SwiftCharge       True   C              NL               US
+ SwiftCharge       True   D              BE               US
+ SwiftCharge       True   D              ES               US
+ SwiftCharge       True   D              FR               US
+ SwiftCharge       True   D              IT               US
+ SwiftCharge       True   D              LU               US
+ SwiftCharge       True   D              NL               US
+ SwiftCharge       True   D              SE               US
+ SwiftCharge       True   F              IT               US
+ SwiftCharge       True   F              LU               US
+ SwiftCharge       True   F              NL               US
+ SwiftCharge       True   G              BE               US
+ SwiftCharge       True   G              FR               US
+ SwiftCharge       True   G              IT               US
+ SwiftCharge       True   G              LU               US
+ SwiftCharge       True   G              NL               US
+ SwiftCharge       True   G              SE               US
+TransactPlus      False   A              FR               US
+TransactPlus      False   A              NL               US
+TransactPlus      False   B              ES               US
+TransactPlus      False   B              NL               US
+TransactPlus      False   B              SE               US
+TransactPlus      False   D              BE               US
+TransactPlus      False   D              ES               US
+TransactPlus      False   D              IT               US
+TransactPlus      False   D              NL               US
+TransactPlus      False   D              SE               US
+TransactPlus      False   F              BE               US
+TransactPlus      False   F              ES               US
+TransactPlus      False   F              FR               US
+TransactPlus      False   F              GR               US
+TransactPlus      False   F              IT               US
+TransactPlus      False   F              LU               US
+TransactPlus      False   F              NL               US
+TransactPlus      False   F              SE               US
+TransactPlus      False   G              GR               US
+TransactPlus      False   G              IT               US
+TransactPlus      False   G              LU               US
+TransactPlus      False   G              NL               US
+TransactPlus      False   G              SE               US
+TransactPlus       True   A              IT               US
+TransactPlus       True   A              NL               US
+TransactPlus       True   B              BE               US
+TransactPlus       True   B              ES               US
+TransactPlus       True   B              IT               US
+TransactPlus       True   B              NL               US
+TransactPlus       True   B              SE               US
+TransactPlus       True   C              FR               US
+TransactPlus       True   C              IT               US
+TransactPlus       True   C              LU               US
+TransactPlus       True   C              NL               US
+TransactPlus       True   C              SE               US
+TransactPlus       True   D              BE               US
+TransactPlus       True   D              ES               US
+TransactPlus       True   D              FR               US
+TransactPlus       True   D              GR               US
+TransactPlus       True   D              IT               US
+TransactPlus       True   D              LU               US
+TransactPlus       True   D              NL               US
+TransactPlus       True   D              SE               US
+TransactPlus       True   F              BE               US
+TransactPlus       True   F              ES               US
+TransactPlus       True   F              FR               US
+TransactPlus       True   F              GR               US
+TransactPlus       True   F              IT               US
+TransactPlus       True   F              LU               US
+TransactPlus       True   F              NL               US
+TransactPlus       True   F              SE               US
+TransactPlus       True   G              BE               US
+TransactPlus       True   G              ES               US
+TransactPlus       True   G              FR               US
+TransactPlus       True   G              GR               US
+TransactPlus       True   G              IT               US
+TransactPlus       True   G              LU               US
+TransactPlus       True   G              NL               US
+TransactPlus       True   G              SE               US
+
+Sample of filtered data (first 5 rows):
+     psp_reference               merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+10     11539582857  Belles_cookbook_store    GlobalCard  2023           14               7           77      False       54.94         SE              SE     Android  v4QmydqCskH7TYu-B_KbNg  I2FVI0bgarR2FcTwB-pp3w  X2wgYLwKBQ-tVhTptskgdg           Ecommerce      4556                   False                False   F               US
+354    79855645555  Belles_cookbook_store        NexPay  2023           19              50           85       True       41.16         IT              IT     Android  Pf4hqvlpcgKCZoDL5-QIVQ  gwGkAP9mVQsmm5oxF7BfRg  Ptx0nqjk05MEohrSdQltOw           Ecommerce      4645                   False                False   D               US
+373    56551532215  Belles_cookbook_store  TransactPlus  2023           23              31           77       True       10.51         SE              SE       Other  -ddbJnLSBlcULW51-SEqGQ  zy0hEmNjqW5XcUn9v8OfDg  cDF5jx2wi1FFxM68M46cKw           Ecommerce      4920                   False                False   D               US
+392    13346482193  Belles_cookbook_store        NexPay  2023            8              22           90       True      175.15         BE              BE     Android                     NaN  uJxTQurTjlQJfkxtWTCpoQ  O7lSySKjh9f7Pp6osfr9Ug           Ecommerce      4133                   False                False   D               US
+644    83759521313  Belles_cookbook_store   SwiftCharge  2023            9              43           61       True      109.41         BE              BE       MacOS                     NaN  n-VzgnCreliXkr19b-R2dg  -sVMyFu7--I8lczbuNFkYA           Ecommerce      4571                   False                 True   G               US

@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (202, 21)
+
+First 5 rows of filtered data:
+      psp_reference              merchant  day_of_year  eur_amount aci   card_scheme  has_fraudulent_dispute
+497     82003791023  Golfclub_Baron_Friso            4      171.09   G    GlobalCard                    True
+974     21323897885  Golfclub_Baron_Friso           15       63.66   G  TransactPlus                    True
+1365    37180450808  Golfclub_Baron_Friso           29       41.96   G  TransactPlus                    True
+2682    40382835811  Golfclub_Baron_Friso            6      416.31   G        NexPay                    True
+2962    16646435570  Golfclub_Baron_Friso            3       47.95   G        NexPay                    True
+
+Current ACIs in fraudulent transactions:
+['G']

@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a dataframe and calculate the count of unique values in the `ip_address` column.

@@ -1,0 +1,30 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+Total transactions for Martinis_Fine_Steakhouse in March 2023: 1153
+
+Sample of filtered transactions:
+     psp_reference                  merchant  year  day_of_year   card_scheme  eur_amount aci
+314    55170309648  Martinis_Fine_Steakhouse  2023           75        NexPay       17.96   F
+327    27004027704  Martinis_Fine_Steakhouse  2023           65  TransactPlus      107.06   D
+345    31136605946  Martinis_Fine_Steakhouse  2023           82   SwiftCharge       17.24   D
+387    44470148934  Martinis_Fine_Steakhouse  2023           89  TransactPlus       63.57   G
+489    75077563048  Martinis_Fine_Steakhouse  2023           88    GlobalCard       26.78   D
+
+Loading merchant data and fees...
+
+Merchant Metadata for Martinis_Fine_Steakhouse:
+{
+  "merchant": "Martinis_Fine_Steakhouse",
+  "capture_delay": "immediate",
+  "acquirer": [
+    "dagoberts_geldpakhuis",
+    "bank_of_springfield"
+  ],
+  "merchant_category_code": 5812,
+  "account_type": "H"
+}

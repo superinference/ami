@@ -1,0 +1,17 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant Info: {'merchant': 'Crossfit_Hanna', 'capture_delay': 'manual', 'acquirer': ['gringotts', 'the_savings_and_loan_bank', 'bank_of_springfield', 'dagoberts_vault'], 'merchant_category_code': 7997, 'account_type': 'F'}
+October Stats for Crossfit_Hanna:
+  Total Volume: €438,023.59
+  Fraud Volume: €42,090.02
+  Fraud Rate (Vol/Vol): 9.6091%
+Found 137 transactions for Day 300
+Calculation Complete.
+Matched Transactions: 89
+Unmatched Transactions: 48
+Total Fees: €66.84
+66.84

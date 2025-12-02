@@ -1,0 +1,9 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Found MCC for 'Eating Places and Restaurants': 5812
+Number of matching rules: 47
+0.349255

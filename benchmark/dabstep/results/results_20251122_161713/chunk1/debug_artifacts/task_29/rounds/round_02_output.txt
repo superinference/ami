@@ -1,0 +1,19 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Total rows loaded: 138236
+Rows with year 2023: 138236
+Mean EUR Amount: 91.8523
+Std Dev EUR Amount: 121.7305
+
+--- Analysis Results ---
+Outliers count (Z > 3): 2429
+Inliers count (Z <= 3): 135807
+Fraud Rate Outliers: 11.4862%
+Fraud Rate Inliers: 7.7213%
+
+--- Final Answer ---
+yes

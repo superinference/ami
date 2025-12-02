@@ -1,0 +1,42 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee Rule 280 Found:
+{
+    "ID": 280,
+    "card_scheme": "GlobalCard",
+    "account_type": [],
+    "capture_delay": "immediate",
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [
+        5411,
+        5412,
+        5499,
+        5912,
+        5812,
+        5813,
+        5911,
+        5983
+    ],
+    "is_credit": true,
+    "aci": [
+        "C",
+        "A"
+    ],
+    "fixed_amount": 0.07,
+    "rate": 26,
+    "intracountry": 0.0
+}
+
+Original Rate (Relative Fee): 26
+Matching Criteria:
+  - Card Scheme: GlobalCard
+  - Account Type: []
+  - Merchant Category Code: [5411, 5412, 5499, 5912, 5812, 5813, 5911, 5983]
+  - Is Credit: True
+  - ACI: ['C', 'A']
+  - Intracountry: 0.0

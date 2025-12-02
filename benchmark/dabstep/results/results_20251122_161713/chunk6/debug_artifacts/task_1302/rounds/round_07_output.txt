@@ -1,0 +1,206 @@
+Round 7 Execution Output
+============================================================
+Temperature: 0.55, Verification: insufficient
+Plan steps: 4
+============================================================
+
+--- NexPay Fee Rules Inspection ---
+ ID  is_credit  fixed_amount  rate monthly_volume monthly_fraud_level       aci  intracountry
+  4        NaN          0.11    25           None                None    [C, A]           1.0
+  9        0.0          0.05    23          <100k                None        []           1.0
+ 34        0.0          0.08    86           None                None    [A, B]           1.0
+ 53        0.0          0.07    95           None                None       [D]           NaN
+ 54        0.0          0.13    68           None                None       [D]           NaN
+ 55        0.0          0.00    11            >5m                None [A, B, C]           NaN
+ 61        0.0          0.03    71           None                None       [F]           NaN
+ 62        0.0          0.05    81           None                None [A, B, C]           NaN
+ 69        1.0          0.14    38           None           7.2%-7.7% [A, B, C]           NaN
+ 73        1.0          0.14    12           None                None       [A]           1.0
+ 77        1.0          0.09    63           None                None       [E]           1.0
+ 82        1.0          0.00    81          <100k                None    [A, B]           NaN
+ 83        1.0          0.04    21           None                None       [B]           NaN
+ 84        0.0          0.13    75           None                None       [F]           NaN
+ 87        1.0          0.08    29           None           7.2%-7.7% [A, B, C]           1.0
+ 89        0.0          0.04    62           None                None       [B]           0.0
+ 93        1.0          0.10    23           None                None    [C, A]           NaN
+ 95        1.0          0.13    64           None           7.7%-8.3% [A, B, C]           NaN
+ 96        NaN          0.10    20           None                None        []           NaN
+ 97        1.0          0.08    63           None                None       [A]           NaN
+ 99        1.0          0.00    29           None                None       [E]           NaN
+111        1.0          0.14    67           None                None       [E]           NaN
+112        1.0          0.01    54           None                None       [B]           NaN
+118        1.0          0.02    30           None                None       [D]           NaN
+145        0.0          0.04    28           None                None       [D]           NaN
+179        1.0          0.09    81           None                None       [E]           NaN
+193        1.0          0.08    52        100k-1m                None       [D]           0.0
+195        0.0          0.09    45           None                None [A, B, C]           0.0
+205        1.0          0.07    52           None                None        []           0.0
+206        0.0          0.08    94          1m-5m                None       [C]           0.0
+217        0.0          0.06    16           None                None    [C, A]           NaN
+219        0.0          0.01    55           None               <7.2%    [C, B]           0.0
+227        1.0          0.11    78           None                None        []           NaN
+231        1.0          0.02    25           None                None    [A, B]           NaN
+234        1.0          0.11    42           None                None    [C, B]           NaN
+248        0.0          0.09    84           None           7.2%-7.7%       [C]           0.0
+252        1.0          0.07    69           None                None    [C, A]           1.0
+260        0.0          0.03    11           None                None       [D]           1.0
+261        0.0          0.03    61           None                None    [C, A]           NaN
+263        1.0          0.08    66           None                None [A, B, C]           1.0
+268        1.0          0.01    33           None                None       [A]           1.0
+272        1.0          0.02    91           None                None       [B]           NaN
+279        NaN          0.02    94            >5m               >8.3%       [F]           1.0
+281        NaN          0.09    49           None                None    [C, A]           1.0
+287        0.0          0.11    45        100k-1m                None       [C]           NaN
+288        0.0          0.02    77           None                None       [C]           NaN
+295        1.0          0.05    89            >5m                None       [E]           1.0
+299        0.0          0.04    38           None                None       [C]           NaN
+302        NaN          0.01    39           None                None        []           1.0
+308        1.0          0.14    12           None                None    [C, A]           NaN
+309        1.0          0.04    69           None                None        []           1.0
+310        0.0          0.00    64           None                None       [B]           NaN
+311        0.0          0.07    57           None               >8.3%    [C, A]           0.0
+314        1.0          0.04    83           None                None        []           1.0
+316        NaN          0.11    67           None                None        []           1.0
+317        1.0          0.07    56          1m-5m                None    [C, B]           NaN
+320        0.0          0.12    50           None                None        []           NaN
+326        0.0          0.13    83           None                None    [C, B]           NaN
+334        0.0          0.09    90        100k-1m                None    [C, A]           1.0
+339        1.0          0.02    76           None                None       [F]           NaN
+340        1.0          0.09    96           None                None       [F]           NaN
+343        0.0          0.14    60           None                None       [A]           NaN
+364        0.0          0.12    84           None                None        []           1.0
+378        0.0          0.10    35           None                None       [B]           NaN
+384        1.0          0.05    14           None                None    [C, B]           NaN
+393        1.0          0.14    25           None                None    [C, B]           0.0
+394        0.0          0.07    50           None                None [A, B, C]           0.0
+406        0.0          0.12    82           None           7.2%-7.7%        []           0.0
+407        0.0          0.03    46           None                None        []           NaN
+415        0.0          0.05    51           None                None       [E]           NaN
+420        0.0          0.12    81           None                None [A, B, C]           NaN
+426        0.0          0.03    88           None           7.7%-8.3%    [A, B]           NaN
+431        0.0          0.10    52           None                None    [C, B]           NaN
+433        1.0          0.08    46           None                None    [A, B]           NaN
+434        0.0          0.12    16           None                None        []           NaN
+441        1.0          0.09    29           None                None    [C, A]           NaN
+448        1.0          0.05    35           None                None    [C, A]           NaN
+450        1.0          0.07    26           None                None       [A]           0.0
+455        NaN          0.08    21           None                None       [B]           0.0
+463        0.0          0.04    63          <100k                None [A, B, C]           NaN
+465        1.0          0.07    90           None                None       [C]           NaN
+466        0.0          0.11    20           None                None       [D]           NaN
+468        1.0          0.06    71           None                None       [C]           0.0
+471        1.0          0.03    53           None               <7.2%       [B]           NaN
+474        1.0          0.13    36           None                None       [B]           NaN
+486        1.0          0.10    82           None                None    [C, A]           0.0
+494        0.0          0.00    14           None                None       [F]           0.0
+496        0.0          0.07    52           None                None       [A]           NaN
+497        0.0          0.04    42          <100k                None        []           0.0
+500        1.0          0.04    43           None                None       [E]           NaN
+505        1.0          0.03    64           None                None [A, B, C]           NaN
+507        0.0          0.01    74           None                None        []           NaN
+510        0.0          0.06    61           None                None    [C, A]           NaN
+512        0.0          0.08    61           None                None    [A, B]           0.0
+515        0.0          0.10    19          1m-5m                None       [A]           0.0
+516        1.0          0.10    95           None                None       [C]           NaN
+517        NaN          0.10    89          1m-5m                None [A, B, C]           NaN
+518        1.0          0.02    72           None                None    [C, B]           NaN
+519        1.0          0.04    82          <100k                None       [F]           1.0
+524        0.0          0.14    27          <100k                None [A, B, C]           NaN
+539        NaN          0.07    90           None                None       [B]           1.0
+553        1.0          0.05    94           None                None    [C, A]           NaN
+554        0.0          0.09    85        100k-1m                None       [A]           NaN
+575        1.0          0.11    78        100k-1m                None        []           NaN
+580        1.0          0.13    77           None                None       [F]           NaN
+582        0.0          0.10    34           None                None       [B]           NaN
+586        1.0          0.06    69           None                None       [F]           NaN
+601        0.0          0.12    56           None                None       [B]           0.0
+603        1.0          0.11    77           None                None [A, B, C]           NaN
+613        1.0          0.10    74           None                None       [B]           NaN
+616        1.0          0.02    14           None                None    [A, B]           0.0
+623        0.0          0.13    10           None                None       [D]           NaN
+629        0.0          0.11    35        100k-1m                None       [B]           NaN
+634        1.0          0.04    61           None                None        []           NaN
+644        1.0          0.08    68           None                None [A, B, C]           NaN
+647        0.0          0.12    45           None                None       [C]           0.0
+648        0.0          0.14    52           None                None       [D]           1.0
+650        1.0          0.05    91           None                None       [C]           NaN
+652        1.0          0.09    51           None                None       [E]           0.0
+656        1.0          0.09    46           None           7.7%-8.3%       [A]           NaN
+659        1.0          0.06    22           None                None       [C]           1.0
+663        1.0          0.10    86          <100k                None       [D]           NaN
+667        1.0          0.07    27           None                None    [C, B]           NaN
+668        0.0          0.12    23           None                None       [C]           NaN
+672        1.0          0.12    86           None                None       [E]           1.0
+676        0.0          0.00    69           None                None    [C, A]           NaN
+679        1.0          0.09    72           None                None       [B]           1.0
+681        1.0          0.07    29           None           7.2%-7.7%    [C, A]           0.0
+685        NaN          0.03    51           None                None [A, B, C]           1.0
+689        1.0          0.00    23           None                None [A, B, C]           NaN
+691        0.0          0.08    56           None           7.7%-8.3%       [E]           0.0
+693        0.0          0.10    14           None                None    [A, B]           0.0
+697        1.0          0.12    86           None                None    [C, B]           NaN
+701        0.0          0.00    37           None                None       [C]           0.0
+716        0.0          0.08    30           None                None        []           NaN
+718        NaN          0.10    87           None                None        []           0.0
+719        0.0          0.14    94           None                None       [F]           0.0
+720        1.0          0.10    19           None                None       [E]           NaN
+721        0.0          0.06    57           None                None       [C]           NaN
+723        0.0          0.06    30          <100k                None       [B]           1.0
+726        1.0          0.11    12        100k-1m                None       [A]           0.0
+763        0.0          0.01    24           None           7.2%-7.7%       [F]           NaN
+765        1.0          0.05    90           None                None        []           1.0
+777        1.0          0.01    66           None                None       [C]           NaN
+780        0.0          0.05    18           None                None       [E]           0.0
+787        0.0          0.11    38           None                None    [C, A]           NaN
+793        1.0          0.06    58           None               <7.2%    [C, B]           NaN
+794        0.0          0.00    46           None                None       [C]           1.0
+804        1.0          0.07    96           None                None    [C, B]           NaN
+809        1.0          0.13    68           None           7.2%-7.7%       [E]           NaN
+814        0.0          0.11    31          1m-5m                None    [C, A]           NaN
+817        1.0          0.06    88           None                None    [C, B]           1.0
+821        1.0          0.10    52           None                None    [C, A]           0.0
+824        1.0          0.11    36          1m-5m                None    [C, A]           1.0
+829        0.0          0.06    40           None                None       [C]           NaN
+836        0.0          0.06    84           None                None    [C, A]           1.0
+853        0.0          0.07    72           None                None       [F]           NaN
+854        0.0          0.12    97           None                None    [C, A]           0.0
+856        1.0          0.07    39           None                None       [B]           NaN
+859        1.0          0.05    54           None                None    [C, A]           1.0
+865        NaN          0.06    49           None                None        []           NaN
+869        1.0          0.11    52           None                None       [B]           NaN
+870        1.0          0.03    47           None                None       [C]           0.0
+873        1.0          0.00    62           None                None       [B]           NaN
+880        1.0          0.10    31           None                None    [C, A]           0.0
+882        1.0          0.01    59           None                None    [C, A]           1.0
+902        1.0          0.02    46           None                None       [C]           0.0
+904        1.0          0.02    86            >5m               >8.3%       [D]           NaN
+905        1.0          0.00    52          1m-5m                None       [A]           1.0
+908        0.0          0.02    62           None                None       [D]           NaN
+919        0.0          0.05    63           None                None    [C, B]           NaN
+927        NaN          0.12    13           None                None [A, B, C]           NaN
+932        0.0          0.02    61          <100k                None       [E]           1.0
+935        0.0          0.04    72           None                None       [D]           NaN
+936        NaN          0.11    56           None                None       [E]           NaN
+940        1.0          0.00    71        100k-1m                None        []           0.0
+945        0.0          0.01    77           None                None       [D]           0.0
+949        1.0          0.07    74            >5m                None    [C, A]           NaN
+952        0.0          0.02    95           None                None        []           1.0
+955        1.0          0.05    13           None               >8.3%       [D]           0.0
+958        0.0          0.01    43           None                None       [F]           0.0
+960        0.0          0.07    24           None                None [A, B, C]           NaN
+965        1.0          0.11    68          <100k                None       [A]           1.0
+970        1.0          0.10    66           None                None    [A, B]           NaN
+971        1.0          0.13    99           None                None       [E]           NaN
+974        0.0          0.01    86          <100k                None       [B]           1.0
+980        1.0          0.05    45           None                None       [A]           NaN
+984        0.0          0.11    23           None                None       [D]           1.0
+990        1.0          0.06    88          1m-5m                None    [C, B]           NaN
+995        0.0          0.03    99           None                None    [C, A]           NaN
+997        1.0          0.00    29           None                None       [C]           NaN
+
+Unique 'is_credit' values in NexPay rules: [nan  0.  1.]
+-----------------------------------
+
+Total Target Transactions: 30463
+Matched Transactions: 1806
+20.80173056478347

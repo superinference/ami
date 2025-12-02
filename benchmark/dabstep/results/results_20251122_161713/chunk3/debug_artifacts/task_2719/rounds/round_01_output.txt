@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments.csv...
+Filtered transactions for Golfclub_Baron_Friso in May (Fraudulent only): 191 rows
+Loading merchant_data.json...
+
+Merchant Context for Golfclub_Baron_Friso:
+  - Merchant Category Code (MCC): 7993
+  - Account Type: F
+
+Sample of filtered transactions (first 5):
+      psp_reference  eur_amount card_scheme  is_credit aci  merchant_category_code account_type
+384     56976945425       27.12  GlobalCard       True   G                    7993            F
+2444    69899418050       78.48      NexPay       True   G                    7993            F
+2539    89147380507      137.23  GlobalCard       True   G                    7993            F
+2824    18503621308      106.37  GlobalCard       True   G                    7993            F
+2836    49633703357      127.05  GlobalCard       True   G                    7993            F

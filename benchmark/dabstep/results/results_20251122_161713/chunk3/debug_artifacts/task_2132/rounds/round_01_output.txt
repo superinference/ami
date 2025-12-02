@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows loaded: 138236
+Filtered rows for Golfclub_Baron_Friso in March (Day 60-90): 2353
+
+Sample of filtered data:
+     psp_reference              merchant  day_of_year  eur_amount   card_scheme
+72     79210911079  Golfclub_Baron_Friso           74       96.78    GlobalCard
+295    13818877063  Golfclub_Baron_Friso           75      316.75    GlobalCard
+309    66393603083  Golfclub_Baron_Friso           85        8.68  TransactPlus
+407    58943924092  Golfclub_Baron_Friso           87      521.94        NexPay
+510    89492996463  Golfclub_Baron_Friso           83       22.85   SwiftCharge

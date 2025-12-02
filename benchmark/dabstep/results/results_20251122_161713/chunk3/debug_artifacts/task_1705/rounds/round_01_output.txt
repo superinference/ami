@@ -1,0 +1,62 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Monthly Stats for Rafa_AI (Jan 2023) ---
+Monthly Volume: €208,369.19
+Monthly Fraud Rate: 11.6156%
+
+--- Unique Transaction Attributes for Day 10 ---
+ card_scheme  is_credit aci issuing_country acquirer_country  intracountry  merchant_category_code account_type capture_delay
+  GlobalCard      False   A              BE               NL         False                    7372            D             7
+  GlobalCard      False   E              SE               NL         False                    7372            D             7
+  GlobalCard      False   E              NL               NL          True                    7372            D             7
+  GlobalCard      False   E              IT               NL         False                    7372            D             7
+  GlobalCard      False   E              GR               NL         False                    7372            D             7
+  GlobalCard       True   C              NL               NL          True                    7372            D             7
+  GlobalCard       True   E              FR               NL         False                    7372            D             7
+  GlobalCard       True   E              ES               NL         False                    7372            D             7
+  GlobalCard       True   E              BE               NL         False                    7372            D             7
+  GlobalCard       True   E              NL               NL          True                    7372            D             7
+  GlobalCard       True   E              IT               NL         False                    7372            D             7
+  GlobalCard       True   E              SE               NL         False                    7372            D             7
+  GlobalCard       True   E              LU               NL         False                    7372            D             7
+  GlobalCard       True   G              BE               NL         False                    7372            D             7
+  GlobalCard       True   G              NL               NL          True                    7372            D             7
+  GlobalCard       True   G              IT               NL         False                    7372            D             7
+  GlobalCard       True   G              ES               NL         False                    7372            D             7
+      NexPay      False   E              FR               NL         False                    7372            D             7
+      NexPay      False   E              LU               NL         False                    7372            D             7
+      NexPay      False   E              BE               NL         False                    7372            D             7
+      NexPay      False   E              ES               NL         False                    7372            D             7
+      NexPay      False   G              ES               NL         False                    7372            D             7
+      NexPay       True   C              GR               NL         False                    7372            D             7
+      NexPay       True   E              IT               NL         False                    7372            D             7
+      NexPay       True   E              NL               NL          True                    7372            D             7
+      NexPay       True   E              FR               NL         False                    7372            D             7
+      NexPay       True   E              BE               NL         False                    7372            D             7
+      NexPay       True   E              ES               NL         False                    7372            D             7
+      NexPay       True   E              SE               NL         False                    7372            D             7
+      NexPay       True   G              NL               NL          True                    7372            D             7
+      NexPay       True   G              BE               NL         False                    7372            D             7
+ SwiftCharge      False   E              GR               NL         False                    7372            D             7
+ SwiftCharge       True   E              FR               NL         False                    7372            D             7
+ SwiftCharge       True   E              SE               NL         False                    7372            D             7
+ SwiftCharge       True   E              NL               NL          True                    7372            D             7
+ SwiftCharge       True   E              LU               NL         False                    7372            D             7
+ SwiftCharge       True   E              BE               NL         False                    7372            D             7
+TransactPlus      False   C              SE               NL         False                    7372            D             7
+TransactPlus      False   E              BE               NL         False                    7372            D             7
+TransactPlus      False   E              FR               NL         False                    7372            D             7
+TransactPlus      False   E              NL               NL          True                    7372            D             7
+TransactPlus       True   A              NL               NL          True                    7372            D             7
+TransactPlus       True   E              IT               NL         False                    7372            D             7
+TransactPlus       True   E              BE               NL         False                    7372            D             7
+TransactPlus       True   E              ES               NL         False                    7372            D             7
+TransactPlus       True   E              SE               NL         False                    7372            D             7
+TransactPlus       True   G              NL               NL          True                    7372            D             7
+TransactPlus       True   G              ES               NL         False                    7372            D             7
+TransactPlus       True   G              GR               NL         False                    7372            D             7
+TransactPlus       True   G              IT               NL         False                    7372            D             7

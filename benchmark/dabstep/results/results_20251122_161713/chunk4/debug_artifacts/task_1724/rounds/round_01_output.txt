@@ -1,0 +1,88 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 70
+
+Filtered Transactions (First 5 rows):
+      psp_reference              merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+2365    40389346639  Golfclub_Baron_Friso    GlobalCard  2023            1              44           12       True       37.80         IT              IT       Linux  0j2Dwi60qNbrDnHCkUPV8g  E_Mxx-jaXZCKPEzt4h7fuQ  6MFvqOc4AW709vrrXTnLGQ           Ecommerce      4133                   False                False   F               IT
+4369    45255815260  Golfclub_Baron_Friso        NexPay  2023           11              23           12       True       83.37         FR              FR         iOS  noW_thCmefSdNL7Rr_UTUA  sozI_plgntrrk1vENohGzQ  X23H4BK9815UD8uKZnRWwg           Ecommerce      4532                   False                False   F               IT
+6292    82231000720  Golfclub_Baron_Friso        NexPay  2023            0              41           12      False       23.98         BE              BE       Other                     NaN  jzHMlkVI3PxqhWI_TB6Nxg  GaCzYO74_kmAtQXqyEGS4Q           Ecommerce      4556                   False                False   F               IT
+7621    26514846986  Golfclub_Baron_Friso    GlobalCard  2023           16              57           12       True       12.59         NL              NL       MacOS  y5fDVEJqHnZc99tfdwwZjw  PRN_eavP6dm95XF8gJpXeA  Ol0IBw1D3lTFk0UfrydweQ           Ecommerce      4916                   False                False   D               IT
+7811    38785756716  Golfclub_Baron_Friso  TransactPlus  2023           12              28           12      False       43.54         NL              NL         iOS                     NaN  xdMPF8bF6rMY1EVmJ-2yCw  9JS2n4p_a9zAq5pwD2bkFQ           Ecommerce      4622                   False                False   F               IT
+
+Relevant columns for fee calculation:
+        psp_reference              merchant   card_scheme  eur_amount  is_credit aci issuing_country acquirer_country
+2365      40389346639  Golfclub_Baron_Friso    GlobalCard       37.80       True   F              IT               IT
+4369      45255815260  Golfclub_Baron_Friso        NexPay       83.37       True   F              FR               IT
+6292      82231000720  Golfclub_Baron_Friso        NexPay       23.98      False   F              BE               IT
+7621      26514846986  Golfclub_Baron_Friso    GlobalCard       12.59       True   D              NL               IT
+7811      38785756716  Golfclub_Baron_Friso  TransactPlus       43.54      False   F              NL               IT
+17628     65150950100  Golfclub_Baron_Friso   SwiftCharge       87.98      False   F              NL               IT
+20143     78632338839  Golfclub_Baron_Friso        NexPay       27.84      False   F              BE               IT
+20785     78085003513  Golfclub_Baron_Friso        NexPay       78.09      False   F              IT               IT
+21350     88203147641  Golfclub_Baron_Friso        NexPay       62.89       True   D              NL               IT
+21914     41980412884  Golfclub_Baron_Friso        NexPay       14.18      False   F              LU               IT
+24609     42426758586  Golfclub_Baron_Friso  TransactPlus       95.96       True   G              IT               IT
+26733     66773581525  Golfclub_Baron_Friso    GlobalCard       43.93      False   F              IT               IT
+26839     69084450943  Golfclub_Baron_Friso    GlobalCard       86.87      False   C              IT               IT
+26872     40116991023  Golfclub_Baron_Friso        NexPay       34.22      False   F              IT               IT
+27760     48083379314  Golfclub_Baron_Friso   SwiftCharge      150.97      False   F              NL               IT
+28101     46016367722  Golfclub_Baron_Friso    GlobalCard      211.47       True   D              NL               IT
+31214     30627834803  Golfclub_Baron_Friso   SwiftCharge       37.85       True   G              SE               IT
+32582     25510903597  Golfclub_Baron_Friso  TransactPlus      189.42       True   G              BE               IT
+34995     23709782582  Golfclub_Baron_Friso    GlobalCard       39.33       True   A              IT               IT
+35658     89329747993  Golfclub_Baron_Friso    GlobalCard       25.29       True   G              BE               IT
+38415     22245542128  Golfclub_Baron_Friso    GlobalCard       19.48      False   F              SE               IT
+38977     63029983594  Golfclub_Baron_Friso    GlobalCard       51.69       True   D              ES               IT
+39091     28670240257  Golfclub_Baron_Friso   SwiftCharge      107.72       True   D              SE               IT
+51968     36153891146  Golfclub_Baron_Friso  TransactPlus       44.25       True   G              NL               IT
+58871     32267748827  Golfclub_Baron_Friso   SwiftCharge      306.26      False   C              IT               IT
+61758     39699588501  Golfclub_Baron_Friso        NexPay      444.71       True   D              IT               IT
+62528     33239209750  Golfclub_Baron_Friso   SwiftCharge       17.53      False   F              NL               IT
+62909     27360269786  Golfclub_Baron_Friso        NexPay      153.46       True   D              LU               IT
+63882     27499950783  Golfclub_Baron_Friso  TransactPlus       85.33       True   G              NL               IT
+65553     13362172555  Golfclub_Baron_Friso    GlobalCard       23.55       True   D              SE               IT
+68306     79110092378  Golfclub_Baron_Friso    GlobalCard      341.14       True   D              SE               IT
+68953     26277186868  Golfclub_Baron_Friso  TransactPlus      180.90       True   D              SE               IT
+71537     79783528496  Golfclub_Baron_Friso    GlobalCard      176.64       True   D              GR               IT
+72453     55398116793  Golfclub_Baron_Friso        NexPay      168.21       True   D              SE               IT
+74011     65998280582  Golfclub_Baron_Friso  TransactPlus       50.76       True   G              NL               IT
+74843     53153261861  Golfclub_Baron_Friso        NexPay      202.83       True   G              NL               IT
+75258     36712112476  Golfclub_Baron_Friso    GlobalCard       14.63      False   F              FR               IT
+76629     38260709611  Golfclub_Baron_Friso    GlobalCard      160.87      False   F              IT               IT
+76636     67836096215  Golfclub_Baron_Friso        NexPay        7.24      False   F              SE               IT
+84979     72855872797  Golfclub_Baron_Friso        NexPay       87.74       True   G              SE               IT
+85159     14731858287  Golfclub_Baron_Friso  TransactPlus       26.28       True   F              ES               IT
+85950     61175548585  Golfclub_Baron_Friso    GlobalCard      107.89       True   D              IT               IT
+89493     76928140292  Golfclub_Baron_Friso   SwiftCharge       29.57      False   F              FR               IT
+89930     42173281741  Golfclub_Baron_Friso        NexPay       61.52       True   D              BE               IT
+92122     63102383526  Golfclub_Baron_Friso  TransactPlus       87.34      False   F              BE               IT
+97020     19281243827  Golfclub_Baron_Friso   SwiftCharge       36.27       True   D              NL               IT
+97838     14132240549  Golfclub_Baron_Friso    GlobalCard       47.22       True   D              NL               IT
+99643     80908920384  Golfclub_Baron_Friso  TransactPlus       58.62       True   G              IT               IT
+99787     89651252056  Golfclub_Baron_Friso    GlobalCard       43.70      False   F              FR               IT
+101768    71898690986  Golfclub_Baron_Friso        NexPay      105.51       True   D              BE               IT
+106414    41586409646  Golfclub_Baron_Friso    GlobalCard      274.96      False   F              NL               IT
+108211    87549604196  Golfclub_Baron_Friso    GlobalCard       29.20       True   G              IT               IT
+109366    22123367605  Golfclub_Baron_Friso  TransactPlus      318.76       True   D              NL               IT
+110219    56828969066  Golfclub_Baron_Friso        NexPay       60.05       True   D              ES               IT
+113357    51182275762  Golfclub_Baron_Friso    GlobalCard       57.41       True   D              IT               IT
+113417    32274296560  Golfclub_Baron_Friso  TransactPlus       26.36      False   F              ES               IT
+116896    56620934744  Golfclub_Baron_Friso  TransactPlus      133.19       True   D              NL               IT
+117632    24726532055  Golfclub_Baron_Friso        NexPay       38.61       True   D              SE               IT
+118959    35402523286  Golfclub_Baron_Friso   SwiftCharge       46.14       True   D              SE               IT
+120226    24621419511  Golfclub_Baron_Friso        NexPay       94.51       True   G              NL               IT
+120991    63933858830  Golfclub_Baron_Friso        NexPay      230.00       True   D              IT               IT
+123034    85248683602  Golfclub_Baron_Friso        NexPay       88.19      False   F              NL               IT
+123938    74627316720  Golfclub_Baron_Friso   SwiftCharge      162.33       True   D              IT               IT
+124751    40118374632  Golfclub_Baron_Friso    GlobalCard      110.40      False   F              NL               IT
+124954    49073143853  Golfclub_Baron_Friso    GlobalCard       91.74       True   D              IT               IT
+129784    69134374237  Golfclub_Baron_Friso        NexPay       10.95      False   F              IT               IT
+131778    66105639666  Golfclub_Baron_Friso    GlobalCard       13.59       True   D              SE               IT
+136502    70660035046  Golfclub_Baron_Friso   SwiftCharge       33.80       True   D              IT               IT
+136672    21598789667  Golfclub_Baron_Friso  TransactPlus        5.01       True   D              FR               IT
+137020    61933903052  Golfclub_Baron_Friso        NexPay       62.55       True   D              NL               IT

@@ -1,0 +1,34 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Found Fee ID 787:
+{
+  "ID": 787,
+  "card_scheme": "NexPay",
+  "account_type": [
+    "D"
+  ],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": false,
+  "aci": [
+    "C",
+    "A"
+  ],
+  "fixed_amount": 0.11,
+  "rate": 38,
+  "intracountry": null
+}
+Old Rate: 38, New Rate: 99
+Rafa_AI Metadata - Account Type: D, MCC: 7372
+Total 2023 transactions for Rafa_AI: 27696
+Transactions matching Fee 787: 175
+Total Volume of matching transactions: 15385.96 EUR
+Delta Calculation: (99 - 38) * 15385.960000000001 / 10000
+93.85435600000001

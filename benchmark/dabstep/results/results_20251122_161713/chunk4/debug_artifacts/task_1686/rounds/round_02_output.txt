@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Belles_cookbook_store
+Dec Volume: 109853.33
+Dec Fraud Volume: 10719.91
+Dec Fraud Rate: 0.097584 (9.7584%)
+Transactions on day 365: 36
+Applicable Fee IDs: [53, 64, 231, 381, 454, 473]

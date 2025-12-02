@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered data shape: (2348, 21)
+Number of transactions: 2348
+     psp_reference              merchant  ... aci  acquirer_country
+56     39614216705  Golfclub_Baron_Friso  ...   D                IT
+195    39870199991  Golfclub_Baron_Friso  ...   D                IT
+199    19005920964  Golfclub_Baron_Friso  ...   G                IT
+218    85546237564  Golfclub_Baron_Friso  ...   F                IT
+248    11082289430  Golfclub_Baron_Friso  ...   D                IT
+
+[5 rows x 21 columns]

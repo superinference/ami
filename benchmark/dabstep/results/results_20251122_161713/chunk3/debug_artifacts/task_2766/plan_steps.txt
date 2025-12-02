@@ -1,0 +1,5 @@
+Step 1: Filter the `payments.csv` dataset to include only transactions where the `merchant` is 'Rafa_AI' and the `year` is 2023.
+Step 2: Calculate Rafa_AI's monthly volume, fraud rate, and typical transaction attributes (is_credit, aci, intracountry) from the filtered payments data, and load merchant_data.json and fees.json to retrieve merchant attributes and fee rules.
+Step 3: Based on the provided fee simulation results, which show GlobalCard has the lowest total fees (€5,855.40) compared to other schemes, the next step is to formulate the final answer.
+
+Answer the question by stating that Rafa_AI should steer traffic to GlobalCard to pay the minimum fees.

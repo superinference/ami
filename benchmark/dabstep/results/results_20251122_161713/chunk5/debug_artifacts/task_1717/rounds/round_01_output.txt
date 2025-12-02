@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original shape: (138236, 21)
+Filtered shape: (145, 21)
+
+First 5 rows of filtered data:
+      psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+900     87870605223  Crossfit_Hanna   SwiftCharge  2023            4              10           10       True       23.22         IT              SE       MacOS  eFN9f1__SkkIMAUnAn-dpQ  wlSR25MUm9K67MRdf6ff-w  uJaohHBGFDLS6HFxVrkDfg           Ecommerce      4556                    True                False   G               NL
+1074    31989054190  Crossfit_Hanna    GlobalCard  2023           13              42           10       True       33.78         NL              NL       Linux  sI24mCL07aujVqFW6vE_dg                     NaN  3jA--wngoVwFvXpEITX51w           Ecommerce      4645                   False                False   F               NL
+2186    36616338517  Crossfit_Hanna        NexPay  2023           16              33           10       True       28.31         FR              FR       Other                     NaN  KBlwoCe4sK8gOmMvUvsYKQ  vI3zHVRZkniKCkSAAXF0ng           Ecommerce      4802                   False                False   D               NL
+2910    85911897738  Crossfit_Hanna    GlobalCard  2023           22              29           10       True      131.46         NL              IT     Android  Ze0LtSWYASIFBSrWvvW9Yw  FteDRM8ECjrhqoWUoTX5nQ  MbFFEycotOh7E09w5vVxfA                 POS      4556                   False                False   C               NL
+3527    43281917330  Crossfit_Hanna  TransactPlus  2023           23              57           10      False        9.06         NL              GR       Linux                     NaN  TAy3zD3L0ITnVkoou9JVNQ  LHvZ2L4p8F5JQwHA2G7bxg           Ecommerce      4532                   False                False   F               NL

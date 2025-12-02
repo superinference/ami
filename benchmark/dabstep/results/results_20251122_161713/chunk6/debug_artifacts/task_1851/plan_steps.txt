@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the dataframe to include only rows where the `merchant` is "Martinis_Fine_Steakhouse", the `year` is 2023, and the `day_of_year` is between 121 and 151 (representing May 1st to May 31st in a non-leap year).
+Step 2: Load `merchant_data.json` to get the merchant's attributes (account type, category code, capture delay), calculate the monthly volume and fraud rate from the filtered transactions, then load `fees.json` to find the applicable fee rule for each transaction and sum the calculated fees.

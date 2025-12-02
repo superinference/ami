@@ -1,0 +1,18 @@
+Step 1: To answer the question about the average fee for SwiftCharge transactions with account type H and MCC 'Eating Places and Restaurants' for a value of 1234 EUR, I need to simulate the fee calculation for relevant historical transactions.
+
+I will perform the following steps:
+1.  **Identify the MCC**: Find the code for "Eating Places and Restaurants".
+2.  **Identify Merchants**: Find merchants with Account Type 'H' and that MCC.
+3.  **Filter Transactions**: Select transactions from `payments.csv` for these merchants using 'SwiftCharge'.
+4.  **Calculate Monthly Stats**: Compute monthly volume and fraud rates for these merchants to determine the applicable `monthly_volume` and `monthly_fraud_level` brackets for each transaction.
+5.  **Match Rules**: For each transaction, find the matching fee rule in `fees.json` based on transaction attributes (`is_credit`, `aci`, `intracountry`) and merchant attributes (`capture_delay`, volume/fraud brackets).
+6.  **Calculate Fees**: Apply the fee formula (`fixed_amount + rate * 1234 / 100
+Step 2: To answer the question about the average fee for SwiftCharge transactions with account type H and MCC 'Eating Places and Restaurants' for a value of 1234 EUR, I need to simulate the fee calculation for relevant historical transactions.
+
+I will perform the following steps:
+1.  **Identify the MCC**: Find the code for "Eating Places and Restaurants".
+2.  **Identify Merchants**: Find merchants with Account Type 'H' and that MCC.
+3.  **Filter Transactions**: Select transactions from `payments.csv` for these merchants using 'SwiftCharge'.
+4.  **Calculate Monthly Stats**: Compute monthly volume and fraud rates for these merchants to determine the applicable `monthly_volume` and `monthly_fraud_level` brackets for each transaction.
+5.  **Match Rules**: For each transaction, find the matching fee rule in `fees.json` based on transaction attributes (`is_credit`, `aci`, `intracountry`) and merchant attributes (`capture_delay`, volume/fraud brackets).
+6.  **Calculate Fees**: Apply the fee formula (`fixed_amount +

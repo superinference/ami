@@ -1,0 +1,25 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+Filtered data for Martinis_Fine_Steakhouse in 2023. Transaction count: 13805
+Loading merchant metadata...
+
+--- Merchant Transaction Profile (2023) ---
+Merchant Name: Martinis_Fine_Steakhouse
+Total Transactions: 13805
+Total Volume (2023): €1,260,227.18
+Avg Monthly Volume: €105,018.93
+Fraud Rate (Volume): 9.1340%
+Avg Transaction Amount: €91.2877
+Credit Ratio: 0.7312
+Intracountry Ratio: 0.0998
+ACI Distribution: {'D': 0.44875045273451647, 'F': 0.26526620789568994, 'G': 0.19594349873234335, 'C': 0.041941325606664255, 'A': 0.028830134009416877, 'B': 0.01926838102136907}
+
+--- Merchant Metadata ---
+MCC: 5812
+Account Type: H
+Acquirers: ['dagoberts_geldpakhuis', 'bank_of_springfield']

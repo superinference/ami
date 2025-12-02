@@ -1,0 +1,738 @@
+{
+    "name": "superinference",
+    "displayName": "SuperInference agent for VS Code",
+    "description": "SuperInference agentic integration for Visual Studio Code with advanced AI chat and code generation capabilities",
+    "version": "0.5.4",
+    "publisher": "superinference",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/superinference/ami"
+    },
+    "license": "GPL-3.0-or-later",
+    "icon": "icon.png",
+    "engines": {
+        "vscode": "^1.74.0"
+    },
+    "enabledApiProposals": [
+        "findTextInFiles"
+    ],
+    "categories": [
+        "AI",
+        "Chat",
+        "Machine Learning",
+        "Programming Languages",
+        "Snippets",
+        "Education"
+    ],
+    "keywords": [
+        "ai",
+        "chat",
+        "chatgpt",
+        "gpt",
+        "gpt4",
+        "gpt3.5",
+        "openai",
+        "copilot",
+        "codex",
+        "code generation",
+        "code explanation",
+        "code summary",
+        "superinference",
+        "assistant"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "superinference-assistant",
+                    "title": "SuperInference Assistant",
+                    "icon": "$(robot)"
+                }
+            ]
+        },
+        "views": {
+            "superinference-assistant": [
+                {
+                    "id": "superinference-assistant-view",
+                    "name": "SuperInference",
+                    "type": "webview",
+                    "when": "superinference.enabled",
+                    "visibility": "visible"
+                }
+            ]
+        },
+        "commands": [
+            {
+                "command": "superinference.openChat",
+                "title": "Open SuperInference Chat",
+                "category": "SuperInference",
+                "icon": "$(robot)"
+            },
+            {
+                "command": "superinference.clearChat",
+                "title": "Clear Chat",
+                "category": "SuperInference",
+                "icon": "$(clear-all)"
+            },
+            {
+                "command": "superinference.generateCode",
+                "title": "Generate Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.explainCode",
+                "title": "Explain Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.fixCode",
+                "title": "Fix Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.reviewCode",
+                "title": "Review Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.generateTest",
+                "title": "Generate Test",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.optimizeCode",
+                "title": "Optimize Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.showWelcome",
+                "title": "Show Welcome",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.enable",
+                "title": "Enable SuperInference",
+                "category": "SuperInference",
+                "icon": "$(check)"
+            },
+            {
+                "command": "superinference.focusChat",
+                "title": "Focus Chat",
+                "category": "SuperInference",
+                "icon": "$(robot)"
+            },
+            {
+                "command": "superinference.showAuxBar",
+                "title": "Show Right Sidebar",
+                "category": "SuperInference",
+                "icon": "$(sidebar-right)"
+            },
+            {
+                "command": "superinference.takeOverRightSidebar",
+                "title": "Take Over Right Sidebar",
+                "category": "SuperInference",
+                "icon": "$(layout-sidebar-right)"
+            },
+            {
+                "command": "superinference.restoreLayout",
+                "title": "Restore Normal Layout",
+                "category": "SuperInference",
+                "icon": "$(layout)"
+            },
+            {
+                "command": "superinference.editCode",
+                "title": "Edit Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.chat.explain",
+                "title": "Explain Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.chat.edit",
+                "title": "Edit Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.chat.fix",
+                "title": "Fix Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.chat.generate",
+                "title": "Generate Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.chat.review",
+                "title": "Review Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.chat.test",
+                "title": "Generate Test",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.chat.optimize",
+                "title": "Optimize Code",
+                "category": "SuperInference"
+            },
+            {
+                "command": "superinference.indexWorkspace",
+                "title": "Index Workspace for AI Context",
+                "category": "SuperInference",
+                "icon": "$(database)"
+            },
+            {
+                "command": "superinference.clearEmbeddings",
+                "title": "Clear All Embeddings",
+                "category": "SuperInference",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "superinference.embeddingsStatus",
+                "title": "Show Embeddings Status",
+                "category": "SuperInference",
+                "icon": "$(info)"
+            },
+            {
+                "command": "superinference.forceReindexFile",
+                "title": "Reindex Current File",
+                "category": "SuperInference",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "superinference.showPerformanceMetrics",
+                "title": "Show Performance Metrics",
+                "category": "SuperInference",
+                "icon": "$(graph)"
+            },
+            {
+                "command": "superinference.testMultiStepReasoning",
+                "title": "Test Multi-Step Reasoning",
+                "category": "SuperInference",
+                "icon": "$(timeline)"
+            }
+        ],
+        "keybindings": [
+            {
+                "command": "superinference.openChat",
+                "key": "ctrl+alt+p",
+                "mac": "cmd+alt+p"
+            }
+        ],
+        "submenus": [
+            {
+                "id": "superinference.chat",
+                "label": "SuperInference Chat",
+                "icon": "$(robot)"
+            }
+        ],
+        "menus": {
+            "commandCenter": [
+                {
+                    "command": "superinference.openChat",
+                    "group": "navigation@1",
+                    "when": "superinference.enabled"
+                }
+            ],
+            "view/title": [
+                {
+                    "command": "superinference.clearChat",
+                    "when": "view == superinference-assistant-view",
+                    "group": "navigation@1"
+                }
+            ],
+            "editor/context": [
+                {
+                    "command": "superinference.explainCode",
+                    "when": "editorHasSelection",
+                    "group": "superinference@1"
+                },
+                {
+                    "command": "superinference.editCode",
+                    "when": "editorHasSelection",
+                    "group": "superinference@2"
+                },
+                {
+                    "command": "superinference.fixCode",
+                    "when": "editorHasSelection",
+                    "group": "superinference@3"
+                },
+                {
+                    "command": "superinference.reviewCode",
+                    "when": "editorHasSelection",
+                    "group": "superinference@4"
+                },
+                {
+                    "command": "superinference.generateTest",
+                    "when": "editorHasSelection",
+                    "group": "superinference@5"
+                },
+                {
+                    "submenu": "superinference.chat",
+                    "when": "editorHasSelection",
+                    "group": "superinference@6"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "superinference.openChat",
+                    "title": "SuperInference: Open Chat"
+                },
+                {
+                    "command": "superinference.clearChat",
+                    "title": "SuperInference: Clear Chat"
+                },
+                {
+                    "command": "superinference.explainCode",
+                    "when": "editorHasSelection"
+                },
+                {
+                    "command": "superinference.fixCode",
+                    "when": "editorHasSelection"
+                },
+                {
+                    "command": "superinference.reviewCode",
+                    "when": "editorHasSelection"
+                },
+                {
+                    "command": "superinference.generateTest",
+                    "when": "editorHasSelection"
+                },
+                {
+                    "command": "superinference.optimizeCode",
+                    "when": "editorHasSelection"
+                },
+                {
+                    "command": "superinference.takeOverRightSidebar",
+                    "title": "SuperInference: Take Over Right Sidebar"
+                },
+                {
+                    "command": "superinference.restoreLayout",
+                    "title": "SuperInference: Restore Normal Layout"
+                }
+            ],
+            "superinference.chat": [
+                {
+                    "command": "superinference.chat.explain",
+                    "group": "chat@1"
+                },
+                {
+                    "command": "superinference.chat.edit",
+                    "group": "chat@2"
+                },
+                {
+                    "command": "superinference.chat.fix",
+                    "group": "chat@3"
+                },
+                {
+                    "command": "superinference.chat.generate",
+                    "group": "chat@4"
+                },
+                {
+                    "command": "superinference.chat.review",
+                    "group": "chat@5"
+                },
+                {
+                    "command": "superinference.chat.test",
+                    "group": "chat@6"
+                },
+                {
+                    "command": "superinference.chat.optimize",
+                    "group": "chat@7"
+                }
+            ]
+        },
+        "configuration": {
+            "title": "SuperInference",
+            "properties": {
+                "superinference.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "OpenAI API key for SuperInference"
+                },
+                "superinference.model": {
+                    "type": "string",
+                    "default": "gpt-4",
+                    "description": "OpenAI model to use",
+                    "enum": [
+                        "gpt-4",
+                        "gpt-4-turbo",
+                        "gpt-3.5-turbo"
+                    ]
+                },
+                "superinference.maxTokens": {
+                    "type": "number",
+                    "default": 2000,
+                    "description": "Maximum tokens for responses"
+                },
+                "superinference.temperature": {
+                    "type": "number",
+                    "default": 0.7,
+                    "description": "Temperature for AI responses (0.0-1.0)"
+                },
+                "superinference.enableChat": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable chat functionality"
+                },
+                "superinference.enableContextMenu": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable context menu commands"
+                },
+                "superinference.showStatusBarItem": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show SuperInference status bar item"
+                },
+                "superinference.chat.terminalChatLocation": {
+                    "type": "string",
+                    "default": "chatView",
+                    "markdownDescription": "Where to open chat from terminal",
+                    "enum": [
+                        "chatView",
+                        "quickChat",
+                        "terminal"
+                    ],
+                    "enumDescriptions": [
+                        "Open in chat panel",
+                        "Open in quick chat",
+                        "Open inline in terminal"
+                    ]
+                },
+                "superinference.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable SuperInference extension"
+                },
+                "superinference.backendUrl": {
+                    "type": "string",
+                    "default": "http://localhost:8080",
+                    "description": "Backend URL for SuperInference AI services"
+                },
+                "superinference.exclusiveRightSidebar": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Make SuperInference the exclusive occupant of the right sidebar (hides other chat panels)"
+                },
+                "superinference.backend.host": {
+                    "type": "string",
+                    "default": "localhost",
+                    "description": "SuperInference backend server host/IP address"
+                },
+                "superinference.backend.port": {
+                    "type": "number",
+                    "default": 3000,
+                    "description": "SuperInference backend server port"
+                },
+                "superinference.backend.protocol": {
+                    "type": "string",
+                    "default": "http",
+                    "enum": [
+                        "http",
+                        "https"
+                    ],
+                    "description": "Backend server protocol"
+                },
+                "superinference.backend.timeout": {
+                    "type": "number",
+                    "default": 30000,
+                    "description": "Backend request timeout in milliseconds"
+                },
+                "superinference.backend.retryAttempts": {
+                    "type": "number",
+                    "default": 3,
+                    "description": "Number of retry attempts for failed requests"
+                },
+                "superinference.backend.healthCheckInterval": {
+                    "type": "number",
+                    "default": 60000,
+                    "description": "Backend health check interval in milliseconds"
+                },
+                "superinference.conversation.autosave": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Automatically approve code changes during conversations"
+                },
+                "superinference.conversation.autorun": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Automatically execute proposed commands during conversations"
+                },
+                "superinference.ai.provider": {
+                    "type": "string",
+                    "default": "openai",
+                    "enum": [
+                        "openai",
+                        "gemini",
+                        "anthropic",
+                        "local"
+                    ],
+                    "description": "Primary AI provider to use"
+                },
+                "superinference.ai.openai.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "OpenAI API key"
+                },
+                "superinference.ai.openai.baseUrl": {
+                    "type": "string",
+                    "default": "https://api.openai.com/v1",
+                    "description": "OpenAI API base URL"
+                },
+                "superinference.ai.openai.model": {
+                    "type": "string",
+                    "default": "gpt-4",
+                    "enum": [
+                        "gpt-4",
+                        "gpt-4-turbo",
+                        "gpt-4o",
+                        "gpt-3.5-turbo"
+                    ],
+                    "description": "OpenAI model to use"
+                },
+                "superinference.ai.openai.maxTokens": {
+                    "type": "number",
+                    "default": 4000,
+                    "description": "Maximum tokens for OpenAI responses"
+                },
+                "superinference.ai.gemini.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Google Gemini API key"
+                },
+                "superinference.ai.gemini.model": {
+                    "type": "string",
+                    "default": "gemini-pro",
+                    "enum": [
+                        "gemini-pro",
+                        "gemini-pro-vision",
+                        "gemini-1.5-pro"
+                    ],
+                    "description": "Gemini model to use"
+                },
+                "superinference.ai.gemini.maxTokens": {
+                    "type": "number",
+                    "default": 8000,
+                    "description": "Maximum tokens for Gemini responses"
+                },
+                "superinference.ai.anthropic.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Anthropic Claude API key"
+                },
+                "superinference.ai.anthropic.model": {
+                    "type": "string",
+                    "default": "claude-3-sonnet-20240229",
+                    "enum": [
+                        "claude-3-opus-20240229",
+                        "claude-3-sonnet-20240229",
+                        "claude-3-haiku-20240307"
+                    ],
+                    "description": "Anthropic Claude model to use"
+                },
+                "superinference.ai.anthropic.maxTokens": {
+                    "type": "number",
+                    "default": 4000,
+                    "description": "Maximum tokens for Claude responses"
+                },
+                "superinference.ai.local.endpoint": {
+                    "type": "string",
+                    "default": "http://localhost:11434",
+                    "description": "Local AI model endpoint (e.g., Ollama)"
+                },
+                "superinference.ai.local.model": {
+                    "type": "string",
+                    "default": "llama2",
+                    "description": "Local AI model name"
+                },
+                "superinference.embeddings.provider": {
+                    "type": "string",
+                    "default": "openai",
+                    "enum": [
+                        "openai",
+                        "gemini",
+                        "local"
+                    ],
+                    "description": "Embeddings provider"
+                },
+                "superinference.embeddings.model": {
+                    "type": "string",
+                    "default": "text-embedding-3-small",
+                    "enum": [
+                        "text-embedding-3-small",
+                        "text-embedding-3-large",
+                        "text-embedding-ada-002"
+                    ],
+                    "description": "Embeddings model to use"
+                },
+                "superinference.embeddings.dimensions": {
+                    "type": "number",
+                    "default": 1536,
+                    "description": "Embedding vector dimensions"
+                },
+                "superinference.api.endpoints.chat": {
+                    "type": "string",
+                    "default": "/api/chat",
+                    "description": "Chat API endpoint path"
+                },
+                "superinference.api.endpoints.embeddings": {
+                    "type": "string",
+                    "default": "/api/embeddings",
+                    "description": "Embeddings API endpoint path"
+                },
+                "superinference.api.endpoints.context": {
+                    "type": "string",
+                    "default": "/api/context",
+                    "description": "Context API endpoint path"
+                },
+                "superinference.api.endpoints.health": {
+                    "type": "string",
+                    "default": "/api/health",
+                    "description": "Health check endpoint path"
+                },
+                "superinference.api.rateLimit.requestsPerMinute": {
+                    "type": "number",
+                    "default": 60,
+                    "description": "Maximum requests per minute"
+                },
+                "superinference.api.rateLimit.concurrentRequests": {
+                    "type": "number",
+                    "default": 5,
+                    "description": "Maximum concurrent requests"
+                },
+                "superinference.enablePerformanceMonitoring": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable performance monitoring and metrics collection"
+                },
+                "superinference.enableCircuitBreaker": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable circuit breaker for resilience"
+                },
+                "superinference.maxCacheSize": {
+                    "type": "number",
+                    "default": 1000,
+                    "description": "Maximum number of cache entries"
+                },
+                "superinference.cacheTimeout": {
+                    "type": "number",
+                    "default": 30,
+                    "description": "Cache timeout in minutes"
+                },
+                "superinference.enableAutoIndex": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically index workspace files for AI context"
+                },
+                "superinference.autoReindexOnSave": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically reindex files when saved"
+                },
+                "superinference.enableSmartContext": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable smart context gathering with intelligent chunking"
+                },
+                "superinference.maxFileSize": {
+                    "type": "number",
+                    "default": 500,
+                    "description": "Maximum file size to index (in KB)"
+                },
+                "superinference.enableDiagnostics": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable diagnostic information and error details"
+                },
+                "superinference.debugMode": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable debug mode with verbose logging"
+                }
+            }
+        }
+    },
+    "scripts": {
+        "//": "Build scripts integrated with GitHub Actions workflows",
+        "vscode:prepublish": "npm run package",
+        "compile": "npm run compile-webview && webpack --mode production --devtool hidden-source-map && npm run copy-resources",
+        "compile:dev": "webpack",
+        "compile-webview": "webpack -c ./webpack.webview.config.js --mode production --devtool hidden-source-map",
+        "compile-webview:dev": "webpack -c ./webpack.webview.config.js",
+        "copy-icons": "cp -f src/webview/codicons/* dist/ 2>/dev/null || true && cp -f src/webview/superinference/* dist/ 2>/dev/null || true && cp -f src/webview/superinference-icons.css dist/ 2>/dev/null || true",
+        "copy-resources": "npm run copy-icons",
+        "watch": "webpack --watch",
+        "package": "npm run compile-webview && webpack --mode production --devtool hidden-source-map && npm run copy-resources",
+        "compile-tests": "tsc -p . --outDir out",
+        "watch-tests": "tsc -p . -w --outDir out",
+        "pretest": "npm run compile-tests && npm run compile && npm run lint",
+        "lint": "eslint src --ext ts",
+        "test": "node ./out/test/runTest.js",
+        "build-vsix": "vsce package --no-yarn -o superinference.vsix",
+        "install-extension": "code --install-extension superinference.vsix",
+        "dev": "npm run compile:dev && npm run install-extension",
+        "dev-install": "npm run build-vsix && npm run install-extension",
+        "watch-and-install": "node scripts/watch-install.js",
+        "quick-install": "./scripts/install-dev.sh"
+    },
+    "devDependencies": {
+        "@types/diff-match-patch": "^1.0.32",
+        "@types/glob": "^8.1.0",
+        "@types/mocha": "^10.0.1",
+        "@types/node": "16.x",
+        "@types/react": "^18.0.28",
+        "@types/react-dom": "^18.0.11",
+        "@types/react-syntax-highlighter": "^15.5.6",
+        "@types/styled-components": "^5.1.34",
+        "@types/vscode": "^1.74.0",
+        "@types/vscode-webview": "^1.57.1",
+        "@typescript-eslint/eslint-plugin": "^5.53.0",
+        "@typescript-eslint/parser": "^5.53.0",
+        "@vscode/test-electron": "^2.2.3",
+        "css-loader": "^6.7.3",
+        "eslint": "^8.34.0",
+        "glob": "^8.1.0",
+        "mocha": "^10.2.0",
+        "postcss-loader": "^7.3.3",
+        "style-loader": "^3.3.2",
+        "ts-loader": "^9.4.2",
+        "typescript": "^4.9.5",
+        "vsce": "^1.95.1",
+        "webpack": "^5.75.0",
+        "webpack-cli": "^5.0.1"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.17.5",
+        "@vscode/codicons": "^0.0.32",
+        "@vscode/webview-ui-toolkit": "^1.4.0",
+        "autoprefixer": "^10.4.16",
+        "axios": "^1.4.0",
+        "diff-match-patch": "^1.0.5",
+        "framer-motion": "^11.0.0",
+        "lucide-react": "^0.400.0",
+        "marked": "^5.1.0",
+        "postcss": "^8.4.32",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "react-markdown": "^8.0.6",
+        "react-syntax-highlighter": "^15.5.0",
+        "react-textarea-autosize": "^8.5.3",
+        "styled-components": "^6.1.8",
+        "tailwindcss": "^3.4.0",
+        "uuid": "^9.0.0",
+        "vscode-languageserver-textdocument": "^1.0.8"
+    },
+    "overrides": {
+        "cheerio": "1.0.0-rc.12"
+    }
+}

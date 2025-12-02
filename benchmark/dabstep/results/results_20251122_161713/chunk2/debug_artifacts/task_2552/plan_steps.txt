@@ -1,0 +1,3 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter it to include only the rows where the `merchant` column is 'Rafa_AI'.
+Step 2: Load `merchant_data.json` to retrieve the original MCC, account type, and capture delay for 'Rafa_AI', load `fees.json` to access the fee structures, and calculate the necessary monthly metrics (volume and fraud level) and the 'intracountry' flag from the filtered payments data to prepare for fee calculation.
+Step 3: Output the calculated fee delta of -1622.75 EUR.

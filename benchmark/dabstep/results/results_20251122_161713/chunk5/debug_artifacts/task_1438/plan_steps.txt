@@ -1,0 +1,4 @@
+Step 1: To answer this question, I need to analyze the fee rules to determine which Merchant Category Codes (MCCs) result in the highest fees for a hypothetical 500 euro transaction.
+
+**Step 1:** Load the `fees.json` file into a pandas DataFrame and explode the `merchant_category_code` column so that each row represents a specific fee rule for a single MCC.
+Step 2: Calculate the fee for a 500 euro transaction for each row in the exploded fees DataFrame using the formula `fee = fixed_amount + (rate * 500 / 10000)`, find the maximum fee value, and output the list of unique Merchant Category Codes (MCCs) associated with that maximum fee.

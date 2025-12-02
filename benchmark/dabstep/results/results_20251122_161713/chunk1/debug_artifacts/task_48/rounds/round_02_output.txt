@@ -1,0 +1,16 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Hourly Fraud Rates (First 5 hours):
+   hour  fraud_rate
+0     0    0.143836
+1     1    0.110969
+2     2    0.105086
+3     3    0.122321
+4     4    0.124264
+
+Calculated Correlation Coefficient: -0.4404
+no

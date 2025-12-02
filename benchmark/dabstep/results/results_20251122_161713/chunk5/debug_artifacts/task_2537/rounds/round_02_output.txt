@@ -1,0 +1,11 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Found 55139 transactions for Crossfit_Hanna in 2023
+Merchant Profile: MCC=7997, Account=F, Delay=manual
+Processed 55139 transactions.
+Total Fee Delta (Scenario B - Scenario A): 6814.65429000000859

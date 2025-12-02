@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a dataframe and calculate the Z-Score for the `eur_amount` column to identify transactions with a Z-Score greater than 3.

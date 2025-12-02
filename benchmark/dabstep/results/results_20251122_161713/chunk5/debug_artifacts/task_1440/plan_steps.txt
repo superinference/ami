@@ -1,0 +1,1 @@
+Step 1: Load the `fees.json` file into a dataframe to analyze the fee structures and rates associated with different Merchant Category Codes (MCCs).

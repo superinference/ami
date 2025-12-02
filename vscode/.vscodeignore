@@ -1,0 +1,109 @@
+# Development and build directories
+.vscode/**
+.vscode-test/**
+.git/**
+node_modules/**
+src/**
+crates/**
+target/**
+out/**
+__pycache__/**
+venv/**
+superinference/**
+mcp_env/**
+
+benchmark/**
+chats/**
+.github/**
+scripts/**
+mcp_server*
+
+# Large test and documentation directories (these were 400+ MB!)
+test_env/**
+tests/**
+claude/**
+
+# Log files and debug artifacts
+*.log
+backend_debug.log
+*.tmp
+*.vsix
+
+# Build and development files
+webpack.config.js
+webpack.webview.config.js
+tsconfig.json
+.eslintrc.json
+Cargo.toml
+Cargo.lock
+package-lock.json
+tailwind.config.js
+postcss.config.js
+.npmrc
+.editorconfig
+.yarnrc
+
+# Source code files (compiled versions are in dist/)
+**/*.ts
+**/*.rs
+**/*.map
+*.pyc
+*.pyo
+*.pyd
+*.py
+# Python development files (keeping essential server files)
+requirements.txt
+requirements.sh
+swe_bench_official_integration.py
+
+# Exclude test and debug Python files
+**/test_*.py
+**/mock_*.py
+**/debug_*.py
+**/*_test.py
+**/*_mock.py
+**/*_debug.py
+**/demo_*.py
+**/run_*.py
+
+# Keep these essential server files:
+# !superinference_server.py
+# !superinference_server_enhanced.py  
+# !superinference_server_embeddings_enhancement.py
+
+# Documentation (keeping only essential README)
+*.md
+!README.md
+CHANGELOG.md
+ARCHITECTURE_ENHANCEMENTS.md
+
+# OS and IDE files
+**/.DS_Store
+**/Thumbs.db
+**/.pytest_cache/
+**/.mypy_cache/
+
+# Scripts directory
+scripts/**
+
+# GitHub workflows and configs
+.github/**
+
+# Cache and temporary files
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+claude/**
+tests
+
+# Exclude all files in the claude directory
+claude/**
+
+# Exclude all files in the tests directory
+tests/**
+test_env/**
+scripts/**
+
+# Exclude all files in the src directory
+src/**

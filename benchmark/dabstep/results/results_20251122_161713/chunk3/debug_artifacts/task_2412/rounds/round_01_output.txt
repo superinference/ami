@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions found: 2315
+Sample of filtered data:
+    merchant  day_of_year  eur_amount  card_scheme
+14   Rafa_AI          191       18.55   GlobalCard
+29   Rafa_AI          189       57.34   GlobalCard
+178  Rafa_AI          187       22.84   GlobalCard
+256  Rafa_AI          199      178.89       NexPay
+335  Rafa_AI          200      221.13  SwiftCharge

@@ -1,0 +1,10 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is 'Rafa_AI' and the `day_of_year` is between 274 and 304 (inclusive), which corresponds to October 2023.
+Step 2: To answer the question about the total fees paid by Rafa_AI in October 2023, I need to recalculate the fees while ensuring that all transactions are correctly matched to a fee rule. The previous attempt left 753 transactions unmatched, likely due to strict or incorrect matching logic regarding data types (e.g., boolean vs float for `intracountry`, list membership for `aci` and `mcc`).
+
+I will perform the following steps:
+1.  **Load Data**: Import `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  **Filter Transactions**: Select transactions for 'Rafa_AI' where `day_of_year` is between 274 and 304 (October).
+3.  **Calculate Monthly Metrics**: Compute the total volume and fraud rate for October to determine the applicable `monthly_volume` and `monthly_fraud_level` buckets in the fee rules.
+4.  **Enrich Transaction Data**:
+    *   Add `intracountry` (True if `issuing_country` == `acquirer_country`).
+    *   Merge static merchant data (`merchant_category_code`, `account_type`, `capture_delay`) from

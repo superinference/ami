@@ -1,0 +1,5 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Belles_cookbook_store' that occurred in the year 2023.
+Step 2: Load the `merchant_data.json` file to retrieve the metadata (account_type, merchant_category_code, acquirer) for 'Belles_cookbook_store', and load `fees.json` to extract the details (match criteria and current rate) of the fee with ID=276.
+Step 3: The previous step has already calculated the delta value based on the fee change for ID=276. The next step is to report this value as the final answer.
+
+Output the calculated delta of -74.67 euros as the final answer.

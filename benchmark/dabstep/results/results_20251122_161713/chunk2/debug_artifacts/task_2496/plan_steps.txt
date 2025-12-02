@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv`, `fees.json`, and `merchant_data.json` files, filter the payments data for the merchant 'Golfclub_Baron_Friso' in the year 2023, and locate the fee rule with ID=709 to identify its original parameters.
+Step 2: Filter the 'Golfclub_Baron_Friso' 2023 transactions to find those matching Fee Rule ID=709 (card_scheme='GlobalCard', is_credit=False, aci in ['A', 'B', 'C']), sum their 'eur_amount', and calculate the fee delta using the formula: (99 - 17) * total_amount / 10000.

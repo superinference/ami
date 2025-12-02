@@ -1,0 +1,42 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Transaction Analysis for Golfclub_Baron_Friso on Day 365 ---
+Total Transactions: 82
+Merchant Category Code: 7993
+Account Type: F
+December Volume: 219564.75
+December Fraud Rate: 0.0841
+
+--- Unique Transaction Profiles (Fee Determinants) ---
+         card_scheme  is_credit aci  intracountry
+3704     SwiftCharge      False   F         False
+5029          NexPay      False   F         False
+5458      GlobalCard      False   F         False
+8197    TransactPlus      False   F         False
+10725   TransactPlus       True   G         False
+12310     GlobalCard       True   D         False
+12980   TransactPlus       True   D          True
+16658         NexPay      False   F          True
+18515     GlobalCard       True   G         False
+22842     GlobalCard       True   B         False
+24416         NexPay       True   D         False
+26195     GlobalCard       True   D          True
+31155     GlobalCard       True   C          True
+31251   TransactPlus       True   D         False
+40883   TransactPlus       True   F          True
+41705         NexPay       True   G         False
+47393    SwiftCharge       True   D         False
+52921     GlobalCard      False   G         False
+56171     GlobalCard       True   G          True
+61785   TransactPlus       True   F         False
+63032    SwiftCharge       True   D          True
+81478   TransactPlus      False   D         False
+88003         NexPay       True   C         False
+91504     GlobalCard      False   D          True
+98693     GlobalCard       True   C         False
+117346        NexPay       True   F          True
+123522   SwiftCharge       True   A         False

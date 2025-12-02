@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame.
+Step 2: Filter the data for the year 2023, group by 'card_scheme', calculate the mean of 'has_fraudulent_dispute' to determine the average fraud rate for each scheme, and then identify the highest rate.

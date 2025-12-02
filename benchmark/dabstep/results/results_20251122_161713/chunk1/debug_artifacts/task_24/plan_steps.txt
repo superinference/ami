@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows where the `has_fraudulent_dispute` column is equal to `True`.
+Step 2: Calculate the value counts of the `device_type` column in the filtered fraudulent transactions dataframe to identify the most frequent device type.

@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data from /output/chunk3/data/context/payments.csv...
+Filtering for merchant 'Rafa_AI' in February 2023 (Day of year 32-59)...
+------------------------------
+FILTERING RESULTS
+------------------------------
+Transactions found: 2126
+Total Volume (EUR): 195471.98
+------------------------------
+First 5 rows of filtered data:
+     psp_reference merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+104    34499880248  Rafa_AI        NexPay  2023           21              50           47       True       46.36         IT              IT     Android  5pD9w1Ej4zX5HzOF1EXikw  VpQBiFGBPjIcl-fVNJwKIw  rckOKxqMyAZBRi9AVZe6pQ           Ecommerce      4916                   False                False   E               NL
+119    23913861684  Rafa_AI        NexPay  2023            2               5           51      False       26.06         IT              IT       MacOS  5WjY0JwVy0wepuFrMUpGFA  B8c3ODQcMKcNcb3AlFk0dA  YCwauXXVW30iYXRI3uyIJQ           Ecommerce      4916                   False                False   E               NL
+246    85404994734  Rafa_AI  TransactPlus  2023           16              54           40       True       12.66         IT              IT       Linux  N4PkpVUpfqidI6JHT9NZkw  Jy9H7BaWeYC_6jA7vwqTtw  yPpZcM7VMjXMkGJCr2TbHg           Ecommerce      4916                   False                False   E               NL
+268    52190640385  Rafa_AI  TransactPlus  2023            9              30           47      False      144.87         SE              SE     Android  ArpTH90ZXUj_ZwbQLCkTlw  wVCy_u26UtyvEhNNuoOUvA  wWfi43hIfiErmOeDe34akQ           Ecommerce      4133                   False                False   E               NL
+338    30308905596  Rafa_AI    GlobalCard  2023           18              16           45       True      131.35         SE              SE     Android  RChOYsvZze6qblQl87Wl-w  0LBj0AXQanMooyCrPr2D9Q  Fn-Q19TYO7LVHoRJZ9P7eQ           Ecommerce      4916                   False                False   E               NL

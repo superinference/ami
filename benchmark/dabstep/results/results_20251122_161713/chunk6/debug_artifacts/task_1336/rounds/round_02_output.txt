@@ -1,0 +1,10 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Identified MCC for 'Eating Places and Restaurants': 5812
+Filtering fees for Scheme: TransactPlus, Account: H, MCC: 5812
+Found 47 matching rules.
+24.457687

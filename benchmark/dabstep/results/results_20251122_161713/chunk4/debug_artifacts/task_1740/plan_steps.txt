@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the merchant is 'Rafa_AI', the year is 2023, and the day of the year is 365.
+Step 2: Load `payments.csv` to calculate the total monthly volume and fraud rate for 'Rafa_AI' in December 2023 (needed for fee tier determination), and also load `merchant_data.json` to retrieve 'Rafa_AI's account type, merchant category code, and capture delay.

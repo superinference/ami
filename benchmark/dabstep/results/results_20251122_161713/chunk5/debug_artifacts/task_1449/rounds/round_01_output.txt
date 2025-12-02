@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Fee Rules for SwiftCharge (Credit):
+    ID  card_scheme is_credit        aci  fixed_amount  rate
+5    6  SwiftCharge      True        [B]          0.03    24
+11  12  SwiftCharge      None     [C, B]          0.01    40
+12  13  SwiftCharge      True        [C]          0.06    74
+14  15  SwiftCharge      True  [A, B, C]          0.12    65
+16  17  SwiftCharge      True        [A]          0.09    60
+
+Total rules found: 156

@@ -1,0 +1,76 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Context: {'merchant': 'Crossfit_Hanna', 'capture_delay': 'manual', 'acquirer': ['gringotts', 'the_savings_and_loan_bank', 'bank_of_springfield', 'dagoberts_vault'], 'merchant_category_code': 7997, 'account_type': 'F'}
+December Stats - Volume: €429,168.02, Fraud Rate: 7.9379%
+Processing 164 transactions for Day 365...
+WARNING: No fee rule matched for transaction 87998451585
+WARNING: No fee rule matched for transaction 84713335301
+WARNING: No fee rule matched for transaction 14292914095
+WARNING: No fee rule matched for transaction 75624270939
+WARNING: No fee rule matched for transaction 54021243796
+WARNING: No fee rule matched for transaction 70785535035
+WARNING: No fee rule matched for transaction 74611979548
+WARNING: No fee rule matched for transaction 31831274945
+WARNING: No fee rule matched for transaction 51597393754
+WARNING: No fee rule matched for transaction 47916793789
+WARNING: No fee rule matched for transaction 22756149300
+WARNING: No fee rule matched for transaction 78286559999
+WARNING: No fee rule matched for transaction 49097757332
+WARNING: No fee rule matched for transaction 49064356693
+WARNING: No fee rule matched for transaction 53091919010
+WARNING: No fee rule matched for transaction 18024971221
+WARNING: No fee rule matched for transaction 15841146054
+WARNING: No fee rule matched for transaction 43637990964
+WARNING: No fee rule matched for transaction 37539262046
+WARNING: No fee rule matched for transaction 30521414295
+WARNING: No fee rule matched for transaction 14210883620
+WARNING: No fee rule matched for transaction 26543096754
+WARNING: No fee rule matched for transaction 89389470770
+WARNING: No fee rule matched for transaction 47374276027
+WARNING: No fee rule matched for transaction 77130954677
+WARNING: No fee rule matched for transaction 12021794021
+WARNING: No fee rule matched for transaction 52140841698
+WARNING: No fee rule matched for transaction 52300447605
+WARNING: No fee rule matched for transaction 54381000256
+WARNING: No fee rule matched for transaction 51003735260
+WARNING: No fee rule matched for transaction 68422958299
+WARNING: No fee rule matched for transaction 52610518017
+WARNING: No fee rule matched for transaction 47233340998
+WARNING: No fee rule matched for transaction 32957397564
+WARNING: No fee rule matched for transaction 35965222415
+WARNING: No fee rule matched for transaction 25266944785
+WARNING: No fee rule matched for transaction 87700579238
+WARNING: No fee rule matched for transaction 15273282681
+WARNING: No fee rule matched for transaction 47336706334
+WARNING: No fee rule matched for transaction 68119644776
+WARNING: No fee rule matched for transaction 51680355974
+WARNING: No fee rule matched for transaction 89285412958
+WARNING: No fee rule matched for transaction 45329251830
+WARNING: No fee rule matched for transaction 49491578581
+WARNING: No fee rule matched for transaction 54811604329
+WARNING: No fee rule matched for transaction 19374649410
+WARNING: No fee rule matched for transaction 72946733568
+WARNING: No fee rule matched for transaction 37813584996
+WARNING: No fee rule matched for transaction 67985971027
+WARNING: No fee rule matched for transaction 16417035685
+WARNING: No fee rule matched for transaction 45979605562
+WARNING: No fee rule matched for transaction 62106696681
+WARNING: No fee rule matched for transaction 13354555701
+WARNING: No fee rule matched for transaction 36777568006
+WARNING: No fee rule matched for transaction 64809063543
+WARNING: No fee rule matched for transaction 71697152398
+WARNING: No fee rule matched for transaction 59012736870
+WARNING: No fee rule matched for transaction 17190491868
+WARNING: No fee rule matched for transaction 61477008508
+WARNING: No fee rule matched for transaction 30739967407
+WARNING: No fee rule matched for transaction 38346674410
+WARNING: No fee rule matched for transaction 26676830139
+
+Total matched transactions: 102/164
+Total Fees: €82.73316500000001
+82.73

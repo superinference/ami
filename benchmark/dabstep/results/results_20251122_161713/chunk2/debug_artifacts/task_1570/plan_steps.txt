@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and filter for rules where the `card_scheme` is 'NexPay' and the `account_type` list either contains 'D' or is empty (indicating it applies to all account types).
+Step 2: Calculate the fee for each applicable rule found in `fees.json` (where `card_scheme` is 'NexPay' and `account_type` contains 'D' or is empty) using the formula `fee = fixed_amount + (rate * 1000 / 10000)`, then compute the average of these fees and output the result formatted to 6 decimal places.

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the data to include only transactions where the `merchant` column is 'Belles_cookbook_store' and the `year` column is 2023.
+Step 2: Load `merchant_data.json` to retrieve the `merchant_category_code`, `account_type`, and `capture_delay` for 'Belles_cookbook_store', load `fees.json`, and then calculate the `intracountry` status, monthly transaction volumes, and monthly fraud rates for the filtered payments data to prepare for fee rule matching.

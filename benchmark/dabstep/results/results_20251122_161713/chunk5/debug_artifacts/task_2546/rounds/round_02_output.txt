@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Filtering for Martinis_Fine_Steakhouse in 2023...
+Merchant Metadata: Original MCC=5812, New MCC=5999, Account Type=H, Capture Delay=immediate
+Calculating fee delta...
+Processed 13805 transactions.
+Total Fee Delta: 2692.24019699999053

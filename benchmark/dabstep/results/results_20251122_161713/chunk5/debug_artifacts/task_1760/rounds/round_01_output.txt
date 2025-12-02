@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Filtering Results ---
+Merchant: Belles_cookbook_store
+Time Period: October 2023 (Day 274 to 304)
+Total Transactions Found: 1133
+
+--- Sample Transactions (First 5) ---
+     psp_reference  day_of_year   card_scheme  is_credit aci  eur_amount issuing_country acquirer_country
+53     79897257292          288  TransactPlus       True   D       28.90              NL               US
+91     59212062455          295   SwiftCharge      False   F       27.14              IT               US
+147    16395543811          285  TransactPlus      False   F       75.27              BE               US
+179    40659575538          276        NexPay       True   G      104.32              IT               US
+184    24745235282          288  TransactPlus       True   D       39.83              SE               US
+
+--- Unique Values in Filtered Data ---
+Card Schemes: ['TransactPlus' 'SwiftCharge' 'NexPay' 'GlobalCard']
+ACI Codes: ['D' 'F' 'G' 'C' 'A' 'B']
+Issuing Countries: ['NL' 'IT' 'BE' 'SE' 'ES' 'FR' 'LU' 'GR']
+Acquirer Countries: ['US']

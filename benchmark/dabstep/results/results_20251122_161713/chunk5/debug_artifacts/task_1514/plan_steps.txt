@@ -1,0 +1,3 @@
+Step 1: Load the `fees.json` file into a dataframe to analyze the fee structures and rates for different card schemes.
+Step 2: Load the `payments.csv` and `merchant_data.json` files into dataframes to access transaction details and merchant attributes required for fee rule matching.
+Step 3: Load the `payments.csv`, `merchant_data.json`, `fees.json`, and `acquirer_countries.csv` files, calculate the profile of the 'average scenario' (most frequent merchant, ACI, credit status, etc., and the merchant's average monthly volume and fraud rate), then iterate through `fees.json` to find the applicable fee rule for each card scheme for a 1000 EUR transaction, and identify the most expensive one.

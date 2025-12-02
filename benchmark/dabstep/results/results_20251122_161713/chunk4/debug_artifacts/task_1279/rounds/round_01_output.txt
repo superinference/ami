@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv
+Original row count: 138236
+Filtered row count: 10128
+
+Sample of filtered data (relevant columns):
+                 merchant  card_scheme  is_credit aci issuing_country acquirer_country
+5          Crossfit_Hanna  SwiftCharge       True   G              NL               NL
+12         Crossfit_Hanna  SwiftCharge       True   D              BE               NL
+20         Crossfit_Hanna  SwiftCharge       True   D              BE               NL
+21   Golfclub_Baron_Friso  SwiftCharge       True   D              SE               IT
+23  Belles_cookbook_store  SwiftCharge       True   D              ES               US
+
+Unique Merchants in filtered set:
+['Crossfit_Hanna' 'Golfclub_Baron_Friso' 'Belles_cookbook_store' 'Rafa_AI'
+ 'Martinis_Fine_Steakhouse']

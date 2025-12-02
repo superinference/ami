@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average Scenario: Merchant=Crossfit_Hanna, Credit=True, ACI=D, Intra=False
+Merchant Metrics: Monthly Vol=423053.07, Fraud Rate=8.9079%
+Scheme: SwiftCharge, Fee: 6.3734 (Fixed: 0.08, Rate: 51)
+Scheme: GlobalCard, Fee: 10.2622 (Fixed: 0.02, Rate: 83)
+Scheme: NexPay, No matching rule found.
+Scheme: TransactPlus, Fee: 11.7196 (Fixed: 0.12, Rate: 94)
+
+Cheapest Scheme: SwiftCharge with fee 6.3734
+SwiftCharge

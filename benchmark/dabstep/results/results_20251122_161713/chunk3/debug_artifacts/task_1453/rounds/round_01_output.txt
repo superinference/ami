@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of rules found: 125
+      ID  card_scheme account_type capture_delay monthly_fraud_level monthly_volume                            merchant_category_code is_credit        aci  fixed_amount  rate  intracountry
+5      6  SwiftCharge           []            >5                None           None  [5411, 5412, 5499, 5912, 5812, 5813, 5911, 5983]      True        [B]          0.03    24           NaN
+12    13  SwiftCharge           []     immediate                None           None  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]      True        [C]          0.06    74           NaN
+14    15  SwiftCharge           []        manual                None           None  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]      True  [A, B, C]          0.12    65           1.0
+16    17  SwiftCharge           []            >5                None           None                                                []      True        [A]          0.09    60           NaN
+21    22  SwiftCharge           []          None                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]      True     [A, B]          0.09    59           NaN
+..   ...          ...          ...           ...                 ...            ...                                               ...       ...        ...           ...   ...           ...
+955  956  SwiftCharge           []           3-5                None           None  [5411, 5412, 5499, 5912, 5812, 5813, 5911, 5983]      True        [B]          0.07    78           0.0
+960  961  SwiftCharge           []          None                None           None        [8062, 8011, 8021, 7231, 7298, 7991, 8049]      True     [C, B]          0.01    40           NaN
+968  969  SwiftCharge          [F]            <3                None           None  [5734, 5735, 5736, 5816, 5912, 7399, 5964, 5999]      True        [C]          0.05    89           NaN
+981  982  SwiftCharge           []           3-5                None           None                                                []      True        [E]          0.04    76           0.0
+990  991  SwiftCharge           []            <3                None            >5m        [8062, 8011, 8021, 7231, 7298, 7991, 8049]      True        [B]          0.02    11           0.0
+
+[125 rows x 12 columns]

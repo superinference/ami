@@ -1,0 +1,61 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Crossfit_Hanna', 'capture_delay': 'manual', 'acquirer': ['gringotts', 'the_savings_and_loan_bank', 'bank_of_springfield', 'dagoberts_vault'], 'merchant_category_code': 7997, 'account_type': 'F'}
+July Stats - Volume: €428299.93, Fraud Volume: €40666.21, Fraud Rate: 9.4948%
+Found 151 transactions for Day 200.
+Warning: No fee rule found for transaction 69749079711
+Warning: No fee rule found for transaction 89205779450
+Warning: No fee rule found for transaction 19993950969
+Warning: No fee rule found for transaction 10444844185
+Warning: No fee rule found for transaction 52804843013
+Warning: No fee rule found for transaction 45228132639
+Warning: No fee rule found for transaction 32303923933
+Warning: No fee rule found for transaction 62534915119
+Warning: No fee rule found for transaction 54040297617
+Warning: No fee rule found for transaction 35032323009
+Warning: No fee rule found for transaction 59815322790
+Warning: No fee rule found for transaction 54238404936
+Warning: No fee rule found for transaction 63795983533
+Warning: No fee rule found for transaction 71600604962
+Warning: No fee rule found for transaction 12465172632
+Warning: No fee rule found for transaction 39879300899
+Warning: No fee rule found for transaction 46543345052
+Warning: No fee rule found for transaction 83635676412
+Warning: No fee rule found for transaction 41114464937
+Warning: No fee rule found for transaction 37708238910
+Warning: No fee rule found for transaction 54021088822
+Warning: No fee rule found for transaction 18856214611
+Warning: No fee rule found for transaction 68209688970
+Warning: No fee rule found for transaction 69227071672
+Warning: No fee rule found for transaction 64472352150
+Warning: No fee rule found for transaction 40496787660
+Warning: No fee rule found for transaction 80503137083
+Warning: No fee rule found for transaction 17892949554
+Warning: No fee rule found for transaction 39031168373
+Warning: No fee rule found for transaction 58445130924
+Warning: No fee rule found for transaction 57046315165
+Warning: No fee rule found for transaction 83679266615
+Warning: No fee rule found for transaction 43397156739
+Warning: No fee rule found for transaction 74708517502
+Warning: No fee rule found for transaction 67334969753
+Warning: No fee rule found for transaction 25012125451
+Warning: No fee rule found for transaction 28017326446
+Warning: No fee rule found for transaction 53658387437
+Warning: No fee rule found for transaction 53714034685
+Warning: No fee rule found for transaction 18028032949
+Warning: No fee rule found for transaction 27663108393
+Warning: No fee rule found for transaction 72254869789
+Warning: No fee rule found for transaction 77809025779
+Warning: No fee rule found for transaction 14723778221
+Warning: No fee rule found for transaction 88279379695
+Warning: No fee rule found for transaction 35166332942
+Warning: No fee rule found for transaction 48095457677
+Warning: No fee rule found for transaction 70485490981
+Warning: No fee rule found for transaction 30810948983
+Warning: No fee rule found for transaction 34507719765
+Total fees for Crossfit_Hanna on day 200: 74.86262199999999

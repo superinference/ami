@@ -1,0 +1,1 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame and calculate the value counts for the 'email_address' column to determine the frequency of transactions for each unique email.

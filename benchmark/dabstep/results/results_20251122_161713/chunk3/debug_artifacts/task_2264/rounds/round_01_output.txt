@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Verification - Total Volume by Card Scheme in April:
+card_scheme
+GlobalCard      34464.68
+NexPay          32558.92
+SwiftCharge      9385.14
+TransactPlus    26507.31
+Name: eur_amount, dtype: float64
+
+Number of transactions found: 1129
+First 5 rows of filtered data:
+      psp_reference                  merchant  ... aci  acquirer_country
+101     72404824030  Martinis_Fine_Steakhouse  ...   G                FR
+235     76962904635  Martinis_Fine_Steakhouse  ...   D                FR
+357     83424592516  Martinis_Fine_Steakhouse  ...   B                FR
+893     38266697701  Martinis_Fine_Steakhouse  ...   F                FR
+1005    85094215127  Martinis_Fine_Steakhouse  ...   D                FR
+
+[5 rows x 21 columns]

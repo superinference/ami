@@ -1,0 +1,17 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Transactions found for Martinis_Fine_Steakhouse in March 2023: 1153
+Monthly Volume: €103,726.64
+Monthly Fraud Rate: 7.7170%
+Merchant Attributes: Type=H, MCC=5812, Delay=immediate
+Unique transaction profiles identified: 68
+
+==============================
+APPLICABLE FEE IDs
+==============================
+12, 16, 36, 51, 64, 65, 79, 84, 95, 107, 123, 134, 141, 150, 162, 163, 187, 217, 276, 280, 284, 300, 304, 332, 347, 364, 367, 381, 384, 398, 428, 431, 433, 454, 456, 473, 477, 485, 491, 501, 503, 536, 547, 556, 572, 595, 616, 622, 626, 637, 640, 660, 680, 682, 702, 709, 721, 741, 769, 804, 813, 834, 863, 870, 878, 888, 891, 913, 915, 921, 980

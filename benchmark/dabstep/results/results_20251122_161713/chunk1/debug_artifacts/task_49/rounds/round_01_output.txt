@@ -1,0 +1,19 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Fraud Rate by IP Country (%):
+ip_country
+BE    10.850453
+NL     9.929435
+SE     7.510155
+FR     5.932859
+IT     5.848616
+LU     5.733464
+ES     5.726748
+GR     5.306753
+Name: has_fraudulent_dispute, dtype: float64
+
+The top country (ip_country) for fraud is: BE

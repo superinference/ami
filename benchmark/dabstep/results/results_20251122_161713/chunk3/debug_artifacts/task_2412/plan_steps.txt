@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` dataset and filter it to include only transactions for the merchant 'Rafa_AI' that occurred in July 2023 (approximately `day_of_year` 182 to 212).
+Step 2: Load `fees.json` to retrieve the details of the fee rule with ID=384 (specifically its matching criteria and original rate) and `merchant_data.json` to get the merchant category code and account type for 'Rafa_AI'.

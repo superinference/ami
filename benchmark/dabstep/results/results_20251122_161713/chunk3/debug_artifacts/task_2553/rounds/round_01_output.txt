@@ -1,0 +1,31 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee Rule 64 Details:
+{
+    "ID": 64,
+    "card_scheme": "SwiftCharge",
+    "account_type": [],
+    "capture_delay": null,
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [],
+    "is_credit": true,
+    "aci": [
+        "D"
+    ],
+    "fixed_amount": 0.08,
+    "rate": 51,
+    "intracountry": null
+}
+
+Key Criteria for Impact Analysis:
+Card Scheme: SwiftCharge
+Original Account Type: []
+Merchant Category Codes: []
+Is Credit: True
+ACI: ['D']
+Intracountry: None

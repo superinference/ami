@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame.
+Step 2: Filter the dataframe for transactions where the merchant is 'Golfclub_Baron_Friso', the card scheme is 'NexPay', and the day_of_year is between 121 and 181 (inclusive, representing May and June 2023), then group by 'issuing_country' and calculate the mean of 'eur_amount'.

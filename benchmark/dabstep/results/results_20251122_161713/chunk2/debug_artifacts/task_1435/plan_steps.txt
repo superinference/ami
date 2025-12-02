@@ -1,0 +1,1 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to inspect the fee rules, specifically the `fixed_amount`, `rate`, and `merchant_category_code` columns, which are necessary to calculate the transaction cost.

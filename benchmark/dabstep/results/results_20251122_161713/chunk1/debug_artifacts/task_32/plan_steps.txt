@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame and calculate the total number of missing values (NaNs) across the entire dataset.

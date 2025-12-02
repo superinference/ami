@@ -1,0 +1,35 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Martinis_Fine_Steakhouse
+Jan 2023 Volume: €118,125.01
+Jan 2023 Fraud Level: 9.6563%
+Transactions to process: 36
+WARNING: No fee rule found for transaction 28830691109
+WARNING: No fee rule found for transaction 61476266515
+WARNING: No fee rule found for transaction 30993162218
+WARNING: No fee rule found for transaction 21660812551
+WARNING: No fee rule found for transaction 72440912985
+WARNING: No fee rule found for transaction 64603347495
+WARNING: No fee rule found for transaction 23658912157
+WARNING: No fee rule found for transaction 33036608675
+WARNING: No fee rule found for transaction 30729172081
+WARNING: No fee rule found for transaction 26207001778
+WARNING: No fee rule found for transaction 10165695045
+WARNING: No fee rule found for transaction 70673062165
+WARNING: No fee rule found for transaction 13889586291
+WARNING: No fee rule found for transaction 71143428234
+WARNING: No fee rule found for transaction 56627875144
+WARNING: No fee rule found for transaction 22500063364
+WARNING: No fee rule found for transaction 21805248450
+WARNING: No fee rule found for transaction 81747034845
+WARNING: No fee rule found for transaction 14205970788
+WARNING: No fee rule found for transaction 58010978585
+WARNING: No fee rule found for transaction 70799752996
+WARNING: No fee rule found for transaction 36275819632
+WARNING: No fee rule found for transaction 24544813752
+Successfully calculated fees for 13/36 transactions.
+Total Fees: 8.73058000000000

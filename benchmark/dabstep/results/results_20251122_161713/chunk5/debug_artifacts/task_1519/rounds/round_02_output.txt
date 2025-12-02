@@ -1,0 +1,26 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Scenario Parameters (Average Scenario):
+  Merchant: Crossfit_Hanna
+  Is Credit: True
+  ACI: D
+  Intracountry: False
+  MCC: 7997
+  Account Type: F
+  Capture Delay: manual
+  Monthly Volume: 423,053.07
+  Monthly Fraud Level: 8.9079%
+No matching rule found for NexPay
+------------------------------
+Fees for 4321 EUR transaction:
+  NexPay: inf EUR
+  GlobalCard: 35.8843 EUR
+  SwiftCharge: 22.1171 EUR
+  TransactPlus: 20.7508 EUR
+------------------------------
+Cheapest Scheme: TransactPlus
+TransactPlus

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv`, `fees.json`, and `merchant_data.json` files into pandas DataFrames to access the transaction data, fee structures, and merchant attributes.
+Step 2: Filter the payments data for 'Martinis_Fine_Steakhouse' in 2023, retrieve the merchant's specific attributes (MCC, account type, capture delay) from the merchant data, calculate the monthly transaction volume and fraud rates to determine applicable fee tiers, and extract the specific rule details for Fee ID=16 from the fees dataset.

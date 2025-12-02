@@ -1,0 +1,11 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the merchant is 'Crossfit_Hanna', `has_fraudulent_dispute` is True, and the `day_of_year` is between 305 and 334 (representing November).
+Step 2: Load `merchant_data.json` to retrieve the `merchant_category_code` and `account_type` for 'Crossfit_Hanna', and load `fees.json`. Then, using `payments.csv`, calculate the total transaction volume and fraud rate for 'Crossfit_Hanna' in November to determine the applicable `monthly_volume` and `monthly_fraud_level` buckets for fee calculation.
+Step 3: To answer the question about the preferred Authorization Characteristics Indicator (ACI) for minimizing fees on fraudulent transactions for 'Crossfit_Hanna' in November, I need to calculate the potential fees for these specific transactions under each possible ACI scenario.
+
+Here is the plan:
+1.  **Load Data**: Load `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  **Filter Context**: Filter `payments.csv` for 'Crossfit_Hanna' transactions in November (day_of_year 305 to 334).
+3.  **Calculate Merchant Metrics**: Calculate the total `monthly_volume` and `monthly_fraud_level` (fraud volume / total volume) for November to determine the applicable fee buckets (e.g., '100k-1m', '<0.8%').
+4.  **Get Merchant Attributes**: Retrieve `merchant_category_code`, `account_type`, and `capture_delay` for 'Crossfit_Hanna' from `merchant_data.json`.
+5.  **Identify Target Transactions**: Filter the November data to isolate only the transactions where `has_fraudulent_dispute` is True.
+6.  **Simulate Fees**: For each possible ACI (`A`, `B`, `C`,

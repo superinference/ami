@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows in payments.csv: 138236
+Transactions for 'Belles_cookbook_store' between day 274 and 304: 1133
+
+First 5 filtered transactions:
+     psp_reference               merchant  ...  eur_amount   card_scheme
+53     79897257292  Belles_cookbook_store  ...       28.90  TransactPlus
+91     59212062455  Belles_cookbook_store  ...       27.14   SwiftCharge
+147    16395543811  Belles_cookbook_store  ...       75.27  TransactPlus
+179    40659575538  Belles_cookbook_store  ...      104.32        NexPay
+184    24745235282  Belles_cookbook_store  ...       39.83  TransactPlus
+
+[5 rows x 5 columns]

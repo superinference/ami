@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions loaded: 138236
+Transactions for Belles_cookbook_store in Jan 2023: 1201
+
+First 5 filtered transactions:
+     psp_reference               merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+18     16900553593  Belles_cookbook_store  GlobalCard  2023           17              43           24       True      295.37         SE              SE       MacOS  IkTvIq7qVolDLRWc-eo2Jw  j2lcSM-ZDZQH8PAm4VshGA  SjIWwffh8yHVwNWJUTh4OA           Ecommerce      4916                   False                False   G               US
+49     66017259224  Belles_cookbook_store      NexPay  2023            0              20           21      False       95.70         BE              BE       Other  kmCfsqvrYKbWkzdry_pWgQ  br9un-3kg89EDG07tyWYtw  ELA6-URdwT-sL0EDv96fIw                 POS      4622                   False                False   B               US
+88     14214155722  Belles_cookbook_store  GlobalCard  2023            1               6            6       True      186.14         NL              NL         iOS  Et1TroJqChIxrH8glJqm1w  tbDq7oL7iLw0XYS9PG01ew  gyESS-qu1JK1ng52-KDQ5Q           Ecommerce      4526                   False                False   D               US
+169    69753929320  Belles_cookbook_store      NexPay  2023           23              23            6       True       61.28         ES              SE     Android  bJKMQp2mCegh3UNJRdAnHQ  LPhi11-5uZ49zv2zzF37-w  2ycla3Za7hpZkwTaOAsZLg           Ecommerce      4556                   False                False   D               US
+302    16970611168  Belles_cookbook_store  GlobalCard  2023           13              47           12      False       39.67         FR              FR     Android                     NaN  6Ij8vTQ0FWpNOC8cPW1ksg  VlBGvwKSj8X2STxRGVrn5Q           Ecommerce      4802                   False                False   D               US

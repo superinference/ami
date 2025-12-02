@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows in dataset: 138236
+Rows after filtering for Crossfit_Hanna, fraud=True, and Nov (days 305-334): 362
+
+Sample of filtered data:
+      psp_reference        merchant  ...  aci  eur_amount
+255     60757699855  Crossfit_Hanna  ...    G      129.22
+883     47230024326  Crossfit_Hanna  ...    G       71.11
+1059    13612070438  Crossfit_Hanna  ...    G      135.26
+1375    74062152859  Crossfit_Hanna  ...    G       78.35
+1495    89867544674  Crossfit_Hanna  ...    G      114.86
+
+[5 rows x 6 columns]

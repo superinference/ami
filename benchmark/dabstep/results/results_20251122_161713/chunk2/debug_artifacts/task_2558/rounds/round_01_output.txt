@@ -1,0 +1,56 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Current Matching Criteria for Fee ID 64:
+{
+    "ID": 64,
+    "card_scheme": "SwiftCharge",
+    "account_type": [],
+    "capture_delay": null,
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [],
+    "is_credit": true,
+    "aci": [
+        "D"
+    ],
+    "fixed_amount": 0.08,
+    "rate": 51,
+    "intracountry": null
+}
+
+Merchant Account Types:
+                merchant account_type
+          Crossfit_Hanna            F
+Martinis_Fine_Steakhouse            H
+   Belles_cookbook_store            R
+    Golfclub_Baron_Friso            F
+                 Rafa_AI            D
+                 Eggnest            H
+                 Gym_Pro            F
+           Gourmet_Bites            H
+              Book_Haven            R
+          City_Golf_Club            F
+             SmartAI_Hub            D
+         Sunny_Side_Cafe            H
+           Pilates_Place            F
+          The_Steakhouse            H
+           Tech_Trainers            S
+            Yoga_Masters            F
+              Urban_Eats            H
+             Read_and_Co            R
+        Luxury_Tee_Times            F
+               InnovateX            D
+              Sunny_Nest            H
+                  FitHub            F
+      Culinary_Creations            H
+        Bookworm_Central            R
+          Green_Fairways            F
+             AI_Pro_Labs            S
+            Brunch_Bliss            H
+            Muscle_House            F
+          Crafty_Cuisine            H
+           Cafe_Centrale            H

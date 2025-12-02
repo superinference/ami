@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` column is 'Rafa_AI' and the `year` is 2023.
+Step 2: Load `merchant_data.json` and `fees.json` to retrieve the original MCC, account type, and fee rules. Then, calculate the monthly transaction volume and fraud rates for 'Rafa_AI' in 2023 to determine the applicable fee tiers. Finally, for each transaction, calculate the fee using the original MCC and the fee using MCC 5999, sum the totals for both scenarios, and compute the difference.

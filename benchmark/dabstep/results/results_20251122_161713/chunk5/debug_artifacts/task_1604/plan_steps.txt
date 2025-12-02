@@ -1,0 +1,5 @@
+Step 1: Load the `fees.json` file and filter for entries where `card_scheme` is 'TransactPlus' and `account_type` is either empty (wildcard) or contains 'H'.
+Step 2: Load `merchant_data.json` to identify merchants with account type 'H', then load `payments.csv` to filter for transactions from these merchants. Calculate the required matching attributes for each transaction: `monthly_volume` (total EUR amount per merchant per month), `monthly_fraud_level` (ratio of fraudulent dispute amount to total amount per merchant per month), and `intracountry` status (matching issuing and acquirer countries). Finally, filter the dataset to only include 'TransactPlus' transactions and prepare the data for fee rule application.
+Step 3: Based on the previous execution which successfully identified the target transactions and calculated the average fee using the specified parameters (Account Type H, TransactPlus, 1000 EUR transaction value), the final answer is available.
+
+output the final answer: 8.247680 EUR

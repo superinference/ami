@@ -1,0 +1,3 @@
+Step 1: Load the `payments.csv` file and filter the data to retrieve all transactions for the merchant 'Belles_cookbook_store' that occurred in the year 2023.
+Step 2: Load `merchant_data.json` to retrieve the current merchant category code (MCC) and account type for 'Belles_cookbook_store', and load `fees.json` to access the fee structures required for calculation.
+Step 3: Calculate the total fees for 'Belles_cookbook_store' transactions in 2023 using the original MCC from `merchant_data.json` and the fee rules in `fees.json`, then calculate the total fees again using the new MCC 5411, and subtract the original fee total from the new fee total to find the delta.

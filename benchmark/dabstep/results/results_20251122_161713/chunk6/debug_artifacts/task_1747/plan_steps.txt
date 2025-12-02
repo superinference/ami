@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows to include only transactions where the `merchant` column is 'Crossfit_Hanna' and the `year` column is 2023.
+Step 2: Load `merchant_data.json` to get the merchant's attributes (MCC, account_type, capture_delay), load `fees.json`, and calculate the monthly total volume and monthly fraud rate from the filtered payments data to prepare for fee matching.

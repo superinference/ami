@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found for Martinis_Fine_Steakhouse in May 2023: 1194
+     psp_reference                  merchant  ... aci  acquirer_country
+50     24796561934  Martinis_Fine_Steakhouse  ...   D                FR
+221    11898953452  Martinis_Fine_Steakhouse  ...   F                FR
+293    55340442542  Martinis_Fine_Steakhouse  ...   F                FR
+519    25973060926  Martinis_Fine_Steakhouse  ...   G                FR
+614    39284689093  Martinis_Fine_Steakhouse  ...   D                FR
+
+[5 rows x 21 columns]

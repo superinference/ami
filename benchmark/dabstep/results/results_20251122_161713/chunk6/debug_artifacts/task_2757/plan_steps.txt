@@ -1,0 +1,14 @@
+Step 1: Load the `payments.csv`, `merchant_data.json`, and `fees.json` files into pandas DataFrames.
+Step 2: To answer the question about which card scheme Belles_cookbook_store should steer traffic to in order to pay the maximum fees, I need to calculate the actual fees incurred by this merchant for each card scheme based on the provided fee structure and transaction history.
+
+Here is the plan:
+1.  **Load Data**: Load `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  **Filter Data**: Select transactions for `Belles_cookbook_store` in `2023`.
+3.  **Enrich Data**:
+    *   Get the merchant's `merchant_category_code`, `account_type`, and `capture_delay` from `merchant_data.json`.
+    *   Calculate `monthly_volume` and `monthly_fraud_level` (fraud amount / total amount) for each month to match fee rules.
+    *   Determine if transactions are `intracountry` (issuing_country == acquirer_country).
+4.  **Calculate Fees**:
+    *   Iterate through the transactions and match them against the rules in `fees.json`.
+    *   A rule matches if all defined fields (non-null/non-empty) in the rule match the transaction/merchant attributes.
+    *   Calculate the fee for each transaction

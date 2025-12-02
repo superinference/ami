@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Top 2 Merchants by Volume (eur_amount):
+                             sum  count
+merchant                               
+Crossfit_Hanna        5076636.90  55139
+Golfclub_Baron_Friso  2553380.62  27748
+
+Top 2 Merchant Names:
+['Crossfit_Hanna', 'Golfclub_Baron_Friso']

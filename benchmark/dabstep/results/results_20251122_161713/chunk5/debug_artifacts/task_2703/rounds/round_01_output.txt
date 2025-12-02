@@ -1,0 +1,26 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total_Transactions: 287
+Avg_Amount: 99.28724738675959
+
+---Schemes---
+card_scheme
+GlobalCard      94
+NexPay          82
+TransactPlus    78
+SwiftCharge     33
+Name: count, dtype: int64
+
+---Is_Credit---
+is_credit
+True    287
+Name: count, dtype: int64
+
+---Current_ACIs---
+aci
+G    287
+Name: count, dtype: int64

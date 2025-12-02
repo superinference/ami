@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a dataframe and calculate the number of unique values in the `email_address` column using the `.nunique()` function.

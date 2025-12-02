@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Top 2 Merchants by Volume:
+                             sum  count
+merchant                               
+Crossfit_Hanna        5076636.90  55139
+Golfclub_Baron_Friso  2553380.62  27748
+
+Total transactions for top 2 merchants: 82887
+Total transactions in dataset: 138236
+Percentage of transactions from top 2 merchants: 59.96%

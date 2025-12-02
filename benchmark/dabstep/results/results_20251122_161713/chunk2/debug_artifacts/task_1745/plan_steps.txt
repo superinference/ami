@@ -1,0 +1,2 @@
+Step 1: Load the `merchant_data.json` file and filter for the merchant "Rafa_AI" to retrieve its static attributes such as `merchant_category_code`, `account_type`, and `capture_delay`.
+Step 2: Load the `payments.csv` file, filter for the merchant "Rafa_AI", and calculate the total monthly transaction volume, the monthly fraud rate (fraudulent volume / total volume), and extract unique combinations of `card_scheme`, `is_credit`, `aci`, and `intracountry` (derived by comparing `issuing_country` and `acquirer_country`) to prepare for matching against fee rules.

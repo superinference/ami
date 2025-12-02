@@ -1,0 +1,16 @@
+[
+  {
+    "round": 1,
+    "plan_steps": 1,
+    "code_length": 2439,
+    "code": "# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef safe_get(df, column, default=None):\n    \"\"\"Safely get column from DataFrame, return default if not exists.\"\"\"\n    if isinstance(df, dict):\n        return df.get(column, default)\n    elif hasattr(df, 'columns') and column in df.columns:\n        return df[column]\n    return default\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef safe_index(array, idx, default=None):\n    \"\"\"Safely get array element at index, return default if out of bounds.\"\"\"\n    try:\n        if 0 <= idx < len(array):\n            return array[idx]\n        return default\n    except (IndexError, TypeError, AttributeError):\n        return default\n\n\nimport pandas as pd\n\ndef calculate_email_percentage():\n    # Load the payments.csv file\n    file_path = '/output/chunk1/data/context/payments.csv'\n    df = pd.read_csv(file_path)\n    \n    # Calculate the number of transactions with an associated email address\n    # We check for non-null values (NaN) and empty strings\n    valid_emails = df['email_address'].notna() & (df['email_address'] != '')\n    \n    num_with_email = valid_emails.sum()\n    total_transactions = len(df)\n    \n    # Calculate percentage\n    if total_transactions > 0:\n        percentage = (num_with_email / total_transactions) * 100\n    else:\n        percentage = 0.0\n        \n    # Print the result formatted to 2 decimal places\n    print(f\"{percentage:.2f}%\")\n\nif __name__ == \"__main__\":\n    calculate_email_percentage()",
+    "execution_output": "90.00%\n",
+    "original_error": null,
+    "debugger_used": false,
+    "verification": "sufficient",
+    "temperature": 0.1,
+    "plan_snapshot": [
+      "Load the 'payments.csv' file into a pandas DataFrame."
+    ]
+  }
+]

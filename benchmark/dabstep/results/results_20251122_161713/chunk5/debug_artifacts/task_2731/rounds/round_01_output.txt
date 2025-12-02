@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Data Shape: (181, 21)
+Total EUR Amount involved: 21019.16
+
+First 5 rows of filtered data:
+      psp_reference merchant  day_of_year  eur_amount   card_scheme aci
+1289    36387496061  Rafa_AI          199      138.52    GlobalCard   G
+2025    33354232027  Rafa_AI          206      757.90   SwiftCharge   G
+2077    80530332882  Rafa_AI          208       77.98   SwiftCharge   G
+3795    60429031137  Rafa_AI          207       28.71    GlobalCard   G
+4065    56969722734  Rafa_AI          200      329.07  TransactPlus   G

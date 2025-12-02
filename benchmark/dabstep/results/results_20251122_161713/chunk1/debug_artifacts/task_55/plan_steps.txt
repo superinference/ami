@@ -1,0 +1,1 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame and calculate the value counts for the 'device_type' column to determine which type appears most frequently.

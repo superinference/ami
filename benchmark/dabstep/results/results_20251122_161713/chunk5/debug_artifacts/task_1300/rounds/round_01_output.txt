@@ -1,0 +1,22 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+      ID   card_scheme account_type capture_delay monthly_fraud_level monthly_volume                            merchant_category_code is_credit        aci  fixed_amount  rate  intracountry
+2      3  TransactPlus           []            >5                None           None  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]      True     [C, A]          0.09    16           0.0
+10    11  TransactPlus           []          None                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]      True     [C, A]          0.00    54           NaN
+20    21  TransactPlus           []          None                None           None        [8062, 8011, 8021, 7231, 7298, 7991, 8049]      True     [A, B]          0.07    83           NaN
+23    24  TransactPlus           []     immediate                None           None  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]      True        [E]          0.06    84           NaN
+27    28  TransactPlus           []     immediate                None           None  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]      True        [F]          0.02    86           1.0
+..   ...           ...          ...           ...                 ...            ...                                               ...       ...        ...           ...   ...           ...
+965  966  TransactPlus           []          None           7.7%-8.3%           None  [5814, 5815, 5816, 7832, 7922, 7995, 7999, 5813]      None        [C]          0.12    73           0.0
+967  968  TransactPlus           []           3-5                None           None                                                []      True  [A, B, C]          0.05    84           NaN
+972  973  TransactPlus           []            <3                None          1m-5m  [5814, 5815, 5816, 7832, 7922, 7995, 7999, 5813]      None        [B]          0.09    76           0.0
+977  978  TransactPlus           []           3-5                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]      None         []          0.12    18           1.0
+993  994  TransactPlus       [S, R]          None                None           None  [5814, 5815, 5816, 7832, 7922, 7995, 7999, 5813]      True        [F]          0.08    78           0.0
+
+[150 rows x 12 columns]
+
+Number of relevant fee rules found: 150

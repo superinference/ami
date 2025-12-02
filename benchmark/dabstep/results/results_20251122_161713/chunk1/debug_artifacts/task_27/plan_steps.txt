@@ -1,0 +1,2 @@
+Step 1: Calculate the mean and standard deviation of the 'eur_amount' column in the `payments.csv` dataframe.
+Step 2: Filter the `payments.csv` dataframe to include only rows where `eur_amount` is greater than (91.85232110304118 + 3 * 121.73051424575894), then group the filtered data by `hour_of_day`, count the number of transactions for each hour, and identify the hour with the highest count.

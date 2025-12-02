@@ -1,0 +1,57 @@
+{
+  "rounds": 5,
+  "verifier_calls": 5,
+  "router_decisions": [
+    "add_step",
+    "fix_1",
+    "add_step",
+    "fix_2"
+  ],
+  "information_theory": {
+    "initial_belief": 0.5,
+    "final_belief": 0.8206,
+    "belief_trajectory": [
+      0.5,
+      0.3,
+      0.25,
+      0.6699999999999999,
+      0.40199999999999997,
+      0.8206
+    ],
+    "initial_entropy_bits": 1.0,
+    "final_entropy_bits": 0.6787627086137198,
+    "entropy_reduction_bits": 0.3212372913862802,
+    "eig_trajectory": [
+      0.3568015214420218,
+      0.3568015214420218,
+      0.178468182634421,
+      0.1312202918357942,
+      0.42111470849472676,
+      0.2756560417017372
+    ],
+    "total_eig_bits": 1.720062267550723,
+    "avg_eig_per_event_bits": 0.28667704459178717,
+    "events_fired": 6
+  },
+  "stopping_analysis": {
+    "stopped_due_to": "plan_sufficient_agreement",
+    "final_eig": 0.2756560417017372,
+    "final_belief": 0.8206,
+    "tau_threshold": 0.01,
+    "kappa_threshold": 0.9
+  },
+  "temperature_adaptation": {
+    "base_temperature": 0.1,
+    "final_temperature": 0.1,
+    "temperature_trajectory": [
+      0.1,
+      0.15000000000000002,
+      0.25,
+      0.3,
+      0.4,
+      0.1
+    ],
+    "total_increases": 4,
+    "max_temperature_reached": 0.4
+  }
+}

@@ -1,0 +1,51 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+Filtering for Merchant: Golfclub_Baron_Friso, Year: 2023, Day: 12
+Loading merchant data...
+
+Total transactions found: 70
+
+Unique Transaction Characteristics (Scheme, Credit, ACI, Intracountry):
+ card_scheme  is_credit aci  intracountry
+  GlobalCard       True   A          True
+  GlobalCard      False   C          True
+  GlobalCard       True   D         False
+  GlobalCard       True   D          True
+  GlobalCard       True   F          True
+  GlobalCard      False   F          True
+  GlobalCard      False   F         False
+  GlobalCard       True   G         False
+  GlobalCard       True   G          True
+      NexPay       True   D         False
+      NexPay       True   D          True
+      NexPay       True   F         False
+      NexPay      False   F         False
+      NexPay      False   F          True
+      NexPay       True   G         False
+ SwiftCharge      False   C          True
+ SwiftCharge       True   D         False
+ SwiftCharge       True   D          True
+ SwiftCharge      False   F         False
+ SwiftCharge       True   G         False
+TransactPlus       True   D         False
+TransactPlus      False   F         False
+TransactPlus       True   F         False
+TransactPlus       True   G          True
+TransactPlus       True   G         False
+
+Merchant Static Characteristics:
+Merchant Category Code (MCC): 7993
+Account Type: F
+
+Sample Enriched Transactions (First 5):
+ psp_reference  card_scheme  eur_amount aci  is_credit issuing_country acquirer_country  intracountry
+   40389346639   GlobalCard       37.80   F       True              IT               IT          True
+   45255815260       NexPay       83.37   F       True              FR               IT         False
+   82231000720       NexPay       23.98   F      False              BE               IT         False
+   26514846986   GlobalCard       12.59   D       True              NL               IT         False
+   38785756716 TransactPlus       43.54   F      False              NL               IT         False

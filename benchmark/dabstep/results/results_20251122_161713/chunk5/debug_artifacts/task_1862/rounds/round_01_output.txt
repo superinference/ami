@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 2327
+Total Volume (EUR): 212511.46
+
+First 5 rows of filtered data:
+     psp_reference merchant  ... aci  acquirer_country
+19     64327336902  Rafa_AI  ...   E                NL
+78     22948949083  Rafa_AI  ...   E                NL
+113    58063899304  Rafa_AI  ...   E                NL
+135    61880970123  Rafa_AI  ...   C                NL
+164    85217906953  Rafa_AI  ...   G                NL
+
+[5 rows x 21 columns]

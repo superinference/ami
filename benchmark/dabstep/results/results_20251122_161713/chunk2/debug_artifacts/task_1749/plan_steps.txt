@@ -1,0 +1,12 @@
+Step 1: Load the `payments.csv` data into a dataframe and filter it to include only transactions where the `merchant` column is 'Martinis_Fine_Steakhouse' and the `year` column is 2023.
+Step 2: To answer the question about the total fees Martinis_Fine_Steakhouse paid in 2023, I need to recalculate the fees ensuring that all transactions are matched to a fee rule. The previous attempt indicated that only about half of the transactions were matched, which suggests a potential issue with how the matching logic handled specific fields (like monthly volume ranges, fraud rates, or wildcards).
+
+I will create a robust Python script to:
+1.  Load the necessary files (`payments.csv`, `merchant_data.json`, `fees.json`).
+2.  Filter for the specific merchant and year.
+3.  Calculate the required monthly metrics (total volume and fraud rate) which are prerequisites for fee rule matching.
+4.  Implement a precise matching algorithm that handles:
+    *   **Wildcards**: `null` or empty lists in `fees.json` mean "applies to all".
+    *   **Ranges**: Parse strings like "100k-1m" for volume and "0.0%-0.5%" for fraud.
+    *   **List inclusions**: Check if the merchant's MCC or Account Type exists in the rule's list.
+    *   **Booleans**: Handle `is_credit` and `intrac

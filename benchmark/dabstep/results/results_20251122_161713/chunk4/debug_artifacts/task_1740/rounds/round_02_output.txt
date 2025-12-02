@@ -1,0 +1,59 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Rafa_AI', 'capture_delay': '7', 'acquirer': ['tellsons_bank'], 'merchant_category_code': 7372, 'account_type': 'D'}
+Calculating stats for Dec 2023 (Day 335-365)...
+Monthly Volume: €227,627.10
+Monthly Fraud Volume: €22,592.38
+Monthly Fraud Rate: 9.9252%
+Found 74 transactions for Rafa_AI on Day 365.
+WARNING: No fee rule matched for Tx 41722267148
+WARNING: No fee rule matched for Tx 83808557858
+WARNING: No fee rule matched for Tx 46990556364
+WARNING: No fee rule matched for Tx 74900421238
+WARNING: No fee rule matched for Tx 49791043129
+WARNING: No fee rule matched for Tx 11020950644
+WARNING: No fee rule matched for Tx 63472981627
+WARNING: No fee rule matched for Tx 61482678122
+WARNING: No fee rule matched for Tx 15422055305
+WARNING: No fee rule matched for Tx 37060383053
+WARNING: No fee rule matched for Tx 66387888621
+WARNING: No fee rule matched for Tx 26192680113
+WARNING: No fee rule matched for Tx 29765113674
+WARNING: No fee rule matched for Tx 82361406256
+WARNING: No fee rule matched for Tx 79240940026
+WARNING: No fee rule matched for Tx 13833379933
+WARNING: No fee rule matched for Tx 52112175908
+WARNING: No fee rule matched for Tx 42714836560
+WARNING: No fee rule matched for Tx 14917257419
+WARNING: No fee rule matched for Tx 60010227909
+WARNING: No fee rule matched for Tx 47635764158
+WARNING: No fee rule matched for Tx 13343337817
+WARNING: No fee rule matched for Tx 55905814450
+WARNING: No fee rule matched for Tx 63811247187
+WARNING: No fee rule matched for Tx 46783545123
+WARNING: No fee rule matched for Tx 47231337730
+WARNING: No fee rule matched for Tx 84122756760
+WARNING: No fee rule matched for Tx 58264629435
+WARNING: No fee rule matched for Tx 43958483664
+WARNING: No fee rule matched for Tx 33510573344
+WARNING: No fee rule matched for Tx 73376525175
+WARNING: No fee rule matched for Tx 23499448311
+WARNING: No fee rule matched for Tx 63509765295
+WARNING: No fee rule matched for Tx 50786177634
+WARNING: No fee rule matched for Tx 45790124053
+WARNING: No fee rule matched for Tx 27201994568
+WARNING: No fee rule matched for Tx 62076710754
+WARNING: No fee rule matched for Tx 87031826844
+WARNING: No fee rule matched for Tx 40822614782
+WARNING: No fee rule matched for Tx 61580313065
+WARNING: No fee rule matched for Tx 78903185193
+WARNING: No fee rule matched for Tx 67316782097
+WARNING: No fee rule matched for Tx 89702883107
+
+Total Fees for Rafa_AI on Day 365: €14.20283300000000
+14.202833000000002

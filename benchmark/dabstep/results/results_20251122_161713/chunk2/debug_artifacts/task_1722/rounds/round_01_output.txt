@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments.csv...
+Total transactions found: 164
+
+First 5 transactions:
+      psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+706     77491366081  Crossfit_Hanna  TransactPlus  2023           21               9          365       True       69.21         SE              SE       MacOS                     NaN  AcToBN9flPqhE-kSR3Voug  tG2ZRhrUzhqzj8N4r7nPhQ           Ecommerce      4526                   False                False   D               NL
+874     61522171872  Crossfit_Hanna  TransactPlus  2023           18              52          365       True       62.87         FR              FR     Android                     NaN  Cuqmk0EaoNJphbNJItx6Bg  UxjWSKbAEmicw_HJbhUgtA           Ecommerce      4916                    True                False   G               NL
+1023    87998451585  Crossfit_Hanna        NexPay  2023           14              53          365      False       34.54         BE              LU         iOS  eXzERDwmaUxRxpXeOMZEMw  LNh3tP-wj_tAEhhcdeAHPg  RVpHf1s5rLNPvmFTMy5P3A                 POS      4556                   False                False   C               NL
+1239    77771120843  Crossfit_Hanna  TransactPlus  2023           14              30          365      False       59.38         NL              NL     Windows  smWpk0T6ZdBR0clJ4zRB6Q  K4bgnkIzEd0dAjyCUKJZtQ  M_WswBU-hAiuO-cTYvGFyg           Ecommerce      4556                   False                False   D               NL
+3273    84713335301  Crossfit_Hanna        NexPay  2023           15               7          365      False      109.23         NL              NL         iOS  i7GbgBm-onXPhv7ZQaVteQ                     NaN  hSOJHTKRMFhqIDeAE81reQ           Ecommerce      4622                   False                False   F               NL
+
+Filtered data saved to filtered_transactions.pkl

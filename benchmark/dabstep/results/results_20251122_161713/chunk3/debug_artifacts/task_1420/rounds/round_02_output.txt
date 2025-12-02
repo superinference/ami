@@ -1,0 +1,9 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+DEBUG: Found MCC for 'Taxicabs and Limousines': 4121
+DEBUG: Found 58 matching rules.
+6.088966

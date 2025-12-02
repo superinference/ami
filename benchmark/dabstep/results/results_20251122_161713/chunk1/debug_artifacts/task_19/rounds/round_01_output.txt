@@ -1,0 +1,49 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded 'payments.csv'.
+Shape: (138236, 21)
+
+First 5 rows:
+   psp_reference               merchant  ... aci  acquirer_country
+0    20034594130         Crossfit_Hanna  ...   F                NL
+1    36926127356         Crossfit_Hanna  ...   F                NL
+2    31114608278  Belles_cookbook_store  ...   F                US
+3    68442235288         Crossfit_Hanna  ...   D                NL
+4    81404384199         Crossfit_Hanna  ...   F                NL
+
+[5 rows x 21 columns]
+
+DataFrame Info:
+<class 'pandas.core.frame.DataFrame'>
+RangeIndex: 138236 entries, 0 to 138235
+Data columns (total 21 columns):
+ #   Column                  Non-Null Count   Dtype  
+---  ------                  --------------   -----  
+ 0   psp_reference           138236 non-null  int64  
+ 1   merchant                138236 non-null  object 
+ 2   card_scheme             138236 non-null  object 
+ 3   year                    138236 non-null  int64  
+ 4   hour_of_day             138236 non-null  int64  
+ 5   minute_of_hour          138236 non-null  int64  
+ 6   day_of_year             138236 non-null  int64  
+ 7   is_credit               138236 non-null  bool   
+ 8   eur_amount              138236 non-null  float64
+ 9   ip_country              138236 non-null  object 
+ 10  issuing_country         138236 non-null  object 
+ 11  device_type             138236 non-null  object 
+ 12  ip_address              110589 non-null  object 
+ 13  email_address           124412 non-null  object 
+ 14  card_number             138236 non-null  object 
+ 15  shopper_interaction     138236 non-null  object 
+ 16  card_bin                138236 non-null  int64  
+ 17  has_fraudulent_dispute  138236 non-null  bool   
+ 18  is_refused_by_adyen     138236 non-null  bool   
+ 19  aci                     138236 non-null  object 
+ 20  acquirer_country        138236 non-null  object 
+dtypes: bool(3), float64(1), int64(6), object(11)
+memory usage: 19.4+ MB
+None

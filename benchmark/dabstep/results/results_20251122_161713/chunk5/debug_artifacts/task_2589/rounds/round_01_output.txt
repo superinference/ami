@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 4167
+
+First 5 rows of filtered data:
+     psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+5      74453982452  Crossfit_Hanna   SwiftCharge  2023            8              30           55       True       14.96         NL              NL       Linux  lRYNn2teO8RZ_ms_5Ei52Q  YunUeDIiQyoqdiDzRWvx9g  8j9y7A7UdAgWkWGV6ggaFA           Ecommerce      4017                    True                False   G               NL
+64     70263464804  Crossfit_Hanna    GlobalCard  2023           15               3           56      False      177.65         BE              BE       MacOS  jPBfgy_z-Sk4KwdQtloxDg  1aBX7KDejYjJFkDb6yu8Qg  UGppzVljPNc9hGORt40q4Q           Ecommerce      4532                   False                False   F               NL
+84     12174730074  Crossfit_Hanna  TransactPlus  2023           13              58           52       True       24.03         LU              LU       Linux  A_M49aEbFafynHXPrqktaQ  hakcCSXDDhrY7Zb0q1LfXA  qVr_2ZnKvJx72KuhsPDa3Q           Ecommerce      4526                   False                False   G               NL
+172    79262358201  Crossfit_Hanna    GlobalCard  2023           14              30           33      False       59.08         NL              NL       MacOS  -XFBwMi6ebey_8Mg89JWlg  mvo4oRUyzzkhDr7SJ_V67g  CPBVcUXTNFdmAQWZUpFaTA           Ecommerce      4920                   False                False   F               NL
+245    32117765622  Crossfit_Hanna    GlobalCard  2023           22               8           36       True       39.59         FR              FR       Other  vpcoRNprqRkS7MkSxXMKvQ                     NaN  87VwDCetk88gvhv-lMXTsg           Ecommerce      4916                   False                False   D               NL
+
+Unique Card Schemes in February for Crossfit_Hanna:
+['SwiftCharge' 'GlobalCard' 'TransactPlus' 'NexPay']

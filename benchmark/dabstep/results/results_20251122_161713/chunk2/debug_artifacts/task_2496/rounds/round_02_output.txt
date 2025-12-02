@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Golfclub_Baron_Friso
+Fee ID: 709
+Original Rate: 17
+New Rate: 99
+Matching Transactions: 229
+Total Affected Amount: 18598.09
+Delta: 152.50433800000002

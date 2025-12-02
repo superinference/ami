@@ -1,0 +1,21 @@
+# Core dependencies
+requests>=2.32.2
+numpy>=1.26.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Hugging Face dependencies for DABStep
+datasets>=4.0.0
+huggingface_hub>=0.33.0
+
+# Data processing
+pyarrow>=15.0.0
+
+# Utilities
+tqdm>=4.66.0
+pathlib2>=2.3.0
+
+# Statistical analysis
+scipy>=1.7.0
+scikit-learn>=1.0.0 

@@ -1,0 +1,18 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average Scenario Parameters:
+  Merchant: Crossfit_Hanna
+  ACI: D
+  Is Credit: True
+  Intracountry: False
+  Account Type: F
+  MCC: 7997
+  Capture Delay: manual
+  Monthly Volume: €423,053.07
+  Monthly Fraud Rate: 8.91%
+------------------------------
+Result: TransactPlus

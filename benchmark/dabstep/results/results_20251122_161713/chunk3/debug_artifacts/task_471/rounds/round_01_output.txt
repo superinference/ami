@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+issuing_country
+BE     86.385354
+ES     92.825818
+FR    103.326720
+GR    100.997969
+IT     97.152098
+LU    106.024231
+NL     95.375833
+SE     91.894213
+Name: eur_amount, dtype: float64

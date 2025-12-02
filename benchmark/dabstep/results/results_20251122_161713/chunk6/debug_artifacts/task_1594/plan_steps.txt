@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe and filter for rows where `card_scheme` is 'NexPay' and `account_type` either contains 'H' or is empty (wildcard).
+Step 2: Load `merchant_data.json` to identify merchants with account type 'H', then load `payments.csv` to filter for transactions involving these merchants and the card scheme 'NexPay', and finally calculate the `intracountry` status, `monthly_volume`, and `monthly_fraud_level` for each relevant transaction to prepare for fee rule matching.

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame to access the transaction data including merchant, card scheme, aci, amount, and date information.
+Step 2: Filter the loaded payments DataFrame for transactions where the merchant is 'Crossfit_Hanna', the card scheme is 'GlobalCard', and the day_of_year is between 152 and 243 (inclusive, representing June 1st to August 31st, 2023), then group the result by 'aci' and calculate the mean of the 'eur_amount' column.

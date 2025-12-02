@@ -1,0 +1,202 @@
+{
+  "final_answer": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso",
+  "execution_result": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso",
+  "generated_code": "import pandas as pd\nimport json\n\n# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\n# Load Data\nfees_path = '/output/chunk2/data/context/fees.json'\nmerchant_path = '/output/chunk2/data/context/merchant_data.json'\npayments_path = '/output/chunk2/data/context/payments.csv'\n\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\n\nwith open(merchant_path, 'r') as f:\n    merchant_data = json.load(f)\n\ndf = pd.read_csv(payments_path)\n\n# 1. Get Rule 64\nrule_64 = next((f for f in fees_data if f['ID'] == 64), None)\nif not rule_64:\n    print(\"Rule 64 not found.\")\n    exit()\n\n# 2. Create Merchant Lookup (Name -> AccountType)\n# We need to look up the account type for every merchant found in the transactions\nmerchant_lookup = {\n    m['merchant']: m.get('account_type')\n    for m in merchant_data\n}\n\n# 3. Filter Transactions based on Rule 64's TRANSACTION-LEVEL criteria\n# These are the criteria that must be met regardless of the merchant's account type.\n# Criteria: card_scheme, is_credit, aci\n\n# Filter by Card Scheme\nif rule_64.get('card_scheme'):\n    df = df[df['card_scheme'] == rule_64['card_scheme']]\n\n# Filter by Is Credit (Handle boolean/null)\nif rule_64.get('is_credit') is not None:\n    # Ensure strict boolean comparison\n    target_credit = rule_64['is_credit']\n    df = df[df['is_credit'] == target_credit]\n\n# Filter by ACI (Rule has list, CSV has single value)\nif is_not_empty(rule_64.get('aci')):\n    allowed_acis = set(rule_64['aci'])\n    df = df[df['aci'].isin(allowed_acis)]\n\n# Filter by MCC (Rule has list, Merchant has single value)\n# Note: MCC is a merchant property, but often checked alongside transaction filters\nif is_not_empty(rule_64.get('merchant_category_code')):\n    allowed_mccs = set(rule_64['merchant_category_code'])\n    # Get merchants from merchant_data that match these MCCs\n    valid_mcc_merchants = {\n        m['merchant'] for m in merchant_data \n        if m.get('merchant_category_code') in allowed_mccs\n    }\n    df = df[df['merchant'].isin(valid_mcc_merchants)]\n\n# 4. Identify Affected Merchants\n# Get list of merchants who actually processed transactions matching the criteria\nactive_merchants = df['merchant'].unique()\n\naffected_merchants = []\n\nfor merchant in active_merchants:\n    # Get merchant's account type\n    acct_type = merchant_lookup.get(merchant)\n    \n    # --- Logic for CURRENT Rule ---\n    # If rule['account_type'] is empty/null, it applies to ALL.\n    # If it has values, merchant must match one.\n    current_rule_ats = rule_64.get('account_type', [])\n    if not is_not_empty(current_rule_ats):\n        matches_current = True\n    else:\n        matches_current = acct_type in current_rule_ats\n        \n    # --- Logic for NEW Rule ---\n    # Rule is ONLY applied to account type 'H'\n    matches_new = (acct_type == 'H')\n    \n    # --- Determine if Affected ---\n    # Affected if status changes (True->False OR False->True)\n    if matches_current != matches_new:\n        affected_merchants.append(merchant)\n\n# 5. Output Result\nif affected_merchants:\n    print(\", \".join(sorted(affected_merchants)))\nelse:\n    print(\"None\")",
+  "finalized_code": null,
+  "computation_code": "import pandas as pd\nimport json\n\n# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\n# Load Data\nfees_path = '/output/chunk2/data/context/fees.json'\nmerchant_path = '/output/chunk2/data/context/merchant_data.json'\npayments_path = '/output/chunk2/data/context/payments.csv'\n\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\n\nwith open(merchant_path, 'r') as f:\n    merchant_data = json.load(f)\n\ndf = pd.read_csv(payments_path)\n\n# 1. Get Rule 64\nrule_64 = next((f for f in fees_data if f['ID'] == 64), None)\nif not rule_64:\n    print(\"Rule 64 not found.\")\n    exit()\n\n# 2. Create Merchant Lookup (Name -> AccountType)\n# We need to look up the account type for every merchant found in the transactions\nmerchant_lookup = {\n    m['merchant']: m.get('account_type')\n    for m in merchant_data\n}\n\n# 3. Filter Transactions based on Rule 64's TRANSACTION-LEVEL criteria\n# These are the criteria that must be met regardless of the merchant's account type.\n# Criteria: card_scheme, is_credit, aci\n\n# Filter by Card Scheme\nif rule_64.get('card_scheme'):\n    df = df[df['card_scheme'] == rule_64['card_scheme']]\n\n# Filter by Is Credit (Handle boolean/null)\nif rule_64.get('is_credit') is not None:\n    # Ensure strict boolean comparison\n    target_credit = rule_64['is_credit']\n    df = df[df['is_credit'] == target_credit]\n\n# Filter by ACI (Rule has list, CSV has single value)\nif is_not_empty(rule_64.get('aci')):\n    allowed_acis = set(rule_64['aci'])\n    df = df[df['aci'].isin(allowed_acis)]\n\n# Filter by MCC (Rule has list, Merchant has single value)\n# Note: MCC is a merchant property, but often checked alongside transaction filters\nif is_not_empty(rule_64.get('merchant_category_code')):\n    allowed_mccs = set(rule_64['merchant_category_code'])\n    # Get merchants from merchant_data that match these MCCs\n    valid_mcc_merchants = {\n        m['merchant'] for m in merchant_data \n        if m.get('merchant_category_code') in allowed_mccs\n    }\n    df = df[df['merchant'].isin(valid_mcc_merchants)]\n\n# 4. Identify Affected Merchants\n# Get list of merchants who actually processed transactions matching the criteria\nactive_merchants = df['merchant'].unique()\n\naffected_merchants = []\n\nfor merchant in active_merchants:\n    # Get merchant's account type\n    acct_type = merchant_lookup.get(merchant)\n    \n    # --- Logic for CURRENT Rule ---\n    # If rule['account_type'] is empty/null, it applies to ALL.\n    # If it has values, merchant must match one.\n    current_rule_ats = rule_64.get('account_type', [])\n    if not is_not_empty(current_rule_ats):\n        matches_current = True\n    else:\n        matches_current = acct_type in current_rule_ats\n        \n    # --- Logic for NEW Rule ---\n    # Rule is ONLY applied to account type 'H'\n    matches_new = (acct_type == 'H')\n    \n    # --- Determine if Affected ---\n    # Affected if status changes (True->False OR False->True)\n    if matches_current != matches_new:\n        affected_merchants.append(merchant)\n\n# 5. Output Result\nif affected_merchants:\n    print(\", \".join(sorted(affected_merchants)))\nelse:\n    print(\"None\")",
+  "computation_result": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso\n",
+  "code_evolution": [
+    {
+      "round": 1,
+      "plan_steps": 1,
+      "code_length": 2077,
+      "code": "# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef safe_get(df, column, default=None):\n    \"\"\"Safely get column from DataFrame, return default if not exists.\"\"\"\n    if isinstance(df, dict):\n        return df.get(column, default)\n    elif hasattr(df, 'columns') and column in df.columns:\n        return df[column]\n    return default\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef safe_index(array, idx, default=None):\n    \"\"\"Safely get array element at index, return default if out of bounds.\"\"\"\n    try:\n        if 0 <= idx < len(array):\n            return array[idx]\n        return default\n    except (IndexError, TypeError, AttributeError):\n        return default\n\n\nimport json\nimport pandas as pd\n\n# Path to the fees file\nfees_path = '/output/chunk2/data/context/fees.json'\n\n# Load the fees data\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\n\n# Retrieve the fee rule with ID 64\nfee_rule_64 = next((fee for fee in fees_data if fee['ID'] == 64), None)\n\n# Print the retrieved fee rule to understand its criteria\nprint(\"Fee Rule 64 Details:\")\nprint(json.dumps(fee_rule_64, indent=4))",
+      "execution_output": "Fee Rule 64 Details:\n{\n    \"ID\": 64,\n    \"card_scheme\": \"SwiftCharge\",\n    \"account_type\": [],\n    \"capture_delay\": null,\n    \"monthly_fraud_level\": null,\n    \"monthly_volume\": null,\n    \"merchant_category_code\": [],\n    \"is_credit\": true,\n    \"aci\": [\n        \"D\"\n    ],\n    \"fixed_amount\": 0.08,\n    \"rate\": 51,\n    \"intracountry\": null\n}\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.1,
+      "plan_snapshot": [
+        "Load the `fees.json` file and retrieve the fee rule with `ID` equal to 64 to understand its current criteria (such as card scheme, merchant category codes, and existing account type restrictions)."
+      ]
+    },
+    {
+      "round": 2,
+      "plan_steps": 2,
+      "code_length": 4150,
+      "code": "import pandas as pd\nimport json\n\n# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\n# Load Data\nfees_path = '/output/chunk2/data/context/fees.json'\nmerchant_path = '/output/chunk2/data/context/merchant_data.json'\npayments_path = '/output/chunk2/data/context/payments.csv'\n\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\n\nwith open(merchant_path, 'r') as f:\n    merchant_data = json.load(f)\n\ndf = pd.read_csv(payments_path)\n\n# 1. Get Rule 64\nrule_64 = next((f for f in fees_data if f['ID'] == 64), None)\nif not rule_64:\n    print(\"Rule 64 not found.\")\n    exit()\n\n# 2. Create Merchant Lookup (Name -> {AccountType, MCC})\nmerchant_lookup = {\n    m['merchant']: {\n        'account_type': m['account_type'],\n        'mcc': m['merchant_category_code']\n    } \n    for m in merchant_data\n}\n\n# 3. Filter Transactions based on Rule 64's STATIC criteria\n# (card_scheme, is_credit, aci, merchant_category_code)\n# We do NOT filter by account_type yet, as we need to compare \"Current\" vs \"New\" logic.\n\n# Filter by Card Scheme\nif rule_64.get('card_scheme'):\n    df = df[df['card_scheme'] == rule_64['card_scheme']]\n\n# Filter by Is Credit\nif rule_64.get('is_credit') is not None:\n    df = df[df['is_credit'] == rule_64['is_credit']]\n\n# Filter by ACI (Rule has list, CSV has single value)\nif is_not_empty(rule_64.get('aci')):\n    allowed_acis = set(rule_64['aci'])\n    df = df[df['aci'].isin(allowed_acis)]\n\n# Filter by MCC (Rule has list, Merchant has single value)\nif is_not_empty(rule_64.get('merchant_category_code')):\n    allowed_mccs = set(rule_64['merchant_category_code'])\n    # Identify merchants in the current filtered DF that match the MCC criteria\n    valid_merchants_mcc = [\n        m for m in df['merchant'].unique()\n        if merchant_lookup.get(m, {}).get('mcc') in allowed_mccs\n    ]\n    df = df[df['merchant'].isin(valid_merchants_mcc)]\n\n# At this point, 'df' contains all transactions that match the Rule's transaction-level criteria.\n# Now we determine which merchants are affected by the Account Type change.\n\npotential_merchants = df['merchant'].unique()\n\n# Set 1: Merchants currently matching Rule 64 (Original Logic)\ncurrent_rule_ats = rule_64.get('account_type', [])\ncurrent_matches = set()\n\nfor m in potential_merchants:\n    m_at = merchant_lookup.get(m, {}).get('account_type')\n    # If rule has no account_type restriction (empty), it matches everyone in potential_merchants\n    if not is_not_empty(current_rule_ats):\n        current_matches.add(m)\n    # If rule has restrictions, check if merchant's AT is in the list\n    elif m_at in current_rule_ats:\n        current_matches.add(m)\n\n# Set 2: Merchants matching if Rule 64 is ONLY applied to 'H' (New Logic)\nnew_matches = set()\nfor m in potential_merchants:\n    m_at = merchant_lookup.get(m, {}).get('account_type')\n    if m_at == 'H':\n        new_matches.add(m)\n\n# Affected = Symmetric Difference\n# (Those who paid and stop) U (Those who didn't pay and start)\naffected_merchants = current_matches.symmetric_difference(new_matches)\n\n# Output\nif len(affected_merchants) > 0:\n    print(\", \".join(sorted(list(affected_merchants))))\nelse:\n    print(\"None\")",
+      "execution_output": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.15000000000000002,
+      "plan_snapshot": [
+        "Load the `fees.json` file and retrieve the fee rule with `ID` equal to 64 to understand its current criteria (such as card scheme, merchant category codes, and existing account type restrictions).",
+        "Load `merchant_data.json` to create a mapping of merchants to their `account_type`, then load `payments.csv` and filter for transactions matching Fee 64's criteria (`card_scheme`='SwiftCharge', `is_credit`=True, `aci`='D'), and finally identify the unique merchants from this filtered set who do not have `account_type` equal to 'H'."
+      ]
+    },
+    {
+      "round": 3,
+      "plan_steps": 2,
+      "code_length": 3971,
+      "code": "import pandas as pd\nimport json\n\n# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\n# Load Data\nfees_path = '/output/chunk2/data/context/fees.json'\nmerchant_path = '/output/chunk2/data/context/merchant_data.json'\npayments_path = '/output/chunk2/data/context/payments.csv'\n\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\n\nwith open(merchant_path, 'r') as f:\n    merchant_data = json.load(f)\n\ndf = pd.read_csv(payments_path)\n\n# 1. Get Rule 64\nrule_64 = next((f for f in fees_data if f['ID'] == 64), None)\nif not rule_64:\n    print(\"Rule 64 not found.\")\n    exit()\n\n# 2. Create Merchant Lookup (Name -> AccountType)\n# We need to look up the account type for every merchant found in the transactions\nmerchant_lookup = {\n    m['merchant']: m.get('account_type')\n    for m in merchant_data\n}\n\n# 3. Filter Transactions based on Rule 64's TRANSACTION-LEVEL criteria\n# These are the criteria that must be met regardless of the merchant's account type.\n# Criteria: card_scheme, is_credit, aci\n\n# Filter by Card Scheme\nif rule_64.get('card_scheme'):\n    df = df[df['card_scheme'] == rule_64['card_scheme']]\n\n# Filter by Is Credit (Handle boolean/null)\nif rule_64.get('is_credit') is not None:\n    # Ensure strict boolean comparison\n    target_credit = rule_64['is_credit']\n    df = df[df['is_credit'] == target_credit]\n\n# Filter by ACI (Rule has list, CSV has single value)\nif is_not_empty(rule_64.get('aci')):\n    allowed_acis = set(rule_64['aci'])\n    df = df[df['aci'].isin(allowed_acis)]\n\n# Filter by MCC (Rule has list, Merchant has single value)\n# Note: MCC is a merchant property, but often checked alongside transaction filters\nif is_not_empty(rule_64.get('merchant_category_code')):\n    allowed_mccs = set(rule_64['merchant_category_code'])\n    # Get merchants from merchant_data that match these MCCs\n    valid_mcc_merchants = {\n        m['merchant'] for m in merchant_data \n        if m.get('merchant_category_code') in allowed_mccs\n    }\n    df = df[df['merchant'].isin(valid_mcc_merchants)]\n\n# 4. Identify Affected Merchants\n# Get list of merchants who actually processed transactions matching the criteria\nactive_merchants = df['merchant'].unique()\n\naffected_merchants = []\n\nfor merchant in active_merchants:\n    # Get merchant's account type\n    acct_type = merchant_lookup.get(merchant)\n    \n    # --- Logic for CURRENT Rule ---\n    # If rule['account_type'] is empty/null, it applies to ALL.\n    # If it has values, merchant must match one.\n    current_rule_ats = rule_64.get('account_type', [])\n    if not is_not_empty(current_rule_ats):\n        matches_current = True\n    else:\n        matches_current = acct_type in current_rule_ats\n        \n    # --- Logic for NEW Rule ---\n    # Rule is ONLY applied to account type 'H'\n    matches_new = (acct_type == 'H')\n    \n    # --- Determine if Affected ---\n    # Affected if status changes (True->False OR False->True)\n    if matches_current != matches_new:\n        affected_merchants.append(merchant)\n\n# 5. Output Result\nif affected_merchants:\n    print(\", \".join(sorted(affected_merchants)))\nelse:\n    print(\"None\")",
+      "execution_output": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "sufficient",
+      "temperature": 0.25,
+      "plan_snapshot": [
+        "Load the `fees.json` file and retrieve the fee rule with `ID` equal to 64 to understand its current criteria (such as card scheme, merchant category codes, and existing account type restrictions).",
+        "Load `fees.json`, `merchant_data.json`, and `payments.csv`. Extract the rule for Fee ID 64. Identify merchants with transactions in 2023 that match the fee's criteria (card scheme, MCC, ACI, etc.), ignoring the account type initially. For these matching merchants, compare their eligibility under the original `account_type` constraint versus the new constraint (`account_type` = 'H') to determine which merchants would either start or stop paying the fee."
+      ]
+    }
+  ],
+  "plan_steps": [
+    {
+      "id": "step_0",
+      "description": "Load the `fees.json` file and retrieve the fee rule with `ID` equal to 64 to understand its current criteria (such as card scheme, merchant category codes, and existing account type restrictions).",
+      "status": "completed",
+      "index": 0
+    },
+    {
+      "id": "step_1",
+      "description": "Load `fees.json`, `merchant_data.json`, and `payments.csv`. Extract the rule for Fee ID 64. Identify merchants with transactions in 2023 that match the fee's criteria (card scheme, MCC, ACI, etc.), ignoring the account type initially. For these matching merchants, compare their eligibility under the original `account_type` constraint versus the new constraint (`account_type` = 'H') to determine which merchants would either start or stop paying the fee.",
+      "status": "completed",
+      "index": 1
+    }
+  ],
+  "rounds": 3,
+  "file_analyses": [
+    "payments.csv",
+    "fees.json",
+    "merchant_data.json",
+    "manual.md",
+    "payments-readme.md",
+    "acquirer_countries.csv",
+    "merchant_category_codes.csv"
+  ],
+  "verifier_calls": 3,
+  "router_decisions": [
+    "add_step",
+    "fix_2"
+  ],
+  "execution_time": 319.3650631904602,
+  "success": true,
+  "generation_config": {
+    "temperature": 0.1,
+    "max_tokens": 100000,
+    "top_p": 0.8,
+    "top_k": 40,
+    "provider": "gemini",
+    "model_name": "gemini-2.5-pro",
+    "critic_threshold": 0.85
+  },
+  "phase_timings": {
+    "analysis_time": 1.288442850112915,
+    "exploration_time": 22.727299451828003,
+    "planning_time": 27.631969451904297,
+    "iteration_time": 267.715558052063,
+    "finalization_time": 0.0005869865417480469
+  },
+  "method": "superinference_star_unified",
+  "superinf_aux_mode": true,
+  "information_theory": {
+    "initial_belief": 0.5,
+    "final_belief": 0.8005,
+    "belief_trajectory": [
+      0.5,
+      0.3,
+      0.685,
+      0.8005
+    ],
+    "initial_entropy_bits": 1.0,
+    "final_entropy_bits": 0.7209269670764653,
+    "entropy_reduction_bits": 0.2790730329235347,
+    "eig_trajectory": [
+      0.3568015214420218,
+      0.3568015214420218,
+      0.178468182634421,
+      0.41953789475090875
+    ],
+    "total_eig_bits": 1.3116091202693734,
+    "avg_eig_per_event_bits": 0.32790228006734334,
+    "events_fired": 4
+  },
+  "stopping_analysis": {
+    "stopped_due_to": "plan_sufficient_agreement",
+    "final_eig": 0.41953789475090875,
+    "final_belief": 0.8005,
+    "tau_threshold": 0.01,
+    "kappa_threshold": 0.9
+  },
+  "critic_metrics": {
+    "alpha_estimate": null,
+    "beta_estimate": null,
+    "approval_rate": 1.0,
+    "avg_score": 0.8333333333333334
+  },
+  "temperature_adaptation": {
+    "base_temperature": 0.1,
+    "final_temperature": 0.1,
+    "temperature_trajectory": [
+      0.1,
+      0.15000000000000002,
+      0.25,
+      0.1
+    ],
+    "total_increases": 2,
+    "max_temperature_reached": 0.25
+  },
+  "exploration_tools": {
+    "ground_truth_values": {
+      "payments_csv_verify_column_names_in_transaction_data_to_prepare_for_checking_which_merchants_actually_process_transactions_matching_fee_64's_criteria": "psp_reference,merchant,card_scheme,year,hour_of_day,minute_of_hour,day_of_year,is_credit,eur_amount,ip_country,issuing_country,device_type,ip_address,email_address,card_number,shopper_interaction,card_bin,has_fraudulent_dispute,is_refused_by_adyen,aci,acquirer_country"
+    },
+    "tools_ran": [
+      "payments_csv_verify_column_names_in_transaction_data_to_prepare_for_checking_which_merchants_actually_process_transactions_matching_fee_64's_criteria"
+    ],
+    "used_exploration": true
+  },
+  "token_usage": {
+    "total_prompt_tokens": 80116,
+    "total_output_tokens": 3624,
+    "total_tokens": 102501,
+    "by_agent": {
+      "coder_initial": {
+        "calls": 1,
+        "prompt_tokens": 13453,
+        "output_tokens": 149,
+        "total_tokens": 14092
+      },
+      "verifier": {
+        "calls": 3,
+        "prompt_tokens": 6057,
+        "output_tokens": 255,
+        "total_tokens": 8641
+      },
+      "router": {
+        "calls": 2,
+        "prompt_tokens": 1963,
+        "output_tokens": 130,
+        "total_tokens": 5962
+      },
+      "planner": {
+        "calls": 2,
+        "prompt_tokens": 22190,
+        "output_tokens": 193,
+        "total_tokens": 25629
+      },
+      "coder_incremental": {
+        "calls": 2,
+        "prompt_tokens": 34258,
+        "output_tokens": 2807,
+        "total_tokens": 45048
+      },
+      "finalizer": {
+        "calls": 1,
+        "prompt_tokens": 2195,
+        "output_tokens": 90,
+        "total_tokens": 3129
+      }
+    }
+  }
+}

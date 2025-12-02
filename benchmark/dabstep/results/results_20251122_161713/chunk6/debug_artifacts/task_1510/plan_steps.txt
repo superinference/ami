@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe to access the fee structures (fixed amounts and variable rates) for each card scheme.
+Step 2: Calculate the fee for a 100 EUR transaction for each rule in the `fees` dataframe using the formula `fee = fixed_amount + (rate * 100 / 10000)`, then group by `card_scheme` to calculate the average fee for each scheme and identify the most expensive one.

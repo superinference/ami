@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Initial shape of fees dataframe: (1000, 12)
+Shape after exploding merchant_category_code: (6969, 12)
+
+First 5 rows of the exploded dataframe:
+   ID merchant_category_code  fixed_amount  rate
+0   1                   8000           0.1    19
+1   1                   8011           0.1    19
+2   1                   8021           0.1    19
+3   1                   8031           0.1    19
+4   1                   8041           0.1    19
+
+Sample of wildcard ('ALL') rules:
+     ID  fixed_amount  rate
+119  16          0.06    81
+120  17          0.09    60
+206  29          0.04    99
+253  36          0.08    61
+363  51          0.10    59

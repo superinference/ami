@@ -1,0 +1,1 @@
+Step 1: Load "fees.json" into a dataframe, then calculate and print the average 'rate' grouped by 'is_credit' (ignoring nulls) and separately calculate and print the average 'rate' grouped by 'intracountry' (ignoring nulls) to determine which boolean factor leads to a lower rate when False.

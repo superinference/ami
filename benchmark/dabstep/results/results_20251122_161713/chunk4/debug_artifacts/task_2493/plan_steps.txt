@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the dataframe to include only transactions where the `merchant` is "Golfclub_Baron_Friso" and the `year` is 2023.
+Step 2: Output the calculated delta of -511.85 as the final answer.

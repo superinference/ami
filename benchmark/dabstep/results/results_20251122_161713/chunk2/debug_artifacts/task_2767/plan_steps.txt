@@ -1,0 +1,2 @@
+Step 1: Filter the `payments.csv` dataset to retrieve all transactions where the `merchant` is 'Belles_cookbook_store', the `year` is 2023, and `has_fraudulent_dispute` is True.
+Step 2: Load `merchant_data.json` to retrieve the account type and merchant category code for 'Belles_cookbook_store', and calculate the merchant's monthly transaction volume and fraud rate from `payments.csv` to determine the applicable fee tiers.

@@ -1,0 +1,19 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: MCC=7993, Account Type=F
+Monthly Volume: €219,564.75
+Monthly Fraud Rate: 8.4067%
+Fee Rule 595: {'ID': 595, 'card_scheme': 'TransactPlus', 'account_type': [], 'capture_delay': None, 'monthly_fraud_level': None, 'monthly_volume': None, 'merchant_category_code': [], 'is_credit': False, 'aci': ['A'], 'fixed_amount': 0.08, 'rate': 62, 'intracountry': None}
+
+Matching Transactions: 4
+Total Matching Volume: €225.71
+Old Rate: 62
+New Rate: 1
+Delta Calculation: (1 - 62) * 225.70999999999998 / 10000
+
+Final Delta: -1.37683100000000

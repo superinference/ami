@@ -1,0 +1,25 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original row count: 138236
+Filtered row count (Crossfit_Hanna, Nov 2023): 4571
+
+First 5 rows of filtered data:
+     psp_reference        merchant  ... aci  acquirer_country
+15     10778285308  Crossfit_Hanna  ...   F                NL
+42     12061579674  Crossfit_Hanna  ...   F                NL
+86     24968211254  Crossfit_Hanna  ...   F                NL
+202    14761476585  Crossfit_Hanna  ...   D                NL
+224    44526047819  Crossfit_Hanna  ...   D                NL
+
+[5 rows x 21 columns]
+
+Unique values in filtered data for fee matching:
+Card Schemes: ['GlobalCard' 'NexPay' 'SwiftCharge' 'TransactPlus']
+Is Credit: [False  True]
+ACI: ['F' 'D' 'G' 'C' 'A' 'B']
+Issuing Countries: ['IT' 'BE' 'LU' 'SE' 'ES' 'NL' 'FR' 'GR']
+Acquirer Countries: ['NL' 'GB']

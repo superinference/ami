@@ -1,0 +1,20 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows loaded: 138236
+Rows after filtering: 77
+
+Sample of filtered data:
+       psp_reference              merchant  ... aci  acquirer_country
+1869     49073469955  Golfclub_Baron_Friso  ...   D                IT
+7462     61869089671  Golfclub_Baron_Friso  ...   G                IT
+9063     68631390777  Golfclub_Baron_Friso  ...   D                IT
+14424    53860603735  Golfclub_Baron_Friso  ...   D                IT
+18931    42528292917  Golfclub_Baron_Friso  ...   D                IT
+
+[5 rows x 21 columns]
+
+Filtered data saved to 'filtered_payments_step1.csv'

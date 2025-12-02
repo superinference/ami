@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (73, 21)
+First 5 rows of filtered data:
+      psp_reference               merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+123     63627896845  Belles_cookbook_store        NexPay  2023           23              17          189       True       31.86         SE              BE     Windows                     NaN  YgdXrhl85b5o39vcpEsghw  fM2F835Z8lSVmyxYU3OWOg           Ecommerce      4920                    True                False   G               US
+227     22754232210  Belles_cookbook_store  TransactPlus  2023            4              42          189       True       22.82         BE              BE         iOS  K0JgzNzS77u36xCHrNxocQ  LpRZBs-xaXxXznAlu3l3Cw  fJJlHcp3QnV5kmU50xkCdw           Ecommerce      4017                    True                False   G               US
+2325    47382066264  Belles_cookbook_store        NexPay  2023           13               2          191       True      504.76         BE              BE         iOS                     NaN  XY5k-hJmdNHXKEWQsaIsIQ  SqPzOoxYmgcXEmwUs3J7Lg           Ecommerce      4802                    True                False   G               US
+3767    36689602297  Belles_cookbook_store   SwiftCharge  2023           14              48          193       True       28.09         IT              IT     Android  DvLLZ6lC3NI2zllG0A1bsw  A_I5R5TcsgakVLzk7fYv1w  krNsY8UlZeO4Gv3_w074Kg           Ecommerce      4920                    True                False   G               US
+4454    69771733625  Belles_cookbook_store    GlobalCard  2023           12              16          206       True       46.70         IT              ES     Android  EFCpCCNuS9lJ6QIZalG-3A  Z_LDtvTBhQm1aAyEq56Aqg  ykQd8z3XLCbTktomB946mw           Ecommerce      4236                    True                False   G               US
+
+Day of year range in filtered data: 182 - 212

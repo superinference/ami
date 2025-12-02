@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a dataframe and calculate the value counts for the `is_credit` column to determine the number of credit (True) and debit (False) transactions.

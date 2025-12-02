@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtering for merchant 'Golfclub_Baron_Friso' in October 2023 (Days 274-304)
+Number of transactions found: 2418
+
+First 5 transactions:
+     psp_reference              merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+16     39644392406  Golfclub_Baron_Friso    GlobalCard  2023           11              25          297       True       94.48         NL              NL     Windows  ecRJFiZeKTQCnklgt7ldow  sWnZoKQeYuLumRHVaKAwZg  hH6dWt0enDqUFmTDu0wveA           Ecommerce      4571                   False                False   D               IT
+114    42312064608  Golfclub_Baron_Friso        NexPay  2023            6              48          298      False      118.64         BE              BE       Linux  EKFmK6Fzec9_9-FyXXc1_w  UfJ5naKrutbWmRVBHCpgKg  ITYEskY_4epxSA39iLSvZg           Ecommerce      4556                   False                False   F               IT
+129    58266142857  Golfclub_Baron_Friso    GlobalCard  2023           14               2          278       True       45.18         BE              SE       Other  bfPVro6tRpAftSR69sNIiA  2e4Pb3qRHanLIKwsWIkjGQ  UYtj3E40mNjgZMERm3gCIA           Ecommerce      4556                   False                False   D               IT
+394    26022198810  Golfclub_Baron_Friso  TransactPlus  2023           18              39          283       True       72.83         IT              IT       Other  FemYfGWxqQgNCOPoH21b8A  zKejqsjrYdJw79_DnqxUOQ  L3GVJeWX3hr6qX4I-r1OxA           Ecommerce      4645                   False                False   G               IT
+437    54497574545  Golfclub_Baron_Friso    GlobalCard  2023           23               0          295       True       64.46         LU              LU       Linux  XHA4ERCHdmgQxxltc5EVnQ  GlLabit2R7dfYLFxUpb6Ow  Cten_0YG8xIJHf4ltwmg5g           Ecommerce      4622                   False                 True   G               IT
+
+Unique values in key columns for fee matching:
+Card Schemes: ['GlobalCard' 'NexPay' 'TransactPlus' 'SwiftCharge']
+ACI: ['D' 'F' 'G' 'A' 'B' 'C']
+Is Credit: [ True False]

@@ -1,0 +1,2 @@
+Step 1: Load the 'fees.json' file into a dataframe.
+Step 2: Filter the `df_fees` DataFrame to find rows where `account_type` contains 'S' (or is empty/null) and `aci` contains 'G' (or is empty/null), then extract and print the resulting `ID`s.

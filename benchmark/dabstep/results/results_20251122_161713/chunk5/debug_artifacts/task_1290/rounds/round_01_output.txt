@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows loaded: 138236
+Filtered rows (NexPay + Credit): 30463
+    psp_reference               merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+3     68442235288         Crossfit_Hanna      NexPay  2023            3               5           77       True      238.42         LU              LU         iOS  3qbuXGoFldniCC6r1X8K0Q  5VW_2O6ku_0p_fLLwuC1vw  wG2VTvj2TfVG-NRDzifMHw           Ecommerce      4017                   False                False   D               NL
+6     85922945139   Golfclub_Baron_Friso      NexPay  2023            6              17          265       True       57.35         NL              NL       MacOS  r1qwSy2fOfqVm8GIcRwRfg  9cmOlwD4F0ymL7nRQt_3Xg  zux-2rRgzotNdbxKnLpLpw           Ecommerce      4556                   False                False   D               IT
+7     50996494424   Golfclub_Baron_Friso      NexPay  2023           20              15           54       True       34.71         SE              SE       MacOS  2nItEMNElHH14wI4yBnByg  53Dph-6X7CqoI_f7NlJa6g  0P4ieP8lxYpSqhABWmwmQg           Ecommerce      4526                   False                False   D               IT
+9     12974611380   Golfclub_Baron_Friso      NexPay  2023           21               0          242       True       13.05         SE              SE     Android  QGKOQYa1ZgWJmvLZkJtheg  RhrGjnIy09oAfASREHh0Rw  kEOtBdNv42532DCUYV4fBA           Ecommerce      4916                   False                False   F               IT
+27    82045987576  Belles_cookbook_store      NexPay  2023           10              28          363       True        9.08         BE              BE       Linux  0vzHOzwAptVqdh8UIiPKSA  jV7Cyzt8bLNrxWUA0jrlYA  Zs5F4mtNNWQXCoymTWE8GA           Ecommerce      4556                   False                False   F               US

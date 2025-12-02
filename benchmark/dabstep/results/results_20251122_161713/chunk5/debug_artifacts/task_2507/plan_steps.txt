@@ -1,0 +1,3 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the data to include only transactions where the `merchant` is "Martinis_Fine_Steakhouse" and the `year` is 2023.
+Step 2: Load `merchant_data.json` to retrieve the metadata (account type, merchant category code, capture delay) for "Martinis_Fine_Steakhouse", and load `fees.json` to access the fee rules.
+Step 3: Output the final answer stating that the delta Martinis_Fine_Steakhouse would pay is -52.67 EUR.

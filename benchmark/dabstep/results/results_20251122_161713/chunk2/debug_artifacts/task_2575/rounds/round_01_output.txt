@@ -1,0 +1,34 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee ID: 787
+Current Criteria:
+  - card_scheme: NexPay
+  - merchant_category_code: []
+  - aci: ['C', 'A']
+  - is_credit: False
+  - account_type: ['D']
+
+Full Fee Object:
+{
+  "ID": 787,
+  "card_scheme": "NexPay",
+  "account_type": [
+    "D"
+  ],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": false,
+  "aci": [
+    "C",
+    "A"
+  ],
+  "fixed_amount": 0.11,
+  "rate": 38,
+  "intracountry": null
+}

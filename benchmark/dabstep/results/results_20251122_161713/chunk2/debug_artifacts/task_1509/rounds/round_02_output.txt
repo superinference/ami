@@ -1,0 +1,16 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average Scenario: Merchant=Crossfit_Hanna, Credit=True, ACI=D, Intra=False
+Merchant Stats: Monthly Vol=423,053.07, Fraud Rate=8.9079%
+No matching rules found for NexPay
+
+--- Fee Calculation Results (100 EUR) ---
+GlobalCard: 0.8500 EUR
+SwiftCharge: 0.5900 EUR
+TransactPlus: 0.4900 EUR
+
+Cheapest Scheme: TransactPlus

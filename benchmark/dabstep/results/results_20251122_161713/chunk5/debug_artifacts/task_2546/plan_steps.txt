@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant "Martinis_Fine_Steakhouse" in the year 2023.
+Step 2: Load `merchant_data.json` to get the original MCC, account type, and capture delay for "Martinis_Fine_Steakhouse", and load `fees.json`. Then, using the filtered payments data, calculate the monthly total volume and monthly fraud rate (fraudulent volume / total volume) for each month to prepare for fee calculation.

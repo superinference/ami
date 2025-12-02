@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (19188, 21)
+
+First 5 rows of filtered data:
+          merchant card_scheme  year  day_of_year  eur_amount aci
+15  Crossfit_Hanna  GlobalCard  2023          325       80.39   F
+17  Crossfit_Hanna  GlobalCard  2023          257       97.90   G
+28  Crossfit_Hanna  GlobalCard  2023          288       61.83   B
+31  Crossfit_Hanna  GlobalCard  2023          296       43.96   F
+35  Crossfit_Hanna  GlobalCard  2023          189     1053.60   D
+
+Unique ACI values in filtered data:
+['F' 'G' 'B' 'D' 'C' 'A']
+
+Day of year range:
+Min: 1, Max: 365

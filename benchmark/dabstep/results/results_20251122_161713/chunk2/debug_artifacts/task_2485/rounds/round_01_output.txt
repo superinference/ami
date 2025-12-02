@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered payments rows: 55139
+Total fee rules loaded: 1000
+Merchant data entries loaded: 30
+Acquirer countries loaded: 8
+Fee rule ID=276 found: {'ID': 276, 'card_scheme': 'GlobalCard', 'account_type': ['R', 'D', 'H', 'F', 'S'], 'capture_delay': None, 'monthly_fraud_level': None, 'monthly_volume': None, 'merchant_category_code': [], 'is_credit': True, 'aci': ['B'], 'fixed_amount': 0.04, 'rate': 75, 'intracountry': None}
+
+Sample filtered payment:
+[{'psp_reference': 20034594130, 'merchant': 'Crossfit_Hanna', 'card_scheme': 'NexPay', 'year': 2023, 'hour_of_day': 16, 'minute_of_hour': 21, 'day_of_year': 12, 'is_credit': False, 'eur_amount': 151.74, 'ip_country': 'SE', 'issuing_country': 'SE', 'device_type': 'Windows', 'ip_address': 'pKPYzJqqwB8TdpY0jiAeQw', 'email_address': '0AKXyaTjW7H4m1hOWmOKBQ', 'card_number': 'uRofX46FuLUrSOTz8AW5UQ', 'shopper_interaction': 'Ecommerce', 'card_bin': 4802, 'has_fraudulent_dispute': False, 'is_refused_by_adyen': False, 'aci': 'F', 'acquirer_country': 'NL'}]

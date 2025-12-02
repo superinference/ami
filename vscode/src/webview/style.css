@@ -1,0 +1,17 @@
+@import './chat/style.css';
+
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
+}
+
+#root {
+    width: 100%;
+    height: 100%;
+}

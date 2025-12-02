@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a dataframe and calculate the frequency of each unique value in the `card_scheme` column using `.value_counts()` to identify the one with the highest count.

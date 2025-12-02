@@ -1,0 +1,77 @@
+# Helper functions for robust data processing
+def coerce_to_float(value):
+    """Convert string with %, $, commas to float. Handles common formats."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        v = value.strip().replace(',', '').replace('€', '').replace('$', '')
+        v = v.lstrip('><≤≥')  # Remove comparison operators
+        if '%' in v:
+            return float(v.replace('%', '')) / 100
+        # Range handling (e.g., "50-60") - return mean
+        if '-' in v and len(v.split('-')) == 2:
+            try:
+                parts = v.split('-')
+                return (float(parts[0]) + float(parts[1])) / 2
+            except:
+                pass
+        return float(v)
+    return float(value)
+
+def safe_get(df, column, default=None):
+    """Safely get column from DataFrame, return default if not exists."""
+    if isinstance(df, dict):
+        return df.get(column, default)
+    elif hasattr(df, 'columns') and column in df.columns:
+        return df[column]
+    return default
+
+def is_not_empty(array):
+    """Check if array/list is not empty. Handles numpy arrays safely."""
+    if array is None:
+        return False
+    if hasattr(array, 'size'):  # numpy array
+        return array.size > 0
+    try:
+        return len(array) > 0
+    except TypeError:
+        return False
+
+def safe_index(array, idx, default=None):
+    """Safely get array element at index, return default if out of bounds."""
+    try:
+        if 0 <= idx < len(array):
+            return array[idx]
+        return default
+    except (IndexError, TypeError, AttributeError):
+        return default
+
+
+import pandas as pd
+
+# Load the payments data
+df = pd.read_csv('/output/chunk1/data/context/payments.csv')
+
+# Calculate Mean and Standard Deviation for eur_amount
+mean_amount = df['eur_amount'].mean()
+std_amount = df['eur_amount'].std()
+
+# Calculate Z-Score
+# Z = (X - Mean) / Std
+df['z_score'] = (df['eur_amount'] - mean_amount) / std_amount
+
+# Identify outliers (Z-Score > 3)
+outliers = df[df['z_score'] > 3]
+
+# Calculate the number of fraudulent transactions among outliers
+fraudulent_outliers_count = outliers['has_fraudulent_dispute'].sum()
+total_outliers_count = len(outliers)
+
+# Calculate the percentage
+if total_outliers_count > 0:
+    fraud_percentage = (fraudulent_outliers_count / total_outliers_count) * 100
+else:
+    fraud_percentage = 0.0
+
+# Print the result formatted as a percentage
+print(f"{fraud_percentage:.2f}%")

@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original rows: 138236
+Filtered rows for Golfclub_Baron_Friso in Jan 2023: 2345
+     psp_reference              merchant  ... aci  acquirer_country
+21     89410650089  Golfclub_Baron_Friso  ...   D                IT
+96     11634048489  Golfclub_Baron_Friso  ...   F                IT
+160    81708557378  Golfclub_Baron_Friso  ...   D                IT
+349    79109939039  Golfclub_Baron_Friso  ...   D                IT
+467    24583464592  Golfclub_Baron_Friso  ...   G                IT
+
+[5 rows x 21 columns]

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame to access the transaction data.
+Step 2: Filter the loaded data for transactions where the merchant is 'Rafa_AI', the card scheme is 'GlobalCard', and the day of year is greater than or equal to 60 (corresponding to March 1st onwards in 2023), then group the filtered data by 'aci' and calculate the mean of the 'eur_amount' column.

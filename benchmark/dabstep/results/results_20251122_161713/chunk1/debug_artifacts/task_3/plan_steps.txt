@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame and check for missing values in the `ip_address` column using `.isnull().sum()`.

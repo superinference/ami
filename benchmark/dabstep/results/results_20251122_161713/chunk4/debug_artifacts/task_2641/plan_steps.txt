@@ -1,0 +1,8 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Golfclub_Baron_Friso' during the month of July (specifically, where `day_of_year` is between 182 and 212), while also loading `fees.json` and `merchant_data.json` to access the necessary fee rules and merchant attributes.
+Step 2: To answer the question "to which card scheme should the merchant Golfclub_Baron_Friso steer traffic in order to pay the maximum fees?", we need to determine which card scheme is the most expensive for this merchant under the conditions of July. This requires calculating the applicable fees for the merchant's transactions in July based on the fee rules.
+
+Here is the next step plan:
+
+1.  **Load and Filter Data**: Load `payments.csv`, `merchant_data.json`, and `fees.json`. Filter `payments.csv` for `merchant == 'Golfclub_Baron_Friso'` and `day_of_year` between 182 and 212 (July).
+2.  **Calculate Monthly Metrics**: Calculate the total `eur_amount` (monthly volume) and the fraud rate (volume of transactions with `has_fraudulent_dispute == True` / total volume) for this merchant in July. Convert these into the format used in `fees.json` (e.g., "100k-1m", ">8.3%").
+3.  **Enrich Transaction Data**: Merge the filtered payments with `merchant_data.json` to add `merchant_category_code`, `account_type`, and `capture_delay`. Determine `intracountry` status for each transaction (

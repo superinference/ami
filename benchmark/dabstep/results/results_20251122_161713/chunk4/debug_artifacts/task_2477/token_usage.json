@@ -1,0 +1,43 @@
+{
+  "total_prompt_tokens": 94272,
+  "total_output_tokens": 5943,
+  "total_tokens": 122828,
+  "by_agent": {
+    "coder_initial": {
+      "calls": 1,
+      "prompt_tokens": 15734,
+      "output_tokens": 162,
+      "total_tokens": 16556
+    },
+    "verifier": {
+      "calls": 3,
+      "prompt_tokens": 8336,
+      "output_tokens": 252,
+      "total_tokens": 11679
+    },
+    "router": {
+      "calls": 2,
+      "prompt_tokens": 1987,
+      "output_tokens": 207,
+      "total_tokens": 6938
+    },
+    "planner": {
+      "calls": 2,
+      "prompt_tokens": 25938,
+      "output_tokens": 117,
+      "total_tokens": 29610
+    },
+    "coder_incremental": {
+      "calls": 2,
+      "prompt_tokens": 38756,
+      "output_tokens": 5122,
+      "total_tokens": 53366
+    },
+    "finalizer": {
+      "calls": 1,
+      "prompt_tokens": 3521,
+      "output_tokens": 83,
+      "total_tokens": 4679
+    }
+  }
+}

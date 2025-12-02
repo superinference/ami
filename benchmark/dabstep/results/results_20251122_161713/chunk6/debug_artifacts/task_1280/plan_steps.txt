@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where `card_scheme` is 'TransactPlus' and `is_credit` is True.
+Step 2: Load `merchant_data.json` and `fees.json`, then reload `payments.csv` to calculate monthly volume and fraud metrics per merchant. Merge these metrics and merchant metadata into the filtered TransactPlus dataset, and add an `intracountry` column.

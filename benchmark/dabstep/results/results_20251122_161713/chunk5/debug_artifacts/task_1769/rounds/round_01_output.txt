@@ -1,0 +1,20 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions found for Crossfit_Hanna in July 2023: 4582
+
+First 5 rows of filtered data:
+     psp_reference        merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+35     71840152056  Crossfit_Hanna  GlobalCard  2023           23              15          189       True     1053.60         LU              NL     Windows  CFFHhvbqS8-UAbRwfuck3w  Mc_3GoBbK1ZHET6oH6yIBg  gUq6W4Zz5YNP0uo8VWv4-g           Ecommerce      4556                   False                False   D               NL
+57     83509523662  Crossfit_Hanna      NexPay  2023           20              26          193       True       31.40         IT              IT     Windows                     NaN  gPBXeko-CwBjS-KTN2LkOw  CCcUyt3yGqrF3kZv6MnoPw           Ecommerce      4891                   False                False   D               NL
+127    65925998779  Crossfit_Hanna      NexPay  2023           20               9          207      False      244.37         NL              NL     Windows  A-Bsd4m3pLNlDvJc-t5fJg  nfXiZaQnrtazNTavV5EaMA  HVBkAyGiAKo20hfz0C4ZPg           Ecommerce      4622                   False                False   F               NL
+139    76983250835  Crossfit_Hanna  GlobalCard  2023           14              30          210       True       30.62         IT              IT     Windows  GB71RPvrO6BXEUeDsC4VTw  ZDl3DhJa51sKm1mwxlT5nw  jT_fVWpou6_94mfo_WbNvA           Ecommerce      4645                   False                False   D               NL
+144    40910806738  Crossfit_Hanna  GlobalCard  2023           14              52          197      False       49.30         SE              SE       Other  JCbGLrPH9ubK31W5CStMrg  f3J0vrbs4nNhA-kTqn5hqg  IkI2tzb-DUeyNTg_7YluTw           Ecommerce      4622                   False                False   F               NL
+
+Unique values in key columns for fee matching:
+Card Schemes: ['GlobalCard' 'NexPay' 'TransactPlus' 'SwiftCharge']
+Is Credit: [ True False]
+ACI: ['D' 'F' 'G' 'C' 'A' 'B']

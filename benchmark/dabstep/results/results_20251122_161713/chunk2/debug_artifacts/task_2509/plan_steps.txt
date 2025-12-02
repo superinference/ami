@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file to retrieve the details (matching criteria and original rate) for the fee rule with ID=280.
+Step 2: Load the `payments.csv` file, filter for transactions belonging to 'Martinis_Fine_Steakhouse' in 2023 that match the Fee ID 280 criteria (Card Scheme='GlobalCard', Is Credit=True, ACI in ['C', 'A'], and Issuing Country not equal to Acquirer Country), sum their `eur_amount`, and calculate the fee delta using the formula `(1 - 26) * total_amount / 10000`.

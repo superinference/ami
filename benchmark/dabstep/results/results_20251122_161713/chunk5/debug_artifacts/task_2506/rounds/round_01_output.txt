@@ -1,0 +1,28 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded data files.
+Payments shape: (138236, 21)
+Fees shape: (1000, 12)
+Merchant Data shape: (30, 5)
+
+Payments Sample:
+   psp_reference               merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+0    20034594130         Crossfit_Hanna      NexPay  2023           16              21           12      False      151.74         SE              SE     Windows  pKPYzJqqwB8TdpY0jiAeQw  0AKXyaTjW7H4m1hOWmOKBQ  uRofX46FuLUrSOTz8AW5UQ           Ecommerce      4802                   False                False   F               NL
+1    36926127356         Crossfit_Hanna      NexPay  2023           23              58           75      False       45.70         NL              NL       Linux  uzUknOkIqExYsWv4X14GUg  _Gm8at1k2ojYAM_wSEptNw  6vqQ89zfCeFk6s4VOoWZFQ           Ecommerce      4920                   False                False   F               NL
+2    31114608278  Belles_cookbook_store  GlobalCard  2023            4              30           96      False       14.11         NL              NL       MacOS  3VO1v_RndDg6jzEiPjfvoQ                     NaN  EmxSN8-GXQw3RG_2v7xKxQ           Ecommerce      4571                   False                False   F               US
+
+Fees Sample:
+   ID   card_scheme account_type capture_delay monthly_fraud_level monthly_volume                            merchant_category_code  is_credit     aci  fixed_amount  rate  intracountry
+0   1  TransactPlus           []          None                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]        0.0  [C, B]          0.10    19           NaN
+1   2    GlobalCard           []          None               >8.3%           None  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]        NaN     [B]          0.13    86           0.0
+2   3  TransactPlus           []            >5                None           None  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]        1.0  [C, A]          0.09    16           0.0
+
+Merchant Data Sample:
+                   merchant capture_delay                                           acquirer  merchant_category_code account_type
+0            Crossfit_Hanna        manual  [gringotts, the_savings_and_loan_bank, bank_of...                    7997            F
+1  Martinis_Fine_Steakhouse     immediate       [dagoberts_geldpakhuis, bank_of_springfield]                    5812            H
+2     Belles_cookbook_store             1                                  [lehman_brothers]                    5942            R

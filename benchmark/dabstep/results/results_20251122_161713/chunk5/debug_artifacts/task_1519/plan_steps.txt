@@ -1,0 +1,4 @@
+Step 1: To determine the cheapest card scheme for the average scenario, I need to first define what the "average scenario" is by identifying the most common transaction characteristics.
+
+**Step 1:** Calculate the mode (most frequent value) for the `is_credit` and `aci` columns in `payments.csv`, and determine the most common `intracountry` status by comparing `issuing_country` and `acquirer_country` for all transactions.
+Step 2: Load `merchant_data.json` to retrieve the `merchant_category_code`, `account_type`, and `capture_delay` for 'Crossfit_Hanna', and using `payments.csv`, calculate the merchant's average monthly volume (total `eur_amount` / 12) and fraud rate (total fraudulent `eur_amount` / total `eur_amount`) to define the scenario parameters.

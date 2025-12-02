@@ -1,0 +1,1 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame, convert the 'has_fraudulent_dispute' column to an integer format (1 for True, 0 for False), and then calculate the Pearson correlation coefficient between the 'eur_amount' and 'has_fraudulent_dispute' columns.

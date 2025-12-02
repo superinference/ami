@@ -1,0 +1,18 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loaded 1000 fee rules.
+
+Average Fee by Card Scheme (for 5000 EUR transaction):
+card_scheme
+GlobalCard      25.982490
+NexPay          27.776440
+SwiftCharge     27.685370
+TransactPlus    27.454858
+Name: calculated_fee, dtype: float64
+
+Most expensive scheme: NexPay (Avg Fee: 27.7764)
+NexPay

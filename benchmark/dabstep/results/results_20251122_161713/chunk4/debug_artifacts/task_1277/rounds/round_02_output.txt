@@ -1,0 +1,8 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Processing 35061 GlobalCard credit transactions...
+Average fee for 50 EUR GlobalCard credit transaction: 0.4270 EUR

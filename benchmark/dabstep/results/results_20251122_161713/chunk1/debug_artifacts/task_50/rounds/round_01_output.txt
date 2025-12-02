@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Data loaded successfully. Shape: (138236, 21)
+is_credit                 bool
+has_fraudulent_dispute    bool
+dtype: object
+   psp_reference               merchant  ... aci  acquirer_country
+0    20034594130         Crossfit_Hanna  ...   F                NL
+1    36926127356         Crossfit_Hanna  ...   F                NL
+2    31114608278  Belles_cookbook_store  ...   F                US
+3    68442235288         Crossfit_Hanna  ...   D                NL
+4    81404384199         Crossfit_Hanna  ...   F                NL
+
+[5 rows x 21 columns]

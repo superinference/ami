@@ -1,0 +1,1 @@
+Step 1: Load the `manual.md` file and read Section 5 ("Understanding Payment Processing Fees") to identify the stated relationships between factors (such as capture delay, monthly fraud level, and monthly volume) and the cost of fees.

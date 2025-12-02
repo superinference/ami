@@ -1,0 +1,18 @@
+Step 1: Load the `fees.json` file into a dataframe to access the fee rules.
+Step 2: To answer the question about the average fee for account type D and card scheme GlobalCard, I need to identify the relevant fee rules from the `fees.json` dataset. The fee is calculated using the formula `fee = fixed_amount + (rate * transaction_value / 10000)`. I will filter the fee rules to find those applicable to 'GlobalCard' and 'Account Type D', calculate the fee for a transaction value of 1234 EUR for each matching rule, and then compute the average.
+
+My next step is to filter the `fees` DataFrame and calculate the average fee.
+
+```python
+import pandas as pd
+
+# Filter for GlobalCard
+global_card_fees = fees_df[fees_df['card_scheme'] == 'GlobalCard']
+
+# Filter for Account Type D
+# We check if 'D' is in the account_type list. 
+# We assume account_type is a list of strings.
+account_type_d_rules = global_card_fees[global_card_fees['account_type'].apply(lambda x: 'D' in x if isinstance(x, list) else False)]
+
+# Calculate fee for each rule: fixed_amount + (rate * 1234 / 10000)
+# transaction_value = 1234

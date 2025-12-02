@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter it to include only rows where the `merchant` is 'Belles_cookbook_store', the `year` is 2023, and the `day_of_year` is 10.
+Step 2: Load `merchant_data.json` to retrieve the merchant's attributes (MCC, account type, capture delay), calculate the total volume and fraud rate for 'Belles_cookbook_store' for January 2023 using `payments.csv`, and then match the transactions from January 10th against the rules in `fees.json` to identify the applicable Fee IDs.

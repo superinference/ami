@@ -1,0 +1,7 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+EXECUTION ERROR: Could not convert string to number. Tip: Strip %, >, <, commas, currency. Use coerce_to_float('8.3%') or pandas.to_numeric(..., errors='coerce').

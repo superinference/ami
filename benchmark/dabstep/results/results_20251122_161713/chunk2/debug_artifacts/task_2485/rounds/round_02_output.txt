@@ -1,0 +1,11 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Transactions affected: 289
+Total affected volume: 36010.16
+Old Rate: 75
+New Rate: 1
+Calculated Delta: -266.47518399999979

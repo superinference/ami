@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and extract the fee rule with `ID` 65 to determine the specific criteria (such as card scheme, merchant category code, account type, etc.) that define this fee.
+Step 2: Load `payments.csv` and filter for transactions where `card_scheme` is 'SwiftCharge', `is_credit` is False, `aci` is 'B', and `issuing_country` is not equal to `acquirer_country` (corresponding to `intracountry` = 0.0), then extract the unique merchant names from these transactions.

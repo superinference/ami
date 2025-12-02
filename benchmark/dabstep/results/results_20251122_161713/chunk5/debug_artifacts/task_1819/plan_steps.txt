@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv`, `fees.json`, `merchant_data.json`, and `acquirer_countries.csv` files into pandas DataFrames to prepare for filtering transactions and calculating fees.
+Step 2: Filter the `payments` DataFrame for 'Belles_cookbook_store' and the month of September 2023 (day_of_year 244 to 273), then calculate the merchant's total monthly volume and fraud rate (needed for fee rules), retrieve the merchant's static attributes (MCC, account type, capture delay) from `merchant_data`, and add an `intracountry` column to the transactions.

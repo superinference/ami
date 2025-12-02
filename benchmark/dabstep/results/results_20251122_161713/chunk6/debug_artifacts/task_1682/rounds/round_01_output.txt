@@ -1,0 +1,74 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+Filtering for merchant 'Belles_cookbook_store' on day_of_year 12...
+
+Found 27 unique transaction attribute combinations:
+         card_scheme  is_credit  ... acquirer_country intracountry
+302       GlobalCard      False  ...               US        False
+19261     GlobalCard       True  ...               US        False
+70046     GlobalCard       True  ...               US        False
+85705     GlobalCard       True  ...               US        False
+33051     GlobalCard      False  ...               US        False
+61999     GlobalCard       True  ...               US        False
+89957     GlobalCard      False  ...               US        False
+103790    GlobalCard       True  ...               US        False
+10763         NexPay      False  ...               US        False
+875           NexPay       True  ...               US        False
+34289         NexPay       True  ...               US        False
+37128         NexPay       True  ...               US        False
+82373         NexPay       True  ...               US        False
+122048        NexPay       True  ...               US        False
+61326         NexPay      False  ...               US        False
+72884         NexPay      False  ...               US        False
+123272        NexPay      False  ...               US        False
+70040    SwiftCharge       True  ...               US        False
+124571   SwiftCharge       True  ...               US        False
+83585    SwiftCharge      False  ...               US        False
+46007    SwiftCharge       True  ...               US        False
+9211    TransactPlus       True  ...               US        False
+18375   TransactPlus       True  ...               US        False
+79049   TransactPlus      False  ...               US        False
+116329  TransactPlus       True  ...               US        False
+17741   TransactPlus       True  ...               US        False
+54347   TransactPlus       True  ...               US        False
+
+[27 rows x 6 columns]
+
+Loading merchant static attributes...
+Merchant Category Code (MCC): 5942
+Account Type: R
+Acquirers: ['lehman_brothers']
+
+Unique Combinations (List of Dicts):
+{'card_scheme': 'GlobalCard', 'is_credit': False, 'aci': 'D', 'issuing_country': 'FR', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'GlobalCard', 'is_credit': True, 'aci': 'D', 'issuing_country': 'SE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'GlobalCard', 'is_credit': True, 'aci': 'D', 'issuing_country': 'ES', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'GlobalCard', 'is_credit': True, 'aci': 'D', 'issuing_country': 'NL', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'GlobalCard', 'is_credit': False, 'aci': 'F', 'issuing_country': 'GR', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'GlobalCard', 'is_credit': True, 'aci': 'F', 'issuing_country': 'NL', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'GlobalCard', 'is_credit': False, 'aci': 'F', 'issuing_country': 'NL', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'GlobalCard', 'is_credit': True, 'aci': 'G', 'issuing_country': 'NL', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': False, 'aci': 'A', 'issuing_country': 'BE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': True, 'aci': 'D', 'issuing_country': 'NL', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': True, 'aci': 'D', 'issuing_country': 'SE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': True, 'aci': 'D', 'issuing_country': 'IT', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': True, 'aci': 'D', 'issuing_country': 'ES', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': True, 'aci': 'D', 'issuing_country': 'BE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': False, 'aci': 'F', 'issuing_country': 'BE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': False, 'aci': 'F', 'issuing_country': 'GR', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'NexPay', 'is_credit': False, 'aci': 'F', 'issuing_country': 'IT', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'SwiftCharge', 'is_credit': True, 'aci': 'D', 'issuing_country': 'IT', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'SwiftCharge', 'is_credit': True, 'aci': 'D', 'issuing_country': 'GR', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'SwiftCharge', 'is_credit': False, 'aci': 'F', 'issuing_country': 'ES', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'SwiftCharge', 'is_credit': True, 'aci': 'G', 'issuing_country': 'BE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'TransactPlus', 'is_credit': True, 'aci': 'D', 'issuing_country': 'BE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'TransactPlus', 'is_credit': True, 'aci': 'D', 'issuing_country': 'FR', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'TransactPlus', 'is_credit': False, 'aci': 'D', 'issuing_country': 'FR', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'TransactPlus', 'is_credit': True, 'aci': 'D', 'issuing_country': 'SE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'TransactPlus', 'is_credit': True, 'aci': 'G', 'issuing_country': 'BE', 'acquirer_country': 'US', 'intracountry': False}
+{'card_scheme': 'TransactPlus', 'is_credit': True, 'aci': 'G', 'issuing_country': 'NL', 'acquirer_country': 'US', 'intracountry': False}

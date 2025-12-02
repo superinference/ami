@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Transaction Profile for Martinis_Fine_Steakhouse in June (Days 152-181):
+Total Volume: 100892.63
+Average Amount: 90.89
+Transaction Count: 1110
+Credit Count: 765
+Intracountry Count: 107
+ACI Counts: {'D': 452, 'F': 343, 'G': 214, 'C': 47, 'A': 35, 'B': 19}

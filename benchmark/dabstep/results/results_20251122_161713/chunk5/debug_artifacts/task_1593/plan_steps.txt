@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to inspect the fee rules and their conditions.
+Step 2: Load the `merchant_data.json` file to identify merchants with account type 'H', and then load the `payments.csv` file to filter for transactions associated with these merchants and the 'GlobalCard' scheme.

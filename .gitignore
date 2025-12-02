@@ -1,0 +1,64 @@
+!.env.example
+mcp/mcp_server.py.log
+
+benchmark/.normalized_cache
+benchmark/dabstep/data/*
+benchmark/dabstep/results/dabstep_run_*
+benchmark/dabstep/results/mcp_server.log
+benchmark/dabstep/.cache
+benchmark/dabstep/data
+benchmark/dabstep/data/context/.normalized_cache
+benchmark/dabstep/source/DABstep
+benchmark/dabstep/source/DABstep
+backend_debug.log
+benchmark_env
+*superinference_results_*
+
+out
+dist
+node_modules
+.vscode-test/
+*.vsix
+mcp_env/**
+__pycache__
+
+dabstep_info/**
+
+.log
+
+test_env/**
+
+# mcp_server.log
+# Rust
+/target
+
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+venv/
+
+.env

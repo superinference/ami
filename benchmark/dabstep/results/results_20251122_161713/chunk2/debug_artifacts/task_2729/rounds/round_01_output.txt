@@ -1,0 +1,32 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments data...
+Filtered transactions count: 165
+        card_scheme  is_credit  eur_amount  ... ip_country acquirer_country aci
+2747         NexPay       True       48.39  ...         BE               IT   G
+3769     GlobalCard       True      153.25  ...         NL               IT   G
+5768         NexPay       True       75.36  ...         BE               IT   G
+7462         NexPay       True       91.61  ...         BE               IT   G
+8392   TransactPlus       True       21.17  ...         FR               IT   G
+9189   TransactPlus       True       16.28  ...         BE               IT   G
+9429    SwiftCharge       True      180.59  ...         IT               IT   G
+12395   SwiftCharge       True       41.42  ...         FR               IT   G
+13029  TransactPlus       True       44.36  ...         BE               IT   G
+14022    GlobalCard       True      179.33  ...         BE               IT   G
+14249        NexPay       True       43.42  ...         NL               IT   G
+15730    GlobalCard       True      255.22  ...         BE               IT   G
+16295    GlobalCard       True       86.23  ...         BE               IT   G
+16725        NexPay       True      562.19  ...         NL               IT   G
+17610  TransactPlus       True       47.04  ...         NL               IT   G
+17894  TransactPlus       True       57.29  ...         NL               IT   G
+18596    GlobalCard       True       61.47  ...         LU               IT   G
+19807        NexPay       True      125.11  ...         NL               IT   G
+19931        NexPay       True       64.39  ...         SE               IT   G
+20356        NexPay       True       64.71  ...         SE               IT   G
+
+[20 rows x 7 columns]
+Loaded 30 merchant records and 1000 fee rules.

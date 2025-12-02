@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data for the merchant 'Rafa_AI' and the year 2023 to isolate the relevant transactions.
+Step 2: Load `fees.json` and `merchant_data.json`, enrich the filtered payments data with merchant attributes (MCC, account type), apply the fee matching logic to identify which transactions are governed by fee rule ID 384, and calculate the total fee delta for these transactions by comparing the cost with the original rate versus the new rate of 1.

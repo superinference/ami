@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original rows: 138236
+Filtered rows: 4575
+
+First 5 rows of filtered data:
+           merchant   card_scheme  day_of_year shopper_interaction  eur_amount
+8    Crossfit_Hanna  TransactPlus            5           Ecommerce       75.42
+33   Crossfit_Hanna  TransactPlus            8           Ecommerce       55.17
+67   Crossfit_Hanna  TransactPlus            8           Ecommerce       56.51
+84   Crossfit_Hanna  TransactPlus           52           Ecommerce       24.03
+105  Crossfit_Hanna  TransactPlus           27           Ecommerce      180.48

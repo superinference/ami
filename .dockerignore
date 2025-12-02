@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+benchmark/benchmark_env/
+
+# Logs
+*.log
+mcp_server.py.log
+backend_debug.log
+benchmark/dabstep/results/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation (keep only essential)
+*.md
+!README.md
+!AGENTS.md
+
+# Test files
+test/
+tests/
+
+# Node modules (for VS Code extension)
+node_modules/
+dist/
+*.vsix
+
+# Large files
+smolagents/
+benchmark/swe_bench/
+benchmark/fable/
+
+# Cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment files (will be set via K8s)
+.env
+.env.*
+
+# Results and checkpoints (will be in persistent volume)
+results/
+checkpoint_*
+*.png
+*.jpg
+*.json.bak
+

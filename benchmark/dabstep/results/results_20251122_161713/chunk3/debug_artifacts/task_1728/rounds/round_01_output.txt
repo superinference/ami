@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 82
+      psp_reference              merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+3704    79834568316  Golfclub_Baron_Friso   SwiftCharge  2023           12              22          365      False       90.16         SE              SE         iOS  OekpSEsFl6m-GAL0bglgRw  7PBW8ud6u20mh6H8GadH5A  sVsZ587wI2RXlLfbL5hRxQ           Ecommerce      4556                   False                False   F               IT
+5029    48050799140  Golfclub_Baron_Friso        NexPay  2023           20               4          365      False       44.71         NL              NL     Windows  YgVlxhEKILRdtjOML4Ox4Q  JW1Zmsd-gDjC9BgcCHnNeQ  I_phE5GoLHr8irol9l_3tw           Ecommerce      4556                   False                False   F               IT
+5458    48478311900  Golfclub_Baron_Friso    GlobalCard  2023            7              55          365      False       36.55         LU              LU     Windows  AJFbnBOn1gVkXibbuizQeg  EKw79U3p4UqnxcpSWToN2Q  x2p1tbwnMh5JyIuDK64k1A           Ecommerce      4017                   False                False   F               IT
+8197    20880406284  Golfclub_Baron_Friso  TransactPlus  2023           16               5          365      False       20.80         NL              FR     Windows  y3YlXaG-GnzwbwGnXFP8bg  dSmLKWncvWf0QC1YQXiLmA  GT14U7JKM5ypEQ_Lacb6mg           Ecommerce      4802                   False                False   F               IT
+8923    23527372089  Golfclub_Baron_Friso   SwiftCharge  2023           18               8          365      False      150.94         BE              BE       MacOS  llD5Q2a7nF_a_UA71FGySg                     NaN  z25jNXPY_aJFl-jDN3F-cw           Ecommerce      4916                   False                False   F               IT

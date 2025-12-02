@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered dataframe shape: (187, 21)
+      psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+0       20034594130  Crossfit_Hanna        NexPay  2023           16              21           12      False      151.74         SE              SE     Windows  pKPYzJqqwB8TdpY0jiAeQw  0AKXyaTjW7H4m1hOWmOKBQ  uRofX46FuLUrSOTz8AW5UQ           Ecommerce      4802                   False                False   F               NL
+483     17990553403  Crossfit_Hanna        NexPay  2023           14              16           12      False      250.47         LU              LU         iOS                     NaN  TZJvs7WOOStB6OmK7Zww1A  rsFN9oOpuje-afvPyeT34A           Ecommerce      4916                   False                False   F               NL
+1366    82630701800  Crossfit_Hanna   SwiftCharge  2023           21              24           12      False       18.25         NL              BE       Other  NDvQhNoSHCoJ0hyTwa8_UQ  irpnfKi4uBWrS6jSvs7OfA  fnWG4th-7ULTpU5bxtG14A           Ecommerce      4526                   False                False   F               NL
+1516    69158977951  Crossfit_Hanna  TransactPlus  2023           16              54           12      False       29.57         FR              FR       MacOS  66B3mHAQWPGeaYCeR_Rzjg  fakb3RXgHBG4dkl3M0L0yg  f_tt0354HnsKd8q8fASXFw           Ecommerce      4526                   False                 True   G               NL
+2413    81325502309  Crossfit_Hanna    GlobalCard  2023            8              46           12       True      150.72         BE              BE       MacOS                     NaN  S6OGC9YH6EEycnP4jWfF-A  xHNoRH6DyaoTm2Jgdimrfg           Ecommerce      4556                    True                False   G               NL

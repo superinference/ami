@@ -1,0 +1,47 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Unique transaction characteristics for Martinis_Fine_Steakhouse on Day 10, 2023:
+ card_scheme  is_credit aci issuing_country acquirer_country
+  GlobalCard      False   A              SE               FR
+  GlobalCard      False   F              ES               FR
+  GlobalCard      False   F              GR               FR
+  GlobalCard      False   F              NL               FR
+  GlobalCard       True   D              BE               FR
+  GlobalCard       True   D              IT               FR
+  GlobalCard       True   D              LU               FR
+  GlobalCard       True   D              NL               FR
+  GlobalCard       True   G              BE               FR
+  GlobalCard       True   G              IT               FR
+  GlobalCard       True   G              NL               FR
+      NexPay      False   C              SE               FR
+      NexPay      False   F              IT               FR
+      NexPay      False   F              SE               FR
+      NexPay       True   D              FR               FR
+      NexPay       True   D              NL               FR
+      NexPay       True   D              SE               FR
+      NexPay       True   F              FR               FR
+      NexPay       True   F              SE               FR
+      NexPay       True   G              BE               FR
+      NexPay       True   G              FR               FR
+      NexPay       True   G              LU               FR
+      NexPay       True   G              NL               FR
+      NexPay       True   G              SE               FR
+ SwiftCharge      False   F              BE               FR
+ SwiftCharge      False   G              NL               FR
+ SwiftCharge       True   B              FR               FR
+ SwiftCharge       True   D              BE               FR
+ SwiftCharge       True   D              SE               FR
+TransactPlus      False   F              BE               FR
+TransactPlus       True   B              FR               FR
+TransactPlus       True   D              IT               FR
+TransactPlus       True   D              NL               FR
+TransactPlus       True   D              SE               FR
+TransactPlus       True   G              BE               FR
+TransactPlus       True   G              ES               FR
+TransactPlus       True   G              NL               FR
+
+Total unique combinations found: 37

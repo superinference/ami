@@ -1,0 +1,18 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Golfclub_Baron_Friso', 'capture_delay': '2', 'acquirer': ['medici'], 'merchant_category_code': 7993, 'account_type': 'F'}
+Monthly Volume: €215,682.64
+Monthly Fraud Volume: €23,206.71
+Monthly Fraud Rate: 10.7597%
+Warning: No rule matched for transaction 81708557378
+Context: {'card_scheme': 'GlobalCard', 'account_type': 'F', 'mcc': 7993, 'capture_delay': '2', 'is_credit': True, 'aci': 'D', 'intracountry': False, 'monthly_volume': np.float64(215682.64), 'monthly_fraud_rate': np.float64(0.10759655946347836)}
+------------------------------
+Transactions Processed: 2345
+Matched Rules: 1039
+Unmatched: 1306
+Total Fees: €798.45

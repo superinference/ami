@@ -1,0 +1,15 @@
+Step 1: Load the `merchant_category_codes.csv` file and filter the rows where the `description` column exactly matches "Fast Food Restaurants" to retrieve the corresponding Merchant Category Code (MCC).
+Step 2: Load the `fees.json` file and filter for rules where `card_scheme` is 'NexPay', `account_type` contains 'H' or is empty, and `merchant_category_code` contains 5814 or is empty. Then, for each matching rule, calculate the fee using the formula `fixed_amount + (rate * 1234 / 10000)` and compute the average of these fees.
+Step 3: To answer the question "For account type H and the MCC description: Fast Food Restaurants, what would be the average fee that the card scheme NexPay would charge for a transaction value of 1234 EUR?", I will perform the following steps:
+
+1.  **Identify the Merchant Category Code (MCC):** Load `merchant_category_codes.csv` and find the `mcc` corresponding to the description "Fast Food Restaurants".
+2.  **Filter Fee Rules:** Load `fees.json` and filter for rules that meet **all** the following criteria:
+    *   `card_scheme` is "NexPay".
+    *   `account_type` is either an empty list `[]` (applies to all) or contains "H".
+    *   `merchant_category_code` is either an empty list `[]` (applies to all) or contains the MCC found in step 1.
+3.  **Calculate Fees:** For each matching rule, calculate the fee using the formula: `fee = fixed_amount + (rate * 1234 / 10000)`.
+4.  **Compute Average:** Calculate the average of the resulting fees.
+5.  **Format Output:** Present the final average fee in EUR, rounded to 6 decimal places.
+
+```python
+import pandas as pd

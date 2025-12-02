@@ -1,0 +1,30 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is "Crossfit_Hanna", the `year` is 2023, and the `day_of_year` is 200.
+Step 2: To solve the issue of unmatched transactions and calculate the correct total fees, I will write a Python script that implements a robust fee matching algorithm, specifically handling the parsing of range-based fields (fraud levels, volumes) and list-based fields (MCC, account types) found in `fees.json`.
+
+```python
+import pandas as pd
+import json
+import numpy as np
+
+def parse_range(value_str, actual_value):
+    """Parses range strings like '100k-1m', '>8.3%', '<3'."""
+    if value_str is None:
+        return True
+    
+    # Handle percentages
+    if '%' in value_str:
+        clean_str = value_str.replace('%', '')
+        actual_val_check = actual_value * 100 # Convert rate to percentage
+    else:
+        clean_str = value_str
+        actual_val_check = actual_value
+
+    # Handle k/m suffixes for volume
+    def parse_num(s):
+        if 'k' in s: return float(s.replace('k', '')) * 1000
+        if 'm' in s: return float(s.replace('m', '')) * 1000000
+        return float(s)
+
+    try:
+        if '-' in clean_str:
+            low,

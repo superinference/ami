@@ -1,0 +1,1 @@
+Step 1: Load the `fees.json`, `merchant_data.json`, and `payments.csv` files into pandas DataFrames to analyze the fee rule with ID 787, merchant account types, and transaction details.

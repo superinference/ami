@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows where the `merchant` is 'Belles_cookbook_store' and the `card_scheme` is 'SwiftCharge'.
+Step 2: Filter the filtered data for the 'day_of_year' between 60 and 120 (representing March and April 2023), then group by 'issuing_country' and calculate the mean of 'eur_amount'.

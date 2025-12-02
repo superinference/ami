@@ -1,0 +1,30 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing Fee ID 384: {
+  "ID": 384,
+  "card_scheme": "NexPay",
+  "account_type": [],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": true,
+  "aci": [
+    "C",
+    "B"
+  ],
+  "fixed_amount": 0.05,
+  "rate": 14,
+  "intracountry": null
+}
+
+Merchants currently matching Fee 384 (before account_type change): ['Martinis_Fine_Steakhouse', 'Crossfit_Hanna', 'Belles_cookbook_store', 'Golfclub_Baron_Friso', 'Rafa_AI']
+
+Analysis Results:
+------------------------------
+The following merchants would be affected (they currently match Fee 384 but are not Account Type F):
+Belles_cookbook_store, Martinis_Fine_Steakhouse, Rafa_AI

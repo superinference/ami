@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where `merchant` is 'Martinis_Fine_Steakhouse', `year` is 2023, and `day_of_year` is 200.
+Step 2: Load `merchant_data.json` to retrieve the merchant's attributes, calculate the total volume and fraud rate for July 2023 (days 182-212) from `payments.csv` to determine the applicable fee tiers, and then use `fees.json` to calculate the total fees for the transactions on day 200.

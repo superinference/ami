@@ -1,0 +1,3 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where `card_scheme` is 'SwiftCharge' and `is_credit` is True.
+Step 2: Load `merchant_data.json` and `fees.json`, merge the merchant attributes (`account_type`, `merchant_category_code`) into the filtered payments DataFrame, and create a new column `intracountry` (True if `issuing_country` equals `acquirer_country`, else False).
+Step 3: For each transaction in the filtered DataFrame, identify the matching fee rule from `fees.json` (based on card_scheme, account_type, merchant_category_code, aci, is_credit, intracountry, and merchant stats), calculate the fee for a 10 EUR amount, and compute the average fee.

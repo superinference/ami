@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame to access the transaction data.
+Step 2: Filter the loaded payments data for transactions where the merchant is 'Belles_cookbook_store', the card scheme is 'GlobalCard', and the day of year is greater than or equal to 305 (corresponding to November 1st onwards in 2023), then group the results by 'acquirer_country' and calculate the mean of the 'eur_amount' column.

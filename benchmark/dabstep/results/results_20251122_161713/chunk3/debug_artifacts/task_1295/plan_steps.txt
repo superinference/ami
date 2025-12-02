@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter for transactions where `card_scheme` is 'SwiftCharge' and `is_credit` is True, while also loading `fees.json` and `merchant_data.json` to prepare for linking fee rules.
+Step 2: Calculate monthly volume and fraud metrics for each merchant using the full dataset, then enrich the filtered SwiftCharge credit transactions with these metrics, merchant metadata (from merchant_data.json), and an 'intracountry' indicator to prepare for fee rule matching.

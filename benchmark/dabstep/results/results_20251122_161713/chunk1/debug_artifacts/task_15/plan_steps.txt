@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the data to include only rows where the `year` column is equal to 2023.

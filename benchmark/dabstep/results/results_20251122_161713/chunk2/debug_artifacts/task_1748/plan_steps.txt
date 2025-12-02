@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows to include only those where the `merchant` column is 'Golfclub_Baron_Friso' and the `year` column is 2023.
+Step 2: Load the `payments.csv`, `merchant_data.json`, and `fees.json` files, filter payments for 'Golfclub_Baron_Friso' in 2023, then calculate the total fees by determining the applicable fee rule for each transaction (matching on merchant attributes, transaction details, and calculated monthly volume/fraud levels) and summing the results.

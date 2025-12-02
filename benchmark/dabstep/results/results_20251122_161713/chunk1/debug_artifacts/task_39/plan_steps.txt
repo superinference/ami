@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and calculate the 25th percentile value of the `eur_amount` column.
+Step 2: Filter the `payments.csv` dataframe to find rows where `eur_amount` is strictly less than 28.37, count these rows, divide by the total number of rows, and multiply by 100 to get the percentage.

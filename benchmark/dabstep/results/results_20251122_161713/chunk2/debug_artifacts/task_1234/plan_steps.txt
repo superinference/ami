@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a dataframe and filter for transactions where the merchant is 'Crossfit_Hanna', the card scheme is 'TransactPlus', and the day of year is less than or equal to 120 (representing January through April).
+Step 2: Group the filtered data by 'shopper_interaction' and calculate the mean of the 'eur_amount' column to determine the average transaction value for each interaction type.

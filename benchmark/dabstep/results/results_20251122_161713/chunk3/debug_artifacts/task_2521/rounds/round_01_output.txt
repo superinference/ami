@@ -1,0 +1,7 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+{'ID': 1, 'card_scheme': 'TransactPlus', 'account_type': [], 'capture_delay': None, 'monthly_fraud_level': None, 'monthly_volume': None, 'merchant_category_code': [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742], 'is_credit': False, 'aci': ['C', 'B'], 'fixed_amount': 0.1, 'rate': 19, 'intracountry': None}

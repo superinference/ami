@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows where the `merchant` is 'Crossfit_Hanna' and the `card_scheme` is 'GlobalCard'.
+Step 2: Filter the filtered data for transactions where `day_of_year` is between 1 and 59 (inclusive, representing January and February 2023), then group by `aci` and calculate the average `eur_amount`.

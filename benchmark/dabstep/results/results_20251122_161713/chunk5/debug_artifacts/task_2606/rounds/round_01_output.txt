@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions for Rafa_AI in March (days 60-90): 2412
+First 5 rows of filtered data:
+     psp_reference merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+118    87045714145  Rafa_AI    GlobalCard  2023           13              30           77       True       37.86         BE              BE         iOS  CMDFKE_MUytdmFOAYJLtdA                     NaN  Y2rfWbk1Q8aEU1qfEQ-oww           Ecommerce      4556                   False                False   E               NL
+251    60645578417  Rafa_AI    GlobalCard  2023           10               9           86       True       11.69         BE              BE     Android  YsabUX3LMDAJH4luD9xASQ  xIBMg3sixWXxIt3R4KDEIA  8ziJGcRv58XBtP8fg5-_mA           Ecommerce      4920                   False                False   E               NL
+391    24346772863  Rafa_AI        NexPay  2023           18              56           75       True       27.24         LU              LU       MacOS                     NaN  C5K5ctNnGrThnQQxJReRFQ  ETmJVOyWH2Nn1wlM_2I3eQ           Ecommerce      4556                   False                False   E               NL
+473    27037343850  Rafa_AI  TransactPlus  2023            8              37           76      False       40.80         IT              IT       MacOS  WnFr1ldasPtXrEoCFOCf_w  EnlOay_wLURAU9QC5V0DQQ  VRnCRZuBYJt3YPFcFoDAlg           Ecommerce      4133                   False                False   E               NL
+527    52920066664  Rafa_AI  TransactPlus  2023            9              15           64       True       99.53         BE              BE       Other  4K4d_bazEOpVMAGRbk8n2w  CHnEd-s6s_8gHJ-UKIR74g  TrocANO_DXZaBitpXyHJ4A           Ecommerce      4556                   False                 True   G               NL
+Verification Successful: Row count matches expected ground truth (2412).
+Filtered data saved to rafa_ai_march_payments.csv

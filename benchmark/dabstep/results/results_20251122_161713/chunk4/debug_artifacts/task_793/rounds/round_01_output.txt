@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original shape: (138236, 21)
+Filtered shape: (2672, 21)
+     psp_reference              merchant  card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+21     89410650089  Golfclub_Baron_Friso  SwiftCharge  2023           20              37           10       True        7.86         SE              SE       Other                     NaN  4L4aF3qoXTGKuFUO5ioruw  2EoBadg0dQ4eOxaltF42Tg           Ecommerce      4571                   False                False   D               IT
+97     61931506150  Golfclub_Baron_Friso  SwiftCharge  2023            9               6          251       True      102.80         IT              IT       Other  uR5a9a6lVh-0TlwE3jIshQ  oirIlC_qD-FRpbP4GtA4Tw  Gg-QjYvU3nTbtSSp49YqZg           Ecommerce      4571                    True                False   G               IT
+186    40505831842  Golfclub_Baron_Friso  SwiftCharge  2023           11              14          112       True      220.28         NL              IT       Linux  6YvtjxuXcuotBxt10-S6Yw  iM88FASkPoDNd3QfoK1ZfQ  Z-ljzJ8L12rBW_poitF0IA           Ecommerce      4916                   False                False   G               IT
+199    19005920964  Golfclub_Baron_Friso  SwiftCharge  2023           15              31          355       True       32.41         NL              NL       Other                     NaN  K1JFPW80CctwqQHNAVLZtA  8pammwAaV73-ijTqj04C4g           Ecommerce      4802                    True                False   G               IT
+230    53393011810  Golfclub_Baron_Friso  SwiftCharge  2023            8              24           36       True       11.64         IT              IT       Other  cy6WLS_2GAYQw--Wnq_SaA  rsIvuIpl5cPp72hld2NxQw  ToAwvspppti-_6TMaJCGaQ                 POS      4017                   False                False   A               IT

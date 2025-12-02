@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions found: 4666
+Average transaction amount: 91.5116
+
+Sample of filtered data:
+     psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+37     57172750246  Crossfit_Hanna        NexPay  2023           15              45          147       True       68.09         GR              GR       Other  oWHmaUAqM2JAMLKCDHvAKA  0ygXGCe2OMFtSbk_1HGiFw  MC34nd-TKq90izlIe-iy2Q           Ecommerce      4556                   False                 True   G               NL
+71     17625769336  Crossfit_Hanna  TransactPlus  2023           14              46          135       True      143.63         BE              BE     Windows  SNEX2rtZBj22jl6fylfpow  E0YwXu-_vDOM0c4u-Ijz4Q  WJjxKI5V_Q1SltDVRtLqYA           Ecommerce      4556                   False                False   D               NL
+74     53693317996  Crossfit_Hanna    GlobalCard  2023           12              34          121       True       97.82         FR              FR     Windows  Xno7eDYG1pBbAM5SZHepyg  SR51j-0eMfAnJAYwHP9EmA  iY9mDvrK9hhZhuTkbC_fbQ           Ecommerce      4916                   False                False   G               NL
+124    82540440050  Crossfit_Hanna  TransactPlus  2023           19              44          123      False      119.45         SE              SE       MacOS  3ftUvYNUJwLjaFKH2UlzFA  jDvvYa1UZAhbSLF_7nE5DA  krTZyxueb4iJvtbjqNUNoA           Ecommerce      4017                   False                False   F               NL
+187    31262311193  Crossfit_Hanna    GlobalCard  2023           11              56          140       True       62.38         BE              BE     Windows  rb2qmdSvo1u2w4Gg9t2Ayw  o9dM0080rST5LjsJGQR5AQ  tQ1_ucfBjb6AsUuDvSK5CQ           Ecommerce      4532                   False                False   D               NL

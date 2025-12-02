@@ -1,0 +1,35 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Data loaded successfully.
+Merchant: Belles_cookbook_store
+MCC: 5942
+Account Type: R
+
+Fee Rule 150 Details:
+{
+  "ID": 150,
+  "card_scheme": "SwiftCharge",
+  "account_type": [],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": true,
+  "aci": [
+    "B"
+  ],
+  "fixed_amount": 0.12,
+  "rate": 69,
+  "intracountry": 0.0
+}
+
+Total 2023 transactions for Belles_cookbook_store: 13848
+Transactions matching Fee ID 150: 24
+Total Affected Volume: 2894.8500000000004
+
+Calculated Delta:
+8.68455000000000

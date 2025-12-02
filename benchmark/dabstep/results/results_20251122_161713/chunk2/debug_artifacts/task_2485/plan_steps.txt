@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` dataset and filter for rows where the `merchant` is 'Crossfit_Hanna' and the `year` is 2023, while also loading `fees.json`, `merchant_data.json`, and `acquirer_countries.csv` to prepare for fee rule matching.
+Step 2: Filter the `payments` DataFrame for 'Crossfit_Hanna' transactions in 2023 that match the specific criteria for Fee ID 276 (card_scheme='GlobalCard', is_credit=True, aci='B'), sum the `eur_amount` for these transactions, and calculate the payment delta using the formula `(1 - 75) * total_amount / 10000`.

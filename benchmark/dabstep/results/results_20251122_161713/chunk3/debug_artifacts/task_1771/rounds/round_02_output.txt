@@ -1,0 +1,16 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Transactions found for Crossfit_Hanna in Sept 2023: 4484
+Monthly Volume: €417,402.73
+Monthly Fraud Volume: €41,429.36
+Monthly Fraud Rate: 9.9255%
+Merchant Attributes: {'account_type': 'F', 'merchant_category_code': 7997, 'capture_delay': 'manual'}
+Unique transaction profiles to check: 92
+
+Applicable Fee IDs:
+29, 36, 51, 64, 65, 89, 107, 123, 150, 163, 276, 304, 381, 384, 428, 454, 473, 477, 536, 572, 595, 626, 631, 678, 680, 704, 709, 741, 792, 813, 861, 871, 884

@@ -1,0 +1,1 @@
+Step 1: Load the 'payments.csv' file into a dataframe, group the data by the 'merchant' column, and calculate the mean of the 'eur_amount' column for each merchant.

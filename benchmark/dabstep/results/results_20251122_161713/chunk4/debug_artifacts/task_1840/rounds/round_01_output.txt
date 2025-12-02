@@ -1,0 +1,23 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded and filtered data.
+Merchant: Golfclub_Baron_Friso
+Time Period: Day 152 to 181 (June 2023)
+Transaction Count: 2283
+
+Sample filtered transactions:
+ psp_reference  day_of_year  card_scheme  is_credit  eur_amount aci acquirer_country issuing_country
+   25576144624          171   GlobalCard       True       19.65   D               IT              NL
+   72750934301          167 TransactPlus       True      113.96   D               IT              NL
+   34562022451          170   GlobalCard       True      147.82   D               IT              IT
+   24122652899          181   GlobalCard       True      256.10   D               IT              LU
+   14326655057          175   GlobalCard       True       11.00   A               IT              NL
+   21583111529          166   GlobalCard      False       39.17   F               IT              IT
+   44848742249          165   GlobalCard      False     1015.65   F               IT              ES
+   52022457064          158       NexPay       True       28.92   D               IT              BE
+   83171884738          171   GlobalCard       True       12.45   C               IT              BE
+   81192398349          166   GlobalCard       True       16.55   D               IT              BE

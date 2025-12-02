@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Golfclub_Baron_Friso', 'capture_delay': '2', 'acquirer': ['medici'], 'merchant_category_code': 7993, 'account_type': 'F'}
+Fee Rule 65: {'ID': 65, 'card_scheme': 'SwiftCharge', 'account_type': [], 'capture_delay': None, 'monthly_fraud_level': None, 'monthly_volume': None, 'merchant_category_code': [], 'is_credit': False, 'aci': ['B'], 'fixed_amount': 0.03, 'rate': 34, 'intracountry': 0.0}
+Old Rate: 34, New Rate: 1
+Found 27748 transactions for Golfclub_Baron_Friso in 2023
+Matching Transactions: 9
+Total Delta: -2.46886200000000

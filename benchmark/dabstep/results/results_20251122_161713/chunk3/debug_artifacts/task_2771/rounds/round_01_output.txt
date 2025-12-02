@@ -1,0 +1,19 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Current characteristics of fraudulent transactions for Rafa_AI in 2023:
+    shopper_interaction aci   card_scheme  is_credit
+34            Ecommerce   G        NexPay       True
+137           Ecommerce   G    GlobalCard       True
+164           Ecommerce   G  TransactPlus       True
+288           Ecommerce   G   SwiftCharge       True
+
+Detailed breakdown of fraudulent transactions:
+  shopper_interaction aci   card_scheme  is_credit  count
+0           Ecommerce   G    GlobalCard       True    728
+1           Ecommerce   G        NexPay       True    654
+2           Ecommerce   G   SwiftCharge       True    221
+3           Ecommerce   G  TransactPlus       True    528

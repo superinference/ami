@@ -1,0 +1,17 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to inspect the fee rules, specifically filtering for those applicable to 'GlobalCard' and credit transactions.
+Step 2: To answer the question about the most expensive Authorization Characteristics Indicator (ACI) for a credit transaction of 10,000 euros on GlobalCard, I need to calculate the potential fees for each ACI based on the rules in `fees.json`.
+
+I will perform the following steps:
+1.  Load the `fees.json` dataset.
+2.  Filter for rules applicable to 'GlobalCard' and Credit transactions (where `is_credit` is True or Null/Wildcard).
+3.  Calculate the fee for a 10,000 euro transaction for each rule using the formula: `fee = fixed_amount + (rate * amount / 10000)`. Since the amount is 10,000, this simplifies to `fee = fixed_amount + rate`.
+4.  Expand the rules to individual ACIs. If a rule has a null or empty `aci` field, it applies to all ACIs (A, B, C, D, E, F, G).
+5.  Group the calculated fees by ACI and find the maximum fee for each ACI.
+6.  Sort the results by fee (descending) and then by ACI (alphabetical ascending) to handle ties.
+7.  Return the top ACI as a list.
+
+```python
+import pandas as pd
+import numpy as np
+
+# Load the

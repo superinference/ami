@@ -1,0 +1,22 @@
+Step 1: To answer the question about applicable Fee IDs for Golfclub_Baron_Friso on the 365th day of 2023, I need to calculate the merchant's December statistics (volume and fraud rate) and then match the specific transaction characteristics from that day against the rules in `fees.json`, handling the string-based range formats (e.g., "100k-1m", ">8.3%") that caused the previous error.
+
+```python
+import pandas as pd
+import json
+
+def parse_range_check(rule_val, actual_val, is_percentage=False):
+    """Parses rule strings like '100k-1m', '>5', '7.7%-8.3%' and checks against actual value."""
+    if rule_val is None:
+        return True
+    
+    # Normalize actual value for percentage comparison (0.08 -> 8.0)
+    check_val = actual_val * 100 if is_percentage else actual_val
+    
+    # Clean string
+    clean_val = str(rule_val).replace('%', '').replace('k', '000').replace('m', '000000')
+    
+    try:
+        if '-' in clean_val:
+            low, high = map(float, clean_val.split('-'))
+            return low <= check_val <= high
+        elif '>'

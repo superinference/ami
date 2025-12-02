@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Average Transaction Value by Device Type:
+device_type
+Android    83.540430
+Linux      84.520119
+MacOS      77.409032
+Other      82.959833
+Windows    97.200244
+iOS        91.342772
+Name: eur_amount, dtype: float64

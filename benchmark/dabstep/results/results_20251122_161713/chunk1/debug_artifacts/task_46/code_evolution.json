@@ -1,0 +1,16 @@
+[
+  {
+    "round": 1,
+    "plan_steps": 1,
+    "code_length": 2344,
+    "code": "# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef safe_get(df, column, default=None):\n    \"\"\"Safely get column from DataFrame, return default if not exists.\"\"\"\n    if isinstance(df, dict):\n        return df.get(column, default)\n    elif hasattr(df, 'columns') and column in df.columns:\n        return df[column]\n    return default\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef safe_index(array, idx, default=None):\n    \"\"\"Safely get array element at index, return default if out of bounds.\"\"\"\n    try:\n        if 0 <= idx < len(array):\n            return array[idx]\n        return default\n    except (IndexError, TypeError, AttributeError):\n        return default\n\n\nimport pandas as pd\n\n# Load the payments.csv file into a pandas DataFrame\ndf = pd.read_csv('/output/chunk1/data/context/payments.csv')\n\n# Identify transactions with missing IP addresses (NaN values)\nmissing_ip_mask = df['ip_address'].isna()\n\n# Identify transactions that have a fraudulent dispute\nfraud_mask = df['has_fraudulent_dispute'] == True\n\n# Count transactions that meet both criteria (Missing IP AND Fraudulent)\ncount_missing_ip_and_fraud = len(df[missing_ip_mask & fraud_mask])\n\n# Calculate the percentage relative to the total number of transactions\ntotal_transactions = len(df)\npercentage = (count_missing_ip_and_fraud / total_transactions) * 100\n\n# Print the result\nprint(percentage)",
+    "execution_output": "1.5444601985011142\n",
+    "original_error": null,
+    "debugger_used": false,
+    "verification": "sufficient",
+    "temperature": 0.1,
+    "plan_snapshot": [
+      "Load the `payments.csv` file into a pandas DataFrame."
+    ]
+  }
+]

@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Data Shape: (1201, 21)
+Total Transactions: 1201
+Average EUR Amount: 94.31
+Credit Transactions Count: 891
+Intracountry Transactions: 0
+
+First 5 rows of filtered data:
+     psp_reference               merchant  ... aci  acquirer_country
+18     16900553593  Belles_cookbook_store  ...   G                US
+49     66017259224  Belles_cookbook_store  ...   B                US
+88     14214155722  Belles_cookbook_store  ...   D                US
+169    69753929320  Belles_cookbook_store  ...   D                US
+302    16970611168  Belles_cookbook_store  ...   D                US
+
+[5 rows x 21 columns]

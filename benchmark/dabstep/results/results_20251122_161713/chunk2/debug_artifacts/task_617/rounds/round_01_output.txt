@@ -1,0 +1,20 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame shape: (445, 21)
+
+Verification of filters:
+Unique Merchants: ['Rafa_AI']
+Unique Card Schemes: ['SwiftCharge']
+Day of Year Range: 121 - 181
+
+First 5 rows of filtered data (relevant columns):
+     merchant  card_scheme  day_of_year device_type  eur_amount
+288   Rafa_AI  SwiftCharge          135       Linux       62.18
+754   Rafa_AI  SwiftCharge          124         iOS       12.86
+956   Rafa_AI  SwiftCharge          157       Other       72.29
+1306  Rafa_AI  SwiftCharge          137         iOS       11.94
+1718  Rafa_AI  SwiftCharge          148       Linux       14.54

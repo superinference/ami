@@ -1,0 +1,25 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee ID 709 Criteria found:
+{
+    "ID": 709,
+    "card_scheme": "GlobalCard",
+    "account_type": [],
+    "capture_delay": null,
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [],
+    "is_credit": false,
+    "aci": [
+        "A",
+        "B",
+        "C"
+    ],
+    "fixed_amount": 0.12,
+    "rate": 17,
+    "intracountry": null
+}

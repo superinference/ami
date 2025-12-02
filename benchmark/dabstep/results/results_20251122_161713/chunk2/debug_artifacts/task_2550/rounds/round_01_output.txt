@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original dataset shape: (138236, 21)
+Filtered dataset shape (Rafa_AI, 2023): (27696, 21)
+
+First 5 rows of filtered data:
+    psp_reference merchant  ... aci  acquirer_country
+14    15954433169  Rafa_AI  ...   E                NL
+19    64327336902  Rafa_AI  ...   E                NL
+29    31882872937  Rafa_AI  ...   E                NL
+34    33722951254  Rafa_AI  ...   G                NL
+39    33017505011  Rafa_AI  ...   E                NL
+
+[5 rows x 21 columns]

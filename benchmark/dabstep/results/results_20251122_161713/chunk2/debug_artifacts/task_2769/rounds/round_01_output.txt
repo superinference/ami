@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of fraudulent transactions retrieved: 2132
+Sample of retrieved transactions:
+     psp_reference              merchant  ... aci  acquirer_country
+97     61931506150  Golfclub_Baron_Friso  ...   G                IT
+138    18193117832  Golfclub_Baron_Friso  ...   G                IT
+165    14440200564  Golfclub_Baron_Friso  ...   G                IT
+190    89331056613  Golfclub_Baron_Friso  ...   G                IT
+199    19005920964  Golfclub_Baron_Friso  ...   G                IT
+
+[5 rows x 21 columns]

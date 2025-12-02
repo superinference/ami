@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Data loaded successfully. Shape: (138236, 21)
+Credit Transactions Count: 101119
+Credit Fraud Rate: 0.106459 (10.6459%)
+Debit Transactions Count: 37117
+Debit Fraud Rate: 0.000000 (0.0000%)
+yes

@@ -1,0 +1,50 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loaded payments.csv with 138236 rows.
+
+Filtering for Merchant: 'Martinis_Fine_Steakhouse', Day: 365, Year: 2023
+Number of matching transactions: 33
+
+First 5 matching transactions:
+      psp_reference                  merchant  ... aci  acquirer_country
+918     23795700038  Martinis_Fine_Steakhouse  ...   G                FR
+3205    12228564812  Martinis_Fine_Steakhouse  ...   G                FR
+3675    57155000478  Martinis_Fine_Steakhouse  ...   C                FR
+5260    82451039423  Martinis_Fine_Steakhouse  ...   F                FR
+7916    15097356669  Martinis_Fine_Steakhouse  ...   F                FR
+
+[5 rows x 21 columns]
+
+Unique transaction characteristics (for fee matching):
+         card_scheme  is_credit aci issuing_country acquirer_country
+918       GlobalCard       True   G              BE               FR
+3205      GlobalCard       True   G              IT               FR
+3675    TransactPlus       True   C              NL               FR
+5260      GlobalCard      False   F              FR               FR
+7916      GlobalCard       True   F              FR               FR
+8051     SwiftCharge       True   D              FR               FR
+8258          NexPay       True   F              ES               FR
+8788      GlobalCard       True   D              GR               FR
+8836          NexPay       True   D              SE               FR
+12717     GlobalCard       True   D              SE               FR
+26991     GlobalCard       True   D              NL               FR
+27360     GlobalCard      False   F              NL               FR
+40277         NexPay       True   G              NL               FR
+59115    SwiftCharge       True   C              IT               FR
+59930         NexPay       True   D              FR               FR
+68411     GlobalCard       True   D              FR               FR
+70409         NexPay       True   G              IT               FR
+96774         NexPay       True   D              BE               FR
+97245         NexPay      False   D              LU               FR
+98234     GlobalCard      False   F              IT               FR
+111116  TransactPlus       True   B              SE               FR
+122301  TransactPlus       True   C              ES               FR
+124675  TransactPlus      False   F              GR               FR
+126593        NexPay      False   G              SE               FR
+127782        NexPay      False   F              BE               FR
+134340    GlobalCard       True   D              ES               FR
+135495        NexPay       True   G              BE               FR

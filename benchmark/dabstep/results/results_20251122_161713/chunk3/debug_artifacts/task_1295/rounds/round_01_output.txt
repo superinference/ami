@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments.csv...
+Filtering for SwiftCharge Credit transactions...
+Loading fees.json and merchant_data.json...
+------------------------------
+Total payments rows: 138236
+Filtered SwiftCharge Credit rows: 10128
+Loaded 1000 fee rules
+Loaded 30 merchant records
+------------------------------
+First 5 rows of filtered data:
+    psp_reference               merchant  ... aci  eur_amount
+5     74453982452         Crossfit_Hanna  ...   G       14.96
+12    55566636527         Crossfit_Hanna  ...   D      117.98
+20    33180657672         Crossfit_Hanna  ...   D       28.12
+21    89410650089   Golfclub_Baron_Friso  ...   D        7.86
+23    79488939497  Belles_cookbook_store  ...   D      374.37
+
+[5 rows x 6 columns]

@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and filter for entries where `card_scheme` is 'SwiftCharge' and `is_credit` is true.
+Step 2: Calculate the fee for each rule in the filtered dataframe using the formula `fee = fixed_amount + (rate * 100 / 10000)`, explode the `aci` column to separate individual indicators, sort the resulting data by `fee` in descending order and `aci` in ascending order, and finally select the `aci` from the top row.

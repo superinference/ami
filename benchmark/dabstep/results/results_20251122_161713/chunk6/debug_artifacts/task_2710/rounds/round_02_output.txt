@@ -1,0 +1,23 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Martinis_Fine_Steakhouse
+March Volume: €103,726.64
+March Fraud Rate: 7.7170%
+Account Type: H, MCC: 5812, Capture Delay: immediate
+Number of fraudulent transactions to simulate: 85
+
+Simulation Results (Total Fees for Fraudulent Txs):
+ACI A: €60.77
+ACI B: €54.46
+ACI C: €44.31
+ACI D: €30.29
+ACI E: €52.66
+ACI F: €46.61
+ACI G: €16.61
+
+Preferred ACI with lowest fees: G
+G

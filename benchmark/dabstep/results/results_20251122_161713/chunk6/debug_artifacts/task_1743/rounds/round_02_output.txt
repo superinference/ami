@@ -1,0 +1,12 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Filtering for Golfclub_Baron_Friso in 2023...
+Merchant Metadata: MCC=7993, Account=F, Delay=2
+
+Applicable Fee IDs for Golfclub_Baron_Friso in 2023:
+36, 51, 53, 64, 65, 107, 123, 150, 163, 276, 304, 381, 384, 394, 398, 428, 454, 473, 477, 536, 572, 595, 608, 626, 631, 678, 680, 709, 725, 741, 813, 861, 868, 871, 884, 939, 942, 960

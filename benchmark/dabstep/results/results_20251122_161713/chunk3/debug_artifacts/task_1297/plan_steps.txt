@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe to inspect the fee rules and their conditions.
+Step 2: Load the `payments.csv` and `merchant_data.json` files, filter the payments for 'GlobalCard' and credit transactions, merge the merchant data, and calculate the necessary fields for fee rule matching (intracountry status, monthly volume, and monthly fraud level per merchant).

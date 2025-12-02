@@ -1,0 +1,13 @@
+Step 1: To answer the question about which card scheme Martinis_Fine_Steakhouse should steer traffic to in September to pay the minimum fees, we need to calculate the hypothetical fees for all of the merchant's September transactions under each available card scheme's pricing rules.
+
+Here is the plan:
+1.  **Load Data**: Load `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  **Filter Data**: Select transactions for `merchant = 'Martinis_Fine_Steakhouse'` occurring in September (Day of Year 244 to 273).
+3.  **Calculate Merchant Metrics**:
+    *   Compute the merchant's **Total Monthly Volume** (sum of `eur_amount`) for September.
+    *   Compute the merchant's **Monthly Fraud Rate** (sum of `eur_amount` where `has_fraudulent_dispute` is True / Total Monthly Volume).
+    *   Retrieve the merchant's static attributes (`merchant_category_code`, `account_type`, `capture_delay`) from `merchant_data.json`.
+4.  **Parse Fee Rules**: Process `fees.json` to handle range strings (e.g., "100k-1m", "0%-1%") and wildcards (null/
+Step 2: Based on the analysis of the September transactions for Martinis_Fine_Steakhouse, which included calculating the total hypothetical fees under each card scheme (GlobalCard, NexPay, SwiftCharge, TransactPlus) using the merchant's specific attributes (Volume, Fraud Rate, MCC 5812, Account Type H) and transaction details (ACI, Credit/Debit, Intracountry), the scheme resulting in the lowest total fees was identified.
+
+Output the card scheme "TransactPlus" as the final answer.

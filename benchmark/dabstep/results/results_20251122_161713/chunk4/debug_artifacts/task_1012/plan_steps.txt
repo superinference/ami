@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame.
+Step 2: Filter the loaded payments data for merchant 'Martinis_Fine_Steakhouse', card scheme 'SwiftCharge', year 2023, and day_of_year between 305 and 365 (inclusive), then group by 'aci' and calculate the mean of 'eur_amount'.

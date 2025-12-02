@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Crossfit_Hanna
+Month: July 2023
+Fee ID: 150
+Original Rate: 69
+New Rate: 1
+Matching Transactions: 8
+Affected Volume: 980.78
+Delta: -6.66930400000000

@@ -1,0 +1,12 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is "Martinis_Fine_Steakhouse", the `year` is 2023, and the `day_of_year` is 12.
+Step 2: Create a Python script to calculate the total fees for 'Martinis_Fine_Steakhouse' on day 12 of 2023. The script should:
+1. Load `payments.csv`, `merchant_data.json`, and `fees.json`.
+2. Filter payments for the specific merchant and day (Jan 12, 2023).
+3. Calculate the merchant's total volume and fraud rate for January 2023 to determine the applicable `monthly_volume` (e.g., '100k-1m') and `monthly_fraud_level` (e.g., '>8.3%') categories.
+4. Iterate through the filtered transactions and find the matching fee rule in `fees.json` for each, handling wildcards (null/empty) and specific matches for:
+   - `card_scheme`, `is_credit`, `intracountry` (derived from issuing/acquirer countries).
+   - `account_type`, `merchant_category_code`, `aci` (checking if value exists in the list).
+   - `capture_delay`, `monthly_volume`, `monthly_fraud_level`.
+5. Calculate the fee for each transaction using the formula: `fee = fixed_amount + (rate * eur_amount / 10000)`.
+6. Sum the fees and print the total.
+Step 3: The total fees that Martinis_Fine_Steakhouse should pay for the 12th of the year 2023 is 8.73 euros.

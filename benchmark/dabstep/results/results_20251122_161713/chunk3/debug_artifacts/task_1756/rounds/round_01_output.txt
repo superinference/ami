@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions loaded: 138236
+Transactions for Belles_cookbook_store in June 2023: 1162
+
+Sample of filtered transactions:
+     psp_reference               merchant  ... aci  acquirer_country
+87     29403666807  Belles_cookbook_store  ...   F                US
+544    48392942015  Belles_cookbook_store  ...   D                US
+620    89155067252  Belles_cookbook_store  ...   D                US
+636    19010787148  Belles_cookbook_store  ...   G                US
+637    78200226028  Belles_cookbook_store  ...   D                US
+
+[5 rows x 21 columns]

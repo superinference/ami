@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and filter for the entry where the `ID` is 17 to understand its current criteria (such as card scheme, merchant category code, etc.).
+Step 2: Load `merchant_data.json` to identify merchants with a `capture_delay` value corresponding to ">5" (e.g., "7") and note their `account_type`, then load `payments.csv` to identify which of these merchants processed transactions matching Fee 17's criteria (`card_scheme`="SwiftCharge", `is_credit`=True, `aci`="A").

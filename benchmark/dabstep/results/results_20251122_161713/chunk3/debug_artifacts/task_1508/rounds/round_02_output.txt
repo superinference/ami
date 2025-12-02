@@ -1,0 +1,16 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average Fee per Scheme for 50 EUR Transaction:
+card_scheme
+GlobalCard      0.329163
+NexPay          0.346702
+SwiftCharge     0.343037
+TransactPlus    0.342199
+Name: calculated_fee_50eur, dtype: float64
+
+Most Expensive Scheme: NexPay (0.3467 EUR)
+NexPay

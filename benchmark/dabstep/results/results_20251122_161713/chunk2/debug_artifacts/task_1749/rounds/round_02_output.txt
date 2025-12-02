@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Loaded 13805 transactions from pickle.
+Merchant Profile: Type=H, MCC=5812, Delay=immediate (0.0)
+Calculating fees per transaction...
+Processed 13805 transactions.
+Matched 7762 transactions to fee rules.
+Total Fees: 5358.36

@@ -1,0 +1,66 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions found: 68
+
+Sample of filtered transactions:
+       psp_reference merchant  ... aci  acquirer_country
+662      64949595541  Rafa_AI  ...   E                NL
+4466     40296060325  Rafa_AI  ...   E                NL
+5173     53978491796  Rafa_AI  ...   E                NL
+9106     11818081411  Rafa_AI  ...   E                NL
+11196    72033135810  Rafa_AI  ...   E                NL
+
+[5 rows x 21 columns]
+
+Unique transaction attribute combinations for fee determination:
+         card_scheme  is_credit aci issuing_country acquirer_country
+662      SwiftCharge       True   E              BE               NL
+4466    TransactPlus       True   E              FR               NL
+5173      GlobalCard      False   E              BE               NL
+9106    TransactPlus      False   E              SE               NL
+11196   TransactPlus       True   E              IT               NL
+11549         NexPay       True   E              BE               NL
+17574         NexPay       True   E              FR               NL
+19238   TransactPlus      False   E              NL               NL
+19658    SwiftCharge       True   E              SE               NL
+24785     GlobalCard      False   C              BE               NL
+26902   TransactPlus       True   E              SE               NL
+29687     GlobalCard       True   E              IT               NL
+32510   TransactPlus       True   E              NL               NL
+33627         NexPay      False   E              BE               NL
+34160         NexPay       True   G              FR               NL
+34904     GlobalCard       True   G              BE               NL
+37772     GlobalCard       True   E              BE               NL
+45367     GlobalCard       True   G              SE               NL
+46272     GlobalCard       True   E              LU               NL
+48239     GlobalCard      False   C              FR               NL
+48426     GlobalCard       True   E              GR               NL
+50013         NexPay       True   B              SE               NL
+50542    SwiftCharge      False   E              IT               NL
+51020         NexPay      False   E              GR               NL
+52162         NexPay       True   E              IT               NL
+61122    SwiftCharge       True   G              BE               NL
+61412     GlobalCard       True   G              NL               NL
+64932   TransactPlus       True   E              LU               NL
+69130         NexPay       True   E              SE               NL
+76217         NexPay       True   E              NL               NL
+78397         NexPay      False   E              NL               NL
+79076   TransactPlus      False   G              IT               NL
+81181     GlobalCard       True   A              IT               NL
+89450     GlobalCard      False   E              IT               NL
+90726         NexPay      False   C              NL               NL
+92782    SwiftCharge       True   B              NL               NL
+95790    SwiftCharge      False   E              SE               NL
+96806     GlobalCard      False   E              NL               NL
+110118  TransactPlus      False   E              BE               NL
+110316  TransactPlus      False   E              FR               NL
+111187    GlobalCard      False   G              BE               NL
+115820    GlobalCard       True   E              FR               NL
+124839        NexPay       True   C              FR               NL
+126068        NexPay       True   G              ES               NL
+128286        NexPay       True   G              SE               NL
+132720        NexPay       True   E              GR               NL

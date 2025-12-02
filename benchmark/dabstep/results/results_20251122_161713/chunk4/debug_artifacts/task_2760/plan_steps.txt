@@ -1,0 +1,12 @@
+Step 1: Load `payments.csv` and filter for the merchant 'Crossfit_Hanna' and year 2023 to calculate the average transaction amount, monthly transaction volume, and monthly fraud rate, which are necessary to match the correct fee tiers in `fees.json`.
+Step 2: To answer the question "to which card scheme should the merchant Crossfit_Hanna steer traffic to in order to pay the minimum fees?", I need to calculate the potential fees for all available card schemes based on Crossfit_Hanna's transaction profile in 2023.
+
+I will perform the following steps:
+1.  **Load Data**: Load `payments.csv`, `fees.json`, `merchant_data.json`, and `acquirer_countries.csv`.
+2.  **Filter Transactions**: Select transactions for `merchant = 'Crossfit_Hanna'` and `year = 2023`.
+3.  **Determine Merchant Profile**:
+    *   Retrieve `merchant_category_code`, `account_type`, and `capture_delay` from `merchant_data.json`.
+    *   Calculate `monthly_volume` (sum of `eur_amount`) and `monthly_fraud_level` (fraud volume / total volume) from the filtered transactions.
+4.  **Parse Fee Rules**:
+    *   Process `fees.json` to handle range strings (e.g., "100k-1m", ">8.3%") and list fields (e.g., `merchant_category_code`, `aci`).
+    *   Filter rules that match the merchant's static profile (MCC, Account Type, Delay) and dynamic stats (Volume, Fraud Level

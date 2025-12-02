@@ -1,0 +1,22 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of fraudulent transactions for Crossfit_Hanna in July: 364
+
+First 5 rows of filtered data:
+      psp_reference        merchant  ...  aci  has_fraudulent_dispute
+374     47512278563  Crossfit_Hanna  ...    G                    True
+592     42742937201  Crossfit_Hanna  ...    G                    True
+649     74452536855  Crossfit_Hanna  ...    G                    True
+838     26337644968  Crossfit_Hanna  ...    G                    True
+1250    69983124113  Crossfit_Hanna  ...    G                    True
+
+[5 rows x 6 columns]
+
+Current ACI distribution in fraudulent transactions:
+aci
+G    364
+Name: count, dtype: int64

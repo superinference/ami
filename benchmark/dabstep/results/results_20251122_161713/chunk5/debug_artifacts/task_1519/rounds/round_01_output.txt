@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Average Scenario Characteristics (Modes):
+Most common is_credit: True
+Most common aci: D
+Most common intracountry: False
+Most common merchant: Crossfit_Hanna
+
+Intracountry Breakdown:
+False    113577
+True      24659
+Name: count, dtype: int64

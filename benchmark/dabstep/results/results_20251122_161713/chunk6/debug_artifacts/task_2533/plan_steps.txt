@@ -1,0 +1,5 @@
+Step 1: Filter the `payments.csv` dataset to include only transactions where the `merchant` is "Crossfit_Hanna" and the `year` is 2023.
+Step 2: Load `merchant_data.json` to retrieve the current MCC and attributes for "Crossfit_Hanna", and load `fees.json`. Then, enhance the filtered payments data by adding an `intracountry` column (True if `issuing_country` equals `acquirer_country`), determining the month from `day_of_year`, and calculating the monthly total volume and fraud rates to facilitate fee rule matching.
+Step 3: Based on the previous step's result, which calculated the original fees (28,500.25 EUR) and the new fees (27,305.10 EUR) resulting in a delta of -1,195.15 EUR, the analysis is complete.
+
+Output the final answer: The amount delta Crossfit_Hanna would have to pay in fees for the year 2023 is -1,195.15 EUR.

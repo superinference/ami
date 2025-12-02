@@ -1,0 +1,20 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (2396, 21)
+
+First 5 rows of filtered data:
+     psp_reference merchant  ... aci  acquirer_country
+62     12075623213  Rafa_AI  ...   E                NL
+142    16711044830  Rafa_AI  ...   C                NL
+311    84174910496  Rafa_AI  ...   E                NL
+325    77365566967  Rafa_AI  ...   E                NL
+352    72544997083  Rafa_AI  ...   E                NL
+
+[5 rows x 21 columns]
+
+Unique Card Schemes in filtered data: ['GlobalCard' 'NexPay' 'TransactPlus' 'SwiftCharge']
+Unique Shopper Interactions in filtered data: ['Ecommerce' 'POS']

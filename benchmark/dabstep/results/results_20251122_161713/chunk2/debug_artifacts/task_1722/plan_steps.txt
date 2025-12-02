@@ -1,0 +1,9 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for transactions where the `merchant` is 'Crossfit_Hanna', the `year` is 2023, and the `day_of_year` is 365.
+Step 2: To answer the question about the total fees for Crossfit_Hanna on the 365th day of 2023, I need to perform a precise calculation that involves matching transactions to fee rules based on multiple criteria (merchant attributes, transaction attributes, and monthly statistics).
+
+The previous attempt highlighted a significant number of unmatched transactions, suggesting that the matching logic needs to be robust, particularly regarding how "wildcard" or "match all" values (like `null` or empty lists `[]`) are handled in the `fees.json` file.
+
+I will create a Python script to:
+1.  **Load and Prepare Data**: Load `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  **Calculate Monthly Stats**: Filter `payments.csv` for 'Crossfit_Hanna' in December 2023 (since day 365 is in December) to calculate the `monthly_volume` and `monthly_fraud_level` (fraud volume / total volume).
+3.  **Parse Fee Rules**: Process `fees.json` to handle ranges (e.g., "100k-1m", "7.7%-8.3%") and convert `null` or empty lists `[]` into "match all" indicators.

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for transactions where the merchant is 'Crossfit_Hanna' and the `day_of_year` is between 182 and 212 (representing July 2023).
+Step 2: Load `fees.json` and `merchant_data.json` to retrieve the rule with ID=150 and Crossfit_Hanna's merchant details, then filter the July transactions to identify those matching fee ID=150 and calculate the total fee delta using the formula `(1 - original_rate) * eur_amount / 10000`.

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where the `merchant` is 'Belles_cookbook_store', the `day_of_year` is 300, and the `year` is 2023.
+Step 2: Load `merchant_data.json` to get the merchant's profile, load `fees.json` to get the fee rules, and process `payments.csv` to calculate the total monthly volume and fraud rate for 'Belles_cookbook_store' in October 2023 (days 274-304) to determine the applicable fee tiers.

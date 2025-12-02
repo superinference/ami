@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the data to include only transactions where the merchant is 'Crossfit_Hanna', the card scheme is 'NexPay', the year is 2023, and the day of year is greater than or equal to 274 (representing the start of Q4).
+Step 2: Group the filtered data by 'ip_country', calculate the mean of 'eur_amount' for each country, sort the results in descending order, and display the top 3 countries with their average transaction values.

@@ -1,0 +1,1 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame, then group the data by the 'ip_country' column and calculate the sum of the 'eur_amount' for each country to identify the one with the highest total transaction amount.

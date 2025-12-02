@@ -1,0 +1,8 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Found 25467 TransactPlus credit transactions.
+Average Fee for 1234 EUR: 11.41528882911869

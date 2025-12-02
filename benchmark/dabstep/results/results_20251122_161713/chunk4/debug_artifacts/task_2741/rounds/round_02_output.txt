@@ -1,0 +1,25 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Rafa_AI
+Sept Volume: €203,119.74
+Sept Fraud Volume: €22,168.51
+Sept Fraud Level: 10.9140%
+Account Type: D, MCC: 7372, Capture Delay: 7
+Number of fraudulent transactions to simulate: 179
+
+Simulation Results:
+ACI A: €182.40
+ACI B: €134.17
+ACI C: €124.48
+ACI D: €119.50
+ACI E: €121.83
+ACI F: €117.14
+ACI G: €109.50
+
+Preferred ACI: G
+Lowest Fee: €109.50
+G

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Belles_cookbook_store' that occurred in the year 2023.
+Step 2: Load the `payments.csv`, `merchant_data.json`, and `fees.json` files, filter for 'Belles_cookbook_store' transactions in 2023, calculate monthly volume and fraud rates, then compute the total fees for the original MCC and the new MCC (8062) by matching transactions to fee rules and calculating the difference.

@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame and calculate the number of missing (null) values in the `ip_address` and `email_address` columns to determine which ones contain missing data.

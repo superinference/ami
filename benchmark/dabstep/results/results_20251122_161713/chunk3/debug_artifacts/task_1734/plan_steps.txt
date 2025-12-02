@@ -1,0 +1,10 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where the `merchant` is 'Martinis_Fine_Steakhouse', the `day_of_year` is 365, and the `year` is 2023.
+Step 2: Load `merchant_data.json` to retrieve the `account_type`, `merchant_category_code`, and `capture_delay` for 'Martinis_Fine_Steakhouse', and simultaneously load `payments.csv` to calculate the total `eur_amount` (monthly volume) and fraud rate (fraud volume / total volume) for this merchant for the entire month of December 2023 (day_of_year 335 to 365).
+Step 3: Load `fees.json`, `merchant_data.json`, and `payments.csv`, then for 'Martinis_Fine_Steakhouse':
+1. Retrieve static merchant details (`account_type`, `merchant_category_code`, `capture_delay`) from `merchant_data.json`.
+2. Calculate `monthly_volume` (sum of `eur_amount`) and `monthly_fraud_level` (sum of `eur_amount` where `has_fraudulent_dispute` is True divided by `monthly_volume`) for December 2023 (days 335-365) using `payments.csv`.
+3. Filter `payments.csv` for transactions on day 365 for this merchant.
+4. For each transaction, find the matching fee rule in `fees.json` by comparing:
+   - Merchant fields: `account_type`, `merchant_category_code`, `capture_delay` (mapping '1','2' to '<3'; '7' to '>5'), `monthly_volume`, `monthly_fraud_level`.
+   - Transaction fields: `card_scheme`, `is_credit`, `aci`, `intracountry` (True if `issuing_country` == `acquirer_country`).
+5. Calculate the fee for each transaction using `fee = fixed_amount + rate * eur_amount / 10000` and sum them to get the total fees.

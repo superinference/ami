@@ -1,0 +1,20 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant Profile for Rafa_AI:
+  Account Type: D
+  MCC: 7372
+  Capture Delay: 7
+
+Monthly Stats (Jan 2023):
+  Volume: €208,369.19
+  Fraud Volume: €24,203.23
+  Fraud Rate: 11.6156%
+
+Transactions on Day 12: 68
+
+Applicable Fee IDs:
+[107, 183, 304, 384, 427, 428, 454, 477, 498, 634, 709, 787, 813, 888, 892, 924]

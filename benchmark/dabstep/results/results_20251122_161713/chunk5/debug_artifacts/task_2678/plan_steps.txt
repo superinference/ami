@@ -1,0 +1,10 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Belles_cookbook_store' that occurred in November (where `day_of_year` is between 305 and 334).
+Step 2: Load `fees.json`, `merchant_data.json`, and `payments.csv`. Filter payments for 'Belles_cookbook_store' in November (day_of_year 305-334). Use the merchant's attributes (MCC, Account Type, Capture Delay) and November stats (Volume ~100.6k, Fraud Rate ~9.2%) to select applicable fee rules. Then, for each card scheme, calculate the total hypothetical fees for the November transactions and identify the scheme with the minimum cost.
+Step 3: To answer the question about which card scheme Belles_cookbook_store should steer traffic to for minimum fees, I need to calculate the hypothetical total fees for the merchant's November transactions under each of the four card schemes, based on the merchant's specific profile and the fee rules.
+
+Here is the plan:
+1. Load `payments.csv`, `merchant_data.json`, `fees.json`, and `acquirer_countries.csv`.
+2. Filter `payments.csv` for the merchant 'Belles_cookbook_store' and the month of November (day_of_year 305 to 334).
+3. Retrieve the merchant's attributes from `merchant_data.json` (MCC, Account Type, Capture Delay, Acquirer) and determine the Acquirer Country using `acquirer_countries.csv`.
+4. Calculate the merchant's November statistics: Total Volume and Fraud Rate (Fraud Volume / Total Volume).
+5. Define a function to calculate the fee for a single transaction under a specific card scheme by finding the matching rule in `fees.json` (matching on MCC, Account Type, Capture Delay, Volume, Fraud Level

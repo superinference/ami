@@ -1,0 +1,28 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Fee Rule ID 64 Inspection ---
+ID                                 64
+card_scheme               SwiftCharge
+account_type                       []
+capture_delay                    None
+monthly_fraud_level              None
+monthly_volume                   None
+merchant_category_code             []
+is_credit                        True
+aci                               [D]
+fixed_amount                     0.08
+rate                               51
+intracountry                      NaN
+Name: 63, dtype: object
+
+--- Key Matching Criteria ---
+Card Scheme: SwiftCharge
+Account Type (Current): []
+Merchant Category Code: []
+ACI: ['D']
+Is Credit: True
+Intracountry: nan

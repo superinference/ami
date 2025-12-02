@@ -1,0 +1,19 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Successfully loaded data. Shape: (138236, 21)
+Rows after filtering for year 2023: 138236
+
+Fraud rates by card scheme (2023):
+card_scheme
+SwiftCharge     0.080245
+NexPay          0.078793
+TransactPlus    0.077061
+GlobalCard      0.076989
+Name: has_fraudulent_dispute, dtype: float64
+
+Scheme with highest fraud rate: SwiftCharge (8.0245%)
+SwiftCharge

@@ -1,0 +1,11 @@
+Step 1: Load the `fees.json` file into a dataframe to inspect the fee rules and their conditions.
+Step 2: To answer the question about the average fee for Account Type F and GlobalCard with a transaction value of 4321 EUR, I need to simulate the fee calculation for relevant historical transactions.
+
+The fee depends on merchant attributes (Account Type, MCC, Capture Delay, Monthly Volume, Monthly Fraud Level) and transaction attributes (Card Scheme, ACI, Is Credit, Intracountry).
+
+I will perform the following steps in a Python script:
+1.  **Load Data**: Load `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  **Identify Merchants**: Filter `merchant_data` to find merchants with `account_type == 'F'`.
+3.  **Calculate Monthly Stats**: Using the full `payments` dataset for these merchants, calculate the `monthly_volume` (sum of `eur_amount`) and `monthly_fraud_level` (sum of `eur_amount` where `has_fraudulent_dispute` is True / total volume) for each month.
+4.  **Filter Transactions**: Filter `payments` for the identified merchants and `card_scheme == 'GlobalCard'`.
+5.  **Enrich Transactions**: Add `intracountry` (issuing ==

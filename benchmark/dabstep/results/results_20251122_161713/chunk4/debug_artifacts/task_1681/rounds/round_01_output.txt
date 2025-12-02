@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Transactions for Belles_cookbook_store on day 10, 2023:
+       psp_reference               merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+6042     69485626841  Belles_cookbook_store      NexPay  2023           14              15           10      False       90.54         NL              NL       Linux  phMWfjriHOJrFpQLrsGCMw  tRKuvk33powLnzlguLg4jg  mdrlozhCvWfngaAdk_S7iw           Ecommerce      4571                   False                False   F               US
+7109     46676280719  Belles_cookbook_store  GlobalCard  2023           16              48           10      False       46.23         LU              NL       Other                     NaN  j_reyKupMJOFGWAa1toJdQ  vqd0UY0UgOI5pGIWepX-jg                 POS      4133                   False                 True   A               US
+7961     53575716360  Belles_cookbook_store  GlobalCard  2023           10              34           10       True      113.68         BE              BE     Android  YYrYPVLOmudEitRQTBSOCw  2zWROVIzmfbwwSE6zucS7w  CE49DEfECudf1xre8NKniw           Ecommerce      4916                   False                False   D               US
+10061    35296418978  Belles_cookbook_store  GlobalCard  2023           23              27           10       True       86.99         ES              ES       MacOS  k8-e8OECSx5W0mXGOww6Fg  S6OGC9YH6EEycnP4jWfF-A  xHNoRH6DyaoTm2Jgdimrfg           Ecommerce      4556                   False                 True   G               US
+23853    28141117112  Belles_cookbook_store      NexPay  2023           13               1           10       True       12.77         IT              IT       Other  YC_gdFHaZem4b1x2JPu1BQ  Fd4m2YCwkRoVI2r5peOnIw  xCi5ORkzLDYIqI5KbvkLlA           Ecommerce      4622                   False                False   D               US
+
+Total records found: 37

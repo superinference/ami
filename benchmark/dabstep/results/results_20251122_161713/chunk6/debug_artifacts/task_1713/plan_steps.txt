@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter it to include only the transactions where the `merchant` is 'Belles_cookbook_store', the `day_of_year` is 100, and the `year` is 2023.
+Step 2: Load `merchant_data.json` to retrieve the account details for 'Belles_cookbook_store', calculate the merchant's total transaction volume and fraud rate for the month of April 2023 (days 91-120) using `payments.csv`, and load `fees.json` to prepare for fee calculation.

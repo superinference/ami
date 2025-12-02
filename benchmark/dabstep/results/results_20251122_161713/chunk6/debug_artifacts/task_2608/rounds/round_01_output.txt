@@ -1,0 +1,41 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Filtered Data Stats for Belles_cookbook_store in April ---
+Row Count: 1118
+Total Volume: 107343.79
+Fraud Volume: 9817.46
+
+--- ACI Counts ---
+aci
+D    495
+F    282
+G    233
+C     37
+A     37
+B     34
+Name: count, dtype: int64
+
+--- Credit Mix ---
+is_credit
+True     818
+False    300
+Name: count, dtype: int64
+
+--- Acquirer Country ---
+acquirer_country
+US    1118
+Name: count, dtype: int64
+
+--- Sample Data ---
+     psp_reference               merchant  ... aci  acquirer_country
+2      31114608278  Belles_cookbook_store  ...   F                US
+82     31185397742  Belles_cookbook_store  ...   F                US
+111    11441093271  Belles_cookbook_store  ...   C                US
+294    88035096329  Belles_cookbook_store  ...   F                US
+569    44872108128  Belles_cookbook_store  ...   G                US
+
+[5 rows x 21 columns]

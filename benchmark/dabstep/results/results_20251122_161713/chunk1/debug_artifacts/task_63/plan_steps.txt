@@ -1,0 +1,1 @@
+Step 1: Load the `merchant_data.json` file into a DataFrame and extract the unique values from the `account_type` column.

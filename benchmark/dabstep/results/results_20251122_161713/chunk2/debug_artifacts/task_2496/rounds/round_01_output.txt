@@ -1,0 +1,30 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loaded payments.csv with 138236 rows.
+Loaded fees.json with 1000 rules.
+Loaded merchant_data.json with 30 merchants.
+Filtered payments for 'Golfclub_Baron_Friso' in 2023: 27748 transactions.
+Found Fee Rule ID=709:
+{
+  "ID": 709,
+  "card_scheme": "GlobalCard",
+  "account_type": [],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": false,
+  "aci": [
+    "A",
+    "B",
+    "C"
+  ],
+  "fixed_amount": 0.12,
+  "rate": 17,
+  "intracountry": null
+}
+Original Rate: 17

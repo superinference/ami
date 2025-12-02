@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe to access the fee rules and their characteristics.
+Step 2: Filter the `fees` DataFrame to include only rows where `card_scheme` is 'TransactPlus' and `account_type` either contains 'D' or is empty (treating empty as a wildcard). Then, for each matching rule, calculate the fee using the formula `fee = fixed_amount + (rate * 4321 / 10000)` and compute the average of these fees.

@@ -1,0 +1,10 @@
+Step 1: Load the "fees.json" file into a dataframe and filter for rows where the 'card_scheme' is 'TransactPlus' and the 'account_type' column either contains 'F' or is empty (indicating a wildcard).
+Step 2: Load "merchant_data.json" and "payments.csv" into dataframes, filter "merchant_data" for rows where 'account_type' is 'F', filter "payments" for rows where 'card_scheme' is 'TransactPlus', merge the two dataframes on the 'merchant' column, and create a new column 'intracountry' which is True if 'issuing_country' equals 'acquirer_country' and False otherwise.
+Step 3: To answer the question about the average fee for account type F with TransactPlus for a 1000 EUR transaction, I need to perform a detailed calculation that involves determining the specific fee rule for each relevant transaction based on dynamic merchant statistics (monthly volume and fraud) and transaction attributes.
+
+Here is the next plan:
+
+Use Python to calculate the average fee by following these steps:
+1.  **Data Loading & Filtering**: Load `payments.csv`, `merchant_data.json`, and `fees.json`. Filter `merchant_data` for `account_type == 'F'` and `fees` for `card_scheme == 'TransactPlus'`.
+2.  **Monthly Stats Calculation**: Using the full `payments` data for the filtered merchants, calculate the `monthly_volume` (sum of `eur_amount`) and `monthly_fraud_level` (sum of fraudulent `eur_amount` / total `monthly_volume`) for each merchant and month (derived from `day_of_year`).
+3.  **Transaction Enrichment**: Filter `payments` for `card_scheme == 'TransactPlus'` and the relevant merchants. Merge with `merchant_data` (to get `merchant_category

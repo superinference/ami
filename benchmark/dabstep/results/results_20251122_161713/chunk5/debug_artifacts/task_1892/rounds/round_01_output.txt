@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 1277
+Total transaction volume: 116436.32
+
+First 5 rows of filtered data:
+     psp_reference               merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+10     11539582857  Belles_cookbook_store    GlobalCard  2023           14               7           77      False       54.94         SE              SE     Android  v4QmydqCskH7TYu-B_KbNg  I2FVI0bgarR2FcTwB-pp3w  X2wgYLwKBQ-tVhTptskgdg           Ecommerce      4556                   False                False   F               US
+354    79855645555  Belles_cookbook_store        NexPay  2023           19              50           85       True       41.16         IT              IT     Android  Pf4hqvlpcgKCZoDL5-QIVQ  gwGkAP9mVQsmm5oxF7BfRg  Ptx0nqjk05MEohrSdQltOw           Ecommerce      4645                   False                False   D               US
+373    56551532215  Belles_cookbook_store  TransactPlus  2023           23              31           77       True       10.51         SE              SE       Other  -ddbJnLSBlcULW51-SEqGQ  zy0hEmNjqW5XcUn9v8OfDg  cDF5jx2wi1FFxM68M46cKw           Ecommerce      4920                   False                False   D               US
+392    13346482193  Belles_cookbook_store        NexPay  2023            8              22           90       True      175.15         BE              BE     Android                     NaN  uJxTQurTjlQJfkxtWTCpoQ  O7lSySKjh9f7Pp6osfr9Ug           Ecommerce      4133                   False                False   D               US
+644    83759521313  Belles_cookbook_store   SwiftCharge  2023            9              43           61       True      109.41         BE              BE       MacOS                     NaN  n-VzgnCreliXkr19b-R2dg  -sVMyFu7--I8lczbuNFkYA           Ecommerce      4571                   False                 True   G               US

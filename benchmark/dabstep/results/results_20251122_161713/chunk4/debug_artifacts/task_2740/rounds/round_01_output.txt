@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments.csv...
+Total transactions found: 89
+
+Sample of filtered transactions:
+      psp_reference                  merchant  ...  aci  has_fraudulent_dispute
+296     80218976741  Martinis_Fine_Steakhouse  ...    G                    True
+2054    34769392156  Martinis_Fine_Steakhouse  ...    G                    True
+4405    54382265565  Martinis_Fine_Steakhouse  ...    G                    True
+4829    50485499469  Martinis_Fine_Steakhouse  ...    G                    True
+5099    50502669081  Martinis_Fine_Steakhouse  ...    G                    True
+
+[5 rows x 7 columns]

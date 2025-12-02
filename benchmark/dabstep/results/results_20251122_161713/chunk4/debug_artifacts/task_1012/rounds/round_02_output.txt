@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average transaction value grouped by aci for Martinis_Fine_Steakhouse (SwiftCharge, Nov-Dec 2023):
+aci
+A    175.343333
+B    251.875000
+C     64.936429
+D     70.091863
+F     66.669254
+G     90.473778
+Name: eur_amount, dtype: float64

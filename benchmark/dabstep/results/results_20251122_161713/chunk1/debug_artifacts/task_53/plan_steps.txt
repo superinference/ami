@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a dataframe and display the first 5 rows and the columns and their types to discern how to proceed.
+Step 2: Count the number of rows in the dataframe where the column 'has_fraudulent_dispute' is True and display the result.

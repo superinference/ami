@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe and filter for rows where the `card_scheme` is 'SwiftCharge' and the `account_type` list either contains 'H' or is empty.
+Step 2: Calculate the fee for each row in the filtered `fees.json` DataFrame using the formula `fee = fixed_amount + (rate * 4321 / 10000)`, then compute the average of these calculated fees and round the result to 6 decimal places.

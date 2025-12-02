@@ -1,0 +1,17 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.20, Verification: insufficient
+Plan steps: 1
+============================================================
+
+DEBUG: Average Fee Analysis by Volume Tier (100 EUR Transaction):
+ vol_rank monthly_volume  estimated_cost
+        0          <100k        0.592766
+        1        100k-1m        0.596957
+        2          1m-5m        0.625769
+        3            >5m        0.633818
+--------------------------------------------------
+At volume '100k-1m', fee (0.5970) did NOT decrease compared to previous (0.5928).
+At volume '1m-5m', fee (0.6258) did NOT decrease compared to previous (0.5970).
+At volume '>5m', fee (0.6338) did NOT decrease compared to previous (0.6258).
+>5m

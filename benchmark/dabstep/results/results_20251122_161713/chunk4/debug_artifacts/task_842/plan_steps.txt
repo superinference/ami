@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for transactions where the merchant is 'Crossfit_Hanna', the card scheme is 'TransactPlus', and the `day_of_year` is greater than or equal to 305 (representing the start of November).
+Step 2: Group the filtered DataFrame by 'acquirer_country' and calculate the mean of the 'eur_amount' column to determine the average transaction value for each country.

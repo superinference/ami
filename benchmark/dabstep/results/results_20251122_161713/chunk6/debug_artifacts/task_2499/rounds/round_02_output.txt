@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Golfclub_Baron_Friso', 'capture_delay': '2', 'acquirer': ['medici'], 'merchant_category_code': 7993, 'account_type': 'F'}
+Fee Rule 595: {'ID': 595, 'card_scheme': 'TransactPlus', 'account_type': [], 'capture_delay': None, 'monthly_fraud_level': None, 'monthly_volume': None, 'merchant_category_code': [], 'is_credit': False, 'aci': ['A'], 'fixed_amount': 0.08, 'rate': 62, 'intracountry': None}
+Found 27748 transactions for Golfclub_Baron_Friso in 2023
+Transactions matching Fee ID 595: 72
+Total Volume matching Fee ID 595: 4383.8099999999995
+-26.74124100000000

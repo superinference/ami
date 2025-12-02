@@ -1,0 +1,36 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv with shape: (138236, 21)
+Successfully loaded fees.json with shape: (1000, 12)
+Successfully loaded merchant_data.json with shape: (30, 5)
+Successfully loaded acquirer_countries.csv with shape: (8, 3)
+
+First 2 rows of payments:
+   psp_reference        merchant  ... aci  acquirer_country
+0    20034594130  Crossfit_Hanna  ...   F                NL
+1    36926127356  Crossfit_Hanna  ...   F                NL
+
+[2 rows x 21 columns]
+
+First 2 rows of fees:
+   ID   card_scheme account_type  ... fixed_amount rate intracountry
+0   1  TransactPlus           []  ...         0.10   19          NaN
+1   2    GlobalCard           []  ...         0.13   86          0.0
+
+[2 rows x 12 columns]
+
+First 2 rows of merchant_data:
+                   merchant capture_delay  ... merchant_category_code  account_type
+0            Crossfit_Hanna        manual  ...                   7997             F
+1  Martinis_Fine_Steakhouse     immediate  ...                   5812             H
+
+[2 rows x 5 columns]
+
+First 2 rows of acquirer_countries:
+   Unnamed: 0                   acquirer country_code
+0           0                  gringotts           GB
+1           1  the_savings_and_loan_bank           US

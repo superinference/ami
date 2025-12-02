@@ -1,0 +1,9 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Total transactions in 2023: 138236
+Fraudulent transactions in 2023: 10765
+Fraud percentage in 2023: 7.787407043027865

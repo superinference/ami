@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where `merchant` is 'Crossfit_Hanna', `card_scheme` is 'NexPay', and `day_of_year` is between 244 (September 1st) and 304 (October 31st).
+Step 2: Group the filtered data by 'issuing_country' and calculate the mean of the 'eur_amount' column to determine the average transaction value for each country.

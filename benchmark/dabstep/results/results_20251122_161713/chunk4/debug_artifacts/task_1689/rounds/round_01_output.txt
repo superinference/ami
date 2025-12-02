@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv with 138236 rows.
+Filtered for merchant='Crossfit_Hanna', year=2023, day_of_year=100.
+Found 151 transactions.
+
+Sample of filtered transactions:
+      psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+1455    34514256749  Crossfit_Hanna   SwiftCharge  2023            7              54          100       True      670.43         BE              BE       MacOS                     NaN  big_7a67yQsMaFxRP5BTVA  FiyTPZsLeHOwHB6eA5GbkQ           Ecommerce      4802                   False                False   D               NL
+1926    14156985399  Crossfit_Hanna    GlobalCard  2023            3              36          100       True       45.01         ES              ES       Other  8CtyGL4e_MOa6DqeIWhSXA  E5S8wJ35x8fGZ3lmQmpKwA  hi7OP3KdLdnpfdI8IFY6TQ           Ecommerce      4920                   False                False   D               GB
+1984    14223507365  Crossfit_Hanna  TransactPlus  2023           13              17          100       True       43.67         BE              BE     Android  mrZ-gdJHjcUZSQXirJwdTA  9oDTISi9slRf9JWP5hQ_0A  o2I_77p0VrXq-_rkehK7_A           Ecommerce      4802                   False                False   D               NL
+3351    87154397933  Crossfit_Hanna    GlobalCard  2023           10              16          100       True       11.06         NL              NL       Other  QCQxcX0b1tFJAoYwJa3Fjg  WubYxcFQf3KRk09M_oZuPA  9bCu0XN-CYZoMP8wfQUM_g                 POS      4571                   False                False   A               NL
+3776    33779130032  Crossfit_Hanna  TransactPlus  2023           20              52          100       True        8.07         BE              BE         iOS  ovYF_vM2AXypX2I-szsOHQ  EGxznNFgRKtN8odiP5gaRw  HGQhXC1dOG7_3mHgzZkHsQ           Ecommerce      4133                   False                False   D               NL
+
+Unique attributes in filtered data (for fee matching):
+card_scheme: ['GlobalCard', 'NexPay', 'SwiftCharge', 'TransactPlus']
+is_credit: [np.False_, np.True_]
+aci: ['A', 'B', 'C', 'D', 'F', 'G']
+issuing_country: ['BE', 'ES', 'FR', 'GR', 'IT', 'LU', 'NL', 'SE']
+acquirer_country: ['GB', 'NL']

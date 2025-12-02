@@ -1,0 +1,28 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded payments.csv with 138236 rows.
+Filtered transactions for Rafa_AI in September (Fraudulent): 179
+
+Sample of filtered data (relevant columns):
+      psp_reference  eur_amount  ... issuing_country acquirer_country
+1858    46411392438      238.56  ...              SE               NL
+2521    27486462527      236.04  ...              ES               NL
+2832    24445970645       89.67  ...              LU               NL
+3416    36563545870       12.80  ...              BE               NL
+3942    79638007471      142.11  ...              NL               NL
+5586    17796264884      428.61  ...              NL               NL
+5930    62041721064      232.02  ...              SE               NL
+7404    33653979209      199.34  ...              BE               NL
+7859    52313129097       79.19  ...              NL               NL
+9187    81305611812      135.24  ...              NL               NL
+
+[10 rows x 6 columns]
+
+Current ACI distribution in these fraudulent transactions:
+aci
+G    179
+Name: count, dtype: int64

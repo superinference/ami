@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions for the merchant 'Belles_cookbook_store' in the year 2023.
+Step 2: Load `merchant_data.json` and `fees.json`, then calculate the total fees for 'Belles_cookbook_store' in 2023 under two scenarios: 1) using the actual MCC from `merchant_data.json`, and 2) using the hypothetical MCC 5911. Finally, compute the difference between the hypothetical and actual fee amounts.

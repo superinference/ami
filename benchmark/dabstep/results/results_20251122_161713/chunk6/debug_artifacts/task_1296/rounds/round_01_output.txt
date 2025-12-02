@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rules found: 150
+    ID   card_scheme account_type  ... fixed_amount rate intracountry
+2    3  TransactPlus           []  ...         0.09   16          0.0
+10  11  TransactPlus           []  ...         0.00   54          NaN
+20  21  TransactPlus           []  ...         0.07   83          NaN
+23  24  TransactPlus           []  ...         0.06   84          NaN
+27  28  TransactPlus           []  ...         0.02   86          1.0
+
+[5 rows x 12 columns]

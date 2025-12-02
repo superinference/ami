@@ -1,0 +1,21 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Martinis_Fine_Steakhouse
+Avg Monthly Volume: €105,018.93
+Fraud Rate: 9.1340%
+Transactions to simulate: 1105
+
+Simulation Results (Total Fees per ACI):
+ACI A: €693.86
+ACI B: €644.13
+ACI C: €474.81
+ACI D: €396.06
+ACI E: €805.44
+ACI F: €776.00
+ACI G: €310.81
+
+Preferred ACI: G

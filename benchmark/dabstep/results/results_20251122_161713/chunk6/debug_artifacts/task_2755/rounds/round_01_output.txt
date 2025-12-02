@@ -1,0 +1,25 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Data Shape: (72, 21)
+
+Sample of filtered transactions (first 5):
+       psp_reference                  merchant  ...  aci eur_amount
+1665     20056981223  Martinis_Fine_Steakhouse  ...    G      69.83
+5218     42065302636  Martinis_Fine_Steakhouse  ...    G      47.19
+10030    41654316879  Martinis_Fine_Steakhouse  ...    G     441.31
+10748    69324040126  Martinis_Fine_Steakhouse  ...    G      27.59
+10818    19473749932  Martinis_Fine_Steakhouse  ...    G       5.07
+
+[5 rows x 6 columns]
+
+Summary of amounts by Card Scheme and ACI:
+card_scheme   aci
+GlobalCard    G      3715.60
+NexPay        G      1664.94
+SwiftCharge   G      1620.58
+TransactPlus  G      2476.84
+Name: eur_amount, dtype: float64

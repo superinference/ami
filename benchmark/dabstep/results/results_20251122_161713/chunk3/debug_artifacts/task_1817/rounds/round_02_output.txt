@@ -1,0 +1,16 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Transactions for Belles_cookbook_store in July: 1138
+Monthly Volume: €106,047.46
+Monthly Fraud Volume: €10,342.75
+Monthly Fraud Rate: 9.7529%
+
+Matched Transactions: 527
+Unmatched Transactions: 611
+Total Fees: €386.36
+386.36

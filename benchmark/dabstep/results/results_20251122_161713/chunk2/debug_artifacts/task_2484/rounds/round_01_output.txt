@@ -1,0 +1,27 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully extracted Fee Rule ID: 398
+Original Rate: 99
+Full Rule Details:
+{
+    "ID": 398,
+    "card_scheme": "SwiftCharge",
+    "account_type": [],
+    "capture_delay": null,
+    "monthly_fraud_level": "7.7%-8.3%",
+    "monthly_volume": null,
+    "merchant_category_code": [],
+    "is_credit": true,
+    "aci": [
+        "A",
+        "B",
+        "C"
+    ],
+    "fixed_amount": 0.08,
+    "rate": 99,
+    "intracountry": null
+}

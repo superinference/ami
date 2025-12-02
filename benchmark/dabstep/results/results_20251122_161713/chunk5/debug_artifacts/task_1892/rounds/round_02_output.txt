@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Belles_cookbook_store
+Month: March 2023
+Fee ID: 384
+Old Rate: 14
+New Rate: 99
+Matching Transactions: 13
+Affected Volume: 742.35
+Delta: 6.30997500000000

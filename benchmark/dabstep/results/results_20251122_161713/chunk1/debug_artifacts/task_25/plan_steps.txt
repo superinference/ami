@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame.
+Step 2: Calculate the Z-score for the 'eur_amount' column using the mean (91.852321) and standard deviation (121.730514), filter the rows where the absolute Z-score is greater than 3, and count the resulting number of outliers.

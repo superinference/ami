@@ -1,0 +1,27 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant: Golfclub_Baron_Friso
+July Total Volume: €225,761.44
+July Fraud Volume: €19,609.05
+July Fraud Rate: 8.6857%
+Account Type: F, MCC: 7993, Capture Delay: 2
+Number of fraudulent transactions to simulate: 165
+
+Simulating fees for different ACIs...
+
+Results:
+ACI A: €117.12
+ACI B: €123.81
+ACI C: €121.94
+ACI D: €71.57
+ACI E: €69.75
+ACI F: €65.24
+ACI G: €61.85
+
+Preferred ACI: G with total fees of €61.85
+G

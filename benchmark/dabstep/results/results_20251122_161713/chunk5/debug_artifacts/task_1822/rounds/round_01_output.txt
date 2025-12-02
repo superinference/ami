@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows in dataset: 138236
+Filtered rows for Belles_cookbook_store in December: 1195
+
+First 5 filtered transactions:
+                  merchant  day_of_year  eur_amount   card_scheme aci  is_credit
+26   Belles_cookbook_store          364       38.66  TransactPlus   G       True
+27   Belles_cookbook_store          363        9.08        NexPay   F       True
+60   Belles_cookbook_store          348       50.50    GlobalCard   D       True
+237  Belles_cookbook_store          352       57.02  TransactPlus   F      False
+300  Belles_cookbook_store          337       38.50   SwiftCharge   G      False

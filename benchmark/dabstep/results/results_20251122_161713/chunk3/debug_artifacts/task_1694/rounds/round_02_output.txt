@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Golfclub_Baron_Friso', 'capture_delay': '2', 'acquirer': ['medici'], 'merchant_category_code': 7993, 'account_type': 'F'}
+Monthly Volume (Jan): 215682.64
+Monthly Fraud Rate (Jan): 0.0861407249466951 (8.61%)
+Transactions on Day 12: 70
+
+Applicable Fee IDs:
+36, 64, 381, 428, 454, 473, 536, 572, 631, 709, 813, 871, 942

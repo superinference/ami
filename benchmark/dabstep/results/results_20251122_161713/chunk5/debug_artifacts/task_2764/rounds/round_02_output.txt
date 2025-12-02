@@ -1,0 +1,19 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Transactions found: 13805
+Profile - MCC: 5812, Account: H, Capture: immediate
+Profile - Avg Monthly Vol: €105,018.93, Fraud Rate: 9.1340%
+Applicable rules found: 87
+Scheme: SwiftCharge | Incomplete Coverage (11208/13805) - Discarded
+Scheme: TransactPlus | Total Fee: €12,439.55 | Coverage: 100%
+Scheme: GlobalCard | Incomplete Coverage (5242/13805) - Discarded
+Scheme: NexPay | Incomplete Coverage (4190/13805) - Discarded
+
+Recommended Scheme: TransactPlus
+Minimum Total Fees: €12,439.55
+TransactPlus

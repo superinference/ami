@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and filter the rules to include only those where `card_scheme` is 'TransactPlus' and `is_credit` is True.
+Step 2: Calculate the fee for a 1 euro transaction for each rule in the filtered `fees.json` data (where `card_scheme` is 'TransactPlus' and `is_credit` is True), map these fees to their corresponding ACIs (handling empty lists as applying to all ACIs: A, B, C, D, E, F, G), determine the maximum fee for each ACI, and identify the ACI with the highest maximum fee (resolving ties alphabetically).

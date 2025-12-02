@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file and filter the data to select rows where the `merchant` is "Martinis_Fine_Steakhouse", the `year` is 2023, and the `day_of_year` is 200.

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv`, `fees.json`, and `merchant_data.json` files into pandas DataFrames to access the transaction data, fee structures, and merchant attributes.
+Step 2: Filter the payments data for 'Golfclub_Baron_Friso', merge it with the merchant metadata, calculate the 'intracountry' status for each transaction, and then identify the transactions that match the specific criteria of Fee ID 595 to calculate the cost difference.

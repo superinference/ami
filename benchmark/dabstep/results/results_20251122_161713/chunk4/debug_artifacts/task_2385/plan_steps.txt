@@ -1,0 +1,20 @@
+Step 1: To answer the question about the payment delta for Rafa_AI in April 2023 given a change in fee ID 17, I need to calculate the fees for relevant transactions using the current rules and then compare them with the modified rule.
+
+The previous error indicates an issue with comparing numerical calculated stats (like fraud rates) against string-based conditions in the fee rules (e.g., ">8.3%"). I will write a script that correctly parses these conditions.
+
+Here is the plan:
+1.  **Load Data**: Read `payments.csv`, `fees.json`, and `merchant_data.json`.
+2.  **Filter Data**: Select transactions for `merchant = 'Rafa_AI'` in April 2023 (Day of Year 91 to 120).
+3.  **Calculate Monthly Stats**: Compute the total `monthly_volume` and `monthly_fraud_level` (fraud volume / total volume) for this merchant in this month, as these are required to match fee rules.
+4.  **Match Rules**: Iterate through each transaction and find the applicable fee rule from `fees.json`.
+    *   Implement a helper function to parse and check conditions like `monthly_
+Step 2: To answer the question about the payment delta for Rafa_AI in April 2023 given a change in fee ID 17, I need to calculate the fees for relevant transactions using the current rules and then compare them with the modified rule.
+
+The previous result `-0.090152` suggests a small reduction, but I will verify this calculation to ensure accuracy, specifically checking the rule matching logic for ID 17 against the April 2023 transactions.
+
+Here is the plan:
+1.  **Load Data**: Read `payments.csv`, `fees.json`, and `merchant_data.json`.
+2.  **Filter Data**: Select transactions for `merchant = 'Rafa_AI'` in April 2023 (Day of Year 91 to 120).
+3.  **Calculate Monthly Stats**: Compute the total `monthly_volume` and `monthly_fraud_level` for Rafa_AI in April 2023, as fee rules often depend on these aggregate metrics.
+4.  **Identify Fee ID 17**: Extract the criteria and original rate for the fee rule with `ID=17` from `fees.json`.
+5.  **Match Transactions**: Iterate through the filtered transactions to identify which ones specifically trigger

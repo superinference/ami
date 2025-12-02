@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully retrieved attributes for Rafa_AI:
+Merchant Category Code: 7372
+Account Type: D
+Capture Delay: 7
+Acquirers: ['tellsons_bank']
+------------------------------
+Full Attribute Dictionary: {'merchant': 'Rafa_AI', 'capture_delay': '7', 'acquirer': ['tellsons_bank'], 'merchant_category_code': 7372, 'account_type': 'D'}

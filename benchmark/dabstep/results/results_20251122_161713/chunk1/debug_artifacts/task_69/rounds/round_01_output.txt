@@ -1,0 +1,12 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded fees.json
+Total records: 1000
+
+Unique values in 'monthly_volume':
+[None '>5m' '<100k' '100k-1m' '1m-5m']
+An error occurred: ('vol_sort', '')

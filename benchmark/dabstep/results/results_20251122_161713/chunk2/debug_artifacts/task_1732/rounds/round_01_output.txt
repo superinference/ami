@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+      psp_reference                  merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+1523    60452484183  Martinis_Fine_Steakhouse  TransactPlus  2023           10              34          200       True      163.77         SE              IT       Linux  VSMTslaNpN3gCstMyskbcw  PRrv53n-g02UBo_pp3fmJQ  7SZ_UDqIou1YaaafcbpmVA           Ecommerce      4556                   False                False   D               FR
+1937    18606145899  Martinis_Fine_Steakhouse  TransactPlus  2023            9              54          200       True       48.10         NL              NL     Windows  vbnTUK9fMnjbdhpe8Ilchg  nQRZ6Ypq3vTUd9Rurot5Vw  CCcUyt3yGqrF3kZv6MnoPw           Ecommerce      4556                   False                False   G               FR
+2481    61928898114  Martinis_Fine_Steakhouse        NexPay  2023           13              15          200      False       35.34         BE              BE     Android  Er9tAPigG1m8m5oPyLiUFA  hO_mlX8ewLO_bARDvFBNgQ  S_ttCcA2MFTxY3K6omh_jw           Ecommerce      4622                   False                False   F               FR
+4204    53366257670  Martinis_Fine_Steakhouse  TransactPlus  2023           11              14          200       True       24.51         NL              NL     Android  gG5I_v1JgurQt_1hL5lD_A  -mm-VkWZpoELcR6m6AvCAA  Ki8g0_pRaXc09WCFMBYNqg           Ecommerce      4891                   False                False   D               FR
+4722    48135075001  Martinis_Fine_Steakhouse    GlobalCard  2023           18               6          200       True      132.12         SE              SE       Linux  XMNAPPd3LqhKMAygBwmkpQ  mR2dpjlergnReqNYIQrO-A  FPOC9DSUePgbZwcTQqyzbQ           Ecommerce      4556                   False                False   G               FR
+Number of transactions found: 49

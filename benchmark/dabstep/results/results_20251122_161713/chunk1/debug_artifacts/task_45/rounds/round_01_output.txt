@@ -1,0 +1,19 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded 'payments.csv'.
+DataFrame Shape: (138236, 21)
+Columns: ['psp_reference', 'merchant', 'card_scheme', 'year', 'hour_of_day', 'minute_of_hour', 'day_of_year', 'is_credit', 'eur_amount', 'ip_country', 'issuing_country', 'device_type', 'ip_address', 'email_address', 'card_number', 'shopper_interaction', 'card_bin', 'has_fraudulent_dispute', 'is_refused_by_adyen', 'aci', 'acquirer_country']
+
+First 5 rows of 'card_scheme' and 'email_address':
+  card_scheme           email_address
+0      NexPay  0AKXyaTjW7H4m1hOWmOKBQ
+1      NexPay  _Gm8at1k2ojYAM_wSEptNw
+2  GlobalCard                     NaN
+3      NexPay  5VW_2O6ku_0p_fLLwuC1vw
+4      NexPay  Alb1iUIxIqlW8YUeYVGTzg
+
+Count of missing values in 'email_address': 13824

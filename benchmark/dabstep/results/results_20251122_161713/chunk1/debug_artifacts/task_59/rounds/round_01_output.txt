@@ -1,0 +1,24 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original rows: 138236
+Filtered rows: 4244
+
+First 5 rows of filtered data:
+     psp_reference        merchant  ... aci  acquirer_country
+86     24968211254  Crossfit_Hanna  ...   F                NL
+202    14761476585  Crossfit_Hanna  ...   D                NL
+208    18135677583  Crossfit_Hanna  ...   D                NL
+224    44526047819  Crossfit_Hanna  ...   D                NL
+255    60757699855  Crossfit_Hanna  ...   G                NL
+
+[5 rows x 21 columns]
+
+Unique values in filtered columns:
+Merchant: ['Crossfit_Hanna']
+Card Scheme: ['NexPay']
+Year: [2023]
+Min Day of Year: 274

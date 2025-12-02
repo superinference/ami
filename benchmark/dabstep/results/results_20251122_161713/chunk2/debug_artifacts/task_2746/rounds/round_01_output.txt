@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Transaction Count: 202
+Average Amount: 110.67
+
+Card Scheme Distribution:
+card_scheme
+GlobalCard      75
+NexPay          62
+TransactPlus    41
+SwiftCharge     24
+Name: count, dtype: int64
+
+Filtered data saved to: /output/chunk2/data/context/rafa_oct_fraud.csv

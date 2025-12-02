@@ -1,0 +1,11 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Average Scenario Parameters (Modes):
+Merchant: Crossfit_Hanna (Count: 55139)
+Is Credit: True (Count: 101119)
+ACI: D (Count: 49642)
+Intracountry: False (Count: 113577)

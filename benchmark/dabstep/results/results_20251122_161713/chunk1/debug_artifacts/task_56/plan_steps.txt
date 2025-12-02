@@ -1,0 +1,1 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame to access the transaction data, specifically the `device_type` column.

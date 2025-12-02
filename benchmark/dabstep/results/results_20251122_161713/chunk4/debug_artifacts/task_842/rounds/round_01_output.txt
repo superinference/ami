@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (2291, 21)
+     psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+154    22758881097  Crossfit_Hanna  TransactPlus  2023           18              33          343      False       27.70         IT              IT     Windows  QogXgKOC5tyOzlPtUncMEA  -osY4FjnWPS6idjcX2WdxQ  YEs5Dk5ULhuaalaYmfb2mg           Ecommerce      4236                   False                False   F               NL
+353    63613295037  Crossfit_Hanna  TransactPlus  2023            9              14          360       True       58.49         BE              BE         iOS  9sif0T0ZMDazK9tK0yY4DQ  A2eTB_-2x2MTiZ8aOZHEZg  JF0Lfvmjue0zSBUMZLMeNg           Ecommerce      4571                   False                False   D               NL
+450    51011669191  Crossfit_Hanna  TransactPlus  2023           11              20          318       True       50.08         IT              IT       MacOS  LQ0zXet91brFFbK0KxeXPQ  nlZiqBWv0o3-xHzGkKUcbA  _z5GlbranMn3O_4oy8aXPw           Ecommerce      4916                   False                False   D               NL
+499    50958105452  Crossfit_Hanna  TransactPlus  2023           16              15          355       True       68.58         ES              ES       Other  ZSaqxaaRmHu9Pj6sGipkOQ  Ox5SMEmCUTkqxV57iouaNw  IJKIcHlmzXujcqBLWBSyPQ           Ecommerce      4556                   False                False   D               GB
+615    38052106532  Crossfit_Hanna  TransactPlus  2023            8               5          314       True       56.04         IT              FR         iOS                     NaN                     NaN  v3GAMkBTgrhv-keVm1mDmA           Ecommerce      4920                   False                False   D               NL

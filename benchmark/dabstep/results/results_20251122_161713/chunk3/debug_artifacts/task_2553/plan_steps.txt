@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and filter the data to retrieve the specific rule entry where `ID` is 64, in order to identify its original criteria (such as `card_scheme`, `merchant_category_code`, and existing `account_type`) before analyzing the impact of the hypothetical change.
+Step 2: Load `merchant_data.json` to get the `account_type` for each merchant, and load `payments.csv` to filter for transactions matching Fee 64's criteria (`card_scheme`='SwiftCharge', `is_credit`=True, `aci`='D'), then identify which of these merchants do not have the `account_type` 'R'.

@@ -1,0 +1,75 @@
+{"task_id": "30", "agent_answer": "yes", "reasoning_trace": "Yes"}
+{"task_id": "64", "agent_answer": "A, B, C, D, E, F, G", "reasoning_trace": "A, B, C, D, E, F, G"}
+{"task_id": "6", "agent_answer": "73.15", "reasoning_trace": "73.15"}
+{"task_id": "24", "agent_answer": "Other", "reasoning_trace": "[Other]"}
+{"task_id": "42", "agent_answer": "no", "reasoning_trace": "No"}
+{"task_id": "23", "agent_answer": "0.0000", "reasoning_trace": "0.0000"}
+{"task_id": "38", "agent_answer": "59.96", "reasoning_trace": "59.96"}
+{"task_id": "59", "agent_answer": "IT, ES, FR", "reasoning_trace": "IT, ES, FR"}
+{"task_id": "25", "agent_answer": "2429", "reasoning_trace": "2429"}
+{"task_id": "1", "agent_answer": "138236", "reasoning_trace": "138236"}
+{"task_id": "10", "agent_answer": "5", "reasoning_trace": "5"}
+{"task_id": "50", "agent_answer": "yes", "reasoning_trace": "Yes"}
+{"task_id": "70", "agent_answer": "yes", "reasoning_trace": "Yes"}
+{"task_id": "19", "agent_answer": "8.024467", "reasoning_trace": "8.024467"}
+{"task_id": "44", "agent_answer": "61.86", "reasoning_trace": "61.86"}
+{"task_id": "27", "agent_answer": "13", "reasoning_trace": "[13]"}
+{"task_id": "36", "agent_answer": "2.986691", "reasoning_trace": "2.986690865093769"}
+{"task_id": "13", "agent_answer": "14", "reasoning_trace": "[14]"}
+{"task_id": "5", "agent_answer": "NL", "reasoning_trace": "[NL]"}
+{"task_id": "60", "agent_answer": "Segment with the worst fraud rate: Issuing Country: BE (10.78%)", "reasoning_trace": "[Segment with the worst fraud rate: Issuing Country: BE (10.78%)]"}
+{"task_id": "67", "agent_answer": "0.0598", "reasoning_trace": "[0.0598]"}
+{"task_id": "22", "agent_answer": "no", "reasoning_trace": "No"}
+{"task_id": "20", "agent_answer": "Crossfit_Hanna", "reasoning_trace": "[Crossfit_Hanna]"}
+{"task_id": "29", "agent_answer": "yes", "reasoning_trace": "Yes"}
+{"task_id": "69", "agent_answer": ">5m", "reasoning_trace": "[>5m]"}
+{"task_id": "45", "agent_answer": "GlobalCard", "reasoning_trace": "GlobalCard"}
+{"task_id": "47", "agent_answer": "78.04", "reasoning_trace": "78.04"}
+{"task_id": "28", "agent_answer": "11.49", "reasoning_trace": "11.49"}
+{"task_id": "32", "agent_answer": "1.43", "reasoning_trace": "1.43"}
+{"task_id": "40", "agent_answer": "10.00%", "reasoning_trace": "10.00%"}
+{"task_id": "46", "agent_answer": "1.54446", "reasoning_trace": "1.5444601985011142"}
+{"task_id": "3", "agent_answer": "27647", "reasoning_trace": "27647"}
+{"task_id": "8", "agent_answer": "Ecommerce", "reasoning_trace": "Ecommerce"}
+{"task_id": "26", "agent_answer": "Crossfit_Hanna", "reasoning_trace": "[Crossfit_Hanna]"}
+{"task_id": "17", "agent_answer": "9.000000", "reasoning_trace": "9.000000"}
+{"task_id": "43", "agent_answer": "274.33", "reasoning_trace": "274.33"}
+{"task_id": "72", "agent_answer": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso, Martinis_Fine_Steakhouse, Rafa_AI", "reasoning_trace": "Belles_cookbook_store, Crossfit_Hanna, Golfclub_Baron_Friso, Martinis_Fine_Steakhouse, Rafa_AI"}
+{"task_id": "68", "agent_answer": "8062, 8011, 8021", "reasoning_trace": "8062, 8011, 8021"}
+{"task_id": "54", "agent_answer": "Crossfit_Hanna", "reasoning_trace": "[Crossfit_Hanna]"}
+{"task_id": "61", "agent_answer": "Rafa_AI", "reasoning_trace": "[Rafa_AI]"}
+{"task_id": "37", "agent_answer": "2.72", "reasoning_trace": "2.72"}
+{"task_id": "57", "agent_answer": "55193", "reasoning_trace": "55193"}
+{"task_id": "34", "agent_answer": "55192", "reasoning_trace": "55192"}
+{"task_id": "55", "agent_answer": "Other", "reasoning_trace": "Other"}
+{"task_id": "31", "agent_answer": "C. both ip_address and email_address", "reasoning_trace": "[C. both ip_address and email_address]"}
+{"task_id": "63", "agent_answer": "D' 'F' 'H' 'R' 'S", "reasoning_trace": "'D' 'F' 'H' 'R' 'S'"}
+{"task_id": "56", "agent_answer": "22520", "reasoning_trace": "22520"}
+{"task_id": "62", "agent_answer": "Not specified", "reasoning_trace": "Not specified"}
+{"task_id": "11", "agent_answer": "4811.76", "reasoning_trace": "4811.76"}
+{"task_id": "58", "agent_answer": "9.765683", "reasoning_trace": "9.76568278247114"}
+{"task_id": "52", "agent_answer": "NL", "reasoning_trace": "[NL]"}
+{"task_id": "12", "agent_answer": "GlobalCard", "reasoning_trace": "[GlobalCard]"}
+{"task_id": "16", "agent_answer": "Golfclub_Baron_Friso", "reasoning_trace": "[Golfclub_Baron_Friso]"}
+{"task_id": "14", "agent_answer": "has_fraudulent_dispute", "reasoning_trace": "has_fraudulent_dispute"}
+{"task_id": "7", "agent_answer": "90.00%", "reasoning_trace": "90.00%"}
+{"task_id": "15", "agent_answer": "7.79", "reasoning_trace": "7.79"}
+{"task_id": "18", "agent_answer": "SwiftCharge", "reasoning_trace": "[SwiftCharge]"}
+{"task_id": "2", "agent_answer": "91.852321", "reasoning_trace": "91.85232110304118"}
+{"task_id": "9", "agent_answer": "64", "reasoning_trace": "[64]"}
+{"task_id": "41", "agent_answer": "ip_address", "reasoning_trace": "[ip_address]"}
+{"task_id": "51", "agent_answer": "41679", "reasoning_trace": "41679"}
+{"task_id": "71", "agent_answer": "no", "reasoning_trace": "No"}
+{"task_id": "35", "agent_answer": "28629", "reasoning_trace": "28629"}
+{"task_id": "4", "agent_answer": "NL", "reasoning_trace": "[NL]"}
+{"task_id": "65", "agent_answer": "is_credit", "reasoning_trace": "is_credit"}
+{"task_id": "48", "agent_answer": "no", "reasoning_trace": "No"}
+{"task_id": "66", "agent_answer": "intracountry", "reasoning_trace": "intracountry"}
+{"task_id": "53", "agent_answer": "10765", "reasoning_trace": "10765"}
+{"task_id": "21", "agent_answer": "Crossfit_Hanna", "reasoning_trace": "[Crossfit_Hanna]"}
+{"task_id": "39", "agent_answer": "24.999277", "reasoning_trace": "24.99927659943864"}
+{"task_id": "49", "agent_answer": "B. BE", "reasoning_trace": "B. BE"}
+{"task_id": "33", "agent_answer": "46284", "reasoning_trace": "46284"}
+{"task_id": "1712", "agent_answer": "9.477138", "reasoning_trace": "9.477138000000002"}
+{"task_id": "1810", "agent_answer": "[36, 51, 65, 107, 123, 150, 163, 183, 276, 286, 304, 359, 384, 427, 428, 477, 498, 595, 626, 631, 634, 701, 709, 741, 787, 813, 861, 888, 892]", "reasoning_trace": "36, 51, 65, 107, 123, 150, 163, 183, 276, 286, 304, 359, 384, 427, 428, 477, 498, 595, 626, 631, 634, 701, 709, 741, 787, 813, 861, 888, 892"}
+{"task_id": "1741", "agent_answer": "[36, 51, 53, 64, 65, 107, 123, 150, 154, 163, 231, 249, 276, 286, 319, 347, 381, 384, 394, 398, 428, 454, 470, 471, 473, 477, 536, 556, 572, 595, 608, 626, 680, 709, 725, 741, 813, 868, 895, 939, 960]", "reasoning_trace": "36, 51, 53, 64, 65, 107, 123, 150, 154, 163, 231, 249, 276, 286, 319, 347, 381, 384, 394, 398, 428, 454, 470, 471, 473, 477, 536, 556, 572, 595, 608, 626, 680, 709, 725, 741, 813, 868, 895, 939, 960"}

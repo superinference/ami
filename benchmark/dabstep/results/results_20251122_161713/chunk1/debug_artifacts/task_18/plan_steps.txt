@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a dataframe and filter the data to include only rows where the 'year' column is 2023.
+Step 2: Group the filtered data by 'card_scheme', calculate the mean of 'has_fraudulent_dispute' to determine the fraud rate for each scheme, sort the results in descending order, and identify the card scheme with the highest rate.

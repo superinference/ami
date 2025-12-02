@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully loaded 1000 fee rules.
+
+Columns available in fees.json:
+['ID', 'card_scheme', 'account_type', 'capture_delay', 'monthly_fraud_level', 'monthly_volume', 'merchant_category_code', 'is_credit', 'aci', 'fixed_amount', 'rate', 'intracountry']
+
+Sample fee rules (first 3):
+   ID   card_scheme account_type capture_delay monthly_fraud_level monthly_volume                            merchant_category_code is_credit     aci  fixed_amount  rate  intracountry
+0   1  TransactPlus           []          None                None           None  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]     False  [C, B]          0.10    19           NaN
+1   2    GlobalCard           []          None               >8.3%           None  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]      None     [B]          0.13    86           0.0
+2   3  TransactPlus           []            >5                None           None  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]      True  [C, A]          0.09    16           0.0
+
+Total rules for 'SwiftCharge': 270

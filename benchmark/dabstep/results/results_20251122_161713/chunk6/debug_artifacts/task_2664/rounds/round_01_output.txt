@@ -1,0 +1,11 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Analysis for Martinis_Fine_Steakhouse in September (Days 244-273):
+Transaction Count: 1196
+Total Monthly Volume: 109430.93 EUR
+Fraud Rate: 7.4415%
+Average Transaction Value: 91.50 EUR

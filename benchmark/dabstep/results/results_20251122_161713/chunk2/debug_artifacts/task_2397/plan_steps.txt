@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the `merchant` is 'Rafa_AI' and the `day_of_year` corresponds to May 2023 (days 121 to 151).
+Step 2: Load `fees.json` and `merchant_data.json` to retrieve the details for fee ID 787 and the merchant 'Rafa_AI', then identify which of the May 2023 transactions match the criteria of fee ID 787 (considering attributes like card scheme, ACI, account type, and merchant stats) and calculate the total fee difference using the formula: `(1 - original_rate) * eur_amount / 10000`.

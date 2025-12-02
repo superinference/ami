@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe and filter the rows where `card_scheme` is 'TransactPlus' and `is_credit` is True (or null, if applicable to credit).
+Step 2: Calculate the fee for each rule in the filtered dataset using the formula `fee = fixed_amount + (rate * 5000 / 10000)`, and then compute the average of these fees.

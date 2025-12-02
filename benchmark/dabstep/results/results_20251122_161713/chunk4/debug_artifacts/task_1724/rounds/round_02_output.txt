@@ -1,0 +1,39 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Golfclub_Baron_Friso
+Jan 2023 Volume: €215,682.64
+Jan 2023 Fraud Level: 10.7597%
+Transactions on Day 12: 70
+Warning: No fee rule found for tx 45255815260
+Warning: No fee rule found for tx 82231000720
+Warning: No fee rule found for tx 65150950100
+Warning: No fee rule found for tx 78632338839
+Warning: No fee rule found for tx 78085003513
+Warning: No fee rule found for tx 88203147641
+Warning: No fee rule found for tx 41980412884
+Warning: No fee rule found for tx 40116991023
+Warning: No fee rule found for tx 48083379314
+Warning: No fee rule found for tx 30627834803
+Warning: No fee rule found for tx 39699588501
+Warning: No fee rule found for tx 33239209750
+Warning: No fee rule found for tx 27360269786
+Warning: No fee rule found for tx 55398116793
+Warning: No fee rule found for tx 53153261861
+Warning: No fee rule found for tx 67836096215
+Warning: No fee rule found for tx 72855872797
+Warning: No fee rule found for tx 76928140292
+Warning: No fee rule found for tx 42173281741
+Warning: No fee rule found for tx 71898690986
+Warning: No fee rule found for tx 56828969066
+Warning: No fee rule found for tx 24726532055
+Warning: No fee rule found for tx 24621419511
+Warning: No fee rule found for tx 63933858830
+Warning: No fee rule found for tx 85248683602
+Warning: No fee rule found for tx 69134374237
+Warning: No fee rule found for tx 61933903052
+
+Total fees for Golfclub_Baron_Friso on Day 12, 2023: 33.13

@@ -1,0 +1,12 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is "Martinis_Fine_Steakhouse", the `year` is 2023, and the `day_of_year` is 10.
+Step 2: To answer the question about the total fees Martinis_Fine_Steakhouse should pay for the 10th of 2023, I need to recalculate the fees with a more robust matching logic, specifically addressing the "No fee rule found" warnings from the previous attempt.
+
+Here is the plan:
+1.  **Load Data**: Load `payments.csv`, `fees.json`, and `merchant_data.json`.
+2.  **Get Merchant Profile**: Retrieve the `merchant_category_code`, `account_type`, and `capture_delay` for "Martinis_Fine_Steakhouse".
+3.  **Calculate Monthly Stats**: Calculate the total transaction volume and fraud rate (fraud volume / total volume) for "Martinis_Fine_Steakhouse" for **January 2023** (days 1-31). This is required to match the `monthly_volume` and `monthly_fraud_level` fields in the fee rules.
+4.  **Filter Transactions**: Select transactions for "Martinis_Fine_Steakhouse" on Day 10 of 2023.
+5.  **Parse Fee Rules**: Process `fees.json` to handle:
+    *   Range strings (e.g., "100k-1m", ">5", "7.7%-8.3%").
+    *   Wildcards (`null` or empty lists).
+    *   `intracountry

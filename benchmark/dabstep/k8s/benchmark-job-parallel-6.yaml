@@ -1,0 +1,308 @@
+# SuperInference DABStep Benchmark - 6 Parallel Containers
+# 450 tasks split into 6 chunks to reduce API rate limiting
+# Chunk distribution: 75, 75, 75, 75, 75, 75 (equal split)
+
+# Create image pull secret first:
+# oc create secret docker-registry ghcr-secret \
+#   --docker-server=ghcr.io \
+#   --docker-username=ccamacho \
+#   --docker-password=ghp_asdfasdf8iiNb \
+#   -n bench --dry-run=client -o yaml | oc apply -f -
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bench
+  labels:
+    app: superinference
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: superinference-dabstep-6chunks
+  namespace: bench
+  labels:
+    app: superinference
+    component: benchmark-parallel-6
+spec:
+  ttlSecondsAfterFinished: 1728000
+  activeDeadlineSeconds: 2592000
+  backoffLimit: 0
+  
+  template:
+    metadata:
+      labels:
+        job-name: superinference-dabstep-6chunks
+        app: superinference
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      imagePullSecrets:
+        - name: ghcr-secret
+      
+      initContainers:
+        - name: timestamp-generator
+          image: busybox
+          command: ["sh", "-c"]
+          args:
+            - |
+              TS=$(date +"%Y%m%d-%H%M%S");
+              echo $TS > /shared/timestamp;
+              echo "Generated timestamp: $TS"
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
+      
+      containers:
+        - name: sidecar
+          image: busybox
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "📦 Sidecar: 6 chunks accessible via /output";
+              echo "   - /output/chunk1/ (tasks 0-75, 75 tasks)";
+              echo "   - /output/chunk2/ (tasks 75-150, 75 tasks)";
+              echo "   - /output/chunk3/ (tasks 150-225, 75 tasks)";
+              echo "   - /output/chunk4/ (tasks 225-300, 75 tasks)";
+              echo "   - /output/chunk5/ (tasks 300-375, 75 tasks)";
+              echo "   - /output/chunk6/ (tasks 375-450, 75 tasks)";
+              echo "   Total: 450 tasks across 6 chunks";
+              echo "";
+              echo "Use: oc cp <pod>:/output ./all-results -c sidecar";
+              sleep infinity
+          volumeMounts:
+            - name: results-volume
+              mountPath: /output
+
+        - name: benchmark-chunk-1
+          image: ghcr.io/superinference/agent:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "🚀 Chunk 1/6: Tasks 0-75 (MCP Port 3001)";
+              if [ -f /secrets/.env ]; then export $(cat /secrets/.env | grep -v '^#' | xargs); fi
+              mkdir -p /output/chunk1;
+              cd /app/benchmark/dabstep;
+              python3 dabstep_benchmark.py \
+                --problems 450 --difficulty both \
+                --start-index 0 --end-index 75 \
+                --mcp-port 3001 \
+                --methods superinference \
+                --output-dir /output/chunk1 \
+                2>&1 | tee /output/chunk1/benchmark.log;
+              echo "done" > /shared/chunk1_complete;
+          env:
+            - name: BENCHMARK_MODE
+              value: "true"
+            - name: HF_HOME
+              value: "/app/benchmark/dabstep/.cache/huggingface"
+            - name: HOME
+              value: "/tmp"
+            - name: DATA_CONTEXT_DIR
+              value: "/output/chunk1/data/context"
+          volumeMounts:
+            - {name: results-volume, mountPath: /output}
+            - {name: env-secret, mountPath: /secrets, readOnly: true}
+            - {name: shared-data, mountPath: /shared}
+            - {name: cache-volume, mountPath: /app/benchmark/dabstep/.cache}
+            - {name: tmp-volume, mountPath: /tmp}
+
+        - name: benchmark-chunk-2
+          image: ghcr.io/superinference/agent:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "🚀 Chunk 2/6: Tasks 75-150 (MCP Port 3002)";
+              if [ -f /secrets/.env ]; then export $(cat /secrets/.env | grep -v '^#' | xargs); fi
+              mkdir -p /output/chunk2;
+              cd /app/benchmark/dabstep;
+              python3 dabstep_benchmark.py \
+                --problems 450 --difficulty both \
+                --start-index 75 --end-index 150 \
+                --mcp-port 3002 \
+                --methods superinference \
+                --output-dir /output/chunk2 \
+                2>&1 | tee /output/chunk2/benchmark.log;
+              echo "done" > /shared/chunk2_complete;
+          env:
+            - name: BENCHMARK_MODE
+              value: "true"
+            - name: HF_HOME
+              value: "/app/benchmark/dabstep/.cache/huggingface"
+            - name: HOME
+              value: "/tmp"
+            - name: DATA_CONTEXT_DIR
+              value: "/output/chunk2/data/context"
+          volumeMounts:
+            - {name: results-volume, mountPath: /output}
+            - {name: env-secret, mountPath: /secrets, readOnly: true}
+            - {name: shared-data, mountPath: /shared}
+            - {name: cache-volume, mountPath: /app/benchmark/dabstep/.cache}
+            - {name: tmp-volume, mountPath: /tmp}
+
+        - name: benchmark-chunk-3
+          image: ghcr.io/superinference/agent:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "🚀 Chunk 3/6: Tasks 150-225 (MCP Port 3003)";
+              if [ -f /secrets/.env ]; then export $(cat /secrets/.env | grep -v '^#' | xargs); fi
+              mkdir -p /output/chunk3;
+              cd /app/benchmark/dabstep;
+              python3 dabstep_benchmark.py \
+                --problems 450 --difficulty both \
+                --start-index 150 --end-index 225 \
+                --mcp-port 3003 \
+                --methods superinference \
+                --output-dir /output/chunk3 \
+                2>&1 | tee /output/chunk3/benchmark.log;
+              echo "done" > /shared/chunk3_complete;
+          env:
+            - name: BENCHMARK_MODE
+              value: "true"
+            - name: HF_HOME
+              value: "/app/benchmark/dabstep/.cache/huggingface"
+            - name: HOME
+              value: "/tmp"
+            - name: DATA_CONTEXT_DIR
+              value: "/output/chunk3/data/context"
+          volumeMounts:
+            - {name: results-volume, mountPath: /output}
+            - {name: env-secret, mountPath: /secrets, readOnly: true}
+            - {name: shared-data, mountPath: /shared}
+            - {name: cache-volume, mountPath: /app/benchmark/dabstep/.cache}
+            - {name: tmp-volume, mountPath: /tmp}
+
+        - name: benchmark-chunk-4
+          image: ghcr.io/superinference/agent:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "🚀 Chunk 4/6: Tasks 225-300 (MCP Port 3004)";
+              if [ -f /secrets/.env ]; then export $(cat /secrets/.env | grep -v '^#' | xargs); fi
+              mkdir -p /output/chunk4;
+              cd /app/benchmark/dabstep;
+              python3 dabstep_benchmark.py \
+                --problems 450 --difficulty both \
+                --start-index 225 --end-index 300 \
+                --mcp-port 3004 \
+                --methods superinference \
+                --output-dir /output/chunk4 \
+                2>&1 | tee /output/chunk4/benchmark.log;
+              echo "done" > /shared/chunk4_complete;
+          env:
+            - name: BENCHMARK_MODE
+              value: "true"
+            - name: HF_HOME
+              value: "/app/benchmark/dabstep/.cache/huggingface"
+            - name: HOME
+              value: "/tmp"
+            - name: DATA_CONTEXT_DIR
+              value: "/output/chunk4/data/context"
+          volumeMounts:
+            - {name: results-volume, mountPath: /output}
+            - {name: env-secret, mountPath: /secrets, readOnly: true}
+            - {name: shared-data, mountPath: /shared}
+            - {name: cache-volume, mountPath: /app/benchmark/dabstep/.cache}
+            - {name: tmp-volume, mountPath: /tmp}
+
+        - name: benchmark-chunk-5
+          image: ghcr.io/superinference/agent:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "🚀 Chunk 5/6: Tasks 300-375 (MCP Port 3005)";
+              if [ -f /secrets/.env ]; then export $(cat /secrets/.env | grep -v '^#' | xargs); fi
+              mkdir -p /output/chunk5;
+              cd /app/benchmark/dabstep;
+              python3 dabstep_benchmark.py \
+                --problems 450 --difficulty both \
+                --start-index 300 --end-index 375 \
+                --mcp-port 3005 \
+                --methods superinference \
+                --output-dir /output/chunk5 \
+                2>&1 | tee /output/chunk5/benchmark.log;
+              echo "done" > /shared/chunk5_complete;
+          env:
+            - name: BENCHMARK_MODE
+              value: "true"
+            - name: HF_HOME
+              value: "/app/benchmark/dabstep/.cache/huggingface"
+            - name: HOME
+              value: "/tmp"
+            - name: DATA_CONTEXT_DIR
+              value: "/output/chunk5/data/context"
+          volumeMounts:
+            - {name: results-volume, mountPath: /output}
+            - {name: env-secret, mountPath: /secrets, readOnly: true}
+            - {name: shared-data, mountPath: /shared}
+            - {name: cache-volume, mountPath: /app/benchmark/dabstep/.cache}
+            - {name: tmp-volume, mountPath: /tmp}
+
+        - name: benchmark-chunk-6
+          image: ghcr.io/superinference/agent:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "🚀 Chunk 6/6: Tasks 375-450 (MCP Port 3006)";
+              if [ -f /secrets/.env ]; then export $(cat /secrets/.env | grep -v '^#' | xargs); fi
+              mkdir -p /output/chunk6;
+              cd /app/benchmark/dabstep;
+              python3 dabstep_benchmark.py \
+                --problems 450 --difficulty both \
+                --start-index 375 --end-index 450 \
+                --mcp-port 3006 \
+                --methods superinference \
+                --output-dir /output/chunk6 \
+                2>&1 | tee /output/chunk6/benchmark.log;
+              echo "done" > /shared/chunk6_complete;
+          env:
+            - name: BENCHMARK_MODE
+              value: "true"
+            - name: HF_HOME
+              value: "/app/benchmark/dabstep/.cache/huggingface"
+            - name: HOME
+              value: "/tmp"
+            - name: DATA_CONTEXT_DIR
+              value: "/output/chunk6/data/context"
+          volumeMounts:
+            - {name: results-volume, mountPath: /output}
+            - {name: env-secret, mountPath: /secrets, readOnly: true}
+            - {name: shared-data, mountPath: /shared}
+            - {name: cache-volume, mountPath: /app/benchmark/dabstep/.cache}
+            - {name: tmp-volume, mountPath: /tmp}
+
+      volumes:
+        - name: results-volume
+          emptyDir:
+            sizeLimit: 30Gi
+        - name: env-secret
+          secret:
+            secretName: superinference-env
+            optional: true
+        - name: shared-data
+          emptyDir: {}
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 2Gi
+
+
+
+

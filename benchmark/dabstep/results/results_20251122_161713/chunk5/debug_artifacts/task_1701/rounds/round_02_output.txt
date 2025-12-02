@@ -1,0 +1,14 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: Account Type=H, MCC=5812, Capture Delay=immediate
+April Stats (Days 91-120):
+  Volume: €102,916.05
+  Fraud Rate: 9.9154%
+Transactions on Day 100: 41
+Unique transaction profiles to check: 32
+Applicable Fee IDs: 12, 36, 107, 150, 160, 162, 187, 280, 367, 381, 394, 431, 433, 454, 473, 477, 491, 572, 616, 626, 660, 682, 702, 709, 741, 769, 813, 888, 891, 913, 960, 980

@@ -1,0 +1,8 @@
+Step 1: Load the `payments.csv` file and filter the dataframe to include only rows where `card_scheme` is 'NexPay' and `is_credit` is True.
+Step 2: To answer the question about the average fee for NexPay credit transactions of 10 EUR, I need to accurately match each relevant transaction in the dataset to its specific fee rule in `fees.json`. This requires calculating merchant-specific metrics (monthly volume and fraud rates) and handling complex matching logic (wildcards, ranges) that was likely incomplete in the previous attempt.
+
+Here is the plan:
+1.  **Calculate Merchant Metrics**: Group the `payments.csv` data by `merchant` and month to calculate `monthly_volume` (sum of `eur_amount`) and `monthly_fraud_level` (sum of `eur_amount` where `has_fraudulent_dispute` is True / total volume).
+2.  **Prepare Transaction Data**: Filter `payments.csv` for `card_scheme == 'NexPay'` and `is_credit == True`. Merge this with `merchant_data.json` to get `merchant_category_code`, `account_type`, and `capture_delay`. Determine `intracountry` status (True if `issuing_country` == `acquirer_country`).
+3.  **Map & Match Rules**: Load `fees.json`. For each transaction, find the matching fee rule by checking all criteria:
+    *   Exact matches: `card_

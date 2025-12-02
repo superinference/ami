@@ -1,0 +1,9 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.20, Verification: insufficient
+Plan steps: 1
+============================================================
+
+DEBUG: is_credit | False (Debit): 55.07 | True (Credit): 54.29
+DEBUG: intracountry | False (International): 50.85 | True (Domestic): 54.76
+intracountry

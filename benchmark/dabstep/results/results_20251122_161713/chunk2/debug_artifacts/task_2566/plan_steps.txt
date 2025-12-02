@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file and extract the fee rule with ID 17 to understand its current matching criteria (such as card scheme, ACI, etc.) and existing account type restrictions.
+Step 2: Load `fees.json`, `merchant_data.json`, and `payments.csv`. Extract the fee rule with ID 17. Identify merchants affected by the change by finding those where the fee applicability changes (either starts applying or stops applying) when the account type requirement is restricted to 'D'.

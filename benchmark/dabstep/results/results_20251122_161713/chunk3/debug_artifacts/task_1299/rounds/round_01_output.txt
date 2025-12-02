@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Found 156 relevant fee rules for SwiftCharge Credit.
+
+Calculating fees per ACI:
+WARNING: No rule found for ACI G
+
+Total Transactions: 10128
+Weighted Fee Sum: 51440.3842
+Average Fee: 5.07902687598736

@@ -1,0 +1,17 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading payments.csv...
+Total rows in original file: 138236
+Rows after filtering for 'Rafa_AI' and year 2023: 27696
+
+Sample of filtered data:
+    psp_reference merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+14    15954433169  Rafa_AI    GlobalCard  2023           11              15          191       True       18.55         GR              GR         iOS  0HA13IRK16lIfJ6Bn0hMoA  UVzK61GrAYwkA67rVA1qIQ  GiG7AUuWkIWW99N5NqwlZw           Ecommerce      4556                   False                False   E               NL
+19    64327336902  Rafa_AI  TransactPlus  2023           17               7          113      False      224.39         IT              IT     Android  O0UKtRnZAaj7inLhhZaWog  h7yegJ7AShGeIt1RYjdzhA  qTFj7u69HBVUYrfFETuMRA           Ecommerce      4916                   False                False   E               NL
+29    31882872937  Rafa_AI    GlobalCard  2023            7              48          189      False       57.34         FR              FR         iOS  FGpkyGpX5BHE_jh69OCGZA  QdoLV331zl00B3YZY-AGlA  WhQF6b95kaLvbpC6TMX7xA           Ecommerce      4916                   False                False   E               NL
+34    33722951254  Rafa_AI        NexPay  2023            3               4          305       True      321.22         SE              SE         iOS  2laa1YbPYX_L5uLHZK85hw                     NaN  7t_MOGf86vDLQgSL06el-g           Ecommerce      4802                    True                False   G               NL
+39    33017505011  Rafa_AI        NexPay  2023           12              19          230       True       13.38         IT              IT       MacOS                     NaN  0mDPYtSNMXytCt3A9WTxxw  wvsZCU5lSdSrSte3sp2Nzw           Ecommerce      4916                   False                False   E               NL

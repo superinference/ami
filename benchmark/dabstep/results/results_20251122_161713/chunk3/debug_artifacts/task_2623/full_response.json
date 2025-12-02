@@ -1,0 +1,185 @@
+{
+  "final_answer": "[187]",
+  "execution_result": "187",
+  "generated_code": "import pandas as pd\nimport json\nimport re\n\n# ---------------------------------------------------------\n# HELPER FUNCTIONS\n# ---------------------------------------------------------\n\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef parse_range_match(value, rule_string):\n    \"\"\"\n    Checks if a numeric value fits within a rule string range.\n    Examples of rule_string: '100k-1m', '>8.3%', '<3', '7.7%-8.3%'\n    \"\"\"\n    if rule_string is None:\n        return True  # Wildcard matches everything\n        \n    # Normalize rule string\n    s = str(rule_string).lower().strip()\n    \n    # Handle k/m suffixes for volume\n    def parse_val(x):\n        x = x.replace('%', '')\n        mult = 1\n        if 'k' in x:\n            mult = 1000\n            x = x.replace('k', '')\n        elif 'm' in x:\n            mult = 1000000\n            x = x.replace('m', '')\n        return float(x) * mult\n\n    try:\n        # Percentage adjustment for value if rule has %\n        val_to_check = value\n        if '%' in s and value < 1.0: # Assuming value is ratio (0.10) and rule is % (10%)\n             # If rule is %, we treat value as ratio. \n             # But parse_val strips %. So 8.3% becomes 8.3.\n             # We should convert value 0.101 -> 10.1 to match rule scale\n             val_to_check = value * 100\n\n        if '-' in s:\n            parts = s.split('-')\n            low = parse_val(parts[0])\n            high = parse_val(parts[1])\n            return low <= val_to_check <= high\n            \n        if s.startswith('>'):\n            limit = parse_val(s[1:])\n            return val_to_check > limit\n            \n        if s.startswith('<'):\n            limit = parse_val(s[1:])\n            return val_to_check < limit\n            \n        # Exact match (rare for ranges, but possible)\n        return val_to_check == parse_val(s)\n        \n    except Exception as e:\n        # Fallback: if parsing fails, assume no match to be safe\n        return False\n\ndef match_fee_rule(tx_profile, rule):\n    \"\"\"\n    Determines if a fee rule applies to a specific transaction/merchant profile.\n    \"\"\"\n    # 1. Merchant Category Code (List match)\n    if rule.get('merchant_category_code') is not None:\n        if tx_profile['mcc'] not in rule['merchant_category_code']:\n            return False\n\n    # 2. Account Type (List match)\n    if rule.get('account_type'): # Check if not empty/None\n        if tx_profile['account_type'] not in rule['account_type']:\n            return False\n\n    # 3. Capture Delay (Exact match)\n    if rule.get('capture_delay') is not None:\n        if rule['capture_delay'] != tx_profile['capture_delay']:\n            return False\n\n    # 4. Monthly Volume (Range match)\n    if rule.get('monthly_volume') is not None:\n        if not parse_range_match(tx_profile['monthly_volume'], rule['monthly_volume']):\n            return False\n\n    # 5. Monthly Fraud Level (Range match)\n    if rule.get('monthly_fraud_level') is not None:\n        if not parse_range_match(tx_profile['monthly_fraud_rate'], rule['monthly_fraud_level']):\n            return False\n            \n    # 6. Is Credit (Exact match - if rule specifies)\n    # Note: For \"steering traffic\" generally, we might look at the average case.\n    # However, if a rule is SPECIFIC to credit=True and our avg tx is generic, \n    # we need to decide. Given the prompt asks for \"using average transaction amount\",\n    # we will calculate the fee for the rule that matches. \n    # If the merchant has mixed traffic, we'll check if the rule applies to the majority or if we average.\n    # For this specific problem, we'll assume we check all valid rules and find the max potential fee.\n    \n    return True\n\ndef calculate_fee(amount, rule):\n    \"\"\"Calculates fee based on fixed amount and rate.\"\"\"\n    fixed = rule.get('fixed_amount', 0.0)\n    rate = rule.get('rate', 0.0)\n    # Fee = Fixed + (Rate * Amount / 10000)\n    return fixed + (rate * amount / 10000)\n\n# ---------------------------------------------------------\n# MAIN EXECUTION\n# ---------------------------------------------------------\n\n# 1. Load Data\ndf_payments = pd.read_csv('/output/chunk3/data/context/payments.csv')\nwith open('/output/chunk3/data/context/merchant_data.json', 'r') as f:\n    merchant_data = json.load(f)\nwith open('/output/chunk3/data/context/fees.json', 'r') as f:\n    fees_data = json.load(f)\n\n# 2. Define Target\ntarget_merchant = 'Martinis_Fine_Steakhouse'\nstart_day = 121\nend_day = 151\n\n# 3. Calculate May Metrics\n# Filter for merchant and date range\nmay_txs = df_payments[\n    (df_payments['merchant'] == target_merchant) & \n    (df_payments['day_of_year'] >= start_day) & \n    (df_payments['day_of_year'] <= end_day)\n]\n\ntotal_volume = may_txs['eur_amount'].sum()\nfraud_txs = may_txs[may_txs['has_fraudulent_dispute'] == True]\nfraud_volume = fraud_txs['eur_amount'].sum()\nfraud_rate = fraud_volume / total_volume if total_volume > 0 else 0\navg_amount = may_txs['eur_amount'].mean()\n\nprint(f\"--- May Metrics for {target_merchant} ---\")\nprint(f\"Total Volume: \u20ac{total_volume:,.2f}\")\nprint(f\"Fraud Volume: \u20ac{fraud_volume:,.2f}\")\nprint(f\"Fraud Rate: {fraud_rate:.2%}\")\nprint(f\"Avg Amount: \u20ac{avg_amount:.2f}\")\n\n# 4. Get Merchant Static Profile\nm_profile = next((item for item in merchant_data if item[\"merchant\"] == target_merchant), None)\nif not m_profile:\n    raise ValueError(f\"Merchant {target_merchant} not found in merchant_data.json\")\n\n# Construct the profile dictionary for matching\nprofile_for_matching = {\n    'mcc': m_profile['merchant_category_code'],\n    'account_type': m_profile['account_type'],\n    'capture_delay': m_profile['capture_delay'],\n    'monthly_volume': total_volume,\n    'monthly_fraud_rate': fraud_rate\n}\n\nprint(f\"\\n--- Merchant Profile ---\")\nprint(f\"MCC: {profile_for_matching['mcc']}\")\nprint(f\"Account Type: {profile_for_matching['account_type']}\")\nprint(f\"Capture Delay: {profile_for_matching['capture_delay']}\")\n\n# 5. Evaluate Fee Rules per Scheme\nscheme_fees = {}\n\n# Get unique schemes from payments to ensure we check relevant ones\n# (Or check all schemes in fees.json)\nschemes = set(r['card_scheme'] for r in fees_data)\n\nprint(f\"\\n--- Evaluating Schemes ---\")\n\nfor scheme in schemes:\n    # Find all rules for this scheme that match the merchant profile\n    matching_rules = []\n    for rule in fees_data:\n        if rule['card_scheme'] == scheme:\n            if match_fee_rule(profile_for_matching, rule):\n                matching_rules.append(rule)\n    \n    if not matching_rules:\n        continue\n        \n    # Calculate fee for the average transaction amount\n    # If multiple rules match (e.g. one for credit, one for debit), we need a strategy.\n    # Since we want to know the MAXIMUM fees to steer traffic to, we will take the \n    # highest fee applicable to this merchant's profile for that scheme.\n    max_fee_for_scheme = 0\n    best_rule_id = None\n    \n    for rule in matching_rules:\n        fee = calculate_fee(avg_amount, rule)\n        if fee > max_fee_for_scheme:\n            max_fee_for_scheme = fee\n            best_rule_id = rule['ID']\n            \n    scheme_fees[scheme] = max_fee_for_scheme\n    print(f\"Scheme: {scheme:<15} | Max Fee: \u20ac{max_fee_for_scheme:.4f} (Rule ID: {best_rule_id})\")\n\n# 6. Determine Winner\nif scheme_fees:\n    most_expensive_scheme = max(scheme_fees, key=scheme_fees.get)\n    max_fee = scheme_fees[most_expensive_scheme]\n    print(f\"\\nRESULT: To pay the maximum fees, steer traffic to: {most_expensive_scheme}\")\nelse:\n    print(\"\\nRESULT: No matching fee rules found.\")",
+  "finalized_code": null,
+  "computation_code": "import pandas as pd\nimport json\nimport re\n\n# ---------------------------------------------------------\n# HELPER FUNCTIONS\n# ---------------------------------------------------------\n\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef parse_range_match(value, rule_string):\n    \"\"\"\n    Checks if a numeric value fits within a rule string range.\n    Examples of rule_string: '100k-1m', '>8.3%', '<3', '7.7%-8.3%'\n    \"\"\"\n    if rule_string is None:\n        return True  # Wildcard matches everything\n        \n    # Normalize rule string\n    s = str(rule_string).lower().strip()\n    \n    # Handle k/m suffixes for volume\n    def parse_val(x):\n        x = x.replace('%', '')\n        mult = 1\n        if 'k' in x:\n            mult = 1000\n            x = x.replace('k', '')\n        elif 'm' in x:\n            mult = 1000000\n            x = x.replace('m', '')\n        return float(x) * mult\n\n    try:\n        # Percentage adjustment for value if rule has %\n        val_to_check = value\n        if '%' in s and value < 1.0: # Assuming value is ratio (0.10) and rule is % (10%)\n             # If rule is %, we treat value as ratio. \n             # But parse_val strips %. So 8.3% becomes 8.3.\n             # We should convert value 0.101 -> 10.1 to match rule scale\n             val_to_check = value * 100\n\n        if '-' in s:\n            parts = s.split('-')\n            low = parse_val(parts[0])\n            high = parse_val(parts[1])\n            return low <= val_to_check <= high\n            \n        if s.startswith('>'):\n            limit = parse_val(s[1:])\n            return val_to_check > limit\n            \n        if s.startswith('<'):\n            limit = parse_val(s[1:])\n            return val_to_check < limit\n            \n        # Exact match (rare for ranges, but possible)\n        return val_to_check == parse_val(s)\n        \n    except Exception as e:\n        # Fallback: if parsing fails, assume no match to be safe\n        return False\n\ndef match_fee_rule(tx_profile, rule):\n    \"\"\"\n    Determines if a fee rule applies to a specific transaction/merchant profile.\n    \"\"\"\n    # 1. Merchant Category Code (List match)\n    if rule.get('merchant_category_code') is not None:\n        if tx_profile['mcc'] not in rule['merchant_category_code']:\n            return False\n\n    # 2. Account Type (List match)\n    if rule.get('account_type'): # Check if not empty/None\n        if tx_profile['account_type'] not in rule['account_type']:\n            return False\n\n    # 3. Capture Delay (Exact match)\n    if rule.get('capture_delay') is not None:\n        if rule['capture_delay'] != tx_profile['capture_delay']:\n            return False\n\n    # 4. Monthly Volume (Range match)\n    if rule.get('monthly_volume') is not None:\n        if not parse_range_match(tx_profile['monthly_volume'], rule['monthly_volume']):\n            return False\n\n    # 5. Monthly Fraud Level (Range match)\n    if rule.get('monthly_fraud_level') is not None:\n        if not parse_range_match(tx_profile['monthly_fraud_rate'], rule['monthly_fraud_level']):\n            return False\n            \n    # 6. Is Credit (Exact match - if rule specifies)\n    # Note: For \"steering traffic\" generally, we might look at the average case.\n    # However, if a rule is SPECIFIC to credit=True and our avg tx is generic, \n    # we need to decide. Given the prompt asks for \"using average transaction amount\",\n    # we will calculate the fee for the rule that matches. \n    # If the merchant has mixed traffic, we'll check if the rule applies to the majority or if we average.\n    # For this specific problem, we'll assume we check all valid rules and find the max potential fee.\n    \n    return True\n\ndef calculate_fee(amount, rule):\n    \"\"\"Calculates fee based on fixed amount and rate.\"\"\"\n    fixed = rule.get('fixed_amount', 0.0)\n    rate = rule.get('rate', 0.0)\n    # Fee = Fixed + (Rate * Amount / 10000)\n    return fixed + (rate * amount / 10000)\n\n# ---------------------------------------------------------\n# MAIN EXECUTION\n# ---------------------------------------------------------\n\n# 1. Load Data\ndf_payments = pd.read_csv('/output/chunk3/data/context/payments.csv')\nwith open('/output/chunk3/data/context/merchant_data.json', 'r') as f:\n    merchant_data = json.load(f)\nwith open('/output/chunk3/data/context/fees.json', 'r') as f:\n    fees_data = json.load(f)\n\n# 2. Define Target\ntarget_merchant = 'Martinis_Fine_Steakhouse'\nstart_day = 121\nend_day = 151\n\n# 3. Calculate May Metrics\n# Filter for merchant and date range\nmay_txs = df_payments[\n    (df_payments['merchant'] == target_merchant) & \n    (df_payments['day_of_year'] >= start_day) & \n    (df_payments['day_of_year'] <= end_day)\n]\n\ntotal_volume = may_txs['eur_amount'].sum()\nfraud_txs = may_txs[may_txs['has_fraudulent_dispute'] == True]\nfraud_volume = fraud_txs['eur_amount'].sum()\nfraud_rate = fraud_volume / total_volume if total_volume > 0 else 0\navg_amount = may_txs['eur_amount'].mean()\n\nprint(f\"--- May Metrics for {target_merchant} ---\")\nprint(f\"Total Volume: \u20ac{total_volume:,.2f}\")\nprint(f\"Fraud Volume: \u20ac{fraud_volume:,.2f}\")\nprint(f\"Fraud Rate: {fraud_rate:.2%}\")\nprint(f\"Avg Amount: \u20ac{avg_amount:.2f}\")\n\n# 4. Get Merchant Static Profile\nm_profile = next((item for item in merchant_data if item[\"merchant\"] == target_merchant), None)\nif not m_profile:\n    raise ValueError(f\"Merchant {target_merchant} not found in merchant_data.json\")\n\n# Construct the profile dictionary for matching\nprofile_for_matching = {\n    'mcc': m_profile['merchant_category_code'],\n    'account_type': m_profile['account_type'],\n    'capture_delay': m_profile['capture_delay'],\n    'monthly_volume': total_volume,\n    'monthly_fraud_rate': fraud_rate\n}\n\nprint(f\"\\n--- Merchant Profile ---\")\nprint(f\"MCC: {profile_for_matching['mcc']}\")\nprint(f\"Account Type: {profile_for_matching['account_type']}\")\nprint(f\"Capture Delay: {profile_for_matching['capture_delay']}\")\n\n# 5. Evaluate Fee Rules per Scheme\nscheme_fees = {}\n\n# Get unique schemes from payments to ensure we check relevant ones\n# (Or check all schemes in fees.json)\nschemes = set(r['card_scheme'] for r in fees_data)\n\nprint(f\"\\n--- Evaluating Schemes ---\")\n\nfor scheme in schemes:\n    # Find all rules for this scheme that match the merchant profile\n    matching_rules = []\n    for rule in fees_data:\n        if rule['card_scheme'] == scheme:\n            if match_fee_rule(profile_for_matching, rule):\n                matching_rules.append(rule)\n    \n    if not matching_rules:\n        continue\n        \n    # Calculate fee for the average transaction amount\n    # If multiple rules match (e.g. one for credit, one for debit), we need a strategy.\n    # Since we want to know the MAXIMUM fees to steer traffic to, we will take the \n    # highest fee applicable to this merchant's profile for that scheme.\n    max_fee_for_scheme = 0\n    best_rule_id = None\n    \n    for rule in matching_rules:\n        fee = calculate_fee(avg_amount, rule)\n        if fee > max_fee_for_scheme:\n            max_fee_for_scheme = fee\n            best_rule_id = rule['ID']\n            \n    scheme_fees[scheme] = max_fee_for_scheme\n    print(f\"Scheme: {scheme:<15} | Max Fee: \u20ac{max_fee_for_scheme:.4f} (Rule ID: {best_rule_id})\")\n\n# 6. Determine Winner\nif scheme_fees:\n    most_expensive_scheme = max(scheme_fees, key=scheme_fees.get)\n    max_fee = scheme_fees[most_expensive_scheme]\n    print(f\"\\nRESULT: To pay the maximum fees, steer traffic to: {most_expensive_scheme}\")\nelse:\n    print(\"\\nRESULT: No matching fee rules found.\")",
+  "computation_result": "--- May Metrics for Martinis_Fine_Steakhouse ---\nTotal Volume: \u20ac110,282.17\nFraud Volume: \u20ac11,171.76\nFraud Rate: 10.13%\nAvg Amount: \u20ac92.36\n\n--- Merchant Profile ---\nMCC: 5812\nAccount Type: H\nCapture Delay: immediate\n\n--- Evaluating Schemes ---\nScheme: TransactPlus    | Max Fee: \u20ac0.7620 (Rule ID: 547)\nScheme: GlobalCard      | Max Fee: \u20ac0.8990 (Rule ID: 162)\nScheme: NexPay          | Max Fee: \u20ac0.8959 (Rule ID: 364)\nScheme: SwiftCharge     | Max Fee: \u20ac0.8404 (Rule ID: 187)\n\nRESULT: To pay the maximum fees, steer traffic to: GlobalCard\n",
+  "code_evolution": [
+    {
+      "round": 1,
+      "plan_steps": 1,
+      "code_length": 2582,
+      "code": "# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef safe_get(df, column, default=None):\n    \"\"\"Safely get column from DataFrame, return default if not exists.\"\"\"\n    if isinstance(df, dict):\n        return df.get(column, default)\n    elif hasattr(df, 'columns') and column in df.columns:\n        return df[column]\n    return default\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef safe_index(array, idx, default=None):\n    \"\"\"Safely get array element at index, return default if out of bounds.\"\"\"\n    try:\n        if 0 <= idx < len(array):\n            return array[idx]\n        return default\n    except (IndexError, TypeError, AttributeError):\n        return default\n\n\nimport pandas as pd\n\n# Load the payments data\ndf = pd.read_csv('/output/chunk3/data/context/payments.csv')\n\n# Define filter criteria\nmerchant_name = 'Martinis_Fine_Steakhouse'\nstart_day = 121\nend_day = 151\n\n# Filter for the specific merchant and date range (May)\nfiltered_df = df[\n    (df['merchant'] == merchant_name) & \n    (df['day_of_year'] >= start_day) & \n    (df['day_of_year'] <= end_day)\n]\n\n# Calculate metrics\ntotal_volume = filtered_df['eur_amount'].sum()\nfraud_volume = filtered_df[filtered_df['has_fraudulent_dispute']]['eur_amount'].sum()\navg_amount = filtered_df['eur_amount'].mean()\ntransaction_count = len(filtered_df)\n\n# Print the results\nprint(f\"Metrics for {merchant_name} in May (Day {start_day}-{end_day}):\")\nprint(f\"Transaction Count: {transaction_count}\")\nprint(f\"Total Monthly Volume: {total_volume:.2f}\")\nprint(f\"Total Fraud Volume: {fraud_volume:.2f}\")\nprint(f\"Average Transaction Amount: {avg_amount:.2f}\")",
+      "execution_output": "Metrics for Martinis_Fine_Steakhouse in May (Day 121-151):\nTransaction Count: 1194\nTotal Monthly Volume: 110282.17\nTotal Fraud Volume: 11171.76\nAverage Transaction Amount: 92.36\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.1,
+      "plan_snapshot": [
+        "Load the `payments.csv` file and filter for transactions belonging to the merchant 'Martinis_Fine_Steakhouse' where the `day_of_year` is between 121 and 151 (representing May), then calculate the total monthly volume, total fraud volume, and average transaction amount."
+      ]
+    },
+    {
+      "round": 2,
+      "plan_steps": 2,
+      "code_length": 8161,
+      "code": "import pandas as pd\nimport json\nimport re\n\n# ---------------------------------------------------------\n# HELPER FUNCTIONS\n# ---------------------------------------------------------\n\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef parse_range_match(value, rule_string):\n    \"\"\"\n    Checks if a numeric value fits within a rule string range.\n    Examples of rule_string: '100k-1m', '>8.3%', '<3', '7.7%-8.3%'\n    \"\"\"\n    if rule_string is None:\n        return True  # Wildcard matches everything\n        \n    # Normalize rule string\n    s = str(rule_string).lower().strip()\n    \n    # Handle k/m suffixes for volume\n    def parse_val(x):\n        x = x.replace('%', '')\n        mult = 1\n        if 'k' in x:\n            mult = 1000\n            x = x.replace('k', '')\n        elif 'm' in x:\n            mult = 1000000\n            x = x.replace('m', '')\n        return float(x) * mult\n\n    try:\n        # Percentage adjustment for value if rule has %\n        val_to_check = value\n        if '%' in s and value < 1.0: # Assuming value is ratio (0.10) and rule is % (10%)\n             # If rule is %, we treat value as ratio. \n             # But parse_val strips %. So 8.3% becomes 8.3.\n             # We should convert value 0.101 -> 10.1 to match rule scale\n             val_to_check = value * 100\n\n        if '-' in s:\n            parts = s.split('-')\n            low = parse_val(parts[0])\n            high = parse_val(parts[1])\n            return low <= val_to_check <= high\n            \n        if s.startswith('>'):\n            limit = parse_val(s[1:])\n            return val_to_check > limit\n            \n        if s.startswith('<'):\n            limit = parse_val(s[1:])\n            return val_to_check < limit\n            \n        # Exact match (rare for ranges, but possible)\n        return val_to_check == parse_val(s)\n        \n    except Exception as e:\n        # Fallback: if parsing fails, assume no match to be safe\n        return False\n\ndef match_fee_rule(tx_profile, rule):\n    \"\"\"\n    Determines if a fee rule applies to a specific transaction/merchant profile.\n    \"\"\"\n    # 1. Merchant Category Code (List match)\n    if rule.get('merchant_category_code') is not None:\n        if tx_profile['mcc'] not in rule['merchant_category_code']:\n            return False\n\n    # 2. Account Type (List match)\n    if rule.get('account_type'): # Check if not empty/None\n        if tx_profile['account_type'] not in rule['account_type']:\n            return False\n\n    # 3. Capture Delay (Exact match)\n    if rule.get('capture_delay') is not None:\n        if rule['capture_delay'] != tx_profile['capture_delay']:\n            return False\n\n    # 4. Monthly Volume (Range match)\n    if rule.get('monthly_volume') is not None:\n        if not parse_range_match(tx_profile['monthly_volume'], rule['monthly_volume']):\n            return False\n\n    # 5. Monthly Fraud Level (Range match)\n    if rule.get('monthly_fraud_level') is not None:\n        if not parse_range_match(tx_profile['monthly_fraud_rate'], rule['monthly_fraud_level']):\n            return False\n            \n    # 6. Is Credit (Exact match - if rule specifies)\n    # Note: For \"steering traffic\" generally, we might look at the average case.\n    # However, if a rule is SPECIFIC to credit=True and our avg tx is generic, \n    # we need to decide. Given the prompt asks for \"using average transaction amount\",\n    # we will calculate the fee for the rule that matches. \n    # If the merchant has mixed traffic, we'll check if the rule applies to the majority or if we average.\n    # For this specific problem, we'll assume we check all valid rules and find the max potential fee.\n    \n    return True\n\ndef calculate_fee(amount, rule):\n    \"\"\"Calculates fee based on fixed amount and rate.\"\"\"\n    fixed = rule.get('fixed_amount', 0.0)\n    rate = rule.get('rate', 0.0)\n    # Fee = Fixed + (Rate * Amount / 10000)\n    return fixed + (rate * amount / 10000)\n\n# ---------------------------------------------------------\n# MAIN EXECUTION\n# ---------------------------------------------------------\n\n# 1. Load Data\ndf_payments = pd.read_csv('/output/chunk3/data/context/payments.csv')\nwith open('/output/chunk3/data/context/merchant_data.json', 'r') as f:\n    merchant_data = json.load(f)\nwith open('/output/chunk3/data/context/fees.json', 'r') as f:\n    fees_data = json.load(f)\n\n# 2. Define Target\ntarget_merchant = 'Martinis_Fine_Steakhouse'\nstart_day = 121\nend_day = 151\n\n# 3. Calculate May Metrics\n# Filter for merchant and date range\nmay_txs = df_payments[\n    (df_payments['merchant'] == target_merchant) & \n    (df_payments['day_of_year'] >= start_day) & \n    (df_payments['day_of_year'] <= end_day)\n]\n\ntotal_volume = may_txs['eur_amount'].sum()\nfraud_txs = may_txs[may_txs['has_fraudulent_dispute'] == True]\nfraud_volume = fraud_txs['eur_amount'].sum()\nfraud_rate = fraud_volume / total_volume if total_volume > 0 else 0\navg_amount = may_txs['eur_amount'].mean()\n\nprint(f\"--- May Metrics for {target_merchant} ---\")\nprint(f\"Total Volume: \u20ac{total_volume:,.2f}\")\nprint(f\"Fraud Volume: \u20ac{fraud_volume:,.2f}\")\nprint(f\"Fraud Rate: {fraud_rate:.2%}\")\nprint(f\"Avg Amount: \u20ac{avg_amount:.2f}\")\n\n# 4. Get Merchant Static Profile\nm_profile = next((item for item in merchant_data if item[\"merchant\"] == target_merchant), None)\nif not m_profile:\n    raise ValueError(f\"Merchant {target_merchant} not found in merchant_data.json\")\n\n# Construct the profile dictionary for matching\nprofile_for_matching = {\n    'mcc': m_profile['merchant_category_code'],\n    'account_type': m_profile['account_type'],\n    'capture_delay': m_profile['capture_delay'],\n    'monthly_volume': total_volume,\n    'monthly_fraud_rate': fraud_rate\n}\n\nprint(f\"\\n--- Merchant Profile ---\")\nprint(f\"MCC: {profile_for_matching['mcc']}\")\nprint(f\"Account Type: {profile_for_matching['account_type']}\")\nprint(f\"Capture Delay: {profile_for_matching['capture_delay']}\")\n\n# 5. Evaluate Fee Rules per Scheme\nscheme_fees = {}\n\n# Get unique schemes from payments to ensure we check relevant ones\n# (Or check all schemes in fees.json)\nschemes = set(r['card_scheme'] for r in fees_data)\n\nprint(f\"\\n--- Evaluating Schemes ---\")\n\nfor scheme in schemes:\n    # Find all rules for this scheme that match the merchant profile\n    matching_rules = []\n    for rule in fees_data:\n        if rule['card_scheme'] == scheme:\n            if match_fee_rule(profile_for_matching, rule):\n                matching_rules.append(rule)\n    \n    if not matching_rules:\n        continue\n        \n    # Calculate fee for the average transaction amount\n    # If multiple rules match (e.g. one for credit, one for debit), we need a strategy.\n    # Since we want to know the MAXIMUM fees to steer traffic to, we will take the \n    # highest fee applicable to this merchant's profile for that scheme.\n    max_fee_for_scheme = 0\n    best_rule_id = None\n    \n    for rule in matching_rules:\n        fee = calculate_fee(avg_amount, rule)\n        if fee > max_fee_for_scheme:\n            max_fee_for_scheme = fee\n            best_rule_id = rule['ID']\n            \n    scheme_fees[scheme] = max_fee_for_scheme\n    print(f\"Scheme: {scheme:<15} | Max Fee: \u20ac{max_fee_for_scheme:.4f} (Rule ID: {best_rule_id})\")\n\n# 6. Determine Winner\nif scheme_fees:\n    most_expensive_scheme = max(scheme_fees, key=scheme_fees.get)\n    max_fee = scheme_fees[most_expensive_scheme]\n    print(f\"\\nRESULT: To pay the maximum fees, steer traffic to: {most_expensive_scheme}\")\nelse:\n    print(\"\\nRESULT: No matching fee rules found.\")",
+      "execution_output": "--- May Metrics for Martinis_Fine_Steakhouse ---\nTotal Volume: \u20ac110,282.17\nFraud Volume: \u20ac11,171.76\nFraud Rate: 10.13%\nAvg Amount: \u20ac92.36\n\n--- Merchant Profile ---\nMCC: 5812\nAccount Type: H\nCapture Delay: immediate\n\n--- Evaluating Schemes ---\nScheme: TransactPlus    | Max Fee: \u20ac0.7620 (Rule ID: 547)\nScheme: GlobalCard      | Max Fee: \u20ac0.8990 (Rule ID: 162)\nScheme: NexPay          | Max Fee: \u20ac0.8959 (Rule ID: 364)\nScheme: SwiftCharge     | Max Fee: \u20ac0.8404 (Rule ID: 187)\n\nRESULT: To pay the maximum fees, steer traffic to: GlobalCard\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.15000000000000002,
+      "plan_snapshot": [
+        "Load the `payments.csv` file and filter for transactions belonging to the merchant 'Martinis_Fine_Steakhouse' where the `day_of_year` is between 121 and 151 (representing May), then calculate the total monthly volume, total fraud volume, and average transaction amount.",
+        "Load `merchant_data.json` to retrieve the profile (MCC, account type, capture delay) for 'Martinis_Fine_Steakhouse', then load `fees.json` to find all fee rules matching this profile and the calculated May metrics (monthly volume '100k-1m', fraud level '>8.3%'), and finally calculate the fee for each card scheme using the average transaction amount (92.36) to identify the most expensive one."
+      ]
+    }
+  ],
+  "plan_steps": [
+    {
+      "id": "step_0",
+      "description": "Load the `payments.csv` file and filter for transactions belonging to the merchant 'Martinis_Fine_Steakhouse' where the `day_of_year` is between 121 and 151 (representing May), then calculate the total monthly volume, total fraud volume, and average transaction amount.",
+      "status": "completed",
+      "index": 0
+    },
+    {
+      "id": "step_1",
+      "description": "Load `merchant_data.json` to retrieve the profile (MCC, account type, capture delay) for 'Martinis_Fine_Steakhouse', then load `fees.json` to find all fee rules matching this profile and the calculated May metrics (monthly volume '100k-1m', fraud level '>8.3%'), and finally calculate the fee for each card scheme using the average transaction amount (92.36) to identify the most expensive one.",
+      "status": "completed",
+      "index": 1
+    }
+  ],
+  "rounds": 2,
+  "file_analyses": [
+    "payments.csv",
+    "fees.json",
+    "merchant_data.json",
+    "manual.md",
+    "payments-readme.md",
+    "acquirer_countries.csv",
+    "merchant_category_codes.csv"
+  ],
+  "verifier_calls": 2,
+  "router_decisions": [
+    "add_step"
+  ],
+  "execution_time": 208.081787109375,
+  "success": true,
+  "generation_config": {
+    "temperature": 0.0,
+    "max_tokens": 100000,
+    "top_p": 0.8,
+    "top_k": 40,
+    "provider": "gemini",
+    "model_name": "gemini-2.5-pro",
+    "critic_threshold": 0.85
+  },
+  "phase_timings": {
+    "analysis_time": 1.10227632522583,
+    "exploration_time": 20.37877058982849,
+    "planning_time": 29.709256172180176,
+    "iteration_time": 152.0578806400299,
+    "finalization_time": 4.8319501876831055
+  },
+  "method": "superinference_star_unified",
+  "superinf_aux_mode": true,
+  "information_theory": {
+    "initial_belief": 0.5,
+    "final_belief": 0.7899999999999999,
+    "belief_trajectory": [
+      0.5,
+      0.3,
+      0.7899999999999999
+    ],
+    "initial_entropy_bits": 1.0,
+    "final_entropy_bits": 0.7414827399312738,
+    "entropy_reduction_bits": 0.2585172600687262,
+    "eig_trajectory": [
+      0.3568015214420218,
+      0.3568015214420218,
+      0.178468182634421
+    ],
+    "total_eig_bits": 0.8920712255184646,
+    "avg_eig_per_event_bits": 0.29735707517282156,
+    "events_fired": 3
+  },
+  "stopping_analysis": {
+    "stopped_due_to": "plan_sufficient_agreement",
+    "final_eig": 0.178468182634421,
+    "final_belief": 0.7899999999999999,
+    "tau_threshold": 0.01,
+    "kappa_threshold": 0.9
+  },
+  "critic_metrics": {
+    "alpha_estimate": null,
+    "beta_estimate": null,
+    "approval_rate": 1.0,
+    "avg_score": 1.0
+  },
+  "temperature_adaptation": {
+    "base_temperature": 0.1,
+    "final_temperature": 0.1,
+    "temperature_trajectory": [
+      0.1,
+      0.15000000000000002,
+      0.1
+    ],
+    "total_increases": 1,
+    "max_temperature_reached": 0.15000000000000002
+  },
+  "exploration_tools": {
+    "ground_truth_values": {
+      "calculate_may_metrics_(volume_fraud_avg_amount)_for_martinis_fine_steakhouse_(day_121-151)": "Count: 1194, TotalVol: 110282.17, FraudVol: 11171.76, AvgAmt: 92.36 [fraud_rate: Fraud percentage (fraud/total)]",
+      "fees_json_verify_fee_rule_structure_(keys:_monthly_volume,_monthly_fraud_level,_rate,_fixed_amount)": "[\n    {\n        \"ID\":1,\n        \"card_scheme\":\"TransactPlus\",\n        \"account_type\":["
+    },
+    "tools_ran": [
+      "calculate_may_metrics_(volume_fraud_avg_amount)_for_martinis_fine_steakhouse_(day_121-151)",
+      "fees_json_verify_fee_rule_structure_(keys:_monthly_volume,_monthly_fraud_level,_rate,_fixed_amount)"
+    ],
+    "used_exploration": true
+  },
+  "token_usage": {
+    "total_prompt_tokens": 48398,
+    "total_output_tokens": 3262,
+    "total_tokens": 61204,
+    "by_agent": {
+      "coder_initial": {
+        "calls": 1,
+        "prompt_tokens": 12817,
+        "output_tokens": 313,
+        "total_tokens": 13859
+      },
+      "verifier": {
+        "calls": 2,
+        "prompt_tokens": 5331,
+        "output_tokens": 180,
+        "total_tokens": 6740
+      },
+      "router": {
+        "calls": 1,
+        "prompt_tokens": 945,
+        "output_tokens": 2,
+        "total_tokens": 2013
+      },
+      "planner": {
+        "calls": 1,
+        "prompt_tokens": 10380,
+        "output_tokens": 100,
+        "total_tokens": 12981
+      },
+      "coder_incremental": {
+        "calls": 1,
+        "prompt_tokens": 16106,
+        "output_tokens": 2598,
+        "total_tokens": 22390
+      },
+      "finalizer": {
+        "calls": 1,
+        "prompt_tokens": 2819,
+        "output_tokens": 69,
+        "total_tokens": 3221
+      }
+    }
+  }
+}

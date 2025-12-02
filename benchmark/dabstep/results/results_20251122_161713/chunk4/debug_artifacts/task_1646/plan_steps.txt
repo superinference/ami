@@ -1,0 +1,1 @@
+Step 1: To answer this question, I will first load the `fees.json` file to identify all fee rules associated with the 'NexPay' card scheme and 'F' account type.

@@ -1,0 +1,2 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame.
+Step 2: Calculate the mean of 'has_fraudulent_dispute' grouped by 'is_credit' to determine the fraud probability for credit versus debit payments, then compare the values to answer the question.

@@ -1,0 +1,33 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee Rule ID 12 Details:
+{
+    "ID": 12,
+    "card_scheme": "SwiftCharge",
+    "account_type": [],
+    "capture_delay": null,
+    "monthly_fraud_level": null,
+    "monthly_volume": null,
+    "merchant_category_code": [
+        5411,
+        5412,
+        5499,
+        5912,
+        5812,
+        5813,
+        5911,
+        5983
+    ],
+    "is_credit": null,
+    "aci": [
+        "C",
+        "B"
+    ],
+    "fixed_amount": 0.01,
+    "rate": 40,
+    "intracountry": null
+}

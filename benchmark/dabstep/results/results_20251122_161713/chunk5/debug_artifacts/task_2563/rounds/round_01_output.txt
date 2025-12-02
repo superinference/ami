@@ -1,0 +1,29 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Fee ID 384 Characteristics ---
+Card Scheme: NexPay
+Merchant Category Codes: []
+Current Account Type: []
+Full Entry: {
+  "ID": 384,
+  "card_scheme": "NexPay",
+  "account_type": [],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": true,
+  "aci": [
+    "C",
+    "B"
+  ],
+  "fixed_amount": 0.05,
+  "rate": 14,
+  "intracountry": null
+}
+
+Observation: 'account_type' is currently empty (Wildcard), meaning it applies to ALL account types matching the other criteria.

@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Data Shape: (4326, 21)
+     psp_reference        merchant  ... aci  acquirer_country
+5      74453982452  Crossfit_Hanna  ...   G                NL
+105    11785147176  Crossfit_Hanna  ...   G                NL
+141    34922844568  Crossfit_Hanna  ...   G                NL
+205    85813870595  Crossfit_Hanna  ...   G                NL
+226    54007540767  Crossfit_Hanna  ...   G                NL
+
+[5 rows x 21 columns]

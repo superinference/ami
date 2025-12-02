@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe to access the fee rules and their characteristics.
+Step 2: Filter the fees dataframe for 'TransactPlus' and credit transactions, calculate the fee for each rule using the formula `fixed_amount + rate * 10 / 10000`, expand the 'aci' column (treating nulls as all possible ACIs), and finally identify the ACI with the highest maximum fee, breaking ties with alphabetical order.

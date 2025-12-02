@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows in payments.csv: 138236
+Rows after filtering for SwiftCharge Credit transactions: 10128
+    psp_reference               merchant  card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+5     74453982452         Crossfit_Hanna  SwiftCharge  2023            8              30           55       True       14.96         NL              NL       Linux  lRYNn2teO8RZ_ms_5Ei52Q  YunUeDIiQyoqdiDzRWvx9g  8j9y7A7UdAgWkWGV6ggaFA           Ecommerce      4017                    True                False   G               NL
+12    55566636527         Crossfit_Hanna  SwiftCharge  2023           10              35          270       True      117.98         BE              BE       Other  TPOemgnEU-_wcqFO4FzoQA  dVI_mlqijeG6kIRKMnmJTQ  kjoTGeJmmxdPEM9pAEVVVg           Ecommerce      4532                   False                False   D               NL
+20    33180657672         Crossfit_Hanna  SwiftCharge  2023            8              52           62       True       28.12         SE              BE       Linux  _ml2eKMWvvR7i1La3ek78A  wWkL7mxJeudAmh7B1NSPsg  2ta19zZL7td3SWu5arCUcw           Ecommerce      4526                   False                False   D               NL
+21    89410650089   Golfclub_Baron_Friso  SwiftCharge  2023           20              37           10       True        7.86         SE              SE       Other                     NaN  4L4aF3qoXTGKuFUO5ioruw  2EoBadg0dQ4eOxaltF42Tg           Ecommerce      4571                   False                False   D               IT
+23    79488939497  Belles_cookbook_store  SwiftCharge  2023           13              34          307       True      374.37         ES              ES       Linux  dWpLx3iS9s2uPLumwmIxCA  ghhAkzYPhoQZcmG7Agi71A  T-1PYlTeN9wvf6ShQ1IvJA           Ecommerce      4571                   False                False   D               US

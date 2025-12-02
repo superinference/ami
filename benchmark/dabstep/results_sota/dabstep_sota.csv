@@ -1,0 +1,26 @@
+Agent,Easy Accuracy (%),Hard Accuracy (%),Organization,Model Family,Model,Date
+CambioML energent.ai\nDS Agent,94.44,57.67,CambioML | user lingjiekong,OpenAI,GPT 5,19-09-2025
+DS-STAR,87.5,45.24,Google Cloud AI Research,Gemini,2.5 Pro,08-07-2025
+Amity DA Agent\nv0.1,80.56,41.01,Amity Solutions Thailand | user aongwachi,Gemini,2.5 Pro,31-05-2025
+AgenticData,94.44,40.48,Tsinghua University,Qwen,3,03-08-2025
+Mphasis-I2I\nAgents,80.56,28.04,Mphasis Limited | user PranavSatheesan,Claude,sonnet 3.5,10-04-2025
+Claude 4 Sonnet\nReACT Baseline,81.94,19.84,Hugging Face,Claude,sonnet 4,28-05-2025
+Open Data\nScientist,84.72,16.4,TogetherAI | user federicotogether,DeepSeek,V3,24-06-2025
+o4-mini Reasoning\nPrompt Baseline,76.39,14.55,Hugging Face,OpenAI,o4 mini,22-04-2025
+Claude 3.7 Sonnet\nReACT Baseline,75.0,13.76,Hugging Face,Claude,sonnet 3.7,07-04-2025
+o3-mini Reasoning\nPrompt Baseline,72.22,13.76,Adyen,OpenAI,o3 mini,02-02-2025
+Gemini 2.5 Pro\nReasoning Prompt Baseline,66.67,12.7,Hugging Face,Gemini,2.5 Pro,05-04-2025
+GPT 4.1\nReACT Baseline,80.56,12.43,Hugging Face,OpenAI,GPT 4.1,22-04-2025
+o1 Reasoning\nPrompt Baseline,69.44,11.11,Adyen,OpenAI,o1,31-01-2025
+Gemini Data\nScience Agent,61.11,9.79,Google,Gemini,2.0 Flash,10-02-2025
+Claude 3.5 Sonnet\nReACT Baseline,77.78,9.26,Adyen,Claude,sonnet 3.5,23-01-2025
+GPT 4.1-mini\nReACT baseline,77.78,8.99,Hugging Face,OpenAI,GPT 4.1-mini,22-04-2025
+Llama 4 Maverick\nReACT Baseline,75.0,8.73,Hugging Face,Llama,4 Maverick,09-04-2025
+GPT 4o\nReACT Baseline,66.67,6.08,Adyen,OpenAI,GPT 4o,23-01-2025
+Deepseek V3\nReACT Baseline,66.67,5.56,Adyen,DeepSeek,v3,23-01-2025
+Claude 3.5 Haiku\nReACT Baseline,77.78,5.03,Adyen,Claude,haiku 3.5,24-01-2025
+Llama 3.3 70B\nReACT Baseline,68.06,3.7,Adyen,Llama,3.3 70B Instruct,23-01-2025
+GPT 4o-mini\nReACT Baseline,69.44,3.44,Adyen,OpenAI,GPT 4o-mini,24-01-2025
+Qwen Coder\nReAct Baseline,54.17,3.44,Adyen,Qwen,2.5 Coder 32B Instruct,28-01-2025
+Llama 4 Scout\nReACT Baseline,52.78,1.85,Hugging Face,Llama,4 Scout,09-04-2025
+Llama 3.2 1B\nReACT Baseline,1.39,0.0,Adyen,Llama,3.2 1B Instruct,23-01-2025

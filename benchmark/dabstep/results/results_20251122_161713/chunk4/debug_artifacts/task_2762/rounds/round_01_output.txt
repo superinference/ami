@@ -1,0 +1,26 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+{
+    "merchant": "Golfclub_Baron_Friso",
+    "metadata": {
+        "merchant_category_code": 7993,
+        "account_type": "F",
+        "acquirer": [
+            "medici"
+        ],
+        "capture_delay": "2"
+    },
+    "metrics_2023": {
+        "total_volume": 2553380.62,
+        "avg_monthly_volume": 212781.71833333335,
+        "total_fraud_volume": 238715.33000000002,
+        "fraud_rate_ratio": 0.09348991220901488,
+        "fraud_rate_percentage": 9.348991220901489,
+        "transaction_count": 27748,
+        "average_eur_amount": 92.0203481331988
+    }
+}

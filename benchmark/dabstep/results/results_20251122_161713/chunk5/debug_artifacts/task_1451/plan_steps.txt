@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to inspect the fee rules associated with 'GlobalCard' and credit transactions.
+Step 2: Calculate the fee for each ACI (A, B, C, D, E, F, G) for a 100 Euro credit transaction on GlobalCard by filtering the `fees.json` data where `card_scheme` is 'GlobalCard' and `is_credit` is either True or None, handling the `aci` list column (where explicit values match or an empty list `[]` implies all ACIs), and identifying the ACI with the highest calculated cost (`fixed_amount + rate * 100 / 10000`).

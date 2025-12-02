@@ -1,0 +1,9 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the merchant is 'Martinis_Fine_Steakhouse', the `day_of_year` is between 152 and 181 (representing June), and `has_fraudulent_dispute` is True.
+Step 2: To determine the preferred Authorization Characteristics Indicator (ACI) with the lowest fees for the fraudulent transactions, I need to calculate the applicable fees for these transactions under each possible ACI. This requires the merchant's specific attributes (to match fee rules) and the fee schedule itself. Additionally, fee rules often depend on the merchant's total monthly volume and fraud level, so I must calculate these metrics for June to select the correct fee tier.
+
+**Plan:**
+
+1.  Load `merchant_data.json` to get the `merchant_category_code`, `account_type`, and `capture_delay` for 'Martinis_Fine_Steakhouse'.
+2.  Load `fees.json` to access the fee rules.
+3.  Load `payments.csv` and filter for 'Martinis_Fine_Steakhouse' in June (days 152-181) to calculate the merchant's **total monthly volume** and **fraud rate** (fraud volume / total volume) for that month, which are necessary to identify the correct fee rules (e.g., volume tiers like '100k-1m' or fraud levels).
+4.  Using the subset of **fraudulent transactions**

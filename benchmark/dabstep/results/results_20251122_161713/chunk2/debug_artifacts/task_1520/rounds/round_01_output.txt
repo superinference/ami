@@ -1,0 +1,29 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Fees DataFrame loaded successfully.
+Shape: (1000, 12)
+Columns: ['ID', 'card_scheme', 'account_type', 'capture_delay', 'monthly_fraud_level', 'monthly_volume', 'merchant_category_code', 'is_credit', 'aci', 'fixed_amount', 'rate', 'intracountry']
+
+Required columns ['fixed_amount', 'rate', 'card_scheme'] are present.
+
+First 5 rows of relevant columns:
+   fixed_amount  rate   card_scheme
+0          0.10    19  TransactPlus
+1          0.13    86    GlobalCard
+2          0.09    16  TransactPlus
+3          0.11    25        NexPay
+4          0.13    69    GlobalCard
+
+Average Fee per Card Scheme for 4321 EUR Transaction:
+card_scheme
+NexPay          24.013855
+SwiftCharge     23.934776
+TransactPlus    23.735768
+GlobalCard      22.463579
+Name: calculated_fee_4321, dtype: float64
+
+Most expensive scheme in the average scenario: NexPay (24.0139 EUR)

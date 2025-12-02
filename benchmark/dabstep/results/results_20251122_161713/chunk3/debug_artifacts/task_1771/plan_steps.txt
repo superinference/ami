@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where the `merchant` is 'Crossfit_Hanna' and the date corresponds to September 2023 (specifically, `year` is 2023 and `day_of_year` is between 244 and 273).
+Step 2: Load `merchant_data.json` to get the merchant's attributes (account type, category code, capture delay), calculate the fraud rate and identify unique transaction profiles (scheme, credit, ACI, intracountry) from the filtered payments data, then load `fees.json` and determine which Fee IDs apply based on these attributes and the fee rules.

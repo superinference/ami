@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average transaction value grouped by issuing_country:
+BE: 95.83
+ES: 109.18
+FR: 71.18
+GR: 77.56
+IT: 90.72
+LU: 143.98
+NL: 86.79
+SE: 105.05

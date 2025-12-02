@@ -1,0 +1,5 @@
+Step 1: Load the `payments.csv` dataset and filter for transactions where the merchant is 'Rafa_AI' and the year is 2023.
+Step 2: Load `fees.json` and `merchant_data.json` to retrieve the fee rule with ID=276 and the merchant details for 'Rafa_AI'. Then, process the filtered transactions to calculate 'intracountry' status, monthly volumes, and monthly fraud levels. Finally, identify the transactions that match the criteria of fee ID=276 and calculate the payment delta using the formula: `(99 - original_rate) * total_matching_eur_amount / 10000`.
+Step 3: Based on the previous results, the delta has already been calculated as approximately 42.90 EUR. The calculation used the formula `(New Rate - Original Rate) * Total Matching Amount / 10000`, which corresponds to `(99 - 75) * 17874.16 / 10000 = 42.897984`. This aligns with the fee structure described in the manual where the rate is applied to the transaction value divided by 10000.
+
+The final answer is 42.90 EUR.

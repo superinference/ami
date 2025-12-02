@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original row count: 138236
+Filtered row count: 2820
+
+First 5 rows of filtered data:
+     psp_reference        merchant  ... aci  acquirer_country
+25     64505510891  Crossfit_Hanna  ...   F                NL
+63     60287333380  Crossfit_Hanna  ...   C                NL
+68     36189817116  Crossfit_Hanna  ...   F                NL
+140    60534247503  Crossfit_Hanna  ...   D                NL
+239    69263548158  Crossfit_Hanna  ...   C                NL
+
+[5 rows x 21 columns]

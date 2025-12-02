@@ -1,0 +1,54 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Details for Fee ID 64 ---
+ID: 64
+card_scheme: SwiftCharge
+account_type: []
+capture_delay: None
+monthly_fraud_level: None
+monthly_volume: None
+merchant_category_code: []
+is_credit: True
+aci: ['D']
+fixed_amount: 0.08
+rate: 51
+intracountry: nan
+
+--- Merchant Data (Account Types & Categories) ---
+                    merchant account_type  merchant_category_code
+0             Crossfit_Hanna            F                    7997
+1   Martinis_Fine_Steakhouse            H                    5812
+2      Belles_cookbook_store            R                    5942
+3       Golfclub_Baron_Friso            F                    7993
+4                    Rafa_AI            D                    7372
+5                    Eggnest            H                    5814
+6                    Gym_Pro            F                    7997
+7              Gourmet_Bites            H                    5812
+8                 Book_Haven            R                    5942
+9             City_Golf_Club            F                    7993
+10               SmartAI_Hub            D                    7372
+11           Sunny_Side_Cafe            H                    5814
+12             Pilates_Place            F                    7997
+13            The_Steakhouse            H                    5812
+14             Tech_Trainers            S                    8299
+15              Yoga_Masters            F                    7997
+16                Urban_Eats            H                    5812
+17               Read_and_Co            R                    5942
+18          Luxury_Tee_Times            F                    7993
+19                 InnovateX            D                    7372
+20                Sunny_Nest            H                    5814
+21                    FitHub            F                    7997
+22        Culinary_Creations            H                    5812
+23          Bookworm_Central            R                    5942
+24            Green_Fairways            F                    7993
+25               AI_Pro_Labs            S                    7372
+26              Brunch_Bliss            H                    5814
+27              Muscle_House            F                    7997
+28            Crafty_Cuisine            H                    5812
+29             Cafe_Centrale            H                    7997
+
+Unique Account Types available: ['F' 'H' 'R' 'D' 'S']

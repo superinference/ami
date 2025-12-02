@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to inspect the fee structures, specifically the `card_scheme`, `fixed_amount`, and `rate` columns.
+Step 2: Calculate the total fee for a 10 EUR transaction for each card scheme using the average `fixed_amount` and `rate` values identified in the previous step (Formula: `fee = fixed_amount + rate * 10 / 10000`), then compare the results to determine which card scheme is the most expensive.

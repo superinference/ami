@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered data for Rafa_AI in October (Days 274-304)
+Row count: 2369
+Sample rows:
+     psp_reference merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+47     66523455495  Rafa_AI    GlobalCard  2023           11              40          282       True       27.04         IT              IT         iOS  JclIqQCRAMBD7nsOD1UO4w  UCwVSsRICL0koU-eVYCmcA  msvxA17JlPHp4XVG3LOVWg           Ecommerce      4556                   False                False   E               NL
+51     62233380230  Rafa_AI  TransactPlus  2023            8               9          276       True       45.61         SE              SE     Android                     NaN  nO8qaF2AswRAIejLpRr8sQ  GsMPgmOIprSvUCZyQL-DVA           Ecommerce      4622                   False                False   E               NL
+75     12774624141  Rafa_AI    GlobalCard  2023           11              18          303       True       80.14         IT              IT       Linux  O12SD_hrQhWVHJ1pT42pmg  arg_azhRjaQ9VUtUolqe5A  zTAubqVoLeX4sCLyqoQVgQ           Ecommerce      4916                   False                False   E               NL
+108    43256077269  Rafa_AI        NexPay  2023           15              14          285       True       60.41         IT              SE     Windows  yC3ZBij_cbTzXgj_lsPKlg  2Ws6QbFejuAOq4BRXkEqbQ  LKxKI0YOSr2rgWSgFowing           Ecommerce      4556                   False                False   E               NL
+136    73126567613  Rafa_AI    GlobalCard  2023           20              49          285       True       56.21         BE              BE     Android  HpbUnD5ZBskRT8FLevrNDA  oK5qt22ryvhqRo19VYO4jw  0AT4e3lejTWJfAra613PJQ           Ecommerce      4556                   False                False   E               NL
+
+Unique days in filtered data: [np.int64(274), np.int64(275), np.int64(276), np.int64(277), np.int64(278), np.int64(279), np.int64(280), np.int64(281), np.int64(282), np.int64(283), np.int64(284), np.int64(285), np.int64(286), np.int64(287), np.int64(288), np.int64(289), np.int64(290), np.int64(291), np.int64(292), np.int64(293), np.int64(294), np.int64(295), np.int64(296), np.int64(297), np.int64(298), np.int64(299), np.int64(300), np.int64(301), np.int64(302), np.int64(303), np.int64(304)]
+Unique merchants in filtered data: ['Rafa_AI']

@@ -1,0 +1,22 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Data Summary for Martinis_Fine_Steakhouse in July:
+Count: 1212
+Total Volume: 109147.70
+Average Amount: 90.06
+Credit Percentage: 73.93%
+Intra-country Percentage: 11.47%
+
+ACI Counts:
+aci
+D    568
+F    307
+G    222
+C     57
+A     30
+B     28
+Name: count, dtype: int64

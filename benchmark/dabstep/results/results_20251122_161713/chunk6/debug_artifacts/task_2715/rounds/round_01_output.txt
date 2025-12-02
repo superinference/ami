@@ -1,0 +1,19 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Analysis for Martinis_Fine_Steakhouse in April ---
+Total Monthly Volume: 102916.05
+Fraudulent Volume: 10204.50
+Fraudulent Transactions Count: 101
+Fraud Rate (Volume): 9.9154%
+
+--- Sample of Isolated Fraudulent Transactions ---
+      psp_reference  eur_amount   card_scheme aci  has_fraudulent_dispute
+3835    81088423402      189.41    GlobalCard   G                    True
+4123    36943634824      294.44        NexPay   G                    True
+4216    49706662244       63.95   SwiftCharge   G                    True
+5994    89993141887       35.17        NexPay   G                    True
+7569    30110703203       25.20  TransactPlus   G                    True

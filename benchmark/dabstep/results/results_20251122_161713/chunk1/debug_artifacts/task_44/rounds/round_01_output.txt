@@ -1,0 +1,9 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Total unique shoppers: 46284
+Repeat shoppers: 28629
+Percentage of repeat customers: 61.85506870624838%

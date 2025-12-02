@@ -1,0 +1,11 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Average Scenario Characteristics ---
+Most Frequent Merchant: Crossfit_Hanna
+Most Frequent is_credit: True
+Most Frequent ACI: D
+Most Frequent Intracountry: False

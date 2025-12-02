@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a DataFrame and filter for entries where `card_scheme` is 'SwiftCharge' and `is_credit` is True (or null, if applicable) to identify the relevant fee structures.
+Step 2: Load `payments.csv`, `merchant_data.json`, and `fees.json`, calculate monthly merchant statistics (volume and fraud), filter for SwiftCharge credit transactions, match each transaction to its applicable fee rule (considering all criteria including ACI, merchant attributes, and monthly stats), and calculate the average fee for a 1234 EUR transaction.

@@ -1,0 +1,17 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Successfully filtered transactions for Martinis_Fine_Steakhouse in October.
+Row count: 1131
+Total Volume: 97814.79
+
+First 5 rows of filtered data:
+     psp_reference                  merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+55     21702732737  Martinis_Fine_Steakhouse      NexPay  2023           19               3          291       True       45.11         BE              BE       Other  x8fwfbBnI_i1bQsm1nn_uw                     NaN  0IZ6uTwI3SiPFBgBl2GcRQ                 POS      4916                   False                False   B               FR
+106    13821686274  Martinis_Fine_Steakhouse      NexPay  2023           20              50          300       True       25.80         ES              ES       Linux  2DnyQuQsRzE4OF56jUi1GQ                     NaN  3L1s3la7AmGEwt2cSuV6tg           Ecommerce      4236                   False                False   D               FR
+206    33007604360  Martinis_Fine_Steakhouse  GlobalCard  2023           23              34          294      False       82.38         FR              FR     Android                     NaN                     NaN  TXI_4an-nRVhwKvDHYD9AQ           Ecommerce      4532                   False                False   F               FR
+323    13949003127  Martinis_Fine_Steakhouse      NexPay  2023           10              27          274       True      153.43         BE              BE       MacOS                     NaN  TTZ0Y1CzLjpD96aJ82Y0rw  b9e3SCWktgKz8bYaJyZ7bA           Ecommerce      4133                   False                False   F               FR
+745    80053425498  Martinis_Fine_Steakhouse  GlobalCard  2023           11              55          296      False       53.67         IT              IT         iOS  LmxZkSXghbc7Z9XzgA0qzQ  hMCr-23vQvg1SePjyzaeFA  -qJPipFZIz_oXz5vbFjSsA           Ecommerce      4571                   False                False   F               FR

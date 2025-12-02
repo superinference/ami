@@ -1,0 +1,9 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Total Transaction Amount: 12697297.46
+Total Unique Emails: 46285
+Average Amount per Unique Email: 274.33

@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+    ID card_scheme account_type  ... fixed_amount rate intracountry
+3    4      NexPay           []  ...         0.11   25          1.0
+68  69      NexPay           []  ...         0.14   38          NaN
+72  73      NexPay           []  ...         0.14   12          1.0
+76  77      NexPay          [R]  ...         0.09   63          1.0
+81  82      NexPay       [S, R]  ...         0.00   81          NaN
+
+[5 rows x 12 columns]
+
+Number of rules after filtering: 109

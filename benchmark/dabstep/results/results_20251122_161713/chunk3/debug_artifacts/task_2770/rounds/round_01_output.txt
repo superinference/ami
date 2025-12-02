@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of fraudulent transactions found: 1105
+Sample of filtered transactions:
+     psp_reference                  merchant  year  has_fraudulent_dispute aci  eur_amount
+112    68618046935  Martinis_Fine_Steakhouse  2023                    True   G      301.72
+296    80218976741  Martinis_Fine_Steakhouse  2023                    True   G      366.19
+321    61080437576  Martinis_Fine_Steakhouse  2023                    True   G      149.38
+558    19768575538  Martinis_Fine_Steakhouse  2023                    True   G      150.81
+681    63136929740  Martinis_Fine_Steakhouse  2023                    True   G       75.55
+
+Context files loaded successfully.

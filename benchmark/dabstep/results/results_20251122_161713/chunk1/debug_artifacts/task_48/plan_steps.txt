@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame.
+Step 2: Calculate the fraud rate for each hour of the day, then compute the correlation coefficient between the hour (0-23) and the calculated fraud rates to determine if it exceeds 0.50.

@@ -1,0 +1,183 @@
+{
+  "final_answer": "0.481685",
+  "execution_result": "0.481685",
+  "generated_code": "import pandas as pd\nimport json\nimport numpy as np\n\n# ---------------------------------------------------------\n# Helper Functions\n# ---------------------------------------------------------\n\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef parse_range(range_str):\n    \"\"\"Parses a range string (e.g., '100k-1m', '>5', '<3') into (min, max).\"\"\"\n    if range_str is None:\n        return (-float('inf'), float('inf'))\n    \n    s = str(range_str).lower().strip()\n    \n    def parse_val(x):\n        x = x.strip()\n        mult = 1\n        if x.endswith('k'):\n            mult = 1000\n            x = x[:-1]\n        elif x.endswith('m'):\n            mult = 1000000\n            x = x[:-1]\n        elif x.endswith('%'):\n            mult = 0.01\n            x = x[:-1]\n        return float(x) * mult\n\n    if '>' in s:\n        val = parse_val(s.replace('>', ''))\n        return (val, float('inf')) # >X means (X, inf)\n    if '<' in s:\n        val = parse_val(s.replace('<', ''))\n        return (-float('inf'), val) # <X means (-inf, X)\n    if '-' in s:\n        parts = s.split('-')\n        return (parse_val(parts[0]), parse_val(parts[1]))\n    \n    try:\n        val = parse_val(s)\n        return (val, val)\n    except:\n        return (-float('inf'), float('inf'))\n\ndef get_month_from_doy(doy):\n    \"\"\"Maps day of year (1-365) to month (1-12) for non-leap year.\"\"\"\n    days_in_months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]\n    cum_days = [0] + list(np.cumsum(days_in_months))\n    for i in range(12):\n        if doy <= cum_days[i+1]:\n            return i + 1\n    return 12\n\ndef match_fee_rule(ctx, rule):\n    \"\"\"Checks if a transaction context matches a fee rule.\"\"\"\n    \n    # 1. Account Type (List)\n    if rule.get('account_type') and ctx['account_type'] not in rule['account_type']:\n        return False\n        \n    # 2. Merchant Category Code (List)\n    if rule.get('merchant_category_code') and ctx['mcc'] not in rule['merchant_category_code']:\n        return False\n        \n    # 3. ACI (List)\n    if rule.get('aci') and ctx['aci'] not in rule['aci']:\n        return False\n        \n    # 4. Is Credit (Bool)\n    if rule.get('is_credit') is not None:\n        if rule['is_credit'] != ctx['is_credit']:\n            return False\n            \n    # 5. Intracountry (Bool/Float -> Bool)\n    if rule.get('intracountry') is not None:\n        rule_intra = bool(rule['intracountry'])\n        if rule_intra != ctx['intracountry']:\n            return False\n\n    # 6. Monthly Volume (Range)\n    if rule.get('monthly_volume'):\n        min_v, max_v = parse_range(rule['monthly_volume'])\n        if not (min_v <= ctx['monthly_volume'] <= max_v):\n            return False\n\n    # 7. Monthly Fraud Level (Range)\n    if rule.get('monthly_fraud_level'):\n        min_f, max_f = parse_range(rule['monthly_fraud_level'])\n        # Note: ctx['monthly_fraud_rate'] is 0.08 for 8%\n        # parse_range handles '%' conversion\n        if not (min_f <= ctx['monthly_fraud_rate'] <= max_f):\n            return False\n\n    # 8. Capture Delay (String or Range)\n    if rule.get('capture_delay'):\n        r_delay = str(rule['capture_delay']).lower()\n        m_delay = str(ctx['capture_delay']).lower()\n        \n        # If rule is a range/comparison\n        if any(c in r_delay for c in ['<', '>', '-']):\n            # Convert merchant delay to float if possible\n            val = 0.0\n            if m_delay == 'immediate':\n                val = 0.0\n            elif m_delay == 'manual':\n                # Manual usually doesn't match numeric ranges unless specified\n                return False \n            else:\n                try:\n                    val = float(m_delay)\n                except:\n                    return False\n            \n            min_d, max_d = parse_range(r_delay)\n            if not (min_d <= val <= max_d):\n                return False\n        else:\n            # Exact string match\n            if r_delay != m_delay:\n                return False\n\n    return True\n\n# ---------------------------------------------------------\n# Main Execution\n# ---------------------------------------------------------\n\n# 1. Load Data\nmerchant_data = pd.read_json('/output/chunk6/data/context/merchant_data.json')\nfees_data = pd.read_json('/output/chunk6/data/context/fees.json')\npayments = pd.read_csv('/output/chunk6/data/context/payments.csv')\n\n# 2. Identify 'H' Merchants\nh_merchants_df = merchant_data[merchant_data['account_type'] == 'H']\nh_merchant_names = set(h_merchants_df['merchant'].unique())\nmerchant_info_map = merchant_data.set_index('merchant').to_dict('index')\n\n# 3. Calculate Monthly Stats for ALL merchants\n# (Volume and Fraud Rate are calculated per merchant per month across ALL their transactions)\npayments['month'] = payments['day_of_year'].apply(get_month_from_doy)\n\n# Calculate fraud volume (sum of eur_amount where has_fraudulent_dispute is True)\n# We use a lambda or pre-filter. Pre-calculating fraud column is faster.\npayments['fraud_amt'] = np.where(payments['has_fraudulent_dispute'], payments['eur_amount'], 0.0)\n\nmonthly_stats = payments.groupby(['merchant', 'month']).agg(\n    total_vol=('eur_amount', 'sum'),\n    fraud_vol=('fraud_amt', 'sum')\n).reset_index()\n\nmonthly_stats['fraud_rate'] = monthly_stats['fraud_vol'] / monthly_stats['total_vol']\nmonthly_stats['fraud_rate'] = monthly_stats['fraud_rate'].fillna(0.0)\n\n# Create lookup dictionary for fast access\nstats_lookup = monthly_stats.set_index(['merchant', 'month']).to_dict('index')\n\n# 4. Filter Target Transactions (NexPay + Account H)\ntarget_txs = payments[\n    (payments['merchant'].isin(h_merchant_names)) & \n    (payments['card_scheme'] == 'NexPay')\n].copy()\n\n# 5. Filter Fee Rules (NexPay only)\nnexpay_fees = fees_data[fees_data['card_scheme'] == 'NexPay'].to_dict('records')\n\n# 6. Calculate Fees for 100 EUR\ncalculated_fees = []\nhypothetical_amount = 100.0\n\nfor _, tx in target_txs.iterrows():\n    merchant = tx['merchant']\n    month = tx['month']\n    \n    # Retrieve Context\n    m_info = merchant_info_map.get(merchant)\n    stats = stats_lookup.get((merchant, month), {'total_vol': 0, 'fraud_rate': 0})\n    \n    ctx = {\n        'account_type': m_info['account_type'],\n        'mcc': m_info['merchant_category_code'],\n        'capture_delay': m_info['capture_delay'],\n        'monthly_volume': stats['total_vol'],\n        'monthly_fraud_rate': stats['fraud_rate'],\n        'aci': tx['aci'],\n        'is_credit': tx['is_credit'],\n        'intracountry': tx['issuing_country'] == tx['acquirer_country']\n    }\n    \n    # Find Matching Rule\n    # We iterate through rules and pick the first one that matches.\n    # (Assuming rules are ordered or mutually exclusive enough for this analysis)\n    matched_rule = None\n    for rule in nexpay_fees:\n        if match_fee_rule(ctx, rule):\n            matched_rule = rule\n            break\n            \n    if matched_rule:\n        # Fee Formula: Fixed + (Rate * Amount / 10000)\n        # Rate is an integer (basis points equivalent? No, usually rate/10000 implies basis points)\n        # Manual says: \"rate * transaction_value / 10000\"\n        fee = matched_rule['fixed_amount'] + (matched_rule['rate'] * hypothetical_amount / 10000.0)\n        calculated_fees.append(fee)\n\n# 7. Output Result\nif calculated_fees:\n    avg_fee = sum(calculated_fees) / len(calculated_fees)\n    print(f\"{avg_fee:.6f}\")\nelse:\n    print(\"0.000000\")",
+  "finalized_code": null,
+  "computation_code": "import pandas as pd\nimport json\nimport numpy as np\n\n# ---------------------------------------------------------\n# Helper Functions\n# ---------------------------------------------------------\n\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef parse_range(range_str):\n    \"\"\"Parses a range string (e.g., '100k-1m', '>5', '<3') into (min, max).\"\"\"\n    if range_str is None:\n        return (-float('inf'), float('inf'))\n    \n    s = str(range_str).lower().strip()\n    \n    def parse_val(x):\n        x = x.strip()\n        mult = 1\n        if x.endswith('k'):\n            mult = 1000\n            x = x[:-1]\n        elif x.endswith('m'):\n            mult = 1000000\n            x = x[:-1]\n        elif x.endswith('%'):\n            mult = 0.01\n            x = x[:-1]\n        return float(x) * mult\n\n    if '>' in s:\n        val = parse_val(s.replace('>', ''))\n        return (val, float('inf')) # >X means (X, inf)\n    if '<' in s:\n        val = parse_val(s.replace('<', ''))\n        return (-float('inf'), val) # <X means (-inf, X)\n    if '-' in s:\n        parts = s.split('-')\n        return (parse_val(parts[0]), parse_val(parts[1]))\n    \n    try:\n        val = parse_val(s)\n        return (val, val)\n    except:\n        return (-float('inf'), float('inf'))\n\ndef get_month_from_doy(doy):\n    \"\"\"Maps day of year (1-365) to month (1-12) for non-leap year.\"\"\"\n    days_in_months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]\n    cum_days = [0] + list(np.cumsum(days_in_months))\n    for i in range(12):\n        if doy <= cum_days[i+1]:\n            return i + 1\n    return 12\n\ndef match_fee_rule(ctx, rule):\n    \"\"\"Checks if a transaction context matches a fee rule.\"\"\"\n    \n    # 1. Account Type (List)\n    if rule.get('account_type') and ctx['account_type'] not in rule['account_type']:\n        return False\n        \n    # 2. Merchant Category Code (List)\n    if rule.get('merchant_category_code') and ctx['mcc'] not in rule['merchant_category_code']:\n        return False\n        \n    # 3. ACI (List)\n    if rule.get('aci') and ctx['aci'] not in rule['aci']:\n        return False\n        \n    # 4. Is Credit (Bool)\n    if rule.get('is_credit') is not None:\n        if rule['is_credit'] != ctx['is_credit']:\n            return False\n            \n    # 5. Intracountry (Bool/Float -> Bool)\n    if rule.get('intracountry') is not None:\n        rule_intra = bool(rule['intracountry'])\n        if rule_intra != ctx['intracountry']:\n            return False\n\n    # 6. Monthly Volume (Range)\n    if rule.get('monthly_volume'):\n        min_v, max_v = parse_range(rule['monthly_volume'])\n        if not (min_v <= ctx['monthly_volume'] <= max_v):\n            return False\n\n    # 7. Monthly Fraud Level (Range)\n    if rule.get('monthly_fraud_level'):\n        min_f, max_f = parse_range(rule['monthly_fraud_level'])\n        # Note: ctx['monthly_fraud_rate'] is 0.08 for 8%\n        # parse_range handles '%' conversion\n        if not (min_f <= ctx['monthly_fraud_rate'] <= max_f):\n            return False\n\n    # 8. Capture Delay (String or Range)\n    if rule.get('capture_delay'):\n        r_delay = str(rule['capture_delay']).lower()\n        m_delay = str(ctx['capture_delay']).lower()\n        \n        # If rule is a range/comparison\n        if any(c in r_delay for c in ['<', '>', '-']):\n            # Convert merchant delay to float if possible\n            val = 0.0\n            if m_delay == 'immediate':\n                val = 0.0\n            elif m_delay == 'manual':\n                # Manual usually doesn't match numeric ranges unless specified\n                return False \n            else:\n                try:\n                    val = float(m_delay)\n                except:\n                    return False\n            \n            min_d, max_d = parse_range(r_delay)\n            if not (min_d <= val <= max_d):\n                return False\n        else:\n            # Exact string match\n            if r_delay != m_delay:\n                return False\n\n    return True\n\n# ---------------------------------------------------------\n# Main Execution\n# ---------------------------------------------------------\n\n# 1. Load Data\nmerchant_data = pd.read_json('/output/chunk6/data/context/merchant_data.json')\nfees_data = pd.read_json('/output/chunk6/data/context/fees.json')\npayments = pd.read_csv('/output/chunk6/data/context/payments.csv')\n\n# 2. Identify 'H' Merchants\nh_merchants_df = merchant_data[merchant_data['account_type'] == 'H']\nh_merchant_names = set(h_merchants_df['merchant'].unique())\nmerchant_info_map = merchant_data.set_index('merchant').to_dict('index')\n\n# 3. Calculate Monthly Stats for ALL merchants\n# (Volume and Fraud Rate are calculated per merchant per month across ALL their transactions)\npayments['month'] = payments['day_of_year'].apply(get_month_from_doy)\n\n# Calculate fraud volume (sum of eur_amount where has_fraudulent_dispute is True)\n# We use a lambda or pre-filter. Pre-calculating fraud column is faster.\npayments['fraud_amt'] = np.where(payments['has_fraudulent_dispute'], payments['eur_amount'], 0.0)\n\nmonthly_stats = payments.groupby(['merchant', 'month']).agg(\n    total_vol=('eur_amount', 'sum'),\n    fraud_vol=('fraud_amt', 'sum')\n).reset_index()\n\nmonthly_stats['fraud_rate'] = monthly_stats['fraud_vol'] / monthly_stats['total_vol']\nmonthly_stats['fraud_rate'] = monthly_stats['fraud_rate'].fillna(0.0)\n\n# Create lookup dictionary for fast access\nstats_lookup = monthly_stats.set_index(['merchant', 'month']).to_dict('index')\n\n# 4. Filter Target Transactions (NexPay + Account H)\ntarget_txs = payments[\n    (payments['merchant'].isin(h_merchant_names)) & \n    (payments['card_scheme'] == 'NexPay')\n].copy()\n\n# 5. Filter Fee Rules (NexPay only)\nnexpay_fees = fees_data[fees_data['card_scheme'] == 'NexPay'].to_dict('records')\n\n# 6. Calculate Fees for 100 EUR\ncalculated_fees = []\nhypothetical_amount = 100.0\n\nfor _, tx in target_txs.iterrows():\n    merchant = tx['merchant']\n    month = tx['month']\n    \n    # Retrieve Context\n    m_info = merchant_info_map.get(merchant)\n    stats = stats_lookup.get((merchant, month), {'total_vol': 0, 'fraud_rate': 0})\n    \n    ctx = {\n        'account_type': m_info['account_type'],\n        'mcc': m_info['merchant_category_code'],\n        'capture_delay': m_info['capture_delay'],\n        'monthly_volume': stats['total_vol'],\n        'monthly_fraud_rate': stats['fraud_rate'],\n        'aci': tx['aci'],\n        'is_credit': tx['is_credit'],\n        'intracountry': tx['issuing_country'] == tx['acquirer_country']\n    }\n    \n    # Find Matching Rule\n    # We iterate through rules and pick the first one that matches.\n    # (Assuming rules are ordered or mutually exclusive enough for this analysis)\n    matched_rule = None\n    for rule in nexpay_fees:\n        if match_fee_rule(ctx, rule):\n            matched_rule = rule\n            break\n            \n    if matched_rule:\n        # Fee Formula: Fixed + (Rate * Amount / 10000)\n        # Rate is an integer (basis points equivalent? No, usually rate/10000 implies basis points)\n        # Manual says: \"rate * transaction_value / 10000\"\n        fee = matched_rule['fixed_amount'] + (matched_rule['rate'] * hypothetical_amount / 10000.0)\n        calculated_fees.append(fee)\n\n# 7. Output Result\nif calculated_fees:\n    avg_fee = sum(calculated_fees) / len(calculated_fees)\n    print(f\"{avg_fee:.6f}\")\nelse:\n    print(\"0.000000\")",
+  "computation_result": "0.481685\n",
+  "code_evolution": [
+    {
+      "round": 1,
+      "plan_steps": 1,
+      "code_length": 3034,
+      "code": "# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef safe_get(df, column, default=None):\n    \"\"\"Safely get column from DataFrame, return default if not exists.\"\"\"\n    if isinstance(df, dict):\n        return df.get(column, default)\n    elif hasattr(df, 'columns') and column in df.columns:\n        return df[column]\n    return default\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef safe_index(array, idx, default=None):\n    \"\"\"Safely get array element at index, return default if out of bounds.\"\"\"\n    try:\n        if 0 <= idx < len(array):\n            return array[idx]\n        return default\n    except (IndexError, TypeError, AttributeError):\n        return default\n\n\nimport pandas as pd\nimport json\n\n# Define file path\nfees_path = '/output/chunk6/data/context/fees.json'\n\n# Load the fees data\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\n\n# Create DataFrame\ndf_fees = pd.DataFrame(fees_data)\n\n# Define filtering logic for account_type\n# Logic: Keep row if account_type is empty (wildcard) OR contains 'H'\ndef is_applicable_account_type(account_type_list):\n    # Check if list is empty (wildcard matches all)\n    if not account_type_list:\n        return True\n    # Check if 'H' is in the list\n    if 'H' in account_type_list:\n        return True\n    return False\n\n# Step 1: Filter for card_scheme 'NexPay'\ndf_nexpay = df_fees[df_fees['card_scheme'] == 'NexPay'].copy()\n\n# Step 2: Filter for account_type 'H' or wildcard\n# We use apply because account_type is a list column\ndf_filtered = df_nexpay[df_nexpay['account_type'].apply(is_applicable_account_type)].copy()\n\n# Display results to verify the step\nprint(f\"Total fees rules: {len(df_fees)}\")\nprint(f\"NexPay rules: {len(df_nexpay)}\")\nprint(f\"Filtered rules (NexPay + Account H/Wildcard): {len(df_filtered)}\")\nprint(\"\\nSample of filtered data:\")\nprint(df_filtered[['ID', 'card_scheme', 'account_type', 'fixed_amount', 'rate']].head())\n\n# Save the filtered dataframe for the next step (optional but good practice in a pipeline, \n# here we just print as requested by the prompt structure)",
+      "execution_output": "Total fees rules: 1000\nNexPay rules: 191\nFiltered rules (NexPay + Account H/Wildcard): 162\n\nSample of filtered data:\n    ID card_scheme     account_type  fixed_amount  rate\n3    4      NexPay               []          0.11    25\n8    9      NexPay               []          0.05    23\n33  34      NexPay  [R, D, H, F, S]          0.08    86\n52  53      NexPay               []          0.07    95\n53  54      NexPay               []          0.13    68\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.1,
+      "plan_snapshot": [
+        "Load the `fees.json` file into a dataframe and filter for rows where `card_scheme` is 'NexPay' and `account_type` either contains 'H' or is empty (wildcard)."
+      ]
+    },
+    {
+      "round": 2,
+      "plan_steps": 2,
+      "code_length": 7939,
+      "code": "import pandas as pd\nimport json\nimport numpy as np\n\n# ---------------------------------------------------------\n# Helper Functions\n# ---------------------------------------------------------\n\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef parse_range(range_str):\n    \"\"\"Parses a range string (e.g., '100k-1m', '>5', '<3') into (min, max).\"\"\"\n    if range_str is None:\n        return (-float('inf'), float('inf'))\n    \n    s = str(range_str).lower().strip()\n    \n    def parse_val(x):\n        x = x.strip()\n        mult = 1\n        if x.endswith('k'):\n            mult = 1000\n            x = x[:-1]\n        elif x.endswith('m'):\n            mult = 1000000\n            x = x[:-1]\n        elif x.endswith('%'):\n            mult = 0.01\n            x = x[:-1]\n        return float(x) * mult\n\n    if '>' in s:\n        val = parse_val(s.replace('>', ''))\n        return (val, float('inf')) # >X means (X, inf)\n    if '<' in s:\n        val = parse_val(s.replace('<', ''))\n        return (-float('inf'), val) # <X means (-inf, X)\n    if '-' in s:\n        parts = s.split('-')\n        return (parse_val(parts[0]), parse_val(parts[1]))\n    \n    try:\n        val = parse_val(s)\n        return (val, val)\n    except:\n        return (-float('inf'), float('inf'))\n\ndef get_month_from_doy(doy):\n    \"\"\"Maps day of year (1-365) to month (1-12) for non-leap year.\"\"\"\n    days_in_months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]\n    cum_days = [0] + list(np.cumsum(days_in_months))\n    for i in range(12):\n        if doy <= cum_days[i+1]:\n            return i + 1\n    return 12\n\ndef match_fee_rule(ctx, rule):\n    \"\"\"Checks if a transaction context matches a fee rule.\"\"\"\n    \n    # 1. Account Type (List)\n    if rule.get('account_type') and ctx['account_type'] not in rule['account_type']:\n        return False\n        \n    # 2. Merchant Category Code (List)\n    if rule.get('merchant_category_code') and ctx['mcc'] not in rule['merchant_category_code']:\n        return False\n        \n    # 3. ACI (List)\n    if rule.get('aci') and ctx['aci'] not in rule['aci']:\n        return False\n        \n    # 4. Is Credit (Bool)\n    if rule.get('is_credit') is not None:\n        if rule['is_credit'] != ctx['is_credit']:\n            return False\n            \n    # 5. Intracountry (Bool/Float -> Bool)\n    if rule.get('intracountry') is not None:\n        rule_intra = bool(rule['intracountry'])\n        if rule_intra != ctx['intracountry']:\n            return False\n\n    # 6. Monthly Volume (Range)\n    if rule.get('monthly_volume'):\n        min_v, max_v = parse_range(rule['monthly_volume'])\n        if not (min_v <= ctx['monthly_volume'] <= max_v):\n            return False\n\n    # 7. Monthly Fraud Level (Range)\n    if rule.get('monthly_fraud_level'):\n        min_f, max_f = parse_range(rule['monthly_fraud_level'])\n        # Note: ctx['monthly_fraud_rate'] is 0.08 for 8%\n        # parse_range handles '%' conversion\n        if not (min_f <= ctx['monthly_fraud_rate'] <= max_f):\n            return False\n\n    # 8. Capture Delay (String or Range)\n    if rule.get('capture_delay'):\n        r_delay = str(rule['capture_delay']).lower()\n        m_delay = str(ctx['capture_delay']).lower()\n        \n        # If rule is a range/comparison\n        if any(c in r_delay for c in ['<', '>', '-']):\n            # Convert merchant delay to float if possible\n            val = 0.0\n            if m_delay == 'immediate':\n                val = 0.0\n            elif m_delay == 'manual':\n                # Manual usually doesn't match numeric ranges unless specified\n                return False \n            else:\n                try:\n                    val = float(m_delay)\n                except:\n                    return False\n            \n            min_d, max_d = parse_range(r_delay)\n            if not (min_d <= val <= max_d):\n                return False\n        else:\n            # Exact string match\n            if r_delay != m_delay:\n                return False\n\n    return True\n\n# ---------------------------------------------------------\n# Main Execution\n# ---------------------------------------------------------\n\n# 1. Load Data\nmerchant_data = pd.read_json('/output/chunk6/data/context/merchant_data.json')\nfees_data = pd.read_json('/output/chunk6/data/context/fees.json')\npayments = pd.read_csv('/output/chunk6/data/context/payments.csv')\n\n# 2. Identify 'H' Merchants\nh_merchants_df = merchant_data[merchant_data['account_type'] == 'H']\nh_merchant_names = set(h_merchants_df['merchant'].unique())\nmerchant_info_map = merchant_data.set_index('merchant').to_dict('index')\n\n# 3. Calculate Monthly Stats for ALL merchants\n# (Volume and Fraud Rate are calculated per merchant per month across ALL their transactions)\npayments['month'] = payments['day_of_year'].apply(get_month_from_doy)\n\n# Calculate fraud volume (sum of eur_amount where has_fraudulent_dispute is True)\n# We use a lambda or pre-filter. Pre-calculating fraud column is faster.\npayments['fraud_amt'] = np.where(payments['has_fraudulent_dispute'], payments['eur_amount'], 0.0)\n\nmonthly_stats = payments.groupby(['merchant', 'month']).agg(\n    total_vol=('eur_amount', 'sum'),\n    fraud_vol=('fraud_amt', 'sum')\n).reset_index()\n\nmonthly_stats['fraud_rate'] = monthly_stats['fraud_vol'] / monthly_stats['total_vol']\nmonthly_stats['fraud_rate'] = monthly_stats['fraud_rate'].fillna(0.0)\n\n# Create lookup dictionary for fast access\nstats_lookup = monthly_stats.set_index(['merchant', 'month']).to_dict('index')\n\n# 4. Filter Target Transactions (NexPay + Account H)\ntarget_txs = payments[\n    (payments['merchant'].isin(h_merchant_names)) & \n    (payments['card_scheme'] == 'NexPay')\n].copy()\n\n# 5. Filter Fee Rules (NexPay only)\nnexpay_fees = fees_data[fees_data['card_scheme'] == 'NexPay'].to_dict('records')\n\n# 6. Calculate Fees for 100 EUR\ncalculated_fees = []\nhypothetical_amount = 100.0\n\nfor _, tx in target_txs.iterrows():\n    merchant = tx['merchant']\n    month = tx['month']\n    \n    # Retrieve Context\n    m_info = merchant_info_map.get(merchant)\n    stats = stats_lookup.get((merchant, month), {'total_vol': 0, 'fraud_rate': 0})\n    \n    ctx = {\n        'account_type': m_info['account_type'],\n        'mcc': m_info['merchant_category_code'],\n        'capture_delay': m_info['capture_delay'],\n        'monthly_volume': stats['total_vol'],\n        'monthly_fraud_rate': stats['fraud_rate'],\n        'aci': tx['aci'],\n        'is_credit': tx['is_credit'],\n        'intracountry': tx['issuing_country'] == tx['acquirer_country']\n    }\n    \n    # Find Matching Rule\n    # We iterate through rules and pick the first one that matches.\n    # (Assuming rules are ordered or mutually exclusive enough for this analysis)\n    matched_rule = None\n    for rule in nexpay_fees:\n        if match_fee_rule(ctx, rule):\n            matched_rule = rule\n            break\n            \n    if matched_rule:\n        # Fee Formula: Fixed + (Rate * Amount / 10000)\n        # Rate is an integer (basis points equivalent? No, usually rate/10000 implies basis points)\n        # Manual says: \"rate * transaction_value / 10000\"\n        fee = matched_rule['fixed_amount'] + (matched_rule['rate'] * hypothetical_amount / 10000.0)\n        calculated_fees.append(fee)\n\n# 7. Output Result\nif calculated_fees:\n    avg_fee = sum(calculated_fees) / len(calculated_fees)\n    print(f\"{avg_fee:.6f}\")\nelse:\n    print(\"0.000000\")",
+      "execution_output": "0.481685\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.15000000000000002,
+      "plan_snapshot": [
+        "Load the `fees.json` file into a dataframe and filter for rows where `card_scheme` is 'NexPay' and `account_type` either contains 'H' or is empty (wildcard).",
+        "Load `merchant_data.json` to identify merchants with account type 'H', then load `payments.csv` to filter for transactions involving these merchants and the card scheme 'NexPay', and finally calculate the `intracountry` status, `monthly_volume`, and `monthly_fraud_level` for each relevant transaction to prepare for fee rule matching."
+      ]
+    }
+  ],
+  "plan_steps": [
+    {
+      "id": "step_0",
+      "description": "Load the `fees.json` file into a dataframe and filter for rows where `card_scheme` is 'NexPay' and `account_type` either contains 'H' or is empty (wildcard).",
+      "status": "completed",
+      "index": 0
+    },
+    {
+      "id": "step_1",
+      "description": "Load `merchant_data.json` to identify merchants with account type 'H', then load `payments.csv` to filter for transactions involving these merchants and the card scheme 'NexPay', and finally calculate the `intracountry` status, `monthly_volume`, and `monthly_fraud_level` for each relevant transaction to prepare for fee rule matching.",
+      "status": "completed",
+      "index": 1
+    }
+  ],
+  "rounds": 2,
+  "file_analyses": [
+    "payments.csv",
+    "fees.json",
+    "merchant_data.json",
+    "manual.md",
+    "payments-readme.md",
+    "acquirer_countries.csv",
+    "merchant_category_codes.csv"
+  ],
+  "verifier_calls": 2,
+  "router_decisions": [
+    "add_step"
+  ],
+  "execution_time": 266.3741657733917,
+  "success": true,
+  "generation_config": {
+    "temperature": 0.1,
+    "max_tokens": 100000,
+    "top_p": 0.8,
+    "top_k": 40,
+    "provider": "gemini",
+    "model_name": "gemini-2.5-pro",
+    "critic_threshold": 0.85
+  },
+  "phase_timings": {
+    "analysis_time": 1.1281490325927734,
+    "exploration_time": 48.54724049568176,
+    "planning_time": 29.911698818206787,
+    "iteration_time": 186.78529596328735,
+    "finalization_time": 0.0004191398620605469
+  },
+  "method": "superinference_star_unified",
+  "superinf_aux_mode": true,
+  "information_theory": {
+    "initial_belief": 0.5,
+    "final_belief": 0.7899999999999999,
+    "belief_trajectory": [
+      0.5,
+      0.3,
+      0.7899999999999999
+    ],
+    "initial_entropy_bits": 1.0,
+    "final_entropy_bits": 0.7414827399312738,
+    "entropy_reduction_bits": 0.2585172600687262,
+    "eig_trajectory": [
+      0.3568015214420218,
+      0.3568015214420218,
+      0.178468182634421
+    ],
+    "total_eig_bits": 0.8920712255184646,
+    "avg_eig_per_event_bits": 0.29735707517282156,
+    "events_fired": 3
+  },
+  "stopping_analysis": {
+    "stopped_due_to": "plan_sufficient_agreement",
+    "final_eig": 0.178468182634421,
+    "final_belief": 0.7899999999999999,
+    "tau_threshold": 0.01,
+    "kappa_threshold": 0.9
+  },
+  "critic_metrics": {
+    "alpha_estimate": null,
+    "beta_estimate": null,
+    "approval_rate": 1.0,
+    "avg_score": 1.0
+  },
+  "temperature_adaptation": {
+    "base_temperature": 0.1,
+    "final_temperature": 0.1,
+    "temperature_trajectory": [
+      0.1,
+      0.15000000000000002,
+      0.1
+    ],
+    "total_increases": 1,
+    "max_temperature_reached": 0.15000000000000002
+  },
+  "exploration_tools": {
+    "ground_truth_values": {
+      "sample_nexpay_transactions_to_verify_data_format_for_matching_(merchant_is_credit_aci_issuing_country_acquirer_country)": "Crossfit_Hanna False F SE NL\nCrossfit_Hanna False F NL NL\nCrossfit_Hanna True D LU NL\nCrossfit_Hanna False F NL NL\nGolfclub_Baron_Friso True D NL IT\nGolfclub_Baron_Friso True D SE IT\nGolfclub_Baron_Friso True F SE IT\nCrossfit_Hanna False F BE NL\nCrossfit_Hanna False F NL NL\nBelles_cookbook_store True F BE US\nRafa_AI True G SE NL\nCrossfit_Hanna True G GR NL\nRafa_AI True E IT NL\nBelles_cookbook_store False B BE US\nRafa_AI True G FR NL\nBelles_cookbook_store False F SE US\nMartinis_Fine_Steakhouse True B BE FR\nCrossfit_Hanna True D IT NL\nMartinis_Fine_Steakhouse True D GR FR\nCrossfit_Hanna True C FR NL [raw_data: Raw data - needs interpretation]"
+    },
+    "tools_ran": [
+      "sample_nexpay_transactions_to_verify_data_format_for_matching_(merchant_is_credit_aci_issuing_country_acquirer_country)"
+    ],
+    "used_exploration": true
+  },
+  "token_usage": {
+    "total_prompt_tokens": 49986,
+    "total_output_tokens": 3621,
+    "total_tokens": 67050,
+    "by_agent": {
+      "coder_initial": {
+        "calls": 1,
+        "prompt_tokens": 13110,
+        "output_tokens": 432,
+        "total_tokens": 14601
+      },
+      "verifier": {
+        "calls": 2,
+        "prompt_tokens": 5305,
+        "output_tokens": 156,
+        "total_tokens": 6779
+      },
+      "router": {
+        "calls": 1,
+        "prompt_tokens": 1017,
+        "output_tokens": 2,
+        "total_tokens": 2173
+      },
+      "planner": {
+        "calls": 1,
+        "prompt_tokens": 10753,
+        "output_tokens": 75,
+        "total_tokens": 12951
+      },
+      "coder_incremental": {
+        "calls": 1,
+        "prompt_tokens": 16401,
+        "output_tokens": 2865,
+        "total_tokens": 26295
+      },
+      "finalizer": {
+        "calls": 1,
+        "prompt_tokens": 3400,
+        "output_tokens": 91,
+        "total_tokens": 4251
+      }
+    }
+  }
+}

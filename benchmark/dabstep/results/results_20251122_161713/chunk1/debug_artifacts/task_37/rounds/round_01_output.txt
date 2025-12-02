@@ -1,0 +1,9 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Credit Transactions (True): 101119
+Debit Transactions (False): 37117
+Ratio of Credit to Debit transactions: 2.7243311690061156

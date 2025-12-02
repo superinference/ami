@@ -1,0 +1,3 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the merchant is 'Rafa_AI' and the `day_of_year` corresponds to September 2023 (days 244 to 273).
+Step 2: Load `fees.json` and `merchant_data.json`, retrieve the fee rule with ID=276 and the merchant details for 'Rafa_AI', then filter the previously obtained September transactions to identify those that match the criteria of fee ID=276 (checking card scheme, account type, merchant category code, ACI, is_credit, and intracountry status), and finally calculate the total fee difference by comparing the original rate with the new rate of 1.
+Step 3: Report the previously calculated delta of -15.34 EUR as the final answer to the question.

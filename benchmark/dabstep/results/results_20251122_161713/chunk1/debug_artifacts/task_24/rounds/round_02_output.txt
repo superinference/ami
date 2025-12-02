@@ -1,0 +1,16 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Device type counts in fraudulent transactions:
+device_type
+Other      3026
+MacOS      1620
+iOS        1570
+Android    1546
+Linux      1519
+Windows    1484
+Name: count, dtype: int64
+Other

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a pandas DataFrame.
+Step 2: Filter the loaded data for merchant 'Golfclub_Baron_Friso', card scheme 'SwiftCharge', and day_of_year between 305 and 365 (November and December), then group by 'issuing_country' and calculate the mean of 'eur_amount'.

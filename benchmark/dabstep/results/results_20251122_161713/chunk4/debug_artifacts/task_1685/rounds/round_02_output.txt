@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Belles_cookbook_store
+Month: 10
+Monthly Volume: 95645.15
+Monthly Fraud Rate: 0.07855251544571933
+Transactions on Day 300: 38
+Applicable Fee IDs: [64, 286, 381, 473, 477, 572, 813]
+64, 286, 381, 473, 477, 572, 813

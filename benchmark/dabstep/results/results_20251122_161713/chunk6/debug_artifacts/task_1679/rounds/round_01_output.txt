@@ -1,0 +1,28 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total SwiftCharge rules found: 270
+Rules applicable to Account Type 'S': 216
+
+--- Applicable Fee Rules (First 10) ---
+    ID account_type                            merchant_category_code  fixed_amount  rate
+5    6           []  [5411, 5412, 5499, 5912, 5812, 5813, 5911, 5983]          0.03    24
+11  12           []  [5411, 5412, 5499, 5912, 5812, 5813, 5911, 5983]          0.01    40
+12  13           []  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]          0.06    74
+13  14           []  [5814, 5815, 5816, 7832, 7922, 7995, 7999, 5813]          0.03    78
+14  15           []  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]          0.12    65
+16  17           []                                                []          0.09    60
+21  22           []  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]          0.09    59
+22  23           []  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]          0.04    67
+35  36           []                                                []          0.08    61
+39  40           []  [5814, 5815, 5816, 7832, 7922, 7995, 7999, 5813]          0.08    82
+
+--- Merchants with Account Type 'S' ---
+         merchant account_type  merchant_category_code
+14  Tech_Trainers            S                    8299
+25    AI_Pro_Labs            S                    7372
+
+Unique MCCs for Account Type 'S': [8299, 7372]

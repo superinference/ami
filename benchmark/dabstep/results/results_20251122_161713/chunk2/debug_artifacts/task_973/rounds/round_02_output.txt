@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Average transaction value grouped by ACI for Belles_cookbook_store (SwiftCharge, Jan-Feb 2023):
+A: 87.79
+B: 86.22
+C: 69.36
+D: 94.34
+F: 77.9
+G: 115.23

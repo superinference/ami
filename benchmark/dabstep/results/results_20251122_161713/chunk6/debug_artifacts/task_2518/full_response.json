@@ -1,0 +1,185 @@
+{
+  "final_answer": "93.85",
+  "execution_result": "93.85",
+  "generated_code": "import pandas as pd\nimport json\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# HELPER FUNCTIONS\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        try:\n            return float(v)\n        except ValueError:\n            return 0.0\n    return float(value) if value is not None else 0.0\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef match_fee_rule(transaction_dict, fee_rule):\n    \"\"\"\n    Determines if a transaction matches a specific fee rule.\n    Matches on: card_scheme, is_credit, aci, account_type, mcc, intracountry.\n    Ignores volume/fraud thresholds for this specific 'what if' scenario unless specified.\n    \"\"\"\n    # 1. Card Scheme\n    if fee_rule.get('card_scheme') and fee_rule['card_scheme'] != transaction_dict.get('card_scheme'):\n        return False\n\n    # 2. Is Credit (Boolean or None for wildcard)\n    if fee_rule.get('is_credit') is not None:\n        if fee_rule['is_credit'] != transaction_dict.get('is_credit'):\n            return False\n\n    # 3. ACI (List or None/Empty for wildcard)\n    if is_not_empty(fee_rule.get('aci')):\n        if transaction_dict.get('aci') not in fee_rule['aci']:\n            return False\n\n    # 4. Account Type (List or None/Empty for wildcard)\n    # Requires transaction_dict to have 'account_type' from merchant_data\n    if is_not_empty(fee_rule.get('account_type')):\n        if transaction_dict.get('account_type') not in fee_rule['account_type']:\n            return False\n\n    # 5. Merchant Category Code (List or None/Empty for wildcard)\n    # Requires transaction_dict to have 'mcc' from merchant_data\n    if is_not_empty(fee_rule.get('merchant_category_code')):\n        if transaction_dict.get('mcc') not in fee_rule['merchant_category_code']:\n            return False\n\n    # 6. Intracountry (Boolean or None for wildcard)\n    # Requires transaction_dict to have 'is_intracountry' calculated\n    if fee_rule.get('intracountry') is not None:\n        # Convert boolean to float 1.0/0.0 if needed, or compare bools\n        rule_intra = fee_rule['intracountry']\n        tx_intra = transaction_dict.get('is_intracountry')\n        \n        # Handle cases where json might have 1.0/0.0 instead of true/false\n        if isinstance(rule_intra, (int, float)):\n            rule_intra = bool(rule_intra)\n        \n        if rule_intra != tx_intra:\n            return False\n\n    return True\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# MAIN SCRIPT\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n# File Paths\npayments_path = '/output/chunk6/data/context/payments.csv'\nfees_path = '/output/chunk6/data/context/fees.json'\nmerchant_data_path = '/output/chunk6/data/context/merchant_data.json'\n\n# 1. Load Data\nprint(\"Loading data...\")\ndf_payments = pd.read_csv(payments_path)\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\nwith open(merchant_data_path, 'r') as f:\n    merchant_data = json.load(f)\n\n# 2. Get Target Fee (ID=787)\ntarget_fee_id = 787\nfee_787 = next((f for f in fees_data if f['ID'] == target_fee_id), None)\n\nif not fee_787:\n    print(f\"Error: Fee ID {target_fee_id} not found.\")\n    exit()\n\nprint(f\"Found Fee ID {target_fee_id}:\")\nprint(json.dumps(fee_787, indent=2))\n\nold_rate = fee_787['rate']\nnew_rate = 99\nprint(f\"Old Rate: {old_rate}, New Rate: {new_rate}\")\n\n# 3. Get Merchant Metadata for Rafa_AI\ntarget_merchant = 'Rafa_AI'\nmerchant_info = next((m for m in merchant_data if m['merchant'] == target_merchant), None)\n\nif not merchant_info:\n    print(f\"Error: Merchant {target_merchant} not found in merchant_data.json\")\n    exit()\n\nrafa_account_type = merchant_info['account_type']\nrafa_mcc = merchant_info['merchant_category_code']\nprint(f\"Rafa_AI Metadata - Account Type: {rafa_account_type}, MCC: {rafa_mcc}\")\n\n# 4. Filter Transactions for Rafa_AI in 2023\n# We filter first by merchant/year to reduce processing\nrafa_txs = df_payments[\n    (df_payments['merchant'] == target_merchant) & \n    (df_payments['year'] == 2023)\n].copy()\n\nprint(f\"Total 2023 transactions for {target_merchant}: {len(rafa_txs)}\")\n\n# 5. Identify Matching Transactions\n# We need to augment transactions with merchant metadata and derived fields (intracountry) to use the matcher\nmatching_indices = []\n\n# Pre-calculate intracountry for the block\n# Intracountry = (issuing_country == acquirer_country)\nrafa_txs['is_intracountry'] = rafa_txs['issuing_country'] == rafa_txs['acquirer_country']\n\nfor idx, row in rafa_txs.iterrows():\n    # Create a dictionary for the matcher\n    tx_dict = {\n        'card_scheme': row['card_scheme'],\n        'is_credit': row['is_credit'],\n        'aci': row['aci'],\n        'account_type': rafa_account_type,\n        'mcc': rafa_mcc,\n        'is_intracountry': row['is_intracountry']\n    }\n    \n    if match_fee_rule(tx_dict, fee_787):\n        matching_indices.append(idx)\n\nmatching_txs = rafa_txs.loc[matching_indices]\nprint(f\"Transactions matching Fee {target_fee_id}: {len(matching_txs)}\")\n\n# 6. Calculate Delta\n# Formula: Fee = Fixed + (Rate * Amount / 10000)\n# Delta = New_Fee - Old_Fee\n# Delta = (Fixed + New_Rate * Amt / 10000) - (Fixed + Old_Rate * Amt / 10000)\n# Delta = (New_Rate - Old_Rate) * Amt / 10000\n\nif len(matching_txs) > 0:\n    total_volume = matching_txs['eur_amount'].sum()\n    print(f\"Total Volume of matching transactions: {total_volume:.2f} EUR\")\n    \n    # Calculate delta with high precision\n    rate_diff = new_rate - old_rate\n    delta = (rate_diff * total_volume) / 10000.0\n    \n    print(f\"Delta Calculation: ({new_rate} - {old_rate}) * {total_volume} / 10000\")\n    print(f\"{delta:.14f}\") # Print with high precision as requested by anti-patterns\nelse:\n    print(\"No matching transactions found. Delta is 0.\")\n    print(\"0.00000000000000\")",
+  "finalized_code": null,
+  "computation_code": "import pandas as pd\nimport json\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# HELPER FUNCTIONS\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        try:\n            return float(v)\n        except ValueError:\n            return 0.0\n    return float(value) if value is not None else 0.0\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef match_fee_rule(transaction_dict, fee_rule):\n    \"\"\"\n    Determines if a transaction matches a specific fee rule.\n    Matches on: card_scheme, is_credit, aci, account_type, mcc, intracountry.\n    Ignores volume/fraud thresholds for this specific 'what if' scenario unless specified.\n    \"\"\"\n    # 1. Card Scheme\n    if fee_rule.get('card_scheme') and fee_rule['card_scheme'] != transaction_dict.get('card_scheme'):\n        return False\n\n    # 2. Is Credit (Boolean or None for wildcard)\n    if fee_rule.get('is_credit') is not None:\n        if fee_rule['is_credit'] != transaction_dict.get('is_credit'):\n            return False\n\n    # 3. ACI (List or None/Empty for wildcard)\n    if is_not_empty(fee_rule.get('aci')):\n        if transaction_dict.get('aci') not in fee_rule['aci']:\n            return False\n\n    # 4. Account Type (List or None/Empty for wildcard)\n    # Requires transaction_dict to have 'account_type' from merchant_data\n    if is_not_empty(fee_rule.get('account_type')):\n        if transaction_dict.get('account_type') not in fee_rule['account_type']:\n            return False\n\n    # 5. Merchant Category Code (List or None/Empty for wildcard)\n    # Requires transaction_dict to have 'mcc' from merchant_data\n    if is_not_empty(fee_rule.get('merchant_category_code')):\n        if transaction_dict.get('mcc') not in fee_rule['merchant_category_code']:\n            return False\n\n    # 6. Intracountry (Boolean or None for wildcard)\n    # Requires transaction_dict to have 'is_intracountry' calculated\n    if fee_rule.get('intracountry') is not None:\n        # Convert boolean to float 1.0/0.0 if needed, or compare bools\n        rule_intra = fee_rule['intracountry']\n        tx_intra = transaction_dict.get('is_intracountry')\n        \n        # Handle cases where json might have 1.0/0.0 instead of true/false\n        if isinstance(rule_intra, (int, float)):\n            rule_intra = bool(rule_intra)\n        \n        if rule_intra != tx_intra:\n            return False\n\n    return True\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# MAIN SCRIPT\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n# File Paths\npayments_path = '/output/chunk6/data/context/payments.csv'\nfees_path = '/output/chunk6/data/context/fees.json'\nmerchant_data_path = '/output/chunk6/data/context/merchant_data.json'\n\n# 1. Load Data\nprint(\"Loading data...\")\ndf_payments = pd.read_csv(payments_path)\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\nwith open(merchant_data_path, 'r') as f:\n    merchant_data = json.load(f)\n\n# 2. Get Target Fee (ID=787)\ntarget_fee_id = 787\nfee_787 = next((f for f in fees_data if f['ID'] == target_fee_id), None)\n\nif not fee_787:\n    print(f\"Error: Fee ID {target_fee_id} not found.\")\n    exit()\n\nprint(f\"Found Fee ID {target_fee_id}:\")\nprint(json.dumps(fee_787, indent=2))\n\nold_rate = fee_787['rate']\nnew_rate = 99\nprint(f\"Old Rate: {old_rate}, New Rate: {new_rate}\")\n\n# 3. Get Merchant Metadata for Rafa_AI\ntarget_merchant = 'Rafa_AI'\nmerchant_info = next((m for m in merchant_data if m['merchant'] == target_merchant), None)\n\nif not merchant_info:\n    print(f\"Error: Merchant {target_merchant} not found in merchant_data.json\")\n    exit()\n\nrafa_account_type = merchant_info['account_type']\nrafa_mcc = merchant_info['merchant_category_code']\nprint(f\"Rafa_AI Metadata - Account Type: {rafa_account_type}, MCC: {rafa_mcc}\")\n\n# 4. Filter Transactions for Rafa_AI in 2023\n# We filter first by merchant/year to reduce processing\nrafa_txs = df_payments[\n    (df_payments['merchant'] == target_merchant) & \n    (df_payments['year'] == 2023)\n].copy()\n\nprint(f\"Total 2023 transactions for {target_merchant}: {len(rafa_txs)}\")\n\n# 5. Identify Matching Transactions\n# We need to augment transactions with merchant metadata and derived fields (intracountry) to use the matcher\nmatching_indices = []\n\n# Pre-calculate intracountry for the block\n# Intracountry = (issuing_country == acquirer_country)\nrafa_txs['is_intracountry'] = rafa_txs['issuing_country'] == rafa_txs['acquirer_country']\n\nfor idx, row in rafa_txs.iterrows():\n    # Create a dictionary for the matcher\n    tx_dict = {\n        'card_scheme': row['card_scheme'],\n        'is_credit': row['is_credit'],\n        'aci': row['aci'],\n        'account_type': rafa_account_type,\n        'mcc': rafa_mcc,\n        'is_intracountry': row['is_intracountry']\n    }\n    \n    if match_fee_rule(tx_dict, fee_787):\n        matching_indices.append(idx)\n\nmatching_txs = rafa_txs.loc[matching_indices]\nprint(f\"Transactions matching Fee {target_fee_id}: {len(matching_txs)}\")\n\n# 6. Calculate Delta\n# Formula: Fee = Fixed + (Rate * Amount / 10000)\n# Delta = New_Fee - Old_Fee\n# Delta = (Fixed + New_Rate * Amt / 10000) - (Fixed + Old_Rate * Amt / 10000)\n# Delta = (New_Rate - Old_Rate) * Amt / 10000\n\nif len(matching_txs) > 0:\n    total_volume = matching_txs['eur_amount'].sum()\n    print(f\"Total Volume of matching transactions: {total_volume:.2f} EUR\")\n    \n    # Calculate delta with high precision\n    rate_diff = new_rate - old_rate\n    delta = (rate_diff * total_volume) / 10000.0\n    \n    print(f\"Delta Calculation: ({new_rate} - {old_rate}) * {total_volume} / 10000\")\n    print(f\"{delta:.14f}\") # Print with high precision as requested by anti-patterns\nelse:\n    print(\"No matching transactions found. Delta is 0.\")\n    print(\"0.00000000000000\")",
+  "computation_result": "Loading data...\nFound Fee ID 787:\n{\n  \"ID\": 787,\n  \"card_scheme\": \"NexPay\",\n  \"account_type\": [\n    \"D\"\n  ],\n  \"capture_delay\": null,\n  \"monthly_fraud_level\": null,\n  \"monthly_volume\": null,\n  \"merchant_category_code\": [],\n  \"is_credit\": false,\n  \"aci\": [\n    \"C\",\n    \"A\"\n  ],\n  \"fixed_amount\": 0.11,\n  \"rate\": 38,\n  \"intracountry\": null\n}\nOld Rate: 38, New Rate: 99\nRafa_AI Metadata - Account Type: D, MCC: 7372\nTotal 2023 transactions for Rafa_AI: 27696\nTransactions matching Fee 787: 175\nTotal Volume of matching transactions: 15385.96 EUR\nDelta Calculation: (99 - 38) * 15385.960000000001 / 10000\n93.85435600000001\n",
+  "code_evolution": [
+    {
+      "round": 1,
+      "plan_steps": 1,
+      "code_length": 2826,
+      "code": "# Helper functions for robust data processing\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')  # Remove comparison operators\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        # Range handling (e.g., \"50-60\") - return mean\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        return float(v)\n    return float(value)\n\ndef safe_get(df, column, default=None):\n    \"\"\"Safely get column from DataFrame, return default if not exists.\"\"\"\n    if isinstance(df, dict):\n        return df.get(column, default)\n    elif hasattr(df, 'columns') and column in df.columns:\n        return df[column]\n    return default\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty. Handles numpy arrays safely.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):  # numpy array\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef safe_index(array, idx, default=None):\n    \"\"\"Safely get array element at index, return default if out of bounds.\"\"\"\n    try:\n        if 0 <= idx < len(array):\n            return array[idx]\n        return default\n    except (IndexError, TypeError, AttributeError):\n        return default\n\n\nimport pandas as pd\nimport json\n\n# Paths\npayments_path = '/output/chunk6/data/context/payments.csv'\nfees_path = '/output/chunk6/data/context/fees.json'\n\n# 1. Load payments and filter\nprint(\"Loading payments data...\")\ndf = pd.read_csv(payments_path)\nrafa_txs = df[(df['merchant'] == 'Rafa_AI') & (df['year'] == 2023)].copy()\n\nprint(f\"Total transactions for Rafa_AI in 2023: {len(rafa_txs)}\")\n\n# 2. Load fees and find ID=787\nprint(\"Loading fees data...\")\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\n\nfee_787 = next((fee for fee in fees_data if fee['ID'] == 787), None)\n\nif fee_787:\n    print(f\"Fee ID 787 found.\")\n    print(f\"Original Rate: {fee_787.get('rate')}\")\n    print(f\"Fixed Amount: {fee_787.get('fixed_amount')}\")\n    print(\"Matching Criteria:\")\n    for key, value in fee_787.items():\n        if key not in ['ID', 'rate', 'fixed_amount']:\n            print(f\"  {key}: {value}\")\nelse:\n    print(\"Fee ID 787 not found.\")\n\n# 3. Save intermediate data for the next step (optional, but good for verification in logs)\n# We will just print the head of the dataframe to ensure it loaded correctly\nprint(\"\\nSample of Rafa_AI transactions:\")\nprint(rafa_txs.head())",
+      "execution_output": "Loading payments data...\nTotal transactions for Rafa_AI in 2023: 27696\nLoading fees data...\nFee ID 787 found.\nOriginal Rate: 38\nFixed Amount: 0.11\nMatching Criteria:\n  card_scheme: NexPay\n  account_type: ['D']\n  capture_delay: None\n  monthly_fraud_level: None\n  monthly_volume: None\n  merchant_category_code: []\n  is_credit: False\n  aci: ['C', 'A']\n  intracountry: None\n\nSample of Rafa_AI transactions:\n    psp_reference merchant  ... aci  acquirer_country\n14    15954433169  Rafa_AI  ...   E                NL\n19    64327336902  Rafa_AI  ...   E                NL\n29    31882872937  Rafa_AI  ...   E                NL\n34    33722951254  Rafa_AI  ...   G                NL\n39    33017505011  Rafa_AI  ...   E                NL\n\n[5 rows x 21 columns]\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.1,
+      "plan_snapshot": [
+        "Load the `payments.csv` dataframe filtering for transactions where the merchant is \"Rafa_AI\" and the year is 2023, and load the `fees.json` file to retrieve the matching criteria and original rate for the fee with ID=787."
+      ]
+    },
+    {
+      "round": 2,
+      "plan_steps": 2,
+      "code_length": 6519,
+      "code": "import pandas as pd\nimport json\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# HELPER FUNCTIONS\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\ndef coerce_to_float(value):\n    \"\"\"Convert string with %, $, commas to float. Handles common formats.\"\"\"\n    if isinstance(value, (int, float)):\n        return float(value)\n    if isinstance(value, str):\n        v = value.strip().replace(',', '').replace('\u20ac', '').replace('$', '')\n        v = v.lstrip('><\u2264\u2265')\n        if '%' in v:\n            return float(v.replace('%', '')) / 100\n        if '-' in v and len(v.split('-')) == 2:\n            try:\n                parts = v.split('-')\n                return (float(parts[0]) + float(parts[1])) / 2\n            except:\n                pass\n        try:\n            return float(v)\n        except ValueError:\n            return 0.0\n    return float(value) if value is not None else 0.0\n\ndef is_not_empty(array):\n    \"\"\"Check if array/list is not empty.\"\"\"\n    if array is None:\n        return False\n    if hasattr(array, 'size'):\n        return array.size > 0\n    try:\n        return len(array) > 0\n    except TypeError:\n        return False\n\ndef match_fee_rule(transaction_dict, fee_rule):\n    \"\"\"\n    Determines if a transaction matches a specific fee rule.\n    Matches on: card_scheme, is_credit, aci, account_type, mcc, intracountry.\n    Ignores volume/fraud thresholds for this specific 'what if' scenario unless specified.\n    \"\"\"\n    # 1. Card Scheme\n    if fee_rule.get('card_scheme') and fee_rule['card_scheme'] != transaction_dict.get('card_scheme'):\n        return False\n\n    # 2. Is Credit (Boolean or None for wildcard)\n    if fee_rule.get('is_credit') is not None:\n        if fee_rule['is_credit'] != transaction_dict.get('is_credit'):\n            return False\n\n    # 3. ACI (List or None/Empty for wildcard)\n    if is_not_empty(fee_rule.get('aci')):\n        if transaction_dict.get('aci') not in fee_rule['aci']:\n            return False\n\n    # 4. Account Type (List or None/Empty for wildcard)\n    # Requires transaction_dict to have 'account_type' from merchant_data\n    if is_not_empty(fee_rule.get('account_type')):\n        if transaction_dict.get('account_type') not in fee_rule['account_type']:\n            return False\n\n    # 5. Merchant Category Code (List or None/Empty for wildcard)\n    # Requires transaction_dict to have 'mcc' from merchant_data\n    if is_not_empty(fee_rule.get('merchant_category_code')):\n        if transaction_dict.get('mcc') not in fee_rule['merchant_category_code']:\n            return False\n\n    # 6. Intracountry (Boolean or None for wildcard)\n    # Requires transaction_dict to have 'is_intracountry' calculated\n    if fee_rule.get('intracountry') is not None:\n        # Convert boolean to float 1.0/0.0 if needed, or compare bools\n        rule_intra = fee_rule['intracountry']\n        tx_intra = transaction_dict.get('is_intracountry')\n        \n        # Handle cases where json might have 1.0/0.0 instead of true/false\n        if isinstance(rule_intra, (int, float)):\n            rule_intra = bool(rule_intra)\n        \n        if rule_intra != tx_intra:\n            return False\n\n    return True\n\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n# MAIN SCRIPT\n# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n# File Paths\npayments_path = '/output/chunk6/data/context/payments.csv'\nfees_path = '/output/chunk6/data/context/fees.json'\nmerchant_data_path = '/output/chunk6/data/context/merchant_data.json'\n\n# 1. Load Data\nprint(\"Loading data...\")\ndf_payments = pd.read_csv(payments_path)\nwith open(fees_path, 'r') as f:\n    fees_data = json.load(f)\nwith open(merchant_data_path, 'r') as f:\n    merchant_data = json.load(f)\n\n# 2. Get Target Fee (ID=787)\ntarget_fee_id = 787\nfee_787 = next((f for f in fees_data if f['ID'] == target_fee_id), None)\n\nif not fee_787:\n    print(f\"Error: Fee ID {target_fee_id} not found.\")\n    exit()\n\nprint(f\"Found Fee ID {target_fee_id}:\")\nprint(json.dumps(fee_787, indent=2))\n\nold_rate = fee_787['rate']\nnew_rate = 99\nprint(f\"Old Rate: {old_rate}, New Rate: {new_rate}\")\n\n# 3. Get Merchant Metadata for Rafa_AI\ntarget_merchant = 'Rafa_AI'\nmerchant_info = next((m for m in merchant_data if m['merchant'] == target_merchant), None)\n\nif not merchant_info:\n    print(f\"Error: Merchant {target_merchant} not found in merchant_data.json\")\n    exit()\n\nrafa_account_type = merchant_info['account_type']\nrafa_mcc = merchant_info['merchant_category_code']\nprint(f\"Rafa_AI Metadata - Account Type: {rafa_account_type}, MCC: {rafa_mcc}\")\n\n# 4. Filter Transactions for Rafa_AI in 2023\n# We filter first by merchant/year to reduce processing\nrafa_txs = df_payments[\n    (df_payments['merchant'] == target_merchant) & \n    (df_payments['year'] == 2023)\n].copy()\n\nprint(f\"Total 2023 transactions for {target_merchant}: {len(rafa_txs)}\")\n\n# 5. Identify Matching Transactions\n# We need to augment transactions with merchant metadata and derived fields (intracountry) to use the matcher\nmatching_indices = []\n\n# Pre-calculate intracountry for the block\n# Intracountry = (issuing_country == acquirer_country)\nrafa_txs['is_intracountry'] = rafa_txs['issuing_country'] == rafa_txs['acquirer_country']\n\nfor idx, row in rafa_txs.iterrows():\n    # Create a dictionary for the matcher\n    tx_dict = {\n        'card_scheme': row['card_scheme'],\n        'is_credit': row['is_credit'],\n        'aci': row['aci'],\n        'account_type': rafa_account_type,\n        'mcc': rafa_mcc,\n        'is_intracountry': row['is_intracountry']\n    }\n    \n    if match_fee_rule(tx_dict, fee_787):\n        matching_indices.append(idx)\n\nmatching_txs = rafa_txs.loc[matching_indices]\nprint(f\"Transactions matching Fee {target_fee_id}: {len(matching_txs)}\")\n\n# 6. Calculate Delta\n# Formula: Fee = Fixed + (Rate * Amount / 10000)\n# Delta = New_Fee - Old_Fee\n# Delta = (Fixed + New_Rate * Amt / 10000) - (Fixed + Old_Rate * Amt / 10000)\n# Delta = (New_Rate - Old_Rate) * Amt / 10000\n\nif len(matching_txs) > 0:\n    total_volume = matching_txs['eur_amount'].sum()\n    print(f\"Total Volume of matching transactions: {total_volume:.2f} EUR\")\n    \n    # Calculate delta with high precision\n    rate_diff = new_rate - old_rate\n    delta = (rate_diff * total_volume) / 10000.0\n    \n    print(f\"Delta Calculation: ({new_rate} - {old_rate}) * {total_volume} / 10000\")\n    print(f\"{delta:.14f}\") # Print with high precision as requested by anti-patterns\nelse:\n    print(\"No matching transactions found. Delta is 0.\")\n    print(\"0.00000000000000\")",
+      "execution_output": "Loading data...\nFound Fee ID 787:\n{\n  \"ID\": 787,\n  \"card_scheme\": \"NexPay\",\n  \"account_type\": [\n    \"D\"\n  ],\n  \"capture_delay\": null,\n  \"monthly_fraud_level\": null,\n  \"monthly_volume\": null,\n  \"merchant_category_code\": [],\n  \"is_credit\": false,\n  \"aci\": [\n    \"C\",\n    \"A\"\n  ],\n  \"fixed_amount\": 0.11,\n  \"rate\": 38,\n  \"intracountry\": null\n}\nOld Rate: 38, New Rate: 99\nRafa_AI Metadata - Account Type: D, MCC: 7372\nTotal 2023 transactions for Rafa_AI: 27696\nTransactions matching Fee 787: 175\nTotal Volume of matching transactions: 15385.96 EUR\nDelta Calculation: (99 - 38) * 15385.960000000001 / 10000\n93.85435600000001\n",
+      "original_error": null,
+      "debugger_used": false,
+      "verification": "insufficient",
+      "temperature": 0.15000000000000002,
+      "plan_snapshot": [
+        "Load the `payments.csv` dataframe filtering for transactions where the merchant is \"Rafa_AI\" and the year is 2023, and load the `fees.json` file to retrieve the matching criteria and original rate for the fee with ID=787.",
+        "Load `merchant_data.json` to determine the account type of \"Rafa_AI\". Then, filter the \"Rafa_AI\" transactions from `payments.csv` where `card_scheme` is 'NexPay', `is_credit` is False, and `aci` is either 'C' or 'A'. Finally, calculate the total transaction volume for these filtered payments and compute the fee delta using the formula `(99 - 38) * volume / 10000`."
+      ]
+    }
+  ],
+  "plan_steps": [
+    {
+      "id": "step_0",
+      "description": "Load the `payments.csv` dataframe filtering for transactions where the merchant is \"Rafa_AI\" and the year is 2023, and load the `fees.json` file to retrieve the matching criteria and original rate for the fee with ID=787.",
+      "status": "completed",
+      "index": 0
+    },
+    {
+      "id": "step_1",
+      "description": "Load `merchant_data.json` to determine the account type of \"Rafa_AI\". Then, filter the \"Rafa_AI\" transactions from `payments.csv` where `card_scheme` is 'NexPay', `is_credit` is False, and `aci` is either 'C' or 'A'. Finally, calculate the total transaction volume for these filtered payments and compute the fee delta using the formula `(99 - 38) * volume / 10000`.",
+      "status": "completed",
+      "index": 1
+    }
+  ],
+  "rounds": 2,
+  "file_analyses": [
+    "payments.csv",
+    "fees.json",
+    "merchant_data.json",
+    "manual.md",
+    "payments-readme.md",
+    "acquirer_countries.csv",
+    "merchant_category_codes.csv"
+  ],
+  "verifier_calls": 2,
+  "router_decisions": [
+    "add_step"
+  ],
+  "execution_time": 172.05825209617615,
+  "success": true,
+  "generation_config": {
+    "temperature": 0.0,
+    "max_tokens": 100000,
+    "top_p": 0.8,
+    "top_k": 40,
+    "provider": "gemini",
+    "model_name": "gemini-2.5-pro",
+    "critic_threshold": 0.85
+  },
+  "phase_timings": {
+    "analysis_time": 1.3703153133392334,
+    "exploration_time": 21.89266848564148,
+    "planning_time": 30.937864065170288,
+    "iteration_time": 106.48972463607788,
+    "finalization_time": 11.366166591644287
+  },
+  "method": "superinference_star_unified",
+  "superinf_aux_mode": true,
+  "information_theory": {
+    "initial_belief": 0.5,
+    "final_belief": 0.7899999999999999,
+    "belief_trajectory": [
+      0.5,
+      0.3,
+      0.7899999999999999
+    ],
+    "initial_entropy_bits": 1.0,
+    "final_entropy_bits": 0.7414827399312738,
+    "entropy_reduction_bits": 0.2585172600687262,
+    "eig_trajectory": [
+      0.3568015214420218,
+      0.3568015214420218,
+      0.178468182634421
+    ],
+    "total_eig_bits": 0.8920712255184646,
+    "avg_eig_per_event_bits": 0.29735707517282156,
+    "events_fired": 3
+  },
+  "stopping_analysis": {
+    "stopped_due_to": "plan_sufficient_agreement",
+    "final_eig": 0.178468182634421,
+    "final_belief": 0.7899999999999999,
+    "tau_threshold": 0.01,
+    "kappa_threshold": 0.9
+  },
+  "critic_metrics": {
+    "alpha_estimate": null,
+    "beta_estimate": null,
+    "approval_rate": 1.0,
+    "avg_score": 1.0
+  },
+  "temperature_adaptation": {
+    "base_temperature": 0.1,
+    "final_temperature": 0.1,
+    "temperature_trajectory": [
+      0.1,
+      0.15000000000000002,
+      0.1
+    ],
+    "total_increases": 1,
+    "max_temperature_reached": 0.15000000000000002
+  },
+  "exploration_tools": {
+    "ground_truth_values": {
+      "analyze_rafa_ais_transaction_distribution_by_card_scheme_(col_3)_is_credit_(col_8)_and_aci_(col_20)_to_see_which_transactions_match_fee_787.": "108 GlobalCard,False,A\n     35 GlobalCard,False,B\n    118 GlobalCard,False,C\n   2203 GlobalCard,False,E\n    120 GlobalCard,False,G\n    146 GlobalCard,True,A\n    161 GlobalCard,True,B\n    316 GlobalCard,True,C\n   5280 GlobalCard,True,E\n   1165 GlobalCard,True,G\n     98 NexPay,False,A\n     21 NexPay,False,B\n     77 NexPay,False,C\n   2020 NexPay,False,E\n     99 NexPay,False,G\n    128 NexPay,True,A\n    135 NexPay,True,B\n    238 NexPay,True,C\n   4505 NexPay,True,E\n   1067 NexPay,True,G\n     28 SwiftCharge,False,A\n      9 SwiftCharge,False,B\n     31 SwiftCharge,False,C\n    645 SwiftCharge,False,E\n     32 SwiftCharge,False,G\n     39 SwiftCharge,True,A\n     39 SwiftCharge,True,B\n     99 SwiftCharge,True,C\n   1466 SwiftCharge,True,E\n    349 SwiftCharge,True,G\n     85 TransactPlus,False,A\n     35 TransactPlus,False,B\n     66 TransactPlus,False,C\n   1550 TransactPlus,False,E\n     96 TransactPlus,False,G\n    117 TransactPlus,True,A\n    109 TransactPlus,True,B\n    205 TransactPlus,True,C\n   3799 TransactPlus,True,E\n    857 TransactPlus,True,G [raw_data: Raw data - needs interpretation]",
+      "calculate_the_total_transaction_volume_(eur_amount_col_9)_for_rafa_ai_to_assist_in_the_delta_calculation.": "2544832.96 [raw_data: Raw data - needs interpretation]"
+    },
+    "tools_ran": [
+      "analyze_rafa_ais_transaction_distribution_by_card_scheme_(col_3)_is_credit_(col_8)_and_aci_(col_20)_to_see_which_transactions_match_fee_787.",
+      "calculate_the_total_transaction_volume_(eur_amount_col_9)_for_rafa_ai_to_assist_in_the_delta_calculation."
+    ],
+    "used_exploration": true
+  },
+  "token_usage": {
+    "total_prompt_tokens": 51219,
+    "total_output_tokens": 2890,
+    "total_tokens": 62544,
+    "by_agent": {
+      "coder_initial": {
+        "calls": 1,
+        "prompt_tokens": 13716,
+        "output_tokens": 411,
+        "total_tokens": 14751
+      },
+      "verifier": {
+        "calls": 2,
+        "prompt_tokens": 5402,
+        "output_tokens": 180,
+        "total_tokens": 7295
+      },
+      "router": {
+        "calls": 1,
+        "prompt_tokens": 1162,
+        "output_tokens": 2,
+        "total_tokens": 2276
+      },
+      "planner": {
+        "calls": 1,
+        "prompt_tokens": 11327,
+        "output_tokens": 107,
+        "total_tokens": 12926
+      },
+      "coder_incremental": {
+        "calls": 1,
+        "prompt_tokens": 16712,
+        "output_tokens": 2102,
+        "total_tokens": 21136
+      },
+      "finalizer": {
+        "calls": 1,
+        "prompt_tokens": 2900,
+        "output_tokens": 88,
+        "total_tokens": 4160
+      }
+    }
+  }
+}

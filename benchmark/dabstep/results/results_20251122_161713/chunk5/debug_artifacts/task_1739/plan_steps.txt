@@ -1,0 +1,23 @@
+Step 1: To answer the question about the total fees for Rafa_AI on day 300, I need to correctly match each of the 85 transactions to the fee schedule in `fees.json`, using the merchant's attributes from `merchant_data.json` and the calculated monthly stats (Volume ~210k, Fraud ~10.6%).
+
+The previous attempt missed 30 transactions, likely due to strict matching on wildcard fields (like empty lists `[]` or `null` values) or incorrect range parsing. I will perform a robust matching process.
+
+```python
+import pandas as pd
+import json
+import numpy as np
+
+# Load data
+payments = pd.read_csv('payments.csv')
+with open('merchant_data.json', 'r') as f:
+    merchant_data = json.load(f)
+with open('fees.json', 'r') as f:
+    fees_rules = json.load(f)
+
+# 1. Get Merchant Metadata for 'Rafa_AI'
+merchant_info = next((item for item in merchant_data if item["merchant"] == "Rafa_AI"), None)
+if not merchant_info:
+    print("Error: Merchant Rafa_AI not found in merchant_data.json")
+else:
+    m_account_type = merchant_info['account_type']
+    m_m

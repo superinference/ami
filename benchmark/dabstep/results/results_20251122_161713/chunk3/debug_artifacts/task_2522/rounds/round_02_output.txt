@@ -1,0 +1,18 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing Fee ID 10:
+ - MCCs: [5814, 5815, 5816, 7832, 7922, 7995, 7999, 5813]
+ - Capture Delay: immediate
+ - Scheme: GlobalCard
+ - ACI: ['B']
+ - Intracountry: 0.0
+ - Volume Threshold: > 5,000,000
+
+Merchants matching static criteria (MCC, Capture Delay): []
+No merchants match the static criteria.
+Found 0 merchant-month combinations exceeding volume threshold.
+An error occurred: 'card_scheme'

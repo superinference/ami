@@ -1,0 +1,20 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Columns in fees DataFrame: ['ID', 'card_scheme', 'account_type', 'capture_delay', 'monthly_fraud_level', 'monthly_volume', 'merchant_category_code', 'is_credit', 'aci', 'fixed_amount', 'rate', 'intracountry']
+
+First 5 rows of fees DataFrame:
+   ID  rate  fixed_amount                            merchant_category_code
+0   1    19          0.10  [8000, 8011, 8021, 8031, 8041, 7299, 9399, 8742]
+1   2    86          0.13  [3000, 3001, 3002, 3003, 7011, 7032, 7512, 7513]
+2   3    16          0.09  [4111, 4121, 4131, 4411, 4511, 4789, 7513, 7523]
+3   4    25          0.11        [8062, 8011, 8021, 7231, 7298, 7991, 8049]
+4   5    69          0.13  [5411, 5412, 5499, 5912, 5812, 5813, 5911, 5983]
+
+Data Types:
+rate              int64
+fixed_amount    float64
+dtype: object

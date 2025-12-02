@@ -1,0 +1,24 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+--- May Metrics for Martinis_Fine_Steakhouse ---
+Total Volume: €110,282.17
+Fraud Volume: €11,171.76
+Fraud Rate: 10.13%
+Avg Amount: €92.36
+
+--- Merchant Profile ---
+MCC: 5812
+Account Type: H
+Capture Delay: immediate
+
+--- Evaluating Schemes ---
+Scheme: TransactPlus    | Max Fee: €0.7620 (Rule ID: 547)
+Scheme: GlobalCard      | Max Fee: €0.8990 (Rule ID: 162)
+Scheme: NexPay          | Max Fee: €0.8959 (Rule ID: 364)
+Scheme: SwiftCharge     | Max Fee: €0.8404 (Rule ID: 187)
+
+RESULT: To pay the maximum fees, steer traffic to: GlobalCard

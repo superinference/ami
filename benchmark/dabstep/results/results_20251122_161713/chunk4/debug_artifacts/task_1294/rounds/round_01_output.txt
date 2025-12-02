@@ -1,0 +1,21 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rules loaded: 1000
+NexPay Credit rules found: 95
+
+Sample of filtered rules:
+    ID card_scheme is_credit  fixed_amount  rate
+68  69      NexPay      True          0.14    38
+72  73      NexPay      True          0.14    12
+76  77      NexPay      True          0.09    63
+81  82      NexPay      True          0.00    81
+82  83      NexPay      True          0.04    21
+
+Data Types:
+fixed_amount    float64
+rate              int64
+dtype: object

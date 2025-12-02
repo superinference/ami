@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered transactions for Martinis_Fine_Steakhouse on Day 100, 2023:
+Row count: 41
+
+Sample columns needed for fee calculation:
+                       merchant   card_scheme  eur_amount aci  is_credit  intracountry account_type  merchant_category_code
+4620   Martinis_Fine_Steakhouse        NexPay      116.93   D       True         False            H                    5812
+6706   Martinis_Fine_Steakhouse  TransactPlus       36.19   G       True         False            H                    5812
+7569   Martinis_Fine_Steakhouse  TransactPlus       25.20   G       True         False            H                    5812
+12137  Martinis_Fine_Steakhouse  TransactPlus       43.08   F      False         False            H                    5812
+17944  Martinis_Fine_Steakhouse  TransactPlus        2.85   D       True         False            H                    5812

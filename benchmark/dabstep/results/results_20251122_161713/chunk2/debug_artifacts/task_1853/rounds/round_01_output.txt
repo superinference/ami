@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered Data Shape: (1212, 21)
+     psp_reference                  merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+148    74622858531  Martinis_Fine_Steakhouse      NexPay  2023           21              12          182       True       13.15         SE              SE       MacOS  x_mxtTGB7ihHmJHSgCghLw  uRcFQQLT_epOpFU2jwsHlA  cNbA6GFOt-p1HECLvXRv8w           Ecommerce      4571                   False                False   D               FR
+176    78022699594  Martinis_Fine_Steakhouse      NexPay  2023           15              51          195      False       83.53         FR              FR         iOS                     NaN  Z-wEG5Px-7SJwzHKWBObLg  3v2ctbSam3tjaQwV5j3wrg           Ecommerce      4571                   False                False   F               FR
+198    37307636905  Martinis_Fine_Steakhouse  GlobalCard  2023            8              55          190       True       36.71         SE              SE         iOS                     NaN                     NaN  sc2WwuU0oFGiyHE-zXnGxQ           Ecommerce      4802                   False                False   D               FR
+313    47557345409  Martinis_Fine_Steakhouse  GlobalCard  2023           10               2          202      False      221.29         NL              NL       Linux  u_rYTzXJRL2K5PNleQbVyQ  30usvi5YcoEZWY5iR6jJsg  WsL42YJmgj7FH7l8JY5Dew           Ecommerce      4622                   False                False   F               FR
+461    35113281926  Martinis_Fine_Steakhouse  GlobalCard  2023           20               2          196       True       62.40         BE              BE     Windows  7iuEvRPBsLHr-b5TQJwP3g  kNzexaIDLBNztYnXOo-O_w  tTamiKSy2c193Bqz6nnf_A           Ecommerce      4017                   False                False   G               FR
+
+Date Range in Filtered Data: 182 to 212
+Unique Merchants: ['Martinis_Fine_Steakhouse']

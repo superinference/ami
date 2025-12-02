@@ -1,0 +1,6 @@
+Step 1: Load the `fees.json` file into a dataframe and filter for rules where `card_scheme` is 'SwiftCharge' and `is_credit` is true (or null/wildcard).
+Step 2: To answer the question about the most expensive Authorization Characteristics Indicator (ACI) for a SwiftCharge credit transaction of 10,000 euros, I need to calculate the applicable fees from the `fees.json` file. The fee is calculated as `fixed_amount + rate * amount / 10000`. Since the amount is 10,000, the variable part is just `rate`. I need to consider rules where `card_scheme` is 'SwiftCharge' and `is_credit` is either True or null (wildcard). I also need to handle the `aci` field, which can be a list of specific ACIs or null (implying all ACIs).
+
+Here is the plan:
+
+Load the `fees.json` data, filter for rows where `card_scheme` is 'SwiftCharge' and `is_credit` is either True or null, calculate the total fee (`fixed_amount + rate`) for a 10,000 EUR transaction for each rule, expand the `aci` field (treating null as all ACIs ['A' through 'G']), and finally identify the ACI associated with the highest fee (sorting alphabetically in case of a tie).

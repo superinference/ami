@@ -1,0 +1,15 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+--- Analysis for Rafa_AI (2023) ---
+Total Yearly Volume: €2,544,832.96
+Average Monthly Volume: €212,069.41
+Total Fraud Volume: €238,970.36
+Fraud Rate (Volume-based): 9.3904%
+Merchant Category Code (MCC): 7372
+Account Type: D
+Total Transactions: 27696
+Card Schemes Used: ['GlobalCard', 'TransactPlus', 'NexPay', 'SwiftCharge']

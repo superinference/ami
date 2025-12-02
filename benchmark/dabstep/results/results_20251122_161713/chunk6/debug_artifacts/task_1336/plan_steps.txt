@@ -1,0 +1,2 @@
+Step 1: Load the `merchant_category_codes.csv` file and filter the rows where the `description` column exactly matches "Eating Places and Restaurants" to identify the corresponding Merchant Category Code (MCC).
+Step 2: Load the `fees.json` file, filter for rules where `card_scheme` is 'TransactPlus', `account_type` contains 'H' or is null/empty, and `merchant_category_code` contains 5812 or is null/empty; then for each matching rule, calculate the fee as `fixed_amount + (rate * 4321 / 10000)` and compute the average of these fees.

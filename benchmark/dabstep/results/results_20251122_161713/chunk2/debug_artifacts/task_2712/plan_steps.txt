@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the merchant is 'Belles_cookbook_store', `has_fraudulent_dispute` is True, and the `day_of_year` is between 91 and 120 (representing April).
+Step 2: Load `merchant_data.json` and `fees.json` to extract merchant details and fee structures, then load `payments.csv` to calculate the April monthly volume and fraud level for 'Belles_cookbook_store', and finally simulate the total fees for the 83 fraudulent transactions under each Authorization Characteristics Indicator (ACI) to identify the lowest cost option.

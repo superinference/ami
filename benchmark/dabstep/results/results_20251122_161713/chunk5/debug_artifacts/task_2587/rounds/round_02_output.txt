@@ -1,0 +1,22 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Successfully loaded all data files.
+
+Merchant: Belles_cookbook_store
+Transactions: 1016
+Feb Volume: €92,061.11
+Feb Fraud Rate: 6.0968%
+Attributes: MCC=5942, Account=R, Delay=1
+
+Calculating projected fees for each scheme...
+Scheme: NexPay          Total Fee: €34.45
+Scheme: GlobalCard      Total Fee: €180.37
+Scheme: SwiftCharge     Total Fee: €295.22
+Scheme: TransactPlus    Total Fee: €460.78
+
+To pay the MAXIMUM fees, steer traffic to: TransactPlus
+TransactPlus

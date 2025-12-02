@@ -1,0 +1,2 @@
+Step 1: Load `payments.csv` into a dataframe and filter for rows where `merchant` is 'Belles_cookbook_store' and `year` is 2023.
+Step 2: Load `merchant_data.json` and `fees.json` to retrieve the merchant's attributes and the specific criteria for fee ID=276, then calculate the monthly transaction volume and fraud rates for 'Belles_cookbook_store' to identify which transactions match the fee rule, and finally compute the total cost difference using the formula: `sum(eur_amount) * (99 - old_rate) / 10000` for the matching transactions.

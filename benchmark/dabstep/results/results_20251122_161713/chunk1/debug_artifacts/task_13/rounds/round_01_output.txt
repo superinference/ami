@@ -1,0 +1,47 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+First 5 rows of payments.csv:
+   psp_reference               merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+0    20034594130         Crossfit_Hanna      NexPay  2023           16              21           12      False      151.74         SE              SE     Windows  pKPYzJqqwB8TdpY0jiAeQw  0AKXyaTjW7H4m1hOWmOKBQ  uRofX46FuLUrSOTz8AW5UQ           Ecommerce      4802                   False                False   F               NL
+1    36926127356         Crossfit_Hanna      NexPay  2023           23              58           75      False       45.70         NL              NL       Linux  uzUknOkIqExYsWv4X14GUg  _Gm8at1k2ojYAM_wSEptNw  6vqQ89zfCeFk6s4VOoWZFQ           Ecommerce      4920                   False                False   F               NL
+2    31114608278  Belles_cookbook_store  GlobalCard  2023            4              30           96      False       14.11         NL              NL       MacOS  3VO1v_RndDg6jzEiPjfvoQ                     NaN  EmxSN8-GXQw3RG_2v7xKxQ           Ecommerce      4571                   False                False   F               US
+3    68442235288         Crossfit_Hanna      NexPay  2023            3               5           77       True      238.42         LU              LU         iOS  3qbuXGoFldniCC6r1X8K0Q  5VW_2O6ku_0p_fLLwuC1vw  wG2VTvj2TfVG-NRDzifMHw           Ecommerce      4017                   False                False   D               NL
+4    81404384199         Crossfit_Hanna      NexPay  2023           17              30           83      False       67.13         NL              NL     Windows  9WMJJdgtop6jkkyerxMvuQ  Alb1iUIxIqlW8YUeYVGTzg  0khzuCj7aQ1e51S5vWR8gg           Ecommerce      4532                   False                False   F               NL
+
+Column Data Types:
+psp_reference               int64
+merchant                   object
+card_scheme                object
+year                        int64
+hour_of_day                 int64
+minute_of_hour              int64
+day_of_year                 int64
+is_credit                    bool
+eur_amount                float64
+ip_country                 object
+issuing_country            object
+device_type                object
+ip_address                 object
+email_address              object
+card_number                object
+shopper_interaction        object
+card_bin                    int64
+has_fraudulent_dispute       bool
+is_refused_by_adyen          bool
+aci                        object
+acquirer_country           object
+dtype: object
+
+--- Analysis Result ---
+Transaction counts per hour (Top 5):
+hour_of_day
+14    9430
+13    9401
+16    9315
+12    9291
+17    8612
+Hour with the most transactions: 14

@@ -1,0 +1,17 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered data shape: (2098, 21)
+Total transactions: 2098
+Total volume: 198046.67
+
+Sample transactions (first 5):
+     psp_reference              merchant  day_of_year  eur_amount   card_scheme aci
+7      50996494424  Golfclub_Baron_Friso           54       34.71        NexPay   D
+80     64323168508  Golfclub_Baron_Friso           50        7.81    GlobalCard   D
+85     86303915612  Golfclub_Baron_Friso           56       52.89  TransactPlus   F
+177    28870405207  Golfclub_Baron_Friso           44       48.95        NexPay   D
+223    53092042697  Golfclub_Baron_Friso           43       87.35    GlobalCard   D

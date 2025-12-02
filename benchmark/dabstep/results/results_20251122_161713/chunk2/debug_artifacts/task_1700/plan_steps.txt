@@ -1,0 +1,1 @@
+Step 1: Load `payments.csv` and filter for rows where `merchant` is "Martinis_Fine_Steakhouse", `year` is 2023, and `day_of_year` is 12 to identify the unique transaction attributes (such as `card_scheme`, `is_credit`, `aci`, `issuing_country`, and `acquirer_country`) present on that date.

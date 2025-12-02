@@ -1,0 +1,11 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is 'Belles_cookbook_store', the `year` is 2023, and the `day_of_year` is 12.
+Step 2: To answer the question about the total fees for Belles_cookbook_store on the 12th of 2023, I need to perform a detailed calculation that involves matching transactions to complex fee rules.
+
+Here is the plan:
+1.  **Load Data**: Read `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  **Calculate Monthly Stats**: Filter all 2023 payments for 'Belles_cookbook_store' to calculate the total monthly volume and fraud rate for January (since day 12 is in January). This is required for fee rule matching.
+3.  **Filter Transactions**: Select only the transactions for 'Belles_cookbook_store' on day 12 of 2023.
+4.  **Define Matching Logic**: Create a robust function to match each transaction against the rules in `fees.json`. This function must handle:
+    *   **Ranges**: Parse strings like "100k-1m", ">8.3%", "<3" to compare with calculated volume, fraud rate, and capture delay.
+    *   **Lists**: Check if the transaction's MCC, ACI, or Account Type exists in the rule's list.
+    *   **Wildcards**: Treat `null` values in

@@ -1,0 +1,11 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Total transactions processed: 55139
+Transactions with matching fee rule: 36812
+Transactions without matching fee rule: 18327
+Total fees paid by Crossfit_Hanna in 2023: 28500.25
+28500.25

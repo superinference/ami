@@ -1,0 +1,4 @@
+Step 1: To answer this question, I need to compare the actual fraud rates of the merchants against the defined "excessive fraud threshold".
+
+**Step 1:** Calculate the fraud rate for each merchant in the `payments.csv` dataset by grouping by `merchant` and dividing the sum of `eur_amount` for transactions where `has_fraudulent_dispute` is True by the total sum of `eur_amount` for that merchant.
+Step 2: Load `fees.json` and extract the unique values from the `monthly_fraud_level` column to identify the specific fraud thresholds defined in the fee structure.

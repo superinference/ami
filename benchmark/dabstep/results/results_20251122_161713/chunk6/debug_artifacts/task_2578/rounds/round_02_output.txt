@@ -1,0 +1,18 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant: Belles_cookbook_store
+Jan Volume: €113,260.42
+Jan Fraud Rate: 7.83%
+MCC: 5942, Account: R, Delay: 1
+Simulating schemes: {'SwiftCharge', 'GlobalCard', 'NexPay', 'TransactPlus'}
+Scheme: SwiftCharge     | Invalid (Missing rules for some txs)
+Scheme: GlobalCard      | Invalid (Missing rules for some txs)
+Scheme: NexPay          | Invalid (Missing rules for some txs)
+Scheme: TransactPlus    | Total Fee: €1,147.32
+
+Recommended Scheme: TransactPlus (Cost: €1,147.32)
+TransactPlus

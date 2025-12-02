@@ -1,0 +1,16 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant: Rafa_AI
+Original MCC: 7372
+Account Type: D
+Capture Delay: 7
+Processing 27696 transactions...
+Total Fee (Original MCC 7372): 13205.6906
+Total Fee (New MCC 5999): 18430.4436
+Delta (New - Old): 5224.75299800011635
+5224.75299800011635

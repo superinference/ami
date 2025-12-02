@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` column is 'Crossfit_Hanna'.
+Step 2: Load `merchant_data.json` to retrieve the account type, capture delay, and original MCC for 'Crossfit_Hanna', load `fees.json`, and then process the filtered payments data to add an `intracountry` column (True if `issuing_country` equals `acquirer_country`) and calculate monthly total volume and monthly fraud rates to facilitate fee rule matching.

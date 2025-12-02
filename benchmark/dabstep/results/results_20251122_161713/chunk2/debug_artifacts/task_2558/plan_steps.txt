@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file to retrieve the current matching criteria for Fee ID 64, and load `merchant_data.json` to determine the `account_type` for each merchant.
+Step 2: Load `payments.csv` and filter for transactions that match the criteria for Fee ID 64 (`card_scheme` = 'SwiftCharge', `is_credit` = True, `aci` = 'D'), then identify the unique merchants from these transactions and determine which of them do not have the account type 'O' based on the merchant data.

@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows loaded: 138236
+Rows after filtering for Belles_cookbook_store, TransactPlus, days 1-59: 558
+
+Sample of filtered data:
+                   merchant   card_scheme  day_of_year device_type  eur_amount
+531   Belles_cookbook_store  TransactPlus           31     Android       60.79
+1186  Belles_cookbook_store  TransactPlus           47         iOS       53.22
+1544  Belles_cookbook_store  TransactPlus           34       MacOS       10.50
+2421  Belles_cookbook_store  TransactPlus            2     Windows       14.70
+2711  Belles_cookbook_store  TransactPlus            2     Windows      136.29

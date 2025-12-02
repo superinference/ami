@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter for rows where `merchant` is 'Rafa_AI', `year` is 2023, and `day_of_year` is 10 to extract the unique transaction attributes (such as `card_scheme`, `is_credit`, `aci`, etc.) needed to match against fee rules.
+Step 2: Output the list of applicable Fee IDs obtained from the previous step: 123, 183, 286, 304, 384, 427, 454, 498, 634, 709, 741, 813, 861, 888, 892, 924.

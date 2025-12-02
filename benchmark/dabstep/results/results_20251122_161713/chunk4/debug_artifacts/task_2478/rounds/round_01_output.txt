@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total transactions found: 13848
+Sample of filtered data:
+    psp_reference               merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+2     31114608278  Belles_cookbook_store    GlobalCard  2023            4              30           96      False       14.11         NL              NL       MacOS  3VO1v_RndDg6jzEiPjfvoQ                     NaN  EmxSN8-GXQw3RG_2v7xKxQ           Ecommerce      4571                   False                False   F               US
+10    11539582857  Belles_cookbook_store    GlobalCard  2023           14               7           77      False       54.94         SE              SE     Android  v4QmydqCskH7TYu-B_KbNg  I2FVI0bgarR2FcTwB-pp3w  X2wgYLwKBQ-tVhTptskgdg           Ecommerce      4556                   False                False   F               US
+18    16900553593  Belles_cookbook_store    GlobalCard  2023           17              43           24       True      295.37         SE              SE       MacOS  IkTvIq7qVolDLRWc-eo2Jw  j2lcSM-ZDZQH8PAm4VshGA  SjIWwffh8yHVwNWJUTh4OA           Ecommerce      4916                   False                False   G               US
+23    79488939497  Belles_cookbook_store   SwiftCharge  2023           13              34          307       True      374.37         ES              ES       Linux  dWpLx3iS9s2uPLumwmIxCA  ghhAkzYPhoQZcmG7Agi71A  T-1PYlTeN9wvf6ShQ1IvJA           Ecommerce      4571                   False                False   D               US
+26    27927426581  Belles_cookbook_store  TransactPlus  2023           19              40          364       True       38.66         SE              SE         iOS  0fPMg3fSyV5FrUUINhAw0w  5i7jWiIDiGIuioFTPtLV0g  tBPkO6dGo4c4VWhrIceYZQ           Ecommerce      4236                   False                 True   G               US

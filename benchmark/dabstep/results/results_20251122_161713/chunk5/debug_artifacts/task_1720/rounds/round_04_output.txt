@@ -1,0 +1,13 @@
+Round 4 Execution Output
+============================================================
+Temperature: 0.35, Verification: sufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Merchant Info: {'merchant': 'Crossfit_Hanna', 'capture_delay': 'manual', 'acquirer': ['gringotts', 'the_savings_and_loan_bank', 'bank_of_springfield', 'dagoberts_vault'], 'merchant_category_code': 7997, 'account_type': 'F'}
+July Stats - Volume: €428299.93, Fraud Volume: €40666.21, Fraud Rate: 9.4948%
+Found 151 transactions for Day 200.
+DEBUG: Unmatched Transaction Context: {'card_scheme': 'NexPay', 'is_credit': True, 'aci': 'D', 'intracountry': False, 'account_type': 'F', 'mcc': 7997, 'capture_delay': 'manual', 'monthly_volume': np.float64(428299.93000000005), 'monthly_fraud_rate': np.float64(0.09494797255745523)}
+Warning: 50 transactions could not be matched to a fee rule.
+Total fees for Crossfit_Hanna on day 200: 74.86262199999999

@@ -1,0 +1,13 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the data to include only transactions where the `merchant` is "Crossfit_Hanna" and the `year` is 2023.
+Step 2: Load the `fees.json` and `merchant_data.json` files, extract the fee rule with ID=384, and retrieve the merchant details for 'Crossfit_Hanna' to understand the specific criteria required for matching transactions.
+Step 3: To answer the question about the payment delta for Crossfit_Hanna in 2023 given a rate change in fee ID=384, I need to identify the transactions that specifically match the criteria of fee ID=384 and then calculate the difference in fees.
+
+Here is the plan:
+1. Load `payments.csv`, `fees.json`, and `merchant_data.json`.
+2. Filter the payments data for the merchant "Crossfit_Hanna" and the year 2023.
+3. Retrieve the specific fee rule with `ID=384` from `fees.json` to get its original `rate` and all matching criteria (e.g., `card_scheme`, `is_credit`, `aci`, `merchant_category_code`, `account_type`, `intracountry`, etc.).
+4. Retrieve the static merchant details (MCC, account type, capture delay) for "Crossfit_Hanna" from `merchant_data.json`.
+5. Filter the "Crossfit_Hanna" transactions to keep only those that match the criteria of fee ID=384. This involves:
+   - Matching `card_scheme`, `is_credit`, `aci` (checking if transaction value is in the rule's list).
+   - Matching `intracountry` status (comparing `issuing_country` and `acquirer_country`).
+   - Verifying the merchant'

@@ -1,0 +1,14 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 151
+Sample transactions:
+      psp_reference        merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+715     69749079711  Crossfit_Hanna      NexPay  2023           22              21          200       True        5.38         FR              FR     Android  tOQhoPjtRTgY9g5OP4vDVw                     NaN  x7SZoqInhBM13izsY5-Q7w           Ecommerce      4571                   False                False   D               NL
+1145    71200843889  Crossfit_Hanna  GlobalCard  2023           20               1          200       True      183.53         IT              IT     Android  Q7INGuxWgYxnlcXNTLScGw  MJtIm3WS-UBD8o2gx7vgOw  EQJWBKzIJV9u9sjKkG-1og           Ecommerce      4133                   False                False   D               NL
+2261    72068542667  Crossfit_Hanna  GlobalCard  2023           16               5          200       True       32.27         NL              NL     Windows  2sTJhafDMENCy3oLSFOwZQ  1Jkpd0aeQ9bg1VQsFuHlTg  6cv1vJ1642nylL8r2XBxpA           Ecommerce      4526                   False                False   D               NL
+2507    89205779450  Crossfit_Hanna      NexPay  2023            4              36          200       True      116.44         BE              SE         iOS  L4x-JCq4hKMbZYlgVzGyZQ  4xN8q5ZO2GvxKtSMkFLs9w  Eq07RquZSfUclhQyr4FMWA           Ecommerce      4556                   False                False   D               NL
+3189    19993950969  Crossfit_Hanna      NexPay  2023           13               7          200       True       45.11         SE              SE       MacOS  grafpK0pV7Vp4-tne1lP5A  LpRZBs-xaXxXznAlu3l3Cw  fJJlHcp3QnV5kmU50xkCdw           Ecommerce      4802                    True                False   G               NL

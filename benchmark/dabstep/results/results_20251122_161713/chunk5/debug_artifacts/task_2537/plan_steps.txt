@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is "Crossfit_Hanna" and the `year` is 2023.
+Step 2: Load `merchant_data.json` and `fees.json`, calculate the monthly transaction volume and fraud levels for "Crossfit_Hanna" in 2023, then compute the total fees for the year under two scenarios (original MCC vs. MCC 7523) by matching each transaction to the correct fee rule, and finally calculate the difference between the two totals.

@@ -1,0 +1,1 @@
+Step 1: Load the 'payments.csv' file into a pandas DataFrame and display the first 5 rows and the columns and their types to discern how to proceed.

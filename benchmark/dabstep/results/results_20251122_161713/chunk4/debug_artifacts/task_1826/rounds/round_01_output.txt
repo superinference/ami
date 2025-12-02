@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame Shape: (4467, 21)
+Total Transaction Volume: 413849.17
+
+First 5 rows of filtered data:
+     psp_reference        merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+24     87912942699  Crossfit_Hanna        NexPay  2023           17              16           97      False      594.52         BE              BE       Linux  Xt521LwPZmuZa7sOo5wL9Q  Zv_OHxjhttfWkAE00oWyKQ  iuboZ4l9Pr5dhSIg3uMPOQ           Ecommerce      4622                   False                False   F               NL
+70     86885022840  Crossfit_Hanna    GlobalCard  2023           21              19          116       True       57.31         NL              NL     Android  G6Mlg5Tc_Iw26XbSS4898w  ivmUg9n2AymluERzmjHzWg  KXLViKIWg4HXlXYiLGBoKA           Ecommerce      4916                   False                False   D               NL
+90     41477821659  Crossfit_Hanna        NexPay  2023           16               5          115       True       25.84         SE              SE     Android                     NaN  6yA_vSnVkP-ja2bpLmog-A  p77GJwRscudQi9CTeSA2zA           Ecommerce      4916                   False                False   G               NL
+92     88192996050  Crossfit_Hanna    GlobalCard  2023           20              49          118       True       22.59         NL              NL       Other  gbyBBnBJ1XRWmPK6ckz-SA                     NaN  Ir0yRhR215BO8PV0E6C6ew           Ecommerce      4916                   False                False   D               NL
+109    13109067436  Crossfit_Hanna  TransactPlus  2023            4              42          117       True      209.28         NL              NL     Windows  p7NG1g0MAIXbg4102ZxRlg  sO26bxDkjU-54dVbhjldbA  7-Z7jevGCwIqGqZWj-yhOg           Ecommerce      4133                   False                False   D               NL

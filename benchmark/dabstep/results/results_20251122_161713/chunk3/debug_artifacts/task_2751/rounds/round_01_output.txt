@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Filtered DataFrame shape: (176, 21)
+      psp_reference merchant card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+34      33722951254  Rafa_AI      NexPay  2023            3               4          305       True      321.22         SE              SE         iOS  2laa1YbPYX_L5uLHZK85hw                     NaN  7t_MOGf86vDLQgSL06el-g           Ecommerce      4802                    True                False   G               NL
+155     73907450843  Rafa_AI      NexPay  2023            5              21          331       True      110.22         IT              NL     Android  F6oZ1PNHo_RbqbbJ1MXH9A  ZM_YH-zfTv5B9aMJC4cKCQ  A7eznhJI7R55xnMN9m8VeA           Ecommerce      4622                    True                False   G               NL
+982     54748508328  Rafa_AI      NexPay  2023           17              20          334       True       60.33         IT              IT       MacOS  w9gC6YMO6NpH3yqph_TxCQ                     NaN  O5Ub1367KfQ97Bj3mzsIXQ           Ecommerce      4556                    True                False   G               NL
+2519    55570096766  Rafa_AI  GlobalCard  2023            9              38          315       True      208.83         BE              BE       MacOS  wKrrZH4F_nGE9qQRlvdWaQ  N0EumW1xDAR5-Gq9V1vj2w  FbB-H6P0yHvdZC8VLF9YsA           Ecommerce      4532                    True                False   G               NL
+2553    37705514867  Rafa_AI  GlobalCard  2023           18              22          308       True      142.31         NL              SE       Other  t6ByG6-qcidXSNVg7Zvxpg  0uD1Fl6fj3g8rNQ8YYcXTg  Sa-ONrJtf-DFcnmNnYccFw           Ecommerce      4916                    True                False   G               NL

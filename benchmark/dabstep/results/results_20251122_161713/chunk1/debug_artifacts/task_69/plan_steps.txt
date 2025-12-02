@@ -1,0 +1,34 @@
+Step 1: To answer the question about the highest volume at which fees do not become cheaper, I need to analyze the relationship between `monthly_volume` and the fee components (`rate` and `fixed_amount`) in the `fees.json` file.
+
+I will calculate the average fee rates for each volume tier, sort them logically, and inspect the trend.
+
+```python
+import pandas as pd
+import json
+
+# Load the fees data
+with open('fees.json', 'r') as f:
+    fees_data = json.load(f)
+
+df_fees = pd.DataFrame(fees_data)
+
+# Filter for rows where monthly_volume is defined (not None)
+df_vol = df_fees[df_fees['monthly_volume'].notna()].copy()
+
+# Define a mapping for sorting the volume ranges logically
+volume_order = {
+    '<100k': 0,
+    '100k-1m': 1,
+    '1m-5m': 2,
+    '>5m': 3
+}
+
+# Map the sorting order
+df_vol['vol_order'] = df_vol['monthly_volume'].map(volume_order)
+
+# Group by monthly_volume and calculate average rate and fixed_amount
+# Also keep the vol_order for sorting
+fee_stats = df_vol.groupby('monthly_volume').agg({
+    'rate': 'mean',
+    'fixed_amount': 'mean',
+    'vol_order

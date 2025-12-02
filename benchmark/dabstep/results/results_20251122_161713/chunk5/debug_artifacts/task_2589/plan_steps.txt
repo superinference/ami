@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter for transactions where the `merchant` is "Crossfit_Hanna" and the `day_of_year` is between 32 and 59 (representing February).
+Step 2: Load `merchant_data.json` and `fees.json` to retrieve merchant attributes and fee rules, then using the filtered February payments for `Crossfit_Hanna`, calculate the merchant's monthly volume and fraud rate to determine the applicable fee tier, and finally compute the total projected fees for each of the four card schemes to identify which one yields the highest cost.

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` dataset and filter the rows to include only transactions for the merchant 'Crossfit_Hanna' in the year 2023.
+Step 2: Load `merchant_data.json` to retrieve the metadata for 'Crossfit_Hanna' and load `fees.json` to retrieve the specific rule with ID=384.

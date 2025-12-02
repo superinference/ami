@@ -1,0 +1,52 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of transactions found: 34
+
+Filtered Transactions (First 5 rows):
+       psp_reference               merchant   card_scheme  eur_amount  is_credit aci ip_country issuing_country acquirer_country
+302      16970611168  Belles_cookbook_store    GlobalCard       39.67      False   D         FR              FR               US
+875      34246082484  Belles_cookbook_store        NexPay       50.24       True   D         NL              NL               US
+9211     84293963492  Belles_cookbook_store  TransactPlus       35.55       True   D         BE              BE               US
+10763    17213076353  Belles_cookbook_store        NexPay      137.08      False   A         BE              BE               US
+17741    73072492205  Belles_cookbook_store  TransactPlus      250.02       True   G         BE              BE               US
+
+Full Transaction Details for Verification:
+        eur_amount   card_scheme aci  is_credit issuing_country acquirer_country
+302          39.67    GlobalCard   D      False              FR               US
+875          50.24        NexPay   D       True              NL               US
+9211         35.55  TransactPlus   D       True              BE               US
+10763       137.08        NexPay   A      False              BE               US
+17741       250.02  TransactPlus   G       True              BE               US
+18375        32.75  TransactPlus   D       True              FR               US
+19261        66.96    GlobalCard   D       True              SE               US
+33051       198.13    GlobalCard   F      False              GR               US
+34289        43.51        NexPay   D       True              SE               US
+37128         2.93        NexPay   D       True              IT               US
+45000        95.69    GlobalCard   D       True              SE               US
+46007        50.32   SwiftCharge   G       True              BE               US
+54347        50.03  TransactPlus   G       True              NL               US
+61326        54.39        NexPay   F      False              BE               US
+61999        16.64    GlobalCard   F       True              NL               US
+70040        68.43   SwiftCharge   D       True              IT               US
+70046        42.05    GlobalCard   D       True              ES               US
+71342        51.64    GlobalCard   D       True              SE               US
+72884        29.23        NexPay   F      False              GR               US
+79049        26.28  TransactPlus   D      False              FR               US
+82373        44.78        NexPay   D       True              ES               US
+83585        97.42   SwiftCharge   F      False              ES               US
+85705       374.48    GlobalCard   D       True              NL               US
+87261        45.77  TransactPlus   G       True              NL               US
+89407        34.75    GlobalCard   D       True              SE               US
+89957        33.24    GlobalCard   F      False              NL               US
+97520        29.56    GlobalCard   D       True              NL               US
+103790       30.73    GlobalCard   G       True              NL               US
+116329       82.85  TransactPlus   D       True              SE               US
+120770       81.02  TransactPlus   G       True              BE               US
+122048       27.58        NexPay   D       True              BE               US
+123272      125.63        NexPay   F      False              IT               US
+124571       12.37   SwiftCharge   D       True              GR               US
+129293      127.41    GlobalCard   D       True              NL               US

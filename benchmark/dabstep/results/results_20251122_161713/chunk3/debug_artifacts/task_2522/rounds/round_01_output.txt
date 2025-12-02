@@ -1,0 +1,43 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Fee ID 10 Criteria Found:
+{
+    "ID": 10,
+    "card_scheme": "GlobalCard",
+    "account_type": [],
+    "capture_delay": "immediate",
+    "monthly_fraud_level": null,
+    "monthly_volume": ">5m",
+    "merchant_category_code": [
+        5814,
+        5815,
+        5816,
+        7832,
+        7922,
+        7995,
+        7999,
+        5813
+    ],
+    "is_credit": null,
+    "aci": [
+        "B"
+    ],
+    "fixed_amount": 0.12,
+    "rate": 59,
+    "intracountry": 0.0
+}
+
+Extracted Criteria for Filtering:
+Card Scheme: GlobalCard
+Account Type: []
+Merchant Category Code (MCC): [5814, 5815, 5816, 7832, 7922, 7995, 7999, 5813]
+Is Credit: None
+ACI: ['B']
+Capture Delay: immediate
+Monthly Fraud Level: None
+Monthly Volume: >5m
+Intracountry: 0.0

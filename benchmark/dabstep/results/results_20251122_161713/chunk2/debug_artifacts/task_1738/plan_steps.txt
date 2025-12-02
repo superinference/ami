@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is 'Rafa_AI', the `year` is 2023, and the `day_of_year` is 200.
+Step 2: Load `merchant_data.json` to retrieve 'Rafa_AI' attributes (MCC, account type, capture delay) and `fees.json` for pricing rules, then process `payments.csv` to calculate the merchant's July 2023 fraud and volume stats, and finally compute the total fees for day 200 by applying the matching fee rules to each transaction.

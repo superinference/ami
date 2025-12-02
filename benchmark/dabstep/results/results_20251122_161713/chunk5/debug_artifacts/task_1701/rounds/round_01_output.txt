@@ -1,0 +1,52 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Loading /output/chunk5/data/context/payments.csv...
+Total rows in dataset: 138236
+Rows matching Merchant 'Martinis_Fine_Steakhouse', Year 2023, Day 100: 41
+
+First 5 rows of filtered data:
+       psp_reference                  merchant   card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+4620     39817478036  Martinis_Fine_Steakhouse        NexPay  2023            6              18          100       True      116.93         NL              NL     Android  FwG7B8DEYQ3p1Toa7I-i4g                     NaN  GVlSpgwvPU-pDbqVwFijbg           Ecommerce      4526                   False                False   D               FR
+6706     50072603720  Martinis_Fine_Steakhouse  TransactPlus  2023            4               1          100       True       36.19         LU              LU       Linux  HCgsbJMzJc3jW8HiAi0MPQ  BeSjL6H-CrBHdMCOKVvexg  dPgLLdlGBiuUqUHkWIJb8g           Ecommerce      4891                   False                False   G               FR
+7569     30110703203  Martinis_Fine_Steakhouse  TransactPlus  2023           10              23          100       True       25.20         BE              NL     Android  pKc2dI7FQB5f1iWG_014Lw  hcWVqcj36hOyikjuYV1Hmg  0xxa__nQXAQWQQ4b_xc0Fg           Ecommerce      4571                    True                False   G               FR
+12137    28303996019  Martinis_Fine_Steakhouse  TransactPlus  2023           19               4          100      False       43.08         BE              BE     Windows  ML29E8P85C-CfKlGWCztog  U6z_4fzb3m8mZjFaipzEUw  w87xtwYCwu-wl7V7g4zKkQ           Ecommerce      4556                   False                False   F               FR
+17944    58989273244  Martinis_Fine_Steakhouse  TransactPlus  2023           13              20          100       True        2.85         ES              ES       Other                     NaN  mluVtlIeHnsVVaq5R8KLFA  OBTV3QcJwsK2t4xr9lBG1w           Ecommerce      4802                   False                False   D               FR
+
+Unique transaction profiles (for fee matching):
+ card_scheme  is_credit aci issuing_country acquirer_country
+      NexPay       True   D              NL               FR
+TransactPlus       True   G              LU               FR
+TransactPlus       True   G              NL               FR
+TransactPlus      False   F              BE               FR
+TransactPlus       True   D              ES               FR
+  GlobalCard      False   D              NL               FR
+      NexPay       True   D              BE               FR
+  GlobalCard       True   D              BE               FR
+      NexPay       True   G              SE               FR
+  GlobalCard      False   A              NL               FR
+  GlobalCard      False   F              FR               FR
+  GlobalCard      False   F              SE               FR
+ SwiftCharge      False   A              IT               FR
+TransactPlus       True   G              IT               FR
+  GlobalCard       True   A              BE               FR
+TransactPlus       True   D              NL               FR
+  GlobalCard      False   F              GR               FR
+  GlobalCard       True   G              FR               FR
+  GlobalCard       True   G              BE               FR
+  GlobalCard       True   D              NL               FR
+ SwiftCharge       True   G              IT               FR
+      NexPay       True   A              NL               FR
+  GlobalCard       True   G              NL               FR
+  GlobalCard       True   D              IT               FR
+      NexPay      False   G              BE               FR
+TransactPlus       True   D              BE               FR
+  GlobalCard       True   D              SE               FR
+  GlobalCard       True   D              GR               FR
+      NexPay       True   D              IT               FR
+      NexPay      False   B              IT               FR
+  GlobalCard       True   D              ES               FR
+ SwiftCharge       True   B              ES               FR

@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter the rows to include only transactions where the `merchant` is 'Belles_cookbook_store', the `year` is 2023, and the `day_of_year` is 10.
+Step 2: Load `merchant_data.json` to retrieve the merchant's metadata, calculate the total volume and fraud rate for January 2023 from `payments.csv` to determine the applicable fee tiers, and then use `fees.json` to calculate the total fees for the transactions on day 10.

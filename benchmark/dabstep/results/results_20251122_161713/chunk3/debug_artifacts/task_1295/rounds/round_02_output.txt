@@ -1,0 +1,11 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Calculating monthly stats...
+Filtering SwiftCharge Credit transactions...
+Found 10128 matching transactions.
+Average fee for 5000 EUR transaction: 27.22285616718737

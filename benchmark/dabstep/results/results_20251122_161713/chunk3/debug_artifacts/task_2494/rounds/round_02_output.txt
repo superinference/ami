@@ -1,0 +1,13 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing Fee ID: 64
+Original Rate: 51
+New Rate: 99
+Merchant Info: {'merchant': 'Golfclub_Baron_Friso', 'capture_delay': '2', 'acquirer': ['medici'], 'merchant_category_code': 7993, 'account_type': 'F'}
+Matching Transactions: 1160
+Total Volume of Matching Transactions: 102370.31
+491.37748800000026

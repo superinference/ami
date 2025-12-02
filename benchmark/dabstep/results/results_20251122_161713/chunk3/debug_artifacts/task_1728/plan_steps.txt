@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the dataframe to include only rows where the `merchant` is 'Golfclub_Baron_Friso', the `year` is 2023, and the `day_of_year` is 365.
+Step 2: Load `merchant_data.json` to retrieve the `account_type`, `capture_delay`, and `merchant_category_code` for 'Golfclub_Baron_Friso', load `fees.json`, and then query `payments.csv` for all transactions of 'Golfclub_Baron_Friso' in December 2023 (day_of_year 335 to 365) to calculate the `monthly_volume` and `monthly_fraud_level` required for fee rule matching.

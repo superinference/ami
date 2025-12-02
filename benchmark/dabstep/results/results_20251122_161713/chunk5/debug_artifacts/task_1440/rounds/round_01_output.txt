@@ -1,0 +1,8 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Max fee found: 49.63
+Most expensive MCCs: [7231, 7298, 7991, 8011, 8021, 8049, 8062]

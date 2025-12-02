@@ -1,0 +1,1 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to analyze the fee rules, specifically focusing on columns like `card_scheme`, `is_credit`, `aci`, `fixed_amount`, and `rate`.

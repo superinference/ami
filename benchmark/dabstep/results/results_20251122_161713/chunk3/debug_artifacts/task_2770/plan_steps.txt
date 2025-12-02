@@ -1,0 +1,11 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the merchant is "Martinis_Fine_Steakhouse", the year is 2023, and `has_fraudulent_dispute` is True.
+Step 2: Load `merchant_data.json` to retrieve the `merchant_category_code`, `account_type`, and `capture_delay` for "Martinis_Fine_Steakhouse", and process `payments.csv` to calculate the merchant's average monthly volume and fraud rate for 2023, as well as the dominant `card_scheme`, `is_credit` status, `intracountry` status, and average `eur_amount` of the fraudulent transactions.
+Step 3: To ensure the "preferred choice" is a valid *different* ACI (as per the question "move... towards a different... ACI") and to confirm the lowest fee calculation with the correct merchant parameters, I will perform a verification step.
+
+**Plan:**
+
+1.  Load `payments.csv`, `merchant_data.json`, and `fees.json`.
+2.  Filter `payments.csv` for the merchant "Martinis_Fine_Steakhouse" and year 2023 to calculate the **average monthly volume** and **annual fraud rate** (total fraudulent volume / total volume).
+3.  Identify the **current ACI distribution** of the fraudulent transactions for this merchant in 2023 to determine the "source" ACI(s).
+4.  Retrieve the merchant's `merchant_category_code` and `account_type` from `merchant_data.json`.
+5.  For the set of fraudulent transactions, simulate the total processing fees if they were switched to each of the possible ACIs (A, B, C, D, E, F, G) by applying the rules from `fees.json` based on the calculated merchant metrics (volume, fraud rate) and transaction details (card scheme, amount, etc.).

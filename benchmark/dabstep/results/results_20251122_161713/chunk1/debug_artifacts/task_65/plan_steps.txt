@@ -1,0 +1,1 @@
+Step 1: Load the `fees.json` file into a pandas DataFrame to inspect the boolean fields (such as `is_credit` and `intracountry`) and the `rate` column.

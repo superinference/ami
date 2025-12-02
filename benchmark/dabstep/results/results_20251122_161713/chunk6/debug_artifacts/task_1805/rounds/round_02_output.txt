@@ -1,0 +1,15 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Loading data...
+Filtering for Rafa_AI in July 2023 (Days 182-212)...
+Total Volume: 212217.24
+Fraud Rate: 9.9045%
+Merchant Attributes: Account=D, MCC=7372, Delay=7
+Unique transaction profiles: 72
+
+Applicable Fee IDs:
+[17, 36, 51, 107, 123, 141, 150, 163, 183, 276, 286, 304, 359, 384, 427, 428, 454, 477, 498, 595, 626, 631, 634, 701, 709, 741, 787, 813, 861, 888, 892, 924]

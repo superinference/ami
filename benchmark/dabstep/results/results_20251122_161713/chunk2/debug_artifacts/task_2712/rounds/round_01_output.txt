@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Number of fraudulent transactions for Belles_cookbook_store in April: 83
+      psp_reference               merchant  card_scheme  year  hour_of_day  minute_of_hour  day_of_year  is_credit  eur_amount ip_country issuing_country device_type              ip_address           email_address             card_number shopper_interaction  card_bin  has_fraudulent_dispute  is_refused_by_adyen aci acquirer_country
+569     44872108128  Belles_cookbook_store       NexPay  2023           15              27          106       True       24.66         ES              ES     Android  RYmxAF5prynGsoVhUAHwMw                     NaN  2fB_wYy7mm7UNMnxaywJUQ           Ecommerce      4556                    True                False   G               US
+2029    12166935859  Belles_cookbook_store  SwiftCharge  2023            9              55          100       True       11.54         SE              SE         iOS  63PADzqAPeYyVsmfrP67Vw  6OBWD60tqj9dfwmV8M27dA  0xaN7_wFGmDPtkOuy5jG4w           Ecommerce      4920                    True                False   G               US
+2404    35982208558  Belles_cookbook_store       NexPay  2023           12              31          102       True       26.68         BE              SE         iOS                     NaN  svxiiUuIsqniIMxzAuvtPQ  plNP0_YX6WqeW5EJUIGlkw           Ecommerce      4802                    True                False   G               US
+2430    77211603816  Belles_cookbook_store       NexPay  2023           19              56          103       True       68.33         BE              SE     Android  D3LcqyVJdK1x72U4rtqQOw  cOc9ozIfnanKc2soaaZ8oQ  Qo1wfa3UYzZkJu5_ndevzg           Ecommerce      4571                    True                False   G               US
+4114    52653421740  Belles_cookbook_store       NexPay  2023            1              58          111       True       29.63         BE              SE     Android                     NaN  idSD1Y13SV-Nuj4YPfGnJQ  L5QtNe3c6chRzFRE8mD74w           Ecommerce      4916                    True                False   G               US

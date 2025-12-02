@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file into a dataframe and filter for rows where the `merchant` is "Crossfit_Hanna", the `year` is 2023, and the `day_of_year` is 10.
+Step 2: Load `merchant_data.json` to retrieve the attributes for 'Crossfit_Hanna', load `fees.json`, and calculate the total transaction volume and fraud rate for 'Crossfit_Hanna' for January 2023 (days 1-31) from `payments.csv`. Then, use these values and the transaction details from day 10 to identify all applicable Fee IDs.

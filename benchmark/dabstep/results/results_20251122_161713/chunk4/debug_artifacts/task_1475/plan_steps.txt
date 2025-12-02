@@ -1,0 +1,2 @@
+Step 1: Load the 'fees.json' file into a pandas DataFrame.
+Step 2: Filter the `fees_df` DataFrame to find rows where `account_type` contains 'D' or is an empty list (wildcard), and `aci` contains 'F' or is an empty list (wildcard), then extract the unique values from the 'ID' column.

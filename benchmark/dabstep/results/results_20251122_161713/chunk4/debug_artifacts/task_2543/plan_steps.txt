@@ -1,0 +1,2 @@
+Step 1: Load the `payments.csv` file and filter the data to include only transactions where the `merchant` is "Martinis_Fine_Steakhouse" and the `year` is 2023.
+Step 2: Report the calculated fee delta of -848.97 EUR as the final answer, noting that the negative sign indicates a reduction in fees.

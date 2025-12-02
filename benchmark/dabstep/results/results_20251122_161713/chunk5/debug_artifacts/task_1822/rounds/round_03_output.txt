@@ -1,0 +1,20 @@
+Round 3 Execution Output
+============================================================
+Temperature: 0.25, Verification: sufficient
+Plan steps: 2
+============================================================
+
+Merchant: Belles_cookbook_store
+Transactions in Dec: 1195
+Monthly Volume: €109,853.33
+Monthly Fraud Volume: €10,719.91
+Monthly Fraud Level: 9.7584%
+Tx 26: Amt=38.66, Scheme=TransactPlus, ACI=G -> Matched Rule ID 454, Fee=0.4834
+Tx 237: Amt=57.02, Scheme=TransactPlus, ACI=F -> Matched Rule ID 381, Fee=0.5104
+Tx 443: Amt=27.06, Scheme=TransactPlus, ACI=F -> Matched Rule ID 381, Fee=0.2527
+
+Total Fees Calculation:
+Matched Transactions: 536
+Unmatched Transactions: 659
+Total Fees: €379.69
+379.69

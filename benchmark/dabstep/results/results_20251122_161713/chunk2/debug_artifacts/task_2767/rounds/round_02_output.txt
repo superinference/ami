@@ -1,0 +1,20 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Merchant Stats 2023: Vol=105184.98, Fraud=9.2957%
+Account Type: R
+MCC: 5942
+Simulating fees for 1071 fraudulent transactions...
+ACI A: €831.04
+ACI B: €746.91
+ACI C: €711.80
+ACI D: €453.69
+ACI E: €435.70
+ACI F: €352.26
+ACI G: €352.26
+
+Lowest Fee ACI: F
+F

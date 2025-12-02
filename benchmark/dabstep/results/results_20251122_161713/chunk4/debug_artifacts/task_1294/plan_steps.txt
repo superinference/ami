@@ -1,0 +1,2 @@
+Step 1: Load the `fees.json` file into a dataframe and filter for rows where `card_scheme` is 'NexPay' and `is_credit` is true to identify the relevant fee rules.
+Step 2: Load the `fees.json` file, filter for rules where `card_scheme` is 'NexPay' and `is_credit` is either True or null (as null applies to all transaction types), then calculate the fee for each resulting rule using the formula `fee = fixed_amount + (rate * 5000 / 10000)` and compute the average of these fees.

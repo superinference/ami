@@ -1,0 +1,31 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Analyzing Fee ID: 787
+Original Criteria: {
+  "ID": 787,
+  "card_scheme": "NexPay",
+  "account_type": [
+    "D"
+  ],
+  "capture_delay": null,
+  "monthly_fraud_level": null,
+  "monthly_volume": null,
+  "merchant_category_code": [],
+  "is_credit": false,
+  "aci": [
+    "C",
+    "A"
+  ],
+  "fixed_amount": 0.11,
+  "rate": 38,
+  "intracountry": null
+}
+
+Checking 5 candidate merchants with matching transactions...
+
+Merchants affected by the change:
+Rafa_AI

@@ -1,0 +1,9 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Total missing values: 41471
+Total cells: 2902956
+Percentage of missing values: 1.4285783181005844

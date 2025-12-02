@@ -1,0 +1,8 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+Day with most transactions: 64
+Transaction count: 437

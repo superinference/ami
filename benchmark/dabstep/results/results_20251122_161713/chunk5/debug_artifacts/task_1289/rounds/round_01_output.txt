@@ -1,0 +1,22 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original rows: 138236
+Filtered rows (GlobalCard + Credit): 35061
+
+Sample of created 'is_intracountry' column:
+                    merchant issuing_country acquirer_country  is_intracountry
+11      Golfclub_Baron_Friso              NL               IT            False
+13  Martinis_Fine_Steakhouse              FR               FR             True
+14                   Rafa_AI              GR               NL            False
+16      Golfclub_Baron_Friso              NL               IT            False
+17            Crossfit_Hanna              IT               NL            False
+
+Distribution of Intracountry transactions:
+is_intracountry
+False    28705
+True      6356
+Name: count, dtype: int64

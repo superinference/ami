@@ -1,0 +1,13 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: sufficient
+Plan steps: 1
+============================================================
+
+merchant
+Crossfit_Hanna              92.069804
+Golfclub_Baron_Friso        92.020348
+Rafa_AI                     91.884495
+Martinis_Fine_Steakhouse    91.287735
+Belles_cookbook_store       91.148166
+Name: eur_amount, dtype: float64

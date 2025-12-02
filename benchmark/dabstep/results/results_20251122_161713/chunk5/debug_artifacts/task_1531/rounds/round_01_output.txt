@@ -1,0 +1,16 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rules in fees.json: 1000
+Rules matching scheme 'SwiftCharge' and account type 'R' (incl. wildcards): 236
+
+Sample of filtered rows:
+    ID  card_scheme account_type  fixed_amount  rate
+5    6  SwiftCharge           []          0.03    24
+11  12  SwiftCharge           []          0.01    40
+12  13  SwiftCharge           []          0.06    74
+13  14  SwiftCharge           []          0.03    78
+14  15  SwiftCharge           []          0.12    65

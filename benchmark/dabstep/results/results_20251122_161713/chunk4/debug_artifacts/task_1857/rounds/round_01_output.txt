@@ -1,0 +1,18 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Original dataset shape: (138236, 21)
+Filtered dataset shape: (1125, 21)
+
+First 5 rows of filtered data:
+     psp_reference                  merchant  ... aci  acquirer_country
+133    58031276636  Martinis_Fine_Steakhouse  ...   F                FR
+180    26901349641  Martinis_Fine_Steakhouse  ...   D                FR
+301    22681634207  Martinis_Fine_Steakhouse  ...   D                FR
+364    55985414769  Martinis_Fine_Steakhouse  ...   F                FR
+418    16643594799  Martinis_Fine_Steakhouse  ...   D                FR
+
+[5 rows x 21 columns]

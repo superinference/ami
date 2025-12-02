@@ -1,0 +1,9 @@
+Round 2 Execution Output
+============================================================
+Temperature: 0.15, Verification: insufficient
+Plan steps: 2
+============================================================
+
+Original Fees (MCC 7997): 28500.2456
+New Fees (MCC 8062): 27305.0970
+-1195.14857500005382

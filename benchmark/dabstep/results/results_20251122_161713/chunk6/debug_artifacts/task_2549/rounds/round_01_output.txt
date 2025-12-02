@@ -1,0 +1,20 @@
+Round 1 Execution Output
+============================================================
+Temperature: 0.10, Verification: insufficient
+Plan steps: 1
+============================================================
+
+Total rows in dataset: 138236
+Rows for Rafa_AI: 27696
+
+First 5 transactions for Rafa_AI:
+    psp_reference merchant  ... aci  acquirer_country
+14    15954433169  Rafa_AI  ...   E                NL
+19    64327336902  Rafa_AI  ...   E                NL
+29    31882872937  Rafa_AI  ...   E                NL
+34    33722951254  Rafa_AI  ...   G                NL
+39    33017505011  Rafa_AI  ...   E                NL
+
+[5 rows x 21 columns]
+
+All required columns for fee calculation are present.
