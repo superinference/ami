@@ -1,0 +1,27 @@
+{
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2020,
+    "sourceType": "module"
+  },
+  "plugins": ["@typescript-eslint", "security"],
+  "extends": [
+    "plugin:security/recommended-legacy"
+  ],
+  "rules": {
+    "security/detect-eval-with-expression": "error",
+    "security/detect-non-literal-fs-filename": "off",
+    "security/detect-non-literal-require": "error",
+    "security/detect-possible-timing-attacks": "error",
+    "security/detect-child-process": "off",
+    "security/detect-non-literal-regexp": "off",
+    "security/detect-unsafe-regex": "error",
+    "security/detect-buffer-noassert": "error",
+    "security/detect-no-csrf-before-method-override": "error",
+    "security/detect-object-injection": "off",
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error"
+  },
+  "ignorePatterns": ["dist/", "node_modules/", "test/"]
+}
