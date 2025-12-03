@@ -37,6 +37,42 @@ jobs:
       - name: Install vsce
         run: npm install -g @vscode/vsce
 
+      - name: Get Extension Version
+        id: get_version
+        working-directory: ./vscode
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Extension version: $VERSION"
+
       - name: Publish Extension
         working-directory: ./vscode
-        run: vsce publish -p ${{ secrets.MICROSOFT_MARKETPLACE_PAT }} --allow-proposed-apis findTextInFiles
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          echo "🚀 Attempting to publish version $VERSION..."
+          
+          # Run vsce publish and capture output
+          set +e
+          OUTPUT=$(vsce publish -p ${{ secrets.MICROSOFT_MARKETPLACE_PAT }} --allow-proposed-apis findTextInFiles 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          # Always show the output
+          echo "$OUTPUT"
+          
+          # Check if error is due to version already existing
+          if [ $EXIT_CODE -ne 0 ]; then
+            if echo "$OUTPUT" | grep -qi "already exists\|already published"; then
+              echo ""
+              echo "✅ Version $VERSION is already published in the marketplace"
+              echo "⏭️  Skipping publish - this is expected if version hasn't changed"
+              exit 0
+            else
+              echo ""
+              echo "❌ Publishing failed with error code $EXIT_CODE"
+              exit $EXIT_CODE
+            fi
+          else
+            echo ""
+            echo "✅ Successfully published version $VERSION"
+          fi

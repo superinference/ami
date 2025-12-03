@@ -1,7 +1,7 @@
 {
-    "name": "superinference",
-    "displayName": "SuperInference agent for VS Code",
-    "description": "SuperInference agentic integration for Visual Studio Code with advanced AI chat and code generation capabilities",
+    "name": "ami-vscode",
+    "displayName": "Agentic Multi-step Inference (AMI) - SuperInference agent for VS Code",
+    "description": "SuperInference agentic integration (AMI) for Visual Studio Code with advanced AI chat and code generation capabilities",
     "version": "0.5.4",
     "publisher": "superinference",
     "repository": {
