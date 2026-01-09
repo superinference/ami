@@ -1,171 +1,83 @@
-# SuperInference for VS Code
+# SuperInference
 
-SuperInference integration for Visual Studio Code with advanced AI chat capabilities powered by **multiple AI providers** (Gemini, OpenAI, DeepSeek) and automatic embeddings-based context management.
+We introduce SUPERINFERENCE, a
+feedback-augmented open-source architecture for
+large-language-model (LLM) agents designed for
+complex programming and multi-step reasoning.
 
-## ✨ Features
+## Quick Start
 
-### 🧠 **NEW: Automatic Embeddings & Smart Context**
-- **Auto-indexing**: Automatically indexes all workspace files when you open a folder
-- **Real-time updates**: Updates embeddings whenever you save file changes  
-- **Smart context selection**: AI uses semantic search to find the most relevant code for your questions
-- **Comprehensive coverage**: Indexes TypeScript, JavaScript, Python, Java, C++, Rust, Go, PHP, Ruby, Swift, Kotlin, HTML, CSS, JSON, YAML, Markdown, and more
-- **Intelligent filtering**: Skips binary files, node_modules, .git, build outputs, and other non-essential directories
-- **Performance optimized**: Processes files in batches with size limits to avoid overwhelming your system
+### 1. Start the MCP Server
 
-### 🚀 **Core AI Capabilities**
-- **Multi-Provider AI Support**: Choose between Gemini, OpenAI, and DeepSeek providers
-- **Real-time AI Chat**: Stream conversations with your preferred AI provider
-- **Dynamic Provider Switching**: Switch between providers on-the-fly
-- **Intelligent Code Generation**: Generate code with full project context
-- **Smart Code Editing**: AI-powered code modifications and improvements
-- **Context-Aware Analysis**: AI understands your entire codebase through embeddings
-- **Code Review & Optimization**: Get suggestions for better, more efficient code
-- **Test Generation**: Automatically create comprehensive tests for your code
-
-### 🎯 **Code Actions**
-- **Explain Code**: Get detailed explanations of selected code segments
-- **Fix Code**: Automatically detect and fix bugs or issues
-- **Review Code**: Get comprehensive code reviews with improvement suggestions
-- **Generate Tests**: Create unit tests for your functions and classes
-- **Optimize Code**: Get performance and readability improvements
-- **Edit Code**: Make specific modifications with natural language instructions
-
-## 🛠️ **Embeddings Management Commands**
-
-Access these through the VS Code Command Palette (`Ctrl/Cmd + Shift + P`):
-
-- `SuperInference: Index Workspace for AI Context` - Manually trigger workspace indexing
-- `SuperInference: Show Embeddings Status` - View current embeddings statistics
-- `SuperInference: Clear All Embeddings` - Reset the embeddings database
-- `SuperInference: Reindex Current File` - Force reindex the currently open file
-
-## 📖 **How It Works**
-
-### Automatic Indexing
-1. **On Workspace Open**: SuperInference automatically scans and indexes all eligible files in your workspace
-2. **On File Save**: When you save changes, the file is automatically reindexed with updated content
-3. **Smart Filtering**: Only indexes text-based source files, skipping binaries and build artifacts
-4. **Performance Limits**: Files larger than 500KB are skipped to maintain performance
-
-### Smart Context Selection
-- When you ask questions, SuperInference uses semantic search to find the most relevant code
-- The AI gets context from files that are semantically related to your query, not just recently opened files
-- This results in much more accurate and contextually relevant responses
-
-### File Types Supported
-- **Languages**: TypeScript, JavaScript, Python, Java, C++, C, C#, Go, Rust, PHP, Ruby, Swift, Kotlin
-- **Web**: HTML, CSS, SCSS, JSON, YAML, XML
-- **Documentation**: Markdown, plain text
-- **Config**: Various configuration file formats
-
-### Excluded Directories
-- `node_modules/`, `.git/`, `dist/`, `build/`, `out/`, `target/`
-- `.vscode/`, `coverage/`, `.next/`, `.nuxt/`, `vendor/`, `__pycache__`
-
-## 🚀 **Getting Started**
-
-1. **Install the Extension**: Install SuperInference from the VS Code marketplace
-2. **Open a Workspace**: Open any folder in VS Code - SuperInference will automatically start indexing
-3. **Wait for Indexing**: You'll see a notification when indexing is complete
-4. **Start Chatting**: Click the SuperInference icon in the right sidebar or use `Ctrl/Cmd + Alt + P`
-
-The AI will now have comprehensive understanding of your codebase through the embedded context!
-
-## ⚙️ **Configuration**
-
-The extension works out of the box with sensible defaults:
-- **Auto-indexing**: Enabled by default when opening workspaces
-- **File size limit**: 500KB per file (configurable)
-- **Batch processing**: 10 files per batch to avoid API overload
-- **Update frequency**: On save for open files, on change for workspace files
-
-## 🔧 **Commands**
-
-### Main Commands
-- `Ctrl/Cmd + Alt + P` - Open SuperInference Chat
-- Right-click context menu - Access SuperInference actions for selected code
-
-### Chat Commands
-- **Explain** - Get detailed code explanations
-- **Fix** - Automatically fix code issues  
-- **Review** - Get improvement suggestions
-- **Generate** - Create new code based on requirements
-- **Test** - Generate comprehensive tests
-- **Optimize** - Performance and readability improvements
-
-## 📊 **Embeddings Status**
-
-Monitor your embeddings database:
-- View total indexed files and entries
-- See breakdown by file type
-- Check indexing status and progress
-- Monitor smart context effectiveness
-
-## 🔄 **Backend Integration**
-
-SuperInference connects to a local backend server (`http://localhost:3000`) that provides:
-- **Multi-provider AI integration** (Gemini, OpenAI, DeepSeek)
-- **Dynamic provider switching**
-- Embeddings creation and management
-- Vector similarity search
-- Smart context selection
-
-Make sure the SuperInference backend server is running for full functionality.
-
-## ⚙️ **AI Provider Configuration**
-
-Configure your AI providers by creating a `.env` file in the project root:
-(or use `.env.example` as a reference)
+The MCP server provides the AI backend for the VS Code extension.
 
 ```bash
-# Default provider to use
-DEFAULT_PROVIDER=gemini
+# HTTP mode (default, recommended)
+./scripts/start-mcp-server.sh
 
-# Gemini Configuration
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
-# Optional: dedicated small critic model
-GEMINI_CRITIC_MODEL=gemini-pro
-
-# OpenAI Configuration  
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4
-OPENAI_BASE_URL=https://api.openai.com/v1
-# Optional: dedicated small critic model
-OPENAI_CRITIC_MODEL=gpt-3.5-turbo
-
-# DeepSeek Configuration
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
-DEEPSEEK_MODEL=deepseek-chat
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-# Optional: dedicated small critic model
-DEEPSEEK_CRITIC_MODEL=deepseek-chat
-
-# Critic routing and strictness
-# Choose which provider to use for the critic (gemini|openai|deepseek)
-CRITIC_PROVIDER=gemini
-# Approval threshold 0..1 (higher = stricter)
-CRITIC_ACCEPT_THRESHOLD=0.6
+# STDIO mode
+./scripts/start-mcp-server.sh stdio
 ```
 
-### Provider Management Tools
+The server runs on port `3000` by default and automatically kills any existing process on that port.
 
-- **Switch Provider**: `switch_provider(provider_name="openai")`
-- **Get Status**: `get_provider_status()`
-- **Test Provider**: `test_provider(provider_name="gemini")`
-- **Update Config**: `update_generation_config(temperature=0.5)`
+### 2. Install the VS Code Extension
 
-See [PROVIDERS.md](PROVIDERS.md) for detailed configuration options.
+Build and install the extension with a single command:
 
-## 🤝 **Contributing**
+```bash
+./scripts/build-vscode-extension.sh
+```
 
-We welcome contributions! Please see our contributing guidelines for more information.
+This script:
+- Installs dependencies
+- Builds the `.vsix` package
+- Installs it in VS Code
+- Reloads VS Code windows
 
-## 📄 **License**
+**Requirements:** Node.js 18+
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### 3. Run Benchmarks
 
----
+Run the DABStep benchmark to evaluate performance:
 
-**Powered by Google Gemini AI with advanced embeddings-based context understanding**
+```bash
+# Basic usage (1 problem, both difficulties)
+./scripts/run-benchmark.sh
+
+# Custom configuration
+./scripts/run-benchmark.sh [problems] [difficulty] [mcp-port] [output-dir]
+```
+
+**Parameters:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `problems` | `1` | Number of problems per difficulty level |
+| `difficulty` | `both` | `easy`, `hard`, or `both` |
+| `mcp-port` | `3000` | MCP server port |
+| `output-dir` | auto | Timestamped directory in `benchmark/dabstep/results/` |
+
+**Example:**
+```bash
+./scripts/run-benchmark.sh 5 hard 3000 ./my-results
+```
+
+**Requirements:** Python 3, `datasets` and `huggingface_hub` packages
+
+## Configuration
+
+Create a `.env` file in the project root (see `.env.example`):
+
+```bash
+# Default provider
+DEFAULT_PROVIDER=gemini
+
+# API Keys
+GEMINI_API_KEY=your_key
+OPENAI_API_KEY=your_key
+DEEPSEEK_API_KEY=your_key
+```
+
+## License
+
+GNU General Public License v3.0 - see LICENSE file for details.
