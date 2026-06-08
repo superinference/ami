@@ -160,6 +160,7 @@ export type EngineEvent =
   | { type: 'error'; error: string }
   | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode: number }
   | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean }
+  | { type: 'provider_changed'; provider: string; model: string; reason: string }
   | { type: 'checkpoint_created'; checkpointId: string; files: string[] }
   | { type: 'analytics_summary'; summary: Record<string, number> }
   | { type: 'superinference_state'; state: { value: number; entropy: number; eig: number; step: number; ppv: number }; stopReason: { type: string; detail: string } }

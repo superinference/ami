@@ -76,7 +76,7 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
   fireworks: ['accounts/fireworks/models/llama-v3p3-70b-instruct'],
   perplexity: ['sonar-pro', 'sonar', 'sonar-reasoning-pro'],
   deepinfra: ['meta-llama/Meta-Llama-3.1-70B-Instruct'],
-  cerebras: ['llama-3.3-70b', 'llama-3.1-8b'],
+  cerebras: ['zai-glm-4.7', 'gpt-oss-120b'],
   alibaba: ['qwen-max', 'qwen-plus', 'qwen-turbo'],
   'azure-openai': ['gpt-4o', 'gpt-4o-mini'],
   'google-vertex': ['gemini-2.5-pro', 'gemini-2.5-flash'],
