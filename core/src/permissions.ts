@@ -283,6 +283,12 @@ export class PermissionManager {
     toolName: string,
     input: Record<string, unknown>,
   ): Promise<'allow' | 'deny' | 'ask'> {
+    // Hardline safety — unconditional, overrides all modes including auto-allow
+    if (toolName === 'bash' && typeof input.command === 'string') {
+      const hardline = detectHardlineCommand(input.command);
+      if (hardline.blocked) return 'deny';
+    }
+
     // Fast path: mode-level overrides
     if (this.mode === 'auto-allow') return 'allow';
     if (this.mode === 'deny-all') return 'deny';

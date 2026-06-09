@@ -41,6 +41,11 @@ export const fileWriteTool: ToolDefinition = {
       ? filePath
       : path.resolve(context.cwd, filePath);
 
+    if (!path.resolve(resolved).startsWith(path.resolve(context.cwd) + path.sep) &&
+        path.resolve(resolved) !== path.resolve(context.cwd)) {
+      return { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true };
+    }
+
     try {
       // Read existing content for diff (if file exists)
       let oldContent = '';

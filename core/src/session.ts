@@ -36,6 +36,18 @@ function truncateMessage(msg: Message): Message {
   return msg;
 }
 
+function sanitizeSessionId(id: string): string {
+  return id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
+}
+
+function assertPathWithin(filePath: string, baseDir: string): void {
+  const resolved = path.resolve(filePath);
+  const resolvedBase = path.resolve(baseDir);
+  if (!resolved.startsWith(resolvedBase + path.sep) && resolved !== resolvedBase) {
+    throw new Error(`Path traversal blocked: ${filePath} escapes ${baseDir}`);
+  }
+}
+
 export class SessionManager {
   private sessionDir: string;
 
@@ -58,13 +70,16 @@ export class SessionManager {
    */
   save(session: Session): void {
     this.ensureDir();
+    const safeId = sanitizeSessionId(session.id);
     const truncatedMessages = session.messages.map(truncateMessage);
     const data: Session = {
       ...session,
+      id: safeId,
       messages: truncatedMessages,
       updatedAt: new Date().toISOString(),
     };
-    const filePath = path.join(this.sessionDir, `${session.id}.json`);
+    const filePath = path.join(this.sessionDir, `${safeId}.json`);
+    assertPathWithin(filePath, this.sessionDir);
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
   }
 
@@ -89,7 +104,9 @@ export class SessionManager {
    * Load a specific session by ID.
    */
   load(id: string): Session | null {
-    const filePath = path.join(this.sessionDir, `${id}.json`);
+    const safeId = sanitizeSessionId(id);
+    const filePath = path.join(this.sessionDir, `${safeId}.json`);
+    assertPathWithin(filePath, this.sessionDir);
     if (!fs.existsSync(filePath)) return null;
     return this.readSessionFile(filePath);
   }
@@ -122,7 +139,9 @@ export class SessionManager {
    * Delete a session file by ID.
    */
   delete(id: string): void {
-    const filePath = path.join(this.sessionDir, `${id}.json`);
+    const safeId = sanitizeSessionId(id);
+    const filePath = path.join(this.sessionDir, `${safeId}.json`);
+    assertPathWithin(filePath, this.sessionDir);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }

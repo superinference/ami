@@ -4,6 +4,25 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 const MAX_OUTPUT_LENGTH = 30000;
 const DEFAULT_TIMEOUT_MS = 120000;
 
+const SENSITIVE_ENV_PATTERNS = [
+  /_KEY$/i, /_SECRET$/i, /_TOKEN$/i, /_PASSWORD$/i, /_CREDENTIALS$/i,
+  /^AWS_/i, /^AZURE_/i, /^GCP_/i,
+  /^GOOGLE_APPLICATION_CREDENTIALS$/i,
+  /^DATABASE_URL$/i, /^REDIS_URL$/i,
+  /^SSH_AUTH_SOCK$/i, /^GIT_ASKPASS$/i,
+  /^NPM_TOKEN$/i, /^DOCKER_/i, /^JWT_/i,
+];
+
+function scrubEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (SENSITIVE_ENV_PATTERNS.some(p => p.test(key))) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
 export const bashTool: ToolDefinition = {
   name: 'bash',
   description:
@@ -51,7 +70,7 @@ export const bashTool: ToolDefinition = {
         child = spawn('bash', ['-c', command], {
           cwd: context.cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env },
+          env: scrubEnv(),
           detached: true,
         });
       } catch (err: unknown) {

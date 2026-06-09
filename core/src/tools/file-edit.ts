@@ -65,7 +65,11 @@ export const fileEditTool: ToolDefinition = {
       ? filePath
       : path.resolve(context.cwd, filePath);
 
-    // Read current file content
+    if (!path.resolve(resolved).startsWith(path.resolve(context.cwd) + path.sep) &&
+        path.resolve(resolved) !== path.resolve(context.cwd)) {
+      return { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true };
+    }
+
     let content: string;
     try {
       content = await fs.promises.readFile(resolved, 'utf-8');

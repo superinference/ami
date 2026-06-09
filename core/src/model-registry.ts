@@ -93,8 +93,8 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
 }
 
 async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${config.apiKey}`;
-  const data = await httpGetJSON(url, {}) as { models?: Array<{ name: string; displayName: string }> };
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models';
+  const data = await httpGetJSON(url, { 'x-goog-api-key': config.apiKey }) as { models?: Array<{ name: string; displayName: string }> };
   return (data.models || []).map(m => ({
     id: m.name.replace('models/', ''),
     name: m.displayName,

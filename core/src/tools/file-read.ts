@@ -59,6 +59,11 @@ export const fileReadTool: ToolDefinition = {
       ? filePath
       : path.resolve(context.cwd, filePath);
 
+    if (!path.resolve(resolved).startsWith(path.resolve(context.cwd) + path.sep) &&
+        path.resolve(resolved) !== path.resolve(context.cwd)) {
+      return { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true };
+    }
+
     // Check file exists
     try {
       await fs.promises.access(resolved, fs.constants.R_OK);

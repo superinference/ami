@@ -212,8 +212,8 @@ async function resolveAvailableModel(
 
     if (provider === 'google' || provider === 'google-vertex') {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
-        { signal: AbortSignal.timeout(5000) },
+        'https://generativelanguage.googleapis.com/v1beta/models',
+        { headers: { 'x-goog-api-key': apiKey }, signal: AbortSignal.timeout(5000) },
       );
       if (res.ok) {
         const data = await res.json() as { models?: Array<{ name: string }> };
