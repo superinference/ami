@@ -175,4 +175,21 @@ describe('SessionManager', () => {
     const entries = sm.list();
     assert.equal(entries[0].preview, '(no messages)');
   });
+
+  it('sanitizes session IDs with path traversal sequences', () => {
+    const session = makeSession('../../etc/evil');
+    sm.save(session);
+    assert.equal(fs.existsSync('/etc/evil.json'), false);
+    const sessionDir = sm.getSessionDir();
+    const files = fs.readdirSync(sessionDir);
+    assert.ok(files.some(f => f.includes('evil')));
+    assert.ok(files.every(f => !f.includes('..')));
+  });
+
+  it('sanitizes session IDs with slashes', () => {
+    const session = makeSession('a/b/c');
+    sm.save(session);
+    const loaded = sm.load('a/b/c');
+    assert.ok(loaded);
+  });
 });

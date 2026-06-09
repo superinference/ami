@@ -259,6 +259,28 @@ describe('PermissionManager — isPathAllowed', () => {
   it('denies absolute paths outside cwd and home', () => {
     assert.equal(pm.isPathAllowed('/opt/secret/data', tmpDir), false);
   });
+
+  it('denies symlinks that resolve outside the workspace', () => {
+    const linkPath = path.join(tmpDir, 'escape-link');
+    try {
+      fs.symlinkSync('/etc/passwd', linkPath);
+    } catch {
+      return; // skip if symlink creation not supported
+    }
+    assert.equal(pm.isPathAllowed(linkPath, tmpDir), false);
+  });
+
+  it('allows symlinks that resolve within the workspace', () => {
+    const target = path.join(tmpDir, 'real-file.ts');
+    fs.writeFileSync(target, 'export {}');
+    const linkPath = path.join(tmpDir, 'link-file.ts');
+    try {
+      fs.symlinkSync(target, linkPath);
+    } catch {
+      return;
+    }
+    assert.ok(pm.isPathAllowed(linkPath, tmpDir));
+  });
 });
 
 describe('PermissionManager — classifyBashCommand', () => {
@@ -372,6 +394,19 @@ describe('PermissionManager — classifyBashCommand', () => {
   it('classifies cargo build as safe', () => {
     assert.equal(pm.classifyBashCommand('cargo build'), 'safe');
     assert.equal(pm.classifyBashCommand('cargo test'), 'safe');
+  });
+
+  it('detects dangerous commands in nested $(...) substitutions', () => {
+    assert.equal(pm.classifyBashCommand('$(echo $(rm -rf /))'), 'destructive');
+    assert.equal(pm.classifyBashCommand('echo $(cat $(rm file))'), 'destructive');
+  });
+
+  it('detects dangerous commands in deeply nested substitutions', () => {
+    assert.equal(pm.classifyBashCommand('$(echo $(echo $(rm -rf /)))'), 'destructive');
+  });
+
+  it('detects dangerous commands inside backtick substitution', () => {
+    assert.equal(pm.classifyBashCommand('echo `rm -rf /`'), 'destructive');
   });
 });
 

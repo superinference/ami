@@ -161,22 +161,61 @@ const SHELL_WRAPPERS = new Set([
  * subshells (...), shell wrappers (env, sudo, bash -c), and
  * environment variable assignments as prefixes.
  */
+function findMatchingParen(s: string, start: number): number {
+  let depth = 1;
+  for (let i = start; i < s.length; i++) {
+    if (s[i] === '(') depth++;
+    if (s[i] === ')') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
 function extractBaseCommands(command: string): string[] {
   const commands: string[] = [];
 
   // 1. Extract commands from $(...) and `...` substitutions
-  const subRegex = /\$\(([^)]+)\)|`([^`]+)`/g;
-  let subMatch;
-  while ((subMatch = subRegex.exec(command)) !== null) {
-    const inner = subMatch[1] || subMatch[2] || '';
-    commands.push(...extractBaseCommands(inner));
+  // Uses balanced-paren matching to handle nested $($(...)...)
+  {
+    let i = 0;
+    while (i < command.length) {
+      if (command[i] === '$' && i + 1 < command.length && command[i + 1] === '(') {
+        const end = findMatchingParen(command, i + 2);
+        if (end !== -1) {
+          commands.push(...extractBaseCommands(command.slice(i + 2, end)));
+          i = end + 1;
+        } else {
+          i++;
+        }
+      } else if (command[i] === '`') {
+        const end = command.indexOf('`', i + 1);
+        if (end !== -1) {
+          commands.push(...extractBaseCommands(command.slice(i + 1, end)));
+          i = end + 1;
+        } else {
+          i++;
+        }
+      } else {
+        i++;
+      }
+    }
   }
 
   // 2. Extract commands from subshells (...)
-  const subshellRegex = /\(([^)]+)\)/g;
-  let shellMatch;
-  while ((shellMatch = subshellRegex.exec(command)) !== null) {
-    commands.push(...extractBaseCommands(shellMatch[1]!));
+  {
+    let i = 0;
+    while (i < command.length) {
+      if (command[i] === '(' && (i === 0 || command[i - 1] !== '$')) {
+        const end = findMatchingParen(command, i + 1);
+        if (end !== -1) {
+          commands.push(...extractBaseCommands(command.slice(i + 1, end)));
+          i = end + 1;
+        } else {
+          i++;
+        }
+      } else {
+        i++;
+      }
+    }
   }
 
   // 3. Split on pipes, semicolons, && and ||

@@ -131,6 +131,32 @@ describe('ProviderCoordinator', () => {
     assert.equal(state.errorCount, 0);
   });
 
+  it('handles fallback -> primary -> fallback re-entry cycle', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      fallbackModel: 'gpt-3.5-turbo',
+    }));
+
+    coord.recordError();
+    assert.equal(coord.getConfig().model, 'gpt-3.5-turbo');
+
+    coord.recordSuccess();
+    coord.recordSuccess();
+    coord.recordSuccess();
+    assert.equal(coord.getConfig().model, 'gpt-4o');
+
+    coord.recordError();
+    assert.equal(coord.getConfig().model, 'gpt-3.5-turbo');
+    assert.equal(coord.getState().errorCount, 2);
+  });
+
+  it('recordError returns false when already on fallback', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      fallbackModel: 'gpt-3.5-turbo',
+    }));
+    assert.equal(coord.recordError(), true);
+    assert.equal(coord.recordError(), false);
+  });
+
   it('tracks rate limits from response headers', () => {
     const coord = new ProviderCoordinator(makeSubsystem());
     coord.updateRateLimits({

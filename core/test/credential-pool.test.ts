@@ -34,9 +34,12 @@ describe('CredentialPool', () => {
     const pool = new CredentialPool('least_used');
     pool.addKey('sk-1');
     pool.addKey('sk-2');
-    pool.acquire(); // sk-1 count=1
-    pool.acquire(); // sk-2 count=1 (tied, first wins, but next round sk-2 wins as it's less used... actually both are 1 now)
-    // After 2 acquires: sk-1=1, sk-2=1. Next picks whichever sorts first by count
+    const first = pool.acquire()!;
+    assert.equal(first.apiKey, 'sk-1');
+    const second = pool.acquire()!;
+    assert.equal(second.apiKey, 'sk-2');
+    const third = pool.acquire()!;
+    assert.ok(['sk-1', 'sk-2'].includes(third.apiKey));
   });
 
   it('marks key as exhausted with cooldown', () => {
@@ -86,5 +89,15 @@ describe('CredentialPool', () => {
     assert.equal(pool.availableCount, 2);
     pool.markDead(pool.acquire()!.id);
     assert.equal(pool.availableCount, 1);
+  });
+
+  it('returns null when all keys are dead', () => {
+    const pool = new CredentialPool();
+    pool.addKey('sk-1');
+    pool.addKey('sk-2');
+    pool.markDead(pool.acquire()!.id);
+    pool.markDead(pool.acquire()!.id);
+    assert.equal(pool.acquire(), null);
+    assert.equal(pool.availableCount, 0);
   });
 });
