@@ -329,20 +329,16 @@ export function convertToolsForSDK(tools: ToolDefinition[]): ToolSet {
 // ---------------------------------------------------------------------------
 
 export function convertMessages(messages: Message[]): ModelMessage[] {
+  const toolNameById = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) toolNameById.set(tc.id, tc.function.name);
+    }
+  }
+
   return messages.map((msg, i): ModelMessage => {
     if (msg.role === 'tool') {
-      // Look up tool name from the preceding assistant message's tool_calls
-      let toolName = '';
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = messages[j];
-        if (prev.role === 'assistant' && prev.tool_calls) {
-          const match = prev.tool_calls.find((tc) => tc.id === msg.tool_call_id);
-          if (match) {
-            toolName = match.function.name;
-            break;
-          }
-        }
-      }
+      const toolName = toolNameById.get(msg.tool_call_id) ?? '';
       return {
         role: 'tool',
         content: [
@@ -489,7 +485,10 @@ export async function* streamChatCompletion(
   options?: { thinking?: ThinkingConfig },
 ): AsyncGenerator<StreamChunk> {
   const model = resolveModel(config);
-  const modelId = config.model;
+  const inferred = inferProviderFromApiKey(config.apiKey)
+    || (config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null)
+    || inferProviderFromEnv();
+  const modelId = config.model || inferred?.defaultModel || 'gpt-4o';
   const sdkTools = tools.length > 0 ? convertToolsForSDK(tools) : undefined;
 
   // Extract system message and pass via `system` parameter to avoid AI SDK warning

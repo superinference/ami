@@ -60,3 +60,5 @@ export type { ProjectConfig } from './config';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
 export type { Intent, Scope, PromptCategory } from './prompt-categorizer';
 export { estimateTokens, estimateToolSchemaTokens } from './utils/tokens';
+export { applyCacheControl, sanitizeToolCallIds } from './provider-transform';
+export { generateTitle } from './title-generator';

@@ -11,12 +11,13 @@ describe('Model context windows', () => {
   it('returns correct window for GPT models', () => {
     assert.equal(getContextWindow('gpt-4o'), 128000);
     assert.equal(getContextWindow('gpt-4-turbo-preview'), 128000);
+    assert.equal(getContextWindow('gpt-4.1'), 1047576);
   });
 
   it('returns correct window for Gemini models', () => {
     assert.equal(getContextWindow('gemini-2.0-flash'), 1048576);
     assert.equal(getContextWindow('gemini-2.5-pro'), 1048576);
-    assert.equal(getContextWindow('gemini-3.1-pro-preview'), 1048576);
+    assert.equal(getContextWindow('gemini-3.1-pro-preview'), 2097152);
   });
 
   it('returns default 128K for unknown models', () => {

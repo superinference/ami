@@ -59,8 +59,8 @@ describe('getContextWindow', () => {
     assert.equal(getContextWindow('gemini-2.5-flash'), 1048576);
   });
 
-  it('returns 1048576 for gemini-3', () => {
-    assert.equal(getContextWindow('gemini-3'), 1048576);
+  it('returns 2097152 for gemini-3', () => {
+    assert.equal(getContextWindow('gemini-3'), 2097152);
   });
 
   it('returns 128000 for gpt-4o-mini', () => {

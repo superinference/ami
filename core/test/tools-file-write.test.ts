@@ -171,3 +171,51 @@ describe('fileWriteTool – relative paths', () => {
     assert.equal(fs.readFileSync(path.join(tmpDir, 'rel.txt'), 'utf-8'), 'relative\n');
   });
 });
+
+describe('fileWriteTool – workspace boundary', () => {
+  it('rejects paths outside workspace', async () => {
+    const result = await fileWriteTool.execute(
+      { file_path: '/tmp/outside-workspace.txt', content: 'nope' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('outside the workspace'));
+  });
+
+  it('allows writing to cwd itself', async () => {
+    const file = path.join(tmpDir, 'inroot.txt');
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'in root\n' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+  });
+});
+
+describe('fileWriteTool – large file diff truncation', () => {
+  it('truncates new file diff at 20 lines', async () => {
+    const file = path.join(tmpDir, 'large-new.txt');
+    const lines = Array.from({ length: 30 }, (_, i) => `line${i + 1}`);
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: lines.join('\n') + '\n' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('more lines'));
+  });
+
+  it('truncates overwrite diff at 20 lines for both old and new', async () => {
+    const file = path.join(tmpDir, 'large-overwrite.txt');
+    const oldLines = Array.from({ length: 25 }, (_, i) => `old${i + 1}`);
+    fs.writeFileSync(file, oldLines.join('\n') + '\n');
+
+    const newLines = Array.from({ length: 25 }, (_, i) => `new${i + 1}`);
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: newLines.join('\n') + '\n' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('more removed'));
+    assert.ok(result.output.includes('more added'));
+  });
+});

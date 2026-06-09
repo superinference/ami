@@ -182,3 +182,25 @@ describe('_resetIndexer', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// getWorkspaceIndexer
+// ---------------------------------------------------------------------------
+
+describe('getWorkspaceIndexer', () => {
+  it('returns a WorkspaceIndexer for the given cwd', () => {
+    _resetIndexer();
+    const { getWorkspaceIndexer } = require('../src/tools/search-symbols');
+    const indexer = getWorkspaceIndexer(tmpDir);
+    assert.ok(indexer);
+    assert.equal(typeof indexer.searchSymbols, 'function');
+  });
+
+  it('returns same indexer for same cwd on repeated calls', () => {
+    _resetIndexer();
+    const { getWorkspaceIndexer } = require('../src/tools/search-symbols');
+    const a = getWorkspaceIndexer(tmpDir);
+    const b = getWorkspaceIndexer(tmpDir);
+    assert.equal(a, b);
+  });
+});

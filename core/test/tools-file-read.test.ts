@@ -70,7 +70,7 @@ describe('fileReadTool – basic reading', () => {
   });
 
   it('returns error for non-existent file', async () => {
-    const result = await fileReadTool.execute({ file_path: '/no/such/file.txt' }, ctx());
+    const result = await fileReadTool.execute({ file_path: path.join(tmpDir, 'no-such-file.txt') }, ctx());
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('not found') || result.output.includes('not readable'));
   });

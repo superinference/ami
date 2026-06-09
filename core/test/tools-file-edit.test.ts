@@ -163,7 +163,7 @@ describe('fileEditTool – successful edits', () => {
 describe('fileEditTool – error cases', () => {
   it('returns error when file does not exist', async () => {
     const result = await fileEditTool.execute(
-      { file_path: '/nonexistent/file.ts', old_string: 'a', new_string: 'b' },
+      { file_path: path.join(tmpDir, 'nonexistent', 'file.ts'), old_string: 'a', new_string: 'b' },
       ctx(),
     );
     assert.equal(result.isError, true);

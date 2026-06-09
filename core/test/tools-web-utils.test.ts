@@ -5,6 +5,7 @@ import {
   isBlockedRedirectTarget,
   validateUrlSafety,
   stripHtml,
+  httpGet,
   BLOCKED_HOSTNAMES,
 } from '../src/tools/web-utils';
 
@@ -243,5 +244,64 @@ describe('stripHtml', () => {
     assert.ok(result.includes('Title'));
     assert.ok(result.includes('Subtitle'));
     assert.ok(result.includes('text'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// httpGet
+// ---------------------------------------------------------------------------
+import * as http from 'http';
+import { before, after } from 'node:test';
+
+describe('httpGet', () => {
+  let server: http.Server;
+  let port: number;
+
+  before(async () => {
+    const s = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url === '/ok') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('hello world');
+      } else if (req.url === '/error') {
+        res.writeHead(500);
+        res.end('Internal Server Error');
+      } else {
+        res.writeHead(404);
+        res.end('not found');
+      }
+    });
+    await new Promise<void>(resolve => {
+      s.listen(0, '127.0.0.1', () => resolve());
+    });
+    server = s;
+    port = (s.address() as { port: number }).port;
+  });
+
+  after(() => { server.close(); });
+
+  it('fetches a page and returns body + statusCode', async () => {
+    const result = await httpGet(`http://127.0.0.1:${port}/ok`, new AbortController().signal);
+    assert.equal(result.statusCode, 200);
+    assert.ok(result.body.includes('hello world'));
+  });
+
+  it('returns error status code for server errors', async () => {
+    const result = await httpGet(`http://127.0.0.1:${port}/error`, new AbortController().signal);
+    assert.equal(result.statusCode, 500);
+  });
+
+  it('returns 404 for unknown paths', async () => {
+    const result = await httpGet(`http://127.0.0.1:${port}/unknown`, new AbortController().signal);
+    assert.equal(result.statusCode, 404);
+  });
+
+  it('rejects when aborted', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    await assert.rejects(
+      httpGet(`http://127.0.0.1:${port}/ok`, ac.signal),
+      (err: Error) => err.message === 'Aborted',
+    );
   });
 });

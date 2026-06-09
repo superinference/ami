@@ -231,18 +231,19 @@ function extractBaseCommands(command: string): string[] {
  * Match a simple glob-like pattern against a string.
  * Supports '*' as a wildcard for any sequence of characters.
  */
+const _patternCache = new Map<string, RegExp>();
 function matchPattern(pattern: string, value: string): boolean {
-  // Exact match
   if (pattern === value) return true;
-
-  // Wildcard-only
   if (pattern === '*') return true;
 
-  // Convert glob to regex
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*');
-  const regex = new RegExp(`^${escaped}$`);
+  let regex = _patternCache.get(pattern);
+  if (!regex) {
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*');
+    regex = new RegExp(`^${escaped}$`);
+    _patternCache.set(pattern, regex);
+  }
   return regex.test(value);
 }
 
