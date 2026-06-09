@@ -123,6 +123,17 @@ export function detectHardlineCommand(command: string): { blocked: boolean; desc
   return { blocked: false, description: null };
 }
 
+export function detectCommandChaining(command: string): { chained: boolean; operators: string[]; count: number } {
+  const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
+  const operators: string[] = [];
+  if (/&&/.test(stripped)) operators.push('&&');
+  if (/\|\|/.test(stripped)) operators.push('||');
+  if (/;/.test(stripped)) operators.push(';');
+
+  const segments = stripped.split(/\s*(?:&&|\|\||;)\s*/).filter(s => s.trim());
+  return { chained: operators.length > 0, operators, count: segments.length };
+}
+
 /** System directories that should never be written to. */
 const SYSTEM_DIRECTORIES = [
   '/etc', '/usr', '/bin', '/sbin', '/var',
@@ -239,7 +250,7 @@ function matchPattern(pattern: string, value: string): boolean {
   let regex = _patternCache.get(pattern);
   if (!regex) {
     const escaped = pattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/[.+^${}()|[\]\\?]/g, '\\$&')
       .replace(/\*/g, '.*');
     regex = new RegExp(`^${escaped}$`);
     _patternCache.set(pattern, regex);

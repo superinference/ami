@@ -109,6 +109,86 @@ function loadConfigFile(configPath: string): ProjectConfig | null {
 // Merge
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ConfigService — hot-reload config watcher
+// ---------------------------------------------------------------------------
+
+export type ConfigChangeListener = (config: ProjectConfig, prev: ProjectConfig) => void;
+
+export class ConfigService {
+  private config: ProjectConfig;
+  private configPath: string;
+  private watcher: fs.FSWatcher | null = null;
+  private listeners: ConfigChangeListener[] = [];
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(cwd: string) {
+    this.configPath = path.join(cwd, '.superinference', 'config.json');
+    this.config = loadConfigFile(this.configPath) ?? {};
+  }
+
+  get(): ProjectConfig {
+    return { ...this.config };
+  }
+
+  onChange(listener: ConfigChangeListener): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== listener);
+    };
+  }
+
+  watch(): void {
+    if (this.watcher) return;
+
+    const dir = path.dirname(this.configPath);
+    try {
+      if (!fs.existsSync(dir)) return;
+
+      this.watcher = fs.watch(dir, (eventType, filename) => {
+        if (filename !== 'config.json') return;
+
+        if (this.debounceTimer) clearTimeout(this.debounceTimer);
+        this.debounceTimer = setTimeout(() => {
+          this.reload();
+        }, 100);
+      });
+
+      this.watcher.on('error', () => {
+        this.stop();
+      });
+    } catch {
+      // Directory doesn't exist or not watchable
+    }
+  }
+
+  reload(): boolean {
+    const prev = this.config;
+    const next = loadConfigFile(this.configPath);
+    if (!next) return false;
+
+    const changed = JSON.stringify(prev) !== JSON.stringify(next);
+    if (changed) {
+      this.config = next;
+      for (const listener of this.listeners) {
+        try { listener(next, prev); } catch (err) { coreLog('config', 'config listener error', { error: String(err) }); }
+      }
+    }
+    return changed;
+  }
+
+  stop(): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    if (this.watcher) {
+      this.watcher.close();
+      this.watcher = null;
+    }
+  }
+}
+
 /**
  * Merge configuration sources in priority order.
  *

@@ -192,6 +192,116 @@ describe('fileWriteTool – workspace boundary', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Read-before-write enforcement
+// ---------------------------------------------------------------------------
+
+describe('fileWriteTool – read-before-write enforcement', () => {
+  it('blocks overwrite when filesRead is set but file was not read', async () => {
+    const file = path.join(tmpDir, 'existing-unread.txt');
+    fs.writeFileSync(file, 'original\n');
+
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'overwritten\n' },
+      ctx({ filesRead: new Set() }),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('must read'));
+  });
+
+  it('allows overwrite when file was previously read', async () => {
+    const file = path.join(tmpDir, 'existing-read.txt');
+    fs.writeFileSync(file, 'original\n');
+    const filesRead = new Set([file]);
+
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'overwritten\n' },
+      ctx({ filesRead }),
+    );
+    assert.ok(!result.isError);
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'overwritten\n');
+  });
+
+  it('allows writing new files without prior read', async () => {
+    const file = path.join(tmpDir, 'brand-new.txt');
+
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'new content\n' },
+      ctx({ filesRead: new Set() }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('new file'));
+  });
+
+  it('skips enforcement when filesRead is undefined', async () => {
+    const file = path.join(tmpDir, 'no-tracking.txt');
+    fs.writeFileSync(file, 'original\n');
+
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'overwritten\n' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+  });
+
+  it('does not modify file when blocked by read-before-write', async () => {
+    const file = path.join(tmpDir, 'protected.txt');
+    fs.writeFileSync(file, 'original\n');
+
+    await fileWriteTool.execute(
+      { file_path: file, content: 'should-not-write\n' },
+      ctx({ filesRead: new Set() }),
+    );
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'original\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CRLF-aware file writing
+// ---------------------------------------------------------------------------
+
+describe('fileWriteTool – CRLF handling', () => {
+  it('preserves CRLF when overwriting CRLF file', async () => {
+    const file = path.join(tmpDir, 'crlf.txt');
+    fs.writeFileSync(file, 'old1\r\nold2\r\n');
+
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'new1\nnew2\n' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    const content = fs.readFileSync(file, 'utf-8');
+    assert.ok(content.includes('\r\n'), 'Should preserve CRLF');
+    assert.equal(content, 'new1\r\nnew2\r\n');
+  });
+
+  it('preserves LF when overwriting LF file', async () => {
+    const file = path.join(tmpDir, 'lf.txt');
+    fs.writeFileSync(file, 'old1\nold2\n');
+
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'new1\nnew2\n' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    const content = fs.readFileSync(file, 'utf-8');
+    assert.ok(!content.includes('\r\n'));
+    assert.equal(content, 'new1\nnew2\n');
+  });
+
+  it('uses content as-is for new files', async () => {
+    const file = path.join(tmpDir, 'brand-new-crlf.txt');
+
+    const result = await fileWriteTool.execute(
+      { file_path: file, content: 'line1\nline2\n' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    const content = fs.readFileSync(file, 'utf-8');
+    assert.equal(content, 'line1\nline2\n');
+  });
+});
+
 describe('fileWriteTool – large file diff truncation', () => {
   it('truncates new file diff at 20 lines', async () => {
     const file = path.join(tmpDir, 'large-new.txt');

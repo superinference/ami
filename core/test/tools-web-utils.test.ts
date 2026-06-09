@@ -134,23 +134,23 @@ describe('isBlockedRedirectTarget', () => {
 describe('validateUrlSafety', () => {
   it('blocks blocked hostnames', async () => {
     const result = await validateUrlSafety('http://localhost/path');
-    assert.ok(result !== null);
-    assert.ok(result!.includes('Blocked'));
+    assert.ok('error' in result);
+    assert.ok(result.error.includes('Blocked'));
   });
 
   it('blocks metadata.google.internal', async () => {
     const result = await validateUrlSafety('http://metadata.google.internal/v1/');
-    assert.ok(result !== null);
-    assert.ok(result!.includes('Blocked'));
+    assert.ok('error' in result);
+    assert.ok(result.error.includes('Blocked'));
   });
 
-  it('returns null for public hostname or fails DNS gracefully', async () => {
+  it('returns resolvedIP for public hostname or fails DNS gracefully', async () => {
     const result = await validateUrlSafety('https://example.com');
-    // In environments with DNS, example.com resolves to a public IP → null.
-    // In restricted/offline environments, DNS fails → a "Blocked: DNS resolution failed" message.
-    if (result !== null) {
-      assert.ok(result.includes('DNS resolution failed'),
-        `Expected null or DNS failure, got: ${result}`);
+    if ('error' in result) {
+      assert.ok(result.error.includes('DNS resolution failed'),
+        `Expected resolvedIP or DNS failure, got: ${result.error}`);
+    } else {
+      assert.ok(result.resolvedIP.length > 0);
     }
   });
 });

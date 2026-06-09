@@ -226,3 +226,129 @@ describe('fileEditTool – fuzzy matching', () => {
     assert.ok(content.includes('const x = 2;'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Read-before-write enforcement
+// ---------------------------------------------------------------------------
+
+describe('fileEditTool – read-before-write enforcement', () => {
+  it('blocks edit when filesRead is set but file was not read', async () => {
+    const file = path.join(tmpDir, 'unread.ts');
+    fs.writeFileSync(file, 'const x = 1;\n');
+
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'const x = 1;', new_string: 'const x = 2;' },
+      ctx({ filesRead: new Set() }),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('must read'));
+  });
+
+  it('allows edit when file was previously read', async () => {
+    const file = path.join(tmpDir, 'wasread.ts');
+    fs.writeFileSync(file, 'const x = 1;\n');
+    const filesRead = new Set([file]);
+
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'const x = 1;', new_string: 'const x = 2;' },
+      ctx({ filesRead }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('Successfully edited'));
+  });
+
+  it('skips enforcement when filesRead is undefined', async () => {
+    const file = path.join(tmpDir, 'notracking.ts');
+    fs.writeFileSync(file, 'const x = 1;\n');
+
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'const x = 1;', new_string: 'const x = 2;' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+  });
+
+  it('resolves relative path for enforcement check', async () => {
+    const file = path.join(tmpDir, 'relative.ts');
+    fs.writeFileSync(file, 'old\n');
+    const filesRead = new Set([file]);
+
+    const result = await fileEditTool.execute(
+      { file_path: 'relative.ts', old_string: 'old', new_string: 'new' },
+      ctx({ filesRead }),
+    );
+    assert.ok(!result.isError);
+  });
+
+  it('does not modify file when blocked by read-before-write', async () => {
+    const file = path.join(tmpDir, 'protected.ts');
+    fs.writeFileSync(file, 'original\n');
+
+    await fileEditTool.execute(
+      { file_path: file, old_string: 'original', new_string: 'modified' },
+      ctx({ filesRead: new Set() }),
+    );
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'original\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CRLF-aware file editing
+// ---------------------------------------------------------------------------
+
+describe('fileEditTool – CRLF handling', () => {
+  it('preserves CRLF line endings when editing', async () => {
+    const file = path.join(tmpDir, 'crlf.ts');
+    fs.writeFileSync(file, 'line1\r\nline2\r\nline3\r\n');
+
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'line2', new_string: 'replaced' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    const content = fs.readFileSync(file, 'utf-8');
+    assert.ok(content.includes('\r\n'), 'Should preserve CRLF endings');
+    assert.ok(content.includes('replaced'));
+    assert.ok(!content.includes('line2'));
+  });
+
+  it('preserves LF line endings when editing', async () => {
+    const file = path.join(tmpDir, 'lf.ts');
+    fs.writeFileSync(file, 'line1\nline2\nline3\n');
+
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'line2', new_string: 'replaced' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    const content = fs.readFileSync(file, 'utf-8');
+    assert.ok(!content.includes('\r\n'), 'Should NOT introduce CRLF');
+    assert.ok(content.includes('replaced'));
+  });
+
+  it('matches CRLF content when model sends LF-only old_string', async () => {
+    const file = path.join(tmpDir, 'crossmatch.ts');
+    fs.writeFileSync(file, 'alpha\r\nbeta\r\ngamma\r\n');
+
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'alpha\nbeta', new_string: 'ALPHA\nBETA' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    const content = fs.readFileSync(file, 'utf-8');
+    assert.ok(content.includes('ALPHA\r\nBETA'), 'Should convert newlines to match file');
+  });
+
+  it('preserves CRLF in multi-line replacement', async () => {
+    const file = path.join(tmpDir, 'multiline-crlf.ts');
+    fs.writeFileSync(file, 'const a = 1;\r\nconst b = 2;\r\nconst c = 3;\r\n');
+
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'const b = 2;', new_string: 'const b = 20;\nconst d = 40;' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    const content = fs.readFileSync(file, 'utf-8');
+    assert.ok(content.includes('const b = 20;\r\nconst d = 40;'));
+  });
+});

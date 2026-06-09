@@ -74,6 +74,9 @@ export interface ToolContext {
   cwd: string;
   abortSignal: AbortSignal;
   onProgress?: (data: string) => void;
+  /** Tracks file paths that have been read during this session.
+   *  Used by file_edit/file_write to enforce read-before-write. */
+  filesRead?: Set<string>;
   _providerConfig?: ProviderConfig;
   _permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   _allowLocalhostForTesting?: boolean;
@@ -119,6 +122,8 @@ export interface StreamChunk {
   error?: string;
   /** Present on error chunks — the Retry-After value in seconds from the response header, if any. */
   retryAfter?: number;
+  /** Response headers from the API call (available on 'done' and 'error' chunks). */
+  responseHeaders?: Record<string, string>;
 }
 
 export interface UsageStats {
@@ -166,6 +171,7 @@ export type EngineEvent =
   | { type: 'superinference_state'; state: { value: number; entropy: number; eig: number; step: number; ppv: number }; stopReason: { type: string; detail: string } }
   | { type: 'suggest_file_save'; content: string; suggestedPath: string; lineCount: number }
   | { type: 'user_question'; toolCallId: string; question: string; options: Array<{ label: string; description: string }>; allowFreeText: boolean }
+  | { type: 'session_title'; title: string }
   | { type: 'done'; totalTurns: number };
 
 export interface EngineConfig {
@@ -214,6 +220,60 @@ export interface EngineConfig {
   /** Handler for AskUserQuestion tool. The UI implements this to show
    *  the question and return the user's answer. */
   onUserQuestion?: (question: string, options: Array<{ label: string; description: string }>, allowFreeText: boolean) => Promise<string>;
+  /** When true, the engine generates a session title via LLM after the first turn. */
+  enableTitleGeneration?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// DI subsystem interfaces — typed groups of related EngineConfig fields
+// ---------------------------------------------------------------------------
+
+export interface ProviderSubsystem {
+  primary: ProviderConfig;
+  fallbackModel?: string;
+  compactionModel?: string;
+  thinking?: ThinkingConfig;
+}
+
+export interface PermissionSubsystem {
+  mode: 'ask' | 'auto-allow' | 'deny-all';
+  rules: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
+  promptHandler?: import('./permissions').PermissionPromptHandler;
+}
+
+export interface SessionSubsystem {
+  sessionId?: string;
+  sessionDir?: string;
+  tokenBudget: number;
+  maxTurns: number;
+  maxSteps?: number;
+}
+
+export function buildSubsystems(config: EngineConfig): {
+  provider: ProviderSubsystem;
+  permissions: PermissionSubsystem;
+  session: SessionSubsystem;
+} {
+  return {
+    provider: {
+      primary: config.provider,
+      fallbackModel: config.fallbackModel,
+      compactionModel: config.compactionModel,
+      thinking: config.thinking,
+    },
+    permissions: {
+      mode: config.permissionMode ?? 'ask',
+      rules: config.permissionRules ?? [],
+      promptHandler: config.permissionPromptHandler,
+    },
+    session: {
+      sessionId: config.sessionId,
+      sessionDir: config.sessionDir,
+      tokenBudget: config.tokenBudget ?? 100_000,
+      maxTurns: config.maxTurns ?? 100,
+      maxSteps: config.maxSteps,
+    },
+  };
 }
 
 export interface EngineSubmitOptions {

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { webSearchTool } from '../src/tools/web-search';
+import { webSearchTool, parseDuckDuckGoResults } from '../src/tools/web-search';
 import type { ToolContext } from '../src/types';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
@@ -134,15 +134,133 @@ describe('webSearchTool – HTTP integration', () => {
   });
 
   it('handles no results from search (line 153)', async () => {
-    // When DDG returns no matching result blocks
-    // This tests the formatResults path with empty results
-    // Since we can't easily mock DDG, we test the error/abort path
     const ac = new AbortController();
-    ac.abort(); // immediate abort
+    ac.abort();
     const result = await webSearchTool.execute(
       { query: 'xyznonexistent123456' },
       ctx({ abortSignal: ac.signal }),
     );
     assert.ok(result.isError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseDuckDuckGoResults — unit tests for parser edge cases
+// ---------------------------------------------------------------------------
+
+describe('parseDuckDuckGoResults', () => {
+  it('returns empty array for empty HTML', () => {
+    assert.deepEqual(parseDuckDuckGoResults(''), []);
+  });
+
+  it('returns empty array for HTML with no result blocks', () => {
+    const html = '<html><body><p>No search results here</p></body></html>';
+    assert.deepEqual(parseDuckDuckGoResults(html), []);
+  });
+
+  it('parses a single result with direct href', () => {
+    const html = `
+      <div class="result results_links">
+        <a class="result__a" href="https://example.com/page">Title Here</a>
+        <a class="result__snippet">Snippet text here.</a>
+      </div>
+    `;
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].title, 'Title Here');
+    assert.equal(results[0].url, 'https://example.com/page');
+    assert.equal(results[0].snippet, 'Snippet text here.');
+  });
+
+  it('decodes uddg-encoded URLs', () => {
+    const html = `
+      <div class="result foo">
+        <a class="result__a" href="?uddg=https%3A%2F%2Fexample.com%2Fpath%3Fq%3D1">Title</a>
+        <span class="result__snippet">Snippet</span>
+      </div>
+    `;
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].url, 'https://example.com/path?q=1');
+  });
+
+  it('handles snippet in div element', () => {
+    const html = `
+      <div class="result x">
+        <a class="result__a" href="https://example.com">Title</a>
+        <div class="result__snippet">Div snippet content</div>
+      </div>
+    `;
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].snippet, 'Div snippet content');
+  });
+
+  it('returns empty snippet when no snippet element exists', () => {
+    const html = `
+      <div class="result x">
+        <a class="result__a" href="https://example.com">Title</a>
+      </div>
+    `;
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].snippet, '');
+  });
+
+  it('strips HTML tags from title', () => {
+    const html = `
+      <div class="result x">
+        <a class="result__a" href="https://example.com"><b>Bold</b> Title</a>
+        <a class="result__snippet">Snippet</a>
+      </div>
+    `;
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results[0].title, 'Bold Title');
+  });
+
+  it('skips blocks without a result__a link', () => {
+    const html = `
+      <div class="result x">
+        <span>No link here</span>
+      </div>
+      <div class="result y">
+        <a class="result__a" href="https://real.com">Real</a>
+        <a class="result__snippet">Got it</a>
+      </div>
+    `;
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].url, 'https://real.com');
+  });
+
+  it('limits results to 10', () => {
+    let html = '';
+    for (let i = 0; i < 15; i++) {
+      html += `
+        <div class="result r${i}">
+          <a class="result__a" href="https://example.com/${i}">Title ${i}</a>
+          <a class="result__snippet">Snippet ${i}</a>
+        </div>
+      `;
+    }
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results.length, 10);
+  });
+
+  it('handles multiple results correctly', () => {
+    const html = `
+      <div class="result a">
+        <a class="result__a" href="https://one.com">One</a>
+        <a class="result__snippet">First</a>
+      </div>
+      <div class="result b">
+        <a class="result__a" href="https://two.com">Two</a>
+        <span class="result__snippet">Second</span>
+      </div>
+    `;
+    const results = parseDuckDuckGoResults(html);
+    assert.equal(results.length, 2);
+    assert.equal(results[0].url, 'https://one.com');
+    assert.equal(results[1].url, 'https://two.com');
   });
 });

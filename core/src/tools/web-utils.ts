@@ -49,15 +49,16 @@ export function isBlockedRedirectTarget(url: string): boolean {
   } catch { return true; }
 }
 
-export async function validateUrlSafety(url: string): Promise<string | null> {
+export async function validateUrlSafety(url: string): Promise<{ error: string } | { resolvedIP: string }> {
   const parsed = new URL(url);
   const hostname = parsed.hostname.toLowerCase();
 
   if (BLOCKED_HOSTNAMES.has(hostname)) {
-    return `Blocked: "${hostname}" is a private/metadata hostname`;
+    return { error: `Blocked: "${hostname}" is a private/metadata hostname` };
   }
 
-  // Resolve hostname and check for private IPs
+  // Resolve hostname and check for private IPs — return the resolved IP
+  // so callers can pin it to prevent DNS rebinding (TOCTOU)
   try {
     const addresses = await new Promise<dns.LookupAddress[]>((resolve, reject) => {
       dns.lookup(hostname, { all: true }, (err, addrs) => {
@@ -67,13 +68,13 @@ export async function validateUrlSafety(url: string): Promise<string | null> {
     });
     for (const addr of addresses) {
       if (isPrivateIP(addr.address)) {
-        return `Blocked: "${hostname}" resolves to private IP ${addr.address}`;
+        return { error: `Blocked: "${hostname}" resolves to private IP ${addr.address}` };
       }
     }
+    return { resolvedIP: addresses[0]?.address || hostname };
   } catch {
-    return `Blocked: DNS resolution failed for "${hostname}" — cannot verify safety`;
+    return { error: `Blocked: DNS resolution failed for "${hostname}" — cannot verify safety` };
   }
-  return null;
 }
 
 /**
@@ -140,12 +141,13 @@ export function httpGet(
     maxRedirects?: number;
     timeoutMs?: number;
     includeContentType?: boolean;
+    resolvedIP?: string;
   },
 ): Promise<{ body: string; statusCode: number; contentType: string }> {
   const maxRedirects = options?.maxRedirects ?? 5;
   const timeoutMs = options?.timeoutMs ?? 30000;
 
-  return httpGetInternal(url, signal, maxRedirects, timeoutMs);
+  return httpGetInternal(url, signal, maxRedirects, timeoutMs, options?.resolvedIP);
 }
 
 function httpGetInternal(
@@ -153,6 +155,7 @@ function httpGetInternal(
   signal: AbortSignal,
   redirectsLeft: number,
   timeoutMs: number,
+  resolvedIP?: string,
 ): Promise<{ body: string; statusCode: number; contentType: string }> {
   const MAX_RESPONSE_LENGTH = 50000;
 
@@ -172,6 +175,10 @@ function httpGetInternal(
 
     const requester = parsed.protocol === 'https:' ? https : http;
 
+    const lookupOverride: http.RequestOptions['lookup'] = resolvedIP
+      ? (_hostname, _opts, cb) => { (cb as (err: null, address: string, family: number) => void)(null, resolvedIP, resolvedIP.includes(':') ? 6 : 4); }
+      : undefined;
+
     const req = requester.get(
       url,
       {
@@ -185,7 +192,7 @@ function httpGetInternal(
           'Upgrade-Insecure-Requests': '1',
         },
         timeout: timeoutMs,
-        rejectUnauthorized: false,
+        ...(lookupOverride ? { lookup: lookupOverride } : {}),
       },
       (res) => {
         const statusCode = res.statusCode ?? 0;
@@ -206,12 +213,12 @@ function httpGetInternal(
             return;
           }
           res.resume(); // Drain the response body
-          validateUrlSafety(redirectUrl).then((ssrfError) => {
-            if (ssrfError) {
-              reject(new Error(ssrfError));
+          validateUrlSafety(redirectUrl).then((ssrfResult) => {
+            if ('error' in ssrfResult) {
+              reject(new Error(ssrfResult.error));
               return;
             }
-            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs).then(resolve, reject);
+            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, ssrfResult.resolvedIP).then(resolve, reject);
           }, reject);
           return;
         }

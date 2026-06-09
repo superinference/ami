@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { detectLineEnding, convertToLineEnding } from './tool-utils';
 
 export const fileWriteTool: ToolDefinition = {
   name: 'file_write',
@@ -49,15 +50,36 @@ export const fileWriteTool: ToolDefinition = {
     try {
       // Read existing content for diff (if file exists)
       let oldContent = '';
-      try { oldContent = await fs.promises.readFile(resolved, 'utf-8'); } catch {}
-      const isNew = oldContent.length === 0;
+      let fileExists = false;
+      try {
+        oldContent = await fs.promises.readFile(resolved, 'utf-8');
+        fileExists = true;
+      } catch {}
+      const isNew = !fileExists || oldContent.length === 0;
+
+      if (fileExists && context.filesRead && !context.filesRead.has(resolved)) {
+        return {
+          output: `Error: You must read ${resolved} with file_read before overwriting it. This prevents accidental data loss.`,
+          isError: true,
+        };
+      }
+
+      // Preserve original line endings when overwriting
+      let finalContent = content;
+      if (fileExists && oldContent.length > 0) {
+        const originalEnding = detectLineEnding(oldContent);
+        finalContent = convertToLineEnding(content, originalEnding);
+      }
 
       // Create parent directories if they don't exist
       const dir = path.dirname(resolved);
       await fs.promises.mkdir(dir, { recursive: true });
 
       // Write file content
-      await fs.promises.writeFile(resolved, content, 'utf-8');
+      await fs.promises.writeFile(resolved, finalContent, 'utf-8');
+
+      // Track as known — the model wrote this content, so it can overwrite later
+      context.filesRead?.add(resolved);
 
       // Build diff output
       const lines = content.split('\n');

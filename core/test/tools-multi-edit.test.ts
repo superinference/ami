@@ -77,7 +77,7 @@ describe('multiEditTool – validation', () => {
 
   it('rejects when file does not exist', async () => {
     const result = await multiEditTool.execute(
-      { file_path: '/nonexistent.txt', edits: [{ old_string: 'a', new_string: 'b' }] },
+      { file_path: path.join(tmpDir, 'nonexistent.txt'), edits: [{ old_string: 'a', new_string: 'b' }] },
       ctx(),
     );
     assert.equal(result.isError, true);

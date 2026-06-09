@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { PermissionManager, detectHardlineCommand } from '../src/permissions';
+import { PermissionManager, detectHardlineCommand, detectCommandChaining } from '../src/permissions';
 import type { PermissionMode, PermissionRule } from '../src/permissions';
 
 function makeTempDir(): string {
@@ -432,4 +432,66 @@ describe('detectHardlineCommand', () => {
       assert.equal(result.blocked, false, `Expected "${cmd}" to NOT be blocked`);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// detectCommandChaining
+// ---------------------------------------------------------------------------
+
+describe('detectCommandChaining', () => {
+  it('detects && chaining', () => {
+    const r = detectCommandChaining('echo a && echo b');
+    assert.equal(r.chained, true);
+    assert.ok(r.operators.includes('&&'));
+    assert.equal(r.count, 2);
+  });
+
+  it('detects || chaining', () => {
+    const r = detectCommandChaining('cmd1 || cmd2');
+    assert.equal(r.chained, true);
+    assert.ok(r.operators.includes('||'));
+  });
+
+  it('detects ; chaining', () => {
+    const r = detectCommandChaining('cmd1; cmd2; cmd3');
+    assert.equal(r.chained, true);
+    assert.ok(r.operators.includes(';'));
+    assert.equal(r.count, 3);
+  });
+
+  it('detects multiple operator types', () => {
+    const r = detectCommandChaining('cmd1 && cmd2 || cmd3; cmd4');
+    assert.equal(r.chained, true);
+    assert.ok(r.operators.includes('&&'));
+    assert.ok(r.operators.includes('||'));
+    assert.ok(r.operators.includes(';'));
+    assert.equal(r.count, 4);
+  });
+
+  it('returns not chained for simple command', () => {
+    const r = detectCommandChaining('echo hello');
+    assert.equal(r.chained, false);
+    assert.equal(r.operators.length, 0);
+    assert.equal(r.count, 1);
+  });
+
+  it('returns not chained for pipe-only command', () => {
+    const r = detectCommandChaining('cat file | grep pattern');
+    assert.equal(r.chained, false);
+  });
+
+  it('ignores operators inside quoted strings', () => {
+    const r = detectCommandChaining('echo "hello && world"');
+    assert.equal(r.chained, false);
+  });
+
+  it('ignores operators inside single-quoted strings', () => {
+    const r = detectCommandChaining("echo 'cmd1; cmd2'");
+    assert.equal(r.chained, false);
+  });
+
+  it('counts segments correctly for && chain', () => {
+    const r = detectCommandChaining('a && b && c');
+    assert.equal(r.count, 3);
+  });
 });

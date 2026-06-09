@@ -1,30 +1,4 @@
-import type { Message } from './types';
-
-export function applyCacheControl(
-  messages: { role: string; content: unknown }[],
-  provider: string,
-): void {
-  if (provider !== 'anthropic') return;
-  // Mark system messages for caching (stable across turns)
-  let systemCount = 0;
-  for (const msg of messages) {
-    if (msg.role === 'system' && systemCount < 2) {
-      (msg as any).providerOptions = { anthropic: { cacheControl: { type: 'ephemeral' } } };
-      systemCount++;
-    }
-  }
-  // Mark last 2 user messages for caching (most recent context)
-  const userIndices: number[] = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      userIndices.push(i);
-      if (userIndices.length >= 2) break;
-    }
-  }
-  for (const idx of userIndices) {
-    (messages[idx] as any).providerOptions = { anthropic: { cacheControl: { type: 'ephemeral' } } };
-  }
-}
+import type { Message, ToolDefinition } from './types';
 
 export function sanitizeToolCallIds(
   messages: Message[],
@@ -50,4 +24,67 @@ export function sanitizeToolCallIds(
     }
     return msg;
   });
+}
+
+export function buildConversationCachePoints(
+  messages: Array<{ role: string }>,
+): Record<number, { type: string }> {
+  const points: Record<number, { type: string }> = {};
+  if (messages.length === 0) return points;
+
+  let lastNonTool = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'tool') {
+      lastNonTool = i;
+      break;
+    }
+  }
+
+  let secondLastNonTool = -1;
+  for (let i = lastNonTool - 1; i >= 0; i--) {
+    if (messages[i].role !== 'tool') {
+      secondLastNonTool = i;
+      break;
+    }
+  }
+
+  if (secondLastNonTool >= 0) points[secondLastNonTool] = { type: 'ephemeral' };
+  if (lastNonTool >= 0) points[lastNonTool] = { type: 'ephemeral' };
+
+  return points;
+}
+
+export function buildToolCacheBreakpoints(
+  tools: ToolDefinition[],
+): Record<number, { type: string }> {
+  if (tools.length === 0) return {};
+  return { [tools.length - 1]: { type: 'ephemeral' } };
+}
+
+export function healOrphanedToolCalls(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  const answeredIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (msg.role === 'tool') {
+      answeredIds.add(msg.tool_call_id);
+    }
+  }
+
+  for (const msg of messages) {
+    result.push(msg);
+
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      const orphans = msg.tool_calls.filter(tc => !answeredIds.has(tc.id));
+      for (const tc of orphans) {
+        result.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: '[Tool call interrupted — no result available]',
+        });
+      }
+    }
+  }
+
+  return result;
 }

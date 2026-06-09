@@ -68,17 +68,20 @@ export const webFetchTool: ToolDefinition = {
     }
 
     // SSRF protection: block private/metadata hostnames and IPs
+    let pinnedIP: string | undefined;
     if (!context._allowLocalhostForTesting) {
-      const ssrfError = await validateUrlSafety(url);
-      if (ssrfError) {
-        return { output: `Error: ${ssrfError}`, isError: true };
+      const ssrfResult = await validateUrlSafety(url);
+      if ('error' in ssrfResult) {
+        return { output: `Error: ${ssrfResult.error}`, isError: true };
       }
+      pinnedIP = ssrfResult.resolvedIP;
     }
 
     try {
       const { body, statusCode, contentType } = await httpGet(
         url,
         context.abortSignal,
+        { resolvedIP: pinnedIP },
       );
 
       if (statusCode >= 400) {

@@ -472,6 +472,72 @@ describe('MemoryManager — getMemoryContext formatting', () => {
 });
 
 // ---------------------------------------------------------------------------
+// loadProjectInstructions — extended context file discovery
+// ---------------------------------------------------------------------------
+describe('MemoryManager — extended context file discovery', () => {
+  beforeEach(() => { tmpDir = createTmpDir(); });
+  afterEach(() => { cleanupTmpDir(tmpDir); });
+
+  it('finds GEMINI.md when higher-priority files are absent', () => {
+    fs.writeFileSync(path.join(tmpDir, 'GEMINI.md'), 'Gemini-specific rules');
+    const mgr = new MemoryManager(tmpDir);
+    const result = mgr.loadProjectInstructions();
+    assert.ok(result.includes('Gemini-specific rules'));
+  });
+
+  it('finds CRUSH.md when higher-priority files are absent', () => {
+    fs.writeFileSync(path.join(tmpDir, 'CRUSH.md'), 'Crush-specific rules');
+    const mgr = new MemoryManager(tmpDir);
+    const result = mgr.loadProjectInstructions();
+    assert.ok(result.includes('Crush-specific rules'));
+  });
+
+  it('finds .cursor/rules when higher-priority files are absent', () => {
+    fs.mkdirSync(path.join(tmpDir, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.cursor', 'rules'), 'Cursor rules content');
+    const mgr = new MemoryManager(tmpDir);
+    const result = mgr.loadProjectInstructions();
+    assert.ok(result.includes('Cursor rules content'));
+  });
+
+  it('loads CLAUDE.local.md alongside CLAUDE.md', () => {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), 'Base instructions');
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.local.md'), 'Personal overrides');
+    const mgr = new MemoryManager(tmpDir);
+    const result = mgr.loadProjectInstructions();
+    assert.ok(result.includes('Base instructions'), 'Should include base file');
+    assert.ok(result.includes('Personal overrides'), 'Should include local variant');
+  });
+
+  it('loads SUPERINFERENCE.local.md alongside SUPERINFERENCE.md', () => {
+    fs.writeFileSync(path.join(tmpDir, 'SUPERINFERENCE.md'), 'SI instructions');
+    fs.writeFileSync(path.join(tmpDir, 'SUPERINFERENCE.local.md'), 'SI local overrides');
+    const mgr = new MemoryManager(tmpDir);
+    const result = mgr.loadProjectInstructions();
+    assert.ok(result.includes('SI instructions'));
+    assert.ok(result.includes('SI local overrides'));
+  });
+
+  it('loads .local.md even without base file', () => {
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.local.md'), 'Local only');
+    const mgr = new MemoryManager(tmpDir);
+    const result = mgr.loadProjectInstructions();
+    assert.ok(result.includes('Local only'));
+  });
+
+  it('respects priority: CLAUDE.md over AGENTS.md over GEMINI.md', () => {
+    fs.writeFileSync(path.join(tmpDir, 'GEMINI.md'), 'Gemini loses');
+    fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), 'Agents loses');
+    fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), 'Claude wins');
+    const mgr = new MemoryManager(tmpDir);
+    const result = mgr.loadProjectInstructions();
+    assert.ok(result.includes('Claude wins'));
+    assert.ok(!result.includes('Agents loses'));
+    assert.ok(!result.includes('Gemini loses'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // loadMemories — sorting by mtime (lines 284-295)
 // ---------------------------------------------------------------------------
 describe('MemoryManager — loadMemories sorting', () => {

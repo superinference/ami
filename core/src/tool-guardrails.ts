@@ -25,10 +25,13 @@ function hashResult(output: string): string {
 }
 
 const MAX_TRACKED_SIGNATURES = 500;
+const LOOP_HISTORY_SIZE = 20;
+const LOOP_MIN_SEQUENCE = 2;
 
 export class ToolCallGuardrailController {
   private exactFailures = new Map<string, number>();
   private noProgressHistory = new Map<string, { resultHash: string; count: number }>();
+  private callHistory: string[] = [];
 
   private evictOldest(map: Map<string, unknown>): void {
     if (map.size > MAX_TRACKED_SIGNATURES) {
@@ -57,12 +60,22 @@ export class ToolCallGuardrailController {
     if (failed) {
       this.exactFailures.set(sig, (this.exactFailures.get(sig) || 0) + 1);
       this.evictOldest(this.exactFailures);
-      return { action: 'allow' };
+    } else {
+      this.exactFailures.delete(sig);
     }
 
-    this.exactFailures.delete(sig);
+    const combined = sig + ':' + hashResult(output);
+    this.callHistory.push(combined);
+    if (this.callHistory.length > LOOP_HISTORY_SIZE) {
+      this.callHistory.shift();
+    }
 
-    if (IDEMPOTENT_TOOLS.has(toolName)) {
+    const loop = this.detectLoop();
+    if (loop) {
+      return { action: 'warn', reason: `Repeating pattern detected: the last ${loop.length} tool calls match a previous sequence. You may be in a loop — try a fundamentally different approach.` };
+    }
+
+    if (!failed && IDEMPOTENT_TOOLS.has(toolName)) {
       const rHash = hashResult(output);
       const prev = this.noProgressHistory.get(sig);
 
@@ -83,8 +96,23 @@ export class ToolCallGuardrailController {
     return { action: 'allow' };
   }
 
+  detectLoop(): string[] | null {
+    const h = this.callHistory;
+    if (h.length < LOOP_MIN_SEQUENCE * 2) return null;
+
+    for (let seqLen = LOOP_MIN_SEQUENCE; seqLen <= Math.floor(h.length / 2); seqLen++) {
+      const tail = h.slice(h.length - seqLen);
+      const prev = h.slice(h.length - seqLen * 2, h.length - seqLen);
+      if (tail.every((v, i) => v === prev[i])) {
+        return tail;
+      }
+    }
+    return null;
+  }
+
   reset(): void {
     this.exactFailures.clear();
     this.noProgressHistory.clear();
+    this.callHistory = [];
   }
 }

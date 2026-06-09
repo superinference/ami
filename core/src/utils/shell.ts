@@ -9,6 +9,7 @@ export interface ExecCommandOptions {
   timeout?: number;
   abortSignal?: AbortSignal;
   onData?: (chunk: string) => void;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ExecCommandResult {
@@ -29,7 +30,7 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData } = options;
+  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env } = options;
 
   return new Promise<ExecCommandResult>((resolve) => {
     // If already aborted, short-circuit
@@ -45,8 +46,8 @@ export function execCommand(
     const proc = child_process.spawn(shell, shellArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      // Use process group so we can kill the tree
       detached: !isWindows,
+      ...(env ? { env } : {}),
     });
 
     let stdout = '';

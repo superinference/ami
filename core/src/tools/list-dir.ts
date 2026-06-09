@@ -35,6 +35,12 @@ export const listDirTool: ToolDefinition = {
       ? dirPath
       : path.resolve(context.cwd, dirPath);
 
+    const abs = path.resolve(resolved);
+    const cwdAbs = path.resolve(context.cwd);
+    if (abs !== cwdAbs && !abs.startsWith(cwdAbs + path.sep)) {
+      return { output: `Error: path "${dirPath}" is outside the workspace directory.`, isError: true };
+    }
+
     // Check if the path exists and is a directory
     let stat: fs.Stats;
     try {

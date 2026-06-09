@@ -77,9 +77,20 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
-    const resolved = path.isAbsolute(notebookPath)
+    let resolved = path.isAbsolute(notebookPath)
       ? notebookPath
       : path.resolve(context.cwd, notebookPath);
+
+    try {
+      resolved = fs.realpathSync(resolved);
+    } catch {
+      // File may not exist yet — use the logical path for the check
+    }
+
+    if (!path.resolve(resolved).startsWith(path.resolve(context.cwd) + path.sep) &&
+        path.resolve(resolved) !== path.resolve(context.cwd)) {
+      return { output: `Error: path "${notebookPath}" is outside the workspace directory.`, isError: true };
+    }
 
     if (path.extname(resolved) !== '.ipynb') {
       return {

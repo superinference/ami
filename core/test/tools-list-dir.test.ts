@@ -117,7 +117,7 @@ describe('listDirTool – listing', () => {
 
 describe('listDirTool – error handling', () => {
   it('returns error for non-existent directory', async () => {
-    const result = await listDirTool.execute({ path: '/nonexistent/dir' }, ctx());
+    const result = await listDirTool.execute({ path: path.join(tmpDir, 'nonexistent-subdir') }, ctx());
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('not found'));
   });

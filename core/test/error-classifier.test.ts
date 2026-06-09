@@ -139,6 +139,25 @@ describe('classifyError — output_too_large', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Content filter
+// ---------------------------------------------------------------------------
+describe('classifyError — content_filter', () => {
+  const expected = { category: 'content_filter' as const, retryable: true, shouldCompact: false, shouldFallback: false };
+
+  it('detects "content_filter"', () => {
+    assertClassification(classifyError('content_filter triggered'), expected);
+  });
+
+  it('detects "content_management"', () => {
+    assertClassification(classifyError('content_management policy violation'), expected);
+  });
+
+  it('detects "content policy"', () => {
+    assertClassification(classifyError('This request violates our content policy'), expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Server error
 // ---------------------------------------------------------------------------
 describe('classifyError — server_error', () => {
@@ -252,8 +271,8 @@ describe('classifyError — cross-cutting', () => {
   });
 
   it('retryable categories have retryable=true', () => {
-    const retryableCategories = ['rate_limited', 'context_overflow', 'output_too_large', 'model_unavailable', 'server_error', 'network_error'];
-    const triggers = ['HTTP 429 Too Many Requests', 'context too long', 'output too large', 'HTTP 503 Service Unavailable', 'HTTP 500 Internal Server Error', 'ECONNREFUSED'];
+    const retryableCategories = ['rate_limited', 'context_overflow', 'output_too_large', 'content_filter', 'model_unavailable', 'server_error', 'network_error'];
+    const triggers = ['HTTP 429 Too Many Requests', 'context too long', 'output too large', 'content_filter triggered', 'HTTP 503 Service Unavailable', 'HTTP 500 Internal Server Error', 'ECONNREFUSED'];
 
     for (let i = 0; i < retryableCategories.length; i++) {
       const result = classifyError(triggers[i]);

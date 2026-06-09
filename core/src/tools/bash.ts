@@ -1,5 +1,6 @@
-import { spawn, ChildProcess } from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { detectCommandChaining } from '../permissions';
+import { execCommand } from '../utils/shell';
 
 const MAX_OUTPUT_LENGTH = 30000;
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -20,6 +21,14 @@ function scrubEnv(): NodeJS.ProcessEnv {
       delete env[key];
     }
   }
+  env.GIT_EDITOR = 'false';
+  env.GIT_PAGER = 'cat';
+  env.EDITOR = 'false';
+  env.VISUAL = 'false';
+  env.PAGER = 'cat';
+  env.DEBIAN_FRONTEND = 'noninteractive';
+  env.GIT_TERMINAL_PROMPT = '0';
+  env.AI_AGENT = 'superinference';
   return env;
 }
 
@@ -60,107 +69,40 @@ export const bashTool: ToolDefinition = {
       return { output: 'Error: command must not be empty.', isError: true };
     }
 
-    return new Promise<ToolResult>((resolve) => {
-      let stdout = '';
-      let stderr = '';
-      let killed = false;
-      let child: ChildProcess;
-
-      try {
-        child = spawn('bash', ['-c', command], {
-          cwd: context.cwd,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: scrubEnv(),
-          detached: true,
-        });
-      } catch (err: unknown) {
-        const message =
-          err instanceof Error ? err.message : String(err);
-        resolve({
-          output: `Error spawning process: ${message}`,
-          isError: true,
-        });
-        return;
-      }
-
-      const killProcessGroup = () => {
-        try {
-          if (child.pid) process.kill(-child.pid, 'SIGKILL');
-        } catch {
-          child.kill('SIGKILL');
-        }
-      };
-
-      const timeoutId = setTimeout(() => {
-        killed = true;
-        killProcessGroup();
-      }, timeout);
-
-      const onAbort = () => {
-        killed = true;
-        killProcessGroup();
-      };
-
-      if (context.abortSignal) {
-        if (context.abortSignal.aborted) {
-          killProcessGroup();
-          clearTimeout(timeoutId);
-          resolve({ output: 'Command aborted.', isError: true });
-          return;
-        }
-        context.abortSignal.addEventListener('abort', onAbort, { once: true });
-      }
-
-      child.stdout!.on('data', (data: Buffer) => {
-        const chunk = data.toString();
-        if (stdout.length < MAX_OUTPUT_LENGTH * 2) stdout += chunk;
-        if (context.onProgress) {
-          context.onProgress(chunk);
-        }
-      });
-
-      child.stderr!.on('data', (data: Buffer) => {
-        const chunk = data.toString();
-        if (stderr.length < MAX_OUTPUT_LENGTH * 2) stderr += chunk;
-        if (context.onProgress) {
-          context.onProgress(chunk);
-        }
-      });
-
-      child.on('error', (err: Error) => {
-        clearTimeout(timeoutId);
-        if (context.abortSignal) {
-          context.abortSignal.removeEventListener('abort', onAbort);
-        }
-        resolve({
-          output: `Error executing command: ${err.message}`,
-          isError: true,
-        });
-      });
-
-      child.on('close', (code: number | null) => {
-        clearTimeout(timeoutId);
-        if (context.abortSignal) {
-          context.abortSignal.removeEventListener('abort', onAbort);
-        }
-
-        if (killed) {
-          const reason = context.abortSignal?.aborted
-            ? 'Command aborted.'
-            : `Command timed out after ${timeout}ms.`;
-          resolve({
-            output: formatOutput(stdout, stderr, null, reason),
-            isError: true,
-          });
-          return;
-        }
-
-        resolve({
-          output: formatOutput(stdout, stderr, code),
-          isError: code !== 0,
-        });
-      });
+    const result = await execCommand(command, {
+      cwd: context.cwd,
+      timeout,
+      abortSignal: context.abortSignal,
+      env: scrubEnv(),
+      onData: context.onProgress ? (chunk) => context.onProgress!(chunk) : undefined,
     });
+
+    if (result.exitCode === null && !result.stdout && result.stderr === 'Aborted') {
+      return { output: 'Command aborted.', isError: true };
+    }
+
+    if (result.exitCode === null) {
+      const reason = context.abortSignal?.aborted
+        ? 'Command aborted.'
+        : `Command timed out after ${timeout}ms.`;
+      return {
+        output: formatOutput(result.stdout, result.stderr, null, reason),
+        isError: true,
+      };
+    }
+
+    let output = formatOutput(result.stdout, result.stderr, result.exitCode);
+    const chaining = detectCommandChaining(command);
+    if (chaining.chained && chaining.count > 2) {
+      output += '\n\n[Note: This command chains ' + chaining.count +
+        ' commands via ' + chaining.operators.join(', ') +
+        '. Consider using separate tool calls for better error handling and readability.]';
+    }
+
+    return {
+      output,
+      isError: result.exitCode !== 0,
+    };
   },
 };
 

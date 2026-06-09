@@ -172,8 +172,7 @@ describe('SessionMemoryExtractor — compaction model', () => {
       [{ toolName: 'file_edit', output: 'edited', isError: false }],
       [{ role: 'user', content: 'edit file' }],
     );
-    // Should work — the mock server responds to any model
-    assert.ok(facts.length >= 0);
+    assert.ok(Array.isArray(facts));
   });
 });
 

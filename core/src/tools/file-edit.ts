@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
+import { detectLineEnding, normalizeToLf, convertToLineEnding } from './tool-utils';
 
 const CONTEXT_LINES = 3;
 
@@ -70,9 +71,16 @@ export const fileEditTool: ToolDefinition = {
       return { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true };
     }
 
-    let content: string;
+    if (context.filesRead && !context.filesRead.has(resolved)) {
+      return {
+        output: `Error: You must read ${resolved} with file_read before editing it. This prevents edits based on stale content.`,
+        isError: true,
+      };
+    }
+
+    let rawContent: string;
     try {
-      content = await fs.promises.readFile(resolved, 'utf-8');
+      rawContent = await fs.promises.readFile(resolved, 'utf-8');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -81,8 +89,13 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
+    const originalEnding = detectLineEnding(rawContent);
+    const content = normalizeToLf(rawContent);
+    const normalizedOld = normalizeToLf(oldString);
+    const normalizedNew = normalizeToLf(newString);
+
     // Graduated fuzzy matching: try exact first, then progressively looser strategies
-    const result = fuzzyFindAndReplace(content, oldString, newString);
+    const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 
     if (result.error) {
       if (result.matchCount === 0) {
@@ -109,7 +122,7 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    const newContent = result.newContent!;
+    const newContent = convertToLineEnding(result.newContent!, originalEnding);
     const strategy = result.strategy!;
 
     try {
@@ -122,8 +135,8 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    // Build a unified diff showing old vs new
-    const diff = buildUnifiedDiff(content, newContent, resolved);
+    // Build a unified diff showing old vs new (use LF-normalized for clean display)
+    const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);
 
     const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
     return {

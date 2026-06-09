@@ -13,7 +13,7 @@ interface SearchResult {
   content?: string;
 }
 
-function parseDuckDuckGoResults(html: string): SearchResult[] {
+export function parseDuckDuckGoResults(html: string): SearchResult[] {
   const results: SearchResult[] = [];
 
   const splitRegex = /<div[^>]*class="[^"]*\bresult\s[^"]*"[^>]*>/gi;
@@ -73,9 +73,9 @@ async function fetchResultContent(
   signal: AbortSignal,
 ): Promise<string> {
   try {
-    const ssrfError = await validateUrlSafety(result.url);
-    if (ssrfError) return '';
-    const { body, statusCode } = await httpGet(result.url, signal, { timeoutMs: FETCH_TIMEOUT_MS });
+    const ssrfResult = await validateUrlSafety(result.url);
+    if ('error' in ssrfResult) return '';
+    const { body, statusCode } = await httpGet(result.url, signal, { timeoutMs: FETCH_TIMEOUT_MS, resolvedIP: ssrfResult.resolvedIP });
     if (statusCode >= 400) return '';
     const text = stripHtml(body);
     return text.substring(0, MAX_CONTENT_PER_RESULT);

@@ -22,6 +22,8 @@ export type { FileState } from './file-cache';
 export { Profiler } from './profiler';
 export { WorkspaceIndexer } from './workspace-indexer';
 export { ToolCallGuardrailController } from './tool-guardrails';
+export { ProviderCoordinator } from './provider-coordinator';
+export type { CoordinatorState } from './provider-coordinator';
 export { PersonaManager } from './personas';
 export type { PersonaDefinition } from './personas';
 export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError } from './logger';
@@ -52,13 +54,17 @@ export type {
   ContextFile,
   UsageStats,
 } from './types';
-export type { ThinkingConfig, ThinkingLevel } from './types';
+export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem } from './types';
+export { buildSubsystems } from './types';
 export { getModelCapabilities } from './model-capabilities';
 export { detectProvider, listModels, validateModel } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs } from './config';
 export type { ProjectConfig } from './config';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
+export { categorizePrompt } from './prompt-categorizer';
 export type { Intent, Scope, PromptCategory } from './prompt-categorizer';
+export type { RateLimitBucket, RateLimitStatus } from './rate-limiter';
+export type { CredentialEntry, SelectionStrategy } from './credential-pool';
+export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
 export { estimateTokens, estimateToolSchemaTokens } from './utils/tokens';
-export { applyCacheControl, sanitizeToolCallIds } from './provider-transform';
 export { generateTitle } from './title-generator';

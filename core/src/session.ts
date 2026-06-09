@@ -6,6 +6,7 @@ const MAX_CONTENT_LENGTH = 5000;
 
 export interface Session {
   id: string;
+  title?: string;
   messages: Message[];
   createdAt: string;
   updatedAt: string;

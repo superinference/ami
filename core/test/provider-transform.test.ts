@@ -1,101 +1,8 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { applyCacheControl, sanitizeToolCallIds } from '../src/provider-transform';
-import type { Message } from '../src/types';
-
-// ---------------------------------------------------------------------------
-// applyCacheControl
-// ---------------------------------------------------------------------------
-describe('applyCacheControl', () => {
-  it('does nothing for non-anthropic providers', () => {
-    const msgs = [
-      { role: 'system', content: 'You are helpful.' },
-      { role: 'user', content: 'hi' },
-    ];
-    applyCacheControl(msgs, 'openai');
-    assert.equal((msgs[0] as any).providerOptions, undefined);
-    assert.equal((msgs[1] as any).providerOptions, undefined);
-  });
-
-  it('marks system messages for caching (anthropic)', () => {
-    const msgs = [
-      { role: 'system', content: 'prompt 1' },
-      { role: 'user', content: 'hello' },
-    ];
-    applyCacheControl(msgs, 'anthropic');
-    assert.deepEqual((msgs[0] as any).providerOptions, {
-      anthropic: { cacheControl: { type: 'ephemeral' } },
-    });
-  });
-
-  it('marks at most 2 system messages', () => {
-    const msgs = [
-      { role: 'system', content: 's1' },
-      { role: 'system', content: 's2' },
-      { role: 'system', content: 's3' },
-      { role: 'user', content: 'u1' },
-    ];
-    applyCacheControl(msgs, 'anthropic');
-    assert.ok((msgs[0] as any).providerOptions);
-    assert.ok((msgs[1] as any).providerOptions);
-    // Third system message should NOT have been marked (only the user messages get marked after)
-    // Actually s3 might get marked if it also matches user. Let's check:
-    // The function only marks system messages with systemCount < 2, so s3 should not be marked by the system loop.
-    // But s3 has role=system, not role=user, so the user loop won't mark it either.
-    // Let's verify:
-    // After the system loop, s3 has no providerOptions from that loop.
-    // The user loop only looks for role=user.
-    assert.equal((msgs[2] as any).providerOptions, undefined);
-  });
-
-  it('marks last 2 user messages for caching', () => {
-    const msgs = [
-      { role: 'system', content: 'sys' },
-      { role: 'user', content: 'u1' },
-      { role: 'assistant', content: 'a1' },
-      { role: 'user', content: 'u2' },
-      { role: 'assistant', content: 'a2' },
-      { role: 'user', content: 'u3' },
-    ];
-    applyCacheControl(msgs, 'anthropic');
-    // u3 (index 5) and u2 (index 3) should be marked
-    assert.deepEqual((msgs[5] as any).providerOptions, {
-      anthropic: { cacheControl: { type: 'ephemeral' } },
-    });
-    assert.deepEqual((msgs[3] as any).providerOptions, {
-      anthropic: { cacheControl: { type: 'ephemeral' } },
-    });
-    // u1 (index 1) should NOT be marked
-    assert.equal((msgs[1] as any).providerOptions, undefined);
-  });
-
-  it('handles single user message', () => {
-    const msgs = [
-      { role: 'user', content: 'only one' },
-    ];
-    applyCacheControl(msgs, 'anthropic');
-    assert.deepEqual((msgs[0] as any).providerOptions, {
-      anthropic: { cacheControl: { type: 'ephemeral' } },
-    });
-  });
-
-  it('handles no user messages', () => {
-    const msgs = [
-      { role: 'system', content: 'sys' },
-      { role: 'assistant', content: 'hello' },
-    ];
-    // Should not throw
-    applyCacheControl(msgs, 'anthropic');
-    assert.ok((msgs[0] as any).providerOptions); // system still marked
-  });
-
-  it('handles empty messages array', () => {
-    const msgs: { role: string; content: unknown }[] = [];
-    applyCacheControl(msgs, 'anthropic');
-    assert.equal(msgs.length, 0);
-  });
-});
+import { sanitizeToolCallIds, buildConversationCachePoints, buildToolCacheBreakpoints, healOrphanedToolCalls } from '../src/provider-transform';
+import type { Message, ToolDefinition } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // sanitizeToolCallIds
@@ -202,5 +109,207 @@ describe('sanitizeToolCallIds', () => {
   it('handles empty messages array', () => {
     const result = sanitizeToolCallIds([], 'anthropic');
     assert.deepEqual(result, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildConversationCachePoints
+// ---------------------------------------------------------------------------
+describe('buildConversationCachePoints', () => {
+  it('returns empty object for empty messages', () => {
+    assert.deepEqual(buildConversationCachePoints([]), {});
+  });
+
+  it('marks the last non-tool message', () => {
+    const msgs = [
+      { role: 'user' },
+      { role: 'assistant' },
+    ];
+    const points = buildConversationCachePoints(msgs);
+    assert.deepEqual(points[1], { type: 'ephemeral' });
+  });
+
+  it('marks last two non-tool messages', () => {
+    const msgs = [
+      { role: 'user' },
+      { role: 'assistant' },
+      { role: 'user' },
+    ];
+    const points = buildConversationCachePoints(msgs);
+    assert.deepEqual(points[1], { type: 'ephemeral' });
+    assert.deepEqual(points[2], { type: 'ephemeral' });
+  });
+
+  it('skips tool messages when finding cache points', () => {
+    const msgs = [
+      { role: 'user' },
+      { role: 'assistant' },
+      { role: 'tool' },
+      { role: 'tool' },
+    ];
+    const points = buildConversationCachePoints(msgs);
+    assert.deepEqual(points[0], { type: 'ephemeral' });
+    assert.deepEqual(points[1], { type: 'ephemeral' });
+    assert.equal(points[2], undefined);
+    assert.equal(points[3], undefined);
+  });
+
+  it('handles single non-tool message', () => {
+    const msgs = [{ role: 'user' }];
+    const points = buildConversationCachePoints(msgs);
+    assert.deepEqual(points[0], { type: 'ephemeral' });
+    assert.equal(Object.keys(points).length, 1);
+  });
+
+  it('handles all tool messages', () => {
+    const msgs = [{ role: 'tool' }, { role: 'tool' }];
+    const points = buildConversationCachePoints(msgs);
+    assert.deepEqual(points, {});
+  });
+
+  it('marks assistant messages not just user messages', () => {
+    const msgs = [
+      { role: 'user' },
+      { role: 'assistant' },
+      { role: 'tool' },
+    ];
+    const points = buildConversationCachePoints(msgs);
+    assert.deepEqual(points[1], { type: 'ephemeral' });
+    assert.deepEqual(points[0], { type: 'ephemeral' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildToolCacheBreakpoints
+// ---------------------------------------------------------------------------
+describe('buildToolCacheBreakpoints', () => {
+  const stubTool = (name: string): ToolDefinition => ({
+    name,
+    description: 'stub',
+    inputSchema: { type: 'object', properties: {} },
+    isReadOnly: true,
+    execute: async () => ({ output: '' }),
+  });
+
+  it('returns empty object for empty tools array', () => {
+    assert.deepEqual(buildToolCacheBreakpoints([]), {});
+  });
+
+  it('marks the last tool with ephemeral cache', () => {
+    const tools = [stubTool('bash'), stubTool('read'), stubTool('edit')];
+    const points = buildToolCacheBreakpoints(tools);
+    assert.deepEqual(points[2], { type: 'ephemeral' });
+    assert.equal(points[0], undefined);
+    assert.equal(points[1], undefined);
+  });
+
+  it('marks index 0 for single tool', () => {
+    const points = buildToolCacheBreakpoints([stubTool('bash')]);
+    assert.deepEqual(points[0], { type: 'ephemeral' });
+  });
+
+  it('returns exactly one entry', () => {
+    const tools = [stubTool('a'), stubTool('b'), stubTool('c'), stubTool('d')];
+    const points = buildToolCacheBreakpoints(tools);
+    assert.equal(Object.keys(points).length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// healOrphanedToolCalls
+// ---------------------------------------------------------------------------
+describe('healOrphanedToolCalls', () => {
+  it('returns empty array for empty messages', () => {
+    assert.deepEqual(healOrphanedToolCalls([]), []);
+  });
+
+  it('passes through messages without tool calls', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    assert.equal(result.length, 2);
+  });
+
+  it('passes through when all tool calls have matching results', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'test' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'bash', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'tc1', content: 'done' },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    assert.equal(result.length, 3);
+  });
+
+  it('injects synthetic result for orphaned tool call', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'test' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'orphan1', type: 'function', function: { name: 'bash', arguments: '{}' } }],
+      },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    assert.equal(result.length, 3);
+    assert.equal(result[2].role, 'tool');
+    const toolMsg = result[2] as { role: 'tool'; tool_call_id: string; content: string };
+    assert.equal(toolMsg.tool_call_id, 'orphan1');
+    assert.ok(toolMsg.content.includes('interrupted'));
+  });
+
+  it('heals multiple orphaned tool calls in one message', () => {
+    const msgs: Message[] = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'tc1', type: 'function', function: { name: 'bash', arguments: '{}' } },
+          { id: 'tc2', type: 'function', function: { name: 'read', arguments: '{}' } },
+        ],
+      },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    assert.equal(result.length, 3);
+    assert.equal((result[1] as { tool_call_id: string }).tool_call_id, 'tc1');
+    assert.equal((result[2] as { tool_call_id: string }).tool_call_id, 'tc2');
+  });
+
+  it('only heals orphans, not answered calls', () => {
+    const msgs: Message[] = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'answered', type: 'function', function: { name: 'bash', arguments: '{}' } },
+          { id: 'orphan', type: 'function', function: { name: 'read', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'answered', content: 'result' },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    assert.equal(result.length, 3);
+    const toolIds = result.filter(m => m.role === 'tool').map(m => (m as { tool_call_id: string }).tool_call_id);
+    assert.ok(toolIds.includes('answered'));
+    assert.ok(toolIds.includes('orphan'));
+  });
+
+  it('does not add duplicates for already-answered calls', () => {
+    const msgs: Message[] = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'bash', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'tc1', content: 'ok' },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    const toolMsgs = result.filter(m => m.role === 'tool');
+    assert.equal(toolMsgs.length, 1);
   });
 });

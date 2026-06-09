@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { stripJsoncComments, loadProjectConfig, loadGlobalConfig, mergeConfigs, type ProjectConfig } from '../src/config';
+import { stripJsoncComments, loadProjectConfig, loadGlobalConfig, mergeConfigs, ConfigService, type ProjectConfig } from '../src/config';
 
 // ---------------------------------------------------------------------------
 // stripJsoncComments
@@ -274,5 +274,130 @@ describe('mergeConfigs', () => {
     const cli: Partial<ProjectConfig> = { model: 'only-cli' };
     const result = mergeConfigs(cli, {}, null, null);
     assert.equal(result.model, 'only-cli');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ConfigService
+// ---------------------------------------------------------------------------
+
+describe('ConfigService', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-config-svc-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('loads config from .superinference/config.json', () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "test-model"}');
+
+    const svc = new ConfigService(tmpDir);
+    assert.equal(svc.get().model, 'test-model');
+  });
+
+  it('returns empty config when file does not exist', () => {
+    const svc = new ConfigService(tmpDir);
+    const config = svc.get();
+    assert.equal(config.model, undefined);
+  });
+
+  it('returns defensive copy from get()', () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "m1"}');
+
+    const svc = new ConfigService(tmpDir);
+    const c1 = svc.get();
+    c1.model = 'mutated';
+    assert.equal(svc.get().model, 'm1');
+  });
+
+  it('reload() detects changes and notifies listeners', () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
+
+    const svc = new ConfigService(tmpDir);
+    let notified = false;
+    let receivedNew: ProjectConfig | null = null;
+    let receivedOld: ProjectConfig | null = null;
+
+    svc.onChange((n, o) => { notified = true; receivedNew = n; receivedOld = o; });
+
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v2"}');
+    const changed = svc.reload();
+
+    assert.equal(changed, true);
+    assert.equal(notified, true);
+    assert.equal(receivedNew!.model, 'v2');
+    assert.equal(receivedOld!.model, 'v1');
+  });
+
+  it('reload() returns false when config unchanged', () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "same"}');
+
+    const svc = new ConfigService(tmpDir);
+    assert.equal(svc.reload(), false);
+  });
+
+  it('onChange() returns unsubscribe function', () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
+
+    const svc = new ConfigService(tmpDir);
+    let callCount = 0;
+    const unsub = svc.onChange(() => { callCount++; });
+
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v2"}');
+    svc.reload();
+    assert.equal(callCount, 1);
+
+    unsub();
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v3"}');
+    svc.reload();
+    assert.equal(callCount, 1);
+  });
+
+  it('stop() cleans up watcher', () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{}');
+
+    const svc = new ConfigService(tmpDir);
+    svc.watch();
+    svc.stop();
+    // Should not throw
+    svc.stop();
+  });
+
+  it('watch() is safe when directory does not exist', () => {
+    const svc = new ConfigService(path.join(tmpDir, 'nonexistent'));
+    svc.watch(); // should not throw
+    svc.stop();
+  });
+
+  it('handles listener errors gracefully', () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
+
+    const svc = new ConfigService(tmpDir);
+    svc.onChange(() => { throw new Error('listener error'); });
+
+    let secondCalled = false;
+    svc.onChange(() => { secondCalled = true; });
+
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v2"}');
+    svc.reload();
+    assert.equal(secondCalled, true);
   });
 });

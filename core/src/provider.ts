@@ -4,6 +4,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature } from './model-capabilities';
+import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls } from './provider-transform';
 import type {
   ProviderConfig,
   Message,
@@ -434,33 +435,12 @@ function buildThinkingOptions(
 function buildCacheBreakpoints(messages: ModelMessage[], hasSystemPrompt: boolean): Record<string, unknown> {
   const cachePoints: Record<number, { type: string }> = {};
 
-  // Breakpoint 1: System prompt (stable, high-value cache target)
-  // The system prompt is passed via the `system` parameter, so we mark
-  // the first message as a cache boundary instead
   if (hasSystemPrompt && messages.length > 0) {
     cachePoints[0] = { type: 'ephemeral' };
   }
 
-  // Breakpoint 2: Latest user message (most frequently reused)
-  let lastUserIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      lastUserIdx = i;
-      break;
-    }
-  }
-
-  // Breakpoint 3: Second-to-last user message (for multi-turn cache reuse)
-  let secondLastUserIdx = -1;
-  for (let i = lastUserIdx - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      secondLastUserIdx = i;
-      break;
-    }
-  }
-
-  if (secondLastUserIdx >= 0) cachePoints[secondLastUserIdx] = { type: 'ephemeral' };
-  if (lastUserIdx >= 0) cachePoints[lastUserIdx] = { type: 'ephemeral' };
+  const conversationPoints = buildConversationCachePoints(messages);
+  Object.assign(cachePoints, conversationPoints);
 
   if (Object.keys(cachePoints).length === 0) return {};
 
@@ -500,11 +480,13 @@ export async function* streamChatCompletion(
     }
     return true;
   });
-  const coreMessages = convertMessages(nonSystemMessages);
-
   const isAnthropic = modelId.startsWith('claude') ||
     config.baseUrl?.includes('anthropic.com') ||
     config.provider === 'anthropic';
+
+  const healed = healOrphanedToolCalls(nonSystemMessages);
+  const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
+  const coreMessages = convertMessages(sanitized);
 
   const cacheBreakpoints = isAnthropic ? buildCacheBreakpoints(coreMessages, !!systemPrompt) : {};
 
@@ -568,6 +550,7 @@ export async function* streamChatCompletion(
               ),
               reasoningTokens: (part.usage as { reasoningTokens?: number }).reasoningTokens ?? 0,
             },
+            responseHeaders: (part as { response?: { headers?: Record<string, string> } }).response?.headers,
           };
           return;
 
@@ -590,12 +573,13 @@ export async function* streamChatCompletion(
             type: 'error',
             error: errMsg,
             ...(errRetryAfter !== undefined && { retryAfter: errRetryAfter }),
+            responseHeaders: errObj?.responseHeaders,
           };
           return;
         }
 
         case 'reasoning-delta':
-          yield { type: 'thinking_delta', text: (part as any).textDelta ?? '' };
+          yield { type: 'thinking_delta', text: (part as { text?: string }).text ?? '' };
           break;
 
         default:
@@ -638,6 +622,7 @@ export async function* streamChatCompletion(
         type: 'error',
         error: errorMsg,
         ...(retryAfter !== undefined && { retryAfter }),
+        responseHeaders,
       };
     }
   }

@@ -194,9 +194,13 @@ describe('inferProviderFromBaseUrl', () => {
 // ---------------------------------------------------------------------------
 describe('inferProviderFromEnv', () => {
   it('returns null when no relevant env vars are set', () => {
-    // Save and clear relevant vars
     const saved: Record<string, string | undefined> = {};
-    const envKeys = ['GROQ_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY', 'DEEPSEEK_API_KEY'];
+    const envKeys = [
+      'GROQ_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY', 'DEEPSEEK_API_KEY',
+      'TOGETHER_AI_API_KEY', 'COHERE_API_KEY', 'FIREWORKS_API_KEY', 'PERPLEXITY_API_KEY',
+      'DEEPINFRA_API_KEY', 'CEREBRAS_API_KEY', 'ALIBABA_API_KEY', 'DASHSCOPE_API_KEY',
+      'LUMA_API_KEY', 'AZURE_OPENAI_API_KEY', 'AWS_ACCESS_KEY_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
+    ];
     for (const key of envKeys) {
       saved[key] = process.env[key];
       delete process.env[key];
@@ -204,12 +208,11 @@ describe('inferProviderFromEnv', () => {
 
     try {
       const result = inferProviderFromEnv();
-      // May return null or a detected provider from other env vars
-      // We can't fully control the test environment
-      assert.ok(result === null || typeof result === 'object');
+      assert.equal(result, null, 'Expected null when all provider env vars are cleared');
     } finally {
       for (const [key, val] of Object.entries(saved)) {
         if (val !== undefined) process.env[key] = val;
+        else delete process.env[key];
       }
     }
   });
@@ -484,8 +487,8 @@ describe('streamChatCompletionWithRetry — abort during wait', () => {
     const messages: Message[] = [{ role: 'user', content: 'Hi' }];
     const ac = new AbortController();
 
-    // Abort after a short delay
-    setTimeout(() => ac.abort(), 50);
+    // Abort after enough time for the 429 response to arrive and retry sleep to start
+    setTimeout(() => ac.abort(), 200);
 
     const chunks: StreamChunk[] = [];
     for await (const chunk of streamChatCompletionWithRetry(
@@ -684,49 +687,14 @@ describe('inferProviderFromEnv — with env vars', () => {
 import { resolveAvailableModel } from '../src/provider';
 
 describe('resolveAvailableModel', () => {
-  let server: http.Server;
-  let port: number;
-
-  before(async () => {
-    const s = http.createServer(async (req, res) => {
-      for await (const _ of req) { /* drain */ }
-      if (req.url && req.url.includes('/models')) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          data: [
-            { id: 'gpt-4o' },
-            { id: 'gpt-4o-mini' },
-            { id: 'custom-only-model' },
-          ],
-        }));
-      } else {
-        res.writeHead(404);
-        res.end();
-      }
-    });
-
-    await new Promise<void>((resolve) => {
-      s.listen(0, '127.0.0.1', () => resolve());
-    });
-    server = s;
-    port = (s.address() as { port: number }).port;
+  it('returns null for provider with invalid API key', async () => {
+    const result = await resolveAvailableModel('openai', 'invalid-key-for-testing');
+    assert.equal(result, null);
   });
 
-  after(() => { server.close(); });
-
-  it('returns null when provider has no models endpoint', async () => {
-    // Use a nonexistent URL to trigger catch block
-    const result = await resolveAvailableModel('openai', 'test-key');
-    // This hits the real OpenAI endpoint which will fail without valid key
-    // The catch block returns null
-    assert.ok(result === null || typeof result === 'string');
-  });
-
-  it('returns null on network error', async () => {
-    // Invalid port to trigger network error
-    const result = await resolveAvailableModel('deepseek', 'test-key');
-    // Will hit real deepseek endpoint and likely fail
-    assert.ok(result === null || typeof result === 'string');
+  it('returns null for unknown provider name', async () => {
+    const result = await resolveAvailableModel('nonexistent-provider', 'fake-key');
+    assert.equal(result, null);
   });
 });
 

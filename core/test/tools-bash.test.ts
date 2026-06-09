@@ -265,3 +265,87 @@ describe('bashTool – spawn error', () => {
     assert.ok(result.isError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Non-interactive environment forcing
+// ---------------------------------------------------------------------------
+
+describe('bashTool – non-interactive env forcing', () => {
+  it('sets GIT_EDITOR to false to prevent interactive git editors', async () => {
+    const result = await bashTool.execute({ command: 'echo $GIT_EDITOR' }, ctx());
+    assert.ok(result.output.includes('false'));
+  });
+
+  it('sets PAGER to cat to prevent interactive pagers', async () => {
+    const result = await bashTool.execute({ command: 'echo $PAGER' }, ctx());
+    assert.ok(result.output.includes('cat'));
+  });
+
+  it('sets GIT_PAGER to cat to prevent interactive git pagers', async () => {
+    const result = await bashTool.execute({ command: 'echo $GIT_PAGER' }, ctx());
+    assert.ok(result.output.includes('cat'));
+  });
+
+  it('sets GIT_TERMINAL_PROMPT to 0 to prevent git credential prompts', async () => {
+    const result = await bashTool.execute({ command: 'echo $GIT_TERMINAL_PROMPT' }, ctx());
+    assert.ok(result.output.includes('0'));
+  });
+
+  it('sets DEBIAN_FRONTEND to noninteractive for apt', async () => {
+    const result = await bashTool.execute({ command: 'echo $DEBIAN_FRONTEND' }, ctx());
+    assert.ok(result.output.includes('noninteractive'));
+  });
+
+  it('sets AI_AGENT to superinference for tool identification', async () => {
+    const result = await bashTool.execute({ command: 'echo $AI_AGENT' }, ctx());
+    assert.ok(result.output.includes('superinference'));
+  });
+
+  it('sets EDITOR and VISUAL to false to block editor launches', async () => {
+    const result = await bashTool.execute({ command: 'echo $EDITOR:$VISUAL' }, ctx());
+    assert.ok(result.output.includes('false:false'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Command chaining detection
+// ---------------------------------------------------------------------------
+
+describe('bashTool – command chaining detection', () => {
+  it('appends chaining note when 3+ commands are chained', async () => {
+    const result = await bashTool.execute(
+      { command: 'echo a && echo b && echo c' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('[Note:'));
+    assert.ok(result.output.includes('chains 3 commands'));
+  });
+
+  it('does not append note for 2-command chain', async () => {
+    const result = await bashTool.execute(
+      { command: 'echo a && echo b' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('[Note:'));
+  });
+
+  it('does not append note for simple commands', async () => {
+    const result = await bashTool.execute(
+      { command: 'echo hello' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('[Note:'));
+  });
+
+  it('does not append note for pipe-only commands', async () => {
+    const result = await bashTool.execute(
+      { command: 'echo hello | cat' },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('[Note:'));
+  });
+});

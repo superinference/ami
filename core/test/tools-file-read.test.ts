@@ -224,3 +224,64 @@ describe('fileReadTool – line number formatting', () => {
     assert.ok(result.output.includes('3\tthird'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Read-before-write tracking (filesRead)
+// ---------------------------------------------------------------------------
+
+describe('fileReadTool – filesRead tracking', () => {
+  it('adds resolved path to filesRead set after successful read', async () => {
+    const file = path.join(tmpDir, 'tracked.txt');
+    fs.writeFileSync(file, 'content\n');
+    const filesRead = new Set<string>();
+
+    await fileReadTool.execute({ file_path: file }, ctx({ filesRead }));
+    assert.ok(filesRead.has(file));
+  });
+
+  it('adds path for image files', async () => {
+    const file = path.join(tmpDir, 'img.png');
+    fs.writeFileSync(file, Buffer.from('fake'));
+    const filesRead = new Set<string>();
+
+    await fileReadTool.execute({ file_path: file }, ctx({ filesRead }));
+    assert.ok(filesRead.has(file));
+  });
+
+  it('adds path even for binary files', async () => {
+    const file = path.join(tmpDir, 'bin.dat');
+    const buf = Buffer.alloc(100);
+    buf[50] = 0;
+    fs.writeFileSync(file, buf);
+    const filesRead = new Set<string>();
+
+    await fileReadTool.execute({ file_path: file }, ctx({ filesRead }));
+    assert.ok(filesRead.has(file));
+  });
+
+  it('does not crash when filesRead is undefined', async () => {
+    const file = path.join(tmpDir, 'notrack.txt');
+    fs.writeFileSync(file, 'data\n');
+
+    const result = await fileReadTool.execute({ file_path: file }, ctx());
+    assert.ok(!result.isError);
+  });
+
+  it('does not add path for non-existent files', async () => {
+    const filesRead = new Set<string>();
+    await fileReadTool.execute(
+      { file_path: path.join(tmpDir, 'ghost.txt') },
+      ctx({ filesRead }),
+    );
+    assert.equal(filesRead.size, 0);
+  });
+
+  it('resolves relative paths before adding to filesRead', async () => {
+    const file = path.join(tmpDir, 'rel-track.txt');
+    fs.writeFileSync(file, 'data\n');
+    const filesRead = new Set<string>();
+
+    await fileReadTool.execute({ file_path: 'rel-track.txt' }, ctx({ filesRead }));
+    assert.ok(filesRead.has(file));
+  });
+});

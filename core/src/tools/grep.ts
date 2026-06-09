@@ -42,7 +42,8 @@ export const grepTool: ToolDefinition = {
     const invalid = validateRequiredString(pattern, 'pattern');
     if (invalid) return invalid;
 
-    const resolved = resolveSearchPath(searchPath, context.cwd);
+    const { resolved, error: pathError } = resolveSearchPath(searchPath, context.cwd);
+    if (pathError) return { output: pathError, isError: true };
 
     // Try ripgrep first, fall back to grep
     const rgResult = await runSearch(
@@ -91,7 +92,7 @@ function buildRgArgs(
     args.push('--glob', include);
   }
 
-  args.push(pattern, searchPath);
+  args.push('--', pattern, searchPath);
   return args;
 }
 
@@ -106,7 +107,7 @@ function buildGrepArgs(
     args.push(`--include=${include}`);
   }
 
-  args.push(pattern, searchPath);
+  args.push('--', pattern, searchPath);
   return args;
 }
 

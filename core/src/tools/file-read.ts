@@ -83,6 +83,8 @@ export const fileReadTool: ToolDefinition = {
       };
     }
 
+    context.filesRead?.add(resolved);
+
     // Handle image files — return base64
     const ext = path.extname(resolved).toLowerCase();
     if (IMAGE_EXTENSIONS.has(ext)) {

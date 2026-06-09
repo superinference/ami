@@ -36,7 +36,8 @@ export const globTool: ToolDefinition = {
     const invalid = validateRequiredString(pattern, 'pattern');
     if (invalid) return invalid;
 
-    const resolved = resolveSearchPath(basePath, context.cwd);
+    const { resolved, error: pathError } = resolveSearchPath(basePath, context.cwd);
+    if (pathError) return { output: pathError, isError: true };
 
     try {
       const entries = await fg(pattern, {
