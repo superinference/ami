@@ -99,12 +99,32 @@ export const bashTool: ToolDefinition = {
         '. Consider using separate tool calls for better error handling and readability.]';
     }
 
+    if (result.exitCode !== 0) {
+      const hint = diagnoseError(output);
+      if (hint) output += `\n\n[Hint: ${hint}]`;
+    }
+
     return {
       output,
       isError: result.exitCode !== 0,
     };
   },
 };
+
+const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
+  { pattern: /Transform failed|SyntaxError:.*Unexpected/i, hint: 'Your code has a syntax error (missing bracket, semicolon, or mismatched quotes). Use file_read to check the file you last edited.' },
+  { pattern: /Cannot find module|ERR_MODULE_NOT_FOUND/i, hint: 'Module not found. Check the import path with list_dir or glob, and try running via npm test instead of raw node commands.' },
+  { pattern: /ENOENT.*no such file/i, hint: 'File or directory does not exist. Use list_dir to check what files are available.' },
+  { pattern: /TypeError:.*is not a function/i, hint: 'A function call is wrong. Use file_read to check the export names and signatures in the imported module.' },
+  { pattern: /ReferenceError:.*is not defined/i, hint: 'A variable or import is missing. Check your imports and variable declarations with file_read.' },
+];
+
+function diagnoseError(output: string): string | null {
+  for (const { pattern, hint } of ERROR_HINTS) {
+    if (pattern.test(output)) return hint;
+  }
+  return null;
+}
 
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) {

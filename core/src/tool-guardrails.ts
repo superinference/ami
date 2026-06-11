@@ -24,6 +24,17 @@ function hashResult(output: string): string {
   return crypto.createHash('sha256').update(output).digest('hex').slice(0, 16);
 }
 
+function recoveryHint(toolName: string): string {
+  switch (toolName) {
+    case 'bash':
+      return 'Use file_read to re-read the files you edited, check for syntax errors, then fix the code before running tests again.';
+    case 'file_edit':
+      return 'Use file_read to see the current file content, then use the exact text from the file as old_string.';
+    default:
+      return 'Try a fundamentally different approach.';
+  }
+}
+
 const MAX_TRACKED_SIGNATURES = 500;
 const LOOP_HISTORY_SIZE = 20;
 const LOOP_MIN_SEQUENCE = 2;
@@ -45,10 +56,10 @@ export class ToolCallGuardrailController {
     const failCount = this.exactFailures.get(sig) || 0;
 
     if (failCount >= EXACT_FAILURE_BLOCK) {
-      return { action: 'block', reason: `Tool "${toolName}" has failed ${failCount} times with identical arguments. Blocked to prevent infinite loop.` };
+      return { action: 'block', reason: `Tool "${toolName}" has failed ${failCount} times with identical arguments. ${recoveryHint(toolName)} Do NOT retry the same command — change your approach.` };
     }
     if (failCount >= EXACT_FAILURE_WARN) {
-      return { action: 'warn', reason: `Tool "${toolName}" has failed ${failCount} times with identical arguments. Try a different approach.` };
+      return { action: 'warn', reason: `Tool "${toolName}" has failed ${failCount} times with identical arguments. ${recoveryHint(toolName)}` };
     }
 
     return { action: 'allow' };

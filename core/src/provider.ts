@@ -48,7 +48,7 @@ type ProviderName =
   | 'amazon-bedrock' | 'togetherai' | 'cohere' | 'fireworks'
   | 'perplexity' | 'deepinfra' | 'deepseek' | 'cerebras'
   | 'openrouter' | 'ollama' | 'luma' | 'alibaba'
-  | 'google-vertex' | 'ai-gateway';
+  | 'google-vertex' | 'ai-gateway' | 'huggingface';
 
 interface InferredProvider {
   provider: ProviderName;
@@ -83,6 +83,7 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
   'google-vertex': ['gemini-2.5-pro', 'gemini-2.5-flash'],
   'amazon-bedrock': ['anthropic.claude-sonnet-4-6-20250514', 'anthropic.claude-haiku-4-5-20251001'],
   openrouter: ['anthropic/claude-sonnet-4', 'openai/gpt-4o'],
+  huggingface: ['deepseek-ai/DeepSeek-V3-0324', 'Qwen/Qwen3-235B-A22B', 'Qwen/Qwen3-32B'],
   luma: ['luma-photon-latest'],
 };
 
@@ -94,6 +95,7 @@ const KEY_PREFIXES: Array<{ prefix: string; provider: ProviderName; exclude?: st
   { prefix: 'gsk_', provider: 'groq' },
   { prefix: 'xai-', provider: 'xai' },
   { prefix: 'pplx-', provider: 'perplexity' },
+  { prefix: 'hf_', provider: 'huggingface' },
   { prefix: 'sk-', provider: 'openai' },
 ];
 
@@ -117,6 +119,7 @@ const URL_PATTERNS: Array<{ pattern: string; provider: ProviderName }> = [
   { pattern: 'anthropic.com', provider: 'anthropic' },
   { pattern: 'openai.azure.com', provider: 'azure-openai' },
   { pattern: 'api.luma.ai', provider: 'luma' },
+  { pattern: 'huggingface.co', provider: 'huggingface' },
   { pattern: 'gateway.ai.cloudflare.com', provider: 'ai-gateway' },
   { pattern: 'localhost', provider: 'ollama' },
   { pattern: '127.0.0.1', provider: 'ollama' },
@@ -137,6 +140,7 @@ const ENV_KEYS: Array<{ env: string; provider: ProviderName }> = [
   { env: 'ALIBABA_API_KEY', provider: 'alibaba' },
   { env: 'DASHSCOPE_API_KEY', provider: 'alibaba' },
   { env: 'LUMA_API_KEY', provider: 'luma' },
+  { env: 'HF_TOKEN', provider: 'huggingface' },
   { env: 'AZURE_OPENAI_API_KEY', provider: 'azure-openai' },
   { env: 'AWS_ACCESS_KEY_ID', provider: 'amazon-bedrock' },
   { env: 'GOOGLE_APPLICATION_CREDENTIALS', provider: 'google-vertex' },
@@ -153,6 +157,7 @@ const PROVIDER_BASE_URLS: Partial<Record<ProviderName, string>> = {
   fireworks: 'https://api.fireworks.ai/inference/v1',
   perplexity: 'https://api.perplexity.ai',
   deepinfra: 'https://api.deepinfra.com/v1/openai',
+  huggingface: 'https://router.huggingface.co/v1',
   cerebras: 'https://api.cerebras.ai/v1',
   alibaba: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   openrouter: 'https://openrouter.ai/api/v1',
@@ -419,9 +424,9 @@ function buildThinkingOptions(
   }
 
   // Google Gemini 2.5 — thinkingConfig via providerOptions
-  if (modelId.startsWith('gemini-2.5')) {
+  if (modelId.startsWith('gemini-2.5') || modelId.startsWith('gemini-3')) {
     const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level);
-    return { providerOptions: { google: { thinkingConfig: { thinkingBudget: budgetTokens } } } };
+    return { providerOptions: { google: { thinkingConfig: { thinkingBudget: budgetTokens, includeThoughts: true } } } };
   }
 
   // DeepSeek / other: no special options needed, thinking comes via inline tags

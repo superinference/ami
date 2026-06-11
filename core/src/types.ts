@@ -222,6 +222,8 @@ export interface EngineConfig {
   onUserQuestion?: (question: string, options: Array<{ label: string; description: string }>, allowFreeText: boolean) => Promise<string>;
   /** When true, the engine generates a session title via LLM after the first turn. */
   enableTitleGeneration?: boolean;
+  /** When true, the engine is running in non-interactive (detached / --prompt) mode. */
+  detachedMode?: boolean;
 }
 
 // ---------------------------------------------------------------------------
