@@ -454,27 +454,6 @@ function buildThinkingOptions(
 // Prompt cache optimization for Anthropic
 // ---------------------------------------------------------------------------
 
-function buildCacheBreakpoints(messages: ModelMessage[], hasSystemPrompt: boolean): Record<string, unknown> {
-  const cachePoints: Record<number, { type: string }> = {};
-
-  if (hasSystemPrompt && messages.length > 0) {
-    cachePoints[0] = { type: 'ephemeral' };
-  }
-
-  const conversationPoints = buildConversationCachePoints(messages);
-  Object.assign(cachePoints, conversationPoints);
-
-  if (Object.keys(cachePoints).length === 0) return {};
-
-  return {
-    providerOptions: {
-      anthropic: {
-        cacheControl: cachePoints,
-      },
-    },
-  };
-}
-
 // ---------------------------------------------------------------------------
 // streamChatCompletion — main streaming function
 // ---------------------------------------------------------------------------
@@ -504,13 +483,34 @@ export async function* streamChatCompletion(
   });
   const isAnthropic = modelId.startsWith('claude') ||
     config.baseUrl?.includes('anthropic.com') ||
-    config.provider === 'anthropic';
+    config.provider === 'anthropic' ||
+    config.provider === 'anthropic-vertex';
 
   const healed = healOrphanedToolCalls(nonSystemMessages);
   const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
   const coreMessages = convertMessages(sanitized);
 
-  const cacheBreakpoints = isAnthropic ? buildCacheBreakpoints(coreMessages, !!systemPrompt) : {};
+  // Apply per-message cache breakpoints for Anthropic prompt caching.
+  // The AI SDK v4 expects cache_control on individual message content parts
+  // via providerOptions, not as a top-level streamText option.
+  if (isAnthropic) {
+    const breakpointIndices = new Set<number>();
+    if (systemPrompt && coreMessages.length > 0) breakpointIndices.add(0);
+    const convPoints = buildConversationCachePoints(coreMessages);
+    for (const idx of Object.keys(convPoints)) breakpointIndices.add(Number(idx));
+    for (const idx of breakpointIndices) {
+      const msg = coreMessages[idx];
+      if (msg) {
+        (msg as Record<string, unknown>).providerOptions = {
+          ...((msg as Record<string, unknown>).providerOptions as Record<string, unknown> || {}),
+          anthropic: {
+            ...((msg as Record<string, unknown>).providerOptions as Record<string, Record<string, unknown>> || {}).anthropic,
+            cacheControl: { type: 'ephemeral' },
+          },
+        };
+      }
+    }
+  }
 
   try {
     const effectiveTemperature = resolveTemperature(modelId, config.temperature ?? 0, options?.thinking);
@@ -530,7 +530,6 @@ export async function* streamChatCompletion(
         if (msg.includes('MissingToolResults')) return;
       },
       ...buildThinkingOptions(modelId, options?.thinking),
-      ...cacheBreakpoints,
     });
 
     // Track tool call indices so engine.ts can accumulate them by index
