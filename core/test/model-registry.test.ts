@@ -63,8 +63,8 @@ describe('detectProvider', () => {
     assert.equal(detectProvider(cfg({ baseUrl: 'https://api.openai.com/v1' })), 'openai');
   });
 
-  it('detects openai from api.deepseek.com URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'https://api.deepseek.com' })), 'openai');
+  it('detects deepseek from api.deepseek.com URL', () => {
+    assert.equal(detectProvider(cfg({ baseUrl: 'https://api.deepseek.com' })), 'deepseek');
   });
 
   // Fallback with sk- key
@@ -100,32 +100,33 @@ describe('formatModelList', () => {
     const models = ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
     const result = formatModelList(models, 'openai');
     assert.ok(result.includes('Available models (openai'));
-    assert.ok(result.includes('3/3'));
-    assert.ok(result.includes('  gpt-3.5-turbo'));
-    assert.ok(result.includes('  gpt-4-turbo'));
+    assert.ok(result.includes('3)'));
     assert.ok(result.includes('  gpt-4o'));
+    assert.ok(result.includes('  gpt-4-turbo'));
+    assert.ok(result.includes('  gpt-3.5-turbo'));
   });
 
-  it('sorts models alphabetically', () => {
+  it('lists all models in given order', () => {
     const models = ['c-model', 'a-model', 'b-model'];
     const result = formatModelList(models, 'test');
     const lines = result.split('\n').slice(1); // skip header
-    assert.equal(lines[0].trim(), 'a-model');
-    assert.equal(lines[1].trim(), 'b-model');
-    assert.equal(lines[2].trim(), 'c-model');
+    assert.equal(lines[0].trim(), 'c-model');
+    assert.equal(lines[1].trim(), 'a-model');
+    assert.equal(lines[2].trim(), 'b-model');
   });
 
-  it('truncates at 30 and shows count', () => {
+  it('lists all models for large lists', () => {
     const models = Array.from({ length: 50 }, (_, i) => `model-${String(i).padStart(3, '0')}`);
     const result = formatModelList(models, 'ollama');
-    assert.ok(result.includes('30/50'));
-    assert.ok(result.includes('... and 20 more'));
+    assert.ok(result.includes('50)'));
+    const lines = result.split('\n').slice(1);
+    assert.equal(lines.length, 50);
   });
 
-  it('does not show "and X more" for exactly 30 models', () => {
+  it('shows correct count for exactly 30 models', () => {
     const models = Array.from({ length: 30 }, (_, i) => `model-${i}`);
     const result = formatModelList(models, 'test');
-    assert.ok(!result.includes('more'));
+    assert.ok(result.includes('30)'));
   });
 
   it('includes provider name in header', () => {
@@ -308,17 +309,19 @@ describe('validateModel — with live server', () => {
 // formatModelList — truncation with >30 models (lines 124-128)
 // ---------------------------------------------------------------------------
 describe('formatModelList — additional coverage', () => {
-  it('does not include more message for exactly 30 models', () => {
+  it('lists all 30 models without truncation', () => {
     const models = Array.from({ length: 30 }, (_, i) => `m-${String(i).padStart(2, '0')}`);
     const result = formatModelList(models, 'test');
-    assert.ok(!result.includes('more'));
-    assert.ok(result.includes('30/30'));
+    assert.ok(result.includes('30)'));
+    const lines = result.split('\n').slice(1);
+    assert.equal(lines.length, 30);
   });
 
-  it('includes more message for 31 models', () => {
+  it('lists all 31 models without truncation', () => {
     const models = Array.from({ length: 31 }, (_, i) => `m-${String(i).padStart(2, '0')}`);
     const result = formatModelList(models, 'test');
-    assert.ok(result.includes('... and 1 more'));
-    assert.ok(result.includes('30/31'));
+    assert.ok(result.includes('31)'));
+    const lines = result.split('\n').slice(1);
+    assert.equal(lines.length, 31);
   });
 });
