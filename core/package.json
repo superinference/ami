@@ -19,11 +19,11 @@
     "security": "npm run lint:security && npm run audit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.81",
-    "@ai-sdk/google": "^3.0.80",
+    "@ai-sdk/anthropic": "^3.0.83",
+    "@ai-sdk/google": "^3.0.81",
     "@ai-sdk/google-vertex": "^4.0.144",
-    "@ai-sdk/openai": "^3.0.66",
-    "ai": "^6.0.193",
+    "@ai-sdk/openai": "^3.0.70",
+    "ai": "^6.0.202",
     "fast-glob": "^3.3.0",
     "zod": "^3.23.0"
   },
