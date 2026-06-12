@@ -4,6 +4,7 @@ import * as path from 'path';
 export interface AnalyticsEvent {
   timestamp: string;
   type: string;
+  sessionId?: string;
   data: Record<string, unknown>;
 }
 
@@ -13,17 +14,23 @@ export class AnalyticsTracker {
   private events: AnalyticsEvent[] = [];
   private logFile: string | null;
   private dirInitialized = false;
+  private _sessionId: string | undefined;
 
   constructor(logDir?: string) {
     this.logFile = logDir ? `${logDir}/analytics.jsonl` : null;
+  }
+
+  setSessionId(sessionId: string): void {
+    this._sessionId = sessionId;
   }
 
   log(type: string, data: Record<string, unknown> = {}): void {
     const event: AnalyticsEvent = {
       timestamp: new Date().toISOString(),
       type,
+      ...(this._sessionId ? { sessionId: this._sessionId } : {}),
       data,
-    };
+    } as AnalyticsEvent;
     this.events.push(event);
     if (this.events.length > MAX_IN_MEMORY_EVENTS) {
       this.events = this.events.slice(-MAX_IN_MEMORY_EVENTS);

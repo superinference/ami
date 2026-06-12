@@ -172,6 +172,8 @@ export type EngineEvent =
   | { type: 'suggest_file_save'; content: string; suggestedPath: string; lineCount: number }
   | { type: 'user_question'; toolCallId: string; question: string; options: Array<{ label: string; description: string }>; allowFreeText: boolean }
   | { type: 'session_title'; title: string }
+  | { type: 'plan_mode_changed'; enabled: boolean }
+  | { type: 'task_updated'; taskId: number; status: string; subject: string }
   | { type: 'done'; totalTurns: number };
 
 export interface EngineConfig {

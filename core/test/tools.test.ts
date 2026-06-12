@@ -574,12 +574,12 @@ describe('list_dir tool', () => {
 // ToolRegistry
 // ---------------------------------------------------------------------------
 describe('ToolRegistry', () => {
-  it('createDefaultTools returns all 15 tools', () => {
+  it('createDefaultTools returns all 18 tools', () => {
     const registry = createDefaultTools('/tmp');
     const tools = registry.getAll();
-    assert.equal(tools.length, 15);
+    assert.equal(tools.length, 18);
     const names = tools.map(t => t.name).sort();
-    assert.deepEqual(names, ['AskUserQuestion', 'bash', 'file_edit', 'file_read', 'file_write', 'glob', 'grep', 'list_dir', 'multi_edit', 'notebook_edit', 'search_symbols', 'task', 'tool_search', 'web_fetch', 'web_search']);
+    assert.deepEqual(names, ['AskUserQuestion', 'bash', 'file_edit', 'file_read', 'file_write', 'git_commit', 'glob', 'grep', 'list_dir', 'multi_edit', 'notebook_edit', 'plan_mode', 'search_symbols', 'task', 'task_tracker', 'tool_search', 'web_fetch', 'web_search']);
   });
 
   it('get returns a specific tool', () => {
@@ -624,7 +624,7 @@ describe('ToolRegistry', () => {
   it('tools have correct isReadOnly flags', () => {
     const registry = createDefaultTools('/tmp');
     const readOnlyTools = ['file_read', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'search_symbols'];
-    const writableTools = ['bash', 'file_write', 'file_edit', 'notebook_edit'];
+    const writableTools = ['bash', 'file_write', 'file_edit', 'notebook_edit', 'git_commit', 'task_tracker'];
 
     for (const name of readOnlyTools) {
       assert.equal(registry.get(name)!.isReadOnly, true, `${name} should be read-only`);

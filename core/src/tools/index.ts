@@ -14,6 +14,9 @@ import { multiEditTool } from './multi-edit';
 import { taskTool } from './task';
 import { toolSearchTool, setSearchableTools } from './tool-search';
 import { askUserQuestionTool } from './ask-user';
+import { gitCommitTool } from './git-commit';
+import { taskTrackerTool } from './task-tracker';
+import { planModeTool } from './plan-mode';
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
@@ -67,6 +70,9 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(taskTool);
   registry.register(toolSearchTool);
   registry.register(askUserQuestionTool);
+  registry.register(gitCommitTool);
+  registry.register(taskTrackerTool);
+  registry.register(planModeTool);
 
   setSearchableTools(registry.getAll());
 
@@ -89,3 +95,6 @@ export { multiEditTool } from './multi-edit';
 export { taskTool } from './task';
 export { toolSearchTool, setSearchableTools } from './tool-search';
 export { askUserQuestionTool } from './ask-user';
+export { gitCommitTool } from './git-commit';
+export { taskTrackerTool, resetTaskState } from './task-tracker';
+export { planModeTool } from './plan-mode';

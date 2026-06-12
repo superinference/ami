@@ -349,3 +349,102 @@ describe('bashTool – command chaining detection', () => {
     assert.ok(!result.output.includes('[Note:'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Git commit guard
+// ---------------------------------------------------------------------------
+
+describe('bashTool – git commit guard', () => {
+  const GUARD_MSG = 'Use the git_commit tool instead';
+
+  it('blocks git commit -m and suggests git_commit tool', async () => {
+    const result = await bashTool.execute(
+      { command: 'git commit -m "test message"' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+    assert.ok(result.output.includes('Co-Authored-By'));
+  });
+
+  it('blocks git commit --amend', async () => {
+    const result = await bashTool.execute(
+      { command: 'git commit --amend' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+  });
+
+  it('blocks chained commands containing git commit', async () => {
+    const result = await bashTool.execute(
+      { command: 'git add . && git commit -m "chained"' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+  });
+
+  it('does not block git log', async () => {
+    const result = await bashTool.execute(
+      { command: 'git log --oneline -1' },
+      ctx(),
+    );
+    assert.ok(!result.output.includes(GUARD_MSG));
+  });
+
+  it('does not block git status', async () => {
+    const result = await bashTool.execute(
+      { command: 'git status' },
+      ctx(),
+    );
+    assert.ok(!result.output.includes(GUARD_MSG));
+  });
+
+  it('does not block git show', async () => {
+    const result = await bashTool.execute(
+      { command: 'git show HEAD --stat' },
+      ctx(),
+    );
+    assert.ok(!result.output.includes(GUARD_MSG));
+  });
+
+  it('does not false-positive on echo "git commit"', async () => {
+    const result = await bashTool.execute(
+      { command: 'echo "git commit"' },
+      ctx(),
+    );
+    assert.ok(!result.output.includes(GUARD_MSG));
+  });
+
+  it('does not false-positive on single-quoted git commit', async () => {
+    const result = await bashTool.execute(
+      { command: "echo 'git commit -m test'" },
+      ctx(),
+    );
+    assert.ok(!result.output.includes(GUARD_MSG));
+  });
+
+  it('blocks git commit with env var prefix', async () => {
+    const result = await bashTool.execute(
+      { command: 'GIT_AUTHOR_NAME=bot git commit -m "test"' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+  });
+
+  it('does not block git diff or git add', async () => {
+    const result1 = await bashTool.execute(
+      { command: 'git diff --cached' },
+      ctx(),
+    );
+    assert.ok(!result1.output.includes(GUARD_MSG));
+
+    const result2 = await bashTool.execute(
+      { command: 'git add .' },
+      ctx(),
+    );
+    assert.ok(!result2.output.includes(GUARD_MSG));
+  });
+});

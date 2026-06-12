@@ -81,7 +81,8 @@ describe('createDefaultTools', () => {
       'bash', 'file_read', 'file_write', 'file_edit',
       'grep', 'glob', 'list_dir', 'web_fetch', 'web_search',
       'notebook_edit', 'search_symbols', 'multi_edit',
-      'task', 'tool_search', 'AskUserQuestion',
+      'task', 'tool_search', 'AskUserQuestion', 'git_commit',
+      'task_tracker', 'plan_mode',
     ];
 
     for (const name of expectedNames) {

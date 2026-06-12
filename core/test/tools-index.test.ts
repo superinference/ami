@@ -9,6 +9,9 @@ import {
   grepTool, globTool, listDirTool,
   notebookEditTool, searchSymbolsTool, multiEditTool,
   taskTool, toolSearchTool, askUserQuestionTool,
+  gitCommitTool,
+  taskTrackerTool,
+  planModeTool,
 } from '../src/tools/index';
 
 describe('ToolRegistry', () => {
@@ -111,7 +114,7 @@ describe('createDefaultTools', () => {
   it('includes core tools by name', () => {
     const registry = createDefaultTools('/tmp');
     const names = registry.getAll().map(t => t.name);
-    for (const expected of ['bash', 'file_read', 'file_write', 'file_edit', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'notebook_edit', 'search_symbols', 'multi_edit', 'task', 'tool_search', 'AskUserQuestion']) {
+    for (const expected of ['bash', 'file_read', 'file_write', 'file_edit', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'notebook_edit', 'search_symbols', 'multi_edit', 'task', 'tool_search', 'AskUserQuestion', 'git_commit', 'task_tracker', 'plan_mode']) {
       assert.ok(names.includes(expected), `Missing tool: ${expected}`);
     }
   });
@@ -155,7 +158,7 @@ describe('createDefaultTools', () => {
 
 describe('re-exported tools are accessible', () => {
   it('all re-exported tools have correct types', () => {
-    for (const tool of [bashTool, fileReadTool, fileWriteTool, fileEditTool, grepTool, globTool, listDirTool, notebookEditTool, searchSymbolsTool, multiEditTool, taskTool, toolSearchTool, askUserQuestionTool]) {
+    for (const tool of [bashTool, fileReadTool, fileWriteTool, fileEditTool, grepTool, globTool, listDirTool, notebookEditTool, searchSymbolsTool, multiEditTool, taskTool, toolSearchTool, askUserQuestionTool, gitCommitTool, taskTrackerTool, planModeTool]) {
       assert.equal(typeof tool.name, 'string');
       assert.equal(typeof tool.description, 'string');
       assert.equal(typeof tool.execute, 'function');

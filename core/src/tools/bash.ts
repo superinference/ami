@@ -5,6 +5,11 @@ import { execCommand } from '../utils/shell';
 const MAX_OUTPUT_LENGTH = 30000;
 const DEFAULT_TIMEOUT_MS = 120000;
 
+function detectGitCommit(command: string): boolean {
+  const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
+  return /\bgit\s+commit\b/.test(stripped);
+}
+
 const SENSITIVE_ENV_PATTERNS = [
   /_KEY$/i, /_SECRET$/i, /_TOKEN$/i, /_PASSWORD$/i, /_CREDENTIALS$/i,
   /^AWS_/i, /^AZURE_/i, /^GCP_/i,
@@ -67,6 +72,16 @@ export const bashTool: ToolDefinition = {
 
     if (!command || command.trim().length === 0) {
       return { output: 'Error: command must not be empty.', isError: true };
+    }
+
+    if (detectGitCommit(command)) {
+      return {
+        output:
+          'Error: Use the git_commit tool instead of running git commit via bash. ' +
+          'The git_commit tool ensures proper Co-Authored-By attribution is always included.\n\n' +
+          'Example: git_commit({ message: "your commit message", files: ["file1.ts", "file2.ts"] })',
+        isError: true,
+      };
     }
 
     const result = await execCommand(command, {
