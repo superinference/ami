@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { expandPath } from './utils/path';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -173,50 +174,43 @@ function findMatchingParen(s: string, start: number): number {
 function extractBaseCommands(command: string): string[] {
   const commands: string[] = [];
 
-  // 1. Extract commands from $(...) and `...` substitutions
-  // Uses balanced-paren matching to handle nested $($(...)...)
-  {
+  function extractDelimited(
+    cmd: string,
+    match: (c: string, idx: number, src: string) => { innerStart: number; end: number } | null,
+  ): void {
     let i = 0;
-    while (i < command.length) {
-      if (command[i] === '$' && i + 1 < command.length && command[i + 1] === '(') {
-        const end = findMatchingParen(command, i + 2);
-        if (end !== -1) {
-          commands.push(...extractBaseCommands(command.slice(i + 2, end)));
-          i = end + 1;
-        } else {
-          i++;
-        }
-      } else if (command[i] === '`') {
-        const end = command.indexOf('`', i + 1);
-        if (end !== -1) {
-          commands.push(...extractBaseCommands(command.slice(i + 1, end)));
-          i = end + 1;
-        } else {
-          i++;
-        }
+    while (i < cmd.length) {
+      const m = match(cmd[i], i, cmd);
+      if (m) {
+        commands.push(...extractBaseCommands(cmd.slice(m.innerStart, m.end)));
+        i = m.end + 1;
       } else {
         i++;
       }
     }
   }
 
-  // 2. Extract commands from subshells (...)
-  {
-    let i = 0;
-    while (i < command.length) {
-      if (command[i] === '(' && (i === 0 || command[i - 1] !== '$')) {
-        const end = findMatchingParen(command, i + 1);
-        if (end !== -1) {
-          commands.push(...extractBaseCommands(command.slice(i + 1, end)));
-          i = end + 1;
-        } else {
-          i++;
-        }
-      } else {
-        i++;
-      }
+  // 1. Extract commands from $(...) and `...` substitutions
+  extractDelimited(command, (ch, i, src) => {
+    if (ch === '$' && i + 1 < src.length && src[i + 1] === '(') {
+      const end = findMatchingParen(src, i + 2);
+      return end !== -1 ? { innerStart: i + 2, end } : null;
     }
-  }
+    if (ch === '`') {
+      const end = src.indexOf('`', i + 1);
+      return end !== -1 ? { innerStart: i + 1, end } : null;
+    }
+    return null;
+  });
+
+  // 2. Extract commands from subshells (...)
+  extractDelimited(command, (ch, i, src) => {
+    if (ch === '(' && (i === 0 || src[i - 1] !== '$')) {
+      const end = findMatchingParen(src, i + 1);
+      return end !== -1 ? { innerStart: i + 1, end } : null;
+    }
+    return null;
+  });
 
   // 3. Split on pipes, semicolons, && and ||
   const segments = command.split(/\s*(?:\|\||&&|[|;])\s*/);
@@ -445,18 +439,7 @@ export class PermissionManager {
    *   - Paths containing ".." segments that escape cwd
    */
   isPathAllowed(filePath: string, cwd: string): boolean {
-    // Expand ~ to home directory
-    let resolved = filePath;
-    if (resolved === '~' || resolved.startsWith('~/') || resolved.startsWith('~\\')) {
-      resolved = path.join(os.homedir(), resolved.slice(1));
-    }
-
-    // Resolve relative paths against cwd
-    if (!path.isAbsolute(resolved)) {
-      resolved = path.resolve(cwd, resolved);
-    }
-
-    resolved = path.normalize(resolved);
+    let resolved = expandPath(filePath, cwd);
 
     // Resolve symlinks to prevent symlink-based escapes
     try {

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
+import { resolveFilePath } from './tool-utils';
 
 export const multiEditTool: ToolDefinition = {
   name: 'multi_edit',
@@ -52,14 +53,8 @@ export const multiEditTool: ToolDefinition = {
       return { output: 'Error: edits must be a non-empty array.', isError: true };
     }
 
-    const resolved = path.isAbsolute(filePath)
-      ? filePath
-      : path.resolve(context.cwd, filePath);
-
-    if (!path.resolve(resolved).startsWith(path.resolve(context.cwd) + path.sep) &&
-        path.resolve(resolved) !== path.resolve(context.cwd)) {
-      return { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true };
-    }
+    const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
+    if (pathError) return pathError;
 
     let content: string;
     try {

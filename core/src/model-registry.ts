@@ -2,6 +2,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
 import type { ProviderConfig } from './types';
+import { MODEL_PREFERENCE } from './provider';
 
 const TIMEOUT_MS = 10000;
 
@@ -10,6 +11,13 @@ interface ModelInfo {
   name?: string;
   owned_by?: string;
 }
+
+const STATIC_MODEL_PROVIDERS = new Set([
+  'anthropic', 'anthropic-vertex', 'google-vertex', 'azure-openai',
+  'amazon-bedrock', 'groq', 'mistral', 'xai', 'deepseek',
+  'togetherai', 'cohere', 'fireworks', 'perplexity', 'deepinfra',
+  'cerebras', 'alibaba', 'luma', 'huggingface',
+]);
 
 function httpGetJSON(
   url: string,
@@ -46,34 +54,58 @@ export function detectProvider(config: ProviderConfig): string {
   const key = config.apiKey || '';
   const url = config.baseUrl || '';
 
+  // Env-based detection for vertex
+  if (process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.CLAUDE_CODE_USE_VERTEX) return 'anthropic-vertex';
+
   // API key patterns
   if (key.startsWith('sk-ant-')) return 'anthropic';
   if (key.startsWith('AIza')) return 'google';
   if (key.startsWith('sk-or-')) return 'openrouter';
+  if (key.startsWith('gsk_')) return 'groq';
+  if (key.startsWith('xai-')) return 'xai';
+  if (key.startsWith('pplx-')) return 'perplexity';
 
   // URL patterns
   if (url.includes('generativelanguage.googleapis.com')) return 'google';
+  if (url.includes('aiplatform.googleapis.com')) return 'google-vertex';
   if (url.includes('api.anthropic.com')) return 'anthropic';
   if (url.includes('openrouter.ai')) return 'openrouter';
+  if (url.includes('api.groq.com')) return 'groq';
+  if (url.includes('api.mistral.ai')) return 'mistral';
+  if (url.includes('api.x.ai')) return 'xai';
+  if (url.includes('api.deepseek.com')) return 'deepseek';
+  if (url.includes('api.together.xyz')) return 'togetherai';
   if (url.includes('localhost') || url.includes('127.0.0.1')) return 'ollama';
   if (url.includes('api.openai.com')) return 'openai';
-  if (url.includes('api.deepseek.com')) return 'openai';
 
   // Default
   if (key.startsWith('sk-')) return 'openai';
   return 'openai';
 }
 
+export function listProviders(): Array<{ id: string; models: string[] }> {
+  return Object.entries(MODEL_PREFERENCE).map(([id, models]) => ({ id, models }));
+}
+
 export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
   const provider = detectProvider(config);
+
+  // Providers with known static model lists (no API listing endpoint)
+  if (STATIC_MODEL_PROVIDERS.has(provider)) {
+    const models = MODEL_PREFERENCE[provider] || [];
+    return models.map(id => ({ id, name: id }));
+  }
 
   try {
     if (provider === 'google') {
       return await listGeminiModels(config);
     }
-    // OpenAI-compatible: OpenAI, Ollama, OpenRouter, DeepSeek
+    // OpenAI-compatible: OpenAI, Ollama, OpenRouter
     return await listOpenAIModels(config);
   } catch {
+    // Fallback to static list if API call fails
+    const models = MODEL_PREFERENCE[provider] || [];
+    if (models.length > 0) return models.map(id => ({ id, name: id }));
     return [];
   }
 }
@@ -126,13 +158,8 @@ export async function validateModel(
 export function formatModelList(models: string[], provider: string): string {
   if (models.length === 0) return 'Could not retrieve model list from provider.';
 
-  const sorted = [...models].sort();
-  const lines = sorted.slice(0, 30).map(m => `  ${m}`);
-  const header = `Available models (${provider}, showing ${Math.min(30, sorted.length)}/${sorted.length}):`;
-
-  if (sorted.length > 30) {
-    lines.push(`  ... and ${sorted.length - 30} more`);
-  }
+  const lines = models.map(m => `  ${m}`);
+  const header = `Available models (${provider}, ${models.length}):`;
 
   return `${header}\n${lines.join('\n')}`;
 }

@@ -13,7 +13,7 @@ import { log as coreLog } from './logger';
  */
 export interface ProjectConfig {
   model?: string;
-  provider?: 'openai' | 'anthropic' | 'google' | 'ollama' | 'openrouter';
+  provider?: 'openai' | 'anthropic' | 'anthropic-vertex' | 'google' | 'ollama' | 'openrouter';
   baseUrl?: string;
   permissionMode?: 'ask' | 'auto-allow' | 'deny-all';
   thinkingLevel?: string;

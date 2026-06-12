@@ -1,6 +1,6 @@
 import fg from 'fast-glob';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validateRequiredString, resolveSearchPath } from './tool-utils';
+import { validatePatternAndPath } from './tool-utils';
 
 const MAX_RESULTS = 200;
 
@@ -30,14 +30,9 @@ export const globTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const pattern = input.pattern as string;
-    const basePath = input.path as string | undefined;
-
-    const invalid = validateRequiredString(pattern, 'pattern');
-    if (invalid) return invalid;
-
-    const { resolved, error: pathError } = resolveSearchPath(basePath, context.cwd);
-    if (pathError) return { output: pathError, isError: true };
+    const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd);
+    if (v.error) return v.error;
+    const { pattern, resolved } = v;
 
     try {
       const entries = await fg(pattern, {

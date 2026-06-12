@@ -1,7 +1,7 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { WorkspaceIndexer, SymbolEntry } from '../workspace-indexer';
 import * as path from 'path';
-import { validateRequiredString } from './tool-utils';
+import { extractQuery } from './tool-utils';
 
 // ---------------------------------------------------------------------------
 // Module-level singleton
@@ -66,11 +66,10 @@ export const searchSymbolsTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const query = input.query as string;
     const typeFilter = input.type as SymbolEntry['type'] | undefined;
-
-    const invalid = validateRequiredString(query, 'query');
-    if (invalid) return invalid;
+    const q = extractQuery(input);
+    if (q.error) return q.error;
+    const query = q.query;
 
     const indexer = await ensureBuilt(context.cwd);
     let results = indexer.searchSymbols(query.trim(), 30);

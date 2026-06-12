@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validateRequiredString, resolveSearchPath } from './tool-utils';
+import { validatePatternAndPath } from './tool-utils';
 
 const MAX_LINES = 200;
 
@@ -35,15 +35,10 @@ export const grepTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const pattern = input.pattern as string;
-    const searchPath = input.path as string | undefined;
     const include = input.include as string | undefined;
-
-    const invalid = validateRequiredString(pattern, 'pattern');
-    if (invalid) return invalid;
-
-    const { resolved, error: pathError } = resolveSearchPath(searchPath, context.cwd);
-    if (pathError) return { output: pathError, isError: true };
+    const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd);
+    if (v.error) return v.error;
+    const { pattern, resolved } = v;
 
     // Try ripgrep first, fall back to grep
     const rgResult = await runSearch(

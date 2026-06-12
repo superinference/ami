@@ -3,6 +3,7 @@ import type { ModelMessage, ToolSet } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls } from './provider-transform';
 import type {
@@ -48,7 +49,7 @@ type ProviderName =
   | 'amazon-bedrock' | 'togetherai' | 'cohere' | 'fireworks'
   | 'perplexity' | 'deepinfra' | 'deepseek' | 'cerebras'
   | 'openrouter' | 'ollama' | 'luma' | 'alibaba'
-  | 'google-vertex' | 'ai-gateway' | 'huggingface';
+  | 'google-vertex' | 'anthropic-vertex' | 'ai-gateway' | 'huggingface';
 
 interface InferredProvider {
   provider: ProviderName;
@@ -81,6 +82,10 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
   alibaba: ['qwen-max', 'qwen-plus', 'qwen-turbo'],
   'azure-openai': ['gpt-4o', 'gpt-4o-mini'],
   'google-vertex': ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  'anthropic-vertex': [
+    'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5-20251022',
+    'claude-haiku-4-5-20251001',
+  ],
   'amazon-bedrock': ['anthropic.claude-sonnet-4-6-20250514', 'anthropic.claude-haiku-4-5-20251001'],
   openrouter: ['anthropic/claude-sonnet-4', 'openai/gpt-4o'],
   huggingface: ['deepseek-ai/DeepSeek-V3-0324', 'Qwen/Qwen3-235B-A22B', 'Qwen/Qwen3-32B'],
@@ -143,6 +148,7 @@ const ENV_KEYS: Array<{ env: string; provider: ProviderName }> = [
   { env: 'HF_TOKEN', provider: 'huggingface' },
   { env: 'AZURE_OPENAI_API_KEY', provider: 'azure-openai' },
   { env: 'AWS_ACCESS_KEY_ID', provider: 'amazon-bedrock' },
+  { env: 'ANTHROPIC_VERTEX_PROJECT_ID', provider: 'anthropic-vertex' },
   { env: 'GOOGLE_APPLICATION_CREDENTIALS', provider: 'google-vertex' },
 ];
 
@@ -259,14 +265,18 @@ async function resolveAvailableModel(
   }
 }
 
-export { resolveAvailableModel, MODEL_PREFERENCE, inferProviderFromBaseUrl, inferProviderFromEnv };
+export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, inferProviderFromBaseUrl, inferProviderFromEnv };
 
 // ---------------------------------------------------------------------------
 // Model resolution — pick the right AI SDK provider
 // ---------------------------------------------------------------------------
 
 // Providers that use native AI SDK packages (not OpenAI-compatible)
-const NATIVE_PROVIDERS = new Set<ProviderName>(['anthropic', 'google', 'google-vertex']);
+const NATIVE_PROVIDERS = new Set<ProviderName>(['anthropic', 'anthropic-vertex', 'google', 'google-vertex']);
+
+function isVertexAIConfigured(): boolean {
+  return !!(process.env.CLAUDE_CODE_USE_VERTEX === '1' || process.env.ANTHROPIC_VERTEX_PROJECT_ID);
+}
 
 // Providers that always route through OpenAI-compatible endpoint
 const OPENAI_COMPAT_PROVIDERS = new Set<ProviderName>([
@@ -284,6 +294,13 @@ export function resolveModel(config: ProviderConfig) {
   const provider = (config.provider as ProviderName) || inferred?.provider;
   const model = config.model || inferred?.defaultModel || 'gpt-4o';
   const baseUrl = config.baseUrl || inferred?.defaultBaseUrl || 'https://api.openai.com/v1';
+
+  // Anthropic via Google Vertex AI
+  if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
+    const project = process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.GOOGLE_VERTEX_PROJECT || '';
+    const location = process.env.CLOUD_ML_REGION || process.env.GOOGLE_VERTEX_LOCATION || 'us-east5';
+    return createVertexAnthropic({ project, location })(model);
+  }
 
   // Native Anthropic SDK
   if (provider === 'anthropic' || model.startsWith('claude') || baseUrl.includes('anthropic.com')) {
@@ -554,6 +571,7 @@ export async function* streamChatCompletion(
                 (part.usage.inputTokens ?? 0) + (part.usage.outputTokens ?? 0)
               ),
               reasoningTokens: (part.usage as { reasoningTokens?: number }).reasoningTokens ?? 0,
+              cachedPromptTokens: (part.usage as { cachedInputTokens?: number }).cachedInputTokens ?? (part.usage as { inputTokenDetails?: { cacheReadTokens?: number } }).inputTokenDetails?.cacheReadTokens ?? 0,
             },
             responseHeaders: (part as { response?: { headers?: Record<string, string> } }).response?.headers,
           };

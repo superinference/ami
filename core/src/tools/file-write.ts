@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { detectLineEnding, convertToLineEnding } from './tool-utils';
+import { detectLineEnding, convertToLineEnding, resolveFilePath } from './tool-utils';
 
 export const fileWriteTool: ToolDefinition = {
   name: 'file_write',
@@ -38,14 +38,8 @@ export const fileWriteTool: ToolDefinition = {
       return { output: 'Error: content must be provided.', isError: true };
     }
 
-    const resolved = path.isAbsolute(filePath)
-      ? filePath
-      : path.resolve(context.cwd, filePath);
-
-    if (!path.resolve(resolved).startsWith(path.resolve(context.cwd) + path.sep) &&
-        path.resolve(resolved) !== path.resolve(context.cwd)) {
-      return { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true };
-    }
+    const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
+    if (pathError) return pathError;
 
     try {
       // Read existing content for diff (if file exists)

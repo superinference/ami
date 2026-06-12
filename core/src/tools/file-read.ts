@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
+import { resolveFilePath } from './tool-utils';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
@@ -55,14 +56,8 @@ export const fileReadTool: ToolDefinition = {
       return { output: 'Error: file_path must not be empty.', isError: true };
     }
 
-    const resolved = path.isAbsolute(filePath)
-      ? filePath
-      : path.resolve(context.cwd, filePath);
-
-    if (!path.resolve(resolved).startsWith(path.resolve(context.cwd) + path.sep) &&
-        path.resolve(resolved) !== path.resolve(context.cwd)) {
-      return { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true };
-    }
+    const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
+    if (pathError) return pathError;
 
     // Check file exists
     try {

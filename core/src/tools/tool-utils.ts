@@ -44,6 +44,50 @@ export interface ToolDescriptionContext {
   hasPackageJson?: boolean;
 }
 
+/**
+ * Resolve a file path relative to cwd and validate it's inside the workspace.
+ * Returns the resolved path or a ToolResult error.
+ */
+export function resolveFilePath(
+  filePath: string,
+  cwd: string,
+): { resolved: string; error?: ToolResult } {
+  const resolved = path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(cwd, filePath);
+  if (!path.resolve(resolved).startsWith(path.resolve(cwd) + path.sep) &&
+      path.resolve(resolved) !== path.resolve(cwd)) {
+    return { resolved, error: { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true } };
+  }
+  return { resolved };
+}
+
+/**
+ * Validate a required pattern string and resolve a search path in one call.
+ * Returns { pattern, resolved } on success, or { error } on validation failure.
+ */
+export function validatePatternAndPath(
+  pattern: unknown,
+  searchPath: string | undefined,
+  cwd: string,
+): { pattern: string; resolved: string; error?: undefined } | { error: ToolResult; pattern?: undefined; resolved?: undefined } {
+  const invalid = validateRequiredString(pattern, 'pattern');
+  if (invalid) return { error: invalid };
+  const { resolved, error: pathError } = resolveSearchPath(searchPath, cwd);
+  if (pathError) return { error: { output: pathError, isError: true } };
+  return { pattern: pattern as string, resolved };
+}
+
+/**
+ * Extract and validate a required 'query' string from tool input.
+ * Returns { query } on success, or { error } on validation failure.
+ */
+export function extractQuery(input: Record<string, unknown>): { query: string; error?: undefined } | { error: ToolResult; query?: undefined } {
+  const invalid = validateRequiredString(input.query, 'query');
+  if (invalid) return { error: invalid };
+  return { query: input.query as string };
+}
+
 export function buildToolDescriptionContext(cwd: string): ToolDescriptionContext {
   const ctx: ToolDescriptionContext = { cwd, projectName: path.basename(cwd) };
   try { ctx.hasGit = fs.existsSync(path.join(cwd, '.git')); } catch { ctx.hasGit = false; }

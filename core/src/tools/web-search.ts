@@ -1,6 +1,6 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validateUrlSafety, stripHtml, httpGet } from './web-utils';
-import { validateRequiredString } from './tool-utils';
+import { extractQuery } from './tool-utils';
 
 const FETCH_TIMEOUT_MS = 10000;
 const MAX_CONTENT_PER_RESULT = 3000;
@@ -127,10 +127,9 @@ export const webSearchTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const query = input.query as string;
-
-    const invalid = validateRequiredString(query, 'query');
-    if (invalid) return invalid;
+    const q = extractQuery(input);
+    if (q.error) return q.error;
+    const query = q.query;
 
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
 

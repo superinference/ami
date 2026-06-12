@@ -118,6 +118,7 @@ export interface StreamChunk {
     completionTokens: number;
     totalTokens: number;
     reasoningTokens?: number;
+    cachedPromptTokens?: number;
   };
   error?: string;
   /** Present on error chunks — the Retry-After value in seconds from the response header, if any. */
