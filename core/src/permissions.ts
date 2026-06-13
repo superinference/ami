@@ -113,6 +113,11 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /\bchmod\b.{0,20}777\s+\//, description: 'chmod 777 on system path' },
   { pattern: /\bcurl\b.*\|\s*(ba|z|da|fi|k|c|tc)?sh\b/, description: 'pipe curl to shell' },
   { pattern: /\bwget\b.*\|\s*(ba|z|da|fi|k|c|tc)?sh\b/, description: 'pipe wget to shell' },
+  { pattern: /\bpkill\s+(-\w+\s+)*node\b/, description: 'pkill node would kill AMI — use kill <pid> to target a specific process' },
+  { pattern: /\bkillall\s+(-\w+\s+)*node\b/, description: 'killall node would kill AMI — use kill <pid> to target a specific process' },
+  { pattern: /\bpkill\s+(-\w+\s+)*tsx\b/, description: 'pkill tsx would kill AMI — use kill <pid> to target a specific process' },
+  { pattern: /\bkillall\s+(-\w+\s+)*tsx\b/, description: 'killall tsx would kill AMI — use kill <pid> to target a specific process' },
+  { pattern: /\bpkill\s+(-\w+\s+)*-f\s+.*superinference\b/i, description: 'would kill AMI — use kill <pid> to target a specific process' },
 ];
 
 export function detectHardlineCommand(command: string): { blocked: boolean; description: string | null } {

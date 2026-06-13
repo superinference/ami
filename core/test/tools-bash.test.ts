@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
-import { bashTool } from '../src/tools/bash';
+import { bashTool, detectSelfKill } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
@@ -460,5 +460,47 @@ describe('bashTool – git commit guard', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectSelfKill — runtime PID guard
+// ---------------------------------------------------------------------------
+
+describe('detectSelfKill', () => {
+  it('detects kill targeting own PID', () => {
+    const result = detectSelfKill(`kill ${process.pid}`);
+    assert.ok(result, 'Should detect kill of own PID');
+    assert.ok(result!.includes('AMI itself'));
+  });
+
+  it('detects kill -9 targeting own PID', () => {
+    const result = detectSelfKill(`kill -9 ${process.pid}`);
+    assert.ok(result, 'Should detect kill -9 of own PID');
+  });
+
+  it('detects kill targeting parent PID', () => {
+    const result = detectSelfKill(`kill ${process.ppid}`);
+    assert.ok(result, 'Should detect kill of parent PID');
+    assert.ok(result!.includes('parent'));
+  });
+
+  it('allows kill of unrelated PID', () => {
+    const fakePid = 99999;
+    if (fakePid !== process.pid && fakePid !== process.ppid) {
+      const result = detectSelfKill(`kill ${fakePid}`);
+      assert.equal(result, null, 'Should allow kill of unrelated PID');
+    }
+  });
+
+  it('allows non-kill commands', () => {
+    assert.equal(detectSelfKill('echo hello'), null);
+    assert.equal(detectSelfKill('ls -la'), null);
+    assert.equal(detectSelfKill('node server.js'), null);
+  });
+
+  it('ignores PIDs inside quotes', () => {
+    const result = detectSelfKill(`echo "kill ${process.pid}"`);
+    assert.equal(result, null, 'Should ignore PIDs in quoted strings');
   });
 });

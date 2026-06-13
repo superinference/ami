@@ -10,6 +10,17 @@ function detectGitCommit(command: string): boolean {
   return /\bgit\s+commit\b/.test(stripped);
 }
 
+export function detectSelfKill(command: string): string | null {
+  const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
+  const pid = process.pid;
+  const ppid = process.ppid;
+  if (new RegExp(`\\bkill\\s+(-\\w+\\s+)*${pid}\\b`).test(stripped))
+    return 'This would kill AMI itself (PID match).';
+  if (new RegExp(`\\bkill\\s+(-\\w+\\s+)*${ppid}\\b`).test(stripped))
+    return 'This would kill AMI\'s parent process.';
+  return null;
+}
+
 const SENSITIVE_ENV_PATTERNS = [
   /_KEY$/i, /_SECRET$/i, /_TOKEN$/i, /_PASSWORD$/i, /_CREDENTIALS$/i,
   /^AWS_/i, /^AZURE_/i, /^GCP_/i,
@@ -53,6 +64,12 @@ export const bashTool: ToolDefinition = {
         description:
           'Optional timeout in milliseconds. Defaults to 120000 (2 minutes).',
       },
+      run_in_background: {
+        type: 'boolean',
+        description:
+          'Run this command in the background. Returns immediately with a task ID. ' +
+          'Use task_output to check results later, task_kill to stop it, or task_list to see all background tasks.',
+      },
       description: {
         type: 'string',
         description:
@@ -81,6 +98,28 @@ export const bashTool: ToolDefinition = {
           'The git_commit tool ensures proper Co-Authored-By attribution is always included.\n\n' +
           'Example: git_commit({ message: "your commit message", files: ["file1.ts", "file2.ts"] })',
         isError: true,
+      };
+    }
+
+    const selfKill = detectSelfKill(command);
+    if (selfKill) {
+      return {
+        output: `Error: ${selfKill} Use kill <pid> with the specific child process PID instead.`,
+        isError: true,
+      };
+    }
+
+    if (input.run_in_background && context.processManager) {
+      const desc = (input.description as string) || command.slice(0, 80);
+      const taskId = context.processManager.spawn(command, {
+        cwd: context.cwd,
+        description: desc,
+        env: scrubEnv(),
+      });
+      const task = context.processManager.get(taskId);
+      return {
+        output: `Background task started.\n  Task ID: ${taskId}\n  PID: ${task?.pid ?? 'unknown'}\n  Command: ${command}\n\nUse task_output({ task_id: "${taskId}" }) to check status and output.\nUse task_kill({ task_id: "${taskId}" }) to stop it.\nUse task_list() to see all background tasks.`,
+        isError: false,
       };
     }
 

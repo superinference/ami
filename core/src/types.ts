@@ -77,6 +77,7 @@ export interface ToolContext {
   /** Tracks file paths that have been read during this session.
    *  Used by file_edit/file_write to enforce read-before-write. */
   filesRead?: Set<string>;
+  processManager?: import('./process-manager').ProcessManager;
   _providerConfig?: ProviderConfig;
   _permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   _allowLocalhostForTesting?: boolean;

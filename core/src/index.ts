@@ -68,3 +68,5 @@ export type { CredentialEntry, SelectionStrategy } from './credential-pool';
 export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
 export { estimateTokens, estimateToolSchemaTokens } from './utils/tokens';
 export { generateTitle } from './title-generator';
+export { ProcessManager } from './process-manager';
+export type { BackgroundProcess } from './process-manager';

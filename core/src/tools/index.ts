@@ -17,6 +17,9 @@ import { askUserQuestionTool } from './ask-user';
 import { gitCommitTool } from './git-commit';
 import { taskTrackerTool } from './task-tracker';
 import { planModeTool } from './plan-mode';
+import { taskOutputTool } from './task-output';
+import { taskKillTool } from './task-kill';
+import { taskListTool } from './task-list';
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
@@ -73,6 +76,9 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(gitCommitTool);
   registry.register(taskTrackerTool);
   registry.register(planModeTool);
+  registry.register(taskOutputTool);
+  registry.register(taskKillTool);
+  registry.register(taskListTool);
 
   setSearchableTools(registry.getAll());
 
@@ -98,3 +104,6 @@ export { askUserQuestionTool } from './ask-user';
 export { gitCommitTool } from './git-commit';
 export { taskTrackerTool, resetTaskState } from './task-tracker';
 export { planModeTool } from './plan-mode';
+export { taskOutputTool } from './task-output';
+export { taskKillTool } from './task-kill';
+export { taskListTool } from './task-list';
