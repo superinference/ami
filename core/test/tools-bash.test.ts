@@ -1,5 +1,9 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as childProcess from 'child_process';
 import { bashTool } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 
@@ -435,16 +439,26 @@ describe('bashTool – git commit guard', () => {
   });
 
   it('does not block git diff or git add', async () => {
-    const result1 = await bashTool.execute(
-      { command: 'git diff --cached' },
-      ctx(),
-    );
-    assert.ok(!result1.output.includes(GUARD_MSG));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-bash-test-'));
+    try {
+      childProcess.execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
+      childProcess.execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
+      childProcess.execSync('git config user.email "t@t.com"', { cwd: tmpDir, stdio: 'pipe' });
+      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
 
-    const result2 = await bashTool.execute(
-      { command: 'git add .' },
-      ctx(),
-    );
-    assert.ok(!result2.output.includes(GUARD_MSG));
+      const result1 = await bashTool.execute(
+        { command: 'git diff --cached' },
+        ctx({ cwd: tmpDir }),
+      );
+      assert.ok(!result1.output.includes(GUARD_MSG));
+
+      const result2 = await bashTool.execute(
+        { command: 'git add .' },
+        ctx({ cwd: tmpDir }),
+      );
+      assert.ok(!result2.output.includes(GUARD_MSG));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

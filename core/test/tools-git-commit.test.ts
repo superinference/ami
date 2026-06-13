@@ -156,19 +156,26 @@ describe('gitCommitTool — validation', () => {
   });
 
   it('accepts "." and ".." as valid file entries', async () => {
-    // "." is special-cased, ".." is a valid relative path — neither should be rejected
-    const result1 = await gitCommitTool.execute(
-      { message: 'test', files: ['.'] },
-      ctx(process.cwd()),
-    );
-    // Will fail at staging check, but shouldn't fail at flag check
-    assert.ok(!result1.output.includes('not flags'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-git-commit-val-'));
+    try {
+      git('init', tmpDir);
+      git('config user.name "Test"', tmpDir);
+      git('config user.email "t@t.com"', tmpDir);
 
-    const result2 = await gitCommitTool.execute(
-      { message: 'test', files: ['..'] },
-      ctx(process.cwd()),
-    );
-    assert.ok(!result2.output.includes('not flags'));
+      const result1 = await gitCommitTool.execute(
+        { message: 'test', files: ['.'] },
+        ctx(tmpDir),
+      );
+      assert.ok(!result1.output.includes('not flags'));
+
+      const result2 = await gitCommitTool.execute(
+        { message: 'test', files: ['..'] },
+        ctx(tmpDir),
+      );
+      assert.ok(!result2.output.includes('not flags'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
