@@ -1,7 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { CostTracker } from '../src/cost-tracker';
+import { CostTracker, _resetPricingCache, _fetchPricing } from '../src/cost-tracker';
+
+// Ensure each test group uses the fallback table (no live fetch interference)
+beforeEach(() => {
+  _resetPricingCache();
+});
 
 // ---------------------------------------------------------------------------
 // CostTracker — basic tracking
@@ -113,10 +118,9 @@ describe('CostTracker', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CostTracker — cost estimation for different models
+// CostTracker — cost estimation (fallback pricing)
 // ---------------------------------------------------------------------------
 describe('CostTracker cost estimation', () => {
-  // Helper: track a known amount and return the computed cost
   function costFor(model: string, prompt: number, completion: number): number {
     const tracker = new CostTracker(model);
     tracker.trackUsage({ promptTokens: prompt, completionTokens: completion });
@@ -124,7 +128,6 @@ describe('CostTracker cost estimation', () => {
   }
 
   it('gpt-4o pricing: $2.50 input / $10 output per million', () => {
-    // 1M prompt + 1M completion = $2.50 + $10 = $12.50
     const cost = costFor('gpt-4o', 1_000_000, 1_000_000);
     assert.equal(cost, 12.5);
   });
@@ -151,37 +154,31 @@ describe('CostTracker cost estimation', () => {
 
   it('substring model matching works (e.g. gpt-4o-2024-08-06)', () => {
     const cost = costFor('gpt-4o-2024-08-06', 1_000_000, 1_000_000);
-    // Should match "gpt-4o" pricing: $2.50 + $10 = $12.50
     assert.equal(cost, 12.5);
   });
 
   it('small token counts produce proportional costs', () => {
-    // 1000 prompt tokens of gpt-4o: (1000/1M) * $2.50 = $0.0025
     const cost = costFor('gpt-4o', 1000, 0);
     assert.ok(Math.abs(cost - 0.0025) < 1e-10);
   });
 
   it('cost accumulates across multiple trackUsage calls', () => {
     const tracker = new CostTracker('gpt-4o');
-    // gpt-4o: $2.50/M input, $10/M output
     tracker.trackUsage({ promptTokens: 500_000, completionTokens: 500_000 });
     tracker.trackUsage({ promptTokens: 500_000, completionTokens: 500_000 });
 
     const stats = tracker.getStats();
-    // Total: 1M prompt + 1M completion = $2.50 + $10 = $12.50
     assert.ok(Math.abs(stats.totalCost - 12.5) < 1e-10);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Prompt caching cost tracking (lines 94-98)
+// Prompt caching cost tracking
 // ---------------------------------------------------------------------------
 
 describe('CostTracker – prompt caching', () => {
   it('tracks cached prompt tokens and calculates savings', () => {
     const tracker = new CostTracker('gpt-4o');
-    // gpt-4o: $2.50/M input
-    // 500K cached, 500K uncached, 100K completion
     tracker.trackUsage({
       promptTokens: 1_000_000,
       completionTokens: 100_000,
@@ -194,10 +191,7 @@ describe('CostTracker – prompt caching', () => {
     assert.ok(stats.cacheHitRate > 0);
     assert.ok(stats.cachedCostSavings > 0);
 
-    // Cache hit rate should be 0.5 (500K cached out of 1M total prompt)
     assert.ok(Math.abs(stats.cacheHitRate - 0.5) < 1e-10);
-
-    // Cached savings: 500K tokens * ($2.50/M) * (1 - 0.1) = $1.125
     assert.ok(Math.abs(stats.cachedCostSavings - 1.125) < 1e-6);
   });
 
@@ -211,14 +205,12 @@ describe('CostTracker – prompt caching', () => {
 
   it('accumulates cache stats across multiple calls', () => {
     const tracker = new CostTracker('claude-sonnet-4');
-    // $3/M input
     tracker.trackUsage({ promptTokens: 1_000_000, completionTokens: 0, cachedPromptTokens: 800_000 });
     tracker.trackUsage({ promptTokens: 500_000, completionTokens: 0, cachedPromptTokens: 200_000 });
 
     const stats = tracker.getStats();
     assert.equal(stats.cachedPromptTokens, 1_000_000);
     assert.equal(stats.uncachedPromptTokens, 500_000);
-    // Hit rate: 1M cached / 1.5M total = 0.667
     assert.ok(Math.abs(stats.cacheHitRate - 2 / 3) < 1e-6);
     assert.ok(stats.cachedCostSavings > 0);
   });
@@ -231,5 +223,21 @@ describe('CostTracker – prompt caching', () => {
     assert.equal(stats.cachedPromptTokens, 0);
     assert.equal(stats.cachedCostSavings, 0);
     assert.equal(stats.uncachedPromptTokens, 1_000_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live pricing fetch
+// ---------------------------------------------------------------------------
+
+describe('CostTracker – live pricing', () => {
+  it('fetches pricing from Vercel AI Gateway without error', async () => {
+    _resetPricingCache();
+    await _fetchPricing();
+    // After fetch, creating a tracker for a known model should produce non-zero cost
+    const tracker = new CostTracker('gpt-4o');
+    tracker.trackUsage({ promptTokens: 1_000_000, completionTokens: 1_000_000 });
+    const stats = tracker.getStats();
+    assert.ok(stats.totalCost > 0, 'live pricing should produce a positive cost');
   });
 });
