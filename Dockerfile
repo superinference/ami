@@ -1,70 +1,70 @@
 # Copyright (C) 2025 SuperInference contributors
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see https://www.gnu.org/licenses/.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
 
-# Dockerfile for SuperInference Agent
-# Unified SuperInference-STAR implementation with full DABStep benchmark support
-# Optimized for Kubernetes deployment
+# openshell-ami: SuperInference AMI agent, baked in (Apache 2.0)
+# Follows the OpenShell thin-base + flavor pattern.
+# Binary installed from superinference.org at build time (license-clean).
+# Runs exclusively in detached mode — no REPL, no TUI.
+# Target size: 200-250 MB
 
-FROM python:3.11-slim
+ARG BASE_IMAGE=registry.access.redhat.com/ubi10/ubi-minimal:latest
+FROM ${BASE_IMAGE}
 
-# Set working directory
-WORKDIR /app
+ARG TARGETARCH
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    build-essential \
-    libgomp1 \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
+# System deps: minimal set for an agent runtime
+USER root
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        tar \
+        gzip \
+        procps-ng \
+        shadow-utils \
+    && microdnf clean all \
+    && rm -rf /var/cache/yum
 
-# Copy requirements first for better caching
-COPY mcp/requirements.txt /app/agent_requirements.txt
-COPY benchmark/requirements.txt /app/benchmark_requirements.txt
+# Users: supervisor (system, non-login) and sandbox (interactive)
+RUN useradd -r -s /usr/sbin/nologin supervisor \
+    && useradd -m -s /bin/bash -d /sandbox sandbox
 
-# Install Python dependencies
-# Install agent requirements first, then benchmark (some overlap is ok)
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r agent_requirements.txt && \
-    pip install --no-cache-dir -r benchmark_requirements.txt
+# Sandbox home structure
+RUN mkdir -p /sandbox/.local/bin \
+             /sandbox/.config/superinference \
+             /sandbox/.superinference \
+    && chown -R sandbox:sandbox /sandbox
 
-# Copy all
-COPY . .
+# Install AMI binary (Apache 2.0 — safe to bake in)
+USER sandbox
+RUN curl -fsSL https://www.superinference.org/install.sh | bash
 
-# Set environment variables with defaults
-ENV DEFAULT_PROVIDER=vllm \
-    DEFAULT_TEMPERATURE=0.1 \
-    DEFAULT_MAX_TOKENS=100000 \
-    DEFAULT_TOP_P=0.8 \
-    DEFAULT_TOP_K=40 \
-    BENCHMARK_MODE=true \
-    PYTHONUNBUFFERED=1
+# Agent install script for OpenShell entrypoint discovery
+USER root
+RUN mkdir -p /etc/openshell/agents
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Create necessary directories with permissions for OpenShift non-root users
-RUN mkdir -p /app/benchmark/dabstep/results \
-             /app/benchmark/dabstep/data/context \
-             /app/logs && \
-    chmod -R 777 /app/benchmark/dabstep/data \
-                 /app/benchmark/dabstep/results \
-                 /app/logs
+# Default policy for OpenShell sandbox
+COPY policy.yaml /etc/openshell/policy.yaml
 
-# Set matplotlib config directory to /tmp (writable in OpenShift)
-ENV MPLCONFIGDIR=/tmp/matplotlib
+# OCI labels for operator discovery
+LABEL io.openshell.sandbox.harness="ami" \
+      io.openshell.sandbox.runtime="binary" \
+      io.openshell.sandbox.license="Apache-2.0" \
+      org.opencontainers.image.title="openshell-ami" \
+      org.opencontainers.image.description="SuperInference AMI autonomous coding agent for OpenShell" \
+      org.opencontainers.image.source="https://github.com/superinference/site" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
-# Expose MCP server port (for server mode)
-EXPOSE 3000
+USER sandbox
+WORKDIR /sandbox
+ENV PATH="/sandbox/.local/bin:${PATH}" \
+    AGENT_NAME=ami
 
-# No USER - OpenShift assigns non-root UID automatically
-# No ENTRYPOINT - Kubernetes job will specify command
-CMD ["/bin/bash"]
-
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["ami"]

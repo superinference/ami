@@ -1,0 +1,33 @@
+# OpenShell sandbox policy for AMI agent
+# This policy defines the security boundaries for the sandbox container.
+# AMI's internal permission system (5 modes, 25 bash security validators)
+# operates within these outer constraints.
+
+version: "1.0"
+agent: ami
+
+permissions:
+  filesystem:
+    read:
+      - /sandbox
+      - /tmp
+    write:
+      - /sandbox
+      - /tmp
+    deny:
+      - /etc
+      - /usr
+      - /var
+
+  network:
+    outbound: true
+    inbound: false
+
+  process:
+    allow_spawn: true
+    max_processes: 50
+
+  resources:
+    max_memory_mb: 4096
+    max_cpu_cores: 4
+    max_disk_mb: 10240
