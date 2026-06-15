@@ -5,7 +5,8 @@ AGENT="${1:-${AGENT_NAME:-bash}}"
 
 case "$AGENT" in
     bash)
-        exec /bin/bash
+        shift 2>/dev/null || true
+        exec /bin/bash "$@"
         ;;
     ami)
         if ! command -v ami >/dev/null 2>&1; then
