@@ -263,6 +263,28 @@ export function reindentReplacement(
 }
 
 // ---------------------------------------------------------------------------
+// Quote style preservation
+// ---------------------------------------------------------------------------
+
+function preserveQuoteStyle(original: string, replacement: string): string {
+  const hasCurlyDouble = /[\u201c\u201d]/.test(original);
+  const hasCurlySingle = /[\u2018\u2019]/.test(original);
+  if (hasCurlyDouble && !replacement.includes('\u201c')) {
+    replacement = replacement.replace(/"/g, (m, offset) => {
+      const beforeCount = replacement.slice(0, offset).split('"').length - 1;
+      return beforeCount % 2 === 0 ? '\u201c' : '\u201d';
+    });
+  }
+  if (hasCurlySingle && !replacement.includes('\u2018')) {
+    replacement = replacement.replace(/'/g, (m, offset) => {
+      const beforeCount = replacement.slice(0, offset).split("'").length - 1;
+      return beforeCount % 2 === 0 ? '\u2018' : '\u2019';
+    });
+  }
+  return replacement;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -298,6 +320,7 @@ export function fuzzyFindAndReplace(
       if (name !== 'exact') {
         replacement = reindentReplacement(matchedRegion, oldString, newString);
       }
+      replacement = preserveQuoteStyle(matchedRegion, replacement);
 
       const newContent = content.slice(0, start) + replacement + content.slice(end);
       return { newContent, strategy: name, matchCount: 1, error: null };

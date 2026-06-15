@@ -68,13 +68,16 @@ describe('fileEditTool – validation', () => {
     assert.ok(result.output.includes('old_string must be provided'));
   });
 
-  it('rejects empty old_string', async () => {
+  it('rejects empty old_string on non-empty file', async () => {
+    const file = path.join(tmpDir, 'nonempty.txt');
+    fs.writeFileSync(file, 'existing content\n');
+
     const result = await fileEditTool.execute(
-      { file_path: '/tmp/f.txt', old_string: '', new_string: 'b' },
+      { file_path: file, old_string: '', new_string: 'b' },
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('old_string must not be empty'));
+    assert.ok(result.output.includes('old_string is empty but file has content'));
   });
 
   it('rejects null new_string', async () => {
@@ -167,7 +170,7 @@ describe('fileEditTool – error cases', () => {
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('Error reading file'));
+    assert.ok(result.output.includes('File not found') || result.output.includes('Error reading file'));
   });
 
   it('returns error when old_string not found', async () => {

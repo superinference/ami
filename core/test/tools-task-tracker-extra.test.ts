@@ -365,8 +365,8 @@ describe('taskTool — execute with engine factory', () => {
       }),
     );
 
-    assert.equal(result.isError, false);
-    assert.equal(result.output, 'explore result');
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('explore result'));
 
     // Verify the config was passed through
     assert.ok(capturedConfig);
@@ -399,8 +399,8 @@ describe('taskTool — execute with engine factory', () => {
       }),
     );
 
-    assert.equal(result.isError, false);
-    assert.equal(result.output, 'general result');
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('general result'));
 
     assert.ok(capturedConfig);
     assert.equal(capturedConfig.permissionMode, 'ask');
@@ -539,7 +539,7 @@ describe('taskTool — execute with engine factory', () => {
         _engineFactory: (_cfg: any) => ({ submit: fakeSubmit }),
       }),
     );
-    assert.equal(result.isError, false);
+    assert.ok(!result.isError);
     assert.ok(result.output.includes('part1'));
     assert.ok(result.output.includes('oops'));
     assert.ok(result.output.includes('part2'));

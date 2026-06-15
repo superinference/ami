@@ -7,6 +7,9 @@ import {
   type PreToolUseContext,
   type PostToolUseContext,
   type PreSamplingContext,
+  type PermissionContext,
+  type TaskEventContext,
+  type UserPromptContext,
   type HookDecision,
 } from '../src/hooks';
 
@@ -273,5 +276,142 @@ describe('HookManager — multiple hook types', () => {
     assert.deepEqual(called, [
       'postSampling', 'stop', 'error', 'preToolUse', 'postToolUse', 'preSampling',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Permission hooks (permissionRequest, permissionDenied)
+// ---------------------------------------------------------------------------
+describe('HookManager — permissionRequest / permissionDenied', () => {
+  it('executePermissionRequest calls registered hooks', async () => {
+    const hm = new HookManager();
+    let received: PermissionContext | undefined;
+    hm.onPermissionRequest(async (ctx) => { received = ctx; });
+
+    await hm.executePermissionRequest({ toolName: 'bash', toolInput: { command: 'ls' } });
+    assert.ok(received);
+    assert.equal(received!.toolName, 'bash');
+  });
+
+  it('executePermissionDenied calls registered hooks', async () => {
+    const hm = new HookManager();
+    let received: PermissionContext | undefined;
+    hm.onPermissionDenied(async (ctx) => { received = ctx; });
+
+    await hm.executePermissionDenied({ toolName: 'bash', toolInput: { command: 'rm -rf /' }, command: 'rm -rf /' });
+    assert.ok(received);
+    assert.equal(received!.toolName, 'bash');
+    assert.equal(received!.command, 'rm -rf /');
+  });
+
+  it('permission hooks swallow errors', async () => {
+    const hm = new HookManager();
+    let called = false;
+    hm.onPermissionRequest(async () => { throw new Error('boom'); });
+    hm.onPermissionRequest(async () => { called = true; });
+
+    await hm.executePermissionRequest({ toolName: 'bash', toolInput: {} });
+    assert.ok(called);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UserPromptSubmit hook
+// ---------------------------------------------------------------------------
+describe('HookManager — userPromptSubmit', () => {
+  it('executeUserPromptSubmit calls registered hooks', async () => {
+    const hm = new HookManager();
+    let received: UserPromptContext | undefined;
+    hm.onUserPromptSubmit(async (ctx) => { received = ctx; });
+
+    await hm.executeUserPromptSubmit({ prompt: 'fix the bug', turnCount: 3 });
+    assert.ok(received);
+    assert.equal(received!.prompt, 'fix the bug');
+    assert.equal(received!.turnCount, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task lifecycle hooks (taskCreated, taskCompleted)
+// ---------------------------------------------------------------------------
+describe('HookManager — taskCreated / taskCompleted', () => {
+  it('executeTaskCreated calls registered hooks', async () => {
+    const hm = new HookManager();
+    let received: TaskEventContext | undefined;
+    hm.onTaskCreated(async (ctx) => { received = ctx; });
+
+    await hm.executeTaskCreated({ taskId: '42', subject: 'Fix login', status: 'pending' });
+    assert.ok(received);
+    assert.equal(received!.taskId, '42');
+    assert.equal(received!.subject, 'Fix login');
+    assert.equal(received!.status, 'pending');
+  });
+
+  it('executeTaskCompleted calls registered hooks', async () => {
+    const hm = new HookManager();
+    let received: TaskEventContext | undefined;
+    hm.onTaskCompleted(async (ctx) => { received = ctx; });
+
+    await hm.executeTaskCompleted({ taskId: '42', subject: 'Fix login', status: 'completed' });
+    assert.ok(received);
+    assert.equal(received!.status, 'completed');
+  });
+
+  it('task hooks swallow errors', async () => {
+    const hm = new HookManager();
+    let secondCalled = false;
+    hm.onTaskCreated(async () => { throw new Error('crash'); });
+    hm.onTaskCreated(async () => { secondCalled = true; });
+
+    await hm.executeTaskCreated({ taskId: '1', subject: 'test', status: 'pending' });
+    assert.ok(secondCalled);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// All 17 hook events execute independently
+// ---------------------------------------------------------------------------
+describe('HookManager — all 17 events independent', () => {
+  it('registers and fires all event types without interference', async () => {
+    const hm = new HookManager();
+    const fired: string[] = [];
+
+    hm.onPostSampling(async () => { fired.push('postSampling'); });
+    hm.onStop(async () => { fired.push('stop'); });
+    hm.onError(async () => { fired.push('error'); });
+    hm.onPreToolUse(async () => { fired.push('preToolUse'); return { action: 'allow' }; });
+    hm.onPostToolUse(async () => { fired.push('postToolUse'); });
+    hm.onPreSampling(async () => { fired.push('preSampling'); return { action: 'allow' }; });
+    hm.onSessionStart(async () => { fired.push('sessionStart'); });
+    hm.onSessionEnd(async () => { fired.push('sessionEnd'); });
+    hm.onSubagentStart(async () => { fired.push('subagentStart'); });
+    hm.onSubagentStop(async () => { fired.push('subagentStop'); });
+    hm.onPreCompact(async () => { fired.push('preCompact'); });
+    hm.onPostCompact(async () => { fired.push('postCompact'); });
+    hm.onPermissionRequest(async () => { fired.push('permissionRequest'); });
+    hm.onPermissionDenied(async () => { fired.push('permissionDenied'); });
+    hm.onUserPromptSubmit(async () => { fired.push('userPromptSubmit'); });
+    hm.onTaskCreated(async () => { fired.push('taskCreated'); });
+    hm.onTaskCompleted(async () => { fired.push('taskCompleted'); });
+
+    await hm.executePostSampling(makeContext());
+    await hm.executeStop(makeContext());
+    await hm.executeError(makeContext());
+    await hm.executePreToolUse(makePreToolUseContext());
+    await hm.executePostToolUse(makePostToolUseContext());
+    await hm.executePreSampling(makePreSamplingContext());
+    await hm.executeSessionStart({ sessionId: 'test', cwd: '/tmp' });
+    await hm.executeSessionEnd({ sessionId: 'test', cwd: '/tmp' });
+    await hm.executeSubagentStart({ parentSessionId: 'p', subagentSessionId: 's', prompt: 'go' });
+    await hm.executeSubagentStop({ parentSessionId: 'p', subagentSessionId: 's', prompt: 'go' });
+    await hm.executePreCompact({ messageCount: 10, tokenEstimate: 5000 });
+    await hm.executePostCompact({ messageCount: 5, tokenEstimate: 2500 });
+    await hm.executePermissionRequest({ toolName: 'bash', toolInput: {} });
+    await hm.executePermissionDenied({ toolName: 'bash', toolInput: {} });
+    await hm.executeUserPromptSubmit({ prompt: 'test', turnCount: 1 });
+    await hm.executeTaskCreated({ taskId: '1', subject: 'test', status: 'pending' });
+    await hm.executeTaskCompleted({ taskId: '1', subject: 'test', status: 'completed' });
+
+    assert.equal(fired.length, 17);
   });
 });

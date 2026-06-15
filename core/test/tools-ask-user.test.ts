@@ -27,10 +27,13 @@ describe('askUserQuestionTool – definition', () => {
     assert.ok(askUserQuestionTool.description.length > 0);
   });
 
-  it('schema requires question and options', () => {
-    const req = askUserQuestionTool.inputSchema.required;
-    assert.ok(req?.includes('question'));
-    assert.ok(req?.includes('options'));
+  it('schema supports both single-question and multi-question formats', () => {
+    const props = askUserQuestionTool.inputSchema.properties;
+    assert.ok('questions' in props, 'supports multi-question array');
+    assert.ok('question' in props, 'supports single-question shorthand');
+    const questionsItems = props.questions.items;
+    assert.ok(questionsItems.required?.includes('question'));
+    assert.ok(questionsItems.required?.includes('options'));
   });
 
   it('schema includes question, options, and allowFreeText properties', () => {

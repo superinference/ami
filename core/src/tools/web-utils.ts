@@ -143,7 +143,7 @@ export function httpGet(
     includeContentType?: boolean;
     resolvedIP?: string;
   },
-): Promise<{ body: string; statusCode: number; contentType: string }> {
+): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string }> {
   const maxRedirects = options?.maxRedirects ?? 5;
   const timeoutMs = options?.timeoutMs ?? 30000;
 
@@ -156,7 +156,7 @@ function httpGetInternal(
   redirectsLeft: number,
   timeoutMs: number,
   resolvedIP?: string,
-): Promise<{ body: string; statusCode: number; contentType: string }> {
+): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string }> {
   const MAX_RESPONSE_LENGTH = 50000;
 
   return new Promise((resolve, reject) => {
@@ -229,7 +229,7 @@ function httpGetInternal(
           totalBytes += chunk.length;
           if (totalBytes > MAX_RESPONSE_LENGTH * 2) {
             res.destroy();
-            resolve({ body: Buffer.concat(chunks).toString('utf-8'), statusCode, contentType: res.headers['content-type'] ?? '' });
+            resolve({ body: Buffer.concat(chunks).toString('utf-8'), statusCode, contentType: res.headers['content-type'] ?? '', finalUrl: url });
             return;
           }
           chunks.push(chunk);
@@ -237,7 +237,7 @@ function httpGetInternal(
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf-8');
           const contentType = res.headers['content-type'] ?? '';
-          resolve({ body, statusCode, contentType });
+          resolve({ body, statusCode, contentType, finalUrl: url });
         });
         res.on('error', reject);
       },

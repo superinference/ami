@@ -83,7 +83,21 @@ export class ProcessManager extends EventEmitter {
     proc.stdout?.on('data', writeChunk);
     proc.stderr?.on('data', writeChunk);
 
+    // Stall detection for background processes
+    let lastOutputSize = 0;
+    const stallCheck = setInterval(() => {
+      const currentSize = this.getOutputSize(taskId);
+      if (currentSize === lastOutputSize) {
+        const result = this.getOutput(taskId, 10);
+        if (result && this.looksLikePrompt(result.output)) {
+          this.kill(taskId);
+        }
+      }
+      lastOutputSize = currentSize;
+    }, 45_000);
+
     proc.on('close', (code) => {
+      clearInterval(stallCheck);
       entry.status = code === 0 ? 'completed' : 'failed';
       entry.exitCode = code;
       try { fs.closeSync(fd); } catch { /* already closed */ }
@@ -92,6 +106,7 @@ export class ProcessManager extends EventEmitter {
     });
 
     proc.on('error', (err) => {
+      clearInterval(stallCheck);
       entry.status = 'failed';
       try {
         fs.writeSync(fd, Buffer.from(`\n[process error: ${err.message}]\n`));
@@ -161,12 +176,53 @@ export class ProcessManager extends EventEmitter {
     return rest;
   }
 
+  getOutputSize(taskId: string): number {
+    const entry = this.processes.get(taskId);
+    if (!entry) return 0;
+    return entry.bytesWritten;
+  }
+
+  private looksLikePrompt(text: string): boolean {
+    const lastLine = text.trim().split('\n').pop() ?? '';
+    return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|Press Enter|Continue\?|Overwrite\?|password:/i.test(lastLine);
+  }
+
   runningCount(): number {
     let count = 0;
     for (const entry of this.processes.values()) {
       if (entry.status === 'running') count++;
     }
     return count;
+  }
+
+  monitorMcp(serverId: string, checkFn: () => Promise<boolean>, intervalMs: number = 30000): string {
+    const taskId = `monitor-${serverId}-${Date.now()}`;
+    const interval = setInterval(async () => {
+      try {
+        const healthy = await checkFn();
+        if (!healthy) {
+          clearInterval(interval);
+          this.emit('complete', { taskId, exitCode: 1, command: `monitor:${serverId}`, description: `MCP monitor: ${serverId}` });
+        }
+      } catch {
+        clearInterval(interval);
+        this.emit('complete', { taskId, exitCode: 1, command: `monitor:${serverId}`, description: `MCP monitor: ${serverId}` });
+      }
+    }, intervalMs);
+    this.processes.set(taskId, {
+      taskId,
+      pid: 0,
+      command: `monitor:${serverId}`,
+      description: `MCP monitor: ${serverId}`,
+      status: 'running',
+      exitCode: null,
+      outputPath: '',
+      startTime: Date.now(),
+      proc: null as any,
+      outputFd: null,
+      bytesWritten: 0,
+    });
+    return taskId;
   }
 
   cleanup(): void {

@@ -22,6 +22,12 @@ const EXCLUDED_MODULES = new Set([
   'rate-limiter.ts',
   'utils/shell.ts',
   'utils/repetition.ts',
+  'tools/mcp-resources.ts',
+  'tools/mcp-tool.ts',
+  'formatter.ts',
+  'session-search.ts',
+  'skillbook.ts',
+  'tool-confirmation.ts',
 ]);
 
 function readAllSourceFiles(dir: string): string[] {

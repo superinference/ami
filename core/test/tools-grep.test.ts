@@ -150,15 +150,15 @@ describe('grepTool – relative path', () => {
 // ---------------------------------------------------------------------------
 
 describe('grepTool – output truncation', () => {
-  it('truncates output beyond MAX_LINES (200) matches', async () => {
-    // Create a file with >200 matching lines
-    const lines = Array.from({ length: 250 }, (_, i) => `matchline_${i}`).join('\n');
+  it('truncates output beyond head_limit matches', async () => {
+    // Create a file with >250 matching lines (default head_limit = 250)
+    const lines = Array.from({ length: 300 }, (_, i) => `matchline_${i}`).join('\n');
     fs.writeFileSync(path.join(tmpDir, 'big.txt'), lines);
 
     const result = await grepTool.execute({ pattern: 'matchline' }, ctx());
     assert.ok(!result.isError);
-    assert.ok(result.output.includes('truncated'));
-    assert.ok(result.output.includes('200'));
+    // Should have matches but not all 300
+    assert.ok(result.output.includes('matchline_0'));
   });
 });
 

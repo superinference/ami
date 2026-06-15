@@ -5,6 +5,50 @@ import { detectProvider, formatModelList, validateModel } from '../src/model-reg
 import type { ProviderConfig } from '../src/types';
 
 // ---------------------------------------------------------------------------
+// Env vars that leak from the host and interfere with provider detection
+// ---------------------------------------------------------------------------
+const INTERFERING_ENV_VARS = [
+  'ANTHROPIC_VERTEX_PROJECT_ID', 'CLAUDE_CODE_USE_VERTEX', 'HF_TOKEN',
+  'GROQ_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY', 'DEEPSEEK_API_KEY',
+  'TOGETHER_AI_API_KEY', 'COHERE_API_KEY', 'FIREWORKS_API_KEY',
+  'PERPLEXITY_API_KEY', 'DEEPINFRA_API_KEY', 'CEREBRAS_API_KEY',
+  'ALIBABA_API_KEY', 'DASHSCOPE_API_KEY', 'LUMA_API_KEY',
+  'AZURE_OPENAI_API_KEY', 'AWS_ACCESS_KEY_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
+];
+
+function withCleanEnv<T>(fn: () => T): T {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of INTERFERING_ENV_VARS) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const key of INTERFERING_ENV_VARS) {
+      if (saved[key] !== undefined) process.env[key] = saved[key];
+      else delete process.env[key];
+    }
+  }
+}
+
+async function withCleanEnvAsync<T>(fn: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of INTERFERING_ENV_VARS) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const key of INTERFERING_ENV_VARS) {
+      if (saved[key] !== undefined) process.env[key] = saved[key];
+      else delete process.env[key];
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helper to build a minimal ProviderConfig
 // ---------------------------------------------------------------------------
 function cfg(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
@@ -27,63 +71,63 @@ describe('detectProvider', () => {
 
   // API key patterns
   it('detects anthropic from sk-ant- key prefix', () => {
-    assert.equal(detectProvider(cfg({ apiKey: 'sk-ant-abc123' })), 'anthropic');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ apiKey: 'sk-ant-abc123' })), 'anthropic'));
   });
 
   it('detects google from AIza key prefix', () => {
-    assert.equal(detectProvider(cfg({ apiKey: 'AIzaSyCxxxxxxxxx' })), 'google');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ apiKey: 'AIzaSyCxxxxxxxxx' })), 'google'));
   });
 
   it('detects openrouter from sk-or- key prefix', () => {
-    assert.equal(detectProvider(cfg({ apiKey: 'sk-or-abcdef' })), 'openrouter');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ apiKey: 'sk-or-abcdef' })), 'openrouter'));
   });
 
   // URL patterns
   it('detects google from generativelanguage URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'https://generativelanguage.googleapis.com/v1' })), 'google');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ baseUrl: 'https://generativelanguage.googleapis.com/v1' })), 'google'));
   });
 
   it('detects anthropic from api.anthropic.com URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'https://api.anthropic.com/v1' })), 'anthropic');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ baseUrl: 'https://api.anthropic.com/v1' })), 'anthropic'));
   });
 
   it('detects openrouter from openrouter.ai URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'https://openrouter.ai/api/v1' })), 'openrouter');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ baseUrl: 'https://openrouter.ai/api/v1' })), 'openrouter'));
   });
 
   it('detects ollama from localhost URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'http://localhost:11434' })), 'ollama');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ baseUrl: 'http://localhost:11434' })), 'ollama'));
   });
 
   it('detects ollama from 127.0.0.1 URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'http://127.0.0.1:11434' })), 'ollama');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ baseUrl: 'http://127.0.0.1:11434' })), 'ollama'));
   });
 
   it('detects openai from api.openai.com URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'https://api.openai.com/v1' })), 'openai');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ baseUrl: 'https://api.openai.com/v1' })), 'openai'));
   });
 
   it('detects deepseek from api.deepseek.com URL', () => {
-    assert.equal(detectProvider(cfg({ baseUrl: 'https://api.deepseek.com' })), 'deepseek');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ baseUrl: 'https://api.deepseek.com' })), 'deepseek'));
   });
 
   // Fallback with sk- key
   it('falls back to openai for sk- key without matching URL', () => {
-    assert.equal(detectProvider(cfg({ apiKey: 'sk-proj-abcdef123' })), 'openai');
+    withCleanEnv(() => assert.equal(detectProvider(cfg({ apiKey: 'sk-proj-abcdef123' })), 'openai'));
   });
 
   // Default fallback
   it('defaults to openai when nothing matches', () => {
-    assert.equal(detectProvider(cfg()), 'openai');
+    withCleanEnv(() => assert.equal(detectProvider(cfg()), 'openai'));
   });
 
   // API key priority over URL
   it('API key prefix takes priority over URL pattern', () => {
     // sk-ant- should detect anthropic even with an openai URL
-    assert.equal(detectProvider(cfg({
+    withCleanEnv(() => assert.equal(detectProvider(cfg({
       apiKey: 'sk-ant-abc',
       baseUrl: 'https://api.openai.com/v1',
-    })), 'anthropic');
+    })), 'anthropic'));
   });
 });
 
@@ -150,7 +194,7 @@ describe('validateModel', () => {
       apiKey: 'test',
       model: 'gpt-4o',
     });
-    const result = await validateModel(config, 'gpt-4o');
+    const result = await withCleanEnvAsync(() => validateModel(config, 'gpt-4o'));
     assert.equal(result.valid, true);
     assert.deepEqual(result.available, []);
   });
@@ -199,7 +243,7 @@ describe('listModels — OpenAI-compatible', () => {
       baseUrl: `http://127.0.0.1:${port}`,
       apiKey: 'test-key',
     });
-    const models = await listModels(config);
+    const models = await withCleanEnvAsync(() => listModels(config));
     assert.equal(models.length, 3);
     assert.equal(models[0].id, 'gpt-4o');
     assert.equal(models[0].owned_by, 'openai');
@@ -279,7 +323,7 @@ describe('validateModel — with live server', () => {
       baseUrl: `http://127.0.0.1:${port}`,
       apiKey: 'test-key',
     });
-    const result = await validateModel(config, 'gpt-4o');
+    const result = await withCleanEnvAsync(() => validateModel(config, 'gpt-4o'));
     assert.equal(result.valid, true);
     assert.equal(result.available.length, 3);
   });
@@ -289,7 +333,7 @@ describe('validateModel — with live server', () => {
       baseUrl: `http://127.0.0.1:${port}`,
       apiKey: 'test-key',
     });
-    const result = await validateModel(config, 'gpt-4');
+    const result = await withCleanEnvAsync(() => validateModel(config, 'gpt-4'));
     assert.equal(result.valid, false);
     assert.ok(result.suggestion, 'Should suggest a partial match');
   });
@@ -299,7 +343,7 @@ describe('validateModel — with live server', () => {
       baseUrl: `http://127.0.0.1:${port}`,
       apiKey: 'test-key',
     });
-    const result = await validateModel(config, 'totally-unknown-model');
+    const result = await withCleanEnvAsync(() => validateModel(config, 'totally-unknown-model'));
     assert.equal(result.valid, false);
     assert.equal(result.suggestion, undefined);
   });

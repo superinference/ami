@@ -117,6 +117,16 @@ export const webSearchTool: ToolDefinition = {
         type: 'string',
         description: 'The search query',
       },
+      allowed_domains: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Only include results from these domains.',
+      },
+      blocked_domains: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Exclude results from these domains.',
+      },
     },
     required: ['query'],
   },
@@ -146,7 +156,28 @@ export const webSearchTool: ToolDefinition = {
         };
       }
 
-      const results = parseDuckDuckGoResults(body);
+      let results = parseDuckDuckGoResults(body);
+
+      const allowedDomains = input.allowed_domains as string[] | undefined;
+      const blockedDomains = input.blocked_domains as string[] | undefined;
+
+      if (allowedDomains && allowedDomains.length > 0) {
+        results = results.filter(r => {
+          try {
+            const host = new URL(r.url).hostname;
+            return allowedDomains.some(d => host === d || host.endsWith('.' + d));
+          } catch { return false; }
+        });
+      }
+
+      if (blockedDomains && blockedDomains.length > 0) {
+        results = results.filter(r => {
+          try {
+            const host = new URL(r.url).hostname;
+            return !blockedDomains.some(d => host === d || host.endsWith('.' + d));
+          } catch { return true; }
+        });
+      }
 
       if (results.length === 0) {
         return {
@@ -165,7 +196,8 @@ export const webSearchTool: ToolDefinition = {
         }
       }
 
-      return { output: formatResults(query, results) };
+      const output = formatResults(query, results) + '\n\nREMINDER: Include sources with markdown links in your response.';
+      return { output };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
 

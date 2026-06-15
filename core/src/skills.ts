@@ -18,6 +18,9 @@ export interface SkillDefinition {
   userInvocable?: boolean; // Can user invoke via /skill-name (default true)
   allowedTools?: string[]; // Restrict which tools this skill can use
   argumentHint?: string;  // Hint text for the argument (e.g., "<file-path>")
+  context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
+  disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
+  effort?: string;         // Thinking effort level for sub-engine (e.g., "low", "medium", "high")
 }
 
 export interface AgentDefinition {
@@ -414,6 +417,10 @@ export class SkillManager {
     if (userInvocableRaw === 'false') userInvocable = false;
     else if (userInvocableRaw === 'true') userInvocable = true;
 
+    const contextRaw = frontmatter.context;
+    const context: SkillDefinition['context'] =
+      contextRaw === 'fork' ? 'fork' : contextRaw === 'inline' ? 'inline' : undefined;
+
     return {
       name,
       description: frontmatter.description || '',
@@ -424,6 +431,10 @@ export class SkillManager {
       model: frontmatter.model || undefined,
       userInvocable,
       allowedTools: parseStringArray(frontmatter['allowed-tools']),
+      argumentHint: frontmatter['argument-hint'] || undefined,
+      context,
+      disableModelInvocation: frontmatter['disable-model-invocation'] === 'true',
+      effort: frontmatter.effort || undefined,
     };
   }
 

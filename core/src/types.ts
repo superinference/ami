@@ -49,25 +49,28 @@ export interface SystemMessage {
 
 export type Message = UserMessage | AssistantMessage | ToolMessage | SystemMessage;
 
+export interface JsonSchemaProperty {
+  type: string;
+  description?: string;
+  enum?: string[];
+  default?: unknown;
+  items?: JsonSchemaProperty;
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  additionalProperties?: boolean | JsonSchemaProperty;
+  [key: string]: unknown;
+}
+
 export interface ToolInputSchema {
   type: 'object';
-  properties: Record<string, {
-    type: string;
-    description?: string;
-    enum?: string[];
-    default?: unknown;
-    items?: {
-      type: string;
-      properties?: Record<string, { type: string; description?: string }>;
-      required?: string[];
-    };
-  }>;
+  properties: Record<string, JsonSchemaProperty>;
   required?: string[];
 }
 
 export interface ToolResult {
   output: string;
   isError?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ToolContext {
@@ -81,7 +84,12 @@ export interface ToolContext {
   _providerConfig?: ProviderConfig;
   _permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   _allowLocalhostForTesting?: boolean;
-  _engineFactory?: (config: EngineConfig) => { submit(prompt: string): AsyncIterable<EngineEvent> };
+  _engineFactory?: (config: EngineConfig) => { submit(prompt: string): AsyncIterable<EngineEvent>; shutdown?(): void };
+  _skillManager?: import('./skills').SkillManager;
+  _hookManager?: import('./hooks').HookManager;
+  _mcpManager?: any;
+  _parentMessages?: Message[];
+  _engineAddSystemReminder?: (msg: string) => void;
 }
 
 export interface ToolDefinition {
@@ -172,7 +180,7 @@ export type EngineEvent =
   | { type: 'analytics_summary'; summary: Record<string, number> }
   | { type: 'superinference_state'; state: { value: number; entropy: number; eig: number; step: number; ppv: number }; stopReason: { type: string; detail: string } }
   | { type: 'suggest_file_save'; content: string; suggestedPath: string; lineCount: number }
-  | { type: 'user_question'; toolCallId: string; question: string; options: Array<{ label: string; description: string }>; allowFreeText: boolean }
+  | { type: 'user_question'; toolCallId: string; question: string; options: Array<{ label: string; description: string }>; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, unknown> }
   | { type: 'session_title'; title: string }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
@@ -195,7 +203,7 @@ export interface EngineConfig {
   /** Override the default session directory ({cwd}/.superinference/sessions/). */
   sessionDir?: string;
   /** Permission mode: 'ask' (default), 'auto-allow', or 'deny-all'. */
-  permissionMode?: 'ask' | 'auto-allow' | 'deny-all';
+  permissionMode?: string;
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Model to fall back to on errors (e.g., 'gemini-2.0-flash' as fallback for 'gemini-1.5-pro'). */
@@ -223,11 +231,19 @@ export interface EngineConfig {
   planMode?: boolean;
   /** Handler for AskUserQuestion tool. The UI implements this to show
    *  the question and return the user's answer. */
-  onUserQuestion?: (question: string, options: Array<{ label: string; description: string }>, allowFreeText: boolean) => Promise<string>;
+  onUserQuestion?: (question: string, options: Array<{ label: string; description: string }>, allowFreeText: boolean, multiSelect?: boolean) => Promise<string>;
   /** When true, the engine generates a session title via LLM after the first turn. */
   enableTitleGeneration?: boolean;
   /** When true, the engine is running in non-interactive (detached / --prompt) mode. */
   detachedMode?: boolean;
+  /** Maximum USD budget for the session. If set, the engine stops when total cost exceeds this amount. */
+  maxBudgetUsd?: number;
+  /** Chat mode — controls tool availability and autonomy level. */
+  mode?: 'ask' | 'edit' | 'agent';
+  /** Maximum tool iterations before prompting to continue. Default 200. */
+  maxToolIterations?: number;
+  /** Behavior when tool iteration limit is reached: 'stop' or 'confirm'. Default 'confirm'. */
+  toolIterationBehavior?: 'stop' | 'confirm';
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +258,7 @@ export interface ProviderSubsystem {
 }
 
 export interface PermissionSubsystem {
-  mode: 'ask' | 'auto-allow' | 'deny-all';
+  mode: string;
   rules: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   promptHandler?: import('./permissions').PermissionPromptHandler;
 }

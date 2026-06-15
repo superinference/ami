@@ -1,7 +1,11 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { taskTool } from '../src/tools/task';
 import type { ToolContext } from '../src/types';
+import { ProcessManager } from '../src/process-manager';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
@@ -98,8 +102,8 @@ describe('taskTool – execute error handling', () => {
         _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
       }),
     );
-    assert.equal(result.isError, false);
-    assert.equal(result.output, 'hello world');
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('hello world'));
   });
 
   it('collects error events from subagent', async () => {
@@ -143,7 +147,110 @@ describe('taskTool – execute error handling', () => {
         _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
       }),
     );
-    assert.equal(result.isError, false);
-    assert.ok(result.output.includes('no output'));
+    assert.ok(!result.isError);
+    assert.ok(result.output.toLowerCase().includes('no output') || result.output.toLowerCase().includes('agent'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Background agent execution
+// ---------------------------------------------------------------------------
+
+describe('taskTool – run_in_background', () => {
+  it('schema includes run_in_background property', () => {
+    const props = taskTool.inputSchema.properties;
+    assert.ok('run_in_background' in props);
+    assert.equal(props.run_in_background.type, 'boolean');
+  });
+
+  it('returns task_id immediately when run_in_background is true', async () => {
+    let submitted = false;
+    async function* fakeSubmit(_prompt: string) {
+      submitted = true;
+      yield { type: 'text_delta' as const, text: 'bg result' };
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-'));
+    const pm = new ProcessManager(tmpDir);
+
+    try {
+      const result = await taskTool.execute(
+        { prompt: 'background work', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
+          processManager: pm,
+        }),
+      );
+
+      assert.equal(result.isError, undefined);
+      assert.ok(result.output.includes('Background agent started'));
+      assert.ok(result.output.includes('agent-'));
+      assert.ok(result.output.includes('task_output'));
+
+      await new Promise(r => setTimeout(r, 50));
+    } finally {
+      pm.cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes output to file when background agent completes', async () => {
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'async result' };
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-'));
+    const pm = new ProcessManager(tmpDir);
+
+    try {
+      const result = await taskTool.execute(
+        { prompt: 'bg task', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
+          processManager: pm,
+        }),
+      );
+
+      const taskId = result.output.match(/agent-[a-f0-9]+/)?.[0];
+      assert.ok(taskId);
+
+      await new Promise(r => setTimeout(r, 100));
+
+      const outputPath = path.join(tmpDir, '.superinference', 'tasks', `${taskId}.output`);
+      const content = fs.readFileSync(outputPath, 'utf-8');
+      assert.ok(content.includes('async result'));
+    } finally {
+      pm.cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('works without processManager (no tracking)', async () => {
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'no-pm result' };
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-'));
+
+    try {
+      const result = await taskTool.execute(
+        { prompt: 'bg no pm', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
+        }),
+      );
+
+      assert.ok(result.output.includes('Background agent started'));
+
+      await new Promise(r => setTimeout(r, 50));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

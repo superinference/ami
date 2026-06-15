@@ -40,6 +40,9 @@ export class SuperInferenceEngine {
     this.belief.reset();
     this.memoryGate.reset();
   }
+
+  getRetriever(): Retriever { return this.retriever; }
+  getMemoryGate(): MemoryGate { return this.memoryGate; }
 }
 
 // Re-export everything

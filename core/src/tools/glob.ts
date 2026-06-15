@@ -38,7 +38,7 @@ export const globTool: ToolDefinition = {
       const entries = await fg(pattern, {
         cwd: resolved,
         ignore: ['**/node_modules/**', '**/.git/**'],
-        dot: false,
+        dot: true,
         onlyFiles: true,
         absolute: false,
       });
@@ -47,12 +47,11 @@ export const globTool: ToolDefinition = {
         return { output: `No files found matching pattern: ${pattern}` };
       }
 
-      // Sort alphabetically
       entries.sort((a, b) => a.localeCompare(b));
 
-      // Limit results
       const limited = entries.slice(0, MAX_RESULTS);
-      const output = limited.join('\n');
+      const summary = `[${entries.length} files${entries.length >= MAX_RESULTS ? ' (truncated)' : ''}]`;
+      const output = `${summary}\n${limited.join('\n')}`;
 
       if (entries.length > MAX_RESULTS) {
         return {

@@ -339,12 +339,24 @@ describe('resolveModel - provider detection edge cases', () => {
   });
 
   it('detects anthropic provider for model name starting with "claude"', () => {
-    const config = makeConfig({
-      baseUrl: 'https://custom-proxy.example.com/v1',
-      model: 'claude-sonnet-4-20250514',
-    });
-    const result = resolveModel(config);
-    assert.ok(result.provider.startsWith('anthropic'), `Expected anthropic, got ${result.provider}`);
+    // Clear vertex env vars so the test can verify the model-name-based detection
+    const savedVertex = process.env.CLAUDE_CODE_USE_VERTEX;
+    const savedProjectId = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    delete process.env.CLAUDE_CODE_USE_VERTEX;
+    delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    try {
+      const config = makeConfig({
+        baseUrl: 'https://custom-proxy.example.com/v1',
+        model: 'claude-sonnet-4-20250514',
+      });
+      const result = resolveModel(config);
+      assert.ok(result.provider.startsWith('anthropic'), `Expected anthropic, got ${result.provider}`);
+    } finally {
+      if (savedVertex !== undefined) process.env.CLAUDE_CODE_USE_VERTEX = savedVertex;
+      else delete process.env.CLAUDE_CODE_USE_VERTEX;
+      if (savedProjectId !== undefined) process.env.ANTHROPIC_VERTEX_PROJECT_ID = savedProjectId;
+      else delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    }
   });
 
   it('uses openai provider for localhost:11434 (Ollama)', () => {

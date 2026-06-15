@@ -2,9 +2,40 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanForSecrets } from './tool-utils';
 
 const CONTEXT_LINES = 3;
+const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
+
+interface FileReadState {
+  content: string;
+  mtime: number;
+}
+const fileReadStates = new Map<string, FileReadState>();
+
+async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
+  try {
+    const historyDir = path.join(cwd, '.superinference', 'file-history');
+    await fs.promises.mkdir(historyDir, { recursive: true });
+
+    const timestamp = Date.now();
+    const safeName = path.basename(filePath).replace(/[^a-zA-Z0-9.-]/g, '_');
+    const historyFile = path.join(historyDir, `${safeName}.${timestamp}.bak`);
+
+    await fs.promises.writeFile(historyFile, originalContent, 'utf-8');
+
+    // Keep only last 20 backups per file
+    const prefix = safeName + '.';
+    const entries = await fs.promises.readdir(historyDir);
+    const matches = entries.filter(e => e.startsWith(prefix) && e.endsWith('.bak')).sort();
+    if (matches.length > 20) {
+      for (const old of matches.slice(0, matches.length - 20)) {
+        await fs.promises.unlink(path.join(historyDir, old)).catch(() => {});
+      }
+    }
+  } catch { /* non-critical, don't fail the edit */ }
+}
+
 
 export const fileEditTool: ToolDefinition = {
   name: 'file_edit',
@@ -26,6 +57,11 @@ export const fileEditTool: ToolDefinition = {
         type: 'string',
         description: 'The replacement string.',
       },
+      replace_all: {
+        type: 'boolean',
+        description: 'Replace all occurrences of old_string instead of requiring uniqueness. Default false.',
+        default: false,
+      },
     },
     required: ['file_path', 'old_string', 'new_string'],
   },
@@ -38,6 +74,7 @@ export const fileEditTool: ToolDefinition = {
     const filePath = input.file_path as string;
     const oldString = input.old_string as string;
     const newString = input.new_string as string;
+    const replaceAll = (input.replace_all as boolean) ?? false;
 
     if (!filePath || filePath.trim().length === 0) {
       return { output: 'Error: file_path must not be empty.', isError: true };
@@ -45,10 +82,6 @@ export const fileEditTool: ToolDefinition = {
 
     if (oldString === undefined || oldString === null) {
       return { output: 'Error: old_string must be provided.', isError: true };
-    }
-
-    if (oldString.length === 0) {
-      return { output: 'Error: old_string must not be empty.', isError: true };
     }
 
     if (newString === undefined || newString === null) {
@@ -65,6 +98,28 @@ export const fileEditTool: ToolDefinition = {
     const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
     if (pathError) return pathError;
 
+    if (resolved.endsWith('.ipynb')) {
+      return {
+        output: `Error: Cannot edit Jupyter notebooks (.ipynb) with file_edit. Use notebook_edit instead, which understands cell structure and properly updates execution state.`,
+        isError: true,
+      };
+    }
+
+    if (!oldString) {
+      if (!fs.existsSync(resolved)) {
+        fs.mkdirSync(path.dirname(resolved), { recursive: true });
+        fs.writeFileSync(resolved, newString, 'utf-8');
+        context.filesRead?.add(resolved);
+        return { output: `Created new file: ${resolved}\n\n${newString.slice(0, 500)}${newString.length > 500 ? '...' : ''}` };
+      }
+      const existing = await fs.promises.readFile(resolved, 'utf-8');
+      if (existing.length === 0) {
+        fs.writeFileSync(resolved, newString, 'utf-8');
+        return { output: `Populated empty file: ${resolved}` };
+      }
+      return { output: 'Error: old_string is empty but file has content. Provide the text to replace.', isError: true };
+    }
+
     if (context.filesRead && !context.filesRead.has(resolved)) {
       return {
         output: `Error: You must read ${resolved} with file_read before editing it. This prevents edits based on stale content.`,
@@ -72,10 +127,38 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
+    const cached = fileReadStates.get(resolved);
+    if (cached) {
+      const currentMtime = fs.statSync(resolved).mtimeMs;
+      if (currentMtime !== cached.mtime) {
+        return { output: 'Error: File has been modified since you last read it. Please read the file again before editing.', isError: true };
+      }
+    }
+
+    try {
+      const stat = fs.statSync(resolved);
+      if (stat.size > MAX_EDIT_FILE_SIZE) {
+        return { output: `Error: File size (${(stat.size / 1_073_741_824).toFixed(2)} GiB) exceeds 1 GiB limit. Large files cannot be edited.`, isError: true };
+      }
+    } catch {
+      // File doesn't exist yet — will be caught by readFile below
+    }
+
     let rawContent: string;
     try {
       rawContent = await fs.promises.readFile(resolved, 'utf-8');
+      fileReadStates.set(resolved, { content: rawContent, mtime: fs.statSync(resolved).mtimeMs });
     } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'ENOENT') {
+        const dir = path.dirname(resolved);
+        const base = path.basename(resolved);
+        let suggestions = '';
+        try {
+          const files = fs.readdirSync(dir).filter(f => f.includes(base.slice(0, 3)) || base.includes(f.slice(0, 3)));
+          if (files.length > 0) suggestions = `\nDid you mean: ${files.slice(0, 5).join(', ')}?`;
+        } catch {}
+        return { output: `Error: File not found: ${resolved}${suggestions}`, isError: true };
+      }
       const message = err instanceof Error ? err.message : String(err);
       return {
         output: `Error reading file: ${message}`,
@@ -109,7 +192,23 @@ export const fileEditTool: ToolDefinition = {
           isError: true,
         };
       }
-      // Multiple matches
+      // Multiple matches — replace all if flag is set, otherwise error
+      if (replaceAll) {
+        const replaced = content.split(normalizedOld).join(normalizedNew);
+        const finalContent = convertToLineEnding(replaced, originalEnding);
+        fs.mkdirSync(path.dirname(resolved), { recursive: true });
+        await trackFileHistory(resolved, rawContent, context.cwd);
+        try {
+          await fs.promises.writeFile(resolved, finalContent, 'utf-8');
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { output: `Error writing file: ${message}`, isError: true };
+        }
+        const diff = buildUnifiedDiff(content, replaced, resolved);
+        return {
+          output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
+        };
+      }
       return {
         output: `Error: ${result.error}`,
         isError: true,
@@ -119,6 +218,19 @@ export const fileEditTool: ToolDefinition = {
     const newContent = convertToLineEnding(result.newContent!, originalEnding);
     const strategy = result.strategy!;
 
+    if (resolved.endsWith('config.json') || resolved.endsWith('settings.json') || resolved.endsWith('tsconfig.json') || resolved.endsWith('package.json')) {
+      try { JSON.parse(newContent); } catch (e) {
+        return { output: `Warning: Edit would create invalid JSON in ${path.basename(resolved)}. Check syntax.\n${(e as Error).message}`, isError: true };
+      }
+    }
+
+    const secrets = scanForSecrets(newContent);
+    if (secrets.length > 0) {
+      return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
+    }
+
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    await trackFileHistory(resolved, rawContent, context.cwd);
     try {
       await fs.promises.writeFile(resolved, newContent, 'utf-8');
     } catch (err: unknown) {
@@ -132,9 +244,18 @@ export const fileEditTool: ToolDefinition = {
     // Build a unified diff showing old vs new (use LF-normalized for clean display)
     const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);
 
+    try {
+      const { getLSPClient } = require('../lsp');
+      const lsp = getLSPClient();
+      lsp.notifyDidChange(resolved, newContent, context.cwd).catch(() => {});
+      lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
+    } catch {}
+
     const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
+    const diffLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length;
+    const patchInfo = `[edit: ${path.basename(resolved)}, ${diffLines} lines changed]`;
     return {
-      output: `Successfully edited ${resolved}${strategyNote}\n\n${diff}`,
+      output: `${patchInfo}\nSuccessfully edited ${resolved}${strategyNote}\n\n${diff}`,
     };
   },
 };

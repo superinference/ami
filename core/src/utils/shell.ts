@@ -3,6 +3,33 @@ import * as os from 'os';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 100_000;
+const DEFAULT_STALL_TIMEOUT_MS = 45_000;
+
+const PROMPT_PATTERNS = [
+  /\(y\/n\)\s*$/i,
+  /\[y\/N\]\s*$/i,
+  /\[Y\/n\]\s*$/i,
+  /\(yes\/no\)\s*$/i,
+  /press enter/i,
+  /press any key/i,
+  /password[:\s]*$/i,
+  /passphrase[:\s]*$/i,
+  /Are you sure\?/i,
+  /Continue\?/i,
+  /Proceed\?/i,
+  /\?\s*$/,
+  /:\s*$/,
+  /> $/,
+  /\$ $/,
+  /% $/,
+  /# $/,
+];
+
+function looksLikePrompt(output: string): boolean {
+  const lastLine = output.trimEnd().split('\n').pop()?.trim() || '';
+  if (lastLine.length === 0 || lastLine.length > 200) return false;
+  return PROMPT_PATTERNS.some(p => p.test(lastLine));
+}
 
 export interface ExecCommandOptions {
   cwd: string;
@@ -10,6 +37,7 @@ export interface ExecCommandOptions {
   abortSignal?: AbortSignal;
   onData?: (chunk: string) => void;
   env?: NodeJS.ProcessEnv;
+  stallTimeoutMs?: number;
 }
 
 export interface ExecCommandResult {
@@ -30,7 +58,7 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env } = options;
+  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS } = options;
 
   return new Promise<ExecCommandResult>((resolve) => {
     // If already aborted, short-circuit
@@ -79,8 +107,23 @@ export function execCommand(
 
     abortSignal?.addEventListener('abort', onAbort, { once: true });
 
+    // --- Stall detection ---
+    let lastDataTime = Date.now();
+    const stallCheck = stallTimeoutMs > 0 ? setInterval(() => {
+      const elapsed = Date.now() - lastDataTime;
+      if (elapsed >= stallTimeoutMs) {
+        const combined = stdout + stderr;
+        if (looksLikePrompt(combined)) {
+          stderr += '\n[Stall detected: process appears to be waiting for interactive input. Killed.]';
+          killTree(proc);
+          finish(null);
+        }
+      }
+    }, 5000) : null;
+
     const cleanUp = (): void => {
       clearTimeout(timer);
+      if (stallCheck) clearInterval(stallCheck);
       abortSignal?.removeEventListener('abort', onAbort);
     };
 
@@ -88,6 +131,7 @@ export function execCommand(
     proc.stdout.on('data', (data: Buffer) => {
       const chunk = data.toString();
       stdout += chunk;
+      lastDataTime = Date.now();
       onData?.(chunk);
     });
 
@@ -95,6 +139,7 @@ export function execCommand(
     proc.stderr.on('data', (data: Buffer) => {
       const chunk = data.toString();
       stderr += chunk;
+      lastDataTime = Date.now();
       onData?.(chunk);
     });
 

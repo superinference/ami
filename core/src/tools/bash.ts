@@ -1,9 +1,29 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
+import { validateBashSecurity } from './bash-security';
+import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 
 const MAX_OUTPUT_LENGTH = 30000;
 const DEFAULT_TIMEOUT_MS = 120000;
+
+function isReadOnlyBashCommand(command: string): boolean {
+  try {
+    const { PermissionManager } = require('../permissions');
+    const pm = new PermissionManager();
+    return pm.classifyBashCommand(command) === 'safe';
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeHungPrompt(output: string): boolean {
+  const lastLine = output.trim().split('\n').pop() ?? '';
+  return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|password:|passphrase:|Press Enter|Continue\?|Overwrite\?|Are you sure/i.test(lastLine);
+}
 
 function detectGitCommit(command: string): boolean {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
@@ -18,6 +38,15 @@ export function detectSelfKill(command: string): string | null {
     return 'This would kill AMI itself (PID match).';
   if (new RegExp(`\\bkill\\s+(-\\w+\\s+)*${ppid}\\b`).test(stripped))
     return 'This would kill AMI\'s parent process.';
+  return null;
+}
+
+function detectBlockedSleep(command: string, runInBackground: boolean, hasCustomTimeout: boolean): string | null {
+  if (runInBackground || hasCustomTimeout) return null;
+  const match = command.match(/^\s*sleep\s+(\d+)/);
+  if (match && parseInt(match[1]) > 10) {
+    return `Blocking sleep for ${match[1]}s detected. Use run_in_background: true for long waits, or schedule_wakeup for timed delays.`;
+  }
   return null;
 }
 
@@ -51,7 +80,7 @@ function scrubEnv(): NodeJS.ProcessEnv {
 export const bashTool: ToolDefinition = {
   name: 'bash',
   description:
-    'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. IMPORTANT: Do not use bash for reading files (use file_read), editing files (use file_edit), or searching (use grep/glob). Use absolute paths. Quote paths with spaces. Git: new commits only (never amend unless asked), never --no-verify, never force-push, never commit unless explicitly asked. Do not sleep between commands. Chain dependent commands with &&.',
+    'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. IMPORTANT: Do not use bash for reading files (use file_read), editing files (use file_edit), or searching (use grep/glob). Use absolute paths. Quote paths with spaces. Git: new commits only (never amend unless asked), never --no-verify, never force-push, never commit unless explicitly asked. Do not sleep between commands. Chain dependent commands with &&. In assistant/detached mode, commands exceeding 15s are auto-backgrounded — use run_in_background for intentionally long tasks.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -75,17 +104,24 @@ export const bashTool: ToolDefinition = {
         description:
           'A short human-readable description of what this command does.',
       },
+      dangerouslyDisableSandbox: {
+        type: 'boolean',
+        description:
+          'Override sandbox mode and run commands without resource restrictions. Use only when the sandbox interferes with legitimate operations.',
+      },
     },
     required: ['command'],
   },
   isReadOnly: false,
+  isConcurrencySafe: false,
 
   async execute(
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
     const command = input.command as string;
-    const timeout = (input.timeout as number) ?? DEFAULT_TIMEOUT_MS;
+    const MAX_TIMEOUT_MS = 3_600_000; // 1 hour
+    const timeout = Math.min((input.timeout as number) || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
     if (!command || command.trim().length === 0) {
       return { output: 'Error: command must not be empty.', isError: true };
@@ -109,6 +145,19 @@ export const bashTool: ToolDefinition = {
       };
     }
 
+    const secCheck = validateBashSecurity(command);
+    if (!secCheck.safe) {
+      return {
+        output: `Error: ${secCheck.message}`,
+        isError: true,
+      };
+    }
+
+    const sleepBlock = detectBlockedSleep(command, !!input.run_in_background, !!input.timeout);
+    if (sleepBlock) return { output: `Error: ${sleepBlock}`, isError: true };
+
+    const readOnly = isReadOnlyBashCommand(command);
+
     if (input.run_in_background && context.processManager) {
       const desc = (input.description as string) || command.slice(0, 80);
       const taskId = context.processManager.spawn(command, {
@@ -118,12 +167,16 @@ export const bashTool: ToolDefinition = {
       });
       const task = context.processManager.get(taskId);
       return {
-        output: `Background task started.\n  Task ID: ${taskId}\n  PID: ${task?.pid ?? 'unknown'}\n  Command: ${command}\n\nUse task_output({ task_id: "${taskId}" }) to check status and output.\nUse task_kill({ task_id: "${taskId}" }) to stop it.\nUse task_list() to see all background tasks.`,
+        output: `[background: true]\nBackground task started.\n  Task ID: ${taskId}\n  PID: ${task?.pid ?? 'unknown'}\n  Command: ${command}\n\nUse task_output({ task_id: "${taskId}" }) to check status and output.\nUse task_kill({ task_id: "${taskId}" }) to stop it.\nUse task_list() to see all background tasks.`,
         isError: false,
       };
     }
 
-    const result = await execCommand(command, {
+    const disableSandbox = input.dangerouslyDisableSandbox === true;
+    const useSandbox = !disableSandbox && shouldUseSandbox(command);
+    const effectiveCommand = useSandbox ? wrapWithSandbox(command, context.cwd) : command;
+
+    const result = await execCommand(effectiveCommand, {
       cwd: context.cwd,
       timeout,
       abortSignal: context.abortSignal,
@@ -136,16 +189,65 @@ export const bashTool: ToolDefinition = {
     }
 
     if (result.exitCode === null) {
-      const reason = context.abortSignal?.aborted
-        ? 'Command aborted.'
-        : `Command timed out after ${timeout}ms.`;
+      if (context.abortSignal?.aborted) {
+        return {
+          output: formatOutput(result.stdout, result.stderr, null, 'Command aborted.'),
+          isError: true,
+        };
+      }
+      const combinedOutput = result.stdout + result.stderr;
+      if (looksLikeHungPrompt(combinedOutput)) {
+        const lastLine = combinedOutput.trim().split('\n').pop();
+        return {
+          output: `Command appears to be waiting for interactive input. Last line: "${lastLine}"\nSuggestion: Use 'echo y | ${command}' or 'yes | ${command}' to auto-respond, or run with run_in_background: true.`,
+          isError: true,
+        };
+      }
+      if (context.processManager) {
+        const taskId = context.processManager.spawn(command, {
+          cwd: context.cwd,
+          description: `[auto-bg] ${command.slice(0, 60)}`,
+          env: scrubEnv(),
+        });
+        return {
+          output: `Command timed out after ${timeout}ms. Auto-moved to background as task ${taskId}. Use task_output to check progress.`,
+        };
+      }
       return {
-        output: formatOutput(result.stdout, result.stderr, null, reason),
+        output: formatOutput(result.stdout, result.stderr, null, `Command timed out after ${timeout}ms.`),
         isError: true,
       };
     }
 
-    let output = formatOutput(result.stdout, result.stderr, result.exitCode);
+    // CWD escape check
+    let stdoutExtra = '';
+    if (result.stdout.includes('cd ') || command.includes('cd ')) {
+      try {
+        const checkCwd = child_process.execSync('pwd', { cwd: context.cwd, encoding: 'utf-8', timeout: 5000 }).trim();
+        if (!checkCwd.startsWith(context.cwd)) {
+          stdoutExtra = '\n[Warning: Command attempted to change directory outside project. CWD reset.]';
+        }
+      } catch {}
+    }
+
+    // Persist large output to disk instead of truncating
+    let stdout = result.stdout + stdoutExtra;
+    if (stdout.length > MAX_OUTPUT_LENGTH) {
+      const spillDir = path.join(context.cwd, '.superinference', 'tool-results');
+      fs.mkdirSync(spillDir, { recursive: true });
+      const spillFile = path.join(spillDir, `bash-${Date.now()}.txt`);
+      fs.writeFileSync(spillFile, stdout, 'utf-8');
+      const headLen = Math.floor(MAX_OUTPUT_LENGTH * 0.67);
+      const tailLen = MAX_OUTPUT_LENGTH - headLen - 200;
+      stdout = stdout.slice(0, headLen) + `\n\n[... ${stdout.length - headLen - tailLen} chars persisted to ${spillFile} — use file_read to view ...]\n\n` + stdout.slice(-tailLen);
+    }
+
+    const noOutputExpected = /^\s*(mkdir|touch|mv|cp|rm|chmod|chown)\b/.test(command);
+    if (noOutputExpected && !stdout.trim() && result.exitCode === 0) {
+      stdout = '[Command completed successfully (no output expected)]';
+    }
+
+    let output = formatOutput(stdout, result.stderr, result.exitCode);
     const chaining = detectCommandChaining(command);
     if (chaining.chained && chaining.count > 2) {
       output += '\n\n[Note: This command chains ' + chaining.count +
@@ -153,14 +255,21 @@ export const bashTool: ToolDefinition = {
         '. Consider using separate tool calls for better error handling and readability.]';
     }
 
+    let interpretation: string | null = null;
     if (result.exitCode !== 0) {
+      interpretation = interpretExitCode(command, result.exitCode);
+      if (interpretation) output += `\n${interpretation}`;
       const hint = diagnoseError(output);
       if (hint) output += `\n\n[Hint: ${hint}]`;
     }
 
+    const exitInfo = result.exitCode !== 0 ? `\n[exit code: ${result.exitCode}${interpretation ? ' ' + interpretation : ''}]` : '';
+    output = `${output}${exitInfo}`.trim();
+
     return {
       output,
       isError: result.exitCode !== 0,
+      metadata: { readOnly },
     };
   },
 };
@@ -177,6 +286,19 @@ function diagnoseError(output: string): string | null {
   for (const { pattern, hint } of ERROR_HINTS) {
     if (pattern.test(output)) return hint;
   }
+  return null;
+}
+
+function interpretExitCode(command: string, exitCode: number): string | null {
+  const base = command.trim().split(/\s+/)[0];
+  if (exitCode === 1 && (base === 'grep' || base === 'rg')) return '(no matches found — not an error)';
+  if (exitCode === 1 && base === 'diff') return '(files differ — not an error)';
+  if (exitCode === 2 && base === 'grep') return '(error in grep pattern or file access)';
+  if (exitCode === 1 && base === 'find' && command.includes('-exec')) return '(exec command failed)';
+  if (exitCode === 126) return '(permission denied — command not executable)';
+  if (exitCode === 127) return '(command not found)';
+  if (exitCode === 128 + 9) return '(killed by SIGKILL)';
+  if (exitCode === 128 + 15) return '(killed by SIGTERM)';
   return null;
 }
 

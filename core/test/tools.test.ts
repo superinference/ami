@@ -67,8 +67,8 @@ describe('file_read tool', () => {
     assert.ok(result.output.includes('line 8'));
     // Should not include line 9
     assert.ok(!result.output.includes('9\tline 9'));
-    // Should report that we're showing a range
-    assert.ok(result.output.includes('Showing lines'));
+    // Should have the range content (lines 6-8)
+    assert.ok(result.output.includes('line 6') && result.output.includes('line 8'));
   });
 
   it('detects binary files', async () => {
@@ -80,7 +80,7 @@ describe('file_read tool', () => {
 
     const result = await fileReadTool.execute({ file_path: fp }, makeContext(tmpDir));
     assert.equal(result.isError, undefined);
-    assert.ok(result.output.includes('[Binary file]'));
+    assert.ok(result.output.includes('Binary file'));
   });
 
   it('returns error for missing file', async () => {
@@ -574,12 +574,12 @@ describe('list_dir tool', () => {
 // ToolRegistry
 // ---------------------------------------------------------------------------
 describe('ToolRegistry', () => {
-  it('createDefaultTools returns all 18 tools', () => {
+  it('createDefaultTools returns all 41 tools', () => {
     const registry = createDefaultTools('/tmp');
     const tools = registry.getAll();
-    assert.equal(tools.length, 18);
+    assert.equal(tools.length, 41);
     const names = tools.map(t => t.name).sort();
-    assert.deepEqual(names, ['AskUserQuestion', 'bash', 'file_edit', 'file_read', 'file_write', 'git_commit', 'glob', 'grep', 'list_dir', 'multi_edit', 'notebook_edit', 'plan_mode', 'search_symbols', 'task', 'task_tracker', 'tool_search', 'web_fetch', 'web_search']);
+    assert.deepEqual(names, ['AskUserQuestion', 'agentic_fetch', 'bash', 'brief', 'config', 'cron_create', 'cron_delete', 'cron_list', 'diagnostics', 'enter_worktree', 'exit_worktree', 'file_edit', 'file_read', 'file_write', 'find_references', 'git_commit', 'glob', 'grep', 'list_dir', 'multi_edit', 'notebook_edit', 'plan_mode', 'schedule_wakeup', 'scout', 'search_symbols', 'send_message', 'skill', 'sleep', 'structured_output', 'task', 'task_kill', 'task_list', 'task_output', 'task_tracker', 'team_create', 'team_delete', 'todo_write', 'tool_search', 'web_fetch', 'web_search', 'workflow']);
   });
 
   it('get returns a specific tool', () => {

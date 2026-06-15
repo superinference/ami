@@ -71,6 +71,17 @@ export class ToolCallGuardrailController {
     if (failed) {
       this.exactFailures.set(sig, (this.exactFailures.get(sig) || 0) + 1);
       this.evictOldest(this.exactFailures);
+
+      const failCount = this.exactFailures.get(sig) || 0;
+      const recovery = this.getRecoveryAction(toolName, args, output);
+      if (failCount >= EXACT_FAILURE_BLOCK) {
+        const reason = `Tool "${toolName}" has failed ${failCount} times with identical arguments. ${recoveryHint(toolName)} Do NOT retry the same command — change your approach.${recovery ? '\n' + recovery : ''}`;
+        return { action: 'block', reason };
+      }
+      if (failCount >= EXACT_FAILURE_WARN) {
+        const reason = `Tool "${toolName}" has failed ${failCount} times with identical arguments. ${recoveryHint(toolName)}${recovery ? '\n' + recovery : ''}`;
+        return { action: 'warn', reason };
+      }
     } else {
       this.exactFailures.delete(sig);
     }
@@ -105,6 +116,28 @@ export class ToolCallGuardrailController {
     }
 
     return { action: 'allow' };
+  }
+
+  private getRecoveryAction(toolName: string, _args: Record<string, unknown>, error: string): string {
+    if (toolName === 'file_edit' && error.includes('not found')) {
+      return 'Recovery: Run file_read on the file first to get the current content, then retry the edit.';
+    }
+    if (toolName === 'file_edit' && error.includes('multiple matches')) {
+      return 'Recovery: Add more context to old_string to make it unique, or use replace_all: true.';
+    }
+    if (toolName === 'bash' && error.includes('command not found')) {
+      return 'Recovery: Check the command name. Use tool_search to find the right tool.';
+    }
+    if (toolName === 'bash' && error.includes('permission denied')) {
+      return 'Recovery: Check file permissions. You may need to use a different approach.';
+    }
+    if (toolName === 'grep' && error.includes('timed out')) {
+      return 'Recovery: Use a more specific pattern or narrow the search path.';
+    }
+    if (toolName === 'web_fetch' && error.includes('SSRF')) {
+      return 'Recovery: The URL points to a private/internal address. Use a public URL instead.';
+    }
+    return '';
   }
 
   detectLoop(): string[] | null {

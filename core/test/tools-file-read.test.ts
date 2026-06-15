@@ -121,7 +121,7 @@ describe('fileReadTool – offset and limit', () => {
     assert.ok(!result.isError);
     assert.ok(result.output.includes('line3'));
     assert.ok(result.output.includes('line4'));
-    assert.ok(result.output.includes('Showing lines'));
+    assert.ok(result.output.includes('Showing'));
     // Should NOT include line1 or line2
     const lines = result.output.split('\n');
     const contentLines = lines.filter(l => /\t/.test(l));

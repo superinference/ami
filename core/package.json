@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "test": "node --max-old-space-size=8192 --import tsx --test test/*.test.ts",
+    "test": "node --max-old-space-size=8192 --import tsx --test --test-force-exit test/*.test.ts",
     "test:coverage": "node --max-old-space-size=8192 --import tsx --test --experimental-test-coverage --test-coverage-exclude='test/**' --test-coverage-exclude='node_modules/**' test/*.test.ts",
     "lint": "eslint src/ --ext .ts --max-warnings 0",
     "lint:security": "eslint src/ --ext .ts --max-warnings 0",

@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { execCommand } from '../utils/shell';
+import { scanForSecrets } from './tool-utils';
 
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
 const TRAILER_REGEX = /Co-Authored-By:\s*AMI\s*<ami@superinference\.org>/i;
@@ -97,6 +98,11 @@ export const gitCommitTool: ToolDefinition = {
         output: 'Error: nothing staged for commit. Stage files with the "files" parameter, or use bash to run git add first.',
         isError: true,
       };
+    }
+
+    const secrets = scanForSecrets(message);
+    if (secrets.length > 0) {
+      return { output: `Warning: Potential secrets detected in commit message: ${secrets.join(', ')}. Remove secrets before committing.`, isError: true };
     }
 
     // Build the final commit message with trailer

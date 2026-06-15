@@ -107,6 +107,29 @@ export function renderToolDescription(
 }
 
 // ---------------------------------------------------------------------------
+// Secret scanner — checks content for leaked credentials before writes
+// ---------------------------------------------------------------------------
+
+const SECRET_PATTERNS = [
+  /(?:^|[^a-zA-Z0-9])(?:sk-[a-zA-Z0-9]{20,})(?:[^a-zA-Z0-9]|$)/,   // OpenAI
+  /(?:^|[^a-zA-Z0-9])(?:sk-ant-[a-zA-Z0-9]{20,})/,                   // Anthropic
+  /(?:^|[^a-zA-Z0-9])(?:ghp_[a-zA-Z0-9]{36})/,                       // GitHub
+  /(?:^|[^a-zA-Z0-9])(?:gsk_[a-zA-Z0-9]{20,})/,                      // Groq
+  /(?:^|[^a-zA-Z0-9])(?:AKIA[A-Z0-9]{16})/,                          // AWS
+  /(?:^|[^a-zA-Z0-9])(?:AIza[a-zA-Z0-9_-]{35})/,                     // Google
+  /(?:password|secret|token|api_key)\s*[:=]\s*['"][^'"]{8,}['"]/i,
+];
+
+export function scanForSecrets(content: string): string[] {
+  const found: string[] = [];
+  for (const pattern of SECRET_PATTERNS) {
+    const match = content.match(pattern);
+    if (match) found.push(match[0].slice(0, 20) + '...');
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------------------
 // CRLF-aware line ending helpers (shared by file-edit and file-write)
 // ---------------------------------------------------------------------------
 

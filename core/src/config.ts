@@ -81,6 +81,14 @@ export function loadProjectConfig(cwd: string): ProjectConfig | null {
 }
 
 /**
+ * Load a local config from `<cwd>/.superinference/config.local.json`.
+ * This file is typically gitignored for user-specific overrides.
+ */
+export function loadLocalConfig(cwd: string): ProjectConfig | null {
+  return loadConfigFile(path.join(cwd, '.superinference', 'config.local.json'));
+}
+
+/**
  * Load the global config from `~/.superinference/config.json`.
  * Returns `null` when the file does not exist.
  */
@@ -89,6 +97,14 @@ export function loadGlobalConfig(): ProjectConfig | null {
   if (!home) return null;
   const configPath = path.join(home, '.superinference', 'config.json');
   return loadConfigFile(configPath);
+}
+
+/**
+ * Load a managed/system-wide config from `/etc/superinference/config.json`.
+ * Used by organizations to set defaults across all users on a machine.
+ */
+export function loadManagedConfig(): ProjectConfig | null {
+  return loadConfigFile('/etc/superinference/config.json');
 }
 
 function loadConfigFile(configPath: string): ProjectConfig | null {
@@ -121,6 +137,7 @@ export class ConfigService {
   private watcher: fs.FSWatcher | null = null;
   private listeners: ConfigChangeListener[] = [];
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private onConfigChangeCallbacks: Array<(source: string, path: string) => void> = [];
 
   constructor(cwd: string) {
     this.configPath = path.join(cwd, '.superinference', 'config.json');
@@ -136,6 +153,10 @@ export class ConfigService {
     return () => {
       this.listeners = this.listeners.filter(l => l !== listener);
     };
+  }
+
+  onConfigChange(cb: (source: string, path: string) => void): void {
+    this.onConfigChangeCallbacks.push(cb);
   }
 
   watch(): void {
@@ -173,6 +194,9 @@ export class ConfigService {
       for (const listener of this.listeners) {
         try { listener(next, prev); } catch (err) { coreLog('config', 'config listener error', { error: String(err) }); }
       }
+      for (const cb of this.onConfigChangeCallbacks) {
+        try { cb('project', this.configPath); } catch (err) { coreLog('config', 'onConfigChange callback error', { error: String(err) }); }
+      }
     }
     return changed;
   }
@@ -195,8 +219,10 @@ export class ConfigService {
  * Priority (highest first):
  *   1. `cliArgs`       — flags passed on the command line
  *   2. `envVars`       — values derived from environment variables
- *   3. `projectConfig` — `.superinference/config.json` in the project
- *   4. `globalConfig`  — `~/.superinference/config.json`
+ *   3. `localConfig`   — `.superinference/config.local.json` (gitignored)
+ *   4. `projectConfig` — `.superinference/config.json` in the project
+ *   5. `globalConfig`  — `~/.superinference/config.json`
+ *   6. `managedConfig` — `/etc/superinference/config.json`
  *
  * Only defined (non-undefined) values participate in the merge.
  */
@@ -205,10 +231,14 @@ export function mergeConfigs(
   envVars: Partial<ProjectConfig>,
   projectConfig: ProjectConfig | null,
   globalConfig: ProjectConfig | null,
+  localConfig?: ProjectConfig | null,
+  managedConfig?: ProjectConfig | null,
 ): ProjectConfig {
   const layers: Array<Partial<ProjectConfig>> = [
+    managedConfig ?? {},
     globalConfig ?? {},
     projectConfig ?? {},
+    localConfig ?? {},
     envVars,
     cliArgs,
   ];

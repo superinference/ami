@@ -451,7 +451,7 @@ describe('notebook_edit tool', () => {
     assert.equal(updated.cells[1].source, 'also keep');
   });
 
-  it('returns error for out-of-range cell_number on replace', async () => {
+  it('auto-converts out-of-range replace to insert at end', async () => {
     const nb = makeNotebook([{ cell_type: 'code', source: 'x' }]);
     const fp = path.join(tmpDir, 'oor-replace.ipynb');
     fs.writeFileSync(fp, JSON.stringify(nb));
@@ -460,8 +460,11 @@ describe('notebook_edit tool', () => {
       { notebook_path: fp, cell_number: 5, new_source: 'y' },
       makeContext(tmpDir),
     );
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('out of range'));
+    // Out-of-range replace auto-converts to insert
+    assert.equal(result.isError, undefined);
+    const updated = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+    assert.equal(updated.cells.length, 2);
+    assert.equal(updated.cells[1].source, 'y');
   });
 
   it('returns error for out-of-range cell_number on delete', async () => {

@@ -1,7 +1,31 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { detectLineEnding, convertToLineEnding, resolveFilePath } from './tool-utils';
+import { detectLineEnding, convertToLineEnding, resolveFilePath, scanForSecrets } from './tool-utils';
+
+async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
+  try {
+    const historyDir = path.join(cwd, '.superinference', 'file-history');
+    await fs.promises.mkdir(historyDir, { recursive: true });
+
+    const timestamp = Date.now();
+    const safeName = path.basename(filePath).replace(/[^a-zA-Z0-9.-]/g, '_');
+    const historyFile = path.join(historyDir, `${safeName}.${timestamp}.bak`);
+
+    await fs.promises.writeFile(historyFile, originalContent, 'utf-8');
+
+    // Keep only last 20 backups per file
+    const prefix = safeName + '.';
+    const entries = await fs.promises.readdir(historyDir);
+    const matches = entries.filter(e => e.startsWith(prefix) && e.endsWith('.bak')).sort();
+    if (matches.length > 20) {
+      for (const old of matches.slice(0, matches.length - 20)) {
+        await fs.promises.unlink(path.join(historyDir, old)).catch(() => {});
+      }
+    }
+  } catch { /* non-critical, don't fail the edit */ }
+}
+
 
 export const fileWriteTool: ToolDefinition = {
   name: 'file_write',
@@ -58,6 +82,21 @@ export const fileWriteTool: ToolDefinition = {
         };
       }
 
+      if (fileExists && context.filesRead?.has(resolved)) {
+        try {
+          const { getFileCache } = require('../file-cache');
+          const cache = getFileCache(context.cwd);
+          if (cache?.hasChanged?.(resolved)) {
+            return { output: 'Error: File has been modified since you last read it. Read the file again before overwriting.', isError: true };
+          }
+        } catch {}
+      }
+
+      const secrets = scanForSecrets(content);
+      if (secrets.length > 0) {
+        return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
+      }
+
       // Preserve original line endings when overwriting
       let finalContent = content;
       if (fileExists && oldContent.length > 0) {
@@ -69,11 +108,23 @@ export const fileWriteTool: ToolDefinition = {
       const dir = path.dirname(resolved);
       await fs.promises.mkdir(dir, { recursive: true });
 
+      // Back up existing content before overwriting
+      if (fileExists && oldContent.length > 0) {
+        await trackFileHistory(resolved, oldContent, context.cwd);
+      }
+
       // Write file content
       await fs.promises.writeFile(resolved, finalContent, 'utf-8');
 
       // Track as known — the model wrote this content, so it can overwrite later
       context.filesRead?.add(resolved);
+
+      try {
+        const { getLSPClient } = require('../lsp');
+        const lsp = getLSPClient();
+        lsp.notifyDidChange(resolved, finalContent, context.cwd).catch(() => {});
+        lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
+      } catch {}
 
       // Build diff output
       const lines = content.split('\n');

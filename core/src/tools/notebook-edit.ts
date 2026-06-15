@@ -33,6 +33,10 @@ export const notebookEditTool: ToolDefinition = {
         type: 'number',
         description: '0-based cell index to edit',
       },
+      cell_id: {
+        type: 'string',
+        description: 'Cell ID (from notebook metadata) to select the cell. Takes precedence over cell_number if both provided.',
+      },
       new_source: {
         type: 'string',
         description: 'New source content for the cell',
@@ -58,9 +62,10 @@ export const notebookEditTool: ToolDefinition = {
   ): Promise<ToolResult> {
     const notebookPath = input.notebook_path as string;
     const newSource = input.new_source as string;
-    const cellNumber = input.cell_number as number | undefined;
+    let cellNumber = input.cell_number as number | undefined;
+    const cellId = input.cell_id as string | undefined;
     const cellType = (input.cell_type as string) ?? undefined;
-    const editMode = (input.edit_mode as string) ?? 'replace';
+    let editMode = (input.edit_mode as string) ?? 'replace';
 
     // --- Validate inputs ---
     if (!notebookPath || notebookPath.trim().length === 0) {
@@ -99,6 +104,21 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
+    if (context.filesRead && !context.filesRead.has(resolved)) {
+      return {
+        output: `Error: You must read ${resolved} with file_read before editing it. This prevents edits based on stale content.`,
+        isError: true,
+      };
+    }
+
+    try {
+      const { getFileCache } = require('../file-cache');
+      const cache = getFileCache(context.cwd);
+      if (cache?.hasChanged?.(resolved)) {
+        return { output: 'Error: Notebook modified since last read. Read it again.', isError: true };
+      }
+    } catch {}
+
     // --- Read and parse the notebook ---
     let raw: string;
     try {
@@ -136,16 +156,47 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
+    // --- Resolve cell_id to cell_number ---
+    if (cellId && cellNumber === undefined) {
+      // Support cell-N alias (e.g. "cell-0", "cell-5")
+      if (typeof cellId === 'string' && cellId.startsWith('cell-')) {
+        const idx = parseInt(cellId.slice(5), 10);
+        if (!isNaN(idx) && idx >= 0 && idx < notebook.cells.length) {
+          cellNumber = idx;
+        }
+      }
+
+      if (cellNumber === undefined) {
+        const idx = notebook.cells.findIndex(c => c.id === cellId);
+        if (idx === -1) {
+          const available = notebook.cells
+            .map((c, i) => c.id ? `${i}:${c.id}` : `${i}:(no id)`)
+            .join(', ');
+          return {
+            output: `Error: cell_id "${cellId}" not found. Available cells: ${available}`,
+            isError: true,
+          };
+        }
+        cellNumber = idx;
+      }
+    }
+
     // --- Determine the target cell index ---
     const totalCells = notebook.cells.length;
 
-    // For insert mode with no cell_number, insert at the end
-    const effectiveIndex =
-      cellNumber !== undefined && cellNumber !== null
-        ? cellNumber
-        : editMode === 'insert'
-          ? totalCells // insert at the end
-          : 0; // default to first cell for replace
+    // For insert mode with cell_id match, insert AFTER the matched cell (Claude behavior)
+    let effectiveIndex: number;
+    if (cellNumber !== undefined && cellNumber !== null) {
+      if (editMode === 'insert' && cellId) {
+        effectiveIndex = cellNumber + 1;
+      } else {
+        effectiveIndex = cellNumber;
+      }
+    } else if (editMode === 'insert') {
+      effectiveIndex = totalCells;
+    } else {
+      effectiveIndex = 0;
+    }
 
     // --- Perform the edit ---
     if (editMode === 'delete') {
@@ -187,31 +238,53 @@ export const notebookEditTool: ToolDefinition = {
       notebook.cells.splice(effectiveIndex, 0, newCell);
     } else {
       // replace
-      if (effectiveIndex < 0 || effectiveIndex >= totalCells) {
+      if (effectiveIndex < 0) {
         return {
           output: `Error: cell_number ${effectiveIndex} is out of range (notebook has ${totalCells} cells, indices 0-${totalCells - 1}).`,
           isError: true,
         };
       }
+      if (effectiveIndex >= totalCells) {
+        // Auto-convert replace to insert at end
+        editMode = 'insert';
+        const type = cellType ?? 'code';
+        const newCell: NotebookCell = {
+          cell_type: type,
+          source: newSource,
+          metadata: {},
+        };
+        if (type === 'code') {
+          newCell.execution_count = null;
+          newCell.outputs = [];
+        }
+        if (
+          notebook.nbformat > 4 ||
+          (notebook.nbformat === 4 && notebook.nbformat_minor >= 5)
+        ) {
+          newCell.id = Math.random().toString(36).substring(2, 15);
+        }
+        notebook.cells.splice(effectiveIndex, 0, newCell);
+      } else {
+        const target = notebook.cells[effectiveIndex];
+        target.source = newSource;
 
-      const target = notebook.cells[effectiveIndex];
-      target.source = newSource;
+        // Reset execution state for code cells
+        if (target.cell_type === 'code') {
+          target.execution_count = null;
+          target.outputs = [];
+        }
 
-      // Reset execution state for code cells
-      if (target.cell_type === 'code') {
-        target.execution_count = null;
-        target.outputs = [];
-      }
-
-      // Optionally change the cell type
-      if (cellType && cellType !== target.cell_type) {
-        target.cell_type = cellType;
+        // Optionally change the cell type
+        if (cellType && cellType !== target.cell_type) {
+          target.cell_type = cellType;
+        }
       }
     }
 
     // --- Write the modified notebook back ---
+    let updatedJson: string;
     try {
-      const updatedJson = JSON.stringify(notebook, null, 1);
+      updatedJson = JSON.stringify(notebook, null, 1);
       await fs.promises.writeFile(resolved, updatedJson, 'utf-8');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -220,6 +293,13 @@ export const notebookEditTool: ToolDefinition = {
         isError: true,
       };
     }
+
+    try {
+      const { getLSPClient } = require('../lsp');
+      const lsp = getLSPClient();
+      lsp.notifyDidChange(resolved, updatedJson, context.cwd).catch(() => {});
+      lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
+    } catch {}
 
     // --- Build confirmation message ---
     const newTotal = notebook.cells.length;

@@ -1,6 +1,6 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { planModeTool } from '../src/tools/plan-mode';
+import { planModeTool, setPlanModeActive } from '../src/tools/plan-mode';
 import type { ToolContext } from '../src/types';
 
 function ctx(): ToolContext {
@@ -40,20 +40,39 @@ describe('planModeTool — definition', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Execute — stub behavior
+// Execute — real implementation
 // ---------------------------------------------------------------------------
 
 describe('planModeTool — execute', () => {
-  it('returns stub message (engine handles actual logic)', async () => {
+  beforeEach(() => setPlanModeActive(false));
+
+  it('enters plan mode and creates plan file', async () => {
     const result = await planModeTool.execute({ action: 'enter' }, ctx());
     assert.equal(result.isError, false);
-    assert.ok(result.output.includes('handled by the engine'));
+    assert.ok(result.output.includes('Entered plan mode'));
+    assert.ok(result.output.includes('Plan file:'));
+    setPlanModeActive(false);
   });
 
-  it('returns same stub for exit action', async () => {
+  it('exits plan mode and shows plan content', async () => {
+    await planModeTool.execute({ action: 'enter' }, ctx());
     const result = await planModeTool.execute({ action: 'exit' }, ctx());
     assert.equal(result.isError, false);
-    assert.ok(result.output.includes('handled by the engine'));
+    assert.ok(result.output.includes('Exiting plan mode'));
+  });
+
+  it('rejects exit when not in plan mode', async () => {
+    const result = await planModeTool.execute({ action: 'exit' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Not in plan mode'));
+  });
+
+  it('rejects enter when already in plan mode', async () => {
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    const result = await planModeTool.execute({ action: 'enter' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Already in plan mode'));
+    setPlanModeActive(false);
   });
 });
 

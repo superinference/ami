@@ -124,7 +124,7 @@ describe('bashTool – abort signal', () => {
     const ac = new AbortController();
     ac.abort();
     const result = await bashTool.execute(
-      { command: 'sleep 60' },
+      { command: 'echo hi' },
       ctx({ abortSignal: ac.signal }),
     );
     assert.equal(result.isError, true);
@@ -228,7 +228,7 @@ describe('bashTool – abort during execution', () => {
   it('returns abort message when signal fires mid-execution', async () => {
     const ac = new AbortController();
     const promise = bashTool.execute(
-      { command: 'sleep 30' },
+      { command: 'sleep 5' },
       ctx({ abortSignal: ac.signal }),
     );
     // Abort after a short delay

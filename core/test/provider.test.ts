@@ -93,24 +93,47 @@ describe('resolveModel - provider detection', () => {
   });
 
   it('detects Anthropic by model name prefix', () => {
-    const config = makeConfig({
-      baseUrl: 'https://api.openai.com/v1', // URL doesn't matter for Anthropic detection
-      model: 'claude-sonnet-4-20250514',
-    });
-    const result = resolveModel(config);
+    // Clear vertex env vars so the test can verify model-name-based detection
+    const savedVertex = process.env.CLAUDE_CODE_USE_VERTEX;
+    const savedProjectId = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    delete process.env.CLAUDE_CODE_USE_VERTEX;
+    delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    try {
+      const config = makeConfig({
+        baseUrl: 'https://api.openai.com/v1', // URL doesn't matter for Anthropic detection
+        model: 'claude-sonnet-4-20250514',
+      });
+      const result = resolveModel(config);
 
-    assert.ok(result);
-    assert.ok(result.provider.startsWith('anthropic'), `Expected provider starting with 'anthropic', got '${result.provider}'`);
+      assert.ok(result);
+      assert.ok(result.provider.startsWith('anthropic'), `Expected provider starting with 'anthropic', got '${result.provider}'`);
+    } finally {
+      if (savedVertex !== undefined) process.env.CLAUDE_CODE_USE_VERTEX = savedVertex;
+      else delete process.env.CLAUDE_CODE_USE_VERTEX;
+      if (savedProjectId !== undefined) process.env.ANTHROPIC_VERTEX_PROJECT_ID = savedProjectId;
+      else delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    }
   });
 
   it('detects Anthropic for claude-3.5 model names', () => {
-    const config = makeConfig({
-      model: 'claude-3-5-sonnet-20241022',
-    });
-    const result = resolveModel(config);
+    const savedVertex = process.env.CLAUDE_CODE_USE_VERTEX;
+    const savedProjectId = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    delete process.env.CLAUDE_CODE_USE_VERTEX;
+    delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    try {
+      const config = makeConfig({
+        model: 'claude-3-5-sonnet-20241022',
+      });
+      const result = resolveModel(config);
 
-    assert.ok(result);
-    assert.ok(result.provider.startsWith('anthropic'), `Expected provider starting with 'anthropic', got '${result.provider}'`);
+      assert.ok(result);
+      assert.ok(result.provider.startsWith('anthropic'), `Expected provider starting with 'anthropic', got '${result.provider}'`);
+    } finally {
+      if (savedVertex !== undefined) process.env.CLAUDE_CODE_USE_VERTEX = savedVertex;
+      else delete process.env.CLAUDE_CODE_USE_VERTEX;
+      if (savedProjectId !== undefined) process.env.ANTHROPIC_VERTEX_PROJECT_ID = savedProjectId;
+      else delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    }
   });
 
   it('detects Google/Gemini by URL', () => {

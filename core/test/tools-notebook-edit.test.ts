@@ -170,7 +170,7 @@ describe('notebookEditTool – replace', () => {
     assert.equal(nb.cells[0].source, 'replaced');
   });
 
-  it('rejects out-of-range cell_number for replace', async () => {
+  it('auto-converts out-of-range replace to insert at end', async () => {
     const file = writeNotebook('oor.ipynb', [
       { cell_type: 'code', source: 'x' },
     ]);
@@ -178,8 +178,12 @@ describe('notebookEditTool – replace', () => {
       { notebook_path: file, cell_number: 5, new_source: 'y', edit_mode: 'replace' },
       ctx(),
     );
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('out of range'));
+    // Out-of-range replace is auto-converted to insert
+    assert.ok(!result.isError, `Expected success (auto-insert), got: ${result.output}`);
+    assert.ok(result.output.includes('Inserted'));
+    const nb = readNotebook(file);
+    assert.equal(nb.cells.length, 2);
+    assert.equal(nb.cells[1].source, 'y');
   });
 
   it('can change cell type during replace', async () => {
