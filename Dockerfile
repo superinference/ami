@@ -24,6 +24,7 @@ RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
         jq \
         tar \
         gzip \
+        libatomic \
         procps-ng \
         shadow-utils \
     && microdnf clean all \

@@ -43,6 +43,7 @@ export class ToolCallGuardrailController {
   private exactFailures = new Map<string, number>();
   private noProgressHistory = new Map<string, { resultHash: string; count: number }>();
   private callHistory: string[] = [];
+  private fileFailures = new Map<string, number>();
 
   private evictOldest(map: Map<string, unknown>): void {
     if (map.size > MAX_TRACKED_SIGNATURES) {
@@ -82,8 +83,25 @@ export class ToolCallGuardrailController {
         const reason = `Tool "${toolName}" has failed ${failCount} times with identical arguments. ${recoveryHint(toolName)}${recovery ? '\n' + recovery : ''}`;
         return { action: 'warn', reason };
       }
+
+      // Per-file failure tracking — catches repeated failures on the same file with different args
+      if ((toolName === 'file_edit' || toolName === 'file_write') && args.file_path) {
+        const fileKey = `${toolName}:${args.file_path}`;
+        const fileCount = (this.fileFailures.get(fileKey) || 0) + 1;
+        this.fileFailures.set(fileKey, fileCount);
+        if (fileCount >= EXACT_FAILURE_BLOCK) {
+          return { action: 'block', reason: `${toolName} has failed ${fileCount} times on ${args.file_path}. Try file_write to replace the entire file instead of file_edit.` };
+        }
+        if (fileCount >= EXACT_FAILURE_WARN + 1) {
+          return { action: 'warn', reason: `${toolName} has failed ${fileCount} times on ${args.file_path}. Consider using file_write to rewrite the file entirely.` };
+        }
+      }
     } else {
       this.exactFailures.delete(sig);
+      // Clear per-file failure counter on success
+      if (args.file_path) {
+        this.fileFailures.delete(`${toolName}:${args.file_path}`);
+      }
     }
 
     const combined = sig + ':' + hashResult(output);
@@ -119,6 +137,9 @@ export class ToolCallGuardrailController {
   }
 
   private getRecoveryAction(toolName: string, _args: Record<string, unknown>, error: string): string {
+    if (toolName === 'file_edit' && error.includes('modified since you last read')) {
+      return 'Recovery: The file changed after your last read. Use file_write to replace the entire file content instead of file_edit.';
+    }
     if (toolName === 'file_edit' && error.includes('not found')) {
       return 'Recovery: Run file_read on the file first to get the current content, then retry the edit.';
     }
@@ -130,6 +151,9 @@ export class ToolCallGuardrailController {
     }
     if (toolName === 'bash' && error.includes('permission denied')) {
       return 'Recovery: Check file permissions. You may need to use a different approach.';
+    }
+    if (toolName === 'bash' && (error.includes('LaTeX Error') || error.includes('! ') || error.includes('Undefined control sequence'))) {
+      return 'Recovery: Use web_search to look up the specific error message before retrying compilation.';
     }
     if (toolName === 'grep' && error.includes('timed out')) {
       return 'Recovery: Use a more specific pattern or narrow the search path.';
@@ -157,6 +181,7 @@ export class ToolCallGuardrailController {
   reset(): void {
     this.exactFailures.clear();
     this.noProgressHistory.clear();
+    this.fileFailures.clear();
     this.callHistory = [];
   }
 }

@@ -77,10 +77,11 @@ const BUILTIN_PERSONAS: PersonaDefinition[] = [
 - Create a project subdirectory for each task (e.g., \`paper/\`, \`analysis/\`). Keep all output files organized there.
 - Save research output to files. Papers go to \`.tex\`, reports to \`.md\`. Never just print long-form content to the terminal.
 - Use web_search to find papers and data sources. Use web_fetch for articles and docs. Use \`bash curl -O\` for binary downloads (zip, tar, PDF).
-- For LaTeX: write your OWN sty file or use \`\\bibliographystyle{plain}\` — do not download sty/bst files from the internet. Escape underscores in emails (\`\\_\`). Use \`\\usepackage{natbib}\` with \`numbers\` option or skip natbib entirely.
-- Compile LaTeX with the FULL sequence: \`pdflatex && bibtex && pdflatex && pdflatex\`. On failure, read the FULL log, fix the root cause, re-read the file, then retry.
+- For LaTeX bibliography: prefer \`\\begin{thebibliography}\` (inline, no external tools). If using BibTeX, always use \`\\usepackage[numbers]{natbib}\` with \`\\bibliographystyle{plainnat}\`. Do not download sty/bst files. Escape underscores in emails (\`\\_\`).
+- Compile LaTeX with the FULL sequence: \`pdflatex && bibtex && pdflatex && pdflatex\`. On failure, read the FULL log, fix the root cause, re-read the file, then retry. If 2+ compilation attempts fail, use \`web_search\` to look up the error.
 - Never say "I was unable to", "I apologize", or "You are absolutely correct" — just fix the issue and move on.
 - Never say "Done" until the final output (PDF, report) exists and is verified.
+- Never delete the output directory or its contents — the user needs the final artifacts.
 - If 3+ attempts fail on the same error, re-read ALL files from scratch to check assumptions.`,
     autoAllowPatterns: [
       'python*', 'python3*', 'pip*', 'jupyter*', 'R*', 'Rscript*',

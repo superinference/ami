@@ -13,6 +13,16 @@ interface FileReadState {
 }
 const fileReadStates = new Map<string, FileReadState>();
 
+/** Clear cached read state for a file (call after external writes to prevent stale-mtime errors). */
+export function clearFileReadState(resolvedPath: string): void {
+  fileReadStates.delete(resolvedPath);
+}
+
+/** Update cached read state after a successful write so the next file_edit doesn't see a stale mtime. */
+function refreshFileReadState(resolvedPath: string, content: string): void {
+  fileReadStates.set(resolvedPath, { content, mtime: fs.statSync(resolvedPath).mtimeMs });
+}
+
 async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
   try {
     const historyDir = path.join(cwd, '.superinference', 'file-history');
@@ -204,6 +214,7 @@ export const fileEditTool: ToolDefinition = {
           const message = err instanceof Error ? err.message : String(err);
           return { output: `Error writing file: ${message}`, isError: true };
         }
+        refreshFileReadState(resolved, normalizeToLf(finalContent));
         const diff = buildUnifiedDiff(content, replaced, resolved);
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
@@ -240,6 +251,7 @@ export const fileEditTool: ToolDefinition = {
         isError: true,
       };
     }
+    refreshFileReadState(resolved, normalizeToLf(newContent));
 
     // Build a unified diff showing old vs new (use LF-normalized for clean display)
     const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);

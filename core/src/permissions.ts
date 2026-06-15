@@ -552,6 +552,13 @@ export class PermissionManager {
     if (this.deniedCommands.has(key)) return 'deny';
 
 
+    // Destructive bash commands always require confirmation in 'ask' mode,
+    // even when matched by a wildcard rule — prevents rm -rf of user output
+    if (this.mode === 'ask' && toolName === 'bash' && typeof input.command === 'string') {
+      const classification = this.classifyBashCommand(input.command);
+      if (classification === 'destructive') return 'ask';
+    }
+
     // Evaluate rules in order (first match wins)
     for (const rule of this.rules) {
       const toolMatches = rule.tool === '*' || rule.tool === toolName;
