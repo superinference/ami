@@ -15,20 +15,39 @@ FROM ${BASE_IMAGE}
 
 ARG TARGETARCH
 
-# System deps: minimal set for an agent runtime
+# System deps + dev toolchain for coding agent tasks
 USER root
 RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
         ca-certificates \
         curl \
+        wget \
         git \
         jq \
         tar \
         gzip \
+        xz \
+        unzip \
+        zip \
         libatomic \
         procps-ng \
         shadow-utils \
+        findutils \
+        diffutils \
+        patch \
+        make \
+        gcc \
+        gcc-c++ \
+        python3 \
+        python3-pip \
     && microdnf clean all \
     && rm -rf /var/cache/yum
+
+# Node.js runtime — needed by the agent to run tests, scripts, etc.
+ARG NODE_VERSION=26.3.0
+RUN ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" \
+       | tar -xJ --strip-components=1 -C /usr/local \
+    && node --version && npm --version
 
 # Users: supervisor (system, non-login) and sandbox (interactive)
 RUN useradd -r -s /usr/sbin/nologin supervisor \

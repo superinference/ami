@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectLineEnding, convertToLineEnding, resolveFilePath, scanForSecrets } from './tool-utils';
-import { clearFileReadState } from './file-edit';
+import { getFileCache } from '../file-cache';
 
 async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
   try {
@@ -84,13 +84,10 @@ export const fileWriteTool: ToolDefinition = {
       }
 
       if (fileExists && context.filesRead?.has(resolved)) {
-        try {
-          const { getFileCache } = require('../file-cache');
-          const cache = getFileCache(context.cwd);
-          if (cache?.hasChanged?.(resolved)) {
-            return { output: 'Error: File has been modified since you last read it. Read the file again before overwriting.', isError: true };
-          }
-        } catch {}
+        if (getFileCache(context.cwd).hasChanged(resolved)) {
+          getFileCache(context.cwd).delete(resolved);
+          return { output: 'Error: File has been modified since you last read it. Read the file again before overwriting.', isError: true };
+        }
       }
 
       const secrets = scanForSecrets(content);
@@ -117,8 +114,10 @@ export const fileWriteTool: ToolDefinition = {
       // Write file content
       await fs.promises.writeFile(resolved, finalContent, 'utf-8');
 
-      // Invalidate file_edit's mtime cache so subsequent edits don't see stale state
-      clearFileReadState(resolved);
+      // Update the unified file cache so subsequent reads return "unchanged"
+      // and edits don't trigger stale-mtime errors
+      const stat = fs.statSync(resolved);
+      getFileCache(context.cwd).set(resolved, finalContent, stat.mtimeMs);
 
       // Track as known — the model wrote this content, so it can overwrite later
       context.filesRead?.add(resolved);

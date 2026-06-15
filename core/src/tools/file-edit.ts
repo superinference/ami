@@ -3,25 +3,10 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
 import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanForSecrets } from './tool-utils';
+import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
-
-interface FileReadState {
-  content: string;
-  mtime: number;
-}
-const fileReadStates = new Map<string, FileReadState>();
-
-/** Clear cached read state for a file (call after external writes to prevent stale-mtime errors). */
-export function clearFileReadState(resolvedPath: string): void {
-  fileReadStates.delete(resolvedPath);
-}
-
-/** Update cached read state after a successful write so the next file_edit doesn't see a stale mtime. */
-function refreshFileReadState(resolvedPath: string, content: string): void {
-  fileReadStates.set(resolvedPath, { content, mtime: fs.statSync(resolvedPath).mtimeMs });
-}
 
 async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
   try {
@@ -137,12 +122,10 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    const cached = fileReadStates.get(resolved);
-    if (cached) {
-      const currentMtime = fs.statSync(resolved).mtimeMs;
-      if (currentMtime !== cached.mtime) {
-        return { output: 'Error: File has been modified since you last read it. Please read the file again before editing.', isError: true };
-      }
+    const fileCache = getFileCache(context.cwd);
+    if (fileCache.hasChanged(resolved)) {
+      fileCache.delete(resolved);
+      return { output: 'Error: File has been modified since you last read it. Please read the file again before editing.', isError: true };
     }
 
     try {
@@ -157,7 +140,6 @@ export const fileEditTool: ToolDefinition = {
     let rawContent: string;
     try {
       rawContent = await fs.promises.readFile(resolved, 'utf-8');
-      fileReadStates.set(resolved, { content: rawContent, mtime: fs.statSync(resolved).mtimeMs });
     } catch (err: unknown) {
       if ((err as { code?: string })?.code === 'ENOENT') {
         const dir = path.dirname(resolved);
@@ -186,6 +168,8 @@ export const fileEditTool: ToolDefinition = {
 
     if (result.error) {
       if (result.matchCount === 0) {
+        fileCache.delete(resolved);
+
         // No match — provide "did you mean?" hints
         const searchLines = oldString.split('\n');
         const hints = findClosestLines(content, searchLines, 3);
@@ -214,7 +198,7 @@ export const fileEditTool: ToolDefinition = {
           const message = err instanceof Error ? err.message : String(err);
           return { output: `Error writing file: ${message}`, isError: true };
         }
-        refreshFileReadState(resolved, normalizeToLf(finalContent));
+        fileCache.set(resolved, normalizeToLf(finalContent), fs.statSync(resolved).mtimeMs);
         const diff = buildUnifiedDiff(content, replaced, resolved);
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
@@ -251,7 +235,7 @@ export const fileEditTool: ToolDefinition = {
         isError: true,
       };
     }
-    refreshFileReadState(resolved, normalizeToLf(newContent));
+    fileCache.set(resolved, normalizeToLf(newContent), fs.statSync(resolved).mtimeMs);
 
     // Build a unified diff showing old vs new (use LF-normalized for clean display)
     const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);

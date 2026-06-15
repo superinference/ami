@@ -32,9 +32,10 @@ export class LSPClient {
       const proc = child_process.spawn(config.command, config.args, {
         cwd, stdio: ['pipe', 'pipe', 'pipe'],
       });
+      proc.on('error', () => { this.processes.delete(language); this.initialized.delete(language); });
+      proc.on('exit', () => { this.processes.delete(language); this.initialized.delete(language); });
       if (!proc.pid) return false;
       this.processes.set(language, proc);
-      proc.on('exit', () => { this.processes.delete(language); this.initialized.delete(language); });
       const initId = ++this.messageId;
       this.sendRequest(proc, initId, 'initialize', {
         processId: process.pid,

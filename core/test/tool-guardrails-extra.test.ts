@@ -72,3 +72,65 @@ describe('ToolCallGuardrailController — hashArgs sorted keys', () => {
     assert.equal(d.action, 'warn');
   });
 });
+
+describe('ToolCallGuardrailController — getProgress()', () => {
+  it('starts at zero', () => {
+    const ctrl = new ToolCallGuardrailController();
+    const p = ctrl.getProgress();
+    assert.equal(p.totalToolCalls, 0);
+    assert.equal(p.totalBashCalls, 0);
+    assert.equal(p.totalEdits, 0);
+    assert.equal(p.totalReads, 0);
+  });
+
+  it('tracks tool calls by type', () => {
+    const ctrl = new ToolCallGuardrailController();
+
+    ctrl.afterCall('file_read', { file_path: 'a.ts' }, 'content', false);
+    ctrl.afterCall('file_read', { file_path: 'b.ts' }, 'content', false);
+    ctrl.afterCall('file_edit', { file_path: 'a.ts', old_string: 'x', new_string: 'y' }, 'ok', false);
+    ctrl.afterCall('bash', { command: 'npm test' }, '1 pass', false);
+    ctrl.afterCall('file_write', { file_path: 'c.ts', content: 'z' }, 'ok', false);
+
+    const p = ctrl.getProgress();
+    assert.equal(p.totalToolCalls, 5);
+    assert.equal(p.totalBashCalls, 1);
+    assert.equal(p.totalEdits, 2);
+    assert.equal(p.totalReads, 2);
+  });
+
+  it('resets all counters', () => {
+    const ctrl = new ToolCallGuardrailController();
+
+    ctrl.afterCall('file_read', { file_path: 'a.ts' }, 'content', false);
+    ctrl.afterCall('bash', { command: 'test' }, 'ok', false);
+    ctrl.afterCall('file_edit', { file_path: 'a.ts', old_string: 'x', new_string: 'y' }, 'ok', false);
+
+    ctrl.reset();
+    const p = ctrl.getProgress();
+    assert.equal(p.totalToolCalls, 0);
+    assert.equal(p.totalBashCalls, 0);
+    assert.equal(p.totalEdits, 0);
+    assert.equal(p.totalReads, 0);
+  });
+
+  it('tracks sinceLastBash counters correctly', () => {
+    const ctrl = new ToolCallGuardrailController();
+
+    ctrl.afterCall('file_read', { file_path: 'a.ts' }, 'content', false);
+    ctrl.afterCall('file_edit', { file_path: 'a.ts', old_string: 'x', new_string: 'y' }, 'ok', false);
+    ctrl.afterCall('file_edit', { file_path: 'a.ts', old_string: 'y', new_string: 'z' }, 'Error', true);
+
+    let p = ctrl.getProgress();
+    assert.equal(p.toolsSinceLastBash, 3);
+    assert.equal(p.editsSinceLastBash, 2);
+    assert.equal(p.editFailsSinceLastBash, 1);
+
+    ctrl.afterCall('bash', { command: 'test' }, 'ok', false);
+    p = ctrl.getProgress();
+    assert.equal(p.toolsSinceLastBash, 0);
+    assert.equal(p.editsSinceLastBash, 0);
+    assert.equal(p.editFailsSinceLastBash, 0);
+    assert.equal(p.totalToolCalls, 4);
+  });
+});

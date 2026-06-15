@@ -39,11 +39,28 @@ const MAX_TRACKED_SIGNATURES = 500;
 const LOOP_HISTORY_SIZE = 20;
 const LOOP_MIN_SEQUENCE = 2;
 
+export interface ProgressSnapshot {
+  totalToolCalls: number;
+  totalBashCalls: number;
+  totalEdits: number;
+  totalReads: number;
+  editsSinceLastBash: number;
+  editFailsSinceLastBash: number;
+  toolsSinceLastBash: number;
+}
+
 export class ToolCallGuardrailController {
   private exactFailures = new Map<string, number>();
   private noProgressHistory = new Map<string, { resultHash: string; count: number }>();
   private callHistory: string[] = [];
   private fileFailures = new Map<string, number>();
+  private editsSinceLastBash = 0;
+  private editFailsSinceLastBash = 0;
+  private toolsSinceLastBash = 0;
+  private totalToolCalls = 0;
+  private totalBashCalls = 0;
+  private totalEdits = 0;
+  private totalReads = 0;
 
   private evictOldest(map: Map<string, unknown>): void {
     if (map.size > MAX_TRACKED_SIGNATURES) {
@@ -63,11 +80,37 @@ export class ToolCallGuardrailController {
       return { action: 'warn', reason: `Tool "${toolName}" has failed ${failCount} times with identical arguments. ${recoveryHint(toolName)}` };
     }
 
+    if ((toolName === 'file_edit' || toolName === 'file_read') && this.editFailsSinceLastBash >= 3 && this.editsSinceLastBash >= 5) {
+      return { action: 'warn', reason: 'You have made multiple file edits without running tests. Run the test command with bash to check your progress before making more edits.' };
+    }
+
+    if (toolName === 'file_read' && this.toolsSinceLastBash >= 10 && this.editsSinceLastBash === 0) {
+      return { action: 'warn', reason: 'You have read files 10+ times without running any bash commands or making edits. Run the test suite with bash to validate your understanding before continuing to read.' };
+    }
+
     return { action: 'allow' };
   }
 
   afterCall(toolName: string, args: Record<string, unknown>, output: string, failed: boolean): GuardrailDecision {
     const sig = hashArgs(toolName, args);
+
+    this.totalToolCalls++;
+    if (toolName === 'bash') {
+      this.totalBashCalls++;
+      this.editsSinceLastBash = 0;
+      this.editFailsSinceLastBash = 0;
+      this.toolsSinceLastBash = 0;
+    } else {
+      this.toolsSinceLastBash++;
+      if (toolName === 'file_edit' || toolName === 'file_write') {
+        this.totalEdits++;
+        this.editsSinceLastBash++;
+        if (failed) this.editFailsSinceLastBash++;
+      }
+      if (toolName === 'file_read') {
+        this.totalReads++;
+      }
+    }
 
     if (failed) {
       this.exactFailures.set(sig, (this.exactFailures.get(sig) || 0) + 1);
@@ -178,10 +221,29 @@ export class ToolCallGuardrailController {
     return null;
   }
 
+  getProgress(): ProgressSnapshot {
+    return {
+      totalToolCalls: this.totalToolCalls,
+      totalBashCalls: this.totalBashCalls,
+      totalEdits: this.totalEdits,
+      totalReads: this.totalReads,
+      editsSinceLastBash: this.editsSinceLastBash,
+      editFailsSinceLastBash: this.editFailsSinceLastBash,
+      toolsSinceLastBash: this.toolsSinceLastBash,
+    };
+  }
+
   reset(): void {
     this.exactFailures.clear();
     this.noProgressHistory.clear();
     this.fileFailures.clear();
     this.callHistory = [];
+    this.editsSinceLastBash = 0;
+    this.editFailsSinceLastBash = 0;
+    this.toolsSinceLastBash = 0;
+    this.totalToolCalls = 0;
+    this.totalBashCalls = 0;
+    this.totalEdits = 0;
+    this.totalReads = 0;
   }
 }

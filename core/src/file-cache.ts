@@ -55,6 +55,11 @@ export class FileCache {
     return cached;
   }
 
+  /** Remove a single file from the cache (e.g. after a failed edit so the next read returns full content). */
+  delete(path: string): void {
+    this.cache.delete(path);
+  }
+
   /** Clear all cached entries. */
   clear(): void {
     this.cache.clear();

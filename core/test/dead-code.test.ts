@@ -17,17 +17,14 @@ import * as path from 'path';
 const CORE_SRC = path.resolve(__dirname, '..', 'src');
 const CORE_INDEX = path.join(CORE_SRC, 'index.ts');
 
+// Unwired features — implemented but not yet integrated into the main flow.
+// Each is kept intentionally for future wiring; removing requires a design decision.
 const EXCLUDED_MODULES = new Set([
-  'credential-pool.ts',
-  'rate-limiter.ts',
-  'utils/shell.ts',
-  'utils/repetition.ts',
-  'tools/mcp-resources.ts',
-  'tools/mcp-tool.ts',
-  'formatter.ts',
-  'session-search.ts',
-  'skillbook.ts',
-  'tool-confirmation.ts',
+  'utils/repetition.ts',    // repetitive-output detector — wire into bash output processing
+  'formatter.ts',           // multi-language file formatter — wire into file_write/file_edit post-hook
+  'session-search.ts',      // TF-IDF session search — wire into session resume UI
+  'skillbook.ts',           // persistent skill/knowledge store — wire into learning loop
+  'tool-confirmation.ts',   // granular tool approval service — wire into permission manager
 ]);
 
 function readAllSourceFiles(dir: string): string[] {
