@@ -282,6 +282,42 @@ Centralized permission handling with pattern-based rules:
 - **Bash classification** — commands classified as safe/unsafe/destructive
 - **Path safety** — blocks writes to system directories
 
+## OpenShell Container Image
+
+The `openshell-ami` container image runs AMI as an autonomous agent inside an OpenShell sandbox. It is built on the [OpenShell Community base](https://github.com/NVIDIA/OpenShell-Community) (Ubuntu Noble) which provides Node.js 22, Python 3.14.3 (via uv), build-essential, git, gh, and npm.
+
+### On-Demand Dependency Resolution
+
+The container runs with a **read-only rootfs** — the agent cannot `apt-get install` anything. However, `/sandbox` is mounted as a **writable volume**, and the base image ships with userspace package managers that install into that writable path:
+
+| Need | Command | Installs to |
+|------|---------|-------------|
+| Python packages | `uv pip install pytest` | `/sandbox/.venv` (in PATH) |
+| Node packages | `npm install mocha` | `/sandbox/node_modules` |
+| CLI tools | `uv tool install ruff` | `/sandbox/.local/bin` (in PATH) |
+| Binaries | `curl ... \| tar -xz -C /sandbox/.local/bin` | `/sandbox/.local/bin` |
+
+The agent discovers dependencies at runtime and installs them in the moment — no pre-planning required.
+
+### Quick Start
+
+```bash
+podman run --rm \
+  --tmpfs /dev/shm:rw,nosuid,nodev,exec,size=2g \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e AGENT_PROMPT="Fix the failing tests" \
+  -v ./myproject:/sandbox/project \
+  ghcr.io/superinference/openshell-ami
+```
+
+For hardened deployments (Kubernetes), use `readOnlyRootFilesystem: true` in the security context with explicit `emptyDir` volume mounts for `/sandbox`, `/tmp`, and `/dev/shm`.
+
+### Build
+
+```bash
+podman build -t openshell-ami -f Dockerfile .
+```
+
 ## Development
 
 ```bash
