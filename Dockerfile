@@ -36,7 +36,7 @@ RUN apt-get purge -y nodejs && \
            /etc/apt/keyrings/nodesource.gpg \
            /usr/share/keyrings/nodesource-repo.gpg-armored.gpg && \
     curl -fsSL https://deb.nodesource.com/setup_26.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
+    apt-get install -y --no-install-recommends nodejs jq && \
     npm install -g npm@11.11.0 && \
     rm -rf /var/lib/apt/lists/* && \
     node --version | grep -qE '^v26\.' || \
