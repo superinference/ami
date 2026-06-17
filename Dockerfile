@@ -71,7 +71,8 @@ LABEL io.openshell.sandbox.harness="ami" \
 USER sandbox
 WORKDIR /sandbox
 ENV PATH="/sandbox/.local/bin:${PATH}" \
-    AGENT_NAME=ami
+    AGENT_NAME=ami \
+    UV_NO_SANDBOX=1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["ami"]
