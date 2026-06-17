@@ -284,7 +284,7 @@ Centralized permission handling with pattern-based rules:
 
 ## OpenShell Container Image
 
-The `openshell-ami` container image runs AMI as an autonomous agent inside an OpenShell sandbox. It is built on the [OpenShell Community base](https://github.com/NVIDIA/OpenShell-Community) (Ubuntu Noble) which provides Node.js 22, Python 3.14.3 (via uv), build-essential, git, gh, and npm.
+The `openshell-ami` container image runs AMI as an autonomous agent inside an OpenShell sandbox. It is built on the [OpenShell Community base](https://github.com/NVIDIA/OpenShell-Community) (Ubuntu Noble) which provides Python 3.14.3 (via uv), build-essential, git, gh, and npm. The base ships Node.js 22, but the AMI layer upgrades to Node.js 26 (required by AMI CLI).
 
 ### On-Demand Dependency Resolution
 

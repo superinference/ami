@@ -7,7 +7,9 @@
 # openshell-ami: SuperInference AMI agent on OpenShell Community base
 #
 # Built on the NVIDIA OpenShell Community base image which provides
-# Node.js 22, Python 3.14.3 (uv), build-essential, git, gh, and more.
+# Python 3.14.3 (uv), build-essential, git, gh, and more.
+# The base ships Node.js 22, but AMI CLI requires Node >= 26, so this
+# image upgrades the toolchain before installing the agent binary.
 # The base ships with uv and npm — the agent uses these to install
 # additional dependencies on demand into the writable /sandbox volume,
 # even when the container rootfs is read-only.
@@ -17,6 +19,28 @@
 
 ARG BASE_IMAGE=ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 FROM ${BASE_IMAGE}
+
+# ── Node.js 22 → 26 upgrade ──────────────────────────────────────────
+# The OpenShell Community base ships Node.js 22 (LTS) via NodeSource.
+# AMI CLI requires Node >= 26 for native TypeScript type-stripping,
+# stable node:test enhancements, and URLPattern support.
+#
+# Fully replace the 22.x toolchain: purge the old package, remove
+# stale global node_modules (native addons compiled against the
+# Node 22 ABI), swap the NodeSource apt source, and install 26.x.
+# npm is pinned to 11.11.0 to match the base image convention.
+USER root
+RUN apt-get purge -y nodejs && \
+    rm -rf /usr/lib/node_modules \
+           /etc/apt/sources.list.d/nodesource.list \
+           /etc/apt/keyrings/nodesource.gpg \
+           /usr/share/keyrings/nodesource-repo.gpg-armored.gpg && \
+    curl -fsSL https://deb.nodesource.com/setup_26.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    npm install -g npm@11.11.0 && \
+    rm -rf /var/lib/apt/lists/* && \
+    node --version | grep -qE '^v26\.' || \
+        { echo "FATAL: expected Node 26, got $(node --version)" >&2; exit 1; }
 
 # AMI-specific directories
 USER sandbox
