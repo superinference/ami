@@ -59,6 +59,14 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # Default policy for OpenShell sandbox
 COPY policy.yaml /etc/openshell/policy.yaml
 
+# ── OpenShift / arbitrary UID support ────────────────────────────────
+# OpenShift assigns random UIDs in GID 0 (root group). All writable
+# paths must be group-writable and owned by GID 0 so any UID can write.
+RUN chgrp -R 0 /sandbox && chmod -R g=u /sandbox && \
+    chmod -R g+w /sandbox/.local /sandbox/.config /sandbox/.superinference \
+                 /sandbox/.venv /sandbox/.uv /sandbox/.npm 2>/dev/null; \
+    chmod g+w /sandbox
+
 # OCI labels for operator discovery
 LABEL io.openshell.sandbox.harness="ami" \
       io.openshell.sandbox.runtime="binary" \
@@ -71,8 +79,13 @@ LABEL io.openshell.sandbox.harness="ami" \
 USER sandbox
 WORKDIR /sandbox
 ENV PATH="/sandbox/.local/bin:${PATH}" \
+    HOME=/sandbox \
     AGENT_NAME=ami \
-    UV_NO_SANDBOX=1
+    UV_NO_SANDBOX=1 \
+    UV_CACHE_DIR=/sandbox/.cache/uv \
+    PIP_CACHE_DIR=/sandbox/.cache/pip \
+    PIP_NO_BUILD_ISOLATION=1 \
+    npm_config_cache=/sandbox/.cache/npm
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["ami"]
