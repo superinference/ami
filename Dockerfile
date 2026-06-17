@@ -36,11 +36,29 @@ RUN apt-get purge -y nodejs && \
            /etc/apt/keyrings/nodesource.gpg \
            /usr/share/keyrings/nodesource-repo.gpg-armored.gpg && \
     curl -fsSL https://deb.nodesource.com/setup_26.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs jq && \
+    apt-get install -y --no-install-recommends nodejs jq sudo && \
     npm install -g npm@11.11.0 && \
-    rm -rf /var/lib/apt/lists/* && \
     node --version | grep -qE '^v26\.' || \
         { echo "FATAL: expected Node 26, got $(node --version)" >&2; exit 1; }
+
+# ── Passwordless sudo for package management ─────────────────────────
+# The container IS the sandbox — allow any user to install system
+# packages via apt-get/dpkg without password. Works with arbitrary
+# UIDs (OpenShift), regular users (K8s/Docker/Podman).
+RUN echo "ALL ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt-get *, /usr/bin/dpkg, /usr/bin/dpkg *" \
+      > /etc/sudoers.d/sandbox-apt && \
+    chmod 0440 /etc/sudoers.d/sandbox-apt
+
+# Make /etc/passwd group-writable so the entrypoint can add a passwd
+# entry for arbitrary UIDs at runtime (OpenShift, Podman --userns)
+RUN chmod g+w /etc/passwd
+
+# ── sandbox-install: non-root package installer ──────────────────────
+# AI agents often refuse to use sudo. This wrapper lets the agent run
+# "sandbox-install htop tree" without knowing about privilege escalation.
+RUN printf '#!/bin/bash\nset -euo pipefail\nsudo apt-get update -qq 2>/dev/null\nexec sudo apt-get install -y -qq "$@"\n' \
+      > /usr/local/bin/sandbox-install && \
+    chmod +x /usr/local/bin/sandbox-install
 
 # AMI-specific directories
 USER sandbox

@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# ── Arbitrary UID support (OpenShift, Podman --userns) ───────────────
+# OpenShift assigns random UIDs not in /etc/passwd. sudo, git, and
+# other tools need a passwd entry. Generate one at startup if missing.
+if ! whoami &>/dev/null 2>&1; then
+  if [ -w /etc/passwd ]; then
+    echo "sandbox:x:$(id -u):0:sandbox:${HOME:-/sandbox}:/bin/bash" >> /etc/passwd
+  fi
+fi
+
 AGENT="${1:-${AGENT_NAME:-bash}}"
 
 case "$AGENT" in
