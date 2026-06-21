@@ -102,8 +102,8 @@ const BUDGET_MAP: Record<ThinkingLevel, number> = {
   off: 0,
   low: 4096,
   medium: 10240,
-  high: 16384,
-  max: 32768,
+  high: 32768,
+  max: 128000,
 };
 
 export function resolveThinkingBudget(level: ThinkingLevel): number {
