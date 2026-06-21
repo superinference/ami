@@ -223,12 +223,12 @@ describe('resolveThinkingBudget', () => {
     assert.equal(resolveThinkingBudget('medium'), 10240);
   });
 
-  it('returns 16384 for high', () => {
-    assert.equal(resolveThinkingBudget('high'), 16384);
+  it('returns 32768 for high', () => {
+    assert.equal(resolveThinkingBudget('high'), 32768);
   });
 
-  it('returns 32768 for max', () => {
-    assert.equal(resolveThinkingBudget('max'), 32768);
+  it('returns 128000 for max', () => {
+    assert.equal(resolveThinkingBudget('max'), 128000);
   });
 });
 

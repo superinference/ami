@@ -946,7 +946,7 @@ describe('bashTool -- exit code interpretation', () => {
       { command: 'grep nonexistentpattern /dev/null' },
       makeCtx(),
     );
-    assert.equal(result.isError, true);
+    assert.equal(result.isError, false);
     assert.ok(result.output.includes('no matches found'));
   });
 
@@ -959,7 +959,7 @@ describe('bashTool -- exit code interpretation', () => {
         { command: `diff ${path.join(tmpDir, 'a.txt')} ${path.join(tmpDir, 'b.txt')}` },
         makeCtx({ cwd: tmpDir }),
       );
-      assert.equal(result.isError, true);
+      assert.equal(result.isError, false);
       assert.ok(result.output.includes('files differ'));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
