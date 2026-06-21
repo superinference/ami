@@ -23,7 +23,7 @@ let _unshareAvailable: boolean | null = null;
 function isUnshareAvailable(): boolean {
   if (_unshareAvailable !== null) return _unshareAvailable;
   try {
-    execSync('which unshare', { stdio: 'pipe', timeout: 2000 });
+    execSync('unshare --map-root-user --mount --pid --fork -- true', { stdio: 'pipe', timeout: 5000 });
     _unshareAvailable = true;
   } catch {
     _unshareAvailable = false;
@@ -54,6 +54,10 @@ const SANDBOX_EXEMPT_PATTERNS = [
   /\bmake\b/,
   /\bcargo\b/,
   /\bgo\s+(build|test|run|mod)\b/,
+  /\bpytest\b/,
+  /\bpython\S*\s+-m\s+pytest\b/,
+  /\bpip\s+install\b/,
+  /\buv\s+pip\b/,
 ];
 
 export function shouldUseSandbox(command: string): boolean {

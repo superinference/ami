@@ -74,6 +74,10 @@ function scrubEnv(): NodeJS.ProcessEnv {
   env.DEBIAN_FRONTEND = 'noninteractive';
   env.GIT_TERMINAL_PROMPT = '0';
   env.AI_AGENT = 'superinference';
+  env.PIP_PROGRESS_BAR = 'off';
+  env.TQDM_DISABLE = '1';
+  env.PYTHONDONTWRITEBYTECODE = '1';
+  env.MANPAGER = 'cat';
   return env;
 }
 
@@ -255,20 +259,23 @@ export const bashTool: ToolDefinition = {
         '. Consider using separate tool calls for better error handling and readability.]';
     }
 
-    let interpretation: string | null = null;
+    let exitCodeInfo: ExitCodeInfo | null = null;
     if (result.exitCode !== 0) {
-      interpretation = interpretExitCode(command, result.exitCode);
-      if (interpretation) output += `\n${interpretation}`;
-      const hint = diagnoseError(output);
-      if (hint) output += `\n\n[Hint: ${hint}]`;
+      exitCodeInfo = interpretExitCode(command, result.exitCode);
+      if (exitCodeInfo) output += `\n${exitCodeInfo.message}`;
+      if (!exitCodeInfo?.isNonError) {
+        const hint = diagnoseError(output);
+        if (hint) output += `\n\n[Hint: ${hint}]`;
+      }
     }
 
-    const exitInfo = result.exitCode !== 0 ? `\n[exit code: ${result.exitCode}${interpretation ? ' ' + interpretation : ''}]` : '';
+    const isRealError = result.exitCode !== 0 && !exitCodeInfo?.isNonError;
+    const exitInfo = result.exitCode !== 0 ? `\n[exit code: ${result.exitCode}${exitCodeInfo ? ' ' + exitCodeInfo.message : ''}]` : '';
     output = `${output}${exitInfo}`.trim();
 
     return {
       output,
-      isError: result.exitCode !== 0,
+      isError: isRealError,
       metadata: { readOnly },
     };
   },
@@ -289,16 +296,24 @@ function diagnoseError(output: string): string | null {
   return null;
 }
 
-function interpretExitCode(command: string, exitCode: number): string | null {
-  const base = command.trim().split(/\s+/)[0];
-  if (exitCode === 1 && (base === 'grep' || base === 'rg')) return '(no matches found — not an error)';
-  if (exitCode === 1 && base === 'diff') return '(files differ — not an error)';
-  if (exitCode === 2 && base === 'grep') return '(error in grep pattern or file access)';
-  if (exitCode === 1 && base === 'find' && command.includes('-exec')) return '(exec command failed)';
-  if (exitCode === 126) return '(permission denied — command not executable)';
-  if (exitCode === 127) return '(command not found)';
-  if (exitCode === 128 + 9) return '(killed by SIGKILL)';
-  if (exitCode === 128 + 15) return '(killed by SIGTERM)';
+interface ExitCodeInfo {
+  message: string;
+  isNonError?: boolean;
+}
+
+function interpretExitCode(command: string, exitCode: number): ExitCodeInfo | null {
+  const parts = command.trim().split(/[|;&]\s*/);
+  const lastCmd = parts[parts.length - 1].trim().split(/\s+/)[0];
+  const base = lastCmd || command.trim().split(/\s+/)[0];
+  if (exitCode === 1 && (base === 'grep' || base === 'rg')) return { message: '(no matches found — not an error)', isNonError: true };
+  if (exitCode === 1 && base === 'diff') return { message: '(files differ — not an error)', isNonError: true };
+  if (exitCode === 1 && (base === 'test' || base === '[')) return { message: '(condition is false)', isNonError: true };
+  if (exitCode === 1 && base === 'find') return { message: '(some paths were inaccessible)', isNonError: true };
+  if (exitCode === 2 && base === 'grep') return { message: '(error in grep pattern or file access)' };
+  if (exitCode === 126) return { message: '(permission denied — command not executable)' };
+  if (exitCode === 127) return { message: '(command not found)' };
+  if (exitCode === 128 + 9) return { message: '(killed by SIGKILL)' };
+  if (exitCode === 128 + 15) return { message: '(killed by SIGTERM)' };
   return null;
 }
 
