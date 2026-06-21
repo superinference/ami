@@ -10,6 +10,8 @@ const IDEMPOTENT_TOOLS = new Set([
   'web_search', 'web_fetch',
 ]);
 
+const FILE_MUTATING_TOOLS = new Set(['file_edit', 'file_write', 'notebook_edit', 'multi_edit']);
+
 const EXACT_FAILURE_WARN = 2;
 const EXACT_FAILURE_BLOCK = 4;
 const NO_PROGRESS_WARN = 3;
@@ -54,13 +56,20 @@ export class ToolCallGuardrailController {
   private noProgressHistory = new Map<string, { resultHash: string; count: number }>();
   private callHistory: string[] = [];
   private fileFailures = new Map<string, number>();
+  private fileEditCounts = new Map<string, number>();
   private editsSinceLastBash = 0;
   private editFailsSinceLastBash = 0;
   private toolsSinceLastBash = 0;
+  private bashTestRunsSinceLastEdit = 0;
+  private successfulEdits = 0;
   private totalToolCalls = 0;
   private totalBashCalls = 0;
   private totalEdits = 0;
   private totalReads = 0;
+  private testFailureSignatures: string[] = [];
+  private consecutiveSameFailures = 0;
+
+  constructor(private detachedMode = false) {}
 
   private evictOldest(map: Map<string, unknown>): void {
     if (map.size > MAX_TRACKED_SIGNATURES) {
@@ -70,6 +79,73 @@ export class ToolCallGuardrailController {
   }
 
   beforeCall(toolName: string, args: Record<string, unknown>): GuardrailDecision {
+    if (this.detachedMode && toolName === 'web_search' && this.totalReads < 2) {
+      return { action: 'warn', reason: 'Read the relevant source files before searching the web. Use file_read to understand the codebase first.' };
+    }
+
+    if (this.detachedMode && FILE_MUTATING_TOOLS.has(toolName) && args.file_path) {
+      const fp = String(args.file_path);
+      const basename = fp.split('/').pop() || '';
+      const isTestFile = /(?:^|\/)(tests?|test_[^/]+|[^/]+_test\.py|conftest\.py)(?:\/|$)/.test(fp)
+        || /\.test\.[a-z]+$/.test(basename);
+      if (isTestFile) {
+        return { action: 'block', reason: `BLOCKED: You are editing a test file (${basename}). Do NOT modify test files — fix the source code instead. The test suite validates your fix; changing tests invalidates the evaluation.` };
+      }
+    }
+
+    if (this.detachedMode && toolName === 'file_edit') {
+      if (this.successfulEdits >= 8) {
+        return { action: 'block', reason: 'BLOCKED: You have already made 8 successful edits. If the failing tests pass, STOP immediately. Do not make further changes.' };
+      }
+      if (args.file_path) {
+        const editCount = this.fileEditCounts.get(String(args.file_path)) || 0;
+        if (editCount >= 5) {
+          return { action: 'warn', reason: `You have edited ${args.file_path} ${editCount} times. If the failing tests pass, STOP. If not, check if you are editing the correct file.` };
+        }
+      }
+      if (args.replace_all) {
+        return { action: 'warn', reason: 'Prefer targeted edits to specific lines instead of bulk find-and-replace. Only use replace_all when you are sure all occurrences should change.' };
+      }
+      if (args.old_string && args.new_string) {
+        const oldStr = String(args.old_string);
+        const newStr = String(args.new_string);
+        const oldLines = oldStr.split('\n').length;
+        const newLines = newStr.split('\n').length;
+        const maxLines = Math.max(oldLines, newLines);
+        if (maxLines > 30) {
+          return { action: 'block', reason: `BLOCKED: Your edit spans ${maxLines} lines (${oldLines}→${newLines}). Edits must be small and targeted. Find the exact lines that need to change and edit only those. Break large edits into smaller ones.` };
+        }
+        if (maxLines > 15) {
+          return { action: 'warn', reason: `Your edit spans ${maxLines} lines (${oldLines}→${newLines}). Prefer smaller, targeted edits.` };
+        }
+      }
+    }
+
+    if (this.detachedMode && toolName === 'bash' && args.command) {
+      const cmd = String(args.command);
+      if (/\b(black|autopep8|yapf|isort|prettier|ruff\s+format)\b/.test(cmd)) {
+        return { action: 'block', reason: 'BLOCKED: Do not use code formatters. Use file_edit for targeted changes only.' };
+      }
+      if (/\bsed\s+(-[a-z]*i|-i[a-z]*)\b/.test(cmd)) {
+        return { action: 'block', reason: 'BLOCKED: Do not use sed -i to modify files. Use file_edit for targeted changes only.' };
+      }
+      if (/\b(git\s+apply|git\s+am|patch\s+-|patch\s+<)\b/.test(cmd)) {
+        return { action: 'block', reason: 'BLOCKED: Do not use git apply or patch. Use file_edit for targeted changes only.' };
+      }
+      if (/\bpython3?\s+-c\b/.test(cmd) && /\b(open|write|Path)\b/.test(cmd) && !/tests?\b|runtests|pytest|unittest/.test(cmd)) {
+        return { action: 'block', reason: 'BLOCKED: Do not use python -c to write files. Use file_edit for targeted changes only.' };
+      }
+      if (/\bgit\s+checkout\b/.test(cmd) && !/\bgit\s+checkout\s+-b\b/.test(cmd)) {
+        return { action: 'warn', reason: 'Reverting files with git checkout discards your progress. Instead of starting over, diagnose why your fix failed and make a targeted correction.' };
+      }
+      if (this.bashTestRunsSinceLastEdit >= 5 && /\b(pytest|runtests|unittest|\.test\()\b/.test(cmd)) {
+        return { action: 'block', reason: 'BLOCKED: You have run tests 5+ times without making any edits. The result will not change. Make an edit first, then run tests.' };
+      }
+      if (this.bashTestRunsSinceLastEdit >= 3 && /\b(pytest|runtests|unittest|\.test\()\b/.test(cmd)) {
+        return { action: 'warn', reason: 'You have run tests 3+ times without making any edits. Running the same tests again will give the same result. Either make an edit to fix the issue, or try a completely different approach.' };
+      }
+    }
+
     const sig = hashArgs(toolName, args);
     const failCount = this.exactFailures.get(sig) || 0;
 
@@ -100,12 +176,25 @@ export class ToolCallGuardrailController {
       this.editsSinceLastBash = 0;
       this.editFailsSinceLastBash = 0;
       this.toolsSinceLastBash = 0;
+      const cmd = String(args.command || '');
+      if (/\b(pytest|runtests|unittest|test)\b/.test(cmd)) {
+        this.bashTestRunsSinceLastEdit++;
+      }
     } else {
       this.toolsSinceLastBash++;
       if (toolName === 'file_edit' || toolName === 'file_write') {
         this.totalEdits++;
         this.editsSinceLastBash++;
-        if (failed) this.editFailsSinceLastBash++;
+        this.bashTestRunsSinceLastEdit = 0;
+        if (failed) {
+          this.editFailsSinceLastBash++;
+        } else {
+          this.successfulEdits++;
+          if (args.file_path) {
+            const fp = String(args.file_path);
+            this.fileEditCounts.set(fp, (this.fileEditCounts.get(fp) || 0) + 1);
+          }
+        }
       }
       if (toolName === 'file_read') {
         this.totalReads++;
@@ -184,7 +273,8 @@ export class ToolCallGuardrailController {
       return 'Recovery: The file changed after your last read. Use file_write to replace the entire file content instead of file_edit.';
     }
     if (toolName === 'file_edit' && error.includes('not found')) {
-      return 'Recovery: Run file_read on the file first to get the current content, then retry the edit.';
+      const filePath = _args.file_path ? ` (${_args.file_path})` : '';
+      return `Recovery: The old_string you specified does not exist in the file${filePath}. You MUST run file_read on this file to see its actual content before retrying. Do not guess — read first.`;
     }
     if (toolName === 'file_edit' && error.includes('multiple matches')) {
       return 'Recovery: Add more context to old_string to make it unique, or use replace_all: true.';
@@ -221,6 +311,22 @@ export class ToolCallGuardrailController {
     return null;
   }
 
+  recordTestFailure(failureSignature: string): { shouldRollback: boolean } {
+    if (this.testFailureSignatures.length > 0 &&
+        this.testFailureSignatures[this.testFailureSignatures.length - 1] === failureSignature) {
+      this.consecutiveSameFailures++;
+    } else {
+      this.consecutiveSameFailures = 1;
+    }
+    this.testFailureSignatures.push(failureSignature);
+    if (this.testFailureSignatures.length > 10) this.testFailureSignatures.shift();
+    return { shouldRollback: this.consecutiveSameFailures >= 3 };
+  }
+
+  resetTestFailures(): void {
+    this.consecutiveSameFailures = 0;
+  }
+
   getProgress(): ProgressSnapshot {
     return {
       totalToolCalls: this.totalToolCalls,
@@ -237,13 +343,18 @@ export class ToolCallGuardrailController {
     this.exactFailures.clear();
     this.noProgressHistory.clear();
     this.fileFailures.clear();
+    this.fileEditCounts.clear();
     this.callHistory = [];
     this.editsSinceLastBash = 0;
     this.editFailsSinceLastBash = 0;
     this.toolsSinceLastBash = 0;
+    this.bashTestRunsSinceLastEdit = 0;
+    this.successfulEdits = 0;
     this.totalToolCalls = 0;
     this.totalBashCalls = 0;
     this.totalEdits = 0;
     this.totalReads = 0;
+    this.testFailureSignatures = [];
+    this.consecutiveSameFailures = 0;
   }
 }

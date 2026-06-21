@@ -35,7 +35,7 @@ async function trackFileHistory(filePath: string, originalContent: string, cwd: 
 export const fileEditTool: ToolDefinition = {
   name: 'file_edit',
   description:
-    'Edit a file by replacing an exact string with new content. You MUST file_read the file first. The old_string must match file content exactly including whitespace and indentation. If match fails, re-read the file and retry with corrected text. Do not include line numbers in old_string or new_string. For new files, use file_write instead.',
+    'Edit a file by replacing an exact string with new content. You MUST file_read the file first. The old_string must match file content exactly including whitespace and indentation. Use the smallest old_string that uniquely identifies the target — usually 2-4 adjacent lines. Avoid large old_strings (10+ lines). If match fails, re-read the file with file_read and retry with the exact text. Do not include line numbers. For new files, use file_write instead.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -240,12 +240,14 @@ export const fileEditTool: ToolDefinition = {
     // Build a unified diff showing old vs new (use LF-normalized for clean display)
     const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);
 
-    try {
-      const { getLSPClient } = require('../lsp');
-      const lsp = getLSPClient();
-      lsp.notifyDidChange(resolved, newContent, context.cwd).catch(() => {});
-      lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
-    } catch {}
+    if (!context.detachedMode) {
+      try {
+        const { getLSPClient } = require('../lsp');
+        const lsp = getLSPClient();
+        lsp.notifyDidChange(resolved, newContent, context.cwd).catch(() => {});
+        lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
+      } catch {}
+    }
 
     const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
     const diffLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length;

@@ -122,12 +122,14 @@ export const fileWriteTool: ToolDefinition = {
       // Track as known — the model wrote this content, so it can overwrite later
       context.filesRead?.add(resolved);
 
-      try {
-        const { getLSPClient } = require('../lsp');
-        const lsp = getLSPClient();
-        lsp.notifyDidChange(resolved, finalContent, context.cwd).catch(() => {});
-        lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
-      } catch {}
+      if (!context.detachedMode) {
+        try {
+          const { getLSPClient } = require('../lsp');
+          const lsp = getLSPClient();
+          lsp.notifyDidChange(resolved, finalContent, context.cwd).catch(() => {});
+          lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
+        } catch {}
+      }
 
       // Build diff output
       const lines = content.split('\n');

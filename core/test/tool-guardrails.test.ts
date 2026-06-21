@@ -167,4 +167,48 @@ describe('ToolCallGuardrailController – loop detection', () => {
     ctrl.afterCall('bash', { command: 'a' }, 'out', false);
     assert.equal(ctrl.detectLoop(), null);
   });
+
+  it('recordTestFailure triggers rollback after 3 identical signatures', () => {
+    const ctrl = new ToolCallGuardrailController();
+    assert.equal(ctrl.recordTestFailure('5:3').shouldRollback, false);
+    assert.equal(ctrl.recordTestFailure('5:3').shouldRollback, false);
+    assert.equal(ctrl.recordTestFailure('5:3').shouldRollback, true);
+  });
+
+  it('recordTestFailure resets counter on different signature', () => {
+    const ctrl = new ToolCallGuardrailController();
+    ctrl.recordTestFailure('5:3');
+    ctrl.recordTestFailure('5:3');
+    assert.equal(ctrl.recordTestFailure('4:4').shouldRollback, false);
+    assert.equal(ctrl.recordTestFailure('4:4').shouldRollback, false);
+    assert.equal(ctrl.recordTestFailure('4:4').shouldRollback, true);
+  });
+
+  it('resetTestFailures clears the counter', () => {
+    const ctrl = new ToolCallGuardrailController();
+    ctrl.recordTestFailure('5:3');
+    ctrl.recordTestFailure('5:3');
+    ctrl.resetTestFailures();
+    assert.equal(ctrl.recordTestFailure('5:3').shouldRollback, false);
+  });
+
+  it('web_search gated in detached mode until 2 reads', () => {
+    const ctrl = new ToolCallGuardrailController(true);
+    const d1 = ctrl.beforeCall('web_search', { query: 'test' });
+    assert.equal(d1.action, 'warn');
+
+    ctrl.afterCall('file_read', { file_path: 'a.ts' }, 'content', false);
+    const d2 = ctrl.beforeCall('web_search', { query: 'test' });
+    assert.equal(d2.action, 'warn');
+
+    ctrl.afterCall('file_read', { file_path: 'b.ts' }, 'content', false);
+    const d3 = ctrl.beforeCall('web_search', { query: 'test' });
+    assert.equal(d3.action, 'allow');
+  });
+
+  it('web_search not gated in non-detached mode', () => {
+    const ctrl = new ToolCallGuardrailController(false);
+    const d = ctrl.beforeCall('web_search', { query: 'test' });
+    assert.equal(d.action, 'allow');
+  });
 });

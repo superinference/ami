@@ -90,6 +90,7 @@ export interface ToolContext {
   _mcpManager?: any;
   _parentMessages?: Message[];
   _engineAddSystemReminder?: (msg: string) => void;
+  detachedMode?: boolean;
 }
 
 export interface ToolDefinition {
@@ -292,7 +293,7 @@ export function buildSubsystems(config: EngineConfig): {
       sessionId: config.sessionId,
       sessionDir: config.sessionDir,
       tokenBudget: config.tokenBudget ?? 100_000,
-      maxTurns: config.maxTurns ?? 100,
+      maxTurns: config.maxTurns === 0 ? Infinity : (config.maxTurns ?? 100),
       maxSteps: config.maxSteps,
     },
   };
