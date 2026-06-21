@@ -103,15 +103,11 @@ describe('classifyError — model_unavailable', () => {
 // ---------------------------------------------------------------------------
 // Auth error
 // ---------------------------------------------------------------------------
-describe('classifyError — auth_error', () => {
+describe('classifyError — auth_error (permanent)', () => {
   const expected = { category: 'auth_error' as const, retryable: false, shouldCompact: false, shouldFallback: false };
 
   it('detects "401"', () => {
     assertClassification(classifyError('HTTP 401 Unauthorized'), expected);
-  });
-
-  it('detects "403"', () => {
-    assertClassification(classifyError('HTTP 403 Forbidden'), expected);
   });
 
   it('detects "API key"', () => {
@@ -120,6 +116,18 @@ describe('classifyError — auth_error', () => {
 
   it('detects "unauthorized"', () => {
     assertClassification(classifyError('Unauthorized access'), expected);
+  });
+});
+
+describe('classifyError — auth_error (transient 403)', () => {
+  const expected = { category: 'auth_error' as const, retryable: true, shouldCompact: false, shouldFallback: true };
+
+  it('detects "403" as retryable', () => {
+    assertClassification(classifyError('HTTP 403 Forbidden'), expected);
+  });
+
+  it('detects "forbidden" as retryable', () => {
+    assertClassification(classifyError('Access forbidden'), expected);
   });
 });
 

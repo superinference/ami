@@ -942,25 +942,30 @@ describe('classifyError — additional abort patterns', () => {
 });
 
 describe('classifyError — additional auth_error patterns', () => {
-  it('detects "forbidden"', () => {
+  it('detects "forbidden" as retryable 403', () => {
     const r = classifyError('Access forbidden to this resource');
     assert.equal(r.category, 'auth_error');
-    assert.equal(r.retryable, false);
+    assert.equal(r.retryable, true);
+    assert.equal(r.shouldFallback, true);
   });
 
   it('detects "invalid_api_key"', () => {
     const r = classifyError('Error: invalid_api_key');
     assert.equal(r.category, 'auth_error');
+    assert.equal(r.retryable, false);
   });
 
   it('detects "authentication"', () => {
     const r = classifyError('Authentication failed for user');
     assert.equal(r.category, 'auth_error');
+    assert.equal(r.retryable, false);
   });
 
-  it('detects HTTP 403', () => {
+  it('detects HTTP 403 as retryable', () => {
     const r = classifyError('HTTP 403 Forbidden');
     assert.equal(r.category, 'auth_error');
+    assert.equal(r.retryable, true);
+    assert.equal(r.shouldFallback, true);
   });
 });
 

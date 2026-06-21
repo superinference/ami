@@ -45,13 +45,17 @@ export function classifyError(error: string): ClassifiedError {
     return { category: 'abort', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
+  // 403 — often transient (quota enforcement, intermittent key restrictions).
+  // Retry with delay and allow fallback to another provider.
+  if (/\bHTTP\s+403\b/i.test(error) || lower.includes('forbidden')) {
+    return { category: 'auth_error', message: error, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 5000 };
+  }
+
   // Auth — not retryable, no point falling back with bad credentials
   if (
     /\bHTTP\s+401\b/i.test(error) ||
-    /\bHTTP\s+403\b/i.test(error) ||
     lower.includes('api key') ||
     lower.includes('unauthorized') ||
-    lower.includes('forbidden') ||
     lower.includes('invalid_api_key') ||
     lower.includes('authentication')
   ) {
