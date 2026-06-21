@@ -29,11 +29,15 @@ export class LSPClient {
     const config = LANGUAGE_SERVERS[language];
     if (!config) return false;
     try {
+      const which = child_process.spawnSync('which', [config.command], { timeout: 2000, stdio: 'pipe' });
+      if (which.status !== 0) return false;
       const proc = child_process.spawn(config.command, config.args, {
         cwd, stdio: ['pipe', 'pipe', 'pipe'],
       });
       proc.on('error', () => { this.processes.delete(language); this.initialized.delete(language); });
       proc.on('exit', () => { this.processes.delete(language); this.initialized.delete(language); });
+      proc.stderr?.on('data', () => {});
+      proc.stdout?.on('data', () => {});
       if (!proc.pid) return false;
       this.processes.set(language, proc);
       const initId = ++this.messageId;
