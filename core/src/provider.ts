@@ -379,7 +379,7 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
       return {
         role: 'assistant',
         content: [
-          ...(msg.content ? [{ type: 'text' as const, text: msg.content }] : []),
+          ...(msg.content?.trim() ? [{ type: 'text' as const, text: msg.content }] : []),
           ...msg.tool_calls.map((tc) => ({
             type: 'tool-call' as const,
             toolCallId: tc.id,
@@ -490,6 +490,23 @@ export async function* streamChatCompletion(
   const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
   const coreMessages = convertMessages(sanitized);
 
+  // Anthropic rejects any text content block with empty text. Strip them.
+  if (isAnthropic) {
+    for (const msg of coreMessages) {
+      const m = msg as Record<string, unknown>;
+      if (Array.isArray(m.content)) {
+        m.content = (m.content as Record<string, unknown>[]).filter(
+          (p) => !(p.type === 'text' && (typeof p.text !== 'string' || p.text.trim() === ''))
+        );
+        if ((m.content as unknown[]).length === 0 && m.role === 'assistant') {
+          m.content = [{ type: 'text' as const, text: '(continued)' }];
+        }
+      } else if (typeof m.content === 'string' && m.content.trim() === '' && m.role === 'assistant') {
+        m.content = '(continued)';
+      }
+    }
+  }
+
   // Apply per-message cache breakpoints for Anthropic prompt caching.
   // The AI SDK v4 expects cache_control on individual message content parts
   // via providerOptions, not as a top-level streamText option.
@@ -499,16 +516,23 @@ export async function* streamChatCompletion(
     const convPoints = buildConversationCachePoints(coreMessages);
     for (const idx of Object.keys(convPoints)) breakpointIndices.add(Number(idx));
     for (const idx of breakpointIndices) {
-      const msg = coreMessages[idx];
-      if (msg) {
-        (msg as Record<string, unknown>).providerOptions = {
-          ...((msg as Record<string, unknown>).providerOptions as Record<string, unknown> || {}),
-          anthropic: {
-            ...((msg as Record<string, unknown>).providerOptions as Record<string, Record<string, unknown>> || {}).anthropic,
-            cacheControl: { type: 'ephemeral' },
-          },
-        };
+      const msg = coreMessages[idx] as Record<string, unknown> | undefined;
+      if (!msg) continue;
+      const content = msg.content;
+      if (Array.isArray(content)) {
+        const hasTextPart = content.some((p: Record<string, unknown>) =>
+          p.type === 'text' && typeof p.text === 'string' && p.text.trim() !== '');
+        if (!hasTextPart) continue;
+      } else if (typeof content === 'string' && content.trim() === '') {
+        continue;
       }
+      msg.providerOptions = {
+        ...((msg.providerOptions as Record<string, unknown>) || {}),
+        anthropic: {
+          ...((msg.providerOptions as Record<string, Record<string, unknown>>) || {}).anthropic,
+          cacheControl: { type: 'ephemeral' },
+        },
+      };
     }
   }
 
