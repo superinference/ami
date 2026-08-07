@@ -17,25 +17,35 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'claude-opus-4': 200000,
   'claude-sonnet-4': 200000,
   'claude-haiku-3.5': 200000,
+  'claude-haiku-4': 200000,
+  'claude-3-5-sonnet': 200000,
+  'claude-3-opus': 200000,
+  'gpt-4o-mini': 128000,
   'gpt-4o': 128000,
   'gpt-4-turbo': 128000,
   'gpt-4.1': 1047576,
+  'o1-mini': 128000,
   'o1': 200000,
+  'o3-mini': 200000,
   'o3': 200000,
   'o4-mini': 200000,
-  'gemini-2.0-flash': 1048576,
   'gemini-2.5-pro': 1048576,
   'gemini-2.5-flash': 1048576,
+  'gemini-2.0-flash': 1048576,
+  'gemini-3.6': 2097152,
+  'gemini-3.1': 2097152,
   'gemini-3': 2097152,
-  'gpt-4o-mini': 128000,
   'gemini-1.5-pro': 1048576,
-  'o1-mini': 128000,
-  'o3-mini': 200000,
+  'deepseek-chat': 64000,
+  'deepseek-reasoner': 64000,
 };
 
 export function getContextWindow(modelId: string): number {
-  for (const [prefix, tokens] of Object.entries(CONTEXT_WINDOWS)) {
-    if (modelId.startsWith(prefix)) return tokens;
+  for (const [key, tokens] of Object.entries(CONTEXT_WINDOWS)) {
+    const idx = modelId.indexOf(key);
+    if (idx === -1) continue;
+    if (key.length <= 3 && idx > 0 && /[a-zA-Z0-9]/.test(modelId[idx - 1])) continue;
+    return tokens;
   }
   return 128000;
 }

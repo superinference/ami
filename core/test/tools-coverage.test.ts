@@ -6,11 +6,13 @@
  * mcp-auth.ts.
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+after(() => { setTimeout(() => process.exit(0), 200); });
 
 import { skillTool } from '../src/tools/skill';
 import { workflowTool } from '../src/tools/workflow';

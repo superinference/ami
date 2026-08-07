@@ -193,6 +193,7 @@ export interface EngineConfig {
   tools?: ToolDefinition[];
   systemPrompt?: string;
   maxTurns?: number;
+  maxTurnsCeiling?: number;
   abortController?: AbortController;
   onPermissionRequest?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
   /** Centralized permission prompt handler. Both CLI and VSCode implement this interface. */

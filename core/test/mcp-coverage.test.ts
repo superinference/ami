@@ -5,13 +5,15 @@
  * Uses only node:test and node:assert/strict.
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { McpClient, McpSessionExpiredError } from '../src/mcp/client';
 import { McpManager, expandEnvVars } from '../src/mcp/manager';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
+after(() => { setTimeout(() => process.exit(0), 200); });
 
 // Helper: standard MCP echo server script that handles common methods
 function makeServerScript(extra = ''): string {

@@ -2,6 +2,8 @@ import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as http from 'http';
 
+after(() => { setTimeout(() => process.exit(0), 200); });
+
 import { streamChatCompletionWithRetry } from '../src/provider';
 import { CostTracker } from '../src/cost-tracker';
 import type { ProviderConfig, Message, StreamChunk } from '../src/types';

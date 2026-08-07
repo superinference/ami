@@ -71,8 +71,8 @@ describe('getContextWindow', () => {
     assert.equal(getContextWindow('gemini-1.5-pro'), 1048576);
   });
 
-  it('returns 200000 for o1-mini (matches o1 prefix)', () => {
-    assert.equal(getContextWindow('o1-mini'), 200000);
+  it('returns 128000 for o1-mini (exact match)', () => {
+    assert.equal(getContextWindow('o1-mini'), 128000);
   });
 
   it('returns 200000 for o3-mini', () => {
