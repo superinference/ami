@@ -43,7 +43,7 @@ export const scoutTool: ToolDefinition = {
       if (query) {
         try {
           const grepOut = child_process.execFileSync(
-            'grep', ['-rn', '--', query, '--include=*.ts', '--include=*.js', '--include=*.py', '--include=*.go', '--include=*.rs', '.'],
+            'grep', ['-rn', '--include=*.ts', '--include=*.js', '--include=*.py', '--include=*.go', '--include=*.rs', '--', query, '.'],
             { cwd: localPath, encoding: 'utf-8', timeout: 10000, maxBuffer: 1024 * 1024 },
           );
           searchResults = grepOut.split('\n').slice(0, 20).join('\n').trim();

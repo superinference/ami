@@ -23,7 +23,7 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'gpt-4o-mini': 128000,
   'gpt-4o': 128000,
   'gpt-4-turbo': 128000,
-  'gpt-4.1': 1047576,
+  'gpt-4.1': 1048576,
   'o1-mini': 128000,
   'o1': 200000,
   'o3-mini': 200000,

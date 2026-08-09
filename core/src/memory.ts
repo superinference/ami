@@ -805,9 +805,15 @@ export class MemoryManager {
       });
     }
 
+    let searchFrom = 0;
     for (const { fullMatch, includePath } of matches) {
+      const pos = result.indexOf(fullMatch, searchFrom);
+      if (pos === -1) continue;
+
       if (seen.has(includePath)) {
-        result = result.replace(fullMatch, `[circular reference: ${path.basename(includePath)}]`);
+        const replacement = `[circular reference: ${path.basename(includePath)}]`;
+        result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
+        searchFrom = pos + replacement.length;
         continue;
       }
       seen.add(includePath);
@@ -815,9 +821,12 @@ export class MemoryManager {
         let included = await fsp.readFile(includePath, 'utf-8');
         included = sanitizeContent(included, includePath);
         included = await this.resolveIncludes(included, includePath, depth + 1, seen);
-        result = result.replace(fullMatch, included);
+        result = result.slice(0, pos) + included + result.slice(pos + fullMatch.length);
+        searchFrom = pos + included.length;
       } catch {
-        result = result.replace(fullMatch, `[include not found: ${path.basename(includePath)}]`);
+        const replacement = `[include not found: ${path.basename(includePath)}]`;
+        result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
+        searchFrom = pos + replacement.length;
       }
     }
 

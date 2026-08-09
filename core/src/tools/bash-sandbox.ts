@@ -94,7 +94,8 @@ function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): stri
   const ulimits = buildUlimits(cfg);
   const escapedCmd = command.replace(/'/g, "'\\''");
 
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}cd ${escapeShell(cwd)} && ${escapedCmd}'`;
+  const escapedCwd = cwd.replace(/'/g, "'\\''");
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}cd ${escapedCwd} && ${escapedCmd}'`;
 }
 
 function wrapWithResourceLimits(command: string, cfg: SandboxConfig): string {

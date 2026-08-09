@@ -711,8 +711,8 @@ export class PermissionManager {
 
     // sed without -i is read-only (prints to stdout)
     if (/\bsed\b/.test(trimmed) && !/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'safe';
-    // find without -delete/-exec rm is read-only
-    if (/\bfind\b/.test(trimmed) && !/\b-delete\b/.test(trimmed) && !/\b-exec\s+rm\b/.test(trimmed)) return 'safe';
+    // find without -delete/-exec/-execdir is read-only
+    if (/\bfind\b/.test(trimmed) && !/\b-delete\b/.test(trimmed) && !/\b-exec\b/.test(trimmed) && !/\b-execdir\b/.test(trimmed) && !/\b-ok\b/.test(trimmed)) return 'safe';
 
     // Check if extracted paths target system directories
     const cmdPaths = extractCommandPaths(trimmed);
@@ -756,9 +756,13 @@ export class PermissionManager {
 
     // Block sensitive files
     const basename = path.basename(resolved).toLowerCase();
-    const sensitiveNames = ['.env', 'credentials', 'secrets', 'id_rsa', 'id_ed25519'];
+    const sensitiveNames = ['.env', 'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa'];
     const sensitiveExts = ['.pem', '.key', '.p12', '.pfx', '.keystore'];
-    if (sensitiveNames.some(s => basename.includes(s)) || sensitiveExts.some(e => basename.endsWith(e))) {
+    const sensitivePatterns = [/^\.env$/, /^\.env\.local$/, /^\.env\.production$/,
+      /^credentials\.json$/, /^secrets\.ya?ml$/, /^\.netrc$/];
+    if (sensitiveNames.some(s => basename === s) ||
+        sensitiveExts.some(e => basename.endsWith(e)) ||
+        sensitivePatterns.some(p => p.test(basename))) {
       return false;
     }
 
