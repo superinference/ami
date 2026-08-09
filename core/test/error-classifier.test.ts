@@ -325,4 +325,16 @@ describe('classifyError — cross-cutting', () => {
     assert.equal(classifyError('Used 50000 tokens').category, 'unknown');
     assert.equal(classifyError('Internal timeout after 3000ms').category, 'unknown');
   });
+
+  it('403 with auth keywords classified as non-retryable auth_error', () => {
+    const result = classifyError('HTTP 403 Forbidden - Invalid API key');
+    assert.equal(result.category, 'auth_error');
+    assert.equal(result.retryable, false);
+  });
+
+  it('max_tokens output limit error not misclassified as context_overflow', () => {
+    const result = classifyError('max_tokens: 100000 > 8192, which is the maximum number of output tokens');
+    assert.notEqual(result.category, 'context_overflow');
+    assert.equal(result.shouldCompact, false);
+  });
 });

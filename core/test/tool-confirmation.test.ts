@@ -53,4 +53,17 @@ describe('ToolConfirmationService', () => {
     svc.approve('bash', { a: '1', b: '2' }, 'session');
     assert.equal(svc.isApproved('bash', { b: '2', a: '1' }), true);
   });
+
+  it('once-scoped approval is recognized by isApproved', () => {
+    const svc = new ToolConfirmationService();
+    svc.approve('bash', { command: 'ls' }, 'once');
+    assert.equal(svc.isApproved('bash', { command: 'ls' }), true);
+  });
+
+  it('once-scoped approval is cleared by clearSession', () => {
+    const svc = new ToolConfirmationService();
+    svc.approve('bash', { command: 'ls' }, 'once');
+    svc.clearSession();
+    assert.equal(svc.isApproved('bash', { command: 'ls' }), false);
+  });
 });

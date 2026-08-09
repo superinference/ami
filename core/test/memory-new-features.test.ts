@@ -50,6 +50,19 @@ describe('matchesPaths', () => {
     assert.equal(matchesPaths(['*.js', '*.ts'], 'foo.ts'), true);
     assert.equal(matchesPaths(['*.js', '*.ts'], 'foo.py'), false);
   });
+
+  it('single * does NOT cross path separators', () => {
+    assert.equal(matchesPaths(['src/*.ts'], 'src/index.ts'), true);
+    assert.equal(matchesPaths(['src/*.ts'], 'src/deeply/nested/file.ts'), false);
+  });
+
+  it('pattern is anchored — no substring matches', () => {
+    assert.equal(matchesPaths(['src/*.ts'], 'other/src/foo.ts'), false);
+  });
+
+  it('** still crosses path separators', () => {
+    assert.equal(matchesPaths(['src/**/*.ts'], 'src/a/b/c.ts'), true);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,9 @@ export class ToolConfirmationService {
   }
 
   isApproved(toolName: string, params: Record<string, unknown> | null): boolean {
-    // Exact combination match (session or workspace)
+    // Exact combination match (once, session, or workspace)
+    const exactOnce = this.buildKey(toolName, params, 'once');
+    if (this.approvals.has(exactOnce)) return true;
     const exactSession = this.buildKey(toolName, params, 'session');
     if (this.approvals.has(exactSession)) return true;
     const exactWs = this.buildKey(toolName, params, 'workspace');

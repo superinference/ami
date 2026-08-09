@@ -45,13 +45,8 @@ export function classifyError(error: string): ClassifiedError {
     return { category: 'abort', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
-  // 403 — often transient (quota enforcement, intermittent key restrictions).
-  // Retry with delay and allow fallback to another provider.
-  if (/\bHTTP\s+403\b/i.test(error) || lower.includes('forbidden')) {
-    return { category: 'auth_error', message: error, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 5000 };
-  }
-
   // Auth — not retryable, no point falling back with bad credentials
+  // Checked before 403 so that "HTTP 403 - invalid api key" is correctly non-retryable.
   if (
     /\bHTTP\s+401\b/i.test(error) ||
     lower.includes('api key') ||
@@ -60,6 +55,12 @@ export function classifyError(error: string): ClassifiedError {
     lower.includes('authentication')
   ) {
     return { category: 'auth_error', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
+  }
+
+  // 403 — often transient (quota enforcement, intermittent key restrictions).
+  // Retry with delay and allow fallback to another provider.
+  if (/\bHTTP\s+403\b/i.test(error) || lower.includes('forbidden')) {
+    return { category: 'auth_error', message: error, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 5000 };
   }
 
   // Rate limit — retryable after a delay
@@ -80,7 +81,7 @@ export function classifyError(error: string): ClassifiedError {
     /\bHTTP\s+413\b/i.test(error) ||
     lower.includes('prompt_too_long') ||
     lower.includes('prompt is too long') ||
-    lower.includes('max_tokens') ||
+    (lower.includes('max_tokens') && !lower.includes('output') && !lower.includes('maximum number of output')) ||
     lower.includes('context length') ||
     lower.includes('token limit') ||
     lower.includes('too many tokens') ||

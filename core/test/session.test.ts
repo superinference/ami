@@ -192,4 +192,28 @@ describe('SessionManager', () => {
     const loaded = sm.load('a/b/c');
     assert.ok(loaded);
   });
+
+  it('list() handles sessions with missing date fields without NaN corruption', () => {
+    const session = makeSession('no-dates');
+    delete (session as any).updatedAt;
+    delete (session as any).createdAt;
+    sm.save(session);
+    const list = sm.list();
+    assert.ok(list.length > 0);
+    for (const entry of list) {
+      if (entry.id === 'no-dates') {
+        assert.ok(true);
+      }
+    }
+  });
+
+  it('extractPreview returns "(no messages)" for empty-content user message', () => {
+    const session = makeSession('empty-msg');
+    session.messages = [{ role: 'user', content: '' }];
+    sm.save(session);
+    const list = sm.list();
+    const entry = list.find(e => e.id === 'empty-msg');
+    assert.ok(entry);
+    assert.equal(entry!.preview, '(no messages)');
+  });
 });

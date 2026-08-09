@@ -93,9 +93,11 @@ export class SessionManager {
 
     // Sort by modification time descending
     files.sort((a, b) => {
-      const aStat = fs.statSync(a);
-      const bStat = fs.statSync(b);
-      return bStat.mtimeMs - aStat.mtimeMs;
+      try {
+        return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+      } catch {
+        return 0;
+      }
     });
 
     return this.readSessionFile(files[0]);
@@ -132,7 +134,11 @@ export class SessionManager {
     }
 
     // Sort by date descending (most recent first)
-    entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    entries.sort((a, b) => {
+      const bTime = b.date ? new Date(b.date).getTime() : 0;
+      const aTime = a.date ? new Date(a.date).getTime() : 0;
+      return (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+    });
     return entries;
   }
 
@@ -198,6 +204,7 @@ export class SessionManager {
     const firstUser = session.messages.find(m => m.role === 'user');
     if (!firstUser || typeof firstUser.content !== 'string') return '(no messages)';
     const flat = firstUser.content.replace(/\n/g, ' ').trim();
+    if (!flat) return '(no messages)';
     return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;
   }
 }

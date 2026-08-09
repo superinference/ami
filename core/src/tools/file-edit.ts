@@ -101,6 +101,10 @@ export const fileEditTool: ToolDefinition = {
     }
 
     if (!oldString) {
+      const secrets = scanForSecrets(newString);
+      if (secrets.length > 0) {
+        return { output: `Error: Potential secrets detected: ${secrets.join(', ')}. Remove them before writing.`, isError: true };
+      }
       if (!fs.existsSync(resolved)) {
         fs.mkdirSync(path.dirname(resolved), { recursive: true });
         fs.writeFileSync(resolved, newString, 'utf-8');

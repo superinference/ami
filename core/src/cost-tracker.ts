@@ -100,7 +100,7 @@ async function fetchLivePricing(): Promise<void> {
         ? perTokenToPerMillion(m.pricing.input_cache_read)
         : null;
 
-      if (isNaN(input) || isNaN(output)) continue;
+      if (isNaN(input) || isNaN(output) || (cached !== null && isNaN(cached))) continue;
 
       // Store under both the full id ("openai/gpt-4o") and the model name ("gpt-4o")
       map[m.id] = [input, output, cached];

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
 import { resolveFilePath } from './tool-utils';
+import { getFileCache } from '../file-cache';
 
 export const multiEditTool: ToolDefinition = {
   name: 'multi_edit',
@@ -113,6 +114,9 @@ export const multiEditTool: ToolDefinition = {
 
     try {
       await fs.promises.writeFile(resolved, content, 'utf-8');
+      const fileCache = getFileCache(context.cwd);
+      const newStat = await fs.promises.stat(resolved);
+      fileCache.set(resolved, content, newStat.mtimeMs);
     } catch (err) {
       return {
         output: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,

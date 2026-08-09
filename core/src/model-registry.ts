@@ -111,6 +111,7 @@ export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
 }
 
 async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
+  if (!config.baseUrl) throw new Error('baseUrl is required for OpenAI-compatible model listing');
   const baseUrl = config.baseUrl.replace(/\/+$/, '');
   const url = `${baseUrl}/models`;
   const headers: Record<string, string> = {};

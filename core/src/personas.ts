@@ -135,11 +135,11 @@ export class PersonaManager {
       this.personas.set(persona.name, persona);
     }
 
-    const projectDir = path.join(this.cwd, '.superinference', 'personas');
-    this.loadPersonasDir(projectDir);
-
     const userDir = path.join(os.homedir(), '.superinference', 'personas');
     this.loadPersonasDir(userDir);
+
+    const projectDir = path.join(this.cwd, '.superinference', 'personas');
+    this.loadPersonasDir(projectDir);
   }
 
   private loadPersonasDir(dir: string): void {

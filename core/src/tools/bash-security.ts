@@ -536,7 +536,8 @@ function validateProcessSubstitution(command: string): SecurityCheckResult {
 }
 
 function validateBacktickInjection(command: string): SecurityCheckResult {
-  if (/`[^`]+`/.test(command) && !/\\`/.test(command)) {
+  const cleaned = command.replace(/\\`/g, '');
+  if (/`[^`]+`/.test(cleaned)) {
     return fail(CHECK_IDS.BACKTICK_INJECTION, 'Backtick command substitution can execute arbitrary commands; use $() instead');
   }
   return PASS;

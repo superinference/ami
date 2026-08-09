@@ -1,5 +1,5 @@
 import type { ProviderConfig, ProviderSubsystem } from './types';
-import { resolveModel, inferProviderFromApiKey, inferProviderFromBaseUrl, inferProviderFromEnv } from './provider';
+import { inferProviderFromApiKey, inferProviderFromBaseUrl, inferProviderFromEnv } from './provider';
 import { RateLimitTracker } from './rate-limiter';
 import type { RateLimitStatus } from './rate-limiter';
 import { CredentialPool } from './credential-pool';

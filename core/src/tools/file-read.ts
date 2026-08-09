@@ -138,15 +138,16 @@ export const fileReadTool: ToolDefinition = {
       };
     }
 
+    const ext = path.extname(resolved).toLowerCase();
+
     const MAX_READ_SIZE = 256 * 1024; // 256KB
-    if (stat.size > MAX_READ_SIZE && !input.pages) {
+    if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext)) {
       return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections.`, isError: true };
     }
 
     context.filesRead?.add(resolved);
 
     // Handle image files — return base64 with optional compression
-    const ext = path.extname(resolved).toLowerCase();
     if (IMAGE_EXTENSIONS.has(ext)) {
       const imageBuffer = await fs.promises.readFile(resolved);
       const mediaType = MEDIA_TYPES[ext] || 'application/octet-stream';

@@ -146,4 +146,32 @@ describe('RateLimitTracker – parseDuration', () => {
     // Should fallback to 60000ms
     assert.ok(status.requests!.resetAt > 0);
   });
+
+  it('handles limit=0 without producing NaN', () => {
+    const tracker = new RateLimitTracker();
+    tracker.update({
+      'x-ratelimit-limit-requests': '0',
+      'x-ratelimit-remaining-requests': '0',
+    });
+    const status = tracker.getStatus();
+    assert.equal(status.requestsPercent, 100);
+    assert.ok(status.shouldWarn);
+    assert.ok(!Number.isNaN(status.requestsPercent));
+  });
+
+  it('parses compound duration strings like 1m30s', () => {
+    const tracker = new RateLimitTracker();
+    const before = Date.now();
+    tracker.update({
+      'x-ratelimit-limit-requests': '100',
+      'x-ratelimit-remaining-requests': '50',
+      'x-ratelimit-reset-requests': '1m30s',
+    });
+    const status = tracker.getStatus();
+    assert.ok(status.requests);
+    const expectedMs = 90000;
+    const elapsed = status.requests!.resetAt - before;
+    assert.ok(elapsed >= expectedMs - 100 && elapsed <= expectedMs + 1000,
+      `Expected resetAt ~90s in future, got ${elapsed}ms`);
+  });
 });

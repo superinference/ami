@@ -102,7 +102,8 @@ function validateCommandFlags(cmd: string, args: string[]): boolean {
   for (const arg of args) {
     if (arg.startsWith('-')) {
       const flag = arg.replace(/^--?/, '').split('=')[0];
-      if (flagDef.blocked.has(arg) || flagDef.blocked.has(flag)) return false;
+      const dashedFlag = arg.split('=')[0];
+      if (flagDef.blocked.has(arg) || flagDef.blocked.has(flag) || flagDef.blocked.has(dashedFlag)) return false;
     }
   }
   return true;
@@ -443,6 +444,25 @@ function extractBaseCommands(command: string): string[] {
   return commands;
 }
 
+function allSegmentsKnown(command: string): boolean {
+  const segments = command.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
+  if (segments.length <= 1) return true;
+  for (const seg of segments) {
+    const tokens = seg.trim().split(/\s+/);
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+    if (i >= tokens.length) continue;
+    const cmdTokens = tokens.slice(i);
+    let found = false;
+    for (let j = 1; j <= Math.min(cmdTokens.length, 3); j++) {
+      const prefix = cmdTokens.slice(0, j).join(' ');
+      if (SAFE_COMMANDS.has(prefix) || SAFE_PREFIXES.has(prefix)) { found = true; break; }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
 /**
  * Match a simple glob-like pattern against a string.
  * Supports '*' as a wildcard for any sequence of characters.
@@ -660,7 +680,10 @@ export class PermissionManager {
 
     // Check safe prefixes (e.g., "git status", "npm test")
     for (const cmd of bases) {
-      if (SAFE_PREFIXES.has(cmd)) return 'safe';
+      if (SAFE_PREFIXES.has(cmd)) {
+        if (allSegmentsKnown(trimmed)) return 'safe';
+        break;
+      }
     }
 
     // Check single-word safe commands with flag validation
@@ -681,7 +704,8 @@ export class PermissionManager {
         // Read-only commands with unquoted expansions are suspicious
         if (containsUnquotedExpansion(trimmed)) return 'unsafe';
 
-        return 'safe';
+        if (allSegmentsKnown(trimmed)) return 'safe';
+        break;
       }
     }
 

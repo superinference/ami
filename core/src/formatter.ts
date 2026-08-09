@@ -54,7 +54,7 @@ export function formatFile(filePath: string, cwd: string): { formatted: boolean;
   if (!config) return { formatted: false };
   if (!isFormatterAvailable(config)) return { formatted: false };
   try {
-    execSync(`${config.command} ${config.args.join(' ')} "${filePath}"`, {
+    execSync(`${config.command} ${config.args.join(' ')} '${filePath.replace(/'/g, "'\\''")}'`, {
       cwd, timeout: 15000, stdio: 'pipe',
     });
     return { formatted: true };

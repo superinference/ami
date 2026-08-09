@@ -23,6 +23,7 @@ export interface MemoryEntry {
   memoryType?: MemoryType;
   ageDays?: number;
   freshness?: string;
+  mtimeMs?: number;
 }
 
 /**
@@ -116,9 +117,10 @@ function sanitizeContent(content: string, filePath: string): string {
 export function matchesPaths(pathGlobs: string[], currentFile: string): boolean {
   for (const glob of pathGlobs) {
     // Escape regex special chars except * and ?, then convert glob wildcards
-    const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-    const pattern = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
-    if (new RegExp(pattern).test(currentFile)) return true;
+    let escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    escaped = escaped.replace(/\*\*/g, '⧫⧫');
+    const pattern = escaped.replace(/\*/g, '[^/]*').replace(/⧫⧫/g, '.*').replace(/\?/g, '[^/]');
+    if (new RegExp(`^${pattern}$`).test(currentFile)) return true;
   }
   return false;
 }
@@ -408,22 +410,14 @@ export class MemoryManager {
           memoryType: parseMemoryType(frontmatter.type),
           ageDays,
           freshness,
+          mtimeMs: stat.mtimeMs,
         });
       } catch {
         // Skip unreadable files
       }
     }
 
-    // Sort newest first by mtime
-    entries.sort((a, b) => {
-      try {
-        const aMtime = fs.statSync(a.path).mtimeMs;
-        const bMtime = fs.statSync(b.path).mtimeMs;
-        return bMtime - aMtime;
-      } catch {
-        return 0;
-      }
-    });
+    entries.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));
 
     return entries;
   }

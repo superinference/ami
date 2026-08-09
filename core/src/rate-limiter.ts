@@ -46,10 +46,10 @@ export class RateLimitTracker {
 
   getStatus(): RateLimitStatus {
     const reqPct = this.requests
-      ? ((this.requests.limit - this.requests.remaining) / this.requests.limit)
+      ? (this.requests.limit > 0 ? (this.requests.limit - this.requests.remaining) / this.requests.limit : 1)
       : 0;
     const tokPct = this.tokens
-      ? ((this.tokens.limit - this.tokens.remaining) / this.tokens.limit)
+      ? (this.tokens.limit > 0 ? (this.tokens.limit - this.tokens.remaining) / this.tokens.limit : 1)
       : 0;
 
     return {
@@ -62,15 +62,20 @@ export class RateLimitTracker {
   }
 
   private parseDuration(value: string): number {
-    const match = value.match(/(\d+)(ms|s|m|h)?/);
-    if (!match) return 60000;
-    const num = parseInt(match[1], 10);
-    switch (match[2]) {
-      case 'ms': return num;
-      case 's': return num * 1000;
-      case 'm': return num * 60000;
-      case 'h': return num * 3600000;
-      default: return num * 1000;
+    const matches = value.matchAll(/(\d+)(ms|s|m|h)?/g);
+    let totalMs = 0;
+    let found = false;
+    for (const match of matches) {
+      found = true;
+      const num = parseInt(match[1], 10);
+      switch (match[2]) {
+        case 'ms': totalMs += num; break;
+        case 's': totalMs += num * 1000; break;
+        case 'm': totalMs += num * 60000; break;
+        case 'h': totalMs += num * 3600000; break;
+        default: totalMs += num * 1000; break;
+      }
     }
+    return found ? totalMs : 60000;
   }
 }

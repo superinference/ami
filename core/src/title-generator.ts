@@ -19,13 +19,19 @@ export async function generateTitle(
 
   let title = '';
   try {
-    for await (const chunk of streamChatCompletion(titleProvider, messages, [], new AbortController().signal)) {
-      if (chunk.type === 'content_delta' && chunk.text) title += chunk.text;
-      if (chunk.type === 'done' || chunk.type === 'error') break;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 30000);
+    try {
+      for await (const chunk of streamChatCompletion(titleProvider, messages, [], ac.signal)) {
+        if (chunk.type === 'content_delta' && chunk.text) title += chunk.text;
+        if (chunk.type === 'done' || chunk.type === 'error') break;
+      }
+    } finally {
+      clearTimeout(timer);
     }
   } catch {}
 
-  // Clean up: remove quotes, thinking tags, truncate
-  title = title.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^["']|["']$/g, '').trim();
+  // Clean up: remove quotes, thinking tags (paired and unclosed), truncate
+  title = title.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/g, '').replace(/^["']|["']$/g, '').trim();
   return title.slice(0, 50) || userMessage.slice(0, 50);
 }

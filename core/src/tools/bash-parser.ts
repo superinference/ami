@@ -99,12 +99,23 @@ class BashLexer {
   readUntilCloseParen(): string {
     let depth = 1;
     let result = '';
+    let inSingle = false;
+    let inDouble = false;
     while (this.pos < this.input.length && depth > 0) {
       const c = this.input[this.pos];
-      if (c === '(') depth++;
-      else if (c === ')') {
-        depth--;
-        if (depth === 0) { this.pos++; break; }
+      if (c === '\\' && inDouble && this.pos + 1 < this.input.length) {
+        result += c + this.input[this.pos + 1];
+        this.pos += 2;
+        continue;
+      }
+      if (c === "'" && !inDouble) { inSingle = !inSingle; }
+      else if (c === '"' && !inSingle) { inDouble = !inDouble; }
+      else if (!inSingle && !inDouble) {
+        if (c === '(') depth++;
+        else if (c === ')') {
+          depth--;
+          if (depth === 0) { this.pos++; break; }
+        }
       }
       result += c;
       this.pos++;

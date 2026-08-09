@@ -26,7 +26,7 @@ export const scoutTool: ToolDefinition = {
     try {
       if (!fs.existsSync(localPath)) {
         fs.mkdirSync(cacheDir, { recursive: true });
-        child_process.execSync(`git clone --depth 1 "${repoUrl}" "${localPath}"`, { timeout: 60000, stdio: 'pipe' });
+        child_process.execFileSync('git', ['clone', '--depth', '1', repoUrl, localPath], { timeout: 60000, stdio: 'pipe' });
       }
 
       const files = child_process.execSync('find . -type f -not -path "./.git/*" | head -50', {
@@ -42,10 +42,11 @@ export const scoutTool: ToolDefinition = {
       let searchResults = '';
       if (query) {
         try {
-          searchResults = child_process.execSync(
-            `grep -rn "${query}" --include="*.ts" --include="*.js" --include="*.py" --include="*.go" --include="*.rs" . | head -20`,
-            { cwd: localPath, encoding: 'utf-8', timeout: 10000 },
-          ).trim();
+          const grepOut = child_process.execFileSync(
+            'grep', ['-rn', '--', query, '--include=*.ts', '--include=*.js', '--include=*.py', '--include=*.go', '--include=*.rs', '.'],
+            { cwd: localPath, encoding: 'utf-8', timeout: 10000, maxBuffer: 1024 * 1024 },
+          );
+          searchResults = grepOut.split('\n').slice(0, 20).join('\n').trim();
         } catch { /* grep returns non-zero when no matches */ }
       }
 
