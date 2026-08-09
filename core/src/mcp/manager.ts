@@ -118,7 +118,7 @@ export class McpManager extends EventEmitter {
     const tools = await client.listTools();
     for (const tool of tools) {
       const key = `${name}:${tool.name}`;
-      const schema = { ...tool, description: this.truncateDescription(tool.description) };
+      const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
       this._allTools.set(key, { serverName: name, schema });
     }
   }
@@ -342,7 +342,7 @@ export class McpManager extends EventEmitter {
       this.invalidateToolCache(name);
       for (const tool of tools) {
         const key = `${name}:${tool.name}`;
-        const schema = { ...tool, description: this.truncateDescription(tool.description) };
+        const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
         this._allTools.set(key, { serverName: name, schema });
       }
     } catch (err) {

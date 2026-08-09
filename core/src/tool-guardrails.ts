@@ -189,7 +189,7 @@ export class ToolCallGuardrailController {
       this.editFailsSinceLastBash = 0;
       this.toolsSinceLastBash = 0;
       const cmd = String(args.command || '');
-      if (/\b(pytest|runtests|unittest|test)\b/.test(cmd)) {
+      if (/\b(pytest|runtests|unittest|npm\s+test|yarn\s+test|\.test\.)\b/.test(cmd)) {
         this.bashTestRunsSinceLastEdit++;
       }
     } else {

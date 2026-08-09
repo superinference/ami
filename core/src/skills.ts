@@ -254,18 +254,19 @@ export class SkillManager {
     if (args) {
       // $ARGUMENTS — the full argument string
       if (args.ARGUMENTS !== undefined) {
-        content = content.replace(/\$ARGUMENTS/g, args.ARGUMENTS);
-        content = content.replace(/\$\{ARGUMENTS\}/g, args.ARGUMENTS);
+        content = content.replace(/\$ARGUMENTS/g, () => args.ARGUMENTS);
+        content = content.replace(/\$\{ARGUMENTS\}/g, () => args.ARGUMENTS);
         // Positional: $0 = full, $1-$9 = tokens
         const tokens = args.ARGUMENTS.split(/\s+/).filter(Boolean);
-        content = content.replace(/\$0/g, args.ARGUMENTS);
+        content = content.replace(/\$0/g, () => args.ARGUMENTS);
         for (let i = 1; i <= 9; i++) {
-          content = content.replace(new RegExp(`\\$${i}`, 'g'), tokens[i - 1] || '');
+          const val = tokens[i - 1] || '';
+          content = content.replace(new RegExp(`\\$${i}`, 'g'), () => val);
         }
       }
       for (const [key, value] of Object.entries(args)) {
         if (key === 'ARGUMENTS') continue;
-        content = content.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), value);
+        content = content.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), () => value);
       }
     }
 

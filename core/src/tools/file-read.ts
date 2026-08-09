@@ -141,7 +141,7 @@ export const fileReadTool: ToolDefinition = {
     const ext = path.extname(resolved).toLowerCase();
 
     const MAX_READ_SIZE = 256 * 1024; // 256KB
-    if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext)) {
+    if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext) && input.offset === undefined && input.limit === undefined) {
       return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections.`, isError: true };
     }
 

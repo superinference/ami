@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { resolveFilePath, detectLineEnding, normalizeToLf, convertToLineEnding } from './tool-utils';
+import { resolveFilePath, detectLineEnding, normalizeToLf, convertToLineEnding, scanForSecrets } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 export const multiEditTool: ToolDefinition = {
@@ -128,6 +128,11 @@ export const multiEditTool: ToolDefinition = {
         output: `No edits applied.\n${failed.join('\n')}`,
         isError: true,
       };
+    }
+
+    const secrets = scanForSecrets(content);
+    if (secrets.length > 0) {
+      return { output: `Warning: Potential secrets detected in edited content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
     }
 
     try {

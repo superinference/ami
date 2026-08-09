@@ -142,7 +142,7 @@ function isXargsSafe(command: string): boolean {
  * Blocks imports of os, subprocess, shutil which can mutate state.
  */
 function isScriptOneLinerSafe(lang: string, code: string): boolean {
-  if (lang === 'python3') {
+  if (lang === 'python3' || lang === 'python') {
     return !/\bimport\s+(os|subprocess|shutil)\b/.test(code) &&
            !/\bfrom\s+(os|subprocess|shutil)\b/.test(code);
   }
@@ -150,8 +150,15 @@ function isScriptOneLinerSafe(lang: string, code: string): boolean {
     return !/\brequire\s*\(\s*['"](?:child_process|fs)['"]\s*\)/.test(code) &&
            !/\bimport\b.*\bfrom\s+['"](?:child_process|fs)['"]/.test(code);
   }
-  // ruby -e and perl -e are read-only by default (no specific block list)
-  return true;
+  if (lang === 'ruby') {
+    return !/\bsystem\b/.test(code) && !/\bexec\b/.test(code) &&
+           !/`/.test(code) && !/\bIO\.popen\b/.test(code);
+  }
+  if (lang === 'perl') {
+    return !/\bsystem\b/.test(code) && !/\bexec\b/.test(code) &&
+           !/`/.test(code) && !/\bqx\b/.test(code);
+  }
+  return false;
 }
 
 /**
