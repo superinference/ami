@@ -225,7 +225,13 @@ export const webFetchTool: ToolDefinition = {
         const htmlUrl = url.replace('/pdf/', '/html/');
         if (htmlUrl !== url) {
           try {
-            const htmlResult = await httpGet(htmlUrl, context.abortSignal);
+            let fallbackIP: string | undefined;
+            if (!context._allowLocalhostForTesting) {
+              const fallbackSsrf = await validateUrlSafety(htmlUrl);
+              if ('error' in fallbackSsrf) throw new Error(fallbackSsrf.error);
+              fallbackIP = fallbackSsrf.resolvedIP;
+            }
+            const htmlResult = await httpGet(htmlUrl, context.abortSignal, { resolvedIP: fallbackIP });
             if (htmlResult.statusCode < 400 && htmlResult.contentType.includes('text/html')) {
               const htmlContent = stripHtml(htmlResult.body);
               if (htmlContent.length > 200) {

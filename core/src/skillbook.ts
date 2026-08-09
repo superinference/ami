@@ -99,7 +99,7 @@ export class Skillbook {
   }
 
   search(query: string): SkillbookEntry[] {
-    const terms = query.toLowerCase().split(/\s+/);
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     return this.getAll().filter(e => {
       const text = `${e.issue} ${e.insight} ${e.keywords.join(' ')}`.toLowerCase();
       return terms.some(t => text.includes(t));

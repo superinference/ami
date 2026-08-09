@@ -93,7 +93,7 @@ export class ToolCallGuardrailController {
       }
     }
 
-    if (this.detachedMode && toolName === 'file_edit') {
+    if (this.detachedMode && FILE_MUTATING_TOOLS.has(toolName)) {
       if (this.successfulEdits >= 8) {
         return { action: 'block', reason: 'BLOCKED: You have already made 8 successful edits. If the failing tests pass, STOP immediately. Do not make further changes.' };
       }
@@ -182,7 +182,7 @@ export class ToolCallGuardrailController {
       }
     } else {
       this.toolsSinceLastBash++;
-      if (toolName === 'file_edit' || toolName === 'file_write') {
+      if (FILE_MUTATING_TOOLS.has(toolName)) {
         this.totalEdits++;
         this.editsSinceLastBash++;
         this.bashTestRunsSinceLastEdit = 0;

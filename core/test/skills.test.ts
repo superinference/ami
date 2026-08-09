@@ -790,3 +790,21 @@ describe('SkillManager — loadAgentsFile', () => {
     assert.equal(result, '');
   });
 });
+
+describe('SkillManager — direct .md name fallback', () => {
+  afterEach(() => { cleanupTmpDir(tmpDir); });
+
+  it('uses filename (not parent dir) as fallback name for direct .md files', () => {
+    tmpDir = createTmpDir();
+    const skillsDir = path.join(tmpDir, '.superinference', 'skills');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'my-skill.md'), '---\ndescription: test\n---\nSkill body here.');
+    fs.writeFileSync(path.join(skillsDir, 'other-skill.md'), '---\ndescription: test2\n---\nOther body here.');
+    const mgr = new SkillManager(tmpDir);
+    const s1 = mgr.getSkill('my-skill');
+    const s2 = mgr.getSkill('other-skill');
+    assert.ok(s1, 'my-skill should be loaded');
+    assert.ok(s2, 'other-skill should be loaded');
+    assert.notEqual(s1!.name, s2!.name, 'skills should have different names');
+  });
+});

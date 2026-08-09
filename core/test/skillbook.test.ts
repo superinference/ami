@@ -80,4 +80,18 @@ describe('Skillbook', () => {
     const context = skillbook.getContext();
     assert.ok(!context.includes('bad advice'));
   });
+
+  it('search with leading/trailing whitespace does not match everything', () => {
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['react'], issue: 'hooks', insight: 'use hooks' } });
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['python'], issue: 'types', insight: 'use mypy' } });
+    const results = skillbook.search(' react ');
+    assert.equal(results.length, 1);
+    assert.ok(results[0].keywords.includes('react'));
+  });
+
+  it('search with pure whitespace returns nothing', () => {
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['test'], issue: 'a', insight: 'b' } });
+    const results = skillbook.search('   ');
+    assert.equal(results.length, 0);
+  });
 });

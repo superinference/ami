@@ -7,6 +7,7 @@ import * as os from 'os';
 import {
   validateRequiredString,
   resolveSearchPath,
+  resolveFilePath,
   buildToolDescriptionContext,
   renderToolDescription,
   detectLineEnding,
@@ -73,6 +74,46 @@ describe('resolveSearchPath', () => {
     const result = resolveSearchPath('subdir', '/home/user/project');
     assert.equal(result.resolved, path.resolve('/home/user/project', 'subdir'));
     assert.equal(result.error, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveFilePath — symlink escape protection
+// ---------------------------------------------------------------------------
+
+describe('resolveFilePath', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-resolve-fp-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('allows files inside workspace', () => {
+    fs.writeFileSync(path.join(tmpDir, 'ok.txt'), 'data');
+    const { resolved, error } = resolveFilePath('ok.txt', tmpDir);
+    assert.equal(error, undefined);
+    assert.ok(resolved.endsWith('ok.txt'));
+  });
+
+  it('rejects symlinks pointing outside workspace', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'si-outside-'));
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(tmpDir, 'link.txt'));
+    const { error } = resolveFilePath('link.txt', tmpDir);
+    assert.ok(error, 'should block symlink escaping workspace');
+    assert.ok(error!.output.includes('symlink'));
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('allows symlinks within workspace', () => {
+    fs.writeFileSync(path.join(tmpDir, 'real.txt'), 'data');
+    fs.symlinkSync(path.join(tmpDir, 'real.txt'), path.join(tmpDir, 'link.txt'));
+    const { error } = resolveFilePath('link.txt', tmpDir);
+    assert.equal(error, undefined);
   });
 });
 

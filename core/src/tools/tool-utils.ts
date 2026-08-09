@@ -55,9 +55,18 @@ export function resolveFilePath(
   const resolved = path.isAbsolute(filePath)
     ? filePath
     : path.resolve(cwd, filePath);
-  if (!path.resolve(resolved).startsWith(path.resolve(cwd) + path.sep) &&
-      path.resolve(resolved) !== path.resolve(cwd)) {
+  const cwdAbs = path.resolve(cwd);
+  if (!path.resolve(resolved).startsWith(cwdAbs + path.sep) &&
+      path.resolve(resolved) !== cwdAbs) {
     return { resolved, error: { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true } };
+  }
+  try {
+    const real = fs.realpathSync(resolved);
+    if (!real.startsWith(cwdAbs + path.sep) && real !== cwdAbs) {
+      return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
+    }
+  } catch {
+    // File doesn't exist yet — no symlink to follow; the logical path check above is sufficient
   }
   return { resolved };
 }

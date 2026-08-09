@@ -136,7 +136,7 @@ function matchGlob(pattern: string, filePath: string): boolean {
     if (ch === '*') {
       if (normPattern[i + 1] === '*') {
         // ** matches any number of path segments
-        regex += '.*';
+        regex += '(?:.*/)?';
         i += 2;
         // Skip trailing /
         if (normPattern[i] === '/') i++;
@@ -146,8 +146,8 @@ function matchGlob(pattern: string, filePath: string): boolean {
       regex += '[^/]*';
     } else if (ch === '?') {
       regex += '[^/]';
-    } else if (ch === '.') {
-      regex += '\\.';
+    } else if ('.+^${}()|[]\\'.includes(ch)) {
+      regex += '\\' + ch;
     } else {
       regex += ch;
     }
@@ -409,7 +409,8 @@ export class SkillManager {
     }
 
     const { frontmatter, body } = parseFrontmatter(raw);
-    const name = frontmatter.name || path.basename(path.dirname(filePath));
+    const basename = path.basename(filePath, path.extname(filePath));
+    const name = frontmatter.name || (basename === 'SKILL' ? path.basename(path.dirname(filePath)) : basename);
     if (!name || !body.trim()) return null;
 
     const userInvocableRaw = frontmatter['user-invocable'];

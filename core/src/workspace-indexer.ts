@@ -71,7 +71,7 @@ function langPatterns(): Record<string, PatternDef[]> {
       { regex: /^use\s+(\S+);/gm, type: 'import', isImport: true },
     ],
     java: [
-      { regex: /(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:\w+\s+)(\w+)\s*\(/gm, type: 'function' },
+      { regex: /^(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:\w+\s+)(\w+)\s*\(/gm, type: 'function' },
       { regex: /(?:public\s+)?(?:abstract\s+)?class\s+(\w+)/gm, type: 'class' },
       { regex: /(?:public\s+)?interface\s+(\w+)/gm, type: 'interface' },
       { regex: /^import\s+(\S+);/gm, type: 'import', isImport: true },
