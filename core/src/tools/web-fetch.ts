@@ -201,7 +201,7 @@ export const webFetchTool: ToolDefinition = {
       const originalHost = new URL(url).hostname;
       const finalHost = new URL(finalUrl).hostname;
       if (originalHost !== finalHost) {
-        return { output: `Redirect detected: ${url} → ${finalUrl}\nThe URL redirected to a different host. Re-fetch with the new URL if needed.` };
+        return { output: `Redirect detected: ${sanitizedUrl} → ${finalUrl}\nThe URL redirected to a different host. Re-fetch with the new URL if needed.` };
       }
 
       // Handle PDF responses — extract text from the PDF

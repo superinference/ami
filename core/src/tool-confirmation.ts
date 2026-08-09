@@ -1,5 +1,17 @@
 import * as crypto from 'crypto';
 
+function deepSortKeys(obj: unknown): unknown {
+  if (Array.isArray(obj)) return obj.map(deepSortKeys);
+  if (obj && typeof obj === 'object') {
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(obj as Record<string, unknown>).sort()) {
+      sorted[k] = deepSortKeys((obj as Record<string, unknown>)[k]);
+    }
+    return sorted;
+  }
+  return obj;
+}
+
 /** @public Represents an approval record for tool execution in automated/library usage. */
 export interface ToolApproval {
   scope: 'once' | 'session' | 'workspace';
@@ -43,7 +55,7 @@ export class ToolConfirmationService {
   }
 
   private hashParams(params: Record<string, unknown>): string {
-    const sorted = JSON.stringify(params, Object.keys(params).sort());
+    const sorted = JSON.stringify(deepSortKeys(params));
     return crypto.createHash('sha256').update(sorted).digest('hex').slice(0, 16);
   }
 

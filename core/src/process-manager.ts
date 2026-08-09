@@ -99,7 +99,9 @@ export class ProcessManager extends EventEmitter {
 
     proc.on('close', (code) => {
       clearInterval(stallCheck);
-      entry.status = code === 0 ? 'completed' : 'failed';
+      if (entry.status !== 'killed') {
+        entry.status = code === 0 ? 'completed' : 'failed';
+      }
       entry.exitCode = code;
       try { fs.closeSync(fd); } catch { /* already closed */ }
       entry.outputFd = null;

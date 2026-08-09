@@ -344,7 +344,7 @@ export class MemoryManager {
     let dir = path.dirname(path.resolve(this.cwd, filePath));
     const root = path.resolve(this.cwd);
 
-    while (dir.startsWith(root)) {
+    while (dir === root || dir.startsWith(root + path.sep)) {
       const found = this.findInstructionFile(dir);
       if (found && !claimedPaths.has(found)) {
         try {

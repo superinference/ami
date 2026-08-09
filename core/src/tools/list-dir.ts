@@ -40,6 +40,14 @@ export const listDirTool: ToolDefinition = {
     if (abs !== cwdAbs && !abs.startsWith(cwdAbs + path.sep)) {
       return { output: `Error: path "${dirPath}" is outside the workspace directory.`, isError: true };
     }
+    try {
+      const real = fs.realpathSync(abs);
+      if (real !== cwdAbs && !real.startsWith(cwdAbs + path.sep)) {
+        return { output: `Error: path "${dirPath}" resolves outside the workspace via symlink.`, isError: true };
+      }
+    } catch {
+      // Path doesn't exist yet — no symlink to follow
+    }
 
     // Check if the path exists and is a directory
     let stat: fs.Stats;

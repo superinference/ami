@@ -17,8 +17,20 @@ const EXACT_FAILURE_BLOCK = 4;
 const NO_PROGRESS_WARN = 3;
 const NO_PROGRESS_BLOCK = 5;
 
+function deepSortKeys(obj: unknown): unknown {
+  if (Array.isArray(obj)) return obj.map(deepSortKeys);
+  if (obj && typeof obj === 'object') {
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(obj as Record<string, unknown>).sort()) {
+      sorted[k] = deepSortKeys((obj as Record<string, unknown>)[k]);
+    }
+    return sorted;
+  }
+  return obj;
+}
+
 function hashArgs(toolName: string, args: Record<string, unknown>): string {
-  const sorted = JSON.stringify(args, Object.keys(args).sort());
+  const sorted = JSON.stringify(deepSortKeys(args));
   return crypto.createHash('sha256').update(`${toolName}:${sorted}`).digest('hex').slice(0, 16);
 }
 

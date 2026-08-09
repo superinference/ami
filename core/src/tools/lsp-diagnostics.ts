@@ -46,7 +46,7 @@ export const lspReferencesTool: ToolDefinition = {
       const indexer = getWorkspaceIndexer(context.cwd);
       const results = indexer.searchSymbols(symbol, 30);
       if (results.length === 0) return { output: `No references found for "${symbol}".` };
-      const formatted = results.map((r: any) => `${r.name} (${r.type}) in ${r.file}:${r.line}`).join('\n');
+      const formatted = results.map((r: any) => `${r.name} (${r.type}) in ${r.filePath}:${r.line}`).join('\n');
       return { output: `References for "${symbol}":\n${formatted}` };
     } catch {
       return { output: `Error searching for "${symbol}". Use grep as fallback.`, isError: true };

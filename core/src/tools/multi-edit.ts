@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { resolveFilePath } from './tool-utils';
+import { resolveFilePath, detectLineEnding, normalizeToLf, convertToLineEnding } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 export const multiEditTool: ToolDefinition = {
@@ -70,15 +70,18 @@ export const multiEditTool: ToolDefinition = {
       return { output: 'Error: File has been modified since you last read it. Read the file again before editing.', isError: true };
     }
 
-    let content: string;
+    let rawContent: string;
     try {
-      content = await fs.promises.readFile(resolved, 'utf-8');
+      rawContent = await fs.promises.readFile(resolved, 'utf-8');
     } catch (err) {
       return {
         output: `Error: Cannot read file "${resolved}": ${err instanceof Error ? err.message : String(err)}`,
         isError: true,
       };
     }
+
+    const originalEnding = detectLineEnding(rawContent);
+    let content = normalizeToLf(rawContent);
 
     const applied: string[] = [];
     const failed: string[] = [];
@@ -96,7 +99,9 @@ export const multiEditTool: ToolDefinition = {
         continue;
       }
 
-      const result = fuzzyFindAndReplace(content, old_string, new_string);
+      const normalizedOld = normalizeToLf(old_string);
+      const normalizedNew = normalizeToLf(new_string);
+      const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 
       if (result.error) {
         if (result.matchCount === 0) {
@@ -126,7 +131,8 @@ export const multiEditTool: ToolDefinition = {
     }
 
     try {
-      await fs.promises.writeFile(resolved, content, 'utf-8');
+      const finalContent = convertToLineEnding(content, originalEnding);
+      await fs.promises.writeFile(resolved, finalContent, 'utf-8');
       const fileCache = getFileCache(context.cwd);
       const newStat = await fs.promises.stat(resolved);
       fileCache.set(resolved, content, newStat.mtimeMs);
