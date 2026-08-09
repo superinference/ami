@@ -1,3 +1,4 @@
+import * as child_process from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -76,17 +77,15 @@ export const gitCommitTool: ToolDefinition = {
 
     // Stage files if specified
     if (files && files.length > 0) {
-      let addCommand: string;
-      if (files.length === 1 && files[0] === '.') {
-        addCommand = 'git add -u';
-      } else {
-        const escaped = files.map(f => `"${f.replace(/"/g, '\\"')}"`).join(' ');
-        addCommand = `git add -- ${escaped}`;
-      }
-
-      const addResult = await execCommand(addCommand, execOpts);
-      if (addResult.exitCode !== 0) {
-        const err = (addResult.stderr || addResult.stdout).trim();
+      const safeFiles = files.filter(f => typeof f === 'string');
+      try {
+        if (safeFiles.length === 1 && safeFiles[0] === '.') {
+          child_process.execFileSync('git', ['add', '-u'], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
+        } else {
+          child_process.execFileSync('git', ['add', '--', ...safeFiles], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
+        }
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e);
         return { output: `Error staging files: ${err}`, isError: true };
       }
     }

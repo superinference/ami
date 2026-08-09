@@ -105,6 +105,9 @@ export const exitWorktreeTool: ToolDefinition = {
     const { setWorktreeSession, getCurrentWorktreeSession } = require('../worktree-manager');
     const activeSession = getCurrentWorktreeSession();
     if (activeSession) {
+      if (activeSession.originalCwd) {
+        context.cwd = activeSession.originalCwd;
+      }
       setWorktreeSession(null);
     }
     if (context._hookManager) {

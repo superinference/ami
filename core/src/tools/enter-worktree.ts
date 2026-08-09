@@ -122,7 +122,12 @@ export const enterWorktreeTool: ToolDefinition = {
       return { output: `Error creating worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
     }
 
-    const commitHash = child_process.execSync('git rev-parse --short HEAD', { cwd: worktreeDir, encoding: 'utf-8' }).trim();
+    let commitHash: string;
+    try {
+      commitHash = child_process.execSync('git rev-parse --short HEAD', { cwd: worktreeDir, encoding: 'utf-8' }).trim();
+    } catch {
+      commitHash = 'unknown';
+    }
 
     const { createWorktreeSession, setWorktreeSession, symlinkLargeDirectories } = require('../worktree-manager');
     const session = createWorktreeSession(context.cwd, slug);

@@ -298,7 +298,7 @@ export class CronScheduler {
   }
 }
 
-function matchField(value: number, spec: string, min: number, max: number): boolean {
+export function matchField(value: number, spec: string, min: number, max: number): boolean {
   if (spec === '*') return true;
 
   for (const part of spec.split(',')) {
@@ -306,12 +306,30 @@ function matchField(value: number, spec: string, min: number, max: number): bool
       const [range, stepStr] = part.split('/');
       const step = parseInt(stepStr, 10);
       if (isNaN(step) || step <= 0) continue;
-      const start = range === '*' ? min : parseInt(range, 10);
-      if (isNaN(start)) continue;
-      if ((value - start) % step === 0 && value >= start && value <= max) return true;
+      let start: number, end: number;
+      if (range === '*') {
+        start = min;
+        end = max;
+      } else if (range.includes('-')) {
+        const [rLo, rHi] = range.split('-').map(Number);
+        if (isNaN(rLo) || isNaN(rHi)) continue;
+        start = rLo;
+        end = rHi;
+      } else {
+        start = parseInt(range, 10);
+        if (isNaN(start)) continue;
+        end = max;
+      }
+      if ((value - start) % step === 0 && value >= start && value <= end) return true;
     } else if (part.includes('-')) {
-      const [lo, hi] = part.split('-').map(Number);
-      if (!isNaN(lo) && !isNaN(hi) && value >= lo && value <= hi) return true;
+      let [lo, hi] = part.split('-').map(Number);
+      if (max === 6) { lo = lo % 7; hi = hi % 7; }
+      if (isNaN(lo) || isNaN(hi)) continue;
+      if (hi >= lo) {
+        if (value >= lo && value <= hi) return true;
+      } else {
+        if (value >= lo || value <= hi) return true;
+      }
     } else {
       let parsed = parseInt(part, 10);
       if (max === 6) parsed = parsed % 7; // DOW: Sunday 7 → 0

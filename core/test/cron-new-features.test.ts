@@ -12,7 +12,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { CronScheduler, wrapPromptSafely, resetScheduler } from '../src/cron';
+import { CronScheduler, wrapPromptSafely, resetScheduler, matchField } from '../src/cron';
 
 let sched: CronScheduler;
 let tmpDir: string;
@@ -158,5 +158,36 @@ describe('CronScheduler — basic CRUD', () => {
   it('gets a job by ID', () => {
     const job = sched.create({ cron: '* * * * *', prompt: 'x' });
     assert.deepEqual(sched.get(job.id), job);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchField — range-step and DOW edge cases
+// ---------------------------------------------------------------------------
+
+describe('matchField', () => {
+  it('range-step 10-20/5 only matches within range', () => {
+    assert.equal(matchField(10, '10-20/5', 1, 31), true);
+    assert.equal(matchField(15, '10-20/5', 1, 31), true);
+    assert.equal(matchField(20, '10-20/5', 1, 31), true);
+    assert.equal(matchField(25, '10-20/5', 1, 31), false);
+    assert.equal(matchField(30, '10-20/5', 1, 31), false);
+  });
+
+  it('DOW range 5-7 matches Friday through Sunday', () => {
+    assert.equal(matchField(5, '5-7', 0, 6), true);  // Friday
+    assert.equal(matchField(6, '5-7', 0, 6), true);  // Saturday
+    assert.equal(matchField(0, '5-7', 0, 6), true);  // Sunday (7 wraps to 0)
+    assert.equal(matchField(1, '5-7', 0, 6), false); // Monday
+  });
+
+  it('DOW literal 7 matches Sunday', () => {
+    assert.equal(matchField(0, '7', 0, 6), true);
+  });
+
+  it('simple range works correctly', () => {
+    assert.equal(matchField(5, '3-7', 0, 23), true);
+    assert.equal(matchField(2, '3-7', 0, 23), false);
+    assert.equal(matchField(8, '3-7', 0, 23), false);
   });
 });

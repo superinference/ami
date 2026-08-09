@@ -50,7 +50,7 @@ export const globTool: ToolDefinition = {
       entries.sort((a, b) => a.localeCompare(b));
 
       const limited = entries.slice(0, MAX_RESULTS);
-      const summary = `[${entries.length} files${entries.length >= MAX_RESULTS ? ' (truncated)' : ''}]`;
+      const summary = `[${entries.length} files${entries.length > MAX_RESULTS ? ' (truncated)' : ''}]`;
       const output = `${summary}\n${limited.join('\n')}`;
 
       if (entries.length > MAX_RESULTS) {

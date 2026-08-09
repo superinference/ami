@@ -88,7 +88,7 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
 export function countWorktreeChanges(worktreePath: string, cwd: string): { uncommitted: number; unpushed: number } | null {
   const gitEnv = { ...process.env, ...GIT_NO_PROMPT_ENV };
   try {
-    const status = execSync('git status --porcelain -uno', { cwd: worktreePath, encoding: 'utf-8', env: gitEnv }).trim();
+    const status = execSync('git status --porcelain', { cwd: worktreePath, encoding: 'utf-8', env: gitEnv }).trim();
     const uncommitted = status ? status.split('\n').length : 0;
     let unpushed = 0;
     try {
