@@ -57,6 +57,19 @@ export const multiEditTool: ToolDefinition = {
     const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
     if (pathError) return pathError;
 
+    if (context.filesRead && !context.filesRead.has(resolved)) {
+      return {
+        output: `Error: You must read ${resolved} with file_read before editing it. This prevents edits based on stale content.`,
+        isError: true,
+      };
+    }
+
+    const fileCache = getFileCache(context.cwd);
+    if (fileCache.hasChanged(resolved)) {
+      fileCache.delete(resolved);
+      return { output: 'Error: File has been modified since you last read it. Read the file again before editing.', isError: true };
+    }
+
     let content: string;
     try {
       content = await fs.promises.readFile(resolved, 'utf-8');

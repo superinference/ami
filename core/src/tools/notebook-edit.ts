@@ -286,6 +286,9 @@ export const notebookEditTool: ToolDefinition = {
     try {
       updatedJson = JSON.stringify(notebook, null, 1);
       await fs.promises.writeFile(resolved, updatedJson, 'utf-8');
+      const newStat = await fs.promises.stat(resolved);
+      const { getFileCache } = require('../file-cache');
+      getFileCache(context.cwd).set(resolved, updatedJson, newStat.mtimeMs);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return {

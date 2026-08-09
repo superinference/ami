@@ -235,6 +235,90 @@ describe('getFileCache – singleton', () => {
 });
 
 // ---------------------------------------------------------------------------
+// trackMtime
+// ---------------------------------------------------------------------------
+describe('FileCache – trackMtime', () => {
+  it('enables hasChanged() without caching content', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'tracked.txt');
+      fs.writeFileSync(filePath, 'hello');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.trackMtime(filePath, stat.mtimeMs);
+
+      assert.equal(cache.hasChanged(filePath), false);
+      assert.equal(cache.get(filePath), null);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('detects changes after mtime-only tracking', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'tracked2.txt');
+      fs.writeFileSync(filePath, 'v1');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.trackMtime(filePath, stat.mtimeMs);
+
+      const newMtime = stat.mtimeMs + 1000;
+      fs.utimesSync(filePath, stat.atimeMs / 1000, newMtime / 1000);
+
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('does not overwrite existing full-content entry', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'full.txt');
+      fs.writeFileSync(filePath, 'full content');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, 'full content', stat.mtimeMs);
+      cache.trackMtime(filePath, stat.mtimeMs + 9999);
+
+      const cached = cache.get(filePath);
+      assert.ok(cached);
+      assert.equal(cached!.content, 'full content');
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// delete
+// ---------------------------------------------------------------------------
+describe('FileCache – delete', () => {
+  it('removes a cached entry', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'del.txt');
+      fs.writeFileSync(filePath, 'content');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, 'content', stat.mtimeMs);
+      assert.ok(cache.get(filePath));
+
+      cache.delete(filePath);
+      assert.equal(cache.get(filePath), null);
+      assert.equal(cache.getStats().files, 0);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration: real file lifecycle
 // ---------------------------------------------------------------------------
 describe('FileCache – integration with real files', () => {

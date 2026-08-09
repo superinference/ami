@@ -229,3 +229,62 @@ describe('multiEditTool – relative paths', () => {
     assert.equal(fs.readFileSync(file, 'utf-8'), 'new\n');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Safety guards (filesRead + hasChanged)
+// ---------------------------------------------------------------------------
+
+describe('multiEditTool – safety guards', () => {
+  it('rejects edit when file not in filesRead', async () => {
+    const file = path.join(tmpDir, 'guarded.ts');
+    fs.writeFileSync(file, 'content\n');
+
+    const result = await multiEditTool.execute({
+      file_path: file,
+      edits: [{ old_string: 'content', new_string: 'changed' }],
+    }, ctx({ filesRead: new Set() }));
+
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('must read'));
+  });
+
+  it('allows edit when file is in filesRead', async () => {
+    const file = path.join(tmpDir, 'allowed.ts');
+    fs.writeFileSync(file, 'content\n');
+
+    const filesRead = new Set<string>();
+    filesRead.add(file);
+
+    const result = await multiEditTool.execute({
+      file_path: file,
+      edits: [{ old_string: 'content', new_string: 'changed' }],
+    }, ctx({ filesRead }));
+
+    assert.ok(!result.isError);
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'changed\n');
+  });
+
+  it('rejects edit when file has changed since last read', async () => {
+    const file = path.join(tmpDir, 'stale.ts');
+    fs.writeFileSync(file, 'original\n');
+    const stat = fs.statSync(file);
+
+    const { getFileCache } = require('../src/file-cache');
+    const cache = getFileCache(tmpDir);
+    cache.set(file, 'original\n', stat.mtimeMs);
+
+    const newMtime = stat.mtimeMs + 2000;
+    fs.utimesSync(file, Date.now() / 1000, newMtime / 1000);
+
+    const filesRead = new Set<string>();
+    filesRead.add(file);
+
+    const result = await multiEditTool.execute({
+      file_path: file,
+      edits: [{ old_string: 'original', new_string: 'changed' }],
+    }, ctx({ filesRead }));
+
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('modified since'));
+  });
+});

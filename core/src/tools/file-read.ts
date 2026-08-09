@@ -301,6 +301,7 @@ export const fileReadTool: ToolDefinition = {
 
     // Use streaming for explicit range reads to avoid loading entire file
     if (input.offset !== undefined || input.limit !== undefined) {
+      fileCache.trackMtime(resolved, stat.mtimeMs);
       const rangeText = await readFileInRange(resolved, offset, limit);
       if (!rangeText) return { output: '(empty file)' };
       let output = `File: ${resolved}\nShowing ${limit} lines from offset ${offset}\n\n${rangeText}`;

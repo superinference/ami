@@ -51,6 +51,7 @@ function assertPathWithin(filePath: string, baseDir: string): void {
 
 export class SessionManager {
   private sessionDir: string;
+  private static _idCounter = 0;
 
   constructor(cwd: string, sessionDirOverride?: string) {
     this.sessionDir = sessionDirOverride ?? path.join(cwd, '.superinference', 'sessions');
@@ -160,6 +161,7 @@ export class SessionManager {
   static newId(): string {
     const now = new Date();
     const pad = (n: number, len = 2) => String(n).padStart(len, '0');
+    const seq = SessionManager._idCounter++;
     const stamp = [
       now.getFullYear(),
       pad(now.getMonth() + 1),
@@ -168,8 +170,10 @@ export class SessionManager {
       pad(now.getHours()),
       pad(now.getMinutes()),
       pad(now.getSeconds()),
+      '-',
+      pad(now.getMilliseconds(), 3),
     ].join('');
-    return `session-${stamp}`;
+    return `session-${stamp}-${seq}`;
   }
 
   /**

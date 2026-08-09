@@ -112,10 +112,15 @@ describe('SessionManager', () => {
     sm.delete('nope');
   });
 
-  it('newId returns a timestamp-based id', () => {
+  it('newId returns a timestamp-based id with milliseconds', () => {
     const id = SessionManager.newId();
     assert.ok(id.startsWith('session-'));
-    assert.ok(id.length > 10);
+    assert.match(id, /^session-\d{8}-\d{6}-\d{3}-\d+$/);
+  });
+
+  it('newId returns distinct IDs for rapid successive calls', () => {
+    const ids = new Set(Array.from({ length: 5 }, () => SessionManager.newId()));
+    assert.ok(ids.size > 1, 'rapid newId() calls should produce distinct IDs');
   });
 
   it('getSessionDir returns the configured directory', () => {

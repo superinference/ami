@@ -45,12 +45,24 @@ export class FileCache {
   }
 
   /**
+   * Track only the mtime of a file (e.g. after a range read where full content
+   * is not available). This enables hasChanged() without caching content.
+   * Does not overwrite an existing full-content entry.
+   */
+  trackMtime(path: string, mtime: number): void {
+    if (!this.cache.has(path)) {
+      this.cache.set(path, { path, content: '', mtime, tokenEstimate: 0 });
+    }
+  }
+
+  /**
    * Get cached content.
-   * Returns null if the file is not cached or has changed on disk.
+   * Returns null if the file is not cached, has changed on disk,
+   * or is a mtime-only entry (no content).
    */
   get(path: string): FileState | null {
     const cached = this.cache.get(path);
-    if (!cached) return null;
+    if (!cached || !cached.content) return null;
     if (this.hasChanged(path)) return null;
     return cached;
   }
