@@ -1643,7 +1643,7 @@ describe('McpManager — getToolAnnotations edge cases', () => {
 
     const ann = manager.getToolAnnotations('srv:myTool');
     assert.equal(ann.readOnlyHint, true);
-    assert.equal(ann.destructiveHint, undefined); // false becomes undefined
+    assert.equal(ann.destructiveHint, false); // explicit false is preserved
     assert.equal(ann.openWorldHint, true);
   });
 

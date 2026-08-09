@@ -119,10 +119,11 @@ export const sendMessageTool: ToolDefinition = {
     };
 
     if (to === '*') {
+      let sent = 0;
       for (const [name, box] of mailboxes) {
-        if (name !== from) box.push(msg);
+        if (name !== from) { box.push(msg); sent++; }
       }
-      return { output: `Broadcast sent to ${mailboxes.size - 1} agents.` };
+      return { output: `Broadcast sent to ${sent} agents.` };
     }
 
     if (!mailboxes.has(to)) {

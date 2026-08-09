@@ -105,7 +105,7 @@ export class McpClient extends EventEmitter {
   private _tools: McpToolSchema[] = [];
   private _resources: McpResource[] = [];
   private _prompts: McpPrompt[] = [];
-  private transport: 'stdio' | 'sse' = 'stdio';
+  private transport: 'stdio' | 'sse' | 'http' = 'stdio';
   private sseUrl: string | null = null;
   private readonly command: string;
   private readonly args: string[];
@@ -323,7 +323,7 @@ export class McpClient extends EventEmitter {
   async connectHTTP(url: string): Promise<void> {
     if (this._state === 'ready') return;
     this._state = 'connecting';
-    this.transport = 'http' as any;
+    this.transport = 'http';
     this.sseUrl = url;
     this.hasTriggeredClose = false;
 
@@ -526,7 +526,7 @@ export class McpClient extends EventEmitter {
   }
 
   private async sendRequestAuto(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    if (this.transport === 'sse' && this.sseUrl) {
+    if ((this.transport === 'sse' || this.transport === 'http') && this.sseUrl) {
       return this.sendHttpRequest(method, params, signal);
     }
     return this.sendRequest(method, params, signal);
@@ -663,7 +663,9 @@ export class McpClient extends EventEmitter {
       if (!trimmed) continue;
       try {
         const msg = JSON.parse(trimmed) as JsonRpcResponse | JsonRpcNotification;
-        if ('id' in msg && msg.id !== undefined) {
+        if ('id' in msg && msg.id !== undefined && 'method' in msg) {
+          this.handleNotification(msg as JsonRpcNotification);
+        } else if ('id' in msg && msg.id !== undefined) {
           this.handleResponse(msg as JsonRpcResponse);
         } else if ('method' in msg) {
           this.handleNotification(msg as JsonRpcNotification);

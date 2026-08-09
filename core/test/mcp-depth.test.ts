@@ -730,7 +730,7 @@ describe('McpManager — tool annotations (extended)', () => {
     });
     const ann = manager.getToolAnnotations('test:deleteSafely');
     assert.equal(ann.readOnlyHint, true);
-    assert.equal(ann.destructiveHint, undefined);
+    assert.equal(ann.destructiveHint, false);
     manager.removeServer('test');
   });
 });

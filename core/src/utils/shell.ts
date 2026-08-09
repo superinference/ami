@@ -19,10 +19,10 @@ const PROMPT_PATTERNS = [
   /Proceed\?/i,
   /\?\s*$/,
   /:\s*$/,
-  /> $/,
-  /\$ $/,
-  /% $/,
-  /# $/,
+  />\s*$/,
+  /\$\s*$/,
+  /%\s*$/,
+  /#\s*$/,
 ];
 
 function looksLikePrompt(output: string): boolean {

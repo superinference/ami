@@ -244,9 +244,9 @@ export class McpManager extends EventEmitter {
     if (entry?.schema.annotations) {
       const a = entry.schema.annotations;
       return {
-        readOnlyHint: a.readOnlyHint || undefined,
-        destructiveHint: a.destructiveHint || undefined,
-        openWorldHint: a.openWorldHint || undefined,
+        readOnlyHint: a.readOnlyHint ?? undefined,
+        destructiveHint: a.destructiveHint ?? undefined,
+        openWorldHint: a.openWorldHint ?? undefined,
       };
     }
 
