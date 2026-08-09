@@ -155,7 +155,8 @@ export const taskTool: ToolDefinition = {
     }
 
     const subAbort = new AbortController();
-    context.abortSignal.addEventListener('abort', () => subAbort.abort(), { once: true });
+    const forwardAbort = () => subAbort.abort();
+    context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
 
     const isolation = input.isolation as string | undefined;
     let effectiveCwd = (input.cwd as string) || context.cwd;
@@ -248,7 +249,7 @@ export const taskTool: ToolDefinition = {
           }
           context.processManager.emit('complete', { taskId, exitCode: 0, command: `[agent] ${label}`, description: `Background agent: ${label}` });
         }
-      })();
+      })().catch(() => {});
 
       return { output: `Background agent started: ${taskId}\nUse task_output to check results.` };
     }
@@ -298,6 +299,7 @@ export const taskTool: ToolDefinition = {
         }
       }
     } catch (err) {
+      context.abortSignal.removeEventListener('abort', forwardAbort);
       if (context._hookManager) {
         context._hookManager.executeSubagentStop({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});
       }
@@ -306,6 +308,7 @@ export const taskTool: ToolDefinition = {
         isError: true,
       };
     }
+    context.abortSignal.removeEventListener('abort', forwardAbort);
 
     if (context._hookManager) {
       context._hookManager.executeSubagentStop({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});

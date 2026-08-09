@@ -110,6 +110,30 @@ describe('sanitizeToolCallIds', () => {
     const result = sanitizeToolCallIds([], 'anthropic');
     assert.deepEqual(result, []);
   });
+
+  it('produces non-empty fallback ID when all chars stripped', () => {
+    const msgs: Message[] = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: '@@##$$', type: 'function', function: { name: 'test', arguments: '{}' } },
+        ],
+      },
+    ];
+    const result = sanitizeToolCallIds(msgs, 'anthropic');
+    const assistant = result[0] as { role: 'assistant'; tool_calls?: Array<{ id: string }> };
+    assert.ok(assistant.tool_calls![0].id.length > 0, 'ID must not be empty');
+  });
+
+  it('produces non-empty fallback for tool_call_id when all chars stripped', () => {
+    const msgs: Message[] = [
+      { role: 'tool', tool_call_id: '!!!', content: 'result' },
+    ];
+    const result = sanitizeToolCallIds(msgs, 'anthropic');
+    const tool = result[0] as { role: 'tool'; tool_call_id: string };
+    assert.ok(tool.tool_call_id.length > 0, 'tool_call_id must not be empty');
+  });
 });
 
 // ---------------------------------------------------------------------------

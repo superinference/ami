@@ -81,7 +81,8 @@ export const skillTool: ToolDefinition = {
     }
 
     const subAbort = new AbortController();
-    context.abortSignal.addEventListener('abort', () => subAbort.abort(), { once: true });
+    const forwardAbort = () => subAbort.abort();
+    context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
 
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };
     if (skill?.model) {
@@ -122,6 +123,8 @@ export const skillTool: ToolDefinition = {
         output: `Skill execution error: ${err instanceof Error ? err.message : String(err)}`,
         isError: true,
       };
+    } finally {
+      context.abortSignal.removeEventListener('abort', forwardAbort);
     }
 
     return { output: result || '(skill produced no output)', isError: false };

@@ -1235,7 +1235,9 @@ export class HookManager extends EventEmitter {
         let body = '';
         res.on('data', (d: Buffer) => body += d);
         res.on('end', () => resolve(body));
+        res.on('error', () => resolve(''));
       });
+      req.on('timeout', () => { req.destroy(); resolve(''); });
       req.on('error', () => resolve(''));
       req.write(eventData);
       req.end();

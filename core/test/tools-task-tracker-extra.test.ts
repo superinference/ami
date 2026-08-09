@@ -465,7 +465,7 @@ describe('taskTool — execute with engine factory', () => {
     let subAborted = false;
 
     async function* fakeSubmit(_prompt: string) {
-      // Simulate a long-running task; parent aborts before we yield
+      parentAbort.abort();
       yield { type: 'text_delta' as const, text: 'start' };
     }
 
@@ -475,7 +475,6 @@ describe('taskTool — execute with engine factory', () => {
         abortSignal: parentAbort.signal,
         _providerConfig: { baseUrl: 'http://test', apiKey: 'key', model: 'model' },
         _engineFactory: (cfg: any) => {
-          // Listen for abort on the sub abort controller
           cfg.abortController.signal.addEventListener('abort', () => {
             subAborted = true;
           });
@@ -484,9 +483,7 @@ describe('taskTool — execute with engine factory', () => {
       }),
     );
 
-    // Abort the parent after execution
-    parentAbort.abort();
-    assert.ok(subAborted, 'sub abort controller should be aborted when parent aborts');
+    assert.ok(subAborted, 'sub abort controller should be aborted when parent aborts during execution');
   });
 
   it('assigns a sessionId to the subagent config', async () => {

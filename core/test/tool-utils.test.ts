@@ -12,6 +12,7 @@ import {
   detectLineEnding,
   normalizeToLf,
   convertToLineEnding,
+  scanForSecrets,
 } from '../src/tools/tool-utils';
 
 // ---------------------------------------------------------------------------
@@ -224,5 +225,64 @@ describe('convertToLineEnding', () => {
 
   it('normalizes mixed input before converting', () => {
     assert.equal(convertToLineEnding('a\r\nb\nc\r\n', '\r\n'), 'a\r\nb\r\nc\r\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanForSecrets
+// ---------------------------------------------------------------------------
+
+describe('scanForSecrets', () => {
+  it('detects OpenAI API keys', () => {
+    const found = scanForSecrets('key: sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects Anthropic API keys', () => {
+    const found = scanForSecrets('ANTHROPIC_KEY=sk-ant-abcdefghijklmnopqrstuvwxyz1234567890');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitHub tokens', () => {
+    const found = scanForSecrets('token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects AWS access key IDs', () => {
+    const found = scanForSecrets('aws_key=AKIAIOSFODNN7EXAMPLE');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects Google API keys', () => {
+    const found = scanForSecrets('google=AIzaSyA1234567890abcdefghijklmnopqrstuv');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects Groq API keys', () => {
+    const found = scanForSecrets('GROQ_KEY=gsk_abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects password assignments', () => {
+    const found = scanForSecrets('password = "my-secret-password-123"');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects token assignments', () => {
+    const found = scanForSecrets("token: 'a-long-secret-token-value'");
+    assert.ok(found.length > 0);
+  });
+
+  it('returns empty array for clean content', () => {
+    const found = scanForSecrets('const x = 42;\nconsole.log("hello world");');
+    assert.equal(found.length, 0);
+  });
+
+  it('truncates matched secrets for safety', () => {
+    const found = scanForSecrets('sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef');
+    for (const f of found) {
+      assert.ok(f.endsWith('...'));
+      assert.ok(f.length <= 25);
+    }
   });
 });

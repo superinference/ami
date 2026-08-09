@@ -10,16 +10,16 @@ export function sanitizeToolCallIds(
     if (msg.role === 'assistant' && msg.tool_calls) {
       return {
         ...msg,
-        tool_calls: msg.tool_calls.map(tc => ({
+        tool_calls: msg.tool_calls.map((tc, i) => ({
           ...tc,
-          id: tc.id.replace(/[^a-zA-Z0-9_-]/g, ''),
+          id: tc.id.replace(/[^a-zA-Z0-9_-]/g, '') || `tc_${String(i).padStart(4, '0')}`,
         })),
       };
     }
     if (msg.role === 'tool') {
       return {
         ...msg,
-        tool_call_id: msg.tool_call_id.replace(/[^a-zA-Z0-9_-]/g, ''),
+        tool_call_id: msg.tool_call_id.replace(/[^a-zA-Z0-9_-]/g, '') || 'tc_fallback',
       };
     }
     return msg;

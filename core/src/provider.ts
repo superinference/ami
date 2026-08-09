@@ -293,7 +293,7 @@ export function resolveModel(config: ProviderConfig) {
 
   const provider = (config.provider as ProviderName) || inferred?.provider;
   const model = config.model || inferred?.defaultModel || 'gpt-4o';
-  const baseUrl = config.baseUrl || inferred?.defaultBaseUrl || 'https://api.openai.com/v1';
+  const baseUrl = config.baseUrl || inferred?.defaultBaseUrl || '';
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
@@ -537,7 +537,7 @@ export async function* streamChatCompletion(
   }
 
   try {
-    const effectiveTemperature = resolveTemperature(modelId, config.temperature ?? 0, options?.thinking);
+    const effectiveTemperature = resolveTemperature(modelId, config.temperature, options?.thinking);
 
     const result = streamText({
       model,

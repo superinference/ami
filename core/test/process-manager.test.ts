@@ -332,3 +332,43 @@ describe('ProcessManager – list() shape', () => {
     await waitForComplete(pm, id);
   });
 });
+
+// ---------------------------------------------------------------------------
+// monitorMcp — cleanup clears interval
+// ---------------------------------------------------------------------------
+
+describe('ProcessManager – monitorMcp', () => {
+  let tmpDir: string;
+  let pm: ProcessManager;
+
+  afterEach(async () => { await cleanupPm(pm); fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('monitorMcp creates a running entry', () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.monitorMcp('test-server', async () => true, 60000);
+    assert.ok(id.startsWith('monitor-'));
+    const task = pm.get(id);
+    assert.ok(task);
+    assert.equal(task!.status, 'running');
+  });
+
+  it('kill() clears monitor interval without crashing', () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.monitorMcp('test-server', async () => true, 60000);
+    const killed = pm.kill(id);
+    assert.ok(killed);
+    const task = pm.get(id);
+    assert.equal(task!.status, 'killed');
+  });
+
+  it('cleanup() clears monitor intervals', () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    pm.monitorMcp('srv1', async () => true, 60000);
+    pm.monitorMcp('srv2', async () => true, 60000);
+    pm.cleanup();
+    assert.equal(pm.runningCount(), 0);
+  });
+});

@@ -22,6 +22,7 @@ interface InternalProcess extends BackgroundProcess {
   proc: child_process.ChildProcess;
   outputFd: number | null;
   bytesWritten: number;
+  _intervalHandle?: ReturnType<typeof setInterval>;
 }
 
 export class ProcessManager extends EventEmitter {
@@ -124,14 +125,19 @@ export class ProcessManager extends EventEmitter {
     if (!entry || entry.status !== 'running') return false;
 
     entry.status = 'killed';
-    try {
-      if (os.platform() === 'win32') {
-        child_process.execSync(`taskkill /pid ${entry.proc.pid} /T /F`, { stdio: 'ignore' });
-      } else {
-        process.kill(-entry.proc.pid!, 'SIGKILL');
+    if (entry._intervalHandle) {
+      clearInterval(entry._intervalHandle);
+      entry._intervalHandle = undefined;
+    } else {
+      try {
+        if (os.platform() === 'win32') {
+          child_process.execSync(`taskkill /pid ${entry.proc.pid} /T /F`, { stdio: 'ignore' });
+        } else {
+          process.kill(-entry.proc.pid!, 'SIGKILL');
+        }
+      } catch {
+        try { entry.proc.kill('SIGKILL'); } catch { /* already dead */ }
       }
-    } catch {
-      try { entry.proc.kill('SIGKILL'); } catch { /* already dead */ }
     }
 
     if (entry.outputFd !== null) {
@@ -221,6 +227,7 @@ export class ProcessManager extends EventEmitter {
       proc: null as any,
       outputFd: null,
       bytesWritten: 0,
+      _intervalHandle: interval,
     });
     return taskId;
   }
