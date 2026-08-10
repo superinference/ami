@@ -22,6 +22,7 @@ function detectLanguage(filePath: string): string | null {
 export class LSPClient {
   private processes: Map<string, child_process.ChildProcess> = new Map();
   private initialized: Set<string> = new Set();
+  private openedDocuments: Set<string> = new Set();
   private messageId = 0;
 
   async ensureServer(language: string, cwd: string): Promise<boolean> {
@@ -51,6 +52,16 @@ export class LSPClient {
     } catch { return false; }
   }
 
+  private ensureDidOpen(proc: child_process.ChildProcess, filePath: string, content?: string): void {
+    const uri = `file://${filePath}`;
+    if (this.openedDocuments.has(uri)) return;
+    const lang = detectLanguage(filePath);
+    this.sendNotification(proc, 'textDocument/didOpen', {
+      textDocument: { uri, languageId: lang ?? 'plaintext', version: 1, text: content ?? '' },
+    });
+    this.openedDocuments.add(uri);
+  }
+
   async notifyDidChange(filePath: string, content: string, cwd: string): Promise<void> {
     const lang = detectLanguage(filePath);
     if (!lang) return;
@@ -59,6 +70,7 @@ export class LSPClient {
       if (!ok) return;
     }
     const proc = this.processes.get(lang)!;
+    this.ensureDidOpen(proc, filePath, content);
     this.sendNotification(proc, 'textDocument/didChange', {
       textDocument: { uri: `file://${filePath}`, version: Date.now() },
       contentChanges: [{ text: content }],
@@ -73,6 +85,7 @@ export class LSPClient {
       if (!ok) return;
     }
     const proc = this.processes.get(lang)!;
+    this.ensureDidOpen(proc, filePath);
     this.sendNotification(proc, 'textDocument/didSave', {
       textDocument: { uri: `file://${filePath}` },
     });
@@ -84,6 +97,7 @@ export class LSPClient {
     }
     this.processes.clear();
     this.initialized.clear();
+    this.openedDocuments.clear();
   }
 
   private sendRequest(proc: child_process.ChildProcess, id: number, method: string, params: unknown): void {

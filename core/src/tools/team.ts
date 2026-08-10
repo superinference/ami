@@ -2,6 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 
+function sanitizeTeamName(name: string): string | null {
+  const clean = name.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!clean || clean !== name) return null;
+  return clean;
+}
+
 interface TeamContext {
   name: string;
   description?: string;
@@ -25,7 +31,9 @@ export const teamCreateTool: ToolDefinition = {
   isReadOnly: false,
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     if (currentTeam) return { output: `Error: Team "${currentTeam.name}" already exists. Delete it first.`, isError: true };
-    const name = input.team_name as string;
+    const rawName = input.team_name as string;
+    const name = sanitizeTeamName(rawName);
+    if (!name) return { output: 'Error: team_name must contain only alphanumeric characters, hyphens, and underscores.', isError: true };
     const teamDir = path.join(context.cwd, '.superinference', 'teams', name);
     fs.mkdirSync(teamDir, { recursive: true });
     fs.mkdirSync(path.join(teamDir, 'memory'), { recursive: true });
