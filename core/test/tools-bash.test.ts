@@ -63,7 +63,7 @@ describe('bashTool – execute', () => {
 
   it('returns non-zero exit code and isError for failing commands', async () => {
     const result = await bashTool.execute({ command: 'false' }, ctx());
-    assert.ok(result.output.includes('Exit code: 1'));
+    assert.ok(result.output.includes('[exit code: 1'));
     assert.equal(result.isError, true);
   });
 

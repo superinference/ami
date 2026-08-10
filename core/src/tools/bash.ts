@@ -251,7 +251,7 @@ export const bashTool: ToolDefinition = {
       stdout = '[Command completed successfully (no output expected)]';
     }
 
-    let output = formatOutput(stdout, result.stderr, result.exitCode);
+    let output = formatOutput(stdout, result.stderr, result.exitCode === 0 ? 0 : null);
     const chaining = detectCommandChaining(command);
     if (chaining.chained && chaining.count > 2) {
       output += '\n\n[Note: This command chains ' + chaining.count +

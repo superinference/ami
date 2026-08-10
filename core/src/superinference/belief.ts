@@ -97,7 +97,7 @@ export class BeliefTracker {
 
   // Reset
   reset(): void {
-    this._bt = this.config.initialBelief;
+    this._bt = Math.max(0.25, Math.min(0.95, this.config.initialBelief));
     this._step = 0;
   }
 }

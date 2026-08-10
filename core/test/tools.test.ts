@@ -316,7 +316,7 @@ describe('bash tool', () => {
       makeContext(tmpDir),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('Exit code: 42'));
+    assert.ok(result.output.includes('[exit code: 42'));
   });
 
   it('captures stderr', async () => {

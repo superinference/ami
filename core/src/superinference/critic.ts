@@ -65,7 +65,14 @@ Respond with ONLY a JSON object:
 
     let depth = 0;
     let end = -1;
+    let inString = false;
     for (let i = start; i < text.length; i++) {
+      if (inString) {
+        if (text[i] === '\\') { i++; continue; }
+        if (text[i] === '"') inString = false;
+        continue;
+      }
+      if (text[i] === '"') { inString = true; continue; }
       if (text[i] === '{') depth++;
       else if (text[i] === '}') {
         depth--;

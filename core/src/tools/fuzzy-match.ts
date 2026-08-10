@@ -174,7 +174,14 @@ function buildPositionMap(original: string, normalized: string): number[] {
       ni++;
       oi += 2;
     }
-    // Smart quote replacements (multi-byte -> single byte)
+    // Em dash: 1 original char → 2 normalized chars ('—' → '--')
+    else if (original[oi] === '—' && normalized[ni] === '-' && ni + 1 < normalized.length && normalized[ni + 1] === '-') {
+      ni++;
+      map[ni] = oi;
+      ni++;
+      oi++;
+    }
+    // Smart quote replacements (single char -> single char)
     else if (original.charCodeAt(oi) > 127 && normalized.charCodeAt(ni) < 128) {
       ni++;
       oi++;

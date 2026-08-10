@@ -290,11 +290,15 @@ export function parseWorkflowMeta(script: string): WorkflowMeta | null {
   if (!metaMatch) return null;
 
   try {
-    const metaStr = metaMatch[1]
-      .replace(/'/g, '"')
-      .replace(/,\s*([}\]])/g, '$1')
-      .replace(/(\w+)\s*:/g, '"$1":');
-    return JSON.parse(metaStr);
+    const factory = new Function(`return (${metaMatch[1]})`); // eslint-disable-line no-new-func
+    const obj = factory();
+    if (!obj || typeof obj !== 'object') return null;
+    return {
+      name: String(obj.name ?? ''),
+      description: String(obj.description ?? ''),
+      phases: Array.isArray(obj.phases) ? obj.phases : undefined,
+      whenToUse: obj.whenToUse ? String(obj.whenToUse) : undefined,
+    };
   } catch {
     return null;
   }
