@@ -169,4 +169,53 @@ describe('LSPClient — didOpen tracking', () => {
     await client.notifyDidChange('/tmp/test.txt', 'hello', '/tmp');
     assert.equal(notifications.length, 0);
   });
+
+  it('process crash clears openedDocuments for that language', async () => {
+    await client.notifyDidChange('/tmp/test.ts', 'code', '/tmp');
+    assert.equal(notifications.length, 2); // didOpen + didChange
+
+    // Simulate process crash: trigger the exit handler
+    const fakeProc = (client as any).processes.get('typescript');
+    const exitListeners = fakeProc.listeners?.('exit') ?? [];
+    // Manually call clearOpenedForLanguage since we can't trigger real events on a fake proc
+    (client as any).clearOpenedForLanguage('typescript');
+    (client as any).processes.delete('typescript');
+    (client as any).initialized.delete('typescript');
+    notifications.length = 0;
+
+    // Re-add fake process (simulates server restart)
+    const newProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
+    (client as any).processes.set('typescript', newProc);
+    (client as any).initialized.add('typescript');
+
+    await client.notifyDidChange('/tmp/test.ts', 'code2', '/tmp');
+    const didOpens = notifications.filter(n => n.method === 'textDocument/didOpen');
+    assert.equal(didOpens.length, 1, 'should re-send didOpen after process crash');
+  });
+
+  it('process crash only clears documents for the crashed language', async () => {
+    // Add a python fake process too
+    const pyProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
+    (client as any).processes.set('python', pyProc);
+    (client as any).initialized.add('python');
+
+    await client.notifyDidChange('/tmp/test.ts', 'ts code', '/tmp');
+    await client.notifyDidChange('/tmp/test.py', 'py code', '/tmp');
+    notifications.length = 0;
+
+    // Crash only typescript
+    (client as any).clearOpenedForLanguage('typescript');
+    (client as any).processes.delete('typescript');
+
+    // Re-add typescript
+    const newTsProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
+    (client as any).processes.set('typescript', newTsProc);
+
+    await client.notifyDidChange('/tmp/test.ts', 'ts2', '/tmp');
+    await client.notifyDidChange('/tmp/test.py', 'py2', '/tmp');
+
+    const didOpens = notifications.filter(n => n.method === 'textDocument/didOpen');
+    assert.equal(didOpens.length, 1, 'only typescript should get new didOpen');
+    assert.equal(didOpens[0].params.textDocument.uri, 'file:///tmp/test.ts');
+  });
 });

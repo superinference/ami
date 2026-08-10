@@ -67,6 +67,12 @@ describe('bashTool – execute', () => {
     assert.equal(result.isError, true);
   });
 
+  it('reports non-zero exit code exactly once (no duplication)', async () => {
+    const result = await bashTool.execute({ command: 'exit 42' }, ctx());
+    const matches = result.output.match(/exit.?code/gi) || [];
+    assert.equal(matches.length, 1, `exit code should appear once, got ${matches.length}: ${result.output}`);
+  });
+
   it('captures stderr', async () => {
     const result = await bashTool.execute(
       { command: 'echo errormsg >&2' },

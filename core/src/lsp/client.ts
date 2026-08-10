@@ -35,8 +35,9 @@ export class LSPClient {
       const proc = child_process.spawn(config.command, config.args, {
         cwd, stdio: ['pipe', 'pipe', 'pipe'],
       });
-      proc.on('error', () => { this.processes.delete(language); this.initialized.delete(language); });
-      proc.on('exit', () => { this.processes.delete(language); this.initialized.delete(language); });
+      const clearLang = () => { this.processes.delete(language); this.initialized.delete(language); this.clearOpenedForLanguage(language); };
+      proc.on('error', clearLang);
+      proc.on('exit', clearLang);
       proc.stderr?.on('data', () => {});
       proc.stdout?.on('data', () => {});
       if (!proc.pid) return false;
@@ -89,6 +90,15 @@ export class LSPClient {
     this.sendNotification(proc, 'textDocument/didSave', {
       textDocument: { uri: `file://${filePath}` },
     });
+  }
+
+  private clearOpenedForLanguage(language: string): void {
+    for (const uri of this.openedDocuments) {
+      const uriPath = uri.replace('file://', '');
+      if (detectLanguage(uriPath) === language) {
+        this.openedDocuments.delete(uri);
+      }
+    }
   }
 
   shutdown(): void {

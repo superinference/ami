@@ -224,31 +224,29 @@ phase('Run')`;
 // ---------------------------------------------------------------------------
 
 describe('bash exit code formatting', () => {
-  it('formatOutput with null exitCode does not append exit code line', () => {
-    // We can't directly import formatOutput (it's not exported), but we
-    // verify the behavior by checking that the tool would not duplicate.
-    // The fix changes line 254: formatOutput(stdout, stderr, null) instead
-    // of formatOutput(stdout, stderr, result.exitCode).
-    // The exitInfo at line 273 is the only place exit code appears.
-    // We verify this indirectly: a non-zero exit code string should appear
-    // exactly once in formatted output.
+  it('non-zero exit code appears exactly once in output', async () => {
+    const { bashTool } = await import('../src/tools/bash');
+    const context = {
+      cwd: process.cwd(),
+      sessionId: 'test',
+      abortSignal: new AbortController().signal,
+      config: {} as any,
+    };
+    const result = await bashTool.execute({ command: 'exit 42' }, context);
+    const matches = result.output.match(/exit.?code/gi) || [];
+    assert.equal(matches.length, 1,
+      `exit code should appear exactly once, got ${matches.length}: ${result.output}`);
+  });
 
-    // This is a structural test — verify the source code was fixed
-    const fs = require('fs');
-    const source = fs.readFileSync(
-      require('path').join(__dirname, '../src/tools/bash.ts'),
-      'utf-8'
-    );
-    const lines = source.split('\n');
-    const fixedLine = lines.find((l: string) =>
-      l.includes('formatOutput(stdout, result.stderr, result.exitCode === 0 ? 0 : null)')
-    );
-    assert.ok(fixedLine,
-      'formatOutput should pass null for non-zero exitCode to avoid duplication with exitInfo');
-    const rawExitCodeLine = lines.find((l: string) =>
-      /formatOutput\(stdout, result\.stderr, result\.exitCode\s*\)/.test(l)
-    );
-    assert.equal(rawExitCodeLine, undefined,
-      'formatOutput should not pass result.exitCode unconditionally');
+  it('exit code 0 still appears in output', async () => {
+    const { bashTool } = await import('../src/tools/bash');
+    const context = {
+      cwd: process.cwd(),
+      sessionId: 'test',
+      abortSignal: new AbortController().signal,
+      config: {} as any,
+    };
+    const result = await bashTool.execute({ command: 'true' }, context);
+    assert.ok(result.output.includes('Exit code: 0'));
   });
 });
