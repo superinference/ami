@@ -8,6 +8,7 @@ import {
   resolveModel,
   convertMessages,
   convertToolsForSDK,
+  buildThinkingOptions,
 } from '../src/provider';
 import type { ToolDefinition, ProviderConfig, Message } from '../src/types';
 
@@ -622,6 +623,64 @@ describe('streamChatCompletion - abort signal', () => {
       assert.ok(!gotContent, 'Should not receive content when signal is already aborted');
     } finally {
       server.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildThinkingOptions parameter format validation
+// ---------------------------------------------------------------------------
+describe('buildThinkingOptions format matches SDK expectations', () => {
+  it('Anthropic thinking output matches @ai-sdk/anthropic providerOptions schema', () => {
+    const result = buildThinkingOptions('claude-opus-4', { enabled: true, level: 'max', budgetTokens: 128000 });
+    const po = result.providerOptions as Record<string, any>;
+    assert.ok(po, 'must return providerOptions');
+    assert.ok(po.anthropic, 'must have anthropic namespace');
+    assert.ok(po.anthropic.thinking, 'must have thinking config');
+    assert.equal(po.anthropic.thinking.type, 'enabled', 'type must be "enabled"');
+    assert.equal(typeof po.anthropic.thinking.budgetTokens, 'number', 'budgetTokens must be a number');
+    assert.ok(po.anthropic.thinking.budgetTokens > 0, 'budgetTokens must be positive');
+    assert.ok(!('experimental_thinking' in result), 'must NOT use deprecated experimental_thinking key');
+    assert.ok(!('enabled' in po.anthropic.thinking), 'must NOT use boolean enabled (old format)');
+  });
+
+  it('OpenAI thinking output matches @ai-sdk/openai providerOptions schema', () => {
+    const result = buildThinkingOptions('o3', { enabled: true, level: 'high' });
+    const po = result.providerOptions as Record<string, any>;
+    assert.ok(po, 'must return providerOptions');
+    assert.ok(po.openai, 'must have openai namespace');
+    assert.equal(typeof po.openai.reasoningEffort, 'string', 'reasoningEffort must be a string');
+    const validEfforts = ['low', 'medium', 'high'];
+    assert.ok(validEfforts.includes(po.openai.reasoningEffort),
+      `reasoningEffort must be one of ${validEfforts.join(', ')}`);
+  });
+
+  it('Google thinking output matches @ai-sdk/google providerOptions schema', () => {
+    const result = buildThinkingOptions('gemini-2.5-pro', { enabled: true, level: 'high' });
+    const po = result.providerOptions as Record<string, any>;
+    assert.ok(po, 'must return providerOptions');
+    assert.ok(po.google, 'must have google namespace');
+    assert.ok(po.google.thinkingConfig, 'must have thinkingConfig');
+    assert.equal(typeof po.google.thinkingConfig.thinkingBudget, 'number', 'thinkingBudget must be a number');
+    assert.equal(po.google.thinkingConfig.includeThoughts, true, 'includeThoughts must be true');
+  });
+
+  it('no provider uses deprecated top-level SDK parameters', () => {
+    const cases = [
+      { model: 'claude-opus-4', level: 'max' as const },
+      { model: 'claude-opus-4-6', level: 'max' as const },
+      { model: 'claude-sonnet-4', level: 'high' as const },
+      { model: 'o1', level: 'medium' as const },
+      { model: 'o3', level: 'high' as const },
+      { model: 'gemini-2.5-pro', level: 'high' as const },
+      { model: 'gemini-2.5-flash', level: 'medium' as const },
+    ];
+    const deprecated = ['experimental_thinking', 'experimental_providerMetadata'];
+    for (const { model, level } of cases) {
+      const result = buildThinkingOptions(model, { enabled: true, level });
+      for (const key of deprecated) {
+        assert.ok(!(key in result), `${model}: must NOT use deprecated key '${key}'`);
+      }
     }
   });
 });

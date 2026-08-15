@@ -421,17 +421,23 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
 // Build provider-specific thinking / reasoning options
 // ---------------------------------------------------------------------------
 
-function buildThinkingOptions(
+export function buildThinkingOptions(
   modelId: string,
   thinking: ThinkingConfig | undefined,
 ): Record<string, unknown> {
   if (!thinking?.enabled) return {};
   const caps = getModelCapabilities(modelId);
 
-  // Anthropic Claude — adaptive thinking via experimental_thinking
+  // Anthropic Claude — thinking via providerOptions.anthropic.thinking
   if (caps?.supportsAdaptiveThinking) {
     const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level);
-    return { experimental_thinking: { enabled: true, budgetTokens } };
+    return {
+      providerOptions: {
+        anthropic: {
+          thinking: { type: 'enabled' as const, budgetTokens },
+        },
+      },
+    };
   }
 
   // OpenAI o-series — reasoning_effort via providerOptions
