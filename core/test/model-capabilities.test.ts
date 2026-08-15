@@ -227,8 +227,20 @@ describe('resolveThinkingBudget', () => {
     assert.equal(resolveThinkingBudget('high'), 32768);
   });
 
-  it('returns 128000 for max', () => {
-    assert.equal(resolveThinkingBudget('max'), 128000);
+  it('returns model-aware budget for max without modelId', () => {
+    const budget = resolveThinkingBudget('max');
+    assert.equal(budget, 128000 - 8192);
+  });
+
+  it('returns model-aware budget for max with Claude Opus 4', () => {
+    const budget = resolveThinkingBudget('max', 'claude-opus-4-6');
+    assert.equal(budget, 128000 - 8192);
+  });
+
+  it('leaves room for response tokens when max', () => {
+    const budget = resolveThinkingBudget('max', 'claude-opus-4-6');
+    assert.ok(budget < 128000, 'budget must be less than maxOutputTokens (128000)');
+    assert.ok(budget >= 1024, 'budget must be at least 1024');
   });
 });
 

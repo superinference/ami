@@ -113,11 +113,18 @@ const BUDGET_MAP: Record<ThinkingLevel, number> = {
   low: 4096,
   medium: 10240,
   high: 32768,
-  max: 128000,
+  max: 0,
 };
 
-export function resolveThinkingBudget(level: ThinkingLevel): number {
-  return BUDGET_MAP[level] ?? 0;
+export function resolveThinkingBudget(level: ThinkingLevel, modelId?: string): number {
+  const budget = BUDGET_MAP[level];
+  if (budget > 0) return budget;
+  if (level === 'max') {
+    const caps = getModelCapabilities(modelId ?? '');
+    const maxBudget = caps?.maxThinkingBudget ?? 128000;
+    return Math.max(1024, maxBudget - 8192);
+  }
+  return 0;
 }
 
 const PROVIDER_SAMPLING_DEFAULTS: Record<string, { temperature?: number; topP?: number; topK?: number }> = {

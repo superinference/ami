@@ -430,7 +430,7 @@ export function buildThinkingOptions(
 
   // Anthropic Claude — thinking via providerOptions.anthropic.thinking
   if (caps?.supportsAdaptiveThinking) {
-    const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level);
+    const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level, modelId);
     return {
       providerOptions: {
         anthropic: {
@@ -448,7 +448,7 @@ export function buildThinkingOptions(
 
   // Google Gemini 2.5 — thinkingConfig via providerOptions
   if (modelId.startsWith('gemini-2.5') || modelId.startsWith('gemini-3')) {
-    const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level);
+    const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level, modelId);
     return { providerOptions: { google: { thinkingConfig: { thinkingBudget: budgetTokens, includeThoughts: true } } } };
   }
 
