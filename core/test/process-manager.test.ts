@@ -372,3 +372,144 @@ describe('ProcessManager – monitorMcp', () => {
     assert.equal(pm.runningCount(), 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// EBADF regression: stream destruction and error handling
+// ---------------------------------------------------------------------------
+
+describe('ProcessManager — EBADF regression coverage', () => {
+  let tmpDir: string;
+  let pm: ProcessManager;
+
+  afterEach(async () => {
+    await cleanupPm(pm);
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('kill destroys stdout/stderr streams before sending SIGKILL', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('while true; do echo data; sleep 0.01; done', { cwd: tmpDir });
+    await new Promise(r => setTimeout(r, 300));
+    // Kill should not throw — streams are destroyed first
+    assert.doesNotThrow(() => pm.kill(id));
+    const task = pm.get(id);
+    assert.equal(task?.status, 'killed');
+  });
+
+  it('kill handles already-exited process gracefully', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('echo fast', { cwd: tmpDir });
+    await waitForComplete(pm, id);
+    // Process already done — kill returns false, no crash
+    assert.equal(pm.kill(id), false);
+  });
+
+  it('double kill does not throw', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('sleep 60', { cwd: tmpDir });
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(pm.kill(id), true);
+    assert.equal(pm.kill(id), false);
+  });
+
+  it('getOutput returns output for running task', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('echo test-output && sleep 5', { cwd: tmpDir });
+    await new Promise(r => setTimeout(r, 200));
+    const result = pm.getOutput(id);
+    assert.ok(result);
+    assert.equal(result.status, 'running');
+    assert.ok(result.output.includes('test-output'));
+    pm.kill(id);
+  });
+
+  it('getOutput with tailLines=0 returns full output', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('for i in 1 2 3 4 5; do echo "line-$i"; done', { cwd: tmpDir });
+    await waitForComplete(pm, id);
+    const result = pm.getOutput(id, 0);
+    assert.ok(result);
+    assert.ok(result.output.includes('line-1'));
+    assert.ok(result.output.includes('line-5'));
+  });
+
+  it('getOutput returns null for unknown task', () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    assert.equal(pm.getOutput('bg-nonexistent'), null);
+  });
+
+  it('list returns all tasks without internal fields', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id1 = pm.spawn('sleep 60', { cwd: tmpDir });
+    const id2 = pm.spawn('echo done', { cwd: tmpDir });
+    await waitForComplete(pm, id2);
+    const list = pm.list();
+    assert.equal(list.length, 2);
+    for (const task of list) {
+      assert.ok(!('proc' in task), 'list should not expose proc');
+      assert.ok(!('outputFd' in task), 'list should not expose outputFd');
+      assert.ok(!('bytesWritten' in task), 'list should not expose bytesWritten');
+    }
+    pm.kill(id1);
+  });
+
+  it('get returns null for unknown task', () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    assert.equal(pm.get('bg-nonexistent'), null);
+  });
+
+  it('getOutputSize returns 0 for unknown task', () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    assert.equal(pm.getOutputSize('bg-nonexistent'), 0);
+  });
+
+  it('completed task has correct exit code', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('exit 42', { cwd: tmpDir });
+    await waitForComplete(pm, id);
+    const task = pm.get(id);
+    assert.equal(task?.status, 'failed');
+    assert.equal(task?.exitCode, 42);
+  });
+
+  it('successful task has exit code 0', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('echo ok', { cwd: tmpDir });
+    await waitForComplete(pm, id);
+    const task = pm.get(id);
+    assert.equal(task?.status, 'completed');
+    assert.equal(task?.exitCode, 0);
+  });
+
+  it('kill with active output pipe flushes correctly', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('for i in $(seq 1 100); do echo "line $i"; done && sleep 60', { cwd: tmpDir });
+    await new Promise(r => setTimeout(r, 500));
+    pm.kill(id);
+    const result = pm.getOutput(id, 0);
+    assert.ok(result);
+    assert.ok(result.output.length > 0, 'output should have been captured before kill');
+  });
+
+  it('cleanup kills all running tasks', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    pm.spawn('sleep 60', { cwd: tmpDir });
+    pm.spawn('sleep 60', { cwd: tmpDir });
+    assert.equal(pm.runningCount(), 2);
+    pm.cleanup();
+    assert.equal(pm.runningCount(), 0);
+  });
+});
