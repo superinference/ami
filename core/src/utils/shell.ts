@@ -95,12 +95,14 @@ export function execCommand(
 
     // --- Timeout handling ---
     const timer = setTimeout(() => {
+      destroyStreams(proc);
       killTree(proc);
       finish(null);
     }, timeout);
 
     // --- Abort signal handling ---
     const onAbort = (): void => {
+      destroyStreams(proc);
       killTree(proc);
       finish(null);
     };
@@ -115,6 +117,7 @@ export function execCommand(
         const combined = stdout + stderr;
         if (looksLikePrompt(combined)) {
           stderr += '\n[Stall detected: process appears to be waiting for interactive input. Killed.]';
+          destroyStreams(proc);
           killTree(proc);
           finish(null);
         }
@@ -143,6 +146,14 @@ export function execCommand(
       onData?.(chunk);
     });
 
+    // Swallow EBADF errors on pipe streams (see process-manager.ts for details)
+    proc.stdout.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EBADF') { stderr += err.message; finish(null); }
+    });
+    proc.stderr.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EBADF') { stderr += err.message; finish(null); }
+    });
+
     // --- Process exit ---
     proc.on('close', (code) => {
       finish(code);
@@ -153,6 +164,20 @@ export function execCommand(
       finish(null);
     });
   });
+}
+
+/**
+ * Destroy stdout/stderr/stdin streams before killing a process to prevent
+ * EBADF errors. When the child process is killed, the OS closes its pipe
+ * ends; if the parent-side streams are still open, Node.js may throw EBADF
+ * when it later tries to close the now-invalid file descriptors.
+ */
+function destroyStreams(proc: child_process.ChildProcess): void {
+  for (const stream of [proc.stdout, proc.stderr, proc.stdin]) {
+    if (stream && !stream.destroyed) {
+      try { stream.destroy(); } catch { /* EBADF is expected here */ }
+    }
+  }
 }
 
 /**

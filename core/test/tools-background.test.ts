@@ -298,4 +298,39 @@ describe('taskKillTool', () => {
     assert.ok(result.isError);
     assert.ok(result.output.includes('not available'));
   });
+
+  it('kill does not throw EBADF when pipes are still open', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    // Spawn a long-running process that generates stdout
+    const id = pm.spawn('while true; do echo ping; sleep 0.1; done', { cwd: tmpDir });
+    // Wait for output to flow through the pipes
+    await new Promise(r => setTimeout(r, 300));
+    // Kill should NOT throw EBADF — streams are destroyed before process kill
+    assert.doesNotThrow(() => {
+      pm.kill(id);
+    });
+    const info = pm.get(id);
+    assert.equal(info?.status, 'killed');
+  });
+
+  it('kill survives double-kill without error', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('sleep 60', { cwd: tmpDir });
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(pm.kill(id), true);
+    // Second kill should return false (already killed), not throw
+    assert.equal(pm.kill(id), false);
+  });
+
+  it('kill handles process that exits before kill signal', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('echo fast && exit 0', { cwd: tmpDir });
+    // Wait for the process to finish naturally
+    await waitForComplete(pm, id);
+    // Kill after completion should return false, not crash
+    assert.equal(pm.kill(id), false);
+  });
 });

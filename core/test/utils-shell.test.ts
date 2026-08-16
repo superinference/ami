@@ -209,3 +209,33 @@ describe('execCommand – process error', () => {
     assert.ok(result.stderr.length > 0 || result.exitCode === null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// EBADF regression: killing a process with active pipes must not crash
+// ---------------------------------------------------------------------------
+
+describe('execCommand – EBADF regression', () => {
+  it('does not throw EBADF when a process is killed while pipes are active', async () => {
+    // Spawn a process that writes continuously to stdout, then timeout-kill it.
+    // Before the fix, this could leave pipe fds in an invalid state.
+    const result = await execCommand(
+      'while true; do echo ping; sleep 0.01; done',
+      { cwd: os.tmpdir(), timeout: 200 },
+    );
+    // Timeout should produce null exit code, not an EBADF crash
+    assert.equal(result.exitCode, null);
+    assert.ok(result.stdout.includes('ping'));
+  });
+
+  it('does not throw EBADF when a process is aborted while pipes are active', async () => {
+    const ac = new AbortController();
+    const resultP = execCommand(
+      'while true; do echo data; sleep 0.01; done',
+      { cwd: os.tmpdir(), timeout: 10000, abortSignal: ac.signal },
+    );
+    await new Promise(r => setTimeout(r, 200));
+    ac.abort();
+    const result = await resultP;
+    assert.equal(result.exitCode, null);
+  });
+});

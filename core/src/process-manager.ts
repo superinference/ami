@@ -83,6 +83,14 @@ export class ProcessManager extends EventEmitter {
 
     proc.stdout?.on('data', writeChunk);
     proc.stderr?.on('data', writeChunk);
+    // Swallow EBADF errors on pipe streams. When a process is killed, the OS
+    // may close the pipe fds before Node.js finishes reading, emitting an
+    // EBADF error event. Without this handler, the error becomes uncaught.
+    const swallowEBADF = (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EBADF') { this.emit('error', err); }
+    };
+    proc.stdout?.on('error', swallowEBADF);
+    proc.stderr?.on('error', swallowEBADF);
 
     // Stall detection for background processes
     let lastOutputSize = 0;
@@ -131,6 +139,12 @@ export class ProcessManager extends EventEmitter {
       clearInterval(entry._intervalHandle);
       entry._intervalHandle = undefined;
     } else {
+      // Destroy stdout/stderr streams BEFORE killing the process to prevent
+      // EBADF errors. When the process is killed, the OS closes the child end
+      // of the pipes. If the parent-side streams are still reading, Node.js
+      // can throw EBADF when it tries to close the now-invalid fds.
+      this.destroyStreams(entry.proc);
+
       try {
         if (os.platform() === 'win32') {
           child_process.execSync(`taskkill /pid ${entry.proc.pid} /T /F`, { stdio: 'ignore' });
@@ -148,6 +162,14 @@ export class ProcessManager extends EventEmitter {
     }
 
     return true;
+  }
+
+  private destroyStreams(proc: child_process.ChildProcess): void {
+    for (const stream of [proc.stdout, proc.stderr, proc.stdin]) {
+      if (stream && !stream.destroyed) {
+        try { stream.destroy(); } catch { /* EBADF is expected here */ }
+      }
+    }
   }
 
   getOutput(taskId: string, tailLines = 50): { status: string; exitCode: number | null; output: string; elapsedMs: number } | null {
