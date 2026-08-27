@@ -109,6 +109,15 @@ export interface ProviderConfig {
   maxTokens?: number;
   temperature?: number;
   provider?: string;
+  /**
+   * Provider-specific request-body fields merged verbatim into every
+   * OpenAI-compatible request (e.g. `chat_template_kwargs` for vLLM-served
+   * Qwen/Granite reasoning control). Deep-merged into the AI SDK request body
+   * at the transport layer, so it survives SDK schema changes and works for any
+   * current or future OpenAI-compatible parameter. Ignored by native
+   * Anthropic/Google providers.
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 export interface StreamChunk {

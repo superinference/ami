@@ -285,8 +285,67 @@ const OPENAI_COMPAT_PROVIDERS = new Set<ProviderName>([
   'alibaba', 'openrouter', 'ollama', 'luma', 'ai-gateway',
 ]);
 
+// ---------------------------------------------------------------------------
+// Generic extra-body passthrough for OpenAI-compatible endpoints
+// ---------------------------------------------------------------------------
+
+/** True for a non-null, non-array plain object. */
+export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Deep-merge `overlay` into `base`, returning a new object. Nested plain
+ * objects are merged recursively; every other value (scalars, arrays) from
+ * `overlay` overrides the corresponding value in `base`.
+ */
+export function deepMergeRecords(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    const current = out[key];
+    if (isPlainRecord(current) && isPlainRecord(value)) {
+      out[key] = deepMergeRecords(current, value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Build a `fetch` wrapper that deep-merges `extraBody` into the JSON request
+ * body of every outgoing OpenAI-compatible request. Returns `undefined` when
+ * there is nothing to merge, so callers can pass it straight to the AI SDK
+ * (which then uses its default fetch). Non-JSON bodies are passed through
+ * untouched.
+ */
+export function withExtraBody(
+  extraBody: Record<string, unknown> | undefined,
+  baseFetch: typeof globalThis.fetch = globalThis.fetch,
+): typeof globalThis.fetch | undefined {
+  if (!extraBody || Object.keys(extraBody).length === 0) return undefined;
+  const wrapped: typeof globalThis.fetch = (input, init) => {
+    if (init && typeof init.body === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(init.body);
+        if (isPlainRecord(parsed)) {
+          init = { ...init, body: JSON.stringify(deepMergeRecords(parsed, extraBody)) };
+        }
+      } catch {
+        // Non-JSON body — leave it untouched.
+      }
+    }
+    return baseFetch(input, init);
+  };
+  return wrapped;
+}
+
 export function resolveModel(config: ProviderConfig) {
   const { apiKey } = config;
+  const fetch = withExtraBody(config.extraBody);
   const inferred = inferProviderFromApiKey(apiKey)
     || (config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null)
     || inferProviderFromEnv();
@@ -315,17 +374,17 @@ export function resolveModel(config: ProviderConfig) {
 
   // Azure OpenAI uses the OpenAI SDK with azure-specific baseURL
   if (provider === 'azure-openai' || baseUrl.includes('openai.azure.com')) {
-    return createOpenAI({ apiKey, baseURL: baseUrl })(model);
+    return createOpenAI({ apiKey, baseURL: baseUrl, fetch })(model);
   }
 
   // Amazon Bedrock — route through OpenAI-compatible if user provides a gateway URL
   if (provider === 'amazon-bedrock') {
-    return createOpenAI({ apiKey, baseURL: baseUrl })(model);
+    return createOpenAI({ apiKey, baseURL: baseUrl, fetch })(model);
   }
 
   // All OpenAI-compatible providers (groq, mistral, xai, deepseek, etc.)
   const effectiveBaseUrl = baseUrl || PROVIDER_BASE_URLS[provider as ProviderName] || 'https://api.openai.com/v1';
-  const openai = createOpenAI({ baseURL: effectiveBaseUrl, apiKey });
+  const openai = createOpenAI({ baseURL: effectiveBaseUrl, apiKey, fetch });
   return openai.chat(model);
 }
 
