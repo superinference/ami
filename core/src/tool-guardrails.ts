@@ -12,6 +12,13 @@ const IDEMPOTENT_TOOLS = new Set([
 
 const FILE_MUTATING_TOOLS = new Set(['file_edit', 'file_write', 'notebook_edit', 'multi_edit']);
 
+// Tools that behave like a bash command execution (reset bash-counters, count toward totalBashCalls)
+const BASH_EQUIVALENT_TOOLS = new Set(['bash', 'run_tests', 'build']);
+
+// Regex that matches test-runner invocations inside bash commands — extended to all supported languages
+const BASH_TEST_RUN_RE =
+  /\b(pytest|runtests|unittest|npm\s+test|yarn\s+test|pnpm\s+test|go\s+test|cargo\s+test|mvn\s+test|dotnet\s+test|ctest|gradlew\s+test|bundle\s+exec\s+rspec|phpunit|\.test\.)\b/;
+
 const EXACT_FAILURE_WARN = 2;
 const EXACT_FAILURE_BLOCK = 4;
 const NO_PROGRESS_WARN = 3;
@@ -41,6 +48,8 @@ function hashResult(output: string): string {
 function recoveryHint(toolName: string): string {
   switch (toolName) {
     case 'bash':
+    case 'run_tests':
+    case 'build':
       return 'Use file_read to re-read the files you edited, check for syntax errors, then fix the code before running tests again.';
     case 'file_edit':
       return 'Use file_read to see the current file content, then use the exact text from the file as old_string.';
@@ -150,14 +159,16 @@ export class ToolCallGuardrailController {
       if (/\bgit\s+checkout\b/.test(cmd) && !/\bgit\s+checkout\s+-b\b/.test(cmd)) {
         return { action: 'warn', reason: 'Reverting files with git checkout discards your progress. Instead of starting over, diagnose why your fix failed and make a targeted correction.' };
       }
-      if (this.bashTestRunsSinceLastEdit >= 5 && /\b(pytest|runtests|unittest|\.test\()\b/.test(cmd)) {
+      if (this.bashTestRunsSinceLastEdit >= 5 && BASH_TEST_RUN_RE.test(cmd)) {
         return { action: 'block', reason: 'BLOCKED: You have run tests 5+ times without making any edits. The result will not change. Make an edit first, then run tests.' };
       }
-      if (this.bashTestRunsSinceLastEdit >= 3 && /\b(pytest|runtests|unittest|\.test\()\b/.test(cmd)) {
+      if (this.bashTestRunsSinceLastEdit >= 3 && BASH_TEST_RUN_RE.test(cmd)) {
         return { action: 'warn', reason: 'You have run tests 3+ times without making any edits. Running the same tests again will give the same result. Either make an edit to fix the issue, or try a completely different approach.' };
       }
     }
 
+    // Exact-failure check runs before repetition guards: a hard block from 4
+    // identical failures should always take priority over a softer repetition warning.
     const sig = hashArgs(toolName, args);
     const failCount = this.exactFailures.get(sig) || 0;
 
@@ -166,6 +177,16 @@ export class ToolCallGuardrailController {
     }
     if (failCount >= EXACT_FAILURE_WARN) {
       return { action: 'warn', reason: `Tool "${toolName}" has failed ${failCount} times with identical arguments. ${recoveryHint(toolName)}` };
+    }
+
+    // run_tests is always a test execution — apply the same repetition guard
+    if (this.detachedMode && toolName === 'run_tests') {
+      if (this.bashTestRunsSinceLastEdit >= 5) {
+        return { action: 'block', reason: 'BLOCKED: You have run tests 5+ times without making any edits. The result will not change. Make an edit first, then run tests.' };
+      }
+      if (this.bashTestRunsSinceLastEdit >= 3) {
+        return { action: 'warn', reason: 'You have run tests 3+ times without making any edits. Running the same tests again will give the same result. Either make an edit to fix the issue, or try a completely different approach.' };
+      }
     }
 
     if ((toolName === 'file_edit' || toolName === 'file_read') && this.editFailsSinceLastBash >= 3 && this.editsSinceLastBash >= 5) {
@@ -183,15 +204,21 @@ export class ToolCallGuardrailController {
     const sig = hashArgs(toolName, args);
 
     this.totalToolCalls++;
-    if (toolName === 'bash') {
+    if (BASH_EQUIVALENT_TOOLS.has(toolName)) {
       this.totalBashCalls++;
       this.editsSinceLastBash = 0;
       this.editFailsSinceLastBash = 0;
       this.toolsSinceLastBash = 0;
-      const cmd = String(args.command || '');
-      if (/\b(pytest|runtests|unittest|npm\s+test|yarn\s+test|\.test\.)\b/.test(cmd)) {
+      if (toolName === 'run_tests') {
+        // run_tests is always a test execution
         this.bashTestRunsSinceLastEdit++;
+      } else if (toolName === 'bash') {
+        const cmd = String(args.command || '');
+        if (BASH_TEST_RUN_RE.test(cmd)) {
+          this.bashTestRunsSinceLastEdit++;
+        }
       }
+      // build does not count as a test run — only resets bash counters
     } else {
       this.toolsSinceLastBash++;
       if (FILE_MUTATING_TOOLS.has(toolName)) {
