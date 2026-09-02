@@ -32,7 +32,81 @@ export interface AgentDefinition {
   maxTurns?: number;
   tools?: string[];       // Allowed tool names (empty = all)
   disallowedTools?: string[];
+  /** Permission mode override for sub-agent invocation. */
+  permissionMode?: 'auto-allow' | 'ask' | 'deny-all';
 }
+
+// ---------------------------------------------------------------------------
+// Built-in agents — always available, overridable by user/project definitions
+// ---------------------------------------------------------------------------
+
+const BUILTIN_AGENTS: AgentDefinition[] = [
+  {
+    name: 'verifier',
+    description: 'Adversarial behavioral verification — prove a fix works by writing and running targeted tests',
+    filePath: '<builtin>',
+    permissionMode: 'auto-allow',
+    tools: ['bash', 'file_read', 'grep', 'glob'],
+    maxTurns: 15,
+    systemPrompt: [
+      'You are an adversarial verification agent. Your sole job: determine whether a specific behavior works correctly.',
+      '',
+      'Your stance is skeptical — assume the fix might be wrong and actively try to prove it.',
+      '',
+      '## Rules',
+      '- NEVER modify project source files or test files.',
+      '- Write all test scripts to /tmp only — they are ephemeral.',
+      '- Read source code FIRST to get correct import paths, types, and signatures before writing any test.',
+      '- Test at least the described case PLUS one edge case (empty input, boundary value, wrong type, etc.).',
+      '',
+      '## Process',
+      '1. Read the relevant source file(s) to understand the actual API.',
+      '2. Write a minimal test script to /tmp that calls the function and asserts the expected output.',
+      '   Use the language\'s assertion mechanism: panic() in Go, assert in Python, assert_eq! in Rust, throw in JS.',
+      '3. Run it — exit 0 = behavior correct, non-zero = behavior wrong.',
+      '4. If it passes, run 1-2 edge cases to confirm robustness.',
+      '5. Return EXACTLY one of:',
+      '   VERIFIED: <what you tested, inputs, all passed>',
+      '   FAILED: <exact error output, which assertion failed>',
+      '',
+      'Do not explain what you are about to do. Execute immediately.',
+    ].join('\n'),
+  },
+  {
+    name: 'code-graph',
+    description: 'Code structure analysis — find related tests, callers, git history, and static issues for any file or function',
+    filePath: '<builtin>',
+    permissionMode: 'auto-allow',
+    tools: ['bash', 'file_read', 'grep', 'glob'],
+    maxTurns: 10,
+    systemPrompt: [
+      'You are a code structure analysis agent. Answer questions about code relationships.',
+      '',
+      '## Capabilities',
+      '- Find test files that cover a source file (co-location + import analysis)',
+      '- Find all callers of a function (grep + context filtering)',
+      '- Show git history for a file or directory (git log, blame, diff via bash)',
+      '- Detect static issues (run go vet, mypy, cargo clippy, eslint via bash)',
+      '- Map import/dependency relationships between modules',
+      '',
+      '## Process',
+      '- Use grep, glob, file_read, and bash to explore the codebase.',
+      '- For test discovery: check co-located test files first, then grep imports.',
+      '- For call graphs: grep for the function name, filter false positives by context.',
+      '- For git history: bash with git log/blame/diff commands.',
+      '- For static analysis: detect language from project files, run appropriate tool.',
+      '',
+      '## Output format',
+      'Return structured findings:',
+      '  Related tests: <files> | Run: <exact command>',
+      '  Callers: <list of file:line references>',
+      '  Recent changes: <git log summary>',
+      '  Static issues: <linter output, or "none found">',
+      '',
+      'Be concise. Return only what was asked. Do not propose fixes.',
+    ].join('\n'),
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Built-in skills — defined inline, no physical files needed
@@ -334,7 +408,12 @@ export class SkillManager {
 
   /** Load everything: built-ins, project, user-global, AGENTS.md. */
   private loadAll(): void {
-    // 1. Built-in skills (lowest priority — overridable)
+    // 1. Built-in agents (lowest priority — overridable by user/project)
+    for (const agent of BUILTIN_AGENTS) {
+      this.agents.set(agent.name, agent);
+    }
+
+    // 2. Built-in skills (lowest priority — overridable)
     for (const skill of BUILTIN_SKILLS) {
       this.skills.set(skill.name, skill);
     }
@@ -456,6 +535,9 @@ export class SkillManager {
     const maxTurnsRaw = frontmatter['max-turns'];
     const maxTurns = maxTurnsRaw ? parseInt(maxTurnsRaw, 10) : undefined;
 
+    const pm = frontmatter['permission-mode'];
+    const permissionMode = (pm === 'auto-allow' || pm === 'ask' || pm === 'deny-all') ? pm : undefined;
+
     return {
       name,
       description: frontmatter.description || '',
@@ -465,6 +547,7 @@ export class SkillManager {
       maxTurns: maxTurns && !isNaN(maxTurns) ? maxTurns : undefined,
       tools: parseStringArray(frontmatter.tools),
       disallowedTools: parseStringArray(frontmatter['disallowed-tools']),
+      permissionMode,
     };
   }
 }

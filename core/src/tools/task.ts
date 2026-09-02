@@ -124,6 +124,7 @@ export const taskTool: ToolDefinition = {
     let agentSystemPrompt: string | undefined;
     let agentModel: string | undefined;
     let agentMaxTurns: number | undefined;
+    let agentPermissionMode: string | undefined;
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -134,6 +135,7 @@ export const taskTool: ToolDefinition = {
       agentSystemPrompt = agentDef.systemPrompt;
       agentModel = agentDef.model;
       agentMaxTurns = agentDef.maxTurns;
+      agentPermissionMode = agentDef.permissionMode;
 
       if (agentDef.tools && agentDef.tools.length > 0) {
         const allowed = new Set(agentDef.tools);
@@ -178,12 +180,20 @@ export const taskTool: ToolDefinition = {
       providerConfig.model = agentModel;
     }
 
+    // Permission mode priority:
+    // 1. Agent definition's permissionMode (e.g. verifier → auto-allow; safe, restricted tools)
+    // 2. explore mode → always auto-allow (read-only tool set)
+    // 3. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
+    const resolvedPermissionMode =
+      agentPermissionMode ||
+      (effectiveMode === 'explore' ? 'auto-allow' : 'ask');
+
     const subConfig: EngineConfig = {
       provider: providerConfig,
       cwd: effectiveCwd,
       tools,
       sessionId: SessionManager.newId(),
-      permissionMode: effectiveMode === 'explore' ? 'auto-allow' : 'ask',
+      permissionMode: resolvedPermissionMode,
       permissionPromptHandler: context._permissionPromptHandler,
       abortController: subAbort,
       maxTurns: agentMaxTurns,
