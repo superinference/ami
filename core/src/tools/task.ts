@@ -197,15 +197,23 @@ export const taskTool: ToolDefinition = {
       permissionPromptHandler: context._permissionPromptHandler,
       abortController: subAbort,
       maxTurns: agentMaxTurns,
+      // Sub-agents always run in detached mode: every turn must have a tool call,
+      // nudge system enforces progress, and no interactive prompts are expected.
+      detachedMode: true,
+      // When a named agent type is used, its system prompt is the authoritative
+      // identity — skip persona resolution (which would inject e.g. the code
+      // persona bug-fixing workflow into a verification-only agent).
+      ...(agentSystemPrompt ? { systemPrompt: agentSystemPrompt } : {}),
     };
 
     if (!context._engineFactory) {
       return { output: 'Error: engine factory not available in this context.', isError: true };
     }
 
-    const effectivePrompt = agentSystemPrompt
-      ? `${agentSystemPrompt}\n\n---\n\n${prompt}`
-      : prompt;
+    // agentSystemPrompt is now in subConfig.systemPrompt — the user message is
+    // just the task prompt. For mode-only tasks (no subagent_type), there is no
+    // agentSystemPrompt and the engine uses its own persona-driven system prompt.
+    const effectivePrompt = prompt;
 
     const runInBackground = input.run_in_background === true;
 
