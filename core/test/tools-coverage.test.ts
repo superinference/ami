@@ -1212,7 +1212,11 @@ describe('taskTool — subagent_type', () => {
     assert.equal(capturedConfig.maxTurns, 5);
   });
 
-  it('prepends systemPrompt from agent definition', async () => {
+  it('passes agent systemPrompt as engine systemPrompt (not prepended to submit prompt)', async () => {
+    // Since task.ts now puts agentSystemPrompt in subConfig.systemPrompt,
+    // the engine's system prompt carries the agent identity, and the submitted
+    // user message is just the task prompt (no mixing).
+    let capturedConfig: any = null;
     let capturedPrompt: string | null = null;
 
     await taskTool.execute(
@@ -1226,18 +1230,24 @@ describe('taskTool — subagent_type', () => {
           }),
           listAgents: () => [],
         } as any,
-        _engineFactory: (_cfg: any) => ({
-          submit: async function* (prompt: string) {
-            capturedPrompt = prompt;
-            yield { type: 'text_delta', text: 'ok' };
-          },
-        }),
+        _engineFactory: (cfg: any) => {
+          capturedConfig = cfg;
+          return {
+            submit: async function* (prompt: string) {
+              capturedPrompt = prompt;
+              yield { type: 'text_delta', text: 'ok' };
+            },
+          };
+        },
       }),
     );
 
-    assert.ok(capturedPrompt);
-    assert.ok(capturedPrompt!.includes('You are a specialist.'));
-    assert.ok(capturedPrompt!.includes('do the thing'));
+    // Agent system prompt goes into subConfig.systemPrompt, not the submit call
+    assert.equal(capturedConfig?.systemPrompt, 'You are a specialist.');
+    // Sub-agents always run in detached mode
+    assert.equal(capturedConfig?.detachedMode, true);
+    // The submit prompt is just the task, not mixed with system prompt
+    assert.equal(capturedPrompt, 'do the thing');
   });
 });
 
