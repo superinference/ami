@@ -175,6 +175,9 @@ export class ConfigService {
         }, 100);
       });
 
+      // unref so the watcher doesn't prevent process exit in test environments
+      this.watcher.unref();
+
       this.watcher.on('error', () => {
         this.stop();
       });
