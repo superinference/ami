@@ -144,6 +144,26 @@ export class ToolCallGuardrailController {
 
     if (this.detachedMode && toolName === 'bash' && args.command) {
       const cmd = String(args.command);
+
+      // Detect test-output redirection into the working tree — this contaminates evaluation patches.
+      // Only flag when a test/build runner pipes into a local file (not /tmp, not /dev/null).
+      if (
+        /\b(go\s+test|cargo\s+test|mvn\s+test|pytest|npm\s+test|yarn\s+test|dotnet\s+test|rspec|phpunit)\b/.test(cmd) &&
+        />\s*(?!\/tmp\/|\/dev\/null\b)[a-zA-Z0-9._/-]*\.(json|log|txt|out|xml|csv)\b/.test(cmd) &&
+        !/>\s*\/tmp\//.test(cmd)
+      ) {
+        return { action: 'warn', reason: 'Redirecting test output to a local file pollutes the git working tree and corrupts the evaluation patch. Use /tmp instead: e.g. `go test ./... > /tmp/test-results.json`' };
+      }
+
+      // Detect extracting archives into the current directory rather than /tmp.
+      // Extracting tools/SDKs into the repo commits hundreds of MB to the patch.
+      if (
+        /\btar\s+[^|&]*-C\s+/.test(cmd) &&
+        !/\btar\s+[^|&]*-C\s+(\/tmp|\/var|\/usr|\/opt|\$HOME|~)[/ ]/.test(cmd)
+      ) {
+        return { action: 'warn', reason: 'Extracting archives into the working directory commits the contents to the evaluation patch. Extract to /tmp instead: `tar -C /tmp -xzf ...`' };
+      }
+
       if (/\b(black|autopep8|yapf|isort|prettier|ruff\s+format)\b/.test(cmd)) {
         return { action: 'block', reason: 'BLOCKED: Do not use code formatters. Use file_edit for targeted changes only.' };
       }

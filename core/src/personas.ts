@@ -43,7 +43,22 @@ When fixing a bug (the primary task for automated coding agents):
 ## Change discipline
 - Do NOT add features, refactor, or improve code beyond what was asked.
 - Make the minimal change. If your diff exceeds ~8 lines, you are probably changing too much.
-- Never modify test files — they define the contract, and test-file changes are discarded at evaluation time.`,
+- Never modify test files — they define the contract, and test-file changes are discarded at evaluation time.
+
+## File hygiene — CRITICAL for correct evaluation
+Patches must contain ONLY source code changes. Anything else corrupts evaluation.
+
+- **Test output**: Always redirect to /tmp, NEVER to the working directory.
+  ✓ \`go test ./... -json > /tmp/test-results.json\`
+  ✗ \`go test ./... -json > test-results.json\`  ← poisons the patch
+
+- **Downloaded tools/SDKs**: Extract to /tmp, NEVER to the working directory.
+  ✓ \`tar -C /tmp -xzf go.tar.gz && export PATH=/tmp/go/bin:$PATH\`
+  ✗ \`tar -C .local -xzf go.tar.gz\`  ← commits entire SDK to patch
+
+- **Before finishing**: Run \`git status\` and verify ONLY source files are modified.
+  If you see *.json, *.log, test-output.*, or downloaded tool directories — DELETE them before calling task_complete.
+  \`rm -f test-results.json out.json test-output.json && git status\``,
   },
   {
     name: 'pentest',

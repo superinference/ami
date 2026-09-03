@@ -612,3 +612,55 @@ describe('test-file editing guard', () => {
     });
   }
 });
+
+describe('artifact contamination guardrails', () => {
+  it('warns when redirecting test output to local json file', () => {
+    const ctrl = makeCtrl();
+    const d = ctrl.beforeCall('bash', { command: 'go test ./... -json > test-results.json' });
+    assert.equal(d.action, 'warn');
+    assert.ok(d.reason?.includes('/tmp'), `Got: ${d.reason}`);
+  });
+
+  it('warns when redirecting cargo test output to local file', () => {
+    const ctrl = makeCtrl();
+    const d = ctrl.beforeCall('bash', { command: 'cargo test -- --format json > out.json' });
+    assert.equal(d.action, 'warn');
+  });
+
+  it('warns when pytest output redirected to local json', () => {
+    const ctrl = makeCtrl();
+    const d = ctrl.beforeCall('bash', { command: 'pytest tests/ -v --json-report > test-output.json' });
+    assert.equal(d.action, 'warn');
+  });
+
+  it('allows test output redirected to /tmp', () => {
+    const ctrl = makeCtrl();
+    const d = ctrl.beforeCall('bash', { command: 'go test ./... -json > /tmp/test-results.json' });
+    assert.equal(d.action, 'allow');
+  });
+
+  it('allows test output to /dev/null', () => {
+    const ctrl = makeCtrl();
+    const d = ctrl.beforeCall('bash', { command: 'go test ./... > /dev/null 2>&1' });
+    assert.equal(d.action, 'allow');
+  });
+
+  it('warns when extracting Go SDK into working directory', () => {
+    const ctrl = makeCtrl();
+    const d = ctrl.beforeCall('bash', { command: 'tar -C .local -xzf go1.24.1.linux-amd64.tar.gz' });
+    assert.equal(d.action, 'warn');
+    assert.ok(d.reason?.includes('/tmp'), `Got: ${d.reason}`);
+  });
+
+  it('allows extracting to /tmp', () => {
+    const ctrl = makeCtrl();
+    const d = ctrl.beforeCall('bash', { command: 'tar -C /tmp -xzf go.tar.gz' });
+    assert.equal(d.action, 'allow');
+  });
+
+  it('no warning in non-detached mode', () => {
+    const ctrl = makeCtrl(false);
+    const d = ctrl.beforeCall('bash', { command: 'go test ./... -json > test-results.json' });
+    assert.equal(d.action, 'allow');
+  });
+});
