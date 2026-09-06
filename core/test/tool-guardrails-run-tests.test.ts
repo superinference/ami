@@ -427,14 +427,14 @@ describe('file_edit size guards', () => {
     assert.ok(d.reason?.includes('16'));
   });
 
-  it('blocks after 8 successful edits', () => {
+  it('blocks after 15 successful edits', () => {
     const ctrl = makeCtrl();
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 15; i++) {
       ctrl.afterCall('file_edit', { file_path: `/src/f${i}.go`, old_string: 'a', new_string: 'b' }, 'ok', false);
     }
     const d = ctrl.beforeCall('file_edit', { file_path: '/src/new.go', old_string: 'x', new_string: 'y' });
     assert.equal(d.action, 'block');
-    assert.ok(d.reason?.includes('8 successful edits'));
+    assert.ok(d.reason?.includes('15 successful edits') || d.reason?.includes('15'));
   });
 });
 
@@ -553,15 +553,20 @@ describe('getRecoveryAction — all branches', () => {
 });
 
 describe('per-file edit and failure guards', () => {
-  it('warns when same file is edited 5+ times', () => {
+  it('warns when same file is edited 5+ times (or global edit-budget warn fires)', () => {
     const ctrl = makeCtrl();
-    // Record 5 successful edits on the same file
+    // Record 5 successful edits on the same file.
+    // At successfulEdits=5 the global RC4 warn fires before the per-file check —
+    // both are valid 'warn' responses; accept either reason.
     for (let i = 0; i < 5; i++) {
       ctrl.afterCall('file_edit', { file_path: '/src/foo.go', old_string: `a${i}`, new_string: `b${i}` }, 'ok', false);
     }
     const d = ctrl.beforeCall('file_edit', { file_path: '/src/foo.go', old_string: 'x', new_string: 'y' });
     assert.equal(d.action, 'warn');
-    assert.ok(d.reason?.includes('/src/foo.go'));
+    assert.ok(
+      d.reason?.includes('/src/foo.go') || d.reason?.includes('successful edits'),
+      `Expected per-file or global edit-budget warning, got: ${d.reason}`,
+    );
   });
 
   it('warns on replace_all usage', () => {
@@ -661,6 +666,113 @@ describe('artifact contamination guardrails', () => {
   it('no warning in non-detached mode', () => {
     const ctrl = makeCtrl(false);
     const d = ctrl.beforeCall('bash', { command: 'go test ./... -json > test-results.json' });
+    assert.equal(d.action, 'allow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RC4: edit budget early warning at 5+ successful edits
+// ---------------------------------------------------------------------------
+
+describe('edit budget early warning (RC4)', () => {
+  it('no warning below 5 successful edits', () => {
+    const ctrl = makeCtrl();
+    for (let i = 0; i < 4; i++) {
+      ctrl.afterCall('file_edit', { file_path: `/src/f${i}.go`, old_string: 'a', new_string: 'b' }, 'ok', false);
+    }
+    const d = ctrl.beforeCall('file_edit', { file_path: '/src/new.go', old_string: 'x', new_string: 'y' });
+    assert.equal(d.action, 'allow');
+  });
+
+  it('warns at exactly 5 successful edits', () => {
+    const ctrl = makeCtrl();
+    for (let i = 0; i < 5; i++) {
+      ctrl.afterCall('file_edit', { file_path: `/src/f${i}.go`, old_string: 'a', new_string: 'b' }, 'ok', false);
+    }
+    const d = ctrl.beforeCall('file_edit', { file_path: '/src/new.go', old_string: 'x', new_string: 'y' });
+    assert.equal(d.action, 'warn');
+    assert.ok(d.reason?.includes('successful edits'), `Got: ${d.reason}`);
+  });
+
+  it('warns at 6 and 7 successful edits', () => {
+    const ctrl = makeCtrl();
+    for (let i = 0; i < 6; i++) {
+      ctrl.afterCall('file_edit', { file_path: `/src/f${i}.go`, old_string: 'a', new_string: 'b' }, 'ok', false);
+    }
+    const d = ctrl.beforeCall('file_edit', { file_path: '/src/new.go', old_string: 'x', new_string: 'y' });
+    assert.equal(d.action, 'warn');
+    assert.ok(d.reason?.includes('successful edits'));
+  });
+
+  it('still blocks at 15 successful edits (hard limit)', () => {
+    const ctrl = makeCtrl();
+    for (let i = 0; i < 15; i++) {
+      ctrl.afterCall('file_edit', { file_path: `/src/f${i}.go`, old_string: 'a', new_string: 'b' }, 'ok', false);
+    }
+    const d = ctrl.beforeCall('file_edit', { file_path: '/src/new.go', old_string: 'x', new_string: 'y' });
+    assert.equal(d.action, 'block');
+  });
+
+  it('no early warning in non-detached mode', () => {
+    const ctrl = makeCtrl(false);
+    for (let i = 0; i < 7; i++) {
+      ctrl.afterCall('file_edit', { file_path: `/src/f${i}.go`, old_string: 'a', new_string: 'b' }, 'ok', false);
+    }
+    const d = ctrl.beforeCall('file_edit', { file_path: '/src/new.go', old_string: 'x', new_string: 'y' });
+    // Non-detached: no edit budget warnings
+    assert.ok(d.action !== 'warn' || !d.reason?.includes('successful edits'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RC1: anti-analysis-paralysis — readOnlyCallsSinceEdit counter
+// ---------------------------------------------------------------------------
+
+describe('anti-analysis-paralysis guardrail (RC1)', () => {
+  function doReads(ctrl: ToolCallGuardrailController, n: number): void {
+    for (let i = 0; i < n; i++) {
+      ctrl.beforeCall('grep', { pattern: `pattern${i}`, path: '.' });
+      ctrl.afterCall('grep', { pattern: `pattern${i}`, path: '.' }, 'output', false);
+    }
+  }
+
+  it('allows first 14 read-only calls with 0 successful edits', () => {
+    const ctrl = makeCtrl();
+    doReads(ctrl, 14);
+    const d = ctrl.beforeCall('grep', { pattern: 'final', path: '.' });
+    assert.equal(d.action, 'allow');
+  });
+
+  it('warns at 15th read-only call with 0 successful edits', () => {
+    const ctrl = makeCtrl();
+    doReads(ctrl, 15);
+    const d = ctrl.beforeCall('grep', { pattern: 'final', path: '.' });
+    assert.equal(d.action, 'warn');
+    assert.ok(d.reason?.includes('exploration'), `Got: ${d.reason}`);
+  });
+
+  it('warns again at 30 (modulo 15)', () => {
+    const ctrl = makeCtrl();
+    doReads(ctrl, 30);
+    const d = ctrl.beforeCall('file_read', { file_path: '/src/x.go' });
+    assert.equal(d.action, 'warn');
+  });
+
+  it('does NOT warn after a successful file edit resets the counter', () => {
+    const ctrl = makeCtrl();
+    doReads(ctrl, 14);
+    // One successful edit resets readOnlyCallsSinceEdit to 0 and sets successfulEdits=1
+    ctrl.afterCall('file_edit', { file_path: '/src/x.go', old_string: 'a', new_string: 'b' }, 'ok', false);
+    // 14 more reads — counter is back at 14, but successfulEdits=1 so guard won't fire (condition: successfulEdits===0)
+    doReads(ctrl, 14);
+    const d = ctrl.beforeCall('grep', { pattern: 'x', path: '.' });
+    assert.equal(d.action, 'allow');
+  });
+
+  it('does not fire in non-detached mode', () => {
+    const ctrl = makeCtrl(false);
+    doReads(ctrl, 20);
+    const d = ctrl.beforeCall('grep', { pattern: 'x', path: '.' });
     assert.equal(d.action, 'allow');
   });
 });

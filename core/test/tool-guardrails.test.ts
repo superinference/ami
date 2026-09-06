@@ -214,19 +214,19 @@ describe('ToolCallGuardrailController – loop detection', () => {
 
   it('detached edit limit applies to file_write not just file_edit', () => {
     const ctrl = new ToolCallGuardrailController(true);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 15; i++) {
       ctrl.afterCall('file_write', { file_path: `f${i}.ts`, content: 'x' }, 'ok', false);
     }
-    const d = ctrl.beforeCall('file_write', { file_path: 'f9.ts', content: 'x' });
+    const d = ctrl.beforeCall('file_write', { file_path: 'f15.ts', content: 'x' });
     assert.equal(d.action, 'block');
   });
 
   it('detached edit limit applies to multi_edit', () => {
     const ctrl = new ToolCallGuardrailController(true);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 15; i++) {
       ctrl.afterCall('multi_edit', { file_path: `f${i}.ts` }, 'ok', false);
     }
-    const d = ctrl.beforeCall('multi_edit', { file_path: 'f9.ts' });
+    const d = ctrl.beforeCall('multi_edit', { file_path: 'f15.ts' });
     assert.equal(d.action, 'block');
   });
 });

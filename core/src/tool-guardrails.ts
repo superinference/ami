@@ -23,6 +23,9 @@ const EXACT_FAILURE_WARN = 2;
 const EXACT_FAILURE_BLOCK = 4;
 const NO_PROGRESS_WARN = 3;
 const NO_PROGRESS_BLOCK = 5;
+/** Detached-mode cap on successful file mutations per session (RC4). */
+const DETACHED_MAX_SUCCESSFUL_EDITS = 15;
+const DETACHED_EDIT_BUDGET_WARN = 5;
 
 function deepSortKeys(obj: unknown): unknown {
   if (Array.isArray(obj)) return obj.map(deepSortKeys);
@@ -83,6 +86,7 @@ export class ToolCallGuardrailController {
   private toolsSinceLastBash = 0;
   private bashTestRunsSinceLastEdit = 0;
   private successfulEdits = 0;
+  private readOnlyCallsSinceEdit = 0;
   private totalToolCalls = 0;
   private totalBashCalls = 0;
   private totalEdits = 0;
@@ -115,8 +119,11 @@ export class ToolCallGuardrailController {
     }
 
     if (this.detachedMode && FILE_MUTATING_TOOLS.has(toolName)) {
-      if (this.successfulEdits >= 8) {
-        return { action: 'block', reason: 'BLOCKED: You have already made 8 successful edits. If the failing tests pass, STOP immediately. Do not make further changes.' };
+      if (this.successfulEdits >= DETACHED_MAX_SUCCESSFUL_EDITS) {
+        return { action: 'block', reason: `BLOCKED: You have already made ${DETACHED_MAX_SUCCESSFUL_EDITS} successful edits. If the failing tests pass, STOP immediately. Do not make further changes.` };
+      }
+      if (this.successfulEdits >= DETACHED_EDIT_BUDGET_WARN) {
+        return { action: 'warn', reason: `You have made ${this.successfulEdits} successful edits. If the failing tests now pass, STOP — do not make further changes. Only continue editing if tests are still failing.` };
       }
       if (args.file_path) {
         const editCount = this.fileEditCounts.get(String(args.file_path)) || 0;
@@ -210,11 +217,30 @@ export class ToolCallGuardrailController {
     }
 
     if ((toolName === 'file_edit' || toolName === 'file_read') && this.editFailsSinceLastBash >= 3 && this.editsSinceLastBash >= 5) {
-      return { action: 'warn', reason: 'You have made multiple file edits without running tests. Run the test command with bash to check your progress before making more edits.' };
+      return { action: 'warn', reason: 'You have made multiple file edits without running tests. Call run_tests() to check your progress before making more edits.' };
     }
 
     if (toolName === 'file_read' && this.toolsSinceLastBash >= 10 && this.editsSinceLastBash === 0) {
-      return { action: 'warn', reason: 'You have read files 10+ times without running any bash commands or making edits. Run the test suite with bash to validate your understanding before continuing to read.' };
+      return { action: 'warn', reason: 'You have read files 10+ times without running tests or making edits. Call run_tests() to discover failing tests before continuing to read.' };
+    }
+
+    // Anti-analysis-paralysis: fires when exploration tools accumulate without any successful edit.
+    // Uses readOnlyCallsSinceEdit which only resets on a successful file mutation.
+    // The existing toolsSinceLastBash guard resets on every bash (even trivial ones) so it misses
+    // agents that alternate grep-bash-grep-bash with zero edits across 40+ calls.
+    if (
+      this.detachedMode &&
+      IDEMPOTENT_TOOLS.has(toolName) &&
+      this.readOnlyCallsSinceEdit > 0 &&
+      this.readOnlyCallsSinceEdit % 15 === 0 &&
+      this.successfulEdits === 0
+    ) {
+      return {
+        action: 'warn',
+        reason: `You have made ${this.readOnlyCallsSinceEdit} read-only exploration calls without completing any file edits. ` +
+          `If you understand the bug, use file_edit to implement the fix now. ` +
+          `If you are still blocked, state exactly what information you still need.`,
+      };
     }
 
     return { action: 'allow' };
@@ -241,6 +267,9 @@ export class ToolCallGuardrailController {
       // build does not count as a test run — only resets bash counters
     } else {
       this.toolsSinceLastBash++;
+      if (IDEMPOTENT_TOOLS.has(toolName)) {
+        this.readOnlyCallsSinceEdit++;
+      }
       if (FILE_MUTATING_TOOLS.has(toolName)) {
         this.totalEdits++;
         this.editsSinceLastBash++;
@@ -249,6 +278,7 @@ export class ToolCallGuardrailController {
           this.editFailsSinceLastBash++;
         } else {
           this.successfulEdits++;
+          this.readOnlyCallsSinceEdit = 0;
           if (args.file_path) {
             const fp = String(args.file_path);
             this.fileEditCounts.set(fp, (this.fileEditCounts.get(fp) || 0) + 1);
@@ -409,6 +439,7 @@ export class ToolCallGuardrailController {
     this.toolsSinceLastBash = 0;
     this.bashTestRunsSinceLastEdit = 0;
     this.successfulEdits = 0;
+    this.readOnlyCallsSinceEdit = 0;
     this.totalToolCalls = 0;
     this.totalBashCalls = 0;
     this.totalEdits = 0;
