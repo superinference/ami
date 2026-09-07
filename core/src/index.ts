@@ -21,7 +21,6 @@ export type { AnalyticsEvent } from './analytics';
 export type { FileState } from './file-cache';
 export { Profiler } from './profiler';
 export { WorkspaceIndexer } from './workspace-indexer';
-export { ToolCallGuardrailController } from './tool-guardrails';
 export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
 export { PersonaManager } from './personas';

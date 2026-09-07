@@ -8,6 +8,8 @@ import {
   validateRequiredString,
   resolveSearchPath,
   resolveFilePath,
+  validatePatternAndPath,
+  extractQuery,
   buildToolDescriptionContext,
   renderToolDescription,
   detectLineEnding,
@@ -45,6 +47,11 @@ describe('validateRequiredString', () => {
     const result = validateRequiredString(undefined, 'x');
     assert.ok(result?.isError);
   });
+
+  it('rejects false-y non-strings like 0', () => {
+    const result = validateRequiredString(0 as unknown, 'num');
+    assert.ok(result?.isError);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -74,6 +81,18 @@ describe('resolveSearchPath', () => {
     const result = resolveSearchPath('subdir', '/home/user/project');
     assert.equal(result.resolved, path.resolve('/home/user/project', 'subdir'));
     assert.equal(result.error, undefined);
+  });
+
+  it('accepts an absolute path that equals cwd', () => {
+    const r = resolveSearchPath('/home/user', '/home/user');
+    assert.equal(r.error, undefined);
+    assert.equal(r.resolved, '/home/user');
+  });
+
+  it('accepts an absolute subpath of cwd', () => {
+    const r = resolveSearchPath('/home/user/sub', '/home/user');
+    assert.equal(r.error, undefined);
+    assert.equal(r.resolved, '/home/user/sub');
   });
 });
 
@@ -114,6 +133,115 @@ describe('resolveFilePath', () => {
     fs.symlinkSync(path.join(tmpDir, 'real.txt'), path.join(tmpDir, 'link.txt'));
     const { error } = resolveFilePath('link.txt', tmpDir);
     assert.equal(error, undefined);
+  });
+
+  it('resolves an absolute path inside the workspace', () => {
+    const target = path.join(tmpDir, 'src', 'index.ts');
+    const r = resolveFilePath(target, tmpDir);
+    assert.equal(r.resolved, target);
+    assert.equal(r.error, undefined);
+  });
+
+  it('resolves a relative path inside the workspace', () => {
+    const r = resolveFilePath('src/index.ts', tmpDir);
+    assert.equal(r.resolved, path.resolve(tmpDir, 'src/index.ts'));
+    assert.equal(r.error, undefined);
+  });
+
+  it('returns error for a path outside the workspace', () => {
+    const r = resolveFilePath('/etc/passwd', tmpDir);
+    assert.ok(r.error);
+    assert.ok(r.error!.isError);
+    assert.ok(r.error!.output.includes('outside the workspace'));
+  });
+
+  it('allows the workspace root itself', () => {
+    const r = resolveFilePath(tmpDir, tmpDir);
+    assert.equal(r.error, undefined);
+  });
+
+  it('rejects parent traversal outside the workspace', () => {
+    const r = resolveFilePath('../../../etc/passwd', tmpDir);
+    assert.ok(r.error);
+    assert.ok(r.error!.isError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validatePatternAndPath / extractQuery
+// ---------------------------------------------------------------------------
+
+describe('validatePatternAndPath', () => {
+  it('returns pattern and resolved path for valid inputs', () => {
+    const cwd = '/home/user/project';
+    const result = validatePatternAndPath('*.ts', 'src', cwd);
+    assert.ok(!result.error);
+    assert.equal(result.pattern, '*.ts');
+    assert.equal(result.resolved, path.resolve(cwd, 'src'));
+  });
+
+  it('returns error for empty pattern', () => {
+    const result = validatePatternAndPath('', undefined, '/tmp');
+    assert.ok(result.error);
+    assert.ok(result.error!.isError);
+    assert.ok(result.error!.output.includes('pattern'));
+  });
+
+  it('returns error for null pattern', () => {
+    const result = validatePatternAndPath(null, undefined, '/tmp');
+    assert.ok(result.error);
+    assert.ok(result.error!.isError);
+  });
+
+  it('returns error for path outside workspace', () => {
+    const result = validatePatternAndPath('*.ts', '/etc', '/home/user/project');
+    assert.ok(result.error);
+    assert.ok(result.error!.isError);
+    assert.ok(result.error!.output.includes('outside the workspace'));
+  });
+
+  it('uses cwd when no search path is provided', () => {
+    const cwd = '/home/user/project';
+    const result = validatePatternAndPath('*.ts', undefined, cwd);
+    assert.ok(!result.error);
+    assert.equal(result.resolved, cwd);
+  });
+});
+
+describe('extractQuery', () => {
+  it('extracts a valid query string', () => {
+    const result = extractQuery({ query: 'hello world' });
+    assert.ok(!result.error);
+    assert.equal(result.query, 'hello world');
+  });
+
+  it('returns error for empty query', () => {
+    const result = extractQuery({ query: '' });
+    assert.ok(result.error);
+    assert.ok(result.error!.isError);
+    assert.ok(result.error!.output.includes('query'));
+  });
+
+  it('returns error for missing query', () => {
+    const result = extractQuery({});
+    assert.ok(result.error);
+    assert.ok(result.error!.isError);
+  });
+
+  it('returns error for whitespace-only query', () => {
+    const result = extractQuery({ query: '   ' });
+    assert.ok(result.error);
+    assert.ok(result.error!.isError);
+  });
+
+  it('returns error for null query', () => {
+    const result = extractQuery({ query: null });
+    assert.ok(result.error);
+  });
+
+  it('returns error for undefined query', () => {
+    const result = extractQuery({ query: undefined });
+    assert.ok(result.error);
   });
 });
 
@@ -225,6 +353,16 @@ describe('renderToolDescription', () => {
     const result = renderToolDescription('{{projectName}}', { cwd: '/tmp' });
     assert.equal(result, '');
   });
+
+  it('leaves templates with no placeholders unchanged', () => {
+    assert.equal(renderToolDescription('plain text', { cwd: '/tmp' }), 'plain text');
+  });
+
+  it('handles adjacent conditional blocks', () => {
+    const tmpl = '{{#hasGit}}git{{/hasGit}} {{#hasPackageJson}}npm{{/hasPackageJson}}';
+    const result = renderToolDescription(tmpl, { cwd: '/tmp', hasGit: true, hasPackageJson: false });
+    assert.equal(result, 'git ');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -243,6 +381,18 @@ describe('detectLineEnding', () => {
   it('defaults to LF on empty string', () => {
     assert.equal(detectLineEnding(''), '\n');
   });
+
+  it('returns LF for LF-only content', () => {
+    assert.equal(detectLineEnding('line1\nline2\n'), '\n');
+  });
+
+  it('returns CRLF for CRLF-only content', () => {
+    assert.equal(detectLineEnding('line1\r\nline2\r\n'), '\r\n');
+  });
+
+  it('returns LF when CRLF and LF counts are equal', () => {
+    assert.equal(detectLineEnding('a\r\nb\nc'), '\n');
+  });
 });
 
 describe('normalizeToLf', () => {
@@ -252,6 +402,14 @@ describe('normalizeToLf', () => {
 
   it('leaves LF unchanged', () => {
     assert.equal(normalizeToLf('a\nb\n'), 'a\nb\n');
+  });
+
+  it('handles text with no line endings', () => {
+    assert.equal(normalizeToLf('no newlines'), 'no newlines');
+  });
+
+  it('handles mixed endings', () => {
+    assert.equal(normalizeToLf('a\r\nb\nc\r\n'), 'a\nb\nc\n');
   });
 });
 
@@ -266,6 +424,15 @@ describe('convertToLineEnding', () => {
 
   it('normalizes mixed input before converting', () => {
     assert.equal(convertToLineEnding('a\r\nb\nc\r\n', '\r\n'), 'a\r\nb\r\nc\r\n');
+  });
+
+  it('handles empty string', () => {
+    assert.equal(convertToLineEnding('', '\r\n'), '');
+    assert.equal(convertToLineEnding('', '\n'), '');
+  });
+
+  it('handles text with no line endings', () => {
+    assert.equal(convertToLineEnding('no newlines', '\r\n'), 'no newlines');
   });
 });
 

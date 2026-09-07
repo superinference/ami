@@ -344,13 +344,3 @@ describe('shell — execCommand', () => {
     assert.ok(r.stdout.includes('hello'));
   });
 });
-
-// ---- tool-guardrails.ts ----
-import { ToolCallGuardrailController } from '../src/tool-guardrails';
-
-describe('ToolCallGuardrailController', () => {
-  it('instantiates and checks a tool call', () => {
-    const ctrl = new ToolCallGuardrailController('/tmp');
-    assert.ok(ctrl);
-  });
-});

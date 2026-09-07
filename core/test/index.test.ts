@@ -48,10 +48,6 @@ describe('index exports', () => {
     assert.equal(typeof core.WorkspaceIndexer, 'function');
   });
 
-  it('exports ToolCallGuardrailController', () => {
-    assert.equal(typeof core.ToolCallGuardrailController, 'function');
-  });
-
   it('exports PersonaManager', () => {
     assert.equal(typeof core.PersonaManager, 'function');
   });
