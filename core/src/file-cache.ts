@@ -26,6 +26,21 @@ export class FileCache {
   }
 
   /**
+   * Cache content after a successful write.
+   * If stat fails (NFS/CSI metadata lag), skip caching rather than storing a
+   * fake mtime — a Date.now() fallback would make the next hasChanged() see a
+   * mismatch and falsely report "file modified since last read".
+   * Never throws: a completed write must not be turned into an error.
+   */
+  setWritten(path: string, content: string): void {
+    try {
+      this.set(path, content, fs.statSync(path).mtimeMs);
+    } catch {
+      // Write already succeeded; metadata can lag on network filesystems.
+    }
+  }
+
+  /**
    * Check if a file has changed since the last read.
    * Returns true when the file's mtime on disk differs from the cached value,
    * or when the file cannot be stat'd (e.g. deleted).

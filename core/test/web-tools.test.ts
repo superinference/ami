@@ -8,6 +8,7 @@ import * as os from 'os';
 import { webFetchTool } from '../src/tools/web-fetch';
 import { webSearchTool } from '../src/tools/web-search';
 import { notebookEditTool } from '../src/tools/notebook-edit';
+import { getFileCache } from '../src/file-cache';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -24,6 +25,22 @@ function makeContext(cwd: string, allowLocalhost = false): ToolContext {
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'si-web-test-'));
+}
+
+async function withStatFailureFor(filePath: string, fn: () => Promise<void>): Promise<void> {
+  const orig = fs.statSync;
+  const target = path.resolve(filePath);
+  (fs as typeof fs).statSync = ((p: fs.PathLike, opts?: unknown) => {
+    if (path.resolve(String(p)) === target) {
+      throw Object.assign(new Error('EIO: stat failed'), { code: 'EIO' });
+    }
+    return (orig as Function).call(fs, p, opts);
+  }) as typeof fs.statSync;
+  try {
+    await fn();
+  } finally {
+    (fs as typeof fs).statSync = orig;
+  }
 }
 
 /**
@@ -619,5 +636,36 @@ describe('notebook_edit tool', () => {
     // The inserted cell should have an id
     assert.ok(updated.cells[1].id, 'Inserted cell should have an ID');
     assert.ok(typeof updated.cells[1].id === 'string');
+  });
+
+  it('does not report isError when post-write stat fails', async () => {
+    const nb = makeNotebook([{ cell_type: 'code', source: 'print("old")' }]);
+    const fp = path.join(tmpDir, 'stat-fail.ipynb');
+    fs.writeFileSync(fp, JSON.stringify(nb));
+    await withStatFailureFor(fp, async () => {
+      const result = await notebookEditTool.execute(
+        { notebook_path: fp, cell_number: 0, new_source: 'print("new")' },
+        makeContext(tmpDir),
+      );
+      assert.notEqual(result.isError, true);
+      assert.ok(result.output.includes('Replaced cell 0'));
+    });
+    const updated = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+    assert.equal(updated.cells[0].source, 'print("new")');
+  });
+
+  it('caches the notebook after a successful edit', async () => {
+    const nb = makeNotebook([{ cell_type: 'code', source: 'print("old")' }]);
+    const fp = path.join(tmpDir, 'nb-cache.ipynb');
+    fs.writeFileSync(fp, JSON.stringify(nb));
+    const result = await notebookEditTool.execute(
+      { notebook_path: fp, cell_number: 0, new_source: 'print("cached")' },
+      makeContext(tmpDir),
+    );
+    assert.notEqual(result.isError, true);
+    const cached = getFileCache(tmpDir).get(fp);
+    assert.ok(cached);
+    const parsed = JSON.parse(cached!.content);
+    assert.equal(parsed.cells[0].source, 'print("cached")');
   });
 });

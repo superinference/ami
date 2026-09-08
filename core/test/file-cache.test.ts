@@ -356,3 +356,29 @@ describe('FileCache – integration with real files', () => {
     assert.equal(cache.get(filePath), null);
   });
 });
+
+describe('FileCache – setWritten', () => {
+  it('caches content after a real write so get() succeeds', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'written.txt');
+      fs.writeFileSync(filePath, 'on disk');
+      const cache = new FileCache();
+      cache.setWritten(filePath, 'on disk');
+      const cached = cache.get(filePath);
+      assert.ok(cached);
+      assert.equal(cached!.content, 'on disk');
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('does not throw when stat fails after the write', () => {
+    const cache = new FileCache();
+    assert.doesNotThrow(() => cache.setWritten('/no/such/file/for-stat.txt', 'wrote'));
+    // A fake mtime must not be stored — hasChanged() on an uncached path is false,
+    // so a later file_edit would not spuriously claim the file was modified.
+    assert.equal(cache.hasChanged('/no/such/file/for-stat.txt'), false);
+    assert.equal(cache.get('/no/such/file/for-stat.txt'), null);
+  });
+});

@@ -138,9 +138,7 @@ export const multiEditTool: ToolDefinition = {
     try {
       const finalContent = convertToLineEnding(content, originalEnding);
       await fs.promises.writeFile(resolved, finalContent, 'utf-8');
-      const fileCache = getFileCache(context.cwd);
-      const newStat = await fs.promises.stat(resolved);
-      fileCache.set(resolved, content, newStat.mtimeMs);
+      getFileCache(context.cwd).setWritten(resolved, content);
     } catch (err) {
       return {
         output: `Error writing file: ${err instanceof Error ? err.message : String(err)}`,

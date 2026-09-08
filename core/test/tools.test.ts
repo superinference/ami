@@ -7,11 +7,13 @@ import * as os from 'os';
 import { fileReadTool } from '../src/tools/file-read';
 import { fileWriteTool } from '../src/tools/file-write';
 import { fileEditTool } from '../src/tools/file-edit';
+import { multiEditTool } from '../src/tools/multi-edit';
 import { bashTool } from '../src/tools/bash';
 import { grepTool } from '../src/tools/grep';
 import { globTool } from '../src/tools/glob';
 import { listDirTool } from '../src/tools/list-dir';
 import { createDefaultTools, ToolRegistry } from '../src/tools/index';
+import { getFileCache } from '../src/file-cache';
 import type { ToolContext } from '../src/types';
 
 function makeContext(cwd: string): ToolContext {
@@ -23,6 +25,22 @@ function makeContext(cwd: string): ToolContext {
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'si-test-'));
+}
+
+async function withStatFailureFor(filePath: string, fn: () => Promise<void>): Promise<void> {
+  const orig = fs.statSync;
+  const target = path.resolve(filePath);
+  (fs as typeof fs).statSync = ((p: fs.PathLike, opts?: unknown) => {
+    if (path.resolve(String(p)) === target) {
+      throw Object.assign(new Error('EIO: stat failed'), { code: 'EIO' });
+    }
+    return (orig as Function).call(fs, p, opts);
+  }) as typeof fs.statSync;
+  try {
+    await fn();
+  } finally {
+    (fs as typeof fs).statSync = orig;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +213,31 @@ describe('file_write tool', () => {
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('content must be provided'));
   });
+
+  it('caches the written file so a subsequent get() hits', async () => {
+    const fp = path.join(tmpDir, 'cached-write.txt');
+    const result = await fileWriteTool.execute(
+      { file_path: fp, content: 'cached' },
+      makeContext(tmpDir),
+    );
+    assert.notEqual(result.isError, true);
+    const cached = getFileCache(tmpDir).get(fp);
+    assert.ok(cached);
+    assert.equal(cached!.content, 'cached');
+  });
+
+  it('does not report isError when post-write stat fails', async () => {
+    const fp = path.join(tmpDir, 'stat-fail-write.txt');
+    await withStatFailureFor(fp, async () => {
+      const result = await fileWriteTool.execute(
+        { file_path: fp, content: 'still wrote' },
+        makeContext(tmpDir),
+      );
+      assert.notEqual(result.isError, true);
+      assert.ok(result.output.includes('Successfully wrote'));
+    });
+    assert.equal(fs.readFileSync(fp, 'utf-8'), 'still wrote');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -285,7 +328,90 @@ describe('file_edit tool', () => {
     // The snippet should show surrounding context with line numbers
     assert.ok(result.output.includes('LINE TEN'));
   });
+
+  it('caches content after a successful unique replace', async () => {
+    const fp = path.join(tmpDir, 'edit-cached.txt');
+    fs.writeFileSync(fp, 'Hello World\n');
+    const result = await fileEditTool.execute(
+      { file_path: fp, old_string: 'World', new_string: 'there' },
+      makeContext(tmpDir),
+    );
+    assert.notEqual(result.isError, true);
+    const cached = getFileCache(tmpDir).get(fp);
+    assert.ok(cached);
+    assert.ok(cached!.content.includes('there'));
+  });
+
+  it('does not report isError when post-write stat fails', async () => {
+    const fp = path.join(tmpDir, 'edit-stat-fail.txt');
+    fs.writeFileSync(fp, 'Hello World\n');
+    await withStatFailureFor(fp, async () => {
+      const result = await fileEditTool.execute(
+        { file_path: fp, old_string: 'World', new_string: 'there' },
+        makeContext(tmpDir),
+      );
+      assert.notEqual(result.isError, true);
+      assert.ok(result.output.includes('Successfully edited'));
+    });
+    assert.ok(fs.readFileSync(fp, 'utf-8').includes('there'));
+  });
+
+  it('caches a newly created file (empty old_string)', async () => {
+    const fp = path.join(tmpDir, 'created-via-edit.txt');
+    const result = await fileEditTool.execute(
+      { file_path: fp, old_string: '', new_string: 'brand new' },
+      makeContext(tmpDir),
+    );
+    assert.notEqual(result.isError, true);
+    assert.ok(result.output.includes('Created new file'));
+    const cached = getFileCache(tmpDir).get(fp);
+    assert.ok(cached);
+    assert.equal(cached!.content, 'brand new');
+  });
 });
+
+// ---------------------------------------------------------------------------
+// multi_edit
+// ---------------------------------------------------------------------------
+describe('multi_edit tool', () => {
+  let tmpDir: string;
+
+  before(() => {
+    tmpDir = makeTempDir();
+  });
+
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('applies sequential edits and succeeds even if post-write stat fails', async () => {
+    const fp = path.join(tmpDir, 'multi.txt');
+    fs.writeFileSync(fp, 'one two three\n');
+    await withStatFailureFor(fp, async () => {
+      const result = await multiEditTool.execute(
+        { file_path: fp, edits: [{ old_string: 'one', new_string: 'ONE' }, { old_string: 'two', new_string: 'TWO' }] },
+        makeContext(tmpDir),
+      );
+      assert.notEqual(result.isError, true);
+      assert.ok(result.output.includes('Successfully edited'));
+    });
+    assert.equal(fs.readFileSync(fp, 'utf-8'), 'ONE TWO three\n');
+  });
+
+  it('caches after a successful multi_edit', async () => {
+    const fp = path.join(tmpDir, 'multi-cache.txt');
+    fs.writeFileSync(fp, 'foo bar\n');
+    const result = await multiEditTool.execute(
+      { file_path: fp, edits: [{ old_string: 'foo', new_string: 'baz' }] },
+      makeContext(tmpDir),
+    );
+    assert.notEqual(result.isError, true);
+    const cached = getFileCache(tmpDir).get(fp);
+    assert.ok(cached);
+    assert.ok(cached!.content.includes('baz'));
+  });
+});
+
 
 // ---------------------------------------------------------------------------
 // bash

@@ -108,12 +108,15 @@ export const fileEditTool: ToolDefinition = {
       if (!fs.existsSync(resolved)) {
         fs.mkdirSync(path.dirname(resolved), { recursive: true });
         fs.writeFileSync(resolved, newString, 'utf-8');
+        getFileCache(context.cwd).setWritten(resolved, newString);
         context.filesRead?.add(resolved);
         return { output: `Created new file: ${resolved}\n\n${newString.slice(0, 500)}${newString.length > 500 ? '...' : ''}` };
       }
       const existing = await fs.promises.readFile(resolved, 'utf-8');
       if (existing.length === 0) {
         fs.writeFileSync(resolved, newString, 'utf-8');
+        getFileCache(context.cwd).setWritten(resolved, newString);
+        context.filesRead?.add(resolved);
         return { output: `Populated empty file: ${resolved}` };
       }
       return { output: 'Error: old_string is empty but file has content. Provide the text to replace.', isError: true };
@@ -202,7 +205,7 @@ export const fileEditTool: ToolDefinition = {
           const message = err instanceof Error ? err.message : String(err);
           return { output: `Error writing file: ${message}`, isError: true };
         }
-        fileCache.set(resolved, normalizeToLf(finalContent), fs.statSync(resolved).mtimeMs);
+        fileCache.setWritten(resolved, normalizeToLf(finalContent));
         const diff = buildUnifiedDiff(content, replaced, resolved);
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
@@ -239,7 +242,7 @@ export const fileEditTool: ToolDefinition = {
         isError: true,
       };
     }
-    fileCache.set(resolved, normalizeToLf(newContent), fs.statSync(resolved).mtimeMs);
+    fileCache.setWritten(resolved, normalizeToLf(newContent));
 
     // Build a unified diff showing old vs new (use LF-normalized for clean display)
     const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);

@@ -115,9 +115,9 @@ export const fileWriteTool: ToolDefinition = {
       await fs.promises.writeFile(resolved, finalContent, 'utf-8');
 
       // Update the unified file cache so subsequent reads return "unchanged"
-      // and edits don't trigger stale-mtime errors
-      const stat = fs.statSync(resolved);
-      getFileCache(context.cwd).set(resolved, finalContent, stat.mtimeMs);
+      // and edits don't trigger stale-mtime errors. Never let a post-write
+      // stat failure turn a successful write into isError.
+      getFileCache(context.cwd).setWritten(resolved, finalContent);
 
       // Track as known — the model wrote this content, so it can overwrite later
       context.filesRead?.add(resolved);

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { getFileCache } from '../file-cache';
 
 interface NotebookCell {
   cell_type: string;
@@ -111,13 +112,10 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
-    try {
-      const { getFileCache } = require('../file-cache');
-      const cache = getFileCache(context.cwd);
-      if (cache?.hasChanged?.(resolved)) {
-        return { output: 'Error: Notebook modified since last read. Read it again.', isError: true };
-      }
-    } catch {}
+    if (getFileCache(context.cwd).hasChanged(resolved)) {
+      getFileCache(context.cwd).delete(resolved);
+      return { output: 'Error: Notebook modified since last read. Read it again.', isError: true };
+    }
 
     // --- Read and parse the notebook ---
     let raw: string;
@@ -286,9 +284,6 @@ export const notebookEditTool: ToolDefinition = {
     try {
       updatedJson = JSON.stringify(notebook, null, 1);
       await fs.promises.writeFile(resolved, updatedJson, 'utf-8');
-      const newStat = await fs.promises.stat(resolved);
-      const { getFileCache } = require('../file-cache');
-      getFileCache(context.cwd).set(resolved, updatedJson, newStat.mtimeMs);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
@@ -296,13 +291,16 @@ export const notebookEditTool: ToolDefinition = {
         isError: true,
       };
     }
+    getFileCache(context.cwd).setWritten(resolved, updatedJson);
 
-    try {
-      const { getLSPClient } = require('../lsp');
-      const lsp = getLSPClient();
-      lsp.notifyDidChange(resolved, updatedJson, context.cwd).catch(() => {});
-      lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
-    } catch {}
+    if (!context.detachedMode) {
+      try {
+        const { getLSPClient } = require('../lsp');
+        const lsp = getLSPClient();
+        lsp.notifyDidChange(resolved, updatedJson, context.cwd).catch(() => {});
+        lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
+      } catch {}
+    }
 
     // --- Build confirmation message ---
     const newTotal = notebook.cells.length;
