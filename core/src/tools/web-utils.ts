@@ -83,8 +83,8 @@ export async function validateUrlSafety(url: string): Promise<{ error: string } 
 
 export function isValidIP(ip: string): boolean {
   if (!ip || ip === 'undefined' || ip === 'null') return false;
-  // v4
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return true;
+  // v4 — flat form avoids security/detect-unsafe-regex (no repeated quantifier group)
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) return true;
   // v6 (coarse — enough to refuse hostnames / "undefined")
   if (ip.includes(':')) return true;
   return false;
