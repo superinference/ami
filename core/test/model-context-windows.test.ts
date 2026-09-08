@@ -29,6 +29,11 @@ describe('Model context windows', () => {
     assert.equal(getContextWindow('o3-mini'), 200000);
     assert.equal(getContextWindow('o4-mini'), 200000);
   });
+
+  it('returns 256k for Qwen3 / Qwen3.8', () => {
+    assert.equal(getContextWindow('Qwen/Qwen3.8-27B'), 262144);
+    assert.equal(getContextWindow('Qwen/Qwen3-235B-A22B'), 262144);
+  });
 });
 
 describe('Model capabilities', () => {

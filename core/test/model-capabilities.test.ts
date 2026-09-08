@@ -86,6 +86,12 @@ describe('getContextWindow', () => {
   it('returns default 128000 for unknown models', () => {
     assert.equal(getContextWindow('unknown-model-xyz'), 128000);
   });
+
+  it('returns 262144 for Qwen3.8 SWE-bench eval ids', () => {
+    assert.equal(getContextWindow('Qwen/Qwen3.8-27B'), 262144);
+    assert.equal(getContextWindow('Qwen3.8-27B'), 262144);
+    assert.equal(getContextWindow('Qwen/Qwen3-30B'), 262144);
+  });
 });
 
 // ---------------------------------------------------------------------------
