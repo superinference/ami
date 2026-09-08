@@ -20,6 +20,25 @@ function isReadOnlyBashCommand(command: string): boolean {
   }
 }
 
+export function isBashForkExhaustion(stdout: string, stderr: string): boolean {
+  const combined = `${stdout}\n${stderr}`;
+  return /fork:\s*Resource temporarily unavailable/i.test(combined)
+    || /Cannot fork/i.test(combined)
+    || /\bEAGAIN\b/i.test(combined);
+}
+
+async function execCommandWithForkRetry(
+  command: string,
+  options: Parameters<typeof execCommand>[1],
+): Promise<Awaited<ReturnType<typeof execCommand>>> {
+  let last = await execCommand(command, options);
+  for (let attempt = 0; attempt < 3 && isBashForkExhaustion(last.stdout, last.stderr); attempt++) {
+    await new Promise(r => setTimeout(r, 150 * (attempt + 1)));
+    last = await execCommand(command, options);
+  }
+  return last;
+}
+
 function looksLikeHungPrompt(output: string): boolean {
   const lastLine = output.trim().split('\n').pop() ?? '';
   return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|password:|passphrase:|Press Enter|Continue\?|Overwrite\?|Are you sure/i.test(lastLine);
@@ -180,7 +199,7 @@ export const bashTool: ToolDefinition = {
     const useSandbox = !disableSandbox && shouldUseSandbox(command);
     const effectiveCommand = useSandbox ? wrapWithSandbox(command, context.cwd) : command;
 
-    const result = await execCommand(effectiveCommand, {
+    const result = await execCommandWithForkRetry(effectiveCommand, {
       cwd: context.cwd,
       timeout,
       abortSignal: context.abortSignal,

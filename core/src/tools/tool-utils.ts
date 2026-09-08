@@ -139,7 +139,7 @@ export function scanForSecrets(content: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// CRLF-aware line ending helpers (shared by file-edit and file-write)
+// CRLF-aware line ending helpers (shared by file-edit)
 // ---------------------------------------------------------------------------
 
 export function detectLineEnding(content: string): '\r\n' | '\n' {

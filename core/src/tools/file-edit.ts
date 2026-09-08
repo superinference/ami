@@ -8,6 +8,12 @@ import { getFileCache } from '../file-cache';
 const CONTEXT_LINES = 3;
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 
+interface SequentialEdit {
+  old_string: string;
+  new_string: string;
+  replace_all?: boolean;
+}
+
 async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
   try {
     const historyDir = path.join(cwd, '.superinference', 'file-history');
@@ -19,7 +25,6 @@ async function trackFileHistory(filePath: string, originalContent: string, cwd: 
 
     await fs.promises.writeFile(historyFile, originalContent, 'utf-8');
 
-    // Keep only last 20 backups per file
     const prefix = safeName + '.';
     const entries = await fs.promises.readdir(historyDir);
     const matches = entries.filter(e => e.startsWith(prefix) && e.endsWith('.bak')).sort();
@@ -31,34 +36,251 @@ async function trackFileHistory(filePath: string, originalContent: string, cwd: 
   } catch { /* non-critical, don't fail the edit */ }
 }
 
+function notifyLsp(resolved: string, content: string, context: ToolContext): void {
+  if (context.detachedMode) return;
+  try {
+    const { getLSPClient } = require('../lsp');
+    const lsp = getLSPClient();
+    lsp.notifyDidChange(resolved, content, context.cwd).catch(() => {});
+    lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
+  } catch {}
+}
+
+function commitWrite(
+  resolved: string,
+  rawToWrite: string,
+  cacheContent: string,
+  context: ToolContext,
+): string | undefined {
+  try {
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    fs.writeFileSync(resolved, rawToWrite, 'utf-8');
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Error writing file: ${message}`;
+  }
+  getFileCache(context.cwd).setWritten(resolved, cacheContent);
+  context.filesRead?.add(resolved);
+  notifyLsp(resolved, rawToWrite, context);
+  return undefined;
+}
+
+async function writeEntireFile(
+  resolved: string,
+  content: string,
+  context: ToolContext,
+): Promise<ToolResult> {
+  let oldContent = '';
+  let fileExists = false;
+  try {
+    oldContent = await fs.promises.readFile(resolved, 'utf-8');
+    fileExists = true;
+  } catch {}
+  const isNew = !fileExists || oldContent.length === 0;
+
+  if (fileExists && oldContent.length > 0 && context.filesRead && !context.filesRead.has(resolved)) {
+    return {
+      output: `Error: You must read ${resolved} with file_read before overwriting it. This prevents accidental data loss.`,
+      isError: true,
+    };
+  }
+
+  if (fileExists && oldContent.length > 0 && context.filesRead?.has(resolved)) {
+    const fileCache = getFileCache(context.cwd);
+    if (fileCache.hasChanged(resolved)) {
+      fileCache.delete(resolved);
+      return { output: 'Error: File has been modified since you last read it. Read the file again before overwriting.', isError: true };
+    }
+  }
+
+  const secrets = scanForSecrets(content);
+  if (secrets.length > 0) {
+    return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
+  }
+
+  let finalContent = content;
+  if (fileExists && oldContent.length > 0) {
+    finalContent = convertToLineEnding(content, detectLineEnding(oldContent));
+  }
+
+  if (fileExists && oldContent.length > 0) {
+    await trackFileHistory(resolved, oldContent, context.cwd);
+  }
+
+  const writeErr = commitWrite(resolved, finalContent, content, context);
+  if (writeErr) return { output: writeErr, isError: true };
+
+  const lines = content.split('\n');
+  const lineCount = lines.length;
+  if (isNew) {
+    const preview = lines.slice(0, 20);
+    const diffLines = preview.map(l => `+${l}`);
+    const truncNote = lineCount > 20 ? `\n... (+${lineCount - 20} more lines)` : '';
+    const createdLabel = !fileExists ? 'Created new file' : 'Populated empty file';
+    return {
+      output: `${createdLabel}: ${resolved}\nSuccessfully wrote ${resolved} (new file, ${lineCount} lines)\n\n--- /dev/null\n+++ ${resolved}\n@@ -0,0 +1,${lineCount} @@\n${diffLines.join('\n')}${truncNote}`,
+    };
+  }
+
+  const oldLines = oldContent.split('\n');
+  const diffParts: string[] = [`--- ${resolved}`, `+++ ${resolved}`];
+  const maxShow = 20;
+  diffParts.push(`@@ -1,${Math.min(oldLines.length, maxShow)} +1,${Math.min(lineCount, maxShow)} @@`);
+  for (const l of oldLines.slice(0, maxShow)) diffParts.push(`-${l}`);
+  if (oldLines.length > maxShow) diffParts.push(`... (-${oldLines.length - maxShow} more removed)`);
+  for (const l of lines.slice(0, maxShow)) diffParts.push(`+${l}`);
+  if (lineCount > maxShow) diffParts.push(`... (+${lineCount - maxShow} more added)`);
+  return { output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n${diffParts.join('\n')}` };
+}
+
+async function applySequentialEdits(
+  resolved: string,
+  edits: SequentialEdit[],
+  context: ToolContext,
+): Promise<ToolResult> {
+  if (context.filesRead && !context.filesRead.has(resolved)) {
+    return {
+      output: `Error: You must read ${resolved} with file_read before editing it. This prevents edits based on stale content.`,
+      isError: true,
+    };
+  }
+
+  const fileCache = getFileCache(context.cwd);
+  if (fileCache.hasChanged(resolved)) {
+    fileCache.delete(resolved);
+    return { output: 'Error: File has been modified since you last read it. Read the file again before editing.', isError: true };
+  }
+
+  let rawContent: string;
+  try {
+    rawContent = await fs.promises.readFile(resolved, 'utf-8');
+  } catch (err) {
+    return {
+      output: `Error: Cannot read file "${resolved}": ${err instanceof Error ? err.message : String(err)}`,
+      isError: true,
+    };
+  }
+
+  const originalEnding = detectLineEnding(rawContent);
+  let content = normalizeToLf(rawContent);
+
+  const applied: string[] = [];
+  const failed: string[] = [];
+
+  for (let i = 0; i < edits.length; i++) {
+    const { old_string, new_string, replace_all: replaceAll } = edits[i];
+
+    if (!old_string || old_string.length === 0) {
+      failed.push(`Edit ${i + 1}: old_string must not be empty`);
+      continue;
+    }
+
+    if (old_string === new_string) {
+      failed.push(`Edit ${i + 1}: old_string and new_string are identical`);
+      continue;
+    }
+
+    const normalizedOld = normalizeToLf(old_string);
+    const normalizedNew = normalizeToLf(new_string ?? '');
+    const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
+
+    if (result.error) {
+      if (result.matchCount === 0) {
+        const searchLines = old_string.split('\n');
+        const hints = findClosestLines(content, searchLines, 2);
+        let hintText = '';
+        if (hints.length > 0) {
+          hintText = ' — did you mean line ' + hints.map(h => h.lineNumber).join(' or ') + '?';
+        }
+        failed.push(`Edit ${i + 1}: old_string not found in file${hintText}`);
+        continue;
+      }
+      if (replaceAll && result.matchCount > 1) {
+        content = content.split(normalizedOld).join(normalizedNew);
+        applied.push(`Edit ${i + 1}: replaced ${result.matchCount} occurrences`);
+        continue;
+      }
+      failed.push(`Edit ${i + 1}: ${result.error}`);
+      continue;
+    }
+
+    content = result.newContent!;
+    const strategyNote = result.strategy !== 'exact' ? ` (${result.strategy})` : '';
+    applied.push(`Edit ${i + 1}: applied${strategyNote}`);
+  }
+
+  if (applied.length === 0) {
+    return {
+      output: `No edits applied.\n${failed.join('\n')}`,
+      isError: true,
+    };
+  }
+
+  const secrets = scanForSecrets(content);
+  if (secrets.length > 0) {
+    return { output: `Warning: Potential secrets detected in edited content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
+  }
+
+  const finalContent = convertToLineEnding(content, originalEnding);
+  await trackFileHistory(resolved, rawContent, context.cwd);
+  const writeErr = commitWrite(resolved, finalContent, content, context);
+  if (writeErr) return { output: writeErr, isError: true };
+
+  const summary = [
+    `Successfully edited ${resolved}`,
+    `${applied.length}/${edits.length} edits applied.`,
+  ];
+  if (failed.length > 0) {
+    summary.push(`\nFailed edits:\n${failed.join('\n')}`);
+  }
+
+  return { output: summary.join('\n'), isError: false };
+}
 
 export const fileEditTool: ToolDefinition = {
   name: 'file_edit',
   description:
-    'Edit a file by replacing an exact string with new content. You MUST file_read the file first. The old_string must match file content exactly including whitespace and indentation. Use the smallest old_string that uniquely identifies the target — usually 2-4 adjacent lines. Avoid large old_strings (10+ lines). If match fails, re-read the file with file_read and retry with the exact text. Do not include line numbers. For new files, use file_write instead.',
+    'Create or edit a file. You MUST file_read an existing file before changing it. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers. Never use bash sed/awk to edit files.',
   inputSchema: {
     type: 'object',
     properties: {
       file_path: {
         type: 'string',
-        description: 'The absolute or relative path to the file to edit.',
+        description: 'The absolute or relative path to the file to create or edit.',
       },
       old_string: {
         type: 'string',
         description:
-          'The exact string to find and replace. Must match file content exactly, including whitespace and indentation.',
+          'Exact text to replace. Omit or pass empty string to write/create the entire file using new_string or content.',
       },
       new_string: {
         type: 'string',
-        description: 'The replacement string.',
+        description: 'Replacement text, or the full file contents when old_string is empty/omitted.',
+      },
+      content: {
+        type: 'string',
+        description: 'Alias for new_string when writing or creating a file (old_string empty/omitted).',
       },
       replace_all: {
         type: 'boolean',
         description: 'Replace all occurrences of old_string instead of requiring uniqueness. Default false.',
         default: false,
       },
+      edits: {
+        type: 'array',
+        description: 'Sequential search-and-replace edits applied in order to one file.',
+        items: {
+          type: 'object',
+          properties: {
+            old_string: { type: 'string', description: 'The exact string to find.' },
+            new_string: { type: 'string', description: 'The replacement string.' },
+            replace_all: { type: 'boolean', description: 'Replace every occurrence of this old_string.' },
+          },
+          required: ['old_string', 'new_string'],
+        },
+      },
     },
-    required: ['file_path', 'old_string', 'new_string'],
+    required: ['file_path'],
   },
   isReadOnly: false,
 
@@ -67,27 +289,11 @@ export const fileEditTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const filePath = input.file_path as string;
-    const oldString = input.old_string as string;
-    const newString = input.new_string as string;
     const replaceAll = (input.replace_all as boolean) ?? false;
+    const editsInput = input.edits;
 
     if (!filePath || filePath.trim().length === 0) {
       return { output: 'Error: file_path must not be empty.', isError: true };
-    }
-
-    if (oldString === undefined || oldString === null) {
-      return { output: 'Error: old_string must be provided.', isError: true };
-    }
-
-    if (newString === undefined || newString === null) {
-      return { output: 'Error: new_string must be provided.', isError: true };
-    }
-
-    if (oldString === newString) {
-      return {
-        output: 'Error: old_string and new_string are identical. No changes needed.',
-        isError: true,
-      };
     }
 
     const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
@@ -100,26 +306,45 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    if (!oldString) {
-      const secrets = scanForSecrets(newString);
-      if (secrets.length > 0) {
-        return { output: `Error: Potential secrets detected: ${secrets.join(', ')}. Remove them before writing.`, isError: true };
+    if (editsInput !== undefined) {
+      if (!Array.isArray(editsInput) || editsInput.length === 0) {
+        return { output: 'Error: edits must be a non-empty array.', isError: true };
       }
-      if (!fs.existsSync(resolved)) {
-        fs.mkdirSync(path.dirname(resolved), { recursive: true });
-        fs.writeFileSync(resolved, newString, 'utf-8');
-        getFileCache(context.cwd).setWritten(resolved, newString);
-        context.filesRead?.add(resolved);
-        return { output: `Created new file: ${resolved}\n\n${newString.slice(0, 500)}${newString.length > 500 ? '...' : ''}` };
+      const edits: SequentialEdit[] = [];
+      for (const raw of editsInput) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          return { output: 'Error: each edit must be an object with old_string and new_string.', isError: true };
+        }
+        const e = raw as Record<string, unknown>;
+        edits.push({
+          old_string: String(e.old_string ?? ''),
+          new_string: String(e.new_string ?? ''),
+          replace_all: Boolean(e.replace_all),
+        });
       }
-      const existing = await fs.promises.readFile(resolved, 'utf-8');
-      if (existing.length === 0) {
-        fs.writeFileSync(resolved, newString, 'utf-8');
-        getFileCache(context.cwd).setWritten(resolved, newString);
-        context.filesRead?.add(resolved);
-        return { output: `Populated empty file: ${resolved}` };
+      return applySequentialEdits(resolved, edits, context);
+    }
+
+    const newString = (input.new_string ?? input.content) as string | undefined;
+    const oldString = input.old_string as string | undefined;
+    const writeMode = oldString === undefined || oldString === null || oldString === '';
+
+    if (writeMode) {
+      if (newString === undefined || newString === null) {
+        return { output: 'Error: new_string (or content) must be provided to create or overwrite a file.', isError: true };
       }
-      return { output: 'Error: old_string is empty but file has content. Provide the text to replace.', isError: true };
+      return writeEntireFile(resolved, newString, context);
+    }
+
+    if (newString === undefined || newString === null) {
+      return { output: 'Error: new_string must be provided.', isError: true };
+    }
+
+    if (oldString === newString) {
+      return {
+        output: 'Error: old_string and new_string are identical. No changes needed.',
+        isError: true,
+      };
     }
 
     if (context.filesRead && !context.filesRead.has(resolved)) {
@@ -170,14 +395,12 @@ export const fileEditTool: ToolDefinition = {
     const normalizedOld = normalizeToLf(oldString);
     const normalizedNew = normalizeToLf(newString);
 
-    // Graduated fuzzy matching: try exact first, then progressively looser strategies
     const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 
     if (result.error) {
       if (result.matchCount === 0) {
         fileCache.delete(resolved);
 
-        // No match — provide "did you mean?" hints
         const searchLines = oldString.split('\n');
         const hints = findClosestLines(content, searchLines, 3);
         let hintText = '';
@@ -193,19 +416,12 @@ export const fileEditTool: ToolDefinition = {
           isError: true,
         };
       }
-      // Multiple matches — replace all if flag is set, otherwise error
       if (replaceAll) {
         const replaced = content.split(normalizedOld).join(normalizedNew);
         const finalContent = convertToLineEnding(replaced, originalEnding);
-        fs.mkdirSync(path.dirname(resolved), { recursive: true });
         await trackFileHistory(resolved, rawContent, context.cwd);
-        try {
-          await fs.promises.writeFile(resolved, finalContent, 'utf-8');
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          return { output: `Error writing file: ${message}`, isError: true };
-        }
-        fileCache.setWritten(resolved, normalizeToLf(finalContent));
+        const writeErr = commitWrite(resolved, finalContent, normalizeToLf(finalContent), context);
+        if (writeErr) return { output: writeErr, isError: true };
         const diff = buildUnifiedDiff(content, replaced, resolved);
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
@@ -231,30 +447,11 @@ export const fileEditTool: ToolDefinition = {
       return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
     }
 
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
     await trackFileHistory(resolved, rawContent, context.cwd);
-    try {
-      await fs.promises.writeFile(resolved, newContent, 'utf-8');
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        output: `Error writing file: ${message}`,
-        isError: true,
-      };
-    }
-    fileCache.setWritten(resolved, normalizeToLf(newContent));
+    const writeErr = commitWrite(resolved, newContent, normalizeToLf(newContent), context);
+    if (writeErr) return { output: writeErr, isError: true };
 
-    // Build a unified diff showing old vs new (use LF-normalized for clean display)
     const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);
-
-    if (!context.detachedMode) {
-      try {
-        const { getLSPClient } = require('../lsp');
-        const lsp = getLSPClient();
-        lsp.notifyDidChange(resolved, newContent, context.cwd).catch(() => {});
-        lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
-      } catch {}
-    }
 
     const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
     const diffLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length;
@@ -269,7 +466,6 @@ function buildUnifiedDiff(oldContent: string, newContent: string, filePath: stri
   const oldLines = oldContent.split('\n');
   const newLines = newContent.split('\n');
 
-  // Find first and last differing lines
   let firstDiff = 0;
   while (firstDiff < oldLines.length && firstDiff < newLines.length && oldLines[firstDiff] === newLines[firstDiff]) {
     firstDiff++;
@@ -286,7 +482,6 @@ function buildUnifiedDiff(oldContent: string, newContent: string, filePath: stri
     return '(no changes detected)';
   }
 
-  // Context window
   const ctxStart = Math.max(0, firstDiff - CONTEXT_LINES);
   const ctxOldEnd = Math.min(oldLines.length - 1, oldEnd + CONTEXT_LINES);
   const ctxNewEnd = Math.min(newLines.length - 1, newEnd + CONTEXT_LINES);
@@ -296,22 +491,18 @@ function buildUnifiedDiff(oldContent: string, newContent: string, filePath: stri
   result.push(`+++ ${filePath}`);
   result.push(`@@ -${ctxStart + 1},${ctxOldEnd - ctxStart + 1} +${ctxStart + 1},${ctxNewEnd - ctxStart + 1} @@`);
 
-  // Context before
   for (let i = ctxStart; i < firstDiff; i++) {
     result.push(` ${oldLines[i]}`);
   }
 
-  // Removed lines
   for (let i = firstDiff; i <= oldEnd; i++) {
     result.push(`-${oldLines[i]}`);
   }
 
-  // Added lines
   for (let i = firstDiff; i <= newEnd; i++) {
     result.push(`+${newLines[i]}`);
   }
 
-  // Context after
   const afterStart = oldEnd + 1;
   const afterEnd = Math.min(oldLines.length - 1, oldEnd + CONTEXT_LINES);
   for (let i = afterStart; i <= afterEnd; i++) {

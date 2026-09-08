@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { fileWriteTool } from '../src/tools/file-write';
+import { fileEditTool } from '../src/tools/file-edit';
 import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
@@ -28,19 +28,19 @@ afterEach(() => {
 // Tool definition
 // ---------------------------------------------------------------------------
 
-describe('fileWriteTool – definition', () => {
+describe('fileEditTool – definition', () => {
   it('has the correct name', () => {
-    assert.equal(fileWriteTool.name, 'file_write');
+    assert.equal(fileEditTool.name, 'file_edit');
   });
 
   it('is not read-only', () => {
-    assert.equal(fileWriteTool.isReadOnly, false);
+    assert.equal(fileEditTool.isReadOnly, false);
   });
 
-  it('schema requires file_path and content', () => {
-    const req = fileWriteTool.inputSchema.required;
+  it('schema requires file_path', () => {
+    const req = fileEditTool.inputSchema.required;
     assert.ok(req?.includes('file_path'));
-    assert.ok(req?.includes('content'));
+    assert.ok(!req?.includes('content'));
   });
 });
 
@@ -48,34 +48,34 @@ describe('fileWriteTool – definition', () => {
 // Validation
 // ---------------------------------------------------------------------------
 
-describe('fileWriteTool – validation', () => {
+describe('fileEditTool – validation', () => {
   it('rejects empty file_path', async () => {
-    const result = await fileWriteTool.execute({ file_path: '', content: 'x' }, ctx());
+    const result = await fileEditTool.execute({ file_path: '', content: 'x' }, ctx());
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('file_path must not be empty'));
   });
 
   it('rejects whitespace-only file_path', async () => {
-    const result = await fileWriteTool.execute({ file_path: '   ', content: 'x' }, ctx());
+    const result = await fileEditTool.execute({ file_path: '   ', content: 'x' }, ctx());
     assert.equal(result.isError, true);
   });
 
   it('rejects null content', async () => {
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: path.join(tmpDir, 'f.txt'), content: null },
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('content must be provided'));
+    assert.ok(result.output.includes('must be provided'));
   });
 
   it('rejects undefined content', async () => {
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: path.join(tmpDir, 'f.txt'), content: undefined },
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('content must be provided'));
+    assert.ok(result.output.includes('must be provided'));
   });
 });
 
@@ -83,10 +83,10 @@ describe('fileWriteTool – validation', () => {
 // Writing new files
 // ---------------------------------------------------------------------------
 
-describe('fileWriteTool – new files', () => {
+describe('fileEditTool – new files', () => {
   it('creates a new file with content', async () => {
     const file = path.join(tmpDir, 'new.txt');
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'hello world\n' },
       ctx(),
     );
@@ -97,7 +97,7 @@ describe('fileWriteTool – new files', () => {
 
   it('creates parent directories if they do not exist', async () => {
     const file = path.join(tmpDir, 'deep', 'nested', 'dir', 'file.txt');
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'nested\n' },
       ctx(),
     );
@@ -107,7 +107,7 @@ describe('fileWriteTool – new files', () => {
 
   it('shows diff lines with + prefix for new files', async () => {
     const file = path.join(tmpDir, 'diff.txt');
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'line1\nline2\n' },
       ctx(),
     );
@@ -118,7 +118,7 @@ describe('fileWriteTool – new files', () => {
 
   it('allows writing empty content', async () => {
     const file = path.join(tmpDir, 'empty.txt');
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: '' },
       ctx(),
     );
@@ -131,12 +131,12 @@ describe('fileWriteTool – new files', () => {
 // Overwriting existing files
 // ---------------------------------------------------------------------------
 
-describe('fileWriteTool – overwriting', () => {
+describe('fileEditTool – overwriting', () => {
   it('overwrites existing file content', async () => {
     const file = path.join(tmpDir, 'existing.txt');
     fs.writeFileSync(file, 'old content\n');
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'new content\n' },
       ctx(),
     );
@@ -149,7 +149,7 @@ describe('fileWriteTool – overwriting', () => {
 
   it('shows line count in output', async () => {
     const file = path.join(tmpDir, 'count.txt');
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'a\nb\nc\n' },
       ctx(),
     );
@@ -161,9 +161,9 @@ describe('fileWriteTool – overwriting', () => {
 // Relative paths
 // ---------------------------------------------------------------------------
 
-describe('fileWriteTool – relative paths', () => {
+describe('fileEditTool – relative paths', () => {
   it('resolves relative paths against cwd', async () => {
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: 'rel.txt', content: 'relative\n' },
       ctx(),
     );
@@ -172,9 +172,9 @@ describe('fileWriteTool – relative paths', () => {
   });
 });
 
-describe('fileWriteTool – workspace boundary', () => {
+describe('fileEditTool – workspace boundary', () => {
   it('rejects paths outside workspace', async () => {
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: '/tmp/outside-workspace.txt', content: 'nope' },
       ctx(),
     );
@@ -184,7 +184,7 @@ describe('fileWriteTool – workspace boundary', () => {
 
   it('allows writing to cwd itself', async () => {
     const file = path.join(tmpDir, 'inroot.txt');
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'in root\n' },
       ctx(),
     );
@@ -196,12 +196,12 @@ describe('fileWriteTool – workspace boundary', () => {
 // Read-before-write enforcement
 // ---------------------------------------------------------------------------
 
-describe('fileWriteTool – read-before-write enforcement', () => {
+describe('fileEditTool – read-before-write enforcement', () => {
   it('blocks overwrite when filesRead is set but file was not read', async () => {
     const file = path.join(tmpDir, 'existing-unread.txt');
     fs.writeFileSync(file, 'original\n');
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'overwritten\n' },
       ctx({ filesRead: new Set() }),
     );
@@ -214,7 +214,7 @@ describe('fileWriteTool – read-before-write enforcement', () => {
     fs.writeFileSync(file, 'original\n');
     const filesRead = new Set([file]);
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'overwritten\n' },
       ctx({ filesRead }),
     );
@@ -225,7 +225,7 @@ describe('fileWriteTool – read-before-write enforcement', () => {
   it('allows writing new files without prior read', async () => {
     const file = path.join(tmpDir, 'brand-new.txt');
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'new content\n' },
       ctx({ filesRead: new Set() }),
     );
@@ -237,7 +237,7 @@ describe('fileWriteTool – read-before-write enforcement', () => {
     const file = path.join(tmpDir, 'no-tracking.txt');
     fs.writeFileSync(file, 'original\n');
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'overwritten\n' },
       ctx(),
     );
@@ -248,7 +248,7 @@ describe('fileWriteTool – read-before-write enforcement', () => {
     const file = path.join(tmpDir, 'protected.txt');
     fs.writeFileSync(file, 'original\n');
 
-    await fileWriteTool.execute(
+    await fileEditTool.execute(
       { file_path: file, content: 'should-not-write\n' },
       ctx({ filesRead: new Set() }),
     );
@@ -260,12 +260,12 @@ describe('fileWriteTool – read-before-write enforcement', () => {
 // CRLF-aware file writing
 // ---------------------------------------------------------------------------
 
-describe('fileWriteTool – CRLF handling', () => {
+describe('fileEditTool – CRLF handling', () => {
   it('preserves CRLF when overwriting CRLF file', async () => {
     const file = path.join(tmpDir, 'crlf.txt');
     fs.writeFileSync(file, 'old1\r\nold2\r\n');
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'new1\nnew2\n' },
       ctx(),
     );
@@ -279,7 +279,7 @@ describe('fileWriteTool – CRLF handling', () => {
     const file = path.join(tmpDir, 'lf.txt');
     fs.writeFileSync(file, 'old1\nold2\n');
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'new1\nnew2\n' },
       ctx(),
     );
@@ -292,7 +292,7 @@ describe('fileWriteTool – CRLF handling', () => {
   it('uses content as-is for new files', async () => {
     const file = path.join(tmpDir, 'brand-new-crlf.txt');
 
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: 'line1\nline2\n' },
       ctx(),
     );
@@ -302,11 +302,11 @@ describe('fileWriteTool – CRLF handling', () => {
   });
 });
 
-describe('fileWriteTool – large file diff truncation', () => {
+describe('fileEditTool – large file diff truncation', () => {
   it('truncates new file diff at 20 lines', async () => {
     const file = path.join(tmpDir, 'large-new.txt');
     const lines = Array.from({ length: 30 }, (_, i) => `line${i + 1}`);
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: lines.join('\n') + '\n' },
       ctx(),
     );
@@ -320,7 +320,7 @@ describe('fileWriteTool – large file diff truncation', () => {
     fs.writeFileSync(file, oldLines.join('\n') + '\n');
 
     const newLines = Array.from({ length: 25 }, (_, i) => `new${i + 1}`);
-    const result = await fileWriteTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, content: newLines.join('\n') + '\n' },
       ctx(),
     );

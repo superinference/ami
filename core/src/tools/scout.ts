@@ -18,7 +18,10 @@ export const scoutTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const repo = input.repo as string;
     const query = input.query as string | undefined;
-    const repoUrl = repo.includes('://') ? repo : `https://github.com/${repo}`;
+    const repoUrl =
+      repo.includes('://') || repo.startsWith('/') || repo.startsWith('.')
+        ? repo
+        : `https://github.com/${repo}`;
     const cacheDir = path.join(context.cwd, '.superinference', 'scout-cache');
     const repoName = repo.replace(/[^a-zA-Z0-9_-]/g, '_');
     const localPath = path.join(cacheDir, repoName);
@@ -51,7 +54,7 @@ export const scoutTool: ToolDefinition = {
       }
 
       return {
-        output: `## Scout: ${repo}\n\n### Files:\n${files}\n\n### README:\n${readme}\n\n${searchResults ? `### Search results for "${query}":\n${searchResults}` : ''}`,
+        output: `## Scout: ${repo}\n\n### Cache path:\n${localPath}\n\nRead files with file_read using this directory as the prefix.\n\n### Files:\n${files}\n\n### README:\n${readme}\n\n${searchResults ? `### Search results for "${query}":\n${searchResults}` : ''}`,
       };
     } catch (err) {
       return { output: `Error scouting ${repo}: ${err instanceof Error ? err.message : String(err)}`, isError: true };

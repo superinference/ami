@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { multiEditTool } from '../src/tools/multi-edit';
+import { fileEditTool } from '../src/tools/file-edit';
 import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
@@ -28,19 +28,20 @@ afterEach(() => {
 // Tool definition
 // ---------------------------------------------------------------------------
 
-describe('multiEditTool – definition', () => {
+describe('fileEditTool – definition', () => {
   it('has the correct name', () => {
-    assert.equal(multiEditTool.name, 'multi_edit');
+    assert.equal(fileEditTool.name, 'file_edit');
   });
 
   it('is not read-only', () => {
-    assert.equal(multiEditTool.isReadOnly, false);
+    assert.equal(fileEditTool.isReadOnly, false);
   });
 
-  it('schema requires file_path and edits', () => {
-    const req = multiEditTool.inputSchema.required;
+  it('schema requires file_path; edits are optional', () => {
+    const req = fileEditTool.inputSchema.required;
     assert.ok(req?.includes('file_path'));
-    assert.ok(req?.includes('edits'));
+    assert.ok(!req?.includes('edits'));
+    assert.ok(fileEditTool.inputSchema.properties && 'edits' in fileEditTool.inputSchema.properties);
   });
 });
 
@@ -48,9 +49,9 @@ describe('multiEditTool – definition', () => {
 // Validation
 // ---------------------------------------------------------------------------
 
-describe('multiEditTool – validation', () => {
+describe('fileEditTool – validation', () => {
   it('rejects empty file_path', async () => {
-    const result = await multiEditTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: '', edits: [{ old_string: 'a', new_string: 'b' }] },
       ctx(),
     );
@@ -59,7 +60,7 @@ describe('multiEditTool – validation', () => {
   });
 
   it('rejects missing edits', async () => {
-    const result = await multiEditTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: path.join(tmpDir, 'f.txt'), edits: [] },
       ctx(),
     );
@@ -68,7 +69,7 @@ describe('multiEditTool – validation', () => {
   });
 
   it('rejects non-array edits', async () => {
-    const result = await multiEditTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: path.join(tmpDir, 'f.txt'), edits: 'not an array' },
       ctx(),
     );
@@ -76,7 +77,7 @@ describe('multiEditTool – validation', () => {
   });
 
   it('rejects when file does not exist', async () => {
-    const result = await multiEditTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: path.join(tmpDir, 'nonexistent.txt'), edits: [{ old_string: 'a', new_string: 'b' }] },
       ctx(),
     );
@@ -89,12 +90,12 @@ describe('multiEditTool – validation', () => {
 // Edits
 // ---------------------------------------------------------------------------
 
-describe('multiEditTool – edits', () => {
+describe('fileEditTool – edits', () => {
   it('applies multiple edits successfully', async () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'const a = 1;\nconst b = 2;\nconst c = 3;\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'const a = 1;', new_string: 'const a = 10;' },
@@ -113,7 +114,7 @@ describe('multiEditTool – edits', () => {
     const file = path.join(tmpDir, 'seq.ts');
     fs.writeFileSync(file, 'AAA\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'AAA', new_string: 'BBB' },
@@ -129,7 +130,7 @@ describe('multiEditTool – edits', () => {
     const file = path.join(tmpDir, 'partial.ts');
     fs.writeFileSync(file, 'alpha\nbeta\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'alpha', new_string: 'ALPHA' },
@@ -146,7 +147,7 @@ describe('multiEditTool – edits', () => {
     const file = path.join(tmpDir, 'empty.ts');
     fs.writeFileSync(file, 'content\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: '', new_string: 'x' },
@@ -162,7 +163,7 @@ describe('multiEditTool – edits', () => {
     const file = path.join(tmpDir, 'identical.ts');
     fs.writeFileSync(file, 'same\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'same', new_string: 'same' }],
     }, ctx());
@@ -175,7 +176,7 @@ describe('multiEditTool – edits', () => {
     const file = path.join(tmpDir, 'nope.ts');
     fs.writeFileSync(file, 'content\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'nonexistent', new_string: 'x' }],
     }, ctx());
@@ -188,7 +189,7 @@ describe('multiEditTool – edits', () => {
     const file = path.join(tmpDir, 'hints.ts');
     fs.writeFileSync(file, 'const fooBar = 1;\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'const fooBaz = 1;', new_string: 'x' }],
     }, ctx());
@@ -201,7 +202,7 @@ describe('multiEditTool – edits', () => {
     const file = path.join(tmpDir, 'dup.ts');
     fs.writeFileSync(file, 'foo\nbar\nfoo\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'foo', new_string: 'baz' }],
     }, ctx());
@@ -215,12 +216,12 @@ describe('multiEditTool – edits', () => {
 // Relative paths
 // ---------------------------------------------------------------------------
 
-describe('multiEditTool – relative paths', () => {
+describe('fileEditTool – relative paths', () => {
   it('resolves relative paths against cwd', async () => {
     const file = path.join(tmpDir, 'rel.ts');
     fs.writeFileSync(file, 'old\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: 'rel.ts',
       edits: [{ old_string: 'old', new_string: 'new' }],
     }, ctx());
@@ -234,12 +235,12 @@ describe('multiEditTool – relative paths', () => {
 // Safety guards (filesRead + hasChanged)
 // ---------------------------------------------------------------------------
 
-describe('multiEditTool – safety guards', () => {
+describe('fileEditTool – safety guards', () => {
   it('rejects edit when file not in filesRead', async () => {
     const file = path.join(tmpDir, 'guarded.ts');
     fs.writeFileSync(file, 'content\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'content', new_string: 'changed' }],
     }, ctx({ filesRead: new Set() }));
@@ -255,7 +256,7 @@ describe('multiEditTool – safety guards', () => {
     const filesRead = new Set<string>();
     filesRead.add(file);
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'content', new_string: 'changed' }],
     }, ctx({ filesRead }));
@@ -279,7 +280,7 @@ describe('multiEditTool – safety guards', () => {
     const filesRead = new Set<string>();
     filesRead.add(file);
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'original', new_string: 'changed' }],
     }, ctx({ filesRead }));

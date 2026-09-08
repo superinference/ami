@@ -1,7 +1,6 @@
 import { ToolDefinition, ToolInputSchema } from '../types';
 import { bashTool } from './bash';
 import { fileReadTool } from './file-read';
-import { fileWriteTool } from './file-write';
 import { fileEditTool } from './file-edit';
 import { grepTool } from './grep';
 import { globTool } from './glob';
@@ -10,7 +9,6 @@ import { webFetchTool } from './web-fetch';
 import { webSearchTool } from './web-search';
 import { notebookEditTool } from './notebook-edit';
 import { searchSymbolsTool } from './search-symbols';
-import { multiEditTool } from './multi-edit';
 import { taskTool } from './task';
 import { toolSearchTool, setSearchableTools } from './tool-search';
 import { askUserQuestionTool } from './ask-user';
@@ -79,7 +77,6 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
 
   registry.register(bashTool);
   registry.register(fileReadTool);
-  registry.register(fileWriteTool);
   registry.register(fileEditTool);
   registry.register(grepTool);
   registry.register(globTool);
@@ -88,7 +85,6 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(webSearchTool);
   registry.register(notebookEditTool);
   registry.register(searchSymbolsTool);
-  registry.register(multiEditTool);
   registry.register(taskTool);
   registry.register(toolSearchTool);
   registry.register(askUserQuestionTool);
@@ -128,7 +124,6 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
 // Re-export individual tools for direct access
 export { bashTool } from './bash';
 export { fileReadTool } from './file-read';
-export { fileWriteTool } from './file-write';
 export { fileEditTool } from './file-edit';
 export { grepTool } from './grep';
 export { globTool } from './glob';
@@ -137,7 +132,6 @@ export { webFetchTool } from './web-fetch';
 export { webSearchTool } from './web-search';
 export { notebookEditTool } from './notebook-edit';
 export { searchSymbolsTool, getWorkspaceIndexer } from './search-symbols';
-export { multiEditTool } from './multi-edit';
 export { taskTool } from './task';
 export { toolSearchTool, setSearchableTools } from './tool-search';
 export { askUserQuestionTool } from './ask-user';

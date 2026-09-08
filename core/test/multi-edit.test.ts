@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { multiEditTool } from '../src/tools/multi-edit';
+import { fileEditTool } from '../src/tools/file-edit';
 
 describe('multi_edit tool', () => {
   let tmpDir: string;
@@ -22,7 +22,7 @@ describe('multi_edit tool', () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'const a = 1;\nconst b = 2;\nconst c = 3;\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'const a = 1;', new_string: 'const a = 10;' },
@@ -42,7 +42,7 @@ describe('multi_edit tool', () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'hello world\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'nonexistent', new_string: 'replacement' },
@@ -57,7 +57,7 @@ describe('multi_edit tool', () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'foo\nbar\nfoo\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'foo', new_string: 'baz' },
@@ -72,7 +72,7 @@ describe('multi_edit tool', () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'const a = 1;\nconst b = 2;\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'const a = 1;', new_string: 'const a = 10;' },
@@ -89,7 +89,7 @@ describe('multi_edit tool', () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'content\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [],
     }, ctx());
@@ -101,7 +101,7 @@ describe('multi_edit tool', () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'content\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'content', new_string: 'content' }],
     }, ctx());
@@ -113,7 +113,7 @@ describe('multi_edit tool', () => {
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'AAA\n');
 
-    const result = await multiEditTool.execute({
+    const result = await fileEditTool.execute({
       file_path: file,
       edits: [
         { old_string: 'AAA', new_string: 'BBB' },

@@ -66,15 +66,28 @@ export async function validateUrlSafety(url: string): Promise<{ error: string } 
         else resolve(addrs);
       });
     });
-    for (const addr of addresses) {
+    const usable = addresses.filter(a => a.address && isValidIP(a.address));
+    if (usable.length === 0) {
+      return { error: `Blocked: DNS resolution failed for "${hostname}" — cannot verify safety` };
+    }
+    for (const addr of usable) {
       if (isPrivateIP(addr.address)) {
         return { error: `Blocked: "${hostname}" resolves to private IP ${addr.address}` };
       }
     }
-    return { resolvedIP: addresses[0]?.address || hostname };
+    return { resolvedIP: usable[0].address };
   } catch {
     return { error: `Blocked: DNS resolution failed for "${hostname}" — cannot verify safety` };
   }
+}
+
+export function isValidIP(ip: string): boolean {
+  if (!ip || ip === 'undefined' || ip === 'null') return false;
+  // v4
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return true;
+  // v6 (coarse — enough to refuse hostnames / "undefined")
+  if (ip.includes(':')) return true;
+  return false;
 }
 
 /**
@@ -175,8 +188,9 @@ function httpGetInternal(
 
     const requester = parsed.protocol === 'https:' ? https : http;
 
-    const lookupOverride: http.RequestOptions['lookup'] = resolvedIP
-      ? (_hostname, _opts, cb) => { (cb as (err: null, address: string, family: number) => void)(null, resolvedIP, resolvedIP.includes(':') ? 6 : 4); }
+    const pinIP = resolvedIP && isValidIP(resolvedIP) ? resolvedIP : undefined;
+    const lookupOverride: http.RequestOptions['lookup'] = pinIP
+      ? (_hostname, _opts, cb) => { (cb as (err: null, address: string, family: number) => void)(null, pinIP, pinIP.includes(':') ? 6 : 4); }
       : undefined;
 
     const req = requester.get(

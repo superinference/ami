@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
-import { bashTool, detectSelfKill } from '../src/tools/bash';
+import { bashTool, detectSelfKill, isBashForkExhaustion } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
@@ -273,6 +273,14 @@ describe('bashTool – spawn error', () => {
       ctx({ cwd: '/nonexistent/dir/xyz' }),
     );
     assert.ok(result.isError);
+  });
+
+  it('detects container fork exhaustion so the runner retries', () => {
+    assert.equal(isBashForkExhaustion('', 'bash: fork: Resource temporarily unavailable'), true);
+    assert.equal(isBashForkExhaustion('', 'Cannot fork'), true);
+    assert.equal(isBashForkExhaustion('', 'EAGAIN'), true);
+    assert.equal(isBashForkExhaustion('ok', ''), false);
+    assert.equal(isBashForkExhaustion('ok', 'some other error'), false);
   });
 });
 

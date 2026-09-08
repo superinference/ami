@@ -9,6 +9,7 @@ import { webFetchTool } from '../src/tools/web-fetch';
 import { webSearchTool } from '../src/tools/web-search';
 import { notebookEditTool } from '../src/tools/notebook-edit';
 import { getFileCache } from '../src/file-cache';
+import { isValidIP } from '../src/tools/web-utils';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -284,6 +285,17 @@ describe('web_fetch tool', () => {
     );
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('Blocked'));
+  });
+});
+
+describe('isValidIP (DNS pin safety)', () => {
+  it('rejects undefined/hostname pins that caused Invalid IP address: undefined', () => {
+    assert.equal(isValidIP('undefined'), false);
+    assert.equal(isValidIP('null'), false);
+    assert.equal(isValidIP(''), false);
+    assert.equal(isValidIP('github.com'), false);
+    assert.equal(isValidIP('1.2.3.4'), true);
+    assert.equal(isValidIP('2001:db8::1'), true);
   });
 });
 

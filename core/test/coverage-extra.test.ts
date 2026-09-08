@@ -36,7 +36,6 @@ describe('createDefaultTools', () => {
     assert.ok(all.length >= 30, `Expected >=30 tools, got ${all.length}`);
     assert.ok(reg.get('bash'));
     assert.ok(reg.get('file_read'));
-    assert.ok(reg.get('file_write'));
     assert.ok(reg.get('file_edit'));
   });
 

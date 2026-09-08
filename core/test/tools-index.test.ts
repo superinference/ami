@@ -5,9 +5,9 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   ToolRegistry, createDefaultTools,
-  bashTool, fileReadTool, fileWriteTool, fileEditTool,
+  bashTool, fileReadTool, fileEditTool,
   grepTool, globTool, listDirTool,
-  notebookEditTool, searchSymbolsTool, multiEditTool,
+  notebookEditTool, searchSymbolsTool,
   taskTool, toolSearchTool, askUserQuestionTool,
   gitCommitTool,
   taskTrackerTool,
@@ -114,7 +114,7 @@ describe('createDefaultTools', () => {
   it('includes core tools by name', () => {
     const registry = createDefaultTools('/tmp');
     const names = registry.getAll().map(t => t.name);
-    for (const expected of ['bash', 'file_read', 'file_write', 'file_edit', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'notebook_edit', 'search_symbols', 'multi_edit', 'task', 'tool_search', 'AskUserQuestion', 'git_commit', 'task_tracker', 'plan_mode']) {
+    for (const expected of ['bash', 'file_read', 'file_edit', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'notebook_edit', 'search_symbols', 'task', 'tool_search', 'AskUserQuestion', 'git_commit', 'task_tracker', 'plan_mode']) {
       assert.ok(names.includes(expected), `Missing tool: ${expected}`);
     }
   });
@@ -158,7 +158,7 @@ describe('createDefaultTools', () => {
 
 describe('re-exported tools are accessible', () => {
   it('all re-exported tools have correct types', () => {
-    for (const tool of [bashTool, fileReadTool, fileWriteTool, fileEditTool, grepTool, globTool, listDirTool, notebookEditTool, searchSymbolsTool, multiEditTool, taskTool, toolSearchTool, askUserQuestionTool, gitCommitTool, taskTrackerTool, planModeTool]) {
+    for (const tool of [bashTool, fileReadTool, fileEditTool, grepTool, globTool, listDirTool, notebookEditTool, searchSymbolsTool, taskTool, toolSearchTool, askUserQuestionTool, gitCommitTool, taskTrackerTool, planModeTool]) {
       assert.equal(typeof tool.name, 'string');
       assert.equal(typeof tool.description, 'string');
       assert.equal(typeof tool.execute, 'function');
@@ -176,7 +176,7 @@ describe('re-exported tools are accessible', () => {
       const r2 = await fileEditTool.execute({ file_path: '', old_string: 'a', new_string: 'b' }, ctx);
       assert.equal(r2.isError, true);
 
-      const r3 = await fileWriteTool.execute({ file_path: '', content: 'x' }, ctx);
+      const r3 = await fileEditTool.execute({ file_path: '', content: 'x' }, ctx);
       assert.equal(r3.isError, true);
 
       const r4 = await grepTool.execute({ pattern: '' }, ctx);

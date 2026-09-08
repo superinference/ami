@@ -78,7 +78,7 @@ export interface ToolContext {
   abortSignal: AbortSignal;
   onProgress?: (data: string) => void;
   /** Tracks file paths that have been read during this session.
-   *  Used by file_edit/file_write to enforce read-before-write. */
+   *  Used by file_edit to enforce read-before-write. */
   filesRead?: Set<string>;
   processManager?: import('./process-manager').ProcessManager;
   _providerConfig?: ProviderConfig;
@@ -249,6 +249,8 @@ export interface EngineConfig {
   detachedMode?: boolean;
   /** Maximum USD budget for the session. If set, the engine stops when total cost exceeds this amount. */
   maxBudgetUsd?: number;
+  /** Wall-clock session limit in milliseconds. If set, the engine stops when elapsed time exceeds this. */
+  maxSessionMs?: number;
   /** Chat mode — controls tool availability and autonomy level. */
   mode?: 'ask' | 'edit' | 'agent';
   /** Maximum tool iterations before prompting to continue. Default 200. */
@@ -303,7 +305,9 @@ export function buildSubsystems(config: EngineConfig): {
       sessionId: config.sessionId,
       sessionDir: config.sessionDir,
       tokenBudget: config.tokenBudget ?? 100_000,
-      maxTurns: config.maxTurns === 0 ? Infinity : (config.maxTurns ?? 100),
+      maxTurns: (config.maxTurns && config.maxTurns > 0 && Number.isFinite(config.maxTurns))
+        ? config.maxTurns
+        : 100,
       maxSteps: config.maxSteps,
     },
   };

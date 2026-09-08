@@ -78,9 +78,9 @@ describe('createDefaultTools', () => {
 
     // All expected default tools
     const expectedNames = [
-      'bash', 'file_read', 'file_write', 'file_edit',
+      'bash', 'file_read', 'file_edit',
       'grep', 'glob', 'list_dir', 'web_fetch', 'web_search',
-      'notebook_edit', 'search_symbols', 'multi_edit',
+      'notebook_edit', 'search_symbols',
       'task', 'tool_search', 'AskUserQuestion', 'git_commit',
       'task_tracker', 'plan_mode',
     ];
