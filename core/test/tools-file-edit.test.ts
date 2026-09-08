@@ -37,11 +37,12 @@ describe('fileEditTool – definition', () => {
     assert.equal(fileEditTool.isReadOnly, false);
   });
 
-  it('schema requires file_path, old_string, new_string', () => {
+  it('schema requires file_path; old_string/new_string optional (write-mode when omitted)', () => {
     const req = fileEditTool.inputSchema.required;
     assert.ok(req?.includes('file_path'));
-    assert.ok(req?.includes('old_string'));
-    assert.ok(req?.includes('new_string'));
+    // old_string and new_string are optional: omitting old_string activates write/create mode
+    assert.ok(!req?.includes('old_string'));
+    assert.ok(!req?.includes('new_string'));
   });
 });
 
@@ -59,30 +60,34 @@ describe('fileEditTool – validation', () => {
     assert.ok(result.output.includes('file_path must not be empty'));
   });
 
-  it('rejects null old_string', async () => {
+  it('null old_string activates write mode — succeeds when new_string provided', async () => {
+    // Unified file_edit: null/undefined/empty old_string = write/create mode
+    const file = path.join(tmpDir, 'write-mode.txt');
     const result = await fileEditTool.execute(
-      { file_path: '/tmp/f.txt', old_string: null, new_string: 'b' },
+      { file_path: file, old_string: null, new_string: 'created content' },
       ctx(),
     );
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('old_string must be provided'));
+    assert.ok(!result.isError);
+    assert.ok(fs.existsSync(file));
   });
 
-  it('rejects empty old_string on non-empty file', async () => {
-    const file = path.join(tmpDir, 'nonempty.txt');
+  it('empty old_string activates write mode — overwrites existing file', async () => {
+    const file = path.join(tmpDir, 'overwrite.txt');
     fs.writeFileSync(file, 'existing content\n');
 
     const result = await fileEditTool.execute(
-      { file_path: file, old_string: '', new_string: 'b' },
+      { file_path: file, old_string: '', new_string: 'new content' },
       ctx(),
     );
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('old_string is empty but file has content'));
+    assert.ok(!result.isError);
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'new content');
   });
 
-  it('rejects null new_string', async () => {
+  it('rejects null new_string when old_string is provided (replace mode)', async () => {
+    const file = path.join(tmpDir, 'existing.txt');
+    fs.writeFileSync(file, 'some content');
     const result = await fileEditTool.execute(
-      { file_path: '/tmp/f.txt', old_string: 'a', new_string: null },
+      { file_path: file, old_string: 'some content', new_string: null },
       ctx(),
     );
     assert.equal(result.isError, true);
@@ -90,12 +95,14 @@ describe('fileEditTool – validation', () => {
   });
 
   it('rejects identical old_string and new_string', async () => {
+    const file = path.join(tmpDir, 'identical.txt');
+    fs.writeFileSync(file, 'same content\n');
     const result = await fileEditTool.execute(
-      { file_path: '/tmp/f.txt', old_string: 'same', new_string: 'same' },
+      { file_path: file, old_string: 'same content', new_string: 'same content' },
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('identical'));
+    assert.ok(result.output.toLowerCase().includes('identical') || result.output.includes('No changes needed'));
   });
 });
 
