@@ -477,6 +477,48 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
 }
 
 // ---------------------------------------------------------------------------
+// Extract reasoning / thinking tokens from AI SDK usage objects
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull reasoning/thinking token counts out of the AI SDK usage object.
+ * OpenAI-compatible vLLM (Qwen `reasoning_effort`) reports them as
+ * `completion_tokens_details.reasoning_tokens`, which the SDK maps to
+ * `usage.reasoningTokens` and/or `usage.outputTokenDetails.reasoningTokens`.
+ */
+export function extractReasoningTokens(usage: unknown): number {
+  if (!usage || typeof usage !== 'object') return 0;
+  const u = usage as Record<string, unknown>;
+
+  const pick = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+    return undefined;
+  };
+
+  const fromTop = pick(u['reasoningTokens']);
+  if (fromTop !== undefined) return fromTop;
+
+  const details = u['outputTokenDetails'];
+  if (details && typeof details === 'object') {
+    const fromDetails = pick((details as Record<string, unknown>)['reasoningTokens']);
+    if (fromDetails !== undefined) return fromDetails;
+  }
+
+  const raw = u['raw'];
+  if (raw && typeof raw === 'object') {
+    const rawObj = raw as Record<string, unknown>;
+    const fromRaw = pick(rawObj['reasoning_tokens']);
+    if (fromRaw !== undefined) return fromRaw;
+    const ctd = rawObj['completion_tokens_details'];
+    if (ctd && typeof ctd === 'object') {
+      const fromCtd = pick((ctd as Record<string, unknown>)['reasoning_tokens']);
+      if (fromCtd !== undefined) return fromCtd;
+    }
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Build provider-specific thinking / reasoning options
 // ---------------------------------------------------------------------------
 
@@ -658,7 +700,7 @@ export async function* streamChatCompletion(
               totalTokens: part.usage.totalTokens ?? (
                 (part.usage.inputTokens ?? 0) + (part.usage.outputTokens ?? 0)
               ),
-              reasoningTokens: (part.usage as { reasoningTokens?: number }).reasoningTokens ?? 0,
+              reasoningTokens: extractReasoningTokens(part.usage),
               cachedPromptTokens: (part.usage as { cachedInputTokens?: number }).cachedInputTokens ?? (part.usage as { inputTokenDetails?: { cacheReadTokens?: number } }).inputTokenDetails?.cacheReadTokens ?? 0,
             },
             responseHeaders: (part as { response?: { headers?: Record<string, string> } }).response?.headers,

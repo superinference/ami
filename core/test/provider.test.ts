@@ -9,6 +9,7 @@ import {
   convertMessages,
   convertToolsForSDK,
   buildThinkingOptions,
+  extractReasoningTokens,
 } from '../src/provider';
 import type { ToolDefinition, ProviderConfig, Message } from '../src/types';
 
@@ -682,5 +683,82 @@ describe('buildThinkingOptions format matches SDK expectations', () => {
         assert.ok(!(key in result), `${model}: must NOT use deprecated key '${key}'`);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractReasoningTokens
+// ---------------------------------------------------------------------------
+describe('extractReasoningTokens', () => {
+  it('returns 0 for null/undefined/non-objects', () => {
+    assert.equal(extractReasoningTokens(null), 0);
+    assert.equal(extractReasoningTokens(undefined), 0);
+    assert.equal(extractReasoningTokens('nope'), 0);
+    assert.equal(extractReasoningTokens(12), 0);
+  });
+
+  it('reads usage.reasoningTokens', () => {
+    assert.equal(extractReasoningTokens({ reasoningTokens: 4096 }), 4096);
+  });
+
+  it('clamps negative reasoningTokens to 0', () => {
+    assert.equal(extractReasoningTokens({ reasoningTokens: -10 }), 0);
+  });
+
+  it('reads outputTokenDetails.reasoningTokens when top-level is absent', () => {
+    assert.equal(extractReasoningTokens({ outputTokenDetails: { reasoningTokens: 2048 } }), 2048);
+  });
+
+  it('reads raw.completion_tokens_details.reasoning_tokens (vLLM/OpenAI shape)', () => {
+    assert.equal(extractReasoningTokens({
+      raw: { completion_tokens_details: { reasoning_tokens: 1024 } },
+    }), 1024);
+  });
+
+  it('reads raw.reasoning_tokens', () => {
+    assert.equal(extractReasoningTokens({ raw: { reasoning_tokens: 512 } }), 512);
+  });
+
+  it('prefers top-level reasoningTokens over nested fields', () => {
+    assert.equal(extractReasoningTokens({
+      reasoningTokens: 100,
+      outputTokenDetails: { reasoningTokens: 999 },
+      raw: { reasoning_tokens: 888 },
+    }), 100);
+  });
+
+  it('returns 0 when no reasoning fields are present', () => {
+    assert.equal(extractReasoningTokens({ inputTokens: 10, outputTokens: 20 }), 0);
+    assert.equal(extractReasoningTokens({ outputTokenDetails: {} }), 0);
+    assert.equal(extractReasoningTokens({ raw: {} }), 0);
+    assert.equal(extractReasoningTokens({ raw: { completion_tokens_details: {} } }), 0);
+  });
+
+  it('ignores non-numeric reasoning fields', () => {
+    assert.equal(extractReasoningTokens({ reasoningTokens: 'lots' }), 0);
+    assert.equal(extractReasoningTokens({ outputTokenDetails: { reasoningTokens: 'x' } }), 0);
+    assert.equal(extractReasoningTokens({ raw: { reasoning_tokens: 'x' } }), 0);
+    assert.equal(extractReasoningTokens({ raw: { completion_tokens_details: { reasoning_tokens: 'x' } } }), 0);
+  });
+
+  it('falls through a zero top-level value to nested fields', () => {
+    assert.equal(extractReasoningTokens({
+      reasoningTokens: 0,
+      outputTokenDetails: { reasoningTokens: 777 },
+    }), 777);
+  });
+
+  it('falls through empty outputTokenDetails to raw completion_tokens_details', () => {
+    assert.equal(extractReasoningTokens({
+      outputTokenDetails: { reasoningTokens: 0 },
+      raw: { completion_tokens_details: { reasoning_tokens: 321 } },
+    }), 321);
+  });
+
+  it('ignores non-object nested containers', () => {
+    assert.equal(extractReasoningTokens({ outputTokenDetails: 'nope' }), 0);
+    assert.equal(extractReasoningTokens({ raw: 'nope' }), 0);
+    assert.equal(extractReasoningTokens({ raw: { completion_tokens_details: 'nope' } }), 0);
+    assert.equal(extractReasoningTokens({ outputTokenDetails: null }), 0);
   });
 });
