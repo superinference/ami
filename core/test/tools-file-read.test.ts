@@ -248,7 +248,7 @@ describe('fileReadTool – filesRead tracking', () => {
     assert.ok(filesRead.has(file));
   });
 
-  it('adds path even for binary files', async () => {
+  it('does not track binary files (tracking moved to after successful processing)', async () => {
     const file = path.join(tmpDir, 'bin.dat');
     const buf = Buffer.alloc(100);
     buf[50] = 0;
@@ -256,7 +256,7 @@ describe('fileReadTool – filesRead tracking', () => {
     const filesRead = new Set<string>();
 
     await fileReadTool.execute({ file_path: file }, ctx({ filesRead }));
-    assert.ok(filesRead.has(file));
+    assert.ok(!filesRead.has(file));
   });
 
   it('does not crash when filesRead is undefined', async () => {
