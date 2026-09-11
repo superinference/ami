@@ -53,9 +53,9 @@ const DETACHED_GIT_DISCARD_MSG =
   'git stash/reset/restore is not allowed in non-interactive eval; it discards the patch.';
 
 /**
- * Detect git commands that discard the working tree. Used in detached/eval
- * sessions where the harness captures `git diff` at the end — stash/reset
- * produce empty_patch after successful edits.
+ * Detect git commands that discard the working tree. Used in detached
+ * sessions where the final `git diff` is the session artifact — stash/reset
+ * would wipe successful edits before that capture.
  */
 export function detectDetachedGitDiscard(command: string): string | null {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, ' ');

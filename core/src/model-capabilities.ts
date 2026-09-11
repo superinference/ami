@@ -38,7 +38,7 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'gemini-1.5-pro': 1048576,
   'deepseek-chat': 64000,
   'deepseek-reasoner': 64000,
-  // Qwen3.8 (SWE-bench Live eval) — 256k native context
+  // Qwen3.8 — 256k native context
   'Qwen3.8': 262144,
   'qwen3.8': 262144,
   'Qwen3': 262144,
