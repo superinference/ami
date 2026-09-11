@@ -66,7 +66,16 @@ export function resolveFilePath(
       return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
     }
   } catch {
-    // File doesn't exist yet — no symlink to follow; the logical path check above is sufficient
+    // File doesn't exist yet — but check if parent dir resolves outside workspace via symlink
+    const parentDir = path.dirname(resolved);
+    try {
+      const realParent = fs.realpathSync(parentDir);
+      if (!realParent.startsWith(cwdAbs + path.sep) && realParent !== cwdAbs) {
+        return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
+      }
+    } catch {
+      // Parent doesn't exist either — logical path check above is sufficient
+    }
   }
   return { resolved };
 }

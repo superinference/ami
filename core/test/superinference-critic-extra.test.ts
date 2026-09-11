@@ -125,7 +125,7 @@ describe('Critic.evaluate() — unparseable response', () => {
     server.close();
   });
 
-  it('returns fail-open default when response has no JSON', async () => {
+  it('returns fail-closed default when response has no JSON', async () => {
     const critic = new Critic(0.05, 0.10);
     const provider = {
       baseUrl: `http://127.0.0.1:${port}/v1`,
@@ -135,10 +135,10 @@ describe('Critic.evaluate() — unparseable response', () => {
     const ac = new AbortController();
 
     const result = await critic.evaluate('query', 'result', provider, ac.signal);
-    // Fail-open: approved=true, score=0.7
-    assert.equal(result.approved, true);
-    assert.equal(result.score, 0.7);
-    assert.ok(result.reason.includes('failed'));
+    // Fail-closed: approved=false, score=0.0
+    assert.equal(result.approved, false);
+    assert.equal(result.score, 0.0);
+    assert.ok(result.reason!.includes('Critic evaluation failed'));
   });
 });
 
@@ -167,7 +167,7 @@ describe('Critic.evaluate() — stream error', () => {
     server.close();
   });
 
-  it('returns fail-open default when stream throws', async () => {
+  it('returns fail-closed default when stream throws', async () => {
     const critic = new Critic(0.05, 0.10);
     const provider = {
       baseUrl: `http://127.0.0.1:${port}/v1`,
@@ -177,9 +177,9 @@ describe('Critic.evaluate() — stream error', () => {
     const ac = new AbortController();
 
     const result = await critic.evaluate('query', 'result', provider, ac.signal);
-    assert.equal(result.approved, true);
-    assert.equal(result.score, 0.7);
-    assert.ok(result.reason.includes('failed'));
+    assert.equal(result.approved, false);
+    assert.equal(result.score, 0.0);
+    assert.ok(result.reason!.includes('Critic evaluation failed'));
   });
 });
 

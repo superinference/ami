@@ -51,11 +51,11 @@ Respond with ONLY a JSON object:
           reason: String(parsed.reason || ''),
         };
       }
-    } catch {
-      // Critic failure defaults to approval (fail-open)
+    } catch (err) {
+      return { approved: false, score: 0.0, reason: `Critic evaluation failed: ${err instanceof Error ? err.message : String(err)}` };
     }
 
-    return { approved: true, score: 0.7, reason: 'Critic evaluation failed, defaulting to approved' };
+    return { approved: false, score: 0.0, reason: 'Critic evaluation failed: no valid JSON in response' };
   }
 
   // Extract JSON with balanced-brace matching (handles nested braces in reason field)

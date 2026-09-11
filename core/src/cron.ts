@@ -169,6 +169,8 @@ export class CronScheduler {
         if (Date.now() - lock.timestamp < LOCK_STALE_MS) {
           return lock.sessionId === this.sessionId;
         }
+        // Stale lock — remove it and try to acquire
+        try { fs.unlinkSync(this.lockPath); } catch { /* race with another cleaner */ }
       }
       const dir = path.dirname(this.lockPath);
       fs.mkdirSync(dir, { recursive: true });
@@ -176,7 +178,7 @@ export class CronScheduler {
         sessionId: this.sessionId,
         pid: process.pid,
         timestamp: Date.now(),
-      }));
+      }), { flag: 'wx' });
       return true;
     } catch {
       return false;

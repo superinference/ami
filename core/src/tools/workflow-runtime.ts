@@ -52,6 +52,32 @@ const MAX_CONCURRENT = Math.max(4, Math.min(16, (require('os').cpus()?.length ??
 const MAX_AGENTS = 1000;
 const MAX_PIPELINE_ITEMS = 4096;
 
+/**
+ * Strip the `export const meta = { ... }` block from a workflow script using
+ * brace-counting so nested objects (e.g. phases with detail objects) are handled
+ * correctly, unlike the previous lazy regex approach.
+ */
+export function stripMeta(script: string): string {
+  const match = script.match(/export\s+const\s+meta\s*=\s*\{/);
+  if (!match || match.index === undefined) return script;
+  const start = match.index;
+  let depth = 0;
+  let inString = false;
+  let stringChar = '';
+  let end = start + match[0].length;
+  for (let i = end - 1; i < script.length; i++) {
+    const ch = script[i];
+    if (inString) {
+      if (ch === stringChar && script[i - 1] !== '\\') inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = true; stringChar = ch; continue; }
+    if (ch === '{') depth++;
+    if (ch === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+  }
+  return script.slice(0, start) + script.slice(end);
+}
+
 export class WorkflowRuntime extends EventEmitter {
   private _currentPhase = '';
   private _agentCount = 0;
@@ -146,7 +172,7 @@ export class WorkflowRuntime extends EventEmitter {
       const childCtx = childRuntime.createContext(args);
       const wrappedScript = `
         return (async function(agent, parallel, pipeline, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
-          ${script.replace(/export\s+const\s+meta\s*=\s*\{[\s\S]*?\n\}/, '')}
+          ${stripMeta(script)}
         })
       `;
       const factory = new Function(wrappedScript)(); // eslint-disable-line no-new-func
@@ -286,11 +312,31 @@ export class WorkflowRuntime extends EventEmitter {
 }
 
 export function parseWorkflowMeta(script: string): WorkflowMeta | null {
-  const metaMatch = script.match(/export\s+const\s+meta\s*=\s*(\{[\s\S]*?\n\})/);
-  if (!metaMatch) return null;
+  const headerMatch = script.match(/export\s+const\s+meta\s*=\s*\{/);
+  if (!headerMatch || headerMatch.index === undefined) return null;
+
+  // Extract the meta object literal using brace counting
+  let depth = 0;
+  let inString = false;
+  let stringChar = '';
+  const braceStart = headerMatch.index + headerMatch[0].length - 1;
+  let braceEnd = braceStart;
+  for (let i = braceStart; i < script.length; i++) {
+    const ch = script[i];
+    if (inString) {
+      if (ch === stringChar && script[i - 1] !== '\\') inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = true; stringChar = ch; continue; }
+    if (ch === '{') depth++;
+    if (ch === '}') { depth--; if (depth === 0) { braceEnd = i; break; } }
+  }
+  if (depth !== 0) return null;
+
+  const metaLiteral = script.slice(braceStart, braceEnd + 1);
 
   try {
-    const factory = new Function(`return (${metaMatch[1]})`); // eslint-disable-line no-new-func
+    const factory = new Function(`return (${metaLiteral})`); // eslint-disable-line no-new-func
     const obj = factory();
     if (!obj || typeof obj !== 'object') return null;
     return {
@@ -328,7 +374,7 @@ export async function executeWorkflow(
 
   const wrappedScript = `
     return (async function(agent, parallel, pipeline, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
-      ${script.replace(/export\s+const\s+meta\s*=\s*\{[\s\S]*?\n\}/, '')}
+      ${stripMeta(script)}
     })
   `;
 

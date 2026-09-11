@@ -353,19 +353,8 @@ export const bashTool: ToolDefinition = {
       };
     }
 
-    // CWD escape check
-    let stdoutExtra = '';
-    if (result.stdout.includes('cd ') || command.includes('cd ')) {
-      try {
-        const checkCwd = child_process.execSync('pwd', { cwd: context.cwd, encoding: 'utf-8', timeout: 5000 }).trim();
-        if (!checkCwd.startsWith(context.cwd)) {
-          stdoutExtra = '\n[Warning: Command attempted to change directory outside project. CWD reset.]';
-        }
-      } catch {}
-    }
-
     // Persist large output to disk instead of truncating
-    let stdout = result.stdout + stdoutExtra;
+    let stdout = result.stdout;
     if (stdout.length > MAX_OUTPUT_LENGTH) {
       const spillDir = path.join(context.cwd, '.superinference', 'tool-results');
       fs.mkdirSync(spillDir, { recursive: true });

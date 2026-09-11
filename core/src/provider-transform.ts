@@ -6,7 +6,7 @@ export function sanitizeToolCallIds(
 ): Message[] {
   if (provider !== 'anthropic') return messages;
   // Anthropic requires alphanumeric-only tool call IDs
-  return messages.map(msg => {
+  return messages.map((msg, idx) => {
     if (msg.role === 'assistant' && msg.tool_calls) {
       return {
         ...msg,
@@ -17,10 +17,16 @@ export function sanitizeToolCallIds(
       };
     }
     if (msg.role === 'tool') {
-      return {
-        ...msg,
-        tool_call_id: msg.tool_call_id.replace(/[^a-zA-Z0-9_-]/g, '') || 'tc_fallback',
-      };
+      const sanitized = msg.tool_call_id.replace(/[^a-zA-Z0-9_-]/g, '');
+      if (sanitized) return { ...msg, tool_call_id: sanitized };
+      // Count preceding consecutive tool messages to determine this tool's
+      // position among its siblings — mirrors the index used for the
+      // assistant-side tc_NNNN fallback so the IDs match.
+      let toolIdx = 0;
+      for (let j = idx - 1; j >= 0 && messages[j].role === 'tool'; j--) {
+        toolIdx++;
+      }
+      return { ...msg, tool_call_id: `tc_${String(toolIdx).padStart(4, '0')}` };
     }
     return msg;
   });

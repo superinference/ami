@@ -145,8 +145,6 @@ export const fileReadTool: ToolDefinition = {
       return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections.`, isError: true };
     }
 
-    context.filesRead?.add(resolved);
-
     // Handle image files — return base64 with optional compression
     if (IMAGE_EXTENSIONS.has(ext)) {
       const imageBuffer = await fs.promises.readFile(resolved);
@@ -181,6 +179,7 @@ export const fileReadTool: ToolDefinition = {
       }
 
       const base64 = finalBuffer.toString('base64');
+      context.filesRead?.add(resolved);
       return {
         output: JSON.stringify({
           type: 'image',
@@ -222,6 +221,7 @@ export const fileReadTool: ToolDefinition = {
         const pdf = await pdfParse(pdfBuffer, opts);
         const text = (pdf.text || '').trim();
         const rangeNote = pageRange ? ` (pages ${pageRange.start}-${pageRange.end})` : '';
+        context.filesRead?.add(resolved);
         return {
           output: `File: ${resolved} (PDF, ${pdf.numpages} pages)${rangeNote}\n\n${text.slice(0, 100000)}`,
           isError: false,
@@ -273,6 +273,7 @@ export const fileReadTool: ToolDefinition = {
           const truncateChars = MAX_FILE_READ_TOKENS * 4;
           content = content.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${MAX_FILE_READ_TOKENS} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
         }
+        context.filesRead?.add(resolved);
         return { output: content };
       } catch (err) {
         return { output: `Error reading notebook: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -309,6 +310,7 @@ export const fileReadTool: ToolDefinition = {
       if (estimatedTokens > MAX_FILE_READ_TOKENS) {
         output = output.slice(0, MAX_FILE_READ_TOKENS * 4) + `\n\n[... truncated: exceeds ${MAX_FILE_READ_TOKENS} token budget. Narrow offset/limit.]`;
       }
+      context.filesRead?.add(resolved);
       return { output };
     }
 
@@ -384,6 +386,7 @@ export const fileReadTool: ToolDefinition = {
       }
     }
 
+    context.filesRead?.add(resolved);
     return { output };
   },
 };
