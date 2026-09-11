@@ -478,18 +478,74 @@ describe('bashTool – git commit guard', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Detached git discard guard (stash/reset/restore → empty_patch)
+// Detached git discard guard (stash push/reset/restore → empty_patch)
+// Discriminator: bare `git stash` stays blocked; `git stash pop` must NOT be.
+// If pop is blocked again, these tests must fail.
 // ---------------------------------------------------------------------------
+
+function initDirtyGitRepo(dir: string, dirty = 'kept-edit\n'): string {
+  childProcess.execSync('git init', { cwd: dir, stdio: 'pipe' });
+  childProcess.execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
+  childProcess.execSync('git config user.email "t@t.com"', { cwd: dir, stdio: 'pipe' });
+  const file = path.join(dir, 'f.txt');
+  fs.writeFileSync(file, 'base\n');
+  childProcess.execSync('git add f.txt && git commit -m init', { cwd: dir, stdio: 'pipe' });
+  fs.writeFileSync(file, dirty);
+  return file;
+}
 
 describe('detectDetachedGitDiscard', () => {
   const MSG = 'not allowed in non-interactive eval';
 
-  it('detects git stash and variants', () => {
+  it('blocks discard stash: bare / push / save / drop / clear', () => {
     assert.ok(detectDetachedGitDiscard('git stash')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git stash push')?.includes(MSG));
-    assert.ok(detectDetachedGitDiscard('git stash pop')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash save')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash drop')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash clear')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash -m wip')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash --message wip')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash --')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash foo')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git --git-dir /tmp/.git --work-tree /tmp stash')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash --pathspec-from-file /tmp/p')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git add -A && git stash')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git -C /tmp stash')?.includes(MSG));
+  });
+
+  it('allows git stash list / show / pop / apply (FAIL if pop is blocked again)', () => {
+    assert.equal(detectDetachedGitDiscard('git stash list'), null, 'FAIL if pop/list is blocked again');
+    assert.equal(detectDetachedGitDiscard('git stash show'), null);
+    assert.equal(detectDetachedGitDiscard('git stash pop'), null, 'FAIL if pop is blocked again');
+    assert.equal(detectDetachedGitDiscard('git stash apply'), null);
+    assert.equal(detectDetachedGitDiscard('git stash pop --index'), null);
+    assert.equal(detectDetachedGitDiscard('git stash apply stash@{0}'), null);
+    assert.equal(detectDetachedGitDiscard('git stash show -p'), null);
+    assert.equal(detectDetachedGitDiscard('git -C /tmp stash pop'), null);
+    assert.equal(detectDetachedGitDiscard('git --git-dir=/tmp/.git stash pop'), null);
+    assert.equal(detectDetachedGitDiscard('git stash pop || git stash apply'), null);
+    assert.equal(detectDetachedGitDiscard('git stash ; git stash pop'), null);
+    assert.equal(detectDetachedGitDiscard('git stash list | cat'), null);
+    assert.equal(detectDetachedGitDiscard('git -c advice.detachedHead=false stash show'), null);
+  });
+
+  it('allows stash && tests && stash pop/apply (A/B pattern)', () => {
+    assert.equal(
+      detectDetachedGitDiscard('git stash && true && git stash pop'),
+      null,
+      'FAIL if stash&&pop compound is blocked',
+    );
+    assert.equal(detectDetachedGitDiscard('git stash && npm test && git stash pop'), null);
+    assert.equal(detectDetachedGitDiscard('git stash push && git stash apply'), null);
+    assert.equal(detectDetachedGitDiscard('git stash save && git stash pop'), null);
+    assert.equal(detectDetachedGitDiscard('git stash && git stash apply'), null);
+  });
+
+  it('still blocks stash without a later pop/apply, and drop even with pop', () => {
+    assert.ok(detectDetachedGitDiscard('git stash && true')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash pop && git stash')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash drop && git stash pop')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash clear && git stash apply')?.includes(MSG));
   });
 
   it('detects git reset --hard / --merge / --keep', () => {
@@ -500,9 +556,11 @@ describe('detectDetachedGitDiscard', () => {
     assert.equal(detectDetachedGitDiscard('git reset HEAD'), null);
   });
 
-  it('detects git restore and git checkout --', () => {
+  it('detects git restore of worktree and git checkout --', () => {
     assert.ok(detectDetachedGitDiscard('git restore file.ts')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git restore --source=HEAD file.ts')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git restore --worktree file.ts')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git restore --staged file.ts')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git checkout -- file.ts')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git checkout HEAD -- src/a.go')?.includes(MSG));
     assert.equal(detectDetachedGitDiscard('git checkout -b feature'), null);
@@ -548,19 +606,13 @@ describe('bashTool – detached git discard block', () => {
   it('allows git stash when not detached', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-stash-allow-'));
     try {
-      childProcess.execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
-      childProcess.execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
-      childProcess.execSync('git config user.email "t@t.com"', { cwd: tmpDir, stdio: 'pipe' });
-      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'base\n');
-      childProcess.execSync('git add f.txt && git commit -m init', { cwd: tmpDir, stdio: 'pipe' });
-      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'dirty\n');
-
+      const file = initDirtyGitRepo(tmpDir, 'dirty\n');
       const result = await bashTool.execute(
         { command: 'git stash' },
         ctx({ cwd: tmpDir, detachedMode: false }),
       );
       assert.equal(result.isError, false, result.output);
-      assert.equal(fs.readFileSync(path.join(tmpDir, 'f.txt'), 'utf8'), 'base\n');
+      assert.equal(fs.readFileSync(file, 'utf8'), 'base\n');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -569,19 +621,60 @@ describe('bashTool – detached git discard block', () => {
   it('does not discard a dirty tree when stash is blocked in detached mode', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-stash-block-'));
     try {
-      childProcess.execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
-      childProcess.execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
-      childProcess.execSync('git config user.email "t@t.com"', { cwd: tmpDir, stdio: 'pipe' });
-      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'base\n');
-      childProcess.execSync('git add f.txt && git commit -m init', { cwd: tmpDir, stdio: 'pipe' });
-      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'kept-edit\n');
-
+      const file = initDirtyGitRepo(tmpDir, 'kept-edit\n');
       const result = await bashTool.execute(
         { command: 'git stash' },
         ctx({ cwd: tmpDir, detachedMode: true }),
       );
-      assert.equal(result.isError, true);
-      assert.equal(fs.readFileSync(path.join(tmpDir, 'f.txt'), 'utf8'), 'kept-edit\n');
+      assert.equal(result.isError, true, 'bare git stash must stay isError (discriminator)');
+      assert.equal(fs.readFileSync(file, 'utf8'), 'kept-edit\n');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows git stash pop in detachedMode (FAIL if pop is blocked again)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-stash-pop-'));
+    try {
+      const file = initDirtyGitRepo(tmpDir, 'kept-edit\n');
+      childProcess.execSync('git stash', { cwd: tmpDir, stdio: 'pipe' });
+      assert.equal(fs.readFileSync(file, 'utf8'), 'base\n');
+
+      const result = await bashTool.execute(
+        { command: 'git stash pop' },
+        ctx({ cwd: tmpDir, detachedMode: true }),
+      );
+      assert.equal(result.isError, false, `git stash pop must succeed, got: ${result.output}`);
+      assert.equal(fs.readFileSync(file, 'utf8'), 'kept-edit\n');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows git stash && true && git stash pop in detachedMode (A/B pattern)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-stash-ab-'));
+    try {
+      const file = initDirtyGitRepo(tmpDir, 'kept-edit\n');
+      const result = await bashTool.execute(
+        { command: 'git stash && true && git stash pop' },
+        ctx({ cwd: tmpDir, detachedMode: true }),
+      );
+      assert.equal(result.isError, false, `stash&&pop must succeed, got: ${result.output}`);
+      assert.equal(fs.readFileSync(file, 'utf8'), 'kept-edit\n');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows git stash list in detachedMode', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-stash-list-'));
+    try {
+      initDirtyGitRepo(tmpDir);
+      const result = await bashTool.execute(
+        { command: 'git stash list' },
+        ctx({ cwd: tmpDir, detachedMode: true }),
+      );
+      assert.equal(result.isError, false, result.output);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -52,20 +52,49 @@ function detectGitCommit(command: string): boolean {
 const DETACHED_GIT_DISCARD_MSG =
   'git stash/reset/restore is not allowed in non-interactive eval; it discards the patch.';
 
-/**
- * Detect git commands that discard the working tree. Used in detached
- * sessions where the final `git diff` is the session artifact — stash/reset
- * would wipe successful edits before that capture.
- */
-export function detectDetachedGitDiscard(command: string): string | null {
+const STASH_POP_APPLY = new Set(['pop', 'apply']);
+const STASH_PUSH_SAVE = new Set(['push', 'save', '']);
+const STASH_DROP_CLEAR = new Set(['drop', 'clear']);
+const STASH_SUBCOMMANDS = new Set([
+  'push', 'save', 'pop', 'apply', 'list', 'show', 'drop', 'clear',
+  'branch', 'create', 'store', 'export', 'import',
+]);
+
+function isShellMeta(t: string): boolean {
+  return t === '&&' || t === '||' || t === ';' || t === '|' || t === '|&' || t === '&';
+}
+
+interface GitInvocation {
+  sub: string;
+  rest: string[];
+  stashSub: string;
+}
+
+function parseStashSubcommand(rest: string[]): string {
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (t === '--') break;
+    if (t.startsWith('-')) {
+      if (t === '-m' || t === '--message' || t === '--pathspec-from-file') i += 1;
+      continue;
+    }
+    const name = t.replace(/[;&]+$/, '');
+    return STASH_SUBCOMMANDS.has(name) ? name : '';
+  }
+  return '';
+}
+
+function parseGitInvocations(command: string): GitInvocation[] {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, ' ');
   const tokens = stripped.split(/\s+/).filter(Boolean);
+  const invocations: GitInvocation[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i].replace(/^.*\//, '');
+    const tok = tokens[i].replace(/^.*\//, '').replace(/[;&]+$/, '');
     if (tok !== 'git') continue;
     let j = i + 1;
     while (j < tokens.length) {
       const t = tokens[j];
+      if (isShellMeta(t)) break;
       if (t === '-C' || t === '-c') { j += 2; continue; }
       if (t.startsWith('--git-dir') || t.startsWith('--work-tree')) {
         j += t.includes('=') ? 1 : 2;
@@ -74,9 +103,42 @@ export function detectDetachedGitDiscard(command: string): string | null {
       if (t.startsWith('-') && t !== '--') { j += 1; continue; }
       break;
     }
-    const sub = tokens[j] || '';
-    const rest = tokens.slice(j + 1);
-    if (sub === 'stash') return DETACHED_GIT_DISCARD_MSG;
+    const sub = (tokens[j] || '').replace(/[;&]+$/, '');
+    const rest: string[] = [];
+    for (let k = j + 1; k < tokens.length; k++) {
+      if (isShellMeta(tokens[k])) break;
+      rest.push(tokens[k]);
+    }
+    invocations.push({
+      sub,
+      rest,
+      stashSub: sub === 'stash' ? parseStashSubcommand(rest) : '',
+    });
+  }
+  return invocations;
+}
+
+/**
+ * Detect git commands that discard the working tree. Used in detached
+ * sessions where the final `git diff` is the session artifact — stash push /
+ * reset / restore would wipe successful edits before that capture.
+ *
+ * Allowed: `git stash list|show|pop|apply`, and compound
+ * `git stash && tests && git stash pop` (stash without a later pop/apply is
+ * still blocked).
+ */
+export function detectDetachedGitDiscard(command: string): string | null {
+  const invocations = parseGitInvocations(command);
+  const hasLaterPopOrApply = (from: number): boolean =>
+    invocations.slice(from + 1).some(inv => inv.sub === 'stash' && STASH_POP_APPLY.has(inv.stashSub));
+
+  for (let i = 0; i < invocations.length; i++) {
+    const { sub, rest, stashSub } = invocations[i];
+    if (sub === 'stash') {
+      if (STASH_DROP_CLEAR.has(stashSub)) return DETACHED_GIT_DISCARD_MSG;
+      if (STASH_PUSH_SAVE.has(stashSub) && !hasLaterPopOrApply(i)) return DETACHED_GIT_DISCARD_MSG;
+      continue;
+    }
     if (sub === 'restore') return DETACHED_GIT_DISCARD_MSG;
     if (sub === 'reset' && rest.some(t => t === '--hard' || t === '--merge' || t === '--keep')) {
       return DETACHED_GIT_DISCARD_MSG;
