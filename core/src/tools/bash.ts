@@ -49,6 +49,48 @@ function detectGitCommit(command: string): boolean {
   return /\bgit\s+commit\b/.test(stripped);
 }
 
+const DETACHED_GIT_DISCARD_MSG =
+  'git stash/reset/restore is not allowed in non-interactive eval; it discards the patch.';
+
+/**
+ * Detect git commands that discard the working tree. Used in detached/eval
+ * sessions where the harness captures `git diff` at the end — stash/reset
+ * produce empty_patch after successful edits.
+ */
+export function detectDetachedGitDiscard(command: string): string | null {
+  const stripped = command.replace(/"[^"]*"|'[^']*'/g, ' ');
+  const tokens = stripped.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i].replace(/^.*\//, '');
+    if (tok !== 'git') continue;
+    let j = i + 1;
+    while (j < tokens.length) {
+      const t = tokens[j];
+      if (t === '-C' || t === '-c') { j += 2; continue; }
+      if (t.startsWith('--git-dir') || t.startsWith('--work-tree')) {
+        j += t.includes('=') ? 1 : 2;
+        continue;
+      }
+      if (t.startsWith('-') && t !== '--') { j += 1; continue; }
+      break;
+    }
+    const sub = tokens[j] || '';
+    const rest = tokens.slice(j + 1);
+    if (sub === 'stash') return DETACHED_GIT_DISCARD_MSG;
+    if (sub === 'restore') return DETACHED_GIT_DISCARD_MSG;
+    if (sub === 'reset' && rest.some(t => t === '--hard' || t === '--merge' || t === '--keep')) {
+      return DETACHED_GIT_DISCARD_MSG;
+    }
+    if (sub === 'checkout' && rest.includes('--')) {
+      return DETACHED_GIT_DISCARD_MSG;
+    }
+    if (sub === 'clean' && rest.some(t => t === '--force' || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(t))) {
+      return DETACHED_GIT_DISCARD_MSG;
+    }
+  }
+  return null;
+}
+
 export function detectSelfKill(command: string): string | null {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   const pid = process.pid;
@@ -158,6 +200,13 @@ export const bashTool: ToolDefinition = {
           'Example: git_commit({ message: "your commit message", files: ["file1.ts", "file2.ts"] })',
         isError: true,
       };
+    }
+
+    if (context.detachedMode) {
+      const discard = detectDetachedGitDiscard(command);
+      if (discard) {
+        return { output: `Error: ${discard}`, isError: true };
+      }
     }
 
     const selfKill = detectSelfKill(command);
