@@ -817,22 +817,36 @@ function extractStatusCode(errorText: string): number | null {
   return null;
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
+
 export async function* streamChatCompletionWithRetry(
   config: ProviderConfig,
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
+  options?: { thinking?: ThinkingConfig; requestTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
 ): AsyncGenerator<StreamChunk> {
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  const timeoutMs = options?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const maxRetries = options?.maxRetries ?? MAX_RETRIES;
+  const baseDelay = options?.baseDelayMs ?? BASE_DELAY_MS;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (abortSignal.aborted) {
       yield { type: 'error', error: 'Request aborted' };
       return;
     }
 
-    let contentStarted = false;
+    // Combine caller abort signal with per-request hard timeout
+    const requestAbort = new AbortController();
+    const timeoutId = setTimeout(() => requestAbort.abort(), timeoutMs);
+    const onCallerAbort = () => requestAbort.abort();
+    abortSignal.addEventListener('abort', onCallerAbort, { once: true });
 
-    for await (const chunk of streamChatCompletion(config, messages, tools, abortSignal, options)) {
+    let contentStarted = false;
+    let timedOut = false;
+
+    try {
+    for await (const chunk of streamChatCompletion(config, messages, tools, requestAbort.signal, options)) {
       if (chunk.type === 'error' && !contentStarted) {
         const statusCode = extractStatusCode(chunk.error ?? '');
 
@@ -841,17 +855,17 @@ export async function* streamChatCompletionWithRetry(
           return;
         }
 
-        if (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode) && attempt < MAX_RETRIES) {
+        if (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode) && attempt < maxRetries) {
           let delayMs: number;
           const retryAfterSeconds = chunk.retryAfter;
           if (statusCode === 429 && retryAfterSeconds != null) {
             delayMs = retryAfterSeconds * 1000;
           } else {
-            delayMs = BASE_DELAY_MS * Math.pow(2, attempt);
+            delayMs = baseDelay * Math.pow(2, attempt);
           }
 
           if (options?.onRetry) {
-            options.onRetry(attempt + 1, MAX_RETRIES, delayMs, statusCode);
+            options.onRetry(attempt + 1, maxRetries, delayMs, statusCode);
           }
 
           try {
@@ -872,11 +886,58 @@ export async function* streamChatCompletionWithRetry(
         contentStarted = true;
       }
 
+      // Detect timeout: if we get a 'done' because the request was aborted by our timeout
+      // (not the caller's abort), treat it as a timeout, not a normal completion
+      if (chunk.type === 'done' && requestAbort.signal.aborted && !abortSignal.aborted && !chunk.finishReason) {
+        timedOut = true;
+        break;
+      }
+
       yield chunk;
 
       if (chunk.type === 'done' || (chunk.type === 'error' && contentStarted)) {
         return;
       }
+    }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if ((msg.includes('AbortError') || msg.includes('aborted') || msg.includes('abort')) && !abortSignal.aborted) {
+        timedOut = true;
+      } else if (requestAbort.signal.aborted && !abortSignal.aborted) {
+        timedOut = true;
+      } else {
+        throw err;
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      abortSignal.removeEventListener('abort', onCallerAbort);
+    }
+
+    // Also detect timeout when the stream ended gracefully due to abort
+    if (!timedOut && requestAbort.signal.aborted && !abortSignal.aborted) {
+      timedOut = true;
+    }
+
+    if (timedOut) {
+      if (contentStarted) {
+        yield { type: 'error', error: `Request timed out after ${timeoutMs}ms (partial content received)` };
+        return;
+      }
+      // No content yet — treat like a retryable error
+      if (attempt < maxRetries) {
+        if (options?.onRetry) {
+          options.onRetry(attempt + 1, maxRetries, baseDelay, 0);
+        }
+        try {
+          await sleep(baseDelay * Math.pow(2, attempt), abortSignal);
+        } catch {
+          yield { type: 'error', error: 'Request aborted' };
+          return;
+        }
+        continue;
+      }
+      yield { type: 'error', error: `Request timed out after ${timeoutMs}ms` };
+      return;
     }
 
     // If we got here via 'break' (retry), the inner loop ended without return — continue outer loop
@@ -885,5 +946,5 @@ export async function* streamChatCompletionWithRetry(
     }
   }
 
-  yield { type: 'error', error: `Max retries (${MAX_RETRIES}) exceeded` };
+  yield { type: 'error', error: `Max retries (${maxRetries}) exceeded` };
 }
