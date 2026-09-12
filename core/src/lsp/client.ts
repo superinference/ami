@@ -38,6 +38,7 @@ export class LSPClient {
       const clearLang = () => { this.processes.delete(language); this.initialized.delete(language); this.clearOpenedForLanguage(language); };
       proc.on('error', clearLang);
       proc.on('exit', clearLang);
+      proc.stdin?.on('error', () => {});
       proc.stderr?.on('data', () => {});
       proc.stdout?.on('data', () => {});
       if (!proc.pid) return false;
