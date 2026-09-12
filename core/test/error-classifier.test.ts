@@ -211,6 +211,22 @@ describe('classifyError — network_error', () => {
     const result = classifyError('ECONNREFUSED');
     assert.equal(result.suggestedDelay, 5000);
   });
+
+  it('detects OPT-09 "Request timed out after Nms"', () => {
+    assertClassification(classifyError('Request timed out after 300000ms'), expected);
+  });
+
+  it('detects OPT-09 "Request timed out after Nms (partial content received)"', () => {
+    assertClassification(classifyError('Request timed out after 300000ms (partial content received)'), expected);
+  });
+
+  it('detects generic "timed out" message', () => {
+    assertClassification(classifyError('Connection timed out'), expected);
+  });
+
+  it('does not false-positive on "Internal timeout" (no space in timeout)', () => {
+    assert.equal(classifyError('Internal timeout after 3000ms').category, 'unknown');
+  });
 });
 
 // ---------------------------------------------------------------------------

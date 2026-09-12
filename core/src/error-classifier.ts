@@ -132,6 +132,7 @@ export function classifyError(error: string): ClassifiedError {
     lower.includes('econnrefused') ||
     lower.includes('etimedout') ||
     lower.includes('econnreset') ||
+    lower.includes('timed out') ||
     lower.includes('network') ||
     lower.includes('fetch failed') ||
     lower.includes('dns')

@@ -180,7 +180,7 @@ export type EngineEvent =
   | { type: 'tool_use_start'; toolName: string; toolCallId: string; input: Record<string, unknown> }
   | { type: 'tool_use_progress'; toolCallId: string; data: string }
   | { type: 'tool_use_result'; toolCallId: string; toolName: string; output: string; isError: boolean }
-  | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[] }
+  | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[]; finishReason?: string }
   | { type: 'usage_update'; stats: UsageStats }
   | { type: 'error'; error: string }
   | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode: number }
