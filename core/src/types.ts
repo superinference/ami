@@ -253,6 +253,12 @@ export interface EngineConfig {
   maxSessionMs?: number;
   /** Chat mode — controls tool availability and autonomy level. */
   mode?: 'ask' | 'edit' | 'agent';
+  /** Per-request timeout in milliseconds for the API provider. Default: 300 000 (5 min). */
+  requestTimeoutMs?: number;
+  /** @internal Override provider-level max retries (for testing). */
+  _providerMaxRetries?: number;
+  /** @internal Override provider-level base delay in ms (for testing). */
+  _providerBaseDelayMs?: number;
   /** Maximum tool iterations before prompting to continue. Default 200. */
   maxToolIterations?: number;
   /** Behavior when tool iteration limit is reached: 'stop' or 'confirm'. Default 'confirm'. */
