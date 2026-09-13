@@ -279,7 +279,7 @@ export const bashTool: ToolDefinition = {
       };
     }
 
-    const secCheck = validateBashSecurity(command);
+    const secCheck = validateBashSecurity(command, { detachedMode: context.detachedMode });
     if (!secCheck.safe) {
       return {
         output: `Error: ${secCheck.message}`,

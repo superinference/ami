@@ -702,7 +702,8 @@ function validateASTCommands(command: string): SecurityCheckResult {
   return PASS;
 }
 
-export function validateBashSecurity(command: string): SecurityCheckResult {
+export function validateBashSecurity(command: string, options?: { detachedMode?: boolean }): SecurityCheckResult {
+  const detached = options?.detachedMode === true;
   let result: SecurityCheckResult;
 
   // Pre-validators (run before any content extraction)
@@ -730,8 +731,12 @@ export function validateBashSecurity(command: string): SecurityCheckResult {
   result = validateUnicodeWhitespace(command);
   if (!result.safe) return result;
 
-  result = validateNewlines(command);
-  if (!result.safe) return result;
+  // Detached mode: skip newline validation — multi-line commands (heredocs,
+  // compound build scripts) are model-generated, not adversarial injection.
+  if (!detached) {
+    result = validateNewlines(command);
+    if (!result.safe) return result;
+  }
 
   const extracted = extractQuotedContent(command);
   const fullyUnquoted = stripSafeRedirections(extracted.fullyUnquoted);
@@ -740,8 +745,12 @@ export function validateBashSecurity(command: string): SecurityCheckResult {
   result = validateCommandSubstitution(command, extracted);
   if (!result.safe) return result;
 
-  result = validateRedirections(command, extracted);
-  if (!result.safe) return result;
+  // Detached mode: skip redirect validation — file output redirections
+  // (capturing test output, writing reports) are core to SWE-bench workflows.
+  if (!detached) {
+    result = validateRedirections(command, extracted);
+    if (!result.safe) return result;
+  }
 
   result = validateBackslashEscapedWhitespace(command, extracted);
   if (!result.safe) return result;
@@ -768,8 +777,12 @@ export function validateBashSecurity(command: string): SecurityCheckResult {
   result = validateJqDangerous(command);
   if (!result.safe) return result;
 
-  result = validateShellMetacharsInCommands(command);
-  if (!result.safe) return result;
+  // Detached mode: skip shell metachar validation in find/grep/xargs —
+  // pipes with fd redirects (2>&1 | grep) are standard build patterns.
+  if (!detached) {
+    result = validateShellMetacharsInCommands(command);
+    if (!result.safe) return result;
+  }
 
   result = validateCommentQuoteDesync(command);
   if (!result.safe) return result;

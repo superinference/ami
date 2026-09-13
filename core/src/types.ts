@@ -194,7 +194,7 @@ export type EngineEvent =
   | { type: 'session_title'; title: string }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
-  | { type: 'done'; totalTurns: number };
+  | { type: 'done'; totalTurns: number; exitReason: 'completed' | 'max_turns' | 'error' | 'abort' | 'session_timeout' | 'max_steps' | 'budget_exceeded' | 'hook_denied' | 'superinference_stop' | 'consecutive_errors' };
 
 export interface EngineConfig {
   provider: ProviderConfig;
