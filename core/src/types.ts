@@ -184,7 +184,7 @@ export type EngineEvent =
   | { type: 'usage_update'; stats: UsageStats }
   | { type: 'error'; error: string }
   | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode: number }
-  | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean }
+  | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean; message?: string }
   | { type: 'provider_changed'; provider: string; model: string; reason: string }
   | { type: 'checkpoint_created'; checkpointId: string; files: string[] }
   | { type: 'analytics_summary'; summary: Record<string, number> }
