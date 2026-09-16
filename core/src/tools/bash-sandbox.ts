@@ -14,7 +14,7 @@ const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
   readOnlyPaths: ['/usr', '/bin', '/lib', '/lib64', '/etc'],
   writablePaths: ['/tmp'],
   maxMemoryMB: 512,
-  maxProcesses: 64,
+  maxProcesses: 8192,
   timeout: 30000,
 };
 

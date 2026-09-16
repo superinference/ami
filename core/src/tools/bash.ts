@@ -27,14 +27,22 @@ export function isBashForkExhaustion(stdout: string, stderr: string): boolean {
     || /\bEAGAIN\b/i.test(combined);
 }
 
+export const FORK_RETRY_MAX = 5;
+export const FORK_RETRY_BASE_MS = 500;
+
 async function execCommandWithForkRetry(
   command: string,
   options: Parameters<typeof execCommand>[1],
 ): Promise<Awaited<ReturnType<typeof execCommand>>> {
   let last = await execCommand(command, options);
-  for (let attempt = 0; attempt < 3 && isBashForkExhaustion(last.stdout, last.stderr); attempt++) {
-    await new Promise(r => setTimeout(r, 150 * (attempt + 1)));
+  for (let attempt = 0; attempt < FORK_RETRY_MAX && isBashForkExhaustion(last.stdout, last.stderr); attempt++) {
+    const base = FORK_RETRY_BASE_MS * Math.pow(2, attempt);
+    const jitter = Math.floor(Math.random() * base);
+    await new Promise(r => setTimeout(r, base + jitter));
     last = await execCommand(command, options);
+  }
+  if (isBashForkExhaustion(last.stdout, last.stderr)) {
+    last.stderr += '\n[fork exhaustion: all retries failed — too many concurrent processes. Try closing other sessions.]';
   }
   return last;
 }

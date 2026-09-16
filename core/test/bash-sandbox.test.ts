@@ -162,3 +162,53 @@ describe('resetSandboxCache', () => {
     assert.equal(s1.method, s2.method);
   });
 });
+
+describe('sandbox maxProcesses — fork exhaustion regression', () => {
+  it('BUG: ulimit -u 64 kills fork on any machine with >64 threads', () => {
+    // ROOT CAUSE: The sandbox set maxProcesses:64, which translates to
+    // `ulimit -u 64`. ulimit -u is a PER-USER limit counting ALL threads
+    // across the entire UID — Chrome, Slack, Claude sessions, everything.
+    // A typical desktop has 2000+ threads. Setting ulimit -u 64 causes
+    // every fork() inside the sandbox to fail with EAGAIN (exit 254):
+    //
+    //   bash: fork: retry: Resource temporarily unavailable
+    //   bash: fork: Resource temporarily unavailable
+    //   [exit code: 254]
+    //
+    // FIX: Raised maxProcesses to 8192.
+
+    resetSandboxCache();
+    const wrapped = wrapWithSandbox('python3 test.py', '/home/user');
+
+    const match = wrapped.match(/ulimit -u (\d+)/);
+    assert.ok(match, 'sandbox must set ulimit -u');
+    const nproc = parseInt(match[1], 10);
+
+    assert.ok(nproc > 64,
+      `ulimit -u ${nproc} is too low — causes fork exhaustion when user has >64 threads`);
+    assert.ok(nproc >= 4096,
+      `ulimit -u ${nproc} must be >= 4096 to handle typical desktop thread counts (2000+)`);
+  });
+
+  it('default maxProcesses allows sandboxed commands to fork on busy systems', () => {
+    resetSandboxCache();
+    // Commands that trigger the sandbox (python, curl, bash -c)
+    // must be able to fork even when the user has thousands of threads
+    for (const cmd of ['python3 test.py', 'curl https://example.com', 'bash -c "echo hi"']) {
+      const wrapped = wrapWithSandbox(cmd, '/tmp');
+      const match = wrapped.match(/ulimit -u (\d+)/);
+      assert.ok(match, `sandbox for "${cmd}" must set ulimit -u`);
+      const nproc = parseInt(match[1], 10);
+      assert.ok(nproc >= 4096,
+        `"${cmd}": ulimit -u ${nproc} too low — needs >= 4096`);
+    }
+  });
+
+  it('custom maxProcesses overrides default', () => {
+    resetSandboxCache();
+    const wrapped = wrapWithSandbox('python3 test.py', '/tmp', { maxProcesses: 16384 });
+    const match = wrapped.match(/ulimit -u (\d+)/);
+    assert.ok(match);
+    assert.equal(parseInt(match[1], 10), 16384);
+  });
+});
