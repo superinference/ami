@@ -18,7 +18,8 @@ function isReadOnlyBashCommand(command: string): boolean {
       const { PermissionManager } = require('../permissions');
       _cachedPermissionManager = new PermissionManager();
     }
-    return _cachedPermissionManager.classifyBashCommand(command) === 'safe';
+    const pm = _cachedPermissionManager!;
+    return pm.classifyBashCommand(command) === 'safe';
   } catch {
     return false;
   }
