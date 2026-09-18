@@ -409,6 +409,95 @@ describe('disconnectAll with pending', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ensureConnected idempotency (gap #2)
+// ---------------------------------------------------------------------------
+
+describe('ensureConnected idempotency', () => {
+  it('is idempotent for pending servers that fail', async () => {
+    const mgr = new McpManager();
+    mgr.addPendingServer('bad', { command: '_nonexistent_cmd_12345' });
+    try { await mgr.ensureConnected('bad'); } catch {}
+    assert.equal(mgr.getServerState('bad'), 'error');
+    try { await mgr.ensureConnected('bad'); } catch {}
+    assert.equal(mgr.getServerState('bad'), 'error');
+    mgr.disconnectAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stopServer clears tool cache (gap #4)
+// ---------------------------------------------------------------------------
+
+describe('stopServer clears tool cache', () => {
+  it('source calls invalidateToolCache in stopServer', () => {
+    const stopBody = managerSrc.slice(
+      managerSrc.indexOf('async stopServer('),
+      managerSrc.indexOf('async restartServer('),
+    );
+    assert.ok(stopBody.includes('invalidateToolCache(name)'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getServerState for stopped servers (gap #5)
+// ---------------------------------------------------------------------------
+
+describe('getServerState for stopped', () => {
+  it('returns stopped after stopServer', async () => {
+    const mgr = new McpManager();
+    mgr.addPendingServer('test', { command: 'echo' });
+    await mgr.stopServer('test');
+    assert.equal(mgr.getServerState('test'), 'stopped');
+    mgr.disconnectAll();
+  });
+
+  it('returns stopped for active server after stop', async () => {
+    const mgr = new McpManager();
+    mgr.addServer('test', { command: 'echo' });
+    await mgr.stopServer('test');
+    assert.equal(mgr.getServerState('test'), 'stopped');
+    mgr.disconnectAll();
+  });
+
+  it('stopped server appears in listAllServers with stopped state', async () => {
+    const mgr = new McpManager();
+    mgr.addPendingServer('test', { command: 'echo' });
+    await mgr.stopServer('test');
+    const servers = mgr.listAllServers();
+    assert.equal(servers.length, 1);
+    assert.equal(servers[0].state, 'stopped');
+    mgr.disconnectAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addPendingServer imageAvailable for container config (gap #6)
+// ---------------------------------------------------------------------------
+
+describe('addPendingServer imageAvailable', () => {
+  it('sets imageAvailable to false for nonexistent image', () => {
+    const mgr = new McpManager();
+    mgr.addPendingServer('test', {
+      command: '',
+      containerConfig: { image: 'si_test_nonexistent_image_99999:latest', runtime: 'auto' },
+    });
+    const servers = mgr.listAllServers();
+    assert.equal(servers.length, 1);
+    assert.equal(servers[0].containerBacked, true);
+    mgr.disconnectAll();
+  });
+
+  it('sets imageAvailable undefined when no container config', () => {
+    const mgr = new McpManager();
+    mgr.addPendingServer('test', { command: 'echo' });
+    const servers = mgr.listAllServers();
+    assert.equal(servers[0].imageAvailable, undefined);
+    assert.equal(servers[0].containerBacked, false);
+    mgr.disconnectAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Source code structure
 // ---------------------------------------------------------------------------
 
