@@ -80,7 +80,7 @@ describe('taskTool – execute error handling', () => {
     assert.ok(result.output.includes('engine factory not available'));
   });
 
-  it('defaults mode to explore and returns error without factory', async () => {
+  it('returns error without factory regardless of default mode', async () => {
     const result = await taskTool.execute(
       { prompt: 'some task' },
       ctx(),
@@ -250,6 +250,210 @@ describe('taskTool – run_in_background', () => {
 
       await new Promise(r => setTimeout(r, 50));
     } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: default mode must be 'general' not 'explore'
+// When no mode is specified, agents must have write tools (file_edit, bash)
+// so they can actually perform tasks like writing tests or editing files.
+// Bug: agents defaulted to 'explore' (read-only) and silently failed.
+// ---------------------------------------------------------------------------
+
+describe('taskTool – default mode gives write tools (regression)', () => {
+  it('agents with no mode specified get file_edit and bash tools', async () => {
+    let capturedTools: string[] = [];
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'wrote tests' };
+    }
+
+    const result = await taskTool.execute(
+      { prompt: 'write unit tests for the solver module' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+        _engineFactory: (cfg) => {
+          capturedTools = (cfg.tools || []).map((t: any) => t.name);
+          return { submit: fakeSubmit };
+        },
+      }),
+    );
+
+    assert.ok(!result.isError, `should succeed, got: ${result.output}`);
+    assert.ok(capturedTools.length > 0, 'engine factory should receive tools');
+    assert.ok(capturedTools.includes('file_edit'),
+      `default mode must include file_edit for writing code; got: [${capturedTools.join(', ')}]`);
+    assert.ok(capturedTools.includes('bash'),
+      `default mode must include bash for running commands; got: [${capturedTools.join(', ')}]`);
+    assert.ok(capturedTools.includes('file_read'),
+      'default mode must include file_read');
+    assert.ok(!capturedTools.includes('task'),
+      'default mode must not include recursive task tool');
+  });
+
+  it('explicit explore mode still restricts to read-only tools', async () => {
+    let capturedTools: string[] = [];
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'explored' };
+    }
+
+    await taskTool.execute(
+      { prompt: 'list all files', mode: 'explore' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+        _engineFactory: (cfg) => {
+          capturedTools = (cfg.tools || []).map((t: any) => t.name);
+          return { submit: fakeSubmit };
+        },
+      }),
+    );
+
+    assert.ok(!capturedTools.includes('file_edit'),
+      'explore mode must NOT include file_edit');
+    assert.ok(!capturedTools.includes('bash'),
+      'explore mode must NOT include bash');
+    assert.ok(capturedTools.includes('file_read'),
+      'explore mode must include file_read');
+    assert.ok(capturedTools.includes('grep'),
+      'explore mode must include grep');
+  });
+
+  it('background agents with no mode get write tools too', async () => {
+    let capturedTools: string[] = [];
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'bg result' };
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-mode-'));
+    const pm = new ProcessManager(tmpDir);
+
+    try {
+      await taskTool.execute(
+        { prompt: 'write tests in background', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: (cfg) => {
+            capturedTools = (cfg.tools || []).map((t: any) => t.name);
+            return { submit: fakeSubmit };
+          },
+          processManager: pm,
+        }),
+      );
+
+      assert.ok(capturedTools.includes('file_edit'),
+        `background agents with default mode must include file_edit; got: [${capturedTools.join(', ')}]`);
+      assert.ok(capturedTools.includes('bash'),
+        `background agents with default mode must include bash; got: [${capturedTools.join(', ')}]`);
+
+      await new Promise(r => setTimeout(r, 50));
+    } finally {
+      pm.cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: background agents must stream output incrementally
+// Output must be written to disk as events arrive, not only on completion.
+// Bug: task_output returned empty results for running agents because output
+// was accumulated in memory and written only after the agent finished.
+// ---------------------------------------------------------------------------
+
+describe('taskTool – background agents stream output incrementally (regression)', () => {
+  it('output file contains partial content while agent is still running', async () => {
+    let resolveBarrier!: () => void;
+    const barrier = new Promise<void>(r => { resolveBarrier = r; });
+
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'partial result here' };
+      await barrier;
+      yield { type: 'text_delta' as const, text: ' and more' };
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-stream-'));
+    const pm = new ProcessManager(tmpDir);
+
+    try {
+      const result = await taskTool.execute(
+        { prompt: 'streaming test', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
+          processManager: pm,
+        }),
+      );
+
+      const taskId = result.output.match(/agent-[a-f0-9]+/)?.[0];
+      assert.ok(taskId, 'should return a task ID');
+
+      await new Promise(r => setTimeout(r, 100));
+
+      const outputPath = path.join(tmpDir, '.superinference', 'tasks', `${taskId}.output`);
+      const midContent = fs.readFileSync(outputPath, 'utf-8');
+      assert.ok(midContent.includes('partial result here'),
+        `output file should contain streamed content during execution, got: "${midContent}"`);
+
+      resolveBarrier();
+      await new Promise(r => setTimeout(r, 100));
+
+      const finalContent = fs.readFileSync(outputPath, 'utf-8');
+      assert.ok(finalContent.includes('partial result here'),
+        'final output should contain first part');
+      assert.ok(finalContent.includes('and more'),
+        'final output should contain second part');
+    } finally {
+      pm.cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('task_output returns partial content for running background agents', async () => {
+    let resolveBarrier!: () => void;
+    const barrier = new Promise<void>(r => { resolveBarrier = r; });
+
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'live progress data' };
+      await barrier;
+      yield { type: 'text_delta' as const, text: ' done' };
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-taskout-'));
+    const pm = new ProcessManager(tmpDir);
+
+    try {
+      const taskResult = await taskTool.execute(
+        { prompt: 'monitored task', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
+          processManager: pm,
+        }),
+      );
+
+      const taskId = taskResult.output.match(/agent-[a-f0-9]+/)?.[0];
+      assert.ok(taskId);
+
+      await new Promise(r => setTimeout(r, 100));
+
+      const { taskOutputTool } = require('../src/tools/task-output');
+      const outputResult = await taskOutputTool.execute(
+        { task_id: taskId },
+        ctx({ processManager: pm }),
+      );
+
+      assert.ok(!outputResult.isError);
+      assert.ok(outputResult.output.includes('live progress data'),
+        `task_output should show streamed content while running, got: "${outputResult.output}"`);
+
+      resolveBarrier();
+      await new Promise(r => setTimeout(r, 100));
+    } finally {
+      pm.cleanup();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });

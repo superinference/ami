@@ -78,7 +78,7 @@ export const taskTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const prompt = input.prompt as string;
-    const mode = (input.mode as string) || 'explore';
+    const mode = (input.mode as string) || 'general';
     const subagentType = input.subagent_type as string | undefined;
     const taskDescription = input.description as string | undefined;
     const resumeTarget = input.resume as string | undefined;
@@ -249,15 +249,28 @@ export const taskTool: ToolDefinition = {
       const subEngine = context._engineFactory(subConfig);
       (async () => {
         let result = '';
+        const fd = fs.openSync(outputPath, 'w');
         try {
           for await (const event of subEngine.submit(effectivePrompt)) {
-            if (event.type === 'text_delta') result += event.text;
-            if (event.type === 'error') result += `\nError: ${event.error}`;
+            if (event.type === 'text_delta') {
+              result += event.text;
+              try { fs.writeSync(fd, event.text); } catch { /* fd closed */ }
+            }
+            if (event.type === 'error') {
+              const errText = `\nError: ${event.error}`;
+              result += errText;
+              try { fs.writeSync(fd, errText); } catch { /* fd closed */ }
+            }
           }
         } catch (err) {
-          result += `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
+          const errText = `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
+          result += errText;
+          try { fs.writeSync(fd, errText); } catch { /* fd closed */ }
         }
-        try { fs.writeFileSync(outputPath, result || '(subagent produced no output)'); } catch { /* dir removed */ }
+        try { fs.closeSync(fd); } catch { /* already closed */ }
+        if (!result) {
+          try { fs.writeFileSync(outputPath, '(subagent produced no output)'); } catch { /* dir removed */ }
+        }
         if (context.processManager) {
           const label = taskDescription || `${prompt.slice(0, 80)}`;
           const entry = (context.processManager as any).processes.get(taskId);
