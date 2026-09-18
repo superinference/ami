@@ -75,6 +75,7 @@ When MCP tools are available, prefer them over bash for the same tool — they p
       'hydra*', 'john*', 'hashcat*', 'msfconsole*', 'msfvenom*',
       'enum4linux*', 'dirb*', 'wpscan*', 'wfuzz*', 'amass*', 'sublist3r*',
       'docker run*', 'docker start*', 'docker stop*', 'docker ps*', 'docker logs*',
+      'podman run*', 'podman start*', 'podman stop*', 'podman ps*', 'podman logs*',
     ],
     mcpServers: {
       kali: {
@@ -105,24 +106,22 @@ Use these tools directly instead of bash when the Kali MCP server is connected.
 
 ## Setup
 
-If MCP tools are not available (server not connected), bootstrap the Kali MCP server. Try Docker first, fall back to native install:
+If MCP tools are not available (server not connected), bootstrap the Kali MCP server using a container. Detect the runtime (\`podman\` or \`docker\`) and start:
 
-### Option A: Docker (preferred — no system changes)
 \`\`\`bash
-docker run -d --name kali-mcp -p 5000:5000 kalilinux/kali-rolling bash -c "apt update && apt install -y mcp-kali-server && kali-server-mcp --host 0.0.0.0 --port 5000"
+# Detect container runtime
+RUNTIME=$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)
+$RUNTIME run -d --name kali-mcp -p 5000:5000 kalilinux/kali-rolling bash -c "apt update && apt install -y mcp-kali-server && kali-server-mcp --host 0.0.0.0 --port 5000"
 \`\`\`
-Wait for container health: \`until curl -s http://localhost:5000/health; do sleep 2; done\`
+Wait for the server: \`until curl -s http://localhost:5000/health; do sleep 2; done\`
 
-### Option B: Native install
-1. Check if \`kali-server-mcp\` is installed: \`which kali-server-mcp\`
-2. If not installed: \`sudo apt install -y mcp-kali-server\`
-3. Start the Flask backend: \`kali-server-mcp --port 5000 &\`
-4. Wait for it to be ready: \`curl -s http://localhost:5000/health || sleep 2\`
+If the container already exists but is stopped: \`$RUNTIME start kali-mcp\`
 
-### Option C: Remote Kali instance
-SSH tunnel: \`ssh -L 5000:localhost:5000 user@kali-host -N &\`
+For a remote Kali instance, set up an SSH tunnel: \`ssh -L 5000:localhost:5000 user@kali-host -N &\`
 
-The MCP bridge will auto-connect once the backend is available on localhost:5000.`,
+The MCP bridge will auto-connect once the backend is available on localhost:5000.
+
+**Never install security tools directly on the host.** Always use containers.`,
     defaultThinkingLevel: 'high',
   },
   {
