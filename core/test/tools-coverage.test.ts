@@ -1244,8 +1244,8 @@ describe('taskTool — subagent_type', () => {
 
     // Agent system prompt goes into subConfig.systemPrompt, not the submit call
     assert.equal(capturedConfig?.systemPrompt, 'You are a specialist.');
-    // Sub-agents always run in detached mode
-    assert.equal(capturedConfig?.detachedMode, true);
+    // Sub-agents inherit detachedMode from parent context (false when not set)
+    assert.equal(capturedConfig?.detachedMode, false);
     // The submit prompt is just the task, not mixed with system prompt
     assert.equal(capturedPrompt, 'do the thing');
   });
