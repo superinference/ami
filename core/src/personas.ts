@@ -79,49 +79,30 @@ When MCP tools are available, prefer them over bash for the same tool — they p
     ],
     mcpServers: {
       kali: {
-        command: 'mcp-server',
-        args: ['--server', 'http://localhost:5000'],
+        command: '',
+        containerConfig: {
+          image: 'cyberillo/kali-mcp-server:latest',
+          name: 'si-kali-mcp',
+          runtime: 'auto',
+        },
       },
     },
     mcpAutoAllowPatterns: [
       'mcp__kali__*',
     ],
-    mcpToolGuidance: `# Kali MCP Server Tools
+    mcpToolGuidance: `# Kali MCP Tools (Container-Backed)
 
-When the Kali MCP server is connected, you have access to these tools:
+The Kali MCP server runs as a container via \`cyberillo/kali-mcp-server\`. It launches automatically when the pentest persona is activated and provides pre-installed security tools through the MCP protocol over stdio.
 
-- **mcp__kali__nmap_scan**: Network scanning — host discovery, port scanning, service/version detection, OS detection. Pass target and scan type.
-- **mcp__kali__nikto_scan**: Web server vulnerability scanning. Pass target URL.
-- **mcp__kali__sqlmap_scan**: SQL injection detection and exploitation. Pass target URL and parameters.
-- **mcp__kali__gobuster_scan**: Directory and file brute-forcing. Pass target URL and wordlist.
-- **mcp__kali__hydra_attack**: Network login brute-forcing. Pass service, target, user/password lists.
-- **mcp__kali__john_crack**: Password hash cracking. Pass hash file and format.
-- **mcp__kali__metasploit_run**: Run Metasploit modules. Pass module path and options.
-- **mcp__kali__enum4linux_scan**: SMB/Samba enumeration. Pass target.
-- **mcp__kali__dirb_scan**: Web content scanning. Pass target URL.
-- **mcp__kali__wpscan_scan**: WordPress vulnerability scanning. Pass target URL.
-- **mcp__kali__run_command**: Execute arbitrary commands on the Kali server.
+## Included Tools
 
-Use these tools directly instead of bash when the Kali MCP server is connected.
+The container includes: nmap, nikto, sqlmap, gobuster, dirb, hydra, john, metasploit, enum4linux, wpscan, searchsploit, tcpdump, whois, and more. All are exposed as \`mcp__kali__*\` MCP tools with structured input/output.
 
-## Setup
+## Usage
 
-If MCP tools are not available (server not connected), bootstrap the Kali MCP server using a container. Detect the runtime (\`podman\` or \`docker\`) and start:
+Prefer MCP tools over raw bash for security scanning — they run in an isolated container and provide structured output. Use the run_command tool for any tool not covered by a specific MCP tool.
 
-\`\`\`bash
-# Detect container runtime
-RUNTIME=$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)
-$RUNTIME run -d --name kali-mcp -p 5000:5000 kalilinux/kali-rolling bash -c "apt update && apt install -y mcp-kali-server && kali-server-mcp --host 0.0.0.0 --port 5000"
-\`\`\`
-Wait for the server: \`until curl -s http://localhost:5000/health; do sleep 2; done\`
-
-If the container already exists but is stopped: \`$RUNTIME start kali-mcp\`
-
-For a remote Kali instance, set up an SSH tunnel: \`ssh -L 5000:localhost:5000 user@kali-host -N &\`
-
-The MCP bridge will auto-connect once the backend is available on localhost:5000.
-
-**Never install security tools directly on the host.** Always use containers.`,
+**All tools run inside a container. Never install security tools directly on the host.**`,
     defaultThinkingLevel: 'high',
   },
   {

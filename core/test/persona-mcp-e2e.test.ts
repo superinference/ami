@@ -84,12 +84,13 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('persona MCP server declaration', () => {
-  it('pentest persona declares kali MCP server with correct config', () => {
+  it('pentest persona declares kali MCP server with containerConfig', () => {
     const pm = new PersonaManager(tmpDir, 'pentest');
     const servers = pm.getMcpServers();
     assert.ok(servers.kali);
-    assert.equal(servers.kali.command, 'mcp-server');
-    assert.deepEqual(servers.kali.args, ['--server', 'http://localhost:5000']);
+    assert.ok(servers.kali.containerConfig, 'kali must have containerConfig');
+    assert.equal(servers.kali.containerConfig!.image, 'cyberillo/kali-mcp-server:latest');
+    assert.equal(servers.kali.containerConfig!.name, 'si-kali-mcp');
   });
 
   it('pentest persona declares mcp__kali__* auto-allow pattern', () => {
@@ -98,11 +99,13 @@ describe('persona MCP server declaration', () => {
     assert.ok(patterns.includes('mcp__kali__*'));
   });
 
-  it('pentest persona has MCP tool guidance mentioning all key tools', () => {
+  it('pentest persona has MCP tool guidance mentioning key capabilities', () => {
     const pm = new PersonaManager(tmpDir, 'pentest');
     const guidance = pm.getMcpToolGuidance();
     assert.ok(guidance);
-    for (const tool of ['nmap_scan', 'nikto_scan', 'sqlmap_scan', 'gobuster_scan', 'hydra_attack', 'metasploit_run', 'run_command']) {
+    assert.ok(guidance!.includes('cyberillo/kali-mcp-server'), 'guidance should mention image');
+    assert.ok(guidance!.includes('run_command'), 'guidance should mention run_command');
+    for (const tool of ['nmap', 'nikto', 'sqlmap', 'gobuster', 'hydra', 'metasploit']) {
       assert.ok(guidance!.includes(tool), `guidance should mention ${tool}`);
     }
   });
@@ -111,8 +114,8 @@ describe('persona MCP server declaration', () => {
     const pm = new PersonaManager(tmpDir, 'pentest');
     const guidance = pm.getMcpToolGuidance();
     assert.ok(guidance);
-    assert.ok(guidance!.includes('docker') || guidance!.includes('podman'), 'should mention container runtime');
-    assert.ok(guidance!.includes('Never install security tools directly'), 'should warn against native install');
+    assert.ok(guidance!.includes('container'), 'should mention container');
+    assert.ok(guidance!.includes('Never install security tools directly on the host'), 'should warn against native install');
   });
 
   it('non-pentest personas have no mcpServers', () => {
@@ -371,13 +374,13 @@ describe('system prompt enrichment', () => {
     assert.ok(overlay.includes('Bash fallback'));
   });
 
-  it('pentest persona guidance includes setup instructions', () => {
+  it('pentest persona guidance mentions container-backed tools', () => {
     const pm = new PersonaManager(tmpDir, 'pentest');
     const guidance = pm.getMcpToolGuidance();
     assert.ok(guidance);
-    assert.ok(guidance!.includes('docker') || guidance!.includes('podman'));
-    assert.ok(guidance!.includes('kali-mcp'));
-    assert.ok(guidance!.includes('5000'));
+    assert.ok(guidance!.includes('container'), 'guidance must mention container');
+    assert.ok(guidance!.includes('nmap'), 'guidance must mention nmap');
+    assert.ok(guidance!.includes('run_command'), 'guidance must mention run_command');
   });
 
   it('guidance is only injected when persona MCP servers are connected', () => {
@@ -470,7 +473,7 @@ describe('full e2e: persona MCP pipeline', () => {
     if (guidance && personaServerNames.some(s => connectedServerNames.has(s))) {
       systemPrompt += `\n\n${guidance}`;
     }
-    assert.ok(systemPrompt.includes('nmap_scan'), 'step 6: system prompt includes MCP guidance');
+    assert.ok(systemPrompt.includes('nmap'), 'step 6: system prompt includes MCP guidance');
     assert.ok(systemPrompt.includes('container'), 'step 6: system prompt includes container setup');
 
     manager.disconnectAll();

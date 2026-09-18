@@ -253,12 +253,13 @@ Custom code assistant.`);
   // MCP integration
   // -------------------------------------------------------------------------
 
-  it('pentest persona has mcpServers config', () => {
+  it('pentest persona has mcpServers config with containerConfig', () => {
     const pm = new PersonaManager(tmpDir, 'pentest');
     const servers = pm.getMcpServers();
     assert.ok(servers.kali, 'pentest persona should have kali MCP server');
-    assert.equal(servers.kali.command, 'mcp-server');
-    assert.deepEqual(servers.kali.args, ['--server', 'http://localhost:5000']);
+    assert.ok(servers.kali.containerConfig, 'kali server must have containerConfig');
+    assert.equal(servers.kali.containerConfig!.image, 'cyberillo/kali-mcp-server:latest');
+    assert.equal(servers.kali.containerConfig!.name, 'si-kali-mcp');
   });
 
   it('pentest persona has mcpAutoAllowPatterns', () => {
@@ -272,8 +273,9 @@ Custom code assistant.`);
     const pm = new PersonaManager(tmpDir, 'pentest');
     const guidance = pm.getMcpToolGuidance();
     assert.ok(guidance);
-    assert.ok(guidance!.includes('nmap_scan'));
-    assert.ok(guidance!.includes('metasploit'));
+    assert.ok(guidance!.includes('cyberillo/kali-mcp-server'));
+    assert.ok(guidance!.includes('container'));
+    assert.ok(guidance!.includes('nmap'));
   });
 
   it('code persona has no mcpServers', () => {

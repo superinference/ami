@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
+import { resolveRuntime, buildContainerArgs, type ContainerConfig } from './container';
 
 export interface McpServerConfig {
   command: string;
@@ -13,6 +14,7 @@ export interface McpServerConfig {
   autoConnect?: boolean;
   transport?: 'stdio' | 'sse' | 'http';
   url?: string;
+  containerConfig?: ContainerConfig;
 }
 
 export interface McpServerStatus {
@@ -40,13 +42,28 @@ export class McpManager extends EventEmitter {
     if (this.clients.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
     }
+
+    let resolvedCommand = config.command || '';
+    let resolvedArgs = config.args;
+
+    if (config.containerConfig) {
+      const runtime = resolveRuntime(config.containerConfig.runtime);
+      if (runtime) {
+        resolvedCommand = runtime;
+        resolvedArgs = buildContainerArgs(config.containerConfig);
+        coreLog('mcp', `container MCP for '${name}': ${runtime} ${resolvedArgs.join(' ')}`);
+      } else {
+        coreLog('mcp', `no container runtime found for '${name}'`);
+      }
+    }
+
     this.configs.set(name, config);
     const client = new McpClient({
-      command: config.command || '',
-      args: config.args,
+      command: resolvedCommand,
+      args: resolvedArgs,
       env: config.env,
-      requestTimeout: config.requestTimeout,
-      connectTimeout: config.connectTimeout,
+      requestTimeout: config.requestTimeout ?? (config.containerConfig ? 60000 : 30000),
+      connectTimeout: config.connectTimeout ?? (config.containerConfig ? 120000 : 10000),
       rootPaths: this.rootPaths,
     });
 
@@ -380,6 +397,7 @@ export class McpManager extends EventEmitter {
     }
     return undefined;
   }
+
 }
 
 export function expandEnvVars(value: string): string {
