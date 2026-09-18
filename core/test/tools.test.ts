@@ -238,17 +238,17 @@ describe('file_edit tool — write and create', () => {
       assert.equal(fs.readFileSync(fp, 'utf-8'), 'now filled');
     });
 
-    it('requires file_read before overwriting a non-empty file when filesRead is tracked', async () => {
+    it('auto-reads and allows overwrite when file not in filesRead', async () => {
       const fp = path.join(tmpDir, 'need-read.txt');
       fs.writeFileSync(fp, 'keep me');
-      const ctx = { ...makeContext(tmpDir), filesRead: new Set<string>() };
+      const filesRead = new Set<string>();
+      const ctx = { ...makeContext(tmpDir), filesRead };
       const result = await fileEditTool.execute(
         { file_path: fp, content: 'overwrite' },
         ctx,
       );
-      assert.equal(result.isError, true);
-      assert.ok(result.output.includes('must read'));
-      assert.equal(fs.readFileSync(fp, 'utf-8'), 'keep me');
+      assert.notEqual(result.isError, true, 'auto-read must allow overwrite without prior file_read');
+      assert.ok(filesRead.has(fp), 'auto-read must track file in filesRead');
     });
 
     it('rejects Jupyter notebooks', async () => {

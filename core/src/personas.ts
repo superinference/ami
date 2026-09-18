@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { PermissionRule } from './permissions';
 import type { ThinkingLevel } from './model-capabilities';
+import type { McpServerConfig } from './mcp/manager';
 
 export interface PersonaDefinition {
   name: string;
@@ -13,6 +14,9 @@ export interface PersonaDefinition {
   permissionRules?: PermissionRule[];
   defaultThinkingLevel?: ThinkingLevel;
   autoAllowPatterns?: string[];
+  mcpServers?: Record<string, McpServerConfig>;
+  mcpAutoAllowPatterns?: string[];
+  mcpToolGuidance?: string;
 }
 
 const BUILTIN_PERSONAS: PersonaDefinition[] = [
@@ -45,15 +49,71 @@ const BUILTIN_PERSONAS: PersonaDefinition[] = [
 - Use tools aggressively to enumerate, scan, and test targets.
 - When finding vulnerabilities, explain the impact and provide remediation steps.
 - Use web_search and web_fetch to look up CVEs, exploit databases, and security advisories.
-- Use bash to run security tools: nmap, nikto, sqlmap, gobuster, ffuf, curl, openssl, etc.
-- Read configuration files to identify misconfigurations.
 - Analyze source code for common vulnerability patterns (OWASP Top 10).
-- Document findings in a structured format: severity, description, impact, remediation.`,
+- Document findings in a structured format: severity, description, impact, remediation.
+
+# Tool Strategy
+
+You have two ways to run security tools:
+
+1. **MCP tools** (preferred when available): Use MCP tools like \`mcp__kali__*\` for structured access to nmap, nikto, sqlmap, gobuster, hydra, john, metasploit, enum4linux, dirb, wpscan, and raw commands. MCP tools return structured output and handle server-side execution.
+2. **Bash fallback**: Use bash to run security tools directly when MCP is not configured: nmap, nikto, sqlmap, gobuster, ffuf, curl, openssl, etc.
+
+When MCP tools are available, prefer them over bash for the same tool — they provide better output parsing and error handling. Use bash for tools not covered by MCP or for custom scripting.
+
+# Recommended Workflow
+
+1. **Reconnaissance**: nmap scans (TCP, UDP, service detection), DNS enumeration, WHOIS
+2. **Web scanning**: nikto, gobuster/dirb for directory brute-forcing, wpscan for WordPress
+3. **Vulnerability testing**: sqlmap for SQL injection, custom curl requests for auth bypass
+4. **Exploitation**: metasploit modules, hydra/john for credential attacks
+5. **Reporting**: Structured findings with severity, evidence, and remediation`,
     autoAllowPatterns: [
       'curl*', 'wget*', 'nmap*', 'nikto*', 'sqlmap*', 'gobuster*',
       'ffuf*', 'openssl*', 'dig*', 'nslookup*', 'whois*', 'traceroute*',
       'netstat*', 'ss*', 'tcpdump*',
+      'hydra*', 'john*', 'hashcat*', 'msfconsole*', 'msfvenom*',
+      'enum4linux*', 'dirb*', 'wpscan*', 'wfuzz*', 'amass*', 'sublist3r*',
     ],
+    mcpServers: {
+      kali: {
+        command: 'mcp-server',
+        args: ['--server', 'http://localhost:5000'],
+      },
+    },
+    mcpAutoAllowPatterns: [
+      'mcp__kali__*',
+    ],
+    mcpToolGuidance: `# Kali MCP Server Tools
+
+When the Kali MCP server is connected, you have access to these tools:
+
+- **mcp__kali__nmap_scan**: Network scanning — host discovery, port scanning, service/version detection, OS detection. Pass target and scan type.
+- **mcp__kali__nikto_scan**: Web server vulnerability scanning. Pass target URL.
+- **mcp__kali__sqlmap_scan**: SQL injection detection and exploitation. Pass target URL and parameters.
+- **mcp__kali__gobuster_scan**: Directory and file brute-forcing. Pass target URL and wordlist.
+- **mcp__kali__hydra_attack**: Network login brute-forcing. Pass service, target, user/password lists.
+- **mcp__kali__john_crack**: Password hash cracking. Pass hash file and format.
+- **mcp__kali__metasploit_run**: Run Metasploit modules. Pass module path and options.
+- **mcp__kali__enum4linux_scan**: SMB/Samba enumeration. Pass target.
+- **mcp__kali__dirb_scan**: Web content scanning. Pass target URL.
+- **mcp__kali__wpscan_scan**: WordPress vulnerability scanning. Pass target URL.
+- **mcp__kali__run_command**: Execute arbitrary commands on the Kali server.
+
+Use these tools directly instead of bash when the Kali MCP server is connected.
+
+## Setup
+
+If MCP tools are not available (server not connected), bootstrap the Kali MCP server:
+
+1. Check if \`kali-server-mcp\` is installed: \`which kali-server-mcp\`
+2. If not installed: \`sudo apt install -y mcp-kali-server\`
+3. Start the Flask backend: \`kali-server-mcp --port 5000 &\`
+4. Wait for it to be ready: \`curl -s http://localhost:5000/health || sleep 2\`
+5. The MCP bridge will auto-connect once the backend is available.
+
+If running against a remote Kali instance, set up an SSH tunnel first:
+\`ssh -L 5000:localhost:5000 user@kali-host -N &\``,
     defaultThinkingLevel: 'high',
   },
   {
@@ -138,6 +198,18 @@ export class PersonaManager {
     return this.active.autoAllowPatterns || [];
   }
 
+  getMcpServers(): Record<string, McpServerConfig> {
+    return this.active.mcpServers || {};
+  }
+
+  getMcpAutoAllowPatterns(): string[] {
+    return this.active.mcpAutoAllowPatterns || [];
+  }
+
+  getMcpToolGuidance(): string | undefined {
+    return this.active.mcpToolGuidance;
+  }
+
   getDefaultThinkingLevel(): ThinkingLevel {
     return this.active.defaultThinkingLevel || 'medium';
   }
@@ -202,6 +274,22 @@ export class PersonaManager {
       autoAllowPatterns: fields['auto-allow']
         ? fields['auto-allow'].split(',').map(s => s.trim())
         : undefined,
+      mcpAutoAllowPatterns: fields['mcp-auto-allow']
+        ? fields['mcp-auto-allow'].split(',').map(s => s.trim())
+        : undefined,
     };
   }
+}
+
+export function matchMcpAutoAllow(toolName: string, patterns: string[]): boolean {
+  for (const pattern of patterns) {
+    if (pattern === '*') return true;
+    if (pattern.endsWith('*')) {
+      const prefix = pattern.slice(0, -1);
+      if (toolName.startsWith(prefix)) return true;
+    } else if (pattern === toolName) {
+      return true;
+    }
+  }
+  return false;
 }

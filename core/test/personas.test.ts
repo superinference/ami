@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { PersonaManager } from '../src/personas';
+import { PersonaManager, matchMcpAutoAllow } from '../src/personas';
 
 describe('PersonaManager', () => {
   let tmpDir: string;
@@ -247,5 +247,103 @@ Custom code assistant.`);
   it('unknown initial persona falls back to code', () => {
     const pm = new PersonaManager(tmpDir, 'nonexistent');
     assert.equal(pm.getActive().name, 'code');
+  });
+
+  // -------------------------------------------------------------------------
+  // MCP integration
+  // -------------------------------------------------------------------------
+
+  it('pentest persona has mcpServers config', () => {
+    const pm = new PersonaManager(tmpDir, 'pentest');
+    const servers = pm.getMcpServers();
+    assert.ok(servers.kali, 'pentest persona should have kali MCP server');
+    assert.equal(servers.kali.command, 'mcp-server');
+    assert.deepEqual(servers.kali.args, ['--server', 'http://localhost:5000']);
+  });
+
+  it('pentest persona has mcpAutoAllowPatterns', () => {
+    const pm = new PersonaManager(tmpDir, 'pentest');
+    const patterns = pm.getMcpAutoAllowPatterns();
+    assert.ok(patterns.length > 0);
+    assert.ok(patterns.includes('mcp__kali__*'));
+  });
+
+  it('pentest persona has mcpToolGuidance', () => {
+    const pm = new PersonaManager(tmpDir, 'pentest');
+    const guidance = pm.getMcpToolGuidance();
+    assert.ok(guidance);
+    assert.ok(guidance!.includes('nmap_scan'));
+    assert.ok(guidance!.includes('metasploit'));
+  });
+
+  it('code persona has no mcpServers', () => {
+    const pm = new PersonaManager(tmpDir, 'code');
+    const servers = pm.getMcpServers();
+    assert.deepEqual(servers, {});
+  });
+
+  it('code persona has no mcpAutoAllowPatterns', () => {
+    const pm = new PersonaManager(tmpDir, 'code');
+    assert.deepEqual(pm.getMcpAutoAllowPatterns(), []);
+  });
+
+  it('pentest system prompt mentions MCP tools', () => {
+    const pm = new PersonaManager(tmpDir, 'pentest');
+    const overlay = pm.getSystemPromptOverlay();
+    assert.ok(overlay.includes('MCP tools'));
+    assert.ok(overlay.includes('mcp__kali__'));
+  });
+
+  it('custom persona with mcp-auto-allow field', () => {
+    const personaDir = path.join(tmpDir, '.superinference', 'personas');
+    fs.mkdirSync(personaDir, { recursive: true });
+    fs.writeFileSync(path.join(personaDir, 'mcppersona.md'), `---
+name: mcppersona
+description: Custom MCP persona
+mcp-auto-allow: mcp__myserver__*, mcp__other__tool_a
+---
+
+Body.`);
+
+    const pm = new PersonaManager(tmpDir);
+    pm.switchTo('mcppersona');
+    const patterns = pm.getMcpAutoAllowPatterns();
+    assert.ok(patterns.includes('mcp__myserver__*'));
+    assert.ok(patterns.includes('mcp__other__tool_a'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchMcpAutoAllow
+// ---------------------------------------------------------------------------
+
+describe('matchMcpAutoAllow', () => {
+  it('matches exact tool name', () => {
+    assert.ok(matchMcpAutoAllow('mcp__kali__nmap_scan', ['mcp__kali__nmap_scan']));
+  });
+
+  it('matches wildcard pattern', () => {
+    assert.ok(matchMcpAutoAllow('mcp__kali__nmap_scan', ['mcp__kali__*']));
+    assert.ok(matchMcpAutoAllow('mcp__kali__sqlmap_scan', ['mcp__kali__*']));
+  });
+
+  it('rejects non-matching tool', () => {
+    assert.ok(!matchMcpAutoAllow('mcp__other__nmap', ['mcp__kali__*']));
+  });
+
+  it('matches global wildcard', () => {
+    assert.ok(matchMcpAutoAllow('mcp__anything__any_tool', ['*']));
+  });
+
+  it('matches against multiple patterns', () => {
+    assert.ok(matchMcpAutoAllow('mcp__other__scan', ['mcp__kali__*', 'mcp__other__*']));
+  });
+
+  it('rejects when no patterns match', () => {
+    assert.ok(!matchMcpAutoAllow('mcp__third__tool', ['mcp__kali__*', 'mcp__other__scan']));
+  });
+
+  it('handles empty patterns array', () => {
+    assert.ok(!matchMcpAutoAllow('mcp__kali__nmap', []));
   });
 });
