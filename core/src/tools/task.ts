@@ -197,9 +197,7 @@ export const taskTool: ToolDefinition = {
       permissionPromptHandler: context._permissionPromptHandler,
       abortController: subAbort,
       maxTurns: agentMaxTurns,
-      // Sub-agents always run in detached mode: every turn must have a tool call,
-      // nudge system enforces progress, and no interactive prompts are expected.
-      detachedMode: true,
+      detachedMode: !!context.detachedMode,
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip persona resolution (which would inject e.g. the code
       // persona bug-fixing workflow into a verification-only agent).
