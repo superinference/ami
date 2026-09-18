@@ -74,6 +74,7 @@ When MCP tools are available, prefer them over bash for the same tool — they p
       'netstat*', 'ss*', 'tcpdump*',
       'hydra*', 'john*', 'hashcat*', 'msfconsole*', 'msfvenom*',
       'enum4linux*', 'dirb*', 'wpscan*', 'wfuzz*', 'amass*', 'sublist3r*',
+      'docker run*', 'docker start*', 'docker stop*', 'docker ps*', 'docker logs*',
     ],
     mcpServers: {
       kali: {
@@ -104,16 +105,24 @@ Use these tools directly instead of bash when the Kali MCP server is connected.
 
 ## Setup
 
-If MCP tools are not available (server not connected), bootstrap the Kali MCP server:
+If MCP tools are not available (server not connected), bootstrap the Kali MCP server. Try Docker first, fall back to native install:
 
+### Option A: Docker (preferred — no system changes)
+\`\`\`bash
+docker run -d --name kali-mcp -p 5000:5000 kalilinux/kali-rolling bash -c "apt update && apt install -y mcp-kali-server && kali-server-mcp --host 0.0.0.0 --port 5000"
+\`\`\`
+Wait for container health: \`until curl -s http://localhost:5000/health; do sleep 2; done\`
+
+### Option B: Native install
 1. Check if \`kali-server-mcp\` is installed: \`which kali-server-mcp\`
 2. If not installed: \`sudo apt install -y mcp-kali-server\`
 3. Start the Flask backend: \`kali-server-mcp --port 5000 &\`
 4. Wait for it to be ready: \`curl -s http://localhost:5000/health || sleep 2\`
-5. The MCP bridge will auto-connect once the backend is available.
 
-If running against a remote Kali instance, set up an SSH tunnel first:
-\`ssh -L 5000:localhost:5000 user@kali-host -N &\``,
+### Option C: Remote Kali instance
+SSH tunnel: \`ssh -L 5000:localhost:5000 user@kali-host -N &\`
+
+The MCP bridge will auto-connect once the backend is available on localhost:5000.`,
     defaultThinkingLevel: 'high',
   },
   {
