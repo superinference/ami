@@ -250,22 +250,44 @@ export const taskTool: ToolDefinition = {
       (async () => {
         let result = '';
         const fd = fs.openSync(outputPath, 'w');
+        const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
         try {
           for await (const event of subEngine.submit(effectivePrompt)) {
+            if (event.type === 'thinking_delta') {
+              w(event.text);
+            }
             if (event.type === 'text_delta') {
               result += event.text;
-              try { fs.writeSync(fd, event.text); } catch { /* fd closed */ }
+              w(event.text);
+            }
+            if (event.type === 'tool_use_start') {
+              const summary = typeof (event as any).input?.command === 'string'
+                ? (event as any).input.command
+                : typeof (event as any).input?.file_path === 'string'
+                  ? (event as any).input.file_path
+                  : JSON.stringify((event as any).input || {}).slice(0, 120);
+              w(`\n▸ ${(event as any).toolName} ${summary}\n`);
+            }
+            if (event.type === 'tool_use_progress') {
+              w((event as any).data || '');
+            }
+            if (event.type === 'tool_use_result') {
+              const output = (event as any).output || '';
+              const lines = output.split('\n');
+              const preview = lines.slice(0, 20).join('\n');
+              const suffix = lines.length > 20 ? `\n  ... (${lines.length - 20} more lines)` : '';
+              w(`${preview}${suffix}\n`);
             }
             if (event.type === 'error') {
               const errText = `\nError: ${event.error}`;
               result += errText;
-              try { fs.writeSync(fd, errText); } catch { /* fd closed */ }
+              w(errText);
             }
           }
         } catch (err) {
           const errText = `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
           result += errText;
-          try { fs.writeSync(fd, errText); } catch { /* fd closed */ }
+          w(errText);
         }
         try { fs.closeSync(fd); } catch { /* already closed */ }
         if (!result) {
