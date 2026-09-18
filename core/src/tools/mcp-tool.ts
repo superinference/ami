@@ -12,6 +12,15 @@ export function createMcpTool(serverName: string, toolName: string, description:
     async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
       const mcpManager = context._mcpManager;
       if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
+
+      if (mcpManager.isPending?.(serverName)) {
+        try {
+          await mcpManager.ensureConnected(serverName);
+        } catch (err) {
+          return { output: `Failed to start MCP server '${serverName}': ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        }
+      }
+
       const MCP_TOOL_TIMEOUT = 100_000_000; // ~27.8 hours
       let timer: ReturnType<typeof setTimeout>;
       const timeoutPromise = new Promise<never>((_, reject) => {

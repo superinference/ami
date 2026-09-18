@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
-import { resolveRuntime, buildContainerArgs, type ContainerConfig } from './container';
+import { resolveRuntime, buildContainerArgs, isImageAvailable, type ContainerConfig } from './container';
 
 export interface McpServerConfig {
   command: string;
@@ -17,13 +17,26 @@ export interface McpServerConfig {
   containerConfig?: ContainerConfig;
 }
 
+export type McpServerState = 'pending' | 'connecting' | 'ready' | 'error' | 'stopped';
+
 export interface McpServerStatus {
   name: string;
-  state: McpClientState;
+  state: McpClientState | McpServerState;
   serverInfo: { name: string; version: string } | null;
   toolCount: number;
   resourceCount: number;
   uptime: number | null;
+  imageAvailable?: boolean;
+  containerBacked?: boolean;
+  error?: string;
+}
+
+export interface PendingServerInfo {
+  name: string;
+  config: McpServerConfig;
+  state: McpServerState;
+  error?: string;
+  imageAvailable?: boolean;
 }
 
 export class McpManager extends EventEmitter {
@@ -33,6 +46,8 @@ export class McpManager extends EventEmitter {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private rootPaths: string[] = [];
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingServers = new Map<string, PendingServerInfo>();
+  private serverErrors = new Map<string, string>();
 
   setRootPaths(paths: string[]): void {
     this.rootPaths = paths;
@@ -103,6 +118,161 @@ export class McpManager extends EventEmitter {
     this.clients.set(name, client);
   }
 
+  addPendingServer(name: string, config: McpServerConfig): void {
+    if (this.clients.has(name) || this.pendingServers.has(name)) {
+      throw new Error(`MCP server '${name}' already registered`);
+    }
+    let imageAvailable: boolean | undefined;
+    if (config.containerConfig) {
+      const runtime = resolveRuntime(config.containerConfig.runtime);
+      if (runtime) {
+        imageAvailable = isImageAvailable(runtime, config.containerConfig.image);
+      }
+    }
+    const info: PendingServerInfo = { name, config, state: 'pending', imageAvailable };
+    this.pendingServers.set(name, info);
+    this.configs.set(name, config);
+    coreLog('mcp', `pending MCP server registered: ${name} (image available: ${imageAvailable ?? 'n/a'})`);
+    this.emit('server-state-changed', name, 'pending');
+  }
+
+  async ensureConnected(name: string): Promise<void> {
+    if (this.clients.has(name)) {
+      const client = this.clients.get(name)!;
+      if (client.state === 'ready') return;
+    }
+
+    const pending = this.pendingServers.get(name);
+    if (!pending) {
+      if (!this.clients.has(name)) throw new Error(`MCP server '${name}' not found`);
+      await this.connectServer(name);
+      return;
+    }
+
+    pending.state = 'connecting';
+    this.serverErrors.delete(name);
+    this.emit('server-state-changed', name, 'connecting');
+    coreLog('mcp', `on-demand connecting MCP server: ${name}`);
+
+    try {
+      this.pendingServers.delete(name);
+      this.addServer(name, pending.config);
+      await this.connectServer(name);
+
+      pending.state = 'ready';
+      this.emit('server-state-changed', name, 'ready');
+      coreLog('mcp', `MCP server connected on-demand: ${name} (${this.getToolsForServer(name).length} tools)`);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      pending.state = 'error';
+      pending.error = errMsg;
+      this.serverErrors.set(name, errMsg);
+      this.pendingServers.set(name, pending);
+      if (this.clients.has(name)) {
+        this.clients.get(name)!.disconnect();
+        this.clients.delete(name);
+      }
+      this.emit('server-state-changed', name, 'error');
+      coreLog('mcp', `on-demand connect failed for ${name}: ${errMsg}`);
+      throw err;
+    }
+  }
+
+  async stopServer(name: string): Promise<void> {
+    const client = this.clients.get(name);
+    if (client) {
+      client.disconnect();
+      this.clients.delete(name);
+      this.invalidateToolCache(name);
+    }
+
+    const timer = this.reconnectTimers.get(name);
+    if (timer) { clearTimeout(timer); this.reconnectTimers.delete(name); }
+
+    const config = this.configs.get(name);
+    if (config) {
+      this.pendingServers.set(name, { name, config, state: 'stopped' });
+    }
+    this.serverErrors.delete(name);
+    this.emit('server-state-changed', name, 'stopped');
+    coreLog('mcp', `MCP server stopped: ${name}`);
+  }
+
+  async restartServer(name: string): Promise<void> {
+    await this.stopServer(name);
+    await this.ensureConnected(name);
+  }
+
+  isPending(name: string): boolean {
+    return this.pendingServers.has(name) && !this.clients.has(name);
+  }
+
+  getServerState(name: string): McpServerState {
+    const pending = this.pendingServers.get(name);
+    if (pending && !this.clients.has(name)) return pending.state;
+    const client = this.clients.get(name);
+    if (!client) return 'pending';
+    if (client.state === 'ready') return 'ready';
+    if (client.state === 'connecting') return 'connecting';
+    if (client.state === 'error') return 'error';
+    return 'stopped';
+  }
+
+  getToolsForServer(name: string): McpToolSchema[] {
+    const tools: McpToolSchema[] = [];
+    for (const [, entry] of this._allTools) {
+      if (entry.serverName === name) tools.push(entry.schema);
+    }
+    return tools;
+  }
+
+  listAllServers(): McpServerStatus[] {
+    const result: McpServerStatus[] = [];
+    const seen = new Set<string>();
+
+    for (const name of this.clients.keys()) {
+      seen.add(name);
+      result.push(this.getFullServerStatus(name));
+    }
+    for (const [name, info] of this.pendingServers) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      result.push({
+        name,
+        state: info.state,
+        serverInfo: null,
+        toolCount: 0,
+        resourceCount: 0,
+        uptime: null,
+        imageAvailable: info.imageAvailable,
+        containerBacked: !!info.config.containerConfig,
+        error: info.error || this.serverErrors.get(name),
+      });
+    }
+    return result;
+  }
+
+  private getFullServerStatus(name: string): McpServerStatus {
+    const client = this.clients.get(name);
+    const config = this.configs.get(name);
+    if (!client) {
+      return {
+        name, state: 'pending', serverInfo: null, toolCount: 0,
+        resourceCount: 0, uptime: null, containerBacked: !!config?.containerConfig,
+      };
+    }
+    return {
+      name,
+      state: client.state,
+      serverInfo: client.serverInfo,
+      toolCount: client.tools.length,
+      resourceCount: client.resources.length,
+      uptime: client.uptime,
+      containerBacked: !!config?.containerConfig,
+      error: this.serverErrors.get(name),
+    };
+  }
+
   removeServer(name: string): void {
     const timer = this.reconnectTimers.get(name);
     if (timer) {
@@ -115,6 +285,8 @@ export class McpManager extends EventEmitter {
       client.disconnect();
       this.clients.delete(name);
     }
+    this.pendingServers.delete(name);
+    this.serverErrors.delete(name);
     this.configs.delete(name);
     this.invalidateToolCache(name);
   }
@@ -299,6 +471,8 @@ export class McpManager extends EventEmitter {
       client.disconnect();
     }
     this._allTools.clear();
+    this.pendingServers.clear();
+    this.serverErrors.clear();
   }
 
   loadFromConfig(configPath: string): void {

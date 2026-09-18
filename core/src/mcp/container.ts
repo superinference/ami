@@ -36,3 +36,32 @@ export function buildContainerArgs(config: ContainerConfig): string[] {
   args.push(config.image);
   return args;
 }
+
+export interface ImageInfo {
+  available: boolean;
+  id?: string;
+  size?: string;
+  created?: string;
+}
+
+export function isImageAvailable(runtime: string, image: string): boolean {
+  try {
+    execSync(`${runtime} image inspect ${image}`, { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getImageInfo(runtime: string, image: string): ImageInfo {
+  try {
+    const out = execSync(
+      `${runtime} image inspect --format '{{.Id}}|||{{.Size}}|||{{.Created}}' ${image}`,
+      { stdio: 'pipe', encoding: 'utf-8' },
+    );
+    const [id, size, created] = out.trim().split('|||');
+    return { available: true, id, size, created };
+  } catch {
+    return { available: false };
+  }
+}
