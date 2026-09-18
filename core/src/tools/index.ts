@@ -164,6 +164,7 @@ export { teamCreateTool, teamDeleteTool, getCurrentTeam, resetTeam } from './tea
 export { todoWriteTool, resetTodos, getTodos } from './todo-write';
 export { createMcpAuthTool } from './mcp-auth';
 export { createMcpTool } from './mcp-tool';
+export { createMcpConnectTool } from './mcp-connect';
 export { listMcpResourcesTool, readMcpResourceTool } from './mcp-resources';
 export { configTool } from './config-tool';
 export { syntheticOutputTool } from './synthetic-output';
