@@ -259,7 +259,6 @@ Custom code assistant.`);
     assert.ok(servers.kali, 'pentest persona should have kali MCP server');
     assert.ok(servers.kali.containerConfig, 'kali server must have containerConfig');
     assert.equal(servers.kali.containerConfig!.image, 'cyberillo/kali-mcp-server:latest');
-    assert.equal(servers.kali.containerConfig!.name, 'si-kali-mcp');
   });
 
   it('pentest persona has mcpAutoAllowPatterns', () => {

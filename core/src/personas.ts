@@ -82,7 +82,6 @@ When MCP tools are available, prefer them over bash for the same tool — they p
         command: '',
         containerConfig: {
           image: 'cyberillo/kali-mcp-server:latest',
-          name: 'si-kali-mcp',
           runtime: 'auto',
         },
       },

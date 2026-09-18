@@ -90,7 +90,6 @@ describe('persona MCP server declaration', () => {
     assert.ok(servers.kali);
     assert.ok(servers.kali.containerConfig, 'kali must have containerConfig');
     assert.equal(servers.kali.containerConfig!.image, 'cyberillo/kali-mcp-server:latest');
-    assert.equal(servers.kali.containerConfig!.name, 'si-kali-mcp');
   });
 
   it('pentest persona declares mcp__kali__* auto-allow pattern', () => {
