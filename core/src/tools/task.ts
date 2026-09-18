@@ -157,8 +157,11 @@ export const taskTool: ToolDefinition = {
     }
 
     const subAbort = new AbortController();
+    const runInBackground = input.run_in_background === true;
     const forwardAbort = () => subAbort.abort();
-    context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
+    if (!runInBackground) {
+      context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
+    }
 
     const isolation = input.isolation as string | undefined;
     let effectiveCwd = (input.cwd as string) || context.cwd;
@@ -213,7 +216,6 @@ export const taskTool: ToolDefinition = {
     // agentSystemPrompt and the engine uses its own persona-driven system prompt.
     const effectivePrompt = prompt;
 
-    const runInBackground = input.run_in_background === true;
 
     const agentName = input.name as string | undefined;
 
