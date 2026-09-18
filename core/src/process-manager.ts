@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
+import { FlowManager } from './flow-manager';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024; // 5 MB per task
 
@@ -28,6 +29,7 @@ interface InternalProcess extends BackgroundProcess {
 export class ProcessManager extends EventEmitter {
   private processes = new Map<string, InternalProcess>();
   private tasksDir: string;
+  readonly flowManager = new FlowManager();
 
   constructor(cwd: string) {
     super();

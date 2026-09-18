@@ -236,17 +236,18 @@ describe('fileEditTool – relative paths', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – safety guards', () => {
-  it('rejects edit when file not in filesRead', async () => {
+  it('auto-reads and allows edit when file not in filesRead', async () => {
     const file = path.join(tmpDir, 'guarded.ts');
     fs.writeFileSync(file, 'content\n');
+    const filesRead = new Set<string>();
 
     const result = await fileEditTool.execute({
       file_path: file,
       edits: [{ old_string: 'content', new_string: 'changed' }],
-    }, ctx({ filesRead: new Set() }));
+    }, ctx({ filesRead }));
 
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('must read'));
+    assert.ok(!result.isError, 'auto-read must allow edit without prior file_read');
+    assert.ok(filesRead.has(file), 'auto-read must track file in filesRead');
   });
 
   it('allows edit when file is in filesRead', async () => {

@@ -197,16 +197,18 @@ describe('fileEditTool – workspace boundary', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – read-before-write enforcement', () => {
-  it('blocks overwrite when filesRead is set but file was not read', async () => {
+  it('auto-reads and allows overwrite when filesRead is set but file was not read', async () => {
     const file = path.join(tmpDir, 'existing-unread.txt');
     fs.writeFileSync(file, 'original\n');
+    const filesRead = new Set<string>();
 
     const result = await fileEditTool.execute(
       { file_path: file, content: 'overwritten\n' },
-      ctx({ filesRead: new Set() }),
+      ctx({ filesRead }),
     );
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('must read'));
+    assert.ok(!result.isError, 'auto-read must allow overwrite without prior file_read');
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'overwritten\n');
+    assert.ok(filesRead.has(file), 'auto-read must track file in filesRead');
   });
 
   it('allows overwrite when file was previously read', async () => {
@@ -244,15 +246,15 @@ describe('fileEditTool – read-before-write enforcement', () => {
     assert.ok(!result.isError);
   });
 
-  it('does not modify file when blocked by read-before-write', async () => {
+  it('auto-reads and modifies file without prior read', async () => {
     const file = path.join(tmpDir, 'protected.txt');
     fs.writeFileSync(file, 'original\n');
 
     await fileEditTool.execute(
-      { file_path: file, content: 'should-not-write\n' },
+      { file_path: file, content: 'should-write\n' },
       ctx({ filesRead: new Set() }),
     );
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'original\n');
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'should-write\n');
   });
 });
 

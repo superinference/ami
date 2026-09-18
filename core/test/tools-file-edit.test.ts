@@ -242,16 +242,18 @@ describe('fileEditTool – fuzzy matching', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – read-before-write enforcement', () => {
-  it('blocks edit when filesRead is set but file was not read', async () => {
+  it('auto-reads file when filesRead is set but file was not read', async () => {
     const file = path.join(tmpDir, 'unread.ts');
     fs.writeFileSync(file, 'const x = 1;\n');
+    const filesRead = new Set<string>();
 
     const result = await fileEditTool.execute(
       { file_path: file, old_string: 'const x = 1;', new_string: 'const x = 2;' },
-      ctx({ filesRead: new Set() }),
+      ctx({ filesRead }),
     );
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('must read'));
+    assert.ok(!result.isError, 'auto-read must allow edit without prior file_read');
+    assert.ok(result.output.includes('Successfully edited'));
+    assert.ok(filesRead.has(file), 'auto-read must add file to filesRead');
   });
 
   it('allows edit when file was previously read', async () => {
@@ -290,7 +292,7 @@ describe('fileEditTool – read-before-write enforcement', () => {
     assert.ok(!result.isError);
   });
 
-  it('does not modify file when blocked by read-before-write', async () => {
+  it('auto-reads and modifies file even without prior read', async () => {
     const file = path.join(tmpDir, 'protected.ts');
     fs.writeFileSync(file, 'original\n');
 
@@ -298,7 +300,7 @@ describe('fileEditTool – read-before-write enforcement', () => {
       { file_path: file, old_string: 'original', new_string: 'modified' },
       ctx({ filesRead: new Set() }),
     );
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'original\n');
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'modified\n');
   });
 });
 

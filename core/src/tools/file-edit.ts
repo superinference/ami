@@ -79,10 +79,8 @@ async function writeEntireFile(
   const isNew = !fileExists || oldContent.length === 0;
 
   if (fileExists && oldContent.length > 0 && context.filesRead && !context.filesRead.has(resolved)) {
-    return {
-      output: `Error: You must read ${resolved} with file_read before overwriting it. This prevents accidental data loss.`,
-      isError: true,
-    };
+    context.filesRead.add(resolved);
+    getFileCache(context.cwd).setWritten(resolved, oldContent);
   }
 
   if (fileExists && oldContent.length > 0 && context.filesRead?.has(resolved)) {
@@ -138,19 +136,6 @@ async function applySequentialEdits(
   edits: SequentialEdit[],
   context: ToolContext,
 ): Promise<ToolResult> {
-  if (context.filesRead && !context.filesRead.has(resolved)) {
-    return {
-      output: `Error: You must read ${resolved} with file_read before editing it. This prevents edits based on stale content.`,
-      isError: true,
-    };
-  }
-
-  const fileCache = getFileCache(context.cwd);
-  if (fileCache.hasChanged(resolved)) {
-    fileCache.delete(resolved);
-    return { output: 'Error: File has been modified since you last read it. Read the file again before editing.', isError: true };
-  }
-
   let rawContent: string;
   try {
     rawContent = await fs.promises.readFile(resolved, 'utf-8');
@@ -159,6 +144,17 @@ async function applySequentialEdits(
       output: `Error: Cannot read file "${resolved}": ${err instanceof Error ? err.message : String(err)}`,
       isError: true,
     };
+  }
+
+  if (context.filesRead && !context.filesRead.has(resolved)) {
+    context.filesRead.add(resolved);
+    getFileCache(context.cwd).setWritten(resolved, rawContent);
+  }
+
+  const fileCache = getFileCache(context.cwd);
+  if (fileCache.hasChanged(resolved)) {
+    fileCache.delete(resolved);
+    return { output: 'Error: File has been modified since you last read it. Read the file again before editing.', isError: true };
   }
 
   const originalEnding = detectLineEnding(rawContent);
@@ -347,19 +343,6 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    if (context.filesRead && !context.filesRead.has(resolved)) {
-      return {
-        output: `Error: You must read ${resolved} with file_read before editing it. This prevents edits based on stale content.`,
-        isError: true,
-      };
-    }
-
-    const fileCache = getFileCache(context.cwd);
-    if (fileCache.hasChanged(resolved)) {
-      fileCache.delete(resolved);
-      return { output: 'Error: File has been modified since you last read it. Please read the file again before editing.', isError: true };
-    }
-
     try {
       const stat = fs.statSync(resolved);
       if (stat.size > MAX_EDIT_FILE_SIZE) {
@@ -388,6 +371,17 @@ export const fileEditTool: ToolDefinition = {
         output: `Error reading file: ${message}`,
         isError: true,
       };
+    }
+
+    if (context.filesRead && !context.filesRead.has(resolved)) {
+      context.filesRead.add(resolved);
+      getFileCache(context.cwd).setWritten(resolved, rawContent);
+    }
+
+    const fileCache = getFileCache(context.cwd);
+    if (fileCache.hasChanged(resolved)) {
+      fileCache.delete(resolved);
+      return { output: 'Error: File has been modified since you last read it. Please read the file again before editing.', isError: true };
     }
 
     const originalEnding = detectLineEnding(rawContent);

@@ -244,6 +244,11 @@ export const taskTool: ToolDefinition = {
           outputFd: null,
           bytesWritten: 0,
         });
+        const fm = (context.processManager as any).flowManager;
+        if (fm) {
+          const flowId = fm.getOrCreateActiveFlow(label);
+          fm.addAgent(flowId, taskId);
+        }
       }
 
       const subEngine = context._engineFactory(subConfig);
