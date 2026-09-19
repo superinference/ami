@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
-import { resolveRuntime, buildContainerArgs, isImageAvailable, type ContainerConfig } from './container';
+import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
 
 export interface McpServerConfig {
   command: string;
@@ -155,6 +155,14 @@ export class McpManager extends EventEmitter {
     coreLog('mcp', `on-demand connecting MCP server: ${name}`);
 
     try {
+      if (pending.config.containerConfig) {
+        const runtime = resolveRuntime(pending.config.containerConfig.runtime);
+        if (runtime && !isImageAvailable(runtime, pending.config.containerConfig.image)) {
+          coreLog('mcp', `pulling image for ${name}: ${pending.config.containerConfig.image}`);
+          await pullImage(runtime, pending.config.containerConfig.image);
+          coreLog('mcp', `image pulled for ${name}`);
+        }
+      }
       this.pendingServers.delete(name);
       this.addServer(name, pending.config);
       await this.connectServer(name);

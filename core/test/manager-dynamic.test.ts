@@ -498,6 +498,57 @@ describe('addPendingServer imageAvailable', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ensureConnected auto-pull integration
+// ---------------------------------------------------------------------------
+
+describe('ensureConnected auto-pull', () => {
+  it('source imports pullImage from container', () => {
+    assert.ok(managerSrc.includes('pullImage'));
+  });
+
+  it('source checks isImageAvailable before pulling', () => {
+    const ensureBody = managerSrc.slice(
+      managerSrc.indexOf('async ensureConnected('),
+      managerSrc.indexOf('async stopServer('),
+    );
+    assert.ok(ensureBody.includes('isImageAvailable'));
+  });
+
+  it('source calls pullImage when image not available', () => {
+    const ensureBody = managerSrc.slice(
+      managerSrc.indexOf('async ensureConnected('),
+      managerSrc.indexOf('async stopServer('),
+    );
+    assert.ok(ensureBody.includes('pullImage'));
+  });
+
+  it('source resolves runtime before pulling', () => {
+    const ensureBody = managerSrc.slice(
+      managerSrc.indexOf('async ensureConnected('),
+      managerSrc.indexOf('async stopServer('),
+    );
+    assert.ok(ensureBody.includes('resolveRuntime'));
+  });
+
+  it('auto-pull only runs for container-backed servers', () => {
+    const ensureBody = managerSrc.slice(
+      managerSrc.indexOf('async ensureConnected('),
+      managerSrc.indexOf('async stopServer('),
+    );
+    assert.ok(ensureBody.includes('pending.config.containerConfig'));
+  });
+
+  it('auto-pull logs before and after pull', () => {
+    const ensureBody = managerSrc.slice(
+      managerSrc.indexOf('async ensureConnected('),
+      managerSrc.indexOf('async stopServer('),
+    );
+    assert.ok(ensureBody.includes('pulling image for'));
+    assert.ok(ensureBody.includes('image pulled for'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Source code structure
 // ---------------------------------------------------------------------------
 

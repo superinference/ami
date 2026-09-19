@@ -74,14 +74,14 @@ When MCP tools are available, prefer them over bash for the same tool — they p
       'netstat*', 'ss*', 'tcpdump*',
       'hydra*', 'john*', 'hashcat*', 'msfconsole*', 'msfvenom*',
       'enum4linux*', 'dirb*', 'wpscan*', 'wfuzz*', 'amass*', 'sublist3r*',
-      'docker run*', 'docker start*', 'docker stop*', 'docker ps*', 'docker logs*',
-      'podman run*', 'podman start*', 'podman stop*', 'podman ps*', 'podman logs*',
+      'docker run*', 'docker start*', 'docker stop*', 'docker ps*', 'docker logs*', 'docker pull*',
+      'podman run*', 'podman start*', 'podman stop*', 'podman ps*', 'podman logs*', 'podman pull*',
     ],
     mcpServers: {
       kali: {
         command: '',
         containerConfig: {
-          image: 'cyberillo/kali-mcp-server:latest',
+          image: 'docker.io/cyberillo/kali-mcp-server:latest',
           runtime: 'auto',
         },
       },

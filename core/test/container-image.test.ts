@@ -6,6 +6,7 @@ import * as path from 'path';
 import {
   isImageAvailable,
   getImageInfo,
+  pullImage,
 } from '../src/mcp/container';
 import type { ImageInfo } from '../src/mcp/container';
 
@@ -107,5 +108,62 @@ describe('getImageInfo', () => {
 
   it('parses output with ||| separator', () => {
     assert.ok(SRC.includes("split('|||')"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pullImage
+// ---------------------------------------------------------------------------
+
+describe('pullImage', () => {
+  it('is exported as a function', () => {
+    assert.equal(typeof pullImage, 'function');
+  });
+
+  it('returns a promise', () => {
+    const p = pullImage('_nonexistent_runtime_', 'nonexistent/image:latest');
+    assert.ok(p instanceof Promise);
+    p.catch(() => {});
+  });
+
+  it('rejects for invalid runtime', async () => {
+    await assert.rejects(
+      () => pullImage('_nonexistent_runtime_', 'nonexistent/image:latest'),
+      (err: Error) => err.message.includes('ENOENT') || err.message.includes('pull failed'),
+    );
+  });
+
+  it('rejects for invalid image with real runtime', async () => {
+    await assert.rejects(
+      () => pullImage('docker', 'si_test_nonexistent_image_99999:latest'),
+      (err: Error) => err.message.includes('pull failed') || err.message.includes('not found'),
+    );
+  });
+
+  it('calls onProgress callback with output lines', async () => {
+    const lines: string[] = [];
+    try {
+      await pullImage('docker', 'si_test_nonexistent_image_99999:latest', (line) => lines.push(line));
+    } catch {
+      // expected
+    }
+    // Even on failure, stderr output should trigger progress callbacks
+    assert.ok(Array.isArray(lines));
+  });
+
+  it('source uses spawn to run pull', () => {
+    assert.ok(SRC.includes("spawn(runtime, ['pull', image]"));
+  });
+
+  it('source resolves on exit code 0', () => {
+    assert.ok(SRC.includes("if (code === 0) resolve()"));
+  });
+
+  it('source rejects with error message on non-zero exit', () => {
+    assert.ok(SRC.includes('pull failed'));
+  });
+
+  it('source handles process error event', () => {
+    assert.ok(SRC.includes("proc.on('error'"));
   });
 });

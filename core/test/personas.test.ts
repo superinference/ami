@@ -57,6 +57,13 @@ describe('PersonaManager', () => {
     assert.ok(patterns.some(p => p.includes('curl')));
   });
 
+  it('pentest auto-allow includes docker pull and podman pull', () => {
+    const pm = new PersonaManager(tmpDir, 'pentest');
+    const patterns = pm.getAutoAllowPatterns();
+    assert.ok(patterns.includes('docker pull*'), 'should include docker pull*');
+    assert.ok(patterns.includes('podman pull*'), 'should include podman pull*');
+  });
+
   it('sre has auto-allow patterns for kubectl', () => {
     const pm = new PersonaManager(tmpDir, 'sre');
     const patterns = pm.getAutoAllowPatterns();
@@ -258,7 +265,7 @@ Custom code assistant.`);
     const servers = pm.getMcpServers();
     assert.ok(servers.kali, 'pentest persona should have kali MCP server');
     assert.ok(servers.kali.containerConfig, 'kali server must have containerConfig');
-    assert.equal(servers.kali.containerConfig!.image, 'cyberillo/kali-mcp-server:latest');
+    assert.equal(servers.kali.containerConfig!.image, 'docker.io/cyberillo/kali-mcp-server:latest');
   });
 
   it('pentest persona has mcpAutoAllowPatterns', () => {

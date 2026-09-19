@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 
 export interface ContainerConfig {
   image: string;
@@ -51,6 +51,31 @@ export function isImageAvailable(runtime: string, image: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function pullImage(
+  runtime: string,
+  image: string,
+  onProgress?: (line: string) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(runtime, ['pull', image], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      const lines = chunk.toString().split('\n').filter(Boolean);
+      for (const line of lines) onProgress?.(line);
+    });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+      const lines = chunk.toString().split('\n').filter(Boolean);
+      for (const line of lines) onProgress?.(line);
+    });
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${runtime} pull failed (exit ${code}): ${stderr.trim()}`));
+    });
+    proc.on('error', (err) => reject(err));
+  });
 }
 
 export function getImageInfo(runtime: string, image: string): ImageInfo {
