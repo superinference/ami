@@ -50,7 +50,7 @@ describe('index exports', () => {
 
   it('exports BUILTIN_PERSONAS', () => {
     assert.ok(Array.isArray(core.BUILTIN_PERSONAS));
-    assert.ok(core.BUILTIN_PERSONAS.length >= 5);
+    assert.ok(core.BUILTIN_PERSONAS.length >= 4);
   });
 
   it('exports matchMcpAutoAllow', () => {

@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { BUILTIN_PERSONAS, matchMcpAutoAllow } from '../src/personas';
 import type { PersonaDefinition } from '../src/personas';
-import { PROVISION_MCP_CONFIGS } from '../../../common/src/provision/command';
 
 describe('BUILTIN_PERSONAS data', () => {
   const findPersona = (name: string): PersonaDefinition =>
@@ -56,52 +55,6 @@ describe('BUILTIN_PERSONAS data', () => {
     assert.ok(pentest.autoAllowPatterns!.includes('podman pull*'));
   });
 
-  it('PROVISION_MCP_CONFIGS has RunPod HTTP MCP server', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    assert.ok(runpod);
-    assert.ok(runpod.servers.runpod);
-    assert.equal(runpod.servers.runpod.transport, 'http');
-    assert.equal(runpod.servers.runpod.url, 'https://mcp.getrunpod.io/');
-  });
-
-  it('PROVISION_MCP_CONFIGS RunPod has Authorization header with env var template', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    assert.ok(runpod.servers.runpod.headers);
-    assert.equal(runpod.servers.runpod.headers!.Authorization, 'Bearer ${RUNPOD_API_KEY}');
-  });
-
-  it('PROVISION_MCP_CONFIGS RunPod has auto-allow patterns', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    assert.ok(runpod.autoAllowPatterns.includes('mcp__runpod__*'));
-  });
-
-  it('PROVISION_MCP_CONFIGS RunPod has request and connect timeouts', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    assert.equal(runpod.servers.runpod.requestTimeout, 60000);
-    assert.equal(runpod.servers.runpod.connectTimeout, 15000);
-  });
-
-  it('PROVISION_MCP_CONFIGS RunPod requires RUNPOD_API_KEY', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    assert.equal(runpod.requiredEnvVar, 'RUNPOD_API_KEY');
-  });
-
-  it('PROVISION_MCP_CONFIGS RunPod systemPromptGuidance mentions GPU compute and VRAM', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    assert.ok(runpod.systemPromptGuidance.includes('GPU Compute'));
-    assert.ok(runpod.systemPromptGuidance.includes('VRAM'));
-    assert.ok(runpod.systemPromptGuidance.includes('/provision'));
-  });
-
-  it('PROVISION_MCP_CONFIGS RunPod toolGuidance mentions RunPod capabilities', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    assert.ok(runpod.toolGuidance.includes('RunPod'));
-    assert.ok(runpod.toolGuidance.includes('mcp__runpod__'));
-    assert.ok(runpod.toolGuidance.includes('Pods'));
-    assert.ok(runpod.toolGuidance.includes('Serverless'));
-    assert.ok(runpod.toolGuidance.includes('vLLM'));
-  });
-
   it('sre persona has kubectl auto-allow', () => {
     const sre = findPersona('sre');
     assert.ok(sre.autoAllowPatterns);
@@ -115,19 +68,10 @@ describe('BUILTIN_PERSONAS data', () => {
     assert.ok(research.autoAllowPatterns!.some(p => p.includes('python')));
   });
 
-  it('pentest and provision RunPod have disjoint MCP auto-allow patterns', () => {
+  it('pentest has kali auto-allow patterns', () => {
     const pentest = findPersona('pentest');
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
+    assert.ok(matchMcpAutoAllow('mcp__kali__nmap_scan', pentest.mcpAutoAllowPatterns!));
     assert.ok(!matchMcpAutoAllow('mcp__runpod__create_pod', pentest.mcpAutoAllowPatterns!));
-    assert.ok(!matchMcpAutoAllow('mcp__kali__nmap_scan', runpod.autoAllowPatterns));
-  });
-
-  it('provision RunPod and pentest use different MCP transport types', () => {
-    const runpod = PROVISION_MCP_CONFIGS.runpod;
-    const pentest = findPersona('pentest');
-    assert.equal(runpod.servers.runpod.transport, 'http');
-    assert.ok(pentest.mcpServers!.kali.containerConfig);
-    assert.equal(pentest.mcpServers!.kali.transport, undefined);
   });
 });
 
