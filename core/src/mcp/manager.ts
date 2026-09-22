@@ -9,6 +9,7 @@ export interface McpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  headers?: Record<string, string>;
   requestTimeout?: number;
   connectTimeout?: number;
   autoConnect?: boolean;
@@ -37,6 +38,14 @@ export interface PendingServerInfo {
   state: McpServerState;
   error?: string;
   imageAvailable?: boolean;
+}
+
+function resolveEnvVars(headers: Record<string, string>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    resolved[key] = value.replace(/\$\{(\w+)\}/g, (_, v) => process.env[v] || '');
+  }
+  return resolved;
 }
 
 export class McpManager extends EventEmitter {
@@ -77,6 +86,7 @@ export class McpManager extends EventEmitter {
       command: resolvedCommand,
       args: resolvedArgs,
       env: config.env,
+      headers: config.headers ? resolveEnvVars(config.headers) : undefined,
       requestTimeout: config.requestTimeout ?? (config.containerConfig ? 60000 : 30000),
       connectTimeout: config.connectTimeout ?? (config.containerConfig ? 120000 : 10000),
       rootPaths: this.rootPaths,

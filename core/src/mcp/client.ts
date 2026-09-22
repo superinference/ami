@@ -113,6 +113,7 @@ export class McpClient extends EventEmitter {
   private readonly requestTimeout: number;
   private readonly connectTimeout: number;
   private readonly rootPaths: string[];
+  private readonly headers: Record<string, string>;
 
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
@@ -127,6 +128,7 @@ export class McpClient extends EventEmitter {
     command: string;
     args?: string[];
     env?: Record<string, string>;
+    headers?: Record<string, string>;
     requestTimeout?: number;
     connectTimeout?: number;
     rootPaths?: string[];
@@ -135,6 +137,7 @@ export class McpClient extends EventEmitter {
     this.command = options.command;
     this.args = options.args ?? [];
     this.env = options.env ?? {};
+    this.headers = options.headers ?? {};
     this.requestTimeout = options.requestTimeout ?? 30000;
     this.connectTimeout = options.connectTimeout ?? 10000;
     this.rootPaths = options.rootPaths ?? [];
@@ -271,6 +274,7 @@ export class McpClient extends EventEmitter {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json, text/event-stream',
+          ...this.headers,
         },
         timeout: this.requestTimeout,
       }, (res: any) => {
@@ -533,8 +537,12 @@ export class McpClient extends EventEmitter {
   }
 
   private sendHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    const id = ++this.requestId;
-    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    const isNotification = method.startsWith('notifications/');
+    const msg: Record<string, unknown> = { jsonrpc: '2.0', method, params };
+    if (!isNotification) {
+      msg.id = ++this.requestId;
+    }
+    const body = JSON.stringify(msg);
     const http = this.sseUrl!.startsWith('https') ? require('https') : require('http');
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -547,6 +555,7 @@ export class McpClient extends EventEmitter {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json, text/event-stream',
+          ...this.headers,
         },
         timeout: this.requestTimeout,
       }, (res: any) => {
@@ -554,6 +563,11 @@ export class McpClient extends EventEmitter {
         let data = '';
         res.on('data', (d: Buffer) => data += d);
         res.on('end', () => {
+          // Notifications: server responds with 202 Accepted (empty body)
+          if (isNotification) {
+            resolve(undefined);
+            return;
+          }
           if (statusCode === 404 && this.isSessionExpiredBody(data)) {
             this._state = 'error';
             this.emit('session-expired');
@@ -561,7 +575,18 @@ export class McpClient extends EventEmitter {
             return;
           }
           try {
-            const parsed = JSON.parse(data);
+            // Try direct JSON parse first; if that fails, extract from
+            // SSE framing (text/event-stream: "event: message\ndata: {…}")
+            let jsonStr = data;
+            try {
+              JSON.parse(jsonStr);
+            } catch {
+              const dataLine = data.split('\n').find(l => l.startsWith('data: '));
+              if (dataLine) {
+                jsonStr = dataLine.slice(6);
+              }
+            }
+            const parsed = JSON.parse(jsonStr);
             if (parsed.error) {
               if (parsed.error.code === -32001) {
                 this._state = 'error';

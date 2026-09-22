@@ -1,6 +1,3 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import type { PermissionRule } from './permissions';
 import type { ThinkingLevel } from './model-capabilities';
 import type { McpServerConfig } from './mcp/manager';
@@ -19,7 +16,7 @@ export interface PersonaDefinition {
   mcpToolGuidance?: string;
 }
 
-const BUILTIN_PERSONAS: PersonaDefinition[] = [
+export const BUILTIN_PERSONAS: PersonaDefinition[] = [
   {
     name: 'code',
     description: 'Code assistant — generation, debugging, refactoring, testing',
@@ -151,123 +148,6 @@ Prefer MCP tools over raw bash for security scanning — they run in an isolated
     defaultThinkingLevel: 'high',
   },
 ];
-
-export class PersonaManager {
-  private personas: Map<string, PersonaDefinition> = new Map();
-  private active: PersonaDefinition;
-  private cwd: string;
-
-  constructor(cwd: string, initialPersona?: string) {
-    this.cwd = cwd;
-    this.loadAll();
-    this.active = this.personas.get(initialPersona || 'code') || BUILTIN_PERSONAS[0]!;
-  }
-
-  getActive(): PersonaDefinition {
-    return this.active;
-  }
-
-  switchTo(name: string): PersonaDefinition | null {
-    const persona = this.personas.get(name);
-    if (!persona) return null;
-    this.active = persona;
-    return persona;
-  }
-
-  list(): PersonaDefinition[] {
-    return Array.from(this.personas.values());
-  }
-
-  getSystemPromptOverlay(): string {
-    return this.active.systemPromptOverlay;
-  }
-
-  getAutoAllowPatterns(): string[] {
-    return this.active.autoAllowPatterns || [];
-  }
-
-  getMcpServers(): Record<string, McpServerConfig> {
-    return this.active.mcpServers || {};
-  }
-
-  getMcpAutoAllowPatterns(): string[] {
-    return this.active.mcpAutoAllowPatterns || [];
-  }
-
-  getMcpToolGuidance(): string | undefined {
-    return this.active.mcpToolGuidance;
-  }
-
-  getDefaultThinkingLevel(): ThinkingLevel {
-    return this.active.defaultThinkingLevel || 'medium';
-  }
-
-  private loadAll(): void {
-    for (const persona of BUILTIN_PERSONAS) {
-      this.personas.set(persona.name, persona);
-    }
-
-    const userDir = path.join(os.homedir(), '.superinference', 'personas');
-    this.loadPersonasDir(userDir);
-
-    const projectDir = path.join(this.cwd, '.superinference', 'personas');
-    this.loadPersonasDir(projectDir);
-  }
-
-  private loadPersonasDir(dir: string): void {
-    let files: string[];
-    try {
-      files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
-    } catch {
-      return;
-    }
-
-    for (const file of files) {
-      try {
-        const content = fs.readFileSync(path.join(dir, file), 'utf-8');
-        const persona = this.parsePersonaFile(content, file);
-        if (persona) {
-          this.personas.set(persona.name, persona);
-        }
-      } catch {}
-    }
-  }
-
-  private parsePersonaFile(content: string, filename: string): PersonaDefinition | null {
-    const trimmed = content.trimStart();
-    if (!trimmed.startsWith('---')) return null;
-
-    const endIdx = trimmed.indexOf('---', 3);
-    if (endIdx === -1) return null;
-
-    const fmBlock = trimmed.slice(3, endIdx).trim();
-    const body = trimmed.slice(endIdx + 3).trim();
-
-    const fields: Record<string, string> = {};
-    for (const line of fmBlock.split('\n')) {
-      const colonIdx = line.indexOf(':');
-      if (colonIdx > 0) {
-        const key = line.slice(0, colonIdx).trim();
-        const val = line.slice(colonIdx + 1).trim();
-        fields[key] = val;
-      }
-    }
-
-    const name = fields['name'] || filename.replace('.md', '');
-    return {
-      name,
-      description: fields['description'] || name,
-      systemPromptOverlay: body,
-      defaultThinkingLevel: (fields['thinking'] as ThinkingLevel) || 'medium',
-      autoAllowPatterns: fields['auto-allow']
-        ? fields['auto-allow'].split(',').map(s => s.trim())
-        : undefined,
-      mcpAutoAllowPatterns: fields['mcp-auto-allow']
-        ? fields['mcp-auto-allow'].split(',').map(s => s.trim())
-        : undefined,
-    };
-  }
-}
 
 export function matchMcpAutoAllow(toolName: string, patterns: string[]): boolean {
   for (const pattern of patterns) {
