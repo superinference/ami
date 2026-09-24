@@ -110,6 +110,12 @@ export interface ProviderConfig {
   temperature?: number;
   provider?: string;
   /**
+   * Actual context window size reported by the serving backend (e.g. vLLM
+   * max_model_len). When set, overrides the theoretical value from
+   * getContextWindow() for headroom calculations and system prompt sizing.
+   */
+  contextWindow?: number;
+  /**
    * Provider-specific request-body fields merged verbatim into every
    * OpenAI-compatible request (e.g. `chat_template_kwargs` for vLLM-served
    * Qwen/Granite reasoning control). Deep-merged into the AI SDK request body
