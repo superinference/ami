@@ -38,18 +38,34 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'gemini-1.5-pro': 1048576,
   'deepseek-chat': 64000,
   'deepseek-reasoner': 64000,
-  // Qwen3.8 — 256k native context
-  'Qwen3.8': 262144,
+  // Qwen3.x — 256k native context
   'qwen3.8': 262144,
-  'Qwen3': 262144,
   'qwen3': 262144,
+  // Qwen2.5 — size-specific context windows (most specific first)
+  'qwen2.5-0.5b': 32768,
+  'qwen2.5-1.5b': 32768,
+  'qwen2.5-3b': 32768,
+  'qwen2.5-7b': 131072,
+  'qwen2.5-14b': 131072,
+  'qwen2.5-32b': 131072,
+  'qwen2.5-72b': 131072,
+  'qwen2.5': 32768,
+  'qwen2': 32768,
+  // Small open-weight models
+  'llama-3.2-1b': 131072,
+  'llama-3.2-3b': 131072,
+  'phi-3-mini': 4096,
+  'phi-3.5-mini': 131072,
+  'phi-4-mini': 131072,
 };
 
 export function getContextWindow(modelId: string): number {
+  const lower = modelId.toLowerCase();
   for (const [key, tokens] of Object.entries(CONTEXT_WINDOWS)) {
-    const idx = modelId.indexOf(key);
+    const keyLower = key.toLowerCase();
+    const idx = lower.indexOf(keyLower);
     if (idx === -1) continue;
-    if (key.length <= 3 && idx > 0 && /[a-zA-Z0-9]/.test(modelId[idx - 1])) continue;
+    if (keyLower.length <= 3 && idx > 0 && /[a-zA-Z0-9]/.test(lower[idx - 1])) continue;
     return tokens;
   }
   return 128000;

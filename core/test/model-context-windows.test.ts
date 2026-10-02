@@ -34,6 +34,28 @@ describe('Model context windows', () => {
     assert.equal(getContextWindow('Qwen/Qwen3.8-27B'), 262144);
     assert.equal(getContextWindow('Qwen/Qwen3-235B-A22B'), 262144);
   });
+
+  it('returns correct context for Qwen2.5 models (size-specific)', () => {
+    assert.equal(getContextWindow('Qwen/Qwen2.5-0.5B-Instruct'), 32768);
+    assert.equal(getContextWindow('Qwen/Qwen2.5-1.5B-Instruct'), 32768);
+    assert.equal(getContextWindow('Qwen/Qwen2.5-3B-Instruct'), 32768);
+    assert.equal(getContextWindow('Qwen/Qwen2.5-7B-Instruct'), 131072);
+    assert.equal(getContextWindow('Qwen/Qwen2.5-14B'), 131072);
+    assert.equal(getContextWindow('Qwen/Qwen2.5-32B'), 131072);
+    assert.equal(getContextWindow('Qwen/Qwen2.5-72B-Instruct'), 131072);
+  });
+
+  it('case-insensitive lookup handles mixed-case HuggingFace IDs', () => {
+    assert.equal(getContextWindow('QWEN2.5-0.5B'), 32768);
+    assert.equal(getContextWindow('qwen2.5-72b-instruct'), 131072);
+    assert.equal(getContextWindow('Qwen/QWEN3-8B'), 262144);
+  });
+
+  it('returns correct context for small open-weight models', () => {
+    assert.equal(getContextWindow('meta-llama/Llama-3.2-1B-Instruct'), 131072);
+    assert.equal(getContextWindow('microsoft/phi-3-mini-4k-instruct'), 4096);
+    assert.equal(getContextWindow('microsoft/Phi-3.5-mini-instruct'), 131072);
+  });
 });
 
 describe('Model capabilities', () => {
