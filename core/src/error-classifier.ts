@@ -20,6 +20,7 @@ export type ErrorCategory =
   | 'server_error'
   | 'network_error'
   | 'abort'
+  | 'repetition'
   | 'unknown';
 
 export interface ClassifiedError {
@@ -138,6 +139,11 @@ export function classifyError(error: string): ClassifiedError {
     lower.includes('dns')
   ) {
     return { category: 'network_error', message: error, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
+  }
+
+  // Repetition — model output is degenerate; not retryable at the API level
+  if (lower.includes('repetitive')) {
+    return { category: 'repetition', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
   // Unknown — not retryable by default; the engine can decide

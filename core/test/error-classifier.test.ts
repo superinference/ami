@@ -249,6 +249,25 @@ describe('classifyError — abort', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Repetition
+// ---------------------------------------------------------------------------
+describe('classifyError — repetition', () => {
+  const expected = { category: 'repetition' as const, retryable: false, shouldCompact: false, shouldFallback: false };
+
+  it('detects "Repetitive output detected"', () => {
+    assertClassification(classifyError('Repetitive output detected'), expected);
+  });
+
+  it('detects "repetitive" in any context', () => {
+    assertClassification(classifyError('Model produced repetitive tokens'), expected);
+  });
+
+  it('is not retryable', () => {
+    assert.equal(classifyError('Repetitive output detected').retryable, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Unknown
 // ---------------------------------------------------------------------------
 describe('classifyError — unknown', () => {
@@ -314,13 +333,16 @@ describe('classifyError — cross-cutting', () => {
 
     const result3 = classifyError('completely random text');
     assert.equal(result3.retryable, false);
+
+    const result4 = classifyError('Repetitive output detected');
+    assert.equal(result4.retryable, false);
   });
 
   it('only context_overflow has shouldCompact=true', () => {
     const result = classifyError('context too long');
     assert.equal(result.shouldCompact, true);
 
-    const others = ['HTTP 429', 'HTTP 401', 'HTTP 503', 'HTTP 500 Internal Server Error', 'ECONNREFUSED', 'abort', 'output too large', 'random'];
+    const others = ['HTTP 429', 'HTTP 401', 'HTTP 503', 'HTTP 500 Internal Server Error', 'ECONNREFUSED', 'abort', 'output too large', 'Repetitive output', 'random'];
     for (const msg of others) {
       assert.equal(classifyError(msg).shouldCompact, false, `"${msg}" should not have shouldCompact`);
     }
@@ -330,7 +352,7 @@ describe('classifyError — cross-cutting', () => {
     assert.equal(classifyError('HTTP 503 Service Unavailable').shouldFallback, true);
     assert.equal(classifyError('HTTP 500 Internal Server Error').shouldFallback, true);
 
-    const noFallback = ['HTTP 429', 'HTTP 401', 'context too long', 'ECONNREFUSED', 'abort', 'random'];
+    const noFallback = ['HTTP 429', 'HTTP 401', 'context too long', 'ECONNREFUSED', 'abort', 'Repetitive output', 'random'];
     for (const msg of noFallback) {
       assert.equal(classifyError(msg).shouldFallback, false, `"${msg}" should not have shouldFallback`);
     }
