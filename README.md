@@ -268,7 +268,8 @@ All parameters are configurable via `SuperInferenceConfig`:
 | `noiseLevel` | η | 0.1 | Retrieval noise level |
 | `successScore` | — | 0.8 | Proxy critic score (success) |
 | `errorScore` | — | 0.3 | Proxy critic score (error) |
-| `useLLMCritic` | — | true | Use LLM-based critic evaluation |
+| `useLLMCritic` | — | false | Call the LLM critic. The library default is off |
+| `enforcing` | — | false | Stored for the caller. `shouldStop()` does not read it |
 
 ---
 

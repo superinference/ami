@@ -229,8 +229,7 @@ export interface EngineConfig {
   compactionModel?: string;
   /** Extended thinking/reasoning configuration. */
   thinking?: ThinkingConfig;
-  /** SuperInference PRE-loop configuration. When enabled, the engine tracks
-   *  belief state, runs a critic, and can stop early on confidence/EIG thresholds. */
+  /** SuperInference belief tracking. shouldStop() ends the session only when enforcing is true. */
   superinference?: SuperInferenceConfig;
   /** Lifecycle hooks for post-sampling, stop, and error events. */
   hooks?: import('./hooks').HookManager;

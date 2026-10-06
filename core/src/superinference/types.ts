@@ -12,6 +12,8 @@ export interface SuperInferenceConfig {
   successScore?: number;         // proxy critic score on tool success (default 0.8)
   errorScore?: number;           // proxy critic score on tool error (default 0.3)
   useLLMCritic?: boolean;        // use real LLM-based critic evaluation (default false)
+  /** When true, the engine may end the session on shouldStop(). Default false. shouldStop() itself does not read this. */
+  enforcing?: boolean;
 }
 
 export interface CriticDecision {
@@ -45,5 +47,6 @@ export const DEFAULT_CONFIG: Required<SuperInferenceConfig> = {
   noiseLevel: 0.1,
   successScore: 0.8,
   errorScore: 0.3,
-  useLLMCritic: true,
+  useLLMCritic: false,
+  enforcing: false,
 };

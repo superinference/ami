@@ -283,6 +283,8 @@ describe('DEFAULT_CONFIG', () => {
     assert.equal(DEFAULT_CONFIG.lambdaPlus, 0.35);
     assert.equal(DEFAULT_CONFIG.lambdaMinus, 0.6);
     assert.equal(DEFAULT_CONFIG.maxSteps, 25);
+    assert.equal(DEFAULT_CONFIG.enforcing, false);
+    assert.equal(DEFAULT_CONFIG.useLLMCritic, false);
   });
 });
 
@@ -557,5 +559,34 @@ describe('BeliefTracker – numerical stability', () => {
     const eigVal = tracker.eig();
     assert.ok(Number.isFinite(eigVal), `EIG should be finite, got ${eigVal}`);
     assert.ok(eigVal >= 0, `EIG should be ≥ 0, got ${eigVal}`);
+  });
+});
+
+describe('BeliefTracker – applyRates', () => {
+  it('replaces lambda and the next update uses the new rate', () => {
+    const tracker = new BeliefTracker({ enabled: true, initialBelief: 0.5, lambdaPlus: 0.35 });
+    tracker.applyRates({ lambdaPlus: 0.4, lambdaMinus: 0.55 });
+    assert.equal(tracker.lambdaPlus, 0.4);
+    assert.equal(tracker.lambdaMinus, 0.55);
+    tracker.update(true, 1);
+    const withNew = tracker.belief;
+    const other = new BeliefTracker({ enabled: true, initialBelief: 0.5, lambdaPlus: 0.35 });
+    other.update(true, 1);
+    assert.ok(withNew > other.belief);
+  });
+
+  it('rejects a rate outside the paper range', () => {
+    const tracker = new BeliefTracker({ enabled: true });
+    assert.throws(() => tracker.applyRates({ lambdaPlus: 0, lambdaMinus: 0.6 }), RangeError);
+    assert.throws(() => tracker.applyRates({ lambdaPlus: 0.35, lambdaMinus: 1 }), RangeError);
+  });
+
+  it('replaces kappa and the next stop check uses it', () => {
+    const tracker = new BeliefTracker({ enabled: true, initialBelief: 0.8, confidenceThreshold: 0.99 });
+    assert.equal(tracker.shouldStop().type, 'none');
+    tracker.applyThreshold(0.8);
+    assert.equal(tracker.confidenceThreshold, 0.8);
+    assert.equal(tracker.shouldStop().type, 'confidence');
+    assert.throws(() => tracker.applyThreshold(0), RangeError);
   });
 });

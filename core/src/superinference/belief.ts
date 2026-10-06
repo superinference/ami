@@ -18,6 +18,34 @@ export class BeliefTracker {
 
   get belief(): number { return this._bt; }
   get step(): number { return this._step; }
+  get lambdaPlus(): number { return this.config.lambdaPlus; }
+  get lambdaMinus(): number { return this.config.lambdaMinus; }
+  get confidenceThreshold(): number { return this.config.confidenceThreshold; }
+
+  /**
+   * Replace λ+ and λ−. The tracker keeps a private copy of config, so writing
+   * the engine's si.config does not change the next update or shouldStop().
+   */
+  applyRates(next: { lambdaPlus: number; lambdaMinus: number }): void {
+    if (next.lambdaPlus <= 0 || next.lambdaPlus > 1) {
+      throw new RangeError(`lambdaPlus must be in (0, 1], got ${next.lambdaPlus}`);
+    }
+    if (next.lambdaMinus <= 0 || next.lambdaMinus >= 1) {
+      throw new RangeError(`lambdaMinus must be in (0, 1), got ${next.lambdaMinus}`);
+    }
+    this.config = { ...this.config, lambdaPlus: next.lambdaPlus, lambdaMinus: next.lambdaMinus };
+  }
+
+  /**
+   * Replace κ. Same private-config reason as applyRates. The proxy score 0.8
+   * never reaches the paper default 0.9, so a confidence stop needs this.
+   */
+  applyThreshold(kappa: number): void {
+    if (kappa <= 0 || kappa > 1) {
+      throw new RangeError(`confidenceThreshold must be in (0, 1], got ${kappa}`);
+    }
+    this.config = { ...this.config, confidenceThreshold: kappa };
+  }
 
   // Equation 1: Belief update
   // b_{t+1} = b_t + λ_+(s - b_t)  if positive (Critic approves)
