@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { spillToolText } from './spill-output';
 
 export function createMcpTool(serverName: string, toolName: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
   const normalizedServer = serverName.replace(/[^a-zA-Z0-9_]/g, '_');
@@ -34,7 +35,7 @@ export function createMcpTool(serverName: string, toolName: string, description:
         ]);
         clearTimeout(timer!);
         const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-        return { output: text.slice(0, 100_000) };
+        return { output: spillToolText(context.cwd, 'mcp', text, 100_000) };
       } catch (err) {
         clearTimeout(timer!);
         return { output: `MCP tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };

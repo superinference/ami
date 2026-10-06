@@ -2408,13 +2408,17 @@ describe('createMcpTool — coverage', () => {
     const r = await tool.execute(
       {},
       ctx({
+        cwd: os.tmpdir(),
         _mcpManager: {
           callTool: async () => bigString,
         },
       }),
     );
     assert.ok(!r.isError);
-    assert.equal(r.output.length, 100_000);
+    assert.ok(r.output.includes('persisted to'), r.output.slice(0, 200));
+    assert.ok(r.output.startsWith('x'.repeat(1000)));
+    assert.ok(r.output.endsWith('x'.repeat(1000)));
+    assert.ok(r.output.length < 200_000);
   });
 });
 
@@ -2554,13 +2558,17 @@ describe('readMcpResourceTool — coverage', () => {
     const r = await readMcpResourceTool.execute(
       { server: 'srv', uri: 'big' },
       ctx({
+        cwd: os.tmpdir(),
         _mcpManager: {
           readResource: async () => bigString,
         },
       }),
     );
     assert.ok(!r.isError);
-    assert.equal(r.output.length, 100_000);
+    assert.ok(r.output.includes('persisted to'));
+    assert.ok(r.output.startsWith('y'.repeat(1000)));
+    assert.ok(r.output.endsWith('y'.repeat(1000)));
+    assert.ok(r.output.length < 200_000);
   });
 
   it('handles readResource error', async () => {

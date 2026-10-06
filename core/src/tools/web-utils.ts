@@ -156,7 +156,7 @@ export function httpGet(
     includeContentType?: boolean;
     resolvedIP?: string;
   },
-): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string }> {
+): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
   const maxRedirects = options?.maxRedirects ?? 5;
   const timeoutMs = options?.timeoutMs ?? 30000;
 
@@ -169,7 +169,7 @@ function httpGetInternal(
   redirectsLeft: number,
   timeoutMs: number,
   resolvedIP?: string,
-): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string }> {
+): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
   const MAX_RESPONSE_LENGTH = 50000;
 
   return new Promise((resolve, reject) => {
@@ -239,21 +239,33 @@ function httpGetInternal(
 
         const chunks: Buffer[] = [];
         let totalBytes = 0;
+        let settled = false;
+        const finish = (body: string, truncated = false) => {
+          if (settled) return;
+          settled = true;
+          resolve({
+            body,
+            statusCode,
+            contentType: res.headers['content-type'] ?? '',
+            finalUrl: url,
+            ...(truncated ? { truncated: true } : {}),
+          });
+        };
         res.on('data', (chunk: Buffer) => {
+          if (settled) return;
           totalBytes += chunk.length;
+          chunks.push(chunk);
           if (totalBytes > MAX_RESPONSE_LENGTH * 2) {
             res.destroy();
-            resolve({ body: Buffer.concat(chunks).toString('utf-8'), statusCode, contentType: res.headers['content-type'] ?? '', finalUrl: url });
-            return;
+            finish(Buffer.concat(chunks).toString('utf-8'), true);
           }
-          chunks.push(chunk);
         });
         res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf-8');
-          const contentType = res.headers['content-type'] ?? '';
-          resolve({ body, statusCode, contentType, finalUrl: url });
+          finish(Buffer.concat(chunks).toString('utf-8'));
         });
-        res.on('error', reject);
+        res.on('error', (err) => {
+          if (!settled) reject(err);
+        });
       },
     );
 

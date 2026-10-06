@@ -3,6 +3,7 @@ import * as path from 'path';
 import { URL } from 'url';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validateUrlSafety, stripHtml, httpGet } from './web-utils';
+import { spillToolText } from './spill-output';
 
 const MAX_RESPONSE_LENGTH = 50000;
 const MAX_URL_LENGTH = 2000;
@@ -184,7 +185,7 @@ export const webFetchTool: ToolDefinition = {
     }
 
     try {
-      const { body, statusCode, contentType, finalUrl } = await httpGet(
+      const { body, statusCode, contentType, finalUrl, truncated } = await httpGet(
         url,
         context.abortSignal,
         { resolvedIP: pinnedIP },
@@ -235,8 +236,9 @@ export const webFetchTool: ToolDefinition = {
             if (htmlResult.statusCode < 400 && htmlResult.contentType.includes('text/html')) {
               const htmlContent = stripHtml(htmlResult.body);
               if (htmlContent.length > 200) {
+                const page = spillToolText(context.cwd, 'web-fetch', htmlContent, MAX_RESPONSE_LENGTH);
                 return {
-                  output: `URL: ${htmlUrl} (HTML version of PDF)\nStatus: ${htmlResult.statusCode}\n\n${htmlContent.slice(0, MAX_RESPONSE_LENGTH)}`,
+                  output: `URL: ${htmlUrl} (HTML version of PDF)\nStatus: ${htmlResult.statusCode}\n\n${page}`,
                   isError: false,
                 };
               }
@@ -267,11 +269,9 @@ export const webFetchTool: ToolDefinition = {
         content = body;
       }
 
-      // Truncate if necessary
-      if (content.length > MAX_RESPONSE_LENGTH) {
-        content =
-          content.slice(0, MAX_RESPONSE_LENGTH) +
-          '\n\n[Content truncated at 50000 characters]';
+      content = spillToolText(context.cwd, 'web-fetch', content, MAX_RESPONSE_LENGTH);
+      if (truncated) {
+        content += '\n\n[Download stopped at 100000 bytes; the rest of the response was not read.]';
       }
 
       // Build the result

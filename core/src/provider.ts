@@ -314,9 +314,13 @@ async function loadModelRecords(config: ProviderConfig): Promise<Record<string, 
         headers: endpoint.headers,
         signal: AbortSignal.timeout(1500),
       });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        modelListCache.delete(cacheKey);
+        return [];
+      }
       return collectModelRecords(await res.json());
     } catch {
+      modelListCache.delete(cacheKey);
       return [];
     }
   })();
@@ -343,17 +347,19 @@ function huggingFaceEndpoint(): string {
 
 function huggingFaceToken(config: ProviderConfig): string | undefined {
   if (config.apiKey?.startsWith('hf_')) return config.apiKey;
-  if (config.provider === 'huggingface' && config.apiKey) return config.apiKey;
-  return process.env.HF_TOKEN || undefined;
+  if (config.provider === 'huggingface' && config.apiKey && !config.apiKey.startsWith('sk-')) return config.apiKey;
+  const env = process.env.HF_TOKEN;
+  if (env && !env.startsWith('sk-')) return env;
+  return undefined;
 }
 
-async function readHuggingFaceFile(url: string, headers: Record<string, string>): Promise<number | undefined> {
+async function readHuggingFaceFile(url: string, headers: Record<string, string>): Promise<number | 'missing' | 'failed'> {
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(1000) });
-    if (!res.ok) return undefined;
-    return readHuggingFaceContextWindow(await res.json());
+    if (!res.ok) return 'missing';
+    return readHuggingFaceContextWindow(await res.json()) ?? 'missing';
   } catch {
-    return undefined;
+    return 'failed';
   }
 }
 
@@ -377,7 +383,8 @@ export async function fetchHuggingFaceContextWindow(repo: string, config: Provid
       readHuggingFaceFile(`${endpoint}/${root}/resolve/main/config.json`, headers),
       readHuggingFaceFile(`${endpoint}/${root}/resolve/main/tokenizer_config.json`, headers),
     ]);
-    const usable = lengths.filter((length): length is number => length !== undefined);
+    if (lengths.some(length => length === 'failed')) huggingFaceCache.delete(cacheKey);
+    const usable = lengths.filter((length): length is number => typeof length === 'number');
     if (usable.length === 0) return undefined;
     return Math.max(...usable);
   })();

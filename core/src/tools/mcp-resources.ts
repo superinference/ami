@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { spillToolText } from './spill-output';
 
 export const listMcpResourcesTool: ToolDefinition = {
   name: 'ListMcpResources',
@@ -40,7 +41,8 @@ export const readMcpResourceTool: ToolDefinition = {
     if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
     try {
       const result = await mcpManager.readResource(input.server as string, input.uri as string);
-      return { output: typeof result === 'string' ? result.slice(0, 100_000) : JSON.stringify(result).slice(0, 100_000) };
+      const text = typeof result === 'string' ? result : JSON.stringify(result);
+      return { output: spillToolText(context.cwd, 'mcp-resource', text, 100_000) };
     } catch (err) {
       return { output: `Error reading MCP resource: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }

@@ -1,11 +1,9 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
 import { validateBashSecurity } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
+import { spillToolText } from './spill-output';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -148,7 +146,7 @@ export function detectDetachedGitDiscard(command: string): string | null {
   for (let i = 0; i < invocations.length; i++) {
     const { sub, rest, stashSub } = invocations[i];
     if (sub === 'stash') {
-      if (STASH_DROP_CLEAR.has(stashSub)) return DETACHED_GIT_DISCARD_MSG;
+      if (STASH_DROP_CLEAR.has(stashSub) || stashSub === 'branch') return DETACHED_GIT_DISCARD_MSG;
       if (STASH_PUSH_SAVE.has(stashSub) && !hasLaterPopOrApply(i)) return DETACHED_GIT_DISCARD_MSG;
       continue;
     }
@@ -156,8 +154,13 @@ export function detectDetachedGitDiscard(command: string): string | null {
     if (sub === 'reset' && rest.some(t => t === '--hard' || t === '--merge' || t === '--keep')) {
       return DETACHED_GIT_DISCARD_MSG;
     }
-    if (sub === 'checkout' && rest.includes('--')) {
-      return DETACHED_GIT_DISCARD_MSG;
+    if (sub === 'checkout') {
+      if (rest.includes('--')) return DETACHED_GIT_DISCARD_MSG;
+      // `git checkout <tree-ish> <path>` discards the worktree. A single
+      // positional (`git checkout main`, `git checkout -b feature`) is a
+      // branch switch and stays allowed.
+      const positional = rest.filter(t => t !== '--' && !t.startsWith('-'));
+      if (positional.length >= 2) return DETACHED_GIT_DISCARD_MSG;
     }
     if (sub === 'clean' && rest.some(t => t === '--force' || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(t))) {
       return DETACHED_GIT_DISCARD_MSG;
@@ -367,16 +370,7 @@ export const bashTool: ToolDefinition = {
     }
 
     // Persist large output to disk instead of truncating
-    let stdout = result.stdout;
-    if (stdout.length > MAX_OUTPUT_LENGTH) {
-      const spillDir = path.join(context.cwd, '.superinference', 'tool-results');
-      fs.mkdirSync(spillDir, { recursive: true });
-      const spillFile = path.join(spillDir, `bash-${Date.now()}.txt`);
-      fs.writeFileSync(spillFile, stdout, 'utf-8');
-      const headLen = Math.floor(MAX_OUTPUT_LENGTH * 0.67);
-      const tailLen = MAX_OUTPUT_LENGTH - headLen - 200;
-      stdout = stdout.slice(0, headLen) + `\n\n[... ${stdout.length - headLen - tailLen} chars persisted to ${spillFile} — use file_read to view ...]\n\n` + stdout.slice(-tailLen);
-    }
+    let stdout = spillToolText(context.cwd, 'bash', result.stdout, MAX_OUTPUT_LENGTH);
 
     const noOutputExpected = /^\s*(mkdir|touch|mv|cp|rm|chmod|chown)\b/.test(command);
     if (noOutputExpected && !stdout.trim() && result.exitCode === 0) {

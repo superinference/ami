@@ -113,7 +113,7 @@ describe('web_fetch tool', () => {
           } else if (req.url === '/large') {
             res.writeHead(200, { 'Content-Type': 'text/plain' });
             // Write 60000 characters of content
-            res.end('x'.repeat(60000));
+            res.end(`HEAD${'x'.repeat(60000)}TAIL`);
           } else {
             res.writeHead(404);
             res.end();
@@ -207,9 +207,10 @@ describe('web_fetch tool', () => {
       makeContext('/tmp', true),
     );
     assert.equal(result.isError, undefined);
-    assert.ok(result.output.includes('[Content truncated at 50000 characters]'));
-    // The total output should be under 51000 chars (50000 + header)
-    assert.ok(result.output.length < 51000);
+    assert.ok(result.output.includes('persisted to'));
+    assert.ok(result.output.includes('HEAD'));
+    assert.ok(result.output.includes('TAIL'));
+    assert.ok(result.output.length < 60000);
   });
 
   it('includes prompt in output when provided', async () => {

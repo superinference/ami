@@ -573,6 +573,9 @@ describe('detectDetachedGitDiscard', () => {
     assert.ok(detectDetachedGitDiscard('git checkout HEAD -- src/a.go')?.includes(MSG));
     assert.equal(detectDetachedGitDiscard('git checkout -b feature'), null);
     assert.equal(detectDetachedGitDiscard('git checkout main'), null);
+    assert.ok(detectDetachedGitDiscard('git checkout HEAD file.ts')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git checkout main src/a.go')?.includes(MSG));
+    assert.ok(detectDetachedGitDiscard('git stash branch feature')?.includes(MSG));
   });
 
   it('detects git clean -f / -fd', () => {

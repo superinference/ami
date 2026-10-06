@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
 import { resolveFilePath } from './tool-utils';
+import { spillToolText } from './spill-output';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
@@ -223,7 +224,7 @@ export const fileReadTool: ToolDefinition = {
         const rangeNote = pageRange ? ` (pages ${pageRange.start}-${pageRange.end})` : '';
         context.filesRead?.add(resolved);
         return {
-          output: `File: ${resolved} (PDF, ${pdf.numpages} pages)${rangeNote}\n\n${text.slice(0, 100000)}`,
+          output: `File: ${resolved} (PDF, ${pdf.numpages} pages)${rangeNote}\n\n${spillToolText(context.cwd, 'pdf', text, 100_000)}`,
           isError: false,
         };
       } catch (err) {

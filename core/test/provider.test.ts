@@ -1510,4 +1510,80 @@ describe('resolveContextWindow', () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
+
+  it('does not keep a failed /models probe', async () => {
+    let calls = 0;
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      calls += 1;
+      if (calls === 1) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('{}');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'brand-new-retry-model', max_model_len: 32_000 }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    const savedToken = process.env.HF_TOKEN;
+    delete process.env.HF_TOKEN;
+    process.env.HF_ENDPOINT = 'http://127.0.0.1:1';
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'sk-retry',
+        model: 'brand-new-retry-model',
+        provider: 'openai',
+      };
+      const first = await resolveContextWindow(config);
+      const second = await resolveContextWindow(config);
+      assert.notEqual(first, 32_000);
+      assert.equal(second, 32_000);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      if (savedToken === undefined) delete process.env.HF_TOKEN;
+      else process.env.HF_TOKEN = savedToken;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('does not send an sk- key to the hub for a huggingface provider', async () => {
+    const seenAuth: Array<string | undefined> = [];
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/')) {
+        seenAuth.push(req.headers.authorization);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ max_position_embeddings: 4096 }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'org/sk-probe', object: 'model' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    const savedToken = process.env.HF_TOKEN;
+    delete process.env.HF_TOKEN;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'sk-local',
+        model: 'org/sk-probe',
+        provider: 'huggingface',
+      });
+      assert.ok(seenAuth.length > 0);
+      assert.ok(seenAuth.every(header => header === undefined || !header.includes('sk-')));
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      if (savedToken === undefined) delete process.env.HF_TOKEN;
+      else process.env.HF_TOKEN = savedToken;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
 });
