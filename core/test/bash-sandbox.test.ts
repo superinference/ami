@@ -73,6 +73,15 @@ describe('shouldUseSandbox', () => {
   it('ignores trigger patterns inside quotes', () => {
     assert.equal(shouldUseSandbox('echo "curl is a tool"'), false);
   });
+
+  it('does not sandbox project test runners, including ones hidden in bash -c', () => {
+    assert.equal(shouldUseSandbox('python -m unittest discover'), false);
+    assert.equal(shouldUseSandbox('python tests/runtests.py'), false);
+    assert.equal(shouldUseSandbox('python manage.py test app'), false);
+    assert.equal(shouldUseSandbox('bash -c "pytest tests/test_client.py -q"'), false);
+    assert.equal(shouldUseSandbox('python -c "print(1)"'), true);
+    assert.equal(shouldUseSandbox('bash -c "echo hello"'), true);
+  });
 });
 
 describe('wrapWithSandbox', () => {

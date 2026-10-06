@@ -4,7 +4,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
-import { getModelCapabilities, resolveThinkingBudget, resolveTemperature } from './model-capabilities';
+import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls } from './provider-transform';
 import type {
   ProviderConfig,
@@ -266,6 +266,143 @@ async function resolveAvailableModel(
 }
 
 export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, inferProviderFromBaseUrl, inferProviderFromEnv };
+
+const modelListCache = new Map<string, Promise<Record<string, unknown>[]>>();
+
+function modelsEndpoint(config: ProviderConfig): { url: string; headers: Record<string, string> } | null {
+  const provider = config.provider ?? '';
+  const baseUrl = (config.baseUrl || '').replace(/\/+$/, '');
+  const apiKey = config.apiKey || '';
+  const officialAnthropic = (provider === 'anthropic' || provider === 'anthropic-vertex')
+    && (!baseUrl || baseUrl.includes('anthropic.com'));
+  const officialGoogle = (provider === 'google' || provider === 'google-vertex')
+    && (!baseUrl || baseUrl.includes('googleapis.com'));
+
+  if (officialAnthropic || baseUrl.includes('anthropic.com')) {
+    const root = baseUrl.includes('anthropic.com') ? baseUrl : 'https://api.anthropic.com';
+    const url = /\/v1$/.test(root) ? `${root}/models` : `${root}/v1/models`;
+    return {
+      url,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    };
+  }
+  if (officialGoogle || baseUrl.includes('generativelanguage.googleapis.com')) {
+    const root = baseUrl.includes('generativelanguage.googleapis.com')
+      ? baseUrl
+      : 'https://generativelanguage.googleapis.com/v1beta';
+    return {
+      url: root.endsWith('/models') ? root : `${root}/models`,
+      headers: { 'x-goog-api-key': apiKey },
+    };
+  }
+  if (!baseUrl) return null;
+  return {
+    url: baseUrl.endsWith('/models') ? baseUrl : `${baseUrl}/models`,
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+  };
+}
+
+async function loadModelRecords(config: ProviderConfig): Promise<Record<string, unknown>[]> {
+  const endpoint = modelsEndpoint(config);
+  if (!endpoint) return [];
+  const cacheKey = `${endpoint.url}|${endpoint.headers.Authorization ?? endpoint.headers['x-api-key'] ?? endpoint.headers['x-goog-api-key'] ?? ''}`;
+  const cached = modelListCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = (async () => {
+    try {
+      const res = await fetch(endpoint.url, {
+        headers: endpoint.headers,
+        signal: AbortSignal.timeout(1500),
+      });
+      if (!res.ok) return [];
+      return collectModelRecords(await res.json());
+    } catch {
+      return [];
+    }
+  })();
+  modelListCache.set(cacheKey, pending);
+  return pending;
+}
+
+/**
+ * Context window from the provider's model list.
+ * Returns undefined when the server has no length, so the caller can try a
+ * Hugging Face model card, then the proprietary table, then the default.
+ */
+export async function fetchAdvertisedContextWindow(config: ProviderConfig): Promise<number | undefined> {
+  if (!config.model) return undefined;
+  const records = await loadModelRecords(config);
+  return pickAdvertisedContextWindow(records, config.model);
+}
+
+const huggingFaceCache = new Map<string, Promise<number | undefined>>();
+
+function huggingFaceEndpoint(): string {
+  return (process.env.HF_ENDPOINT || 'https://huggingface.co').replace(/\/+$/, '');
+}
+
+function huggingFaceToken(config: ProviderConfig): string | undefined {
+  if (config.apiKey?.startsWith('hf_')) return config.apiKey;
+  if (config.provider === 'huggingface' && config.apiKey) return config.apiKey;
+  return process.env.HF_TOKEN || undefined;
+}
+
+async function readHuggingFaceFile(url: string, headers: Record<string, string>): Promise<number | undefined> {
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(1000) });
+    if (!res.ok) return undefined;
+    return readHuggingFaceContextWindow(await res.json());
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Context length from the Hub model card (`config.json` and
+ * `tokenizer_config.json`). A network failure, a missing repo, or no
+ * published length returns undefined so the caller can use the table.
+ * `HF_ENDPOINT` selects the hub, including an offline mirror.
+ */
+export async function fetchHuggingFaceContextWindow(repo: string, config: ProviderConfig): Promise<number | undefined> {
+  const endpoint = huggingFaceEndpoint();
+  const token = huggingFaceToken(config);
+  const cacheKey = `${endpoint}|${repo}|${token ?? ''}`;
+  const cached = huggingFaceCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = (async () => {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const root = repo.split('/').map(part => encodeURIComponent(part)).join('/');
+    const lengths = await Promise.all([
+      readHuggingFaceFile(`${endpoint}/${root}/resolve/main/config.json`, headers),
+      readHuggingFaceFile(`${endpoint}/${root}/resolve/main/tokenizer_config.json`, headers),
+    ]);
+    const usable = lengths.filter((length): length is number => length !== undefined);
+    if (usable.length === 0) return undefined;
+    return Math.max(...usable);
+  })();
+  huggingFaceCache.set(cacheKey, pending);
+  return pending;
+}
+
+/**
+ * Served length, then a Hugging Face model card, then the model table,
+ * then the 128k default. An explicit `contextWindow` on the config is kept:
+ * provision already stored `max_model_len` there.
+ */
+export async function resolveContextWindow(config: ProviderConfig): Promise<number> {
+  if (typeof config.contextWindow === 'number' && config.contextWindow > 0) {
+    return config.contextWindow;
+  }
+  const records = config.model ? await loadModelRecords(config) : [];
+  const fetched = config.model ? pickAdvertisedContextWindow(records, config.model) : undefined;
+  if (fetched !== undefined) return fetched;
+  for (const repo of huggingfaceRepoCandidates(config.model || '', records)) {
+    const card = await fetchHuggingFaceContextWindow(repo, config);
+    if (card !== undefined) return card;
+  }
+  return getContextWindow(config.model || '');
+}
 
 // ---------------------------------------------------------------------------
 // Model resolution — pick the right AI SDK provider
@@ -652,7 +789,11 @@ export async function* streamChatCompletion(
       messages: coreMessages,
       tools: sdkTools,
       stopWhen: stepCountIs(1),
-      maxOutputTokens: config.maxTokens ?? 8192,
+      maxOutputTokens: fitOutputTokens(
+        config.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+        config.contextWindow ?? getContextWindow(modelId),
+        0,
+      ),
       ...(effectiveTemperature !== undefined ? { temperature: effectiveTemperature } : {}),
       abortSignal,
       maxRetries: 0,

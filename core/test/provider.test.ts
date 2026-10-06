@@ -10,7 +10,11 @@ import {
   convertToolsForSDK,
   buildThinkingOptions,
   extractReasoningTokens,
+  resolveContextWindow,
+  fetchAdvertisedContextWindow,
+  fetchHuggingFaceContextWindow,
 } from '../src/provider';
+import { fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../src/model-capabilities';
 import type { ToolDefinition, ProviderConfig, Message } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -427,6 +431,72 @@ describe('streamChatCompletion - streaming via AI SDK with mock server', () => {
     const doneChunks = chunks.filter(c => c.type === 'done');
     assert.ok(doneChunks.length >= 1, 'Should have at least one done event');
   });
+
+  it('defaults max_tokens to 32768 when the config omits it', async () => {
+    let seenMax: unknown;
+    const cap = http.createServer(async (req, res) => {
+      const raw = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+      });
+      seenMax = JSON.parse(raw.toString()).max_tokens;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end('data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}\n\ndata: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}]}\n\ndata: [DONE]\n\n');
+    });
+    await new Promise<void>(resolve => cap.listen(0, '127.0.0.1', () => resolve()));
+    const capPort = (cap.address() as { port: number }).port;
+    try {
+      const config = makeConfig({
+        baseUrl: `http://127.0.0.1:${capPort}/v1`,
+        model: 'test-model',
+      });
+      delete config.maxTokens;
+      const ac = new AbortController();
+      for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) {
+        // drain
+      }
+      assert.equal(seenMax, 32768);
+    } finally {
+      await new Promise<void>(resolve => cap.close(() => resolve()));
+    }
+  });
+
+  it('clamps max_tokens to a 32k window instead of sending 32768 or 262144', async () => {
+    let seenMax: unknown;
+    const cap = http.createServer(async (req, res) => {
+      const raw = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+      });
+      seenMax = JSON.parse(raw.toString()).max_tokens;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end('data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}\n\ndata: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}]}\n\ndata: [DONE]\n\n');
+    });
+    await new Promise<void>(resolve => cap.listen(0, '127.0.0.1', () => resolve()));
+    const capPort = (cap.address() as { port: number }).port;
+    try {
+      const config = makeConfig({
+        baseUrl: `http://127.0.0.1:${capPort}/v1`,
+        model: 'qwen2.5-0.5b',
+        maxTokens: 262_144,
+        contextWindow: 32_768,
+      });
+      const ac = new AbortController();
+      for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) {
+        // drain
+      }
+      const expected = fitOutputTokens(262_144, 32_768, 0);
+      assert.equal(seenMax, expected);
+      assert.ok(expected < DEFAULT_MAX_OUTPUT_TOKENS);
+      assert.ok(expected > 8_192);
+    } finally {
+      await new Promise<void>(resolve => cap.close(() => resolve()));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -760,5 +830,684 @@ describe('extractReasoningTokens', () => {
     assert.equal(extractReasoningTokens({ raw: 'nope' }), 0);
     assert.equal(extractReasoningTokens({ raw: { completion_tokens_details: 'nope' } }), 0);
     assert.equal(extractReasoningTokens({ outputTokenDetails: null }), 0);
+  });
+});
+
+describe('resolveContextWindow', () => {
+  it('keeps an explicit window without calling the server', async () => {
+    const window = await resolveContextWindow({
+      baseUrl: 'http://127.0.0.1:1/v1',
+      apiKey: 'x',
+      model: 'gpt-4o',
+      contextWindow: 4096,
+    });
+    assert.equal(window, 4096);
+  });
+
+  it('prefers max_model_len over the model table', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        data: [{ id: 'claude-opus-5-5', max_model_len: 32_768 }],
+      }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'claude-opus-5-5',
+        provider: 'openai',
+      };
+      assert.equal(await fetchAdvertisedContextWindow(config), 32_768);
+      assert.equal(await resolveContextWindow(config), 32_768);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the proprietary table when /models has no length', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-6-astra', object: 'model' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'gpt-6-astra',
+        provider: 'openai',
+      };
+      assert.equal(await fetchAdvertisedContextWindow(config), undefined);
+      assert.equal(await resolveContextWindow(config), 1_050_000);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('reads Anthropic max_input_tokens and ignores the completion cap', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      assert.equal(req.headers['x-api-key'], 'ant-key');
+      assert.equal(req.headers['anthropic-version'], '2023-06-01');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        data: [{ id: 'claude-sonnet-4-6', max_input_tokens: 32_000, max_tokens: 8192 }],
+      }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/anthropic.com/v1`,
+        apiKey: 'ant-key',
+        model: 'claude-sonnet-4-6',
+        provider: 'anthropic',
+      };
+      assert.equal(await resolveContextWindow(config), 32_000);
+      assert.equal(await fetchAdvertisedContextWindow(config), 32_000);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('reads Gemini inputTokenLimit from the configured host', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      assert.equal(req.headers['x-goog-api-key'], 'g-key');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        models: [{ name: 'models/gemini-2.5-pro', inputTokenLimit: 65_536 }],
+      }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/generativelanguage.googleapis.com/v1beta`,
+        apiKey: 'g-key',
+        model: 'gemini-2.5-pro',
+        provider: 'google',
+      };
+      assert.equal(await resolveContextWindow(config), 65_536);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('keeps a Gemini list URL that already ends in /models', async () => {
+    const seen: string[] = [];
+    const server = http.createServer(async (req, res) => {
+      seen.push(req.url ?? '');
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        models: [{ name: 'models/gemini-2.5-flash', inputTokenLimit: 77_000 }],
+      }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/generativelanguage.googleapis.com/v1beta/models`,
+        apiKey: 'g-key',
+        model: 'gemini-2.5-flash',
+        provider: 'google',
+      };
+      assert.equal(await resolveContextWindow(config), 77_000);
+      assert.ok(seen.some(url => url.endsWith('/models') && !url.endsWith('/models/models')));
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the table when the models endpoint fails', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('no');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/v1/models`,
+        apiKey: 'test',
+        model: 'grok-4.7',
+        provider: 'openai',
+      };
+      assert.equal(await resolveContextWindow(config), 500_000);
+      assert.equal(await fetchAdvertisedContextWindow({ ...config, model: '' }), undefined);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the table when the models payload is not JSON', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('not-json');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: '',
+        model: 'grok-4.3',
+        provider: 'openai',
+      };
+      assert.equal(await resolveContextWindow(config), 1_000_000);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('asks the official list URL when the provider has no base URL', async () => {
+    const original = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (!target.startsWith('https://api.anthropic.com') && !target.startsWith('https://generativelanguage.googleapis.com')) {
+        return original(url, init);
+      }
+      seen.push(target);
+      const anthropic = target.includes('anthropic');
+      const body = anthropic
+        ? { data: [{ id: 'claude-opus-4-20250514', max_input_tokens: 111_000 }] }
+        : { models: [{ name: 'models/gemini-2.5-pro', inputTokenLimit: 222_000 }] };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      assert.equal(await resolveContextWindow({
+        provider: 'anthropic', apiKey: 'ant-official', model: 'claude-opus-4-20250514', baseUrl: '',
+      }), 111_000);
+      assert.equal(await resolveContextWindow({
+        provider: 'google', apiKey: 'g-official', model: 'gemini-2.5-pro', baseUrl: '',
+      }), 222_000);
+      assert.ok(seen.some(url => url === 'https://api.anthropic.com/v1/models'));
+      assert.ok(seen.some(url => url === 'https://generativelanguage.googleapis.com/v1beta/models'));
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('uses the table when there is no endpoint to ask', async () => {
+    assert.equal(await resolveContextWindow({
+      apiKey: 'x', model: 'gpt-4o', baseUrl: '', contextWindow: 0,
+    }), 128_000);
+  });
+
+  it('uses the 128k default when the server and the table both miss', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'brand-new-model', object: 'model' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'brand-new-model',
+        provider: 'openai',
+      };
+      assert.equal(await resolveContextWindow(config), 128_000);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('keeps an explicit window and does not call the hub', async () => {
+    const hits = { n: 0 };
+    const server = http.createServer(async (req, res) => {
+      hits.n += 1;
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ max_position_embeddings: 999_999 }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'Qwen/Qwen2.5-0.5B-Instruct',
+        contextWindow: 4096,
+      }), 4096);
+      assert.equal(hits.n, 0);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('prefers /models over a longer Hugging Face card', async () => {
+    const hits = { n: 0 };
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/')) {
+        hits.n += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ max_position_embeddings: 999_999 }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'Qwen/Qwen2.5-7B-Instruct', max_model_len: 32_000 }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    const savedToken = process.env.HF_TOKEN;
+    delete process.env.HF_TOKEN;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'sk-not-a-hub-key',
+        model: 'Qwen/Qwen2.5-7B-Instruct',
+        provider: 'openai',
+      }), 32_000);
+      assert.equal(hits.n, 0);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      if (savedToken === undefined) delete process.env.HF_TOKEN;
+      else process.env.HF_TOKEN = savedToken;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the longer card length when /models omits one', async () => {
+    const seenAuth: Array<string | undefined> = [];
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/tokenizer_config.json')) {
+        seenAuth.push(req.headers.authorization);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ model_max_length: 1e30 }));
+        return;
+      }
+      if (req.url?.includes('/resolve/main/config.json')) {
+        seenAuth.push(req.headers.authorization);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ max_position_embeddings: 32_768, sliding_window: 131_072 }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'Qwen/Qwen2.5-0.5B-Instruct', object: 'model' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    const savedToken = process.env.HF_TOKEN;
+    delete process.env.HF_TOKEN;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      const config: ProviderConfig = {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'hf_test_token',
+        model: 'Qwen/Qwen2.5-0.5B-Instruct',
+        provider: 'huggingface',
+      };
+      assert.equal(await resolveContextWindow(config), 131_072);
+      assert.equal(await fetchHuggingFaceContextWindow('Qwen/Qwen2.5-0.5B-Instruct', config), 131_072);
+      assert.ok(seenAuth.every(header => header === 'Bearer hf_test_token'));
+      assert.equal(seenAuth.length, 2);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      if (savedToken === undefined) delete process.env.HF_TOKEN;
+      else process.env.HF_TOKEN = savedToken;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('lets a tokenizer length raise a short config', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('tokenizer_config.json')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ model_max_length: 65_536 }));
+        return;
+      }
+      if (req.url?.includes('config.json')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ max_position_embeddings: 8192 }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'org/wider-than-config' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'org/wider-than-config',
+        provider: 'openai',
+      }), 65_536);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('resolves a vLLM alias from the single served repo card', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/')) {
+        res.writeHead(req.url.includes('config.json') ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(req.url.includes('config.json')
+          ? JSON.stringify({ max_position_embeddings: 50_000 })
+          : '{}');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'Qwen/Qwen2.5-0.5B-Instruct' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'plain-hub-key',
+        model: 'served-alias',
+        provider: 'huggingface',
+      }), 50_000);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('does not search the hub for a bare id in a multi-model catalog', async () => {
+    const hits = { n: 0 };
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/')) {
+        hits.n += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ max_position_embeddings: 999_999 }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-4o' }, { id: 'org/secret' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'gpt-4o',
+        provider: 'openai',
+      }), 128_000);
+      assert.equal(hits.n, 0);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the table when the hub has no card', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end('{"error":"not found"}');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'Qwen/Qwen2.5-0.5B-Instruct' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'Qwen/Qwen2.5-0.5B-Instruct',
+        provider: 'openai',
+      }), 32_768);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the table when the hub payload is not JSON', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('not-json');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'org/brand-new-model' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'org/brand-new-model',
+        provider: 'openai',
+      }), 128_000);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the table when the hub is unreachable', async () => {
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = 'http://127.0.0.1:1';
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: 'http://127.0.0.1:1/v1',
+        apiKey: 'test',
+        model: 'Qwen/Qwen2.5-0.5B-Instruct',
+        provider: 'openai',
+      }), 32_768);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+    }
+  });
+
+  it('uses the table for an empty model id without calling the hub', async () => {
+    assert.equal(await resolveContextWindow({
+      apiKey: 'x', model: '', baseUrl: 'http://127.0.0.1:1/v1', contextWindow: Number.NaN,
+    }), 128_000);
+  });
+
+  it('sends HF_TOKEN when the api key is not a hub key', async () => {
+    const auths: Array<string | undefined> = [];
+    const urls: string[] = [];
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/')) {
+        auths.push(req.headers.authorization);
+        urls.push(req.url);
+        res.writeHead(req.url.includes('config.json') ? 200 : 404);
+        res.end(req.url.includes('config.json') ? JSON.stringify({ max_position_embeddings: 70_000 }) : '{}');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'org/token-probe' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    const savedToken = process.env.HF_TOKEN;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}/`;
+    process.env.HF_TOKEN = 'hf_from_env';
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'sk-not-hub',
+        model: 'org/token-probe',
+        provider: 'openai',
+      }), 70_000);
+      assert.ok(auths.includes('Bearer hf_from_env'));
+      assert.ok(urls.every(url => !url.startsWith('//')));
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      if (savedToken === undefined) delete process.env.HF_TOKEN;
+      else process.env.HF_TOKEN = savedToken;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('prefers an hf_ api key over HF_TOKEN and skips a non-hub key', async () => {
+    const direct: Array<string | undefined> = [];
+    const plain: Array<string | undefined> = [];
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      const bucket = req.url?.includes('org/direct') ? direct : plain;
+      if (req.url?.includes('/resolve/main/')) {
+        bucket.push(req.headers.authorization);
+        const encoded = req.url.includes('foo%40bar') || req.url.includes('foo@bar');
+        const window = req.url?.includes('org/direct') ? 81_000 : encoded ? 4_242 : undefined;
+        res.writeHead(window ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(window && req.url?.includes('config.json')
+          ? JSON.stringify({ max_position_embeddings: window })
+          : '{}');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'org/plain' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    const savedToken = process.env.HF_TOKEN;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    process.env.HF_TOKEN = 'hf_from_env';
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'hf_direct',
+        model: 'org/direct',
+        provider: 'openai',
+      }), 81_000);
+      assert.ok(direct.every(header => header === 'Bearer hf_direct'));
+      delete process.env.HF_TOKEN;
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'sk-plain',
+        model: 'org/foo@bar',
+        provider: 'openai',
+      }), 4_242);
+      assert.ok(plain.every(header => header === undefined));
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      if (savedToken === undefined) delete process.env.HF_TOKEN;
+      else process.env.HF_TOKEN = savedToken;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('uses the next served repo when the requested card is missing', async () => {
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url?.includes('/resolve/main/config.json') && req.url.includes('org/found')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ max_position_embeddings: 180_000 }));
+        return;
+      }
+      if (req.url?.includes('/resolve/main/')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end('{}');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'org/found' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    process.env.HF_ENDPOINT = `http://127.0.0.1:${port}`;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'org/missing',
+        provider: 'openai',
+      }), 180_000);
+    } finally {
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('asks huggingface.co when no hub endpoint is configured', async () => {
+    const savedEndpoint = process.env.HF_ENDPOINT;
+    delete process.env.HF_ENDPOINT;
+    const original = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (!target.startsWith('https://huggingface.co/')) return original(url, init);
+      seen.push(target);
+      const body = target.endsWith('/config.json')
+        ? { max_position_embeddings: 222_000 }
+        : { model_max_length: 1e30 };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    const server = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'org/default-probe' }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      assert.equal(await resolveContextWindow({
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test',
+        model: 'org/default-probe',
+        provider: 'openai',
+      }), 222_000);
+      assert.ok(seen.includes('https://huggingface.co/org/default-probe/resolve/main/config.json'));
+      assert.ok(seen.includes('https://huggingface.co/org/default-probe/resolve/main/tokenizer_config.json'));
+    } finally {
+      globalThis.fetch = original;
+      if (savedEndpoint === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = savedEndpoint;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 });

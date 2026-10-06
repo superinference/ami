@@ -7,7 +7,7 @@ import { execCommand } from '../utils/shell';
 import { validateBashSecurity } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 
-const MAX_OUTPUT_LENGTH = 30000;
+const MAX_OUTPUT_LENGTH = 200_000;
 const DEFAULT_TIMEOUT_MS = 120000;
 
 let _cachedPermissionManager: InstanceType<typeof import('../permissions').PermissionManager> | null = null;

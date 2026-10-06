@@ -56,11 +56,18 @@ const SANDBOX_EXEMPT_PATTERNS = [
   /\bgo\s+(build|test|run|mod)\b/,
   /\bpytest\b/,
   /\bpython\S*\s+-m\s+pytest\b/,
+  /\bpython\S*\s+-m\s+unittest\b/,
+  /\bruntests\.py\b/,
+  /\bmanage\.py\s+test\b/,
   /\bpip\s+install\b/,
   /\buv\s+pip\b/,
 ];
 
 export function shouldUseSandbox(command: string): boolean {
+  // Match exemptions on the original command so `bash -c "pytest ..."` and
+  // `python tests/runtests.py` are not wrapped. Quote-stripping hides the
+  // inner command and leaves `bash -c`, which is a sandbox trigger.
+  if (SANDBOX_EXEMPT_PATTERNS.some(p => p.test(command))) return false;
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   if (SANDBOX_EXEMPT_PATTERNS.some(p => p.test(stripped))) return false;
   return SANDBOX_TRIGGER_PATTERNS.some(p => p.test(stripped));

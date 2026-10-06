@@ -2,8 +2,35 @@ import * as child_process from 'child_process';
 import * as os from 'os';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_OUTPUT_CHARS = 100_000;
+/** Bound captured output. Head plus tail so a long pytest log keeps its summary. */
+const HEAD_CHARS = 670_000;
+const TAIL_CHARS = 330_000;
 const DEFAULT_STALL_TIMEOUT_MS = 45_000;
+
+function createOutputBuffer(): { push: (chunk: string) => void; value: () => string } {
+  let head = '';
+  let tail = '';
+  let dropped = 0;
+  return {
+    push(chunk: string) {
+      if (head.length < HEAD_CHARS) {
+        const room = HEAD_CHARS - head.length;
+        head += chunk.slice(0, room);
+        chunk = chunk.slice(room);
+      }
+      if (chunk.length === 0) return;
+      tail += chunk;
+      if (tail.length > TAIL_CHARS) {
+        dropped += tail.length - TAIL_CHARS;
+        tail = tail.slice(tail.length - TAIL_CHARS);
+      }
+    },
+    value() {
+      if (dropped === 0) return head + tail;
+      return head + `\n[${dropped} chars truncated]\n` + tail;
+    },
+  };
+}
 
 const PROMPT_PATTERNS = [
   /\(y\/n\)\s*$/i,
@@ -52,7 +79,7 @@ export interface ExecCommandResult {
  *
  * - Respects timeout (default 120 000 ms) and abort signal.
  * - Kills the entire process tree on timeout or abort.
- * - Truncates stdout/stderr to 100 000 characters max.
+ * - Keeps the first 670k and last 330k characters of stdout and stderr.
  */
 export function execCommand(
   command: string,
@@ -78,8 +105,8 @@ export function execCommand(
       ...(env ? { env } : {}),
     });
 
-    let stdout = '';
-    let stderr = '';
+    const stdoutBuf = createOutputBuffer();
+    const stderrBuf = createOutputBuffer();
     let settled = false;
 
     const finish = (exitCode: number | null): void => {
@@ -87,8 +114,8 @@ export function execCommand(
       settled = true;
       cleanUp();
       resolve({
-        stdout: truncate(stdout),
-        stderr: truncate(stderr),
+        stdout: stdoutBuf.value(),
+        stderr: stderrBuf.value(),
         exitCode,
       });
     };
@@ -114,9 +141,9 @@ export function execCommand(
     const stallCheck = stallTimeoutMs > 0 ? setInterval(() => {
       const elapsed = Date.now() - lastDataTime;
       if (elapsed >= stallTimeoutMs) {
-        const combined = stdout + stderr;
+        const combined = stdoutBuf.value() + stderrBuf.value();
         if (looksLikePrompt(combined)) {
-          stderr += '\n[Stall detected: process appears to be waiting for interactive input. Killed.]';
+          stderrBuf.push('\n[Stall detected: process appears to be waiting for interactive input. Killed.]');
           destroyStreams(proc);
           killTree(proc);
           finish(null);
@@ -133,7 +160,7 @@ export function execCommand(
     // --- Stream stdout ---
     proc.stdout.on('data', (data: Buffer) => {
       const chunk = data.toString();
-      stdout += chunk;
+      stdoutBuf.push(chunk);
       lastDataTime = Date.now();
       onData?.(chunk);
     });
@@ -141,17 +168,17 @@ export function execCommand(
     // --- Stream stderr ---
     proc.stderr.on('data', (data: Buffer) => {
       const chunk = data.toString();
-      stderr += chunk;
+      stderrBuf.push(chunk);
       lastDataTime = Date.now();
       onData?.(chunk);
     });
 
     // Swallow EBADF errors on pipe streams (see process-manager.ts for details)
     proc.stdout.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code !== 'EBADF') { stderr += err.message; finish(null); }
+      if (err.code !== 'EBADF') { stderrBuf.push(err.message); finish(null); }
     });
     proc.stderr.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code !== 'EBADF') { stderr += err.message; finish(null); }
+      if (err.code !== 'EBADF') { stderrBuf.push(err.message); finish(null); }
     });
 
     // --- Process exit ---
@@ -160,7 +187,7 @@ export function execCommand(
     });
 
     proc.on('error', (err) => {
-      stderr += err.message;
+      stderrBuf.push(err.message);
       finish(null);
     });
   });
@@ -204,10 +231,3 @@ function killTree(proc: child_process.ChildProcess): void {
   }
 }
 
-/**
- * Truncate a string to `MAX_OUTPUT_CHARS`, appending a marker if truncated.
- */
-function truncate(text: string): string {
-  if (text.length <= MAX_OUTPUT_CHARS) return text;
-  return text.slice(0, MAX_OUTPUT_CHARS) + '\n[truncated]';
-}

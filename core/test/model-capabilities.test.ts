@@ -8,6 +8,13 @@ import {
   resolveThinkingBudget,
   resolveTemperature,
   getProviderSamplingDefaults,
+  fitOutputTokens,
+  capThinkingBudget,
+  maxToolOutputChars,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  OUTPUT_FIT_SAFETY_TOKENS,
+  MIN_FITTED_OUTPUT_TOKENS,
+  MIN_THINKING_BUDGET,
   type ThinkingLevel,
 } from '../src/model-capabilities';
 
@@ -337,5 +344,96 @@ describe('resolveTemperature', () => {
     it('returns undefined for truly unknown model with thinking enabled and no config temp', () => {
       assert.equal(resolveTemperature('totally-unknown', undefined, { enabled: true }), undefined);
     });
+  });
+});
+
+describe('output, thinking, and tool-char budgets agree', () => {
+  const windows = [32_768, 128_000, 200_000, 262_144, 1_048_576];
+
+  it('default output is 32768 and fits beside a short prompt on every listed window', () => {
+    assert.equal(DEFAULT_MAX_OUTPUT_TOKENS, 32_768);
+    for (const window of windows) {
+      const output = fitOutputTokens(DEFAULT_MAX_OUTPUT_TOKENS, window, 2_000);
+      assert.ok(output <= DEFAULT_MAX_OUTPUT_TOKENS, `${window}: output grew past the default`);
+      assert.ok(2_000 + output + OUTPUT_FIT_SAFETY_TOKENS <= window, `${window}: output does not fit`);
+      if (window >= 40_000) {
+        assert.equal(output, 32_768, `${window}: a roomy window must keep the full default`);
+      } else {
+        assert.ok(output < 32_768, `${window}: a 32k window must not be asked for 32768 output`);
+        assert.ok(output > 8_192, `${window}: fell back to the old 8192 clamp`);
+      }
+    }
+  });
+
+  it('does not send a 256k escalation step on a 128k window', () => {
+    const output = fitOutputTokens(262_144, 128_000, 20_000);
+    assert.ok(output < 262_144, `raw escalation leaked: ${output}`);
+    assert.equal(output, 128_000 - 20_000 - OUTPUT_FIT_SAFETY_TOKENS);
+    assert.equal(20_000 + output + OUTPUT_FIT_SAFETY_TOKENS, 128_000);
+  });
+
+  it('keeps the 65536 escalation step when the prompt is small on a 128k window', () => {
+    assert.equal(fitOutputTokens(65_536, 128_000, 4_000), 65_536);
+  });
+
+  it('high thinking plus default output stays under each window', () => {
+    for (const window of windows) {
+      const prompt = Math.floor(window * 0.5);
+      const output = fitOutputTokens(DEFAULT_MAX_OUTPUT_TOKENS, window, prompt);
+      const thinking = capThinkingBudget(resolveThinkingBudget('high'), window, prompt, output);
+      assert.ok(
+        prompt + output + thinking + OUTPUT_FIT_SAFETY_TOKENS <= window,
+        `${window}: prompt ${prompt} + output ${output} + thinking ${thinking} overflows`,
+      );
+    }
+  });
+
+  it('max thinking on Claude does not consume the safety margin', () => {
+    const window = getContextWindow('claude-opus-4');
+    const prompt = 150_000;
+    const output = fitOutputTokens(DEFAULT_MAX_OUTPUT_TOKENS, window, prompt);
+    const thinking = capThinkingBudget(resolveThinkingBudget('max', 'claude-opus-4'), window, prompt, output);
+    assert.ok(thinking > 1_024);
+    assert.ok(thinking < resolveThinkingBudget('max', 'claude-opus-4'));
+    assert.ok(prompt + output + thinking + OUTPUT_FIT_SAFETY_TOKENS <= window);
+  });
+
+  it('turns thinking off when the window is already full', () => {
+    const thinking = capThinkingBudget(32_768, 32_768, 30_000, 4_000);
+    assert.equal(thinking, 0);
+  });
+
+  it('uses the defaults when a budget is missing or the window cannot hold a completion', () => {
+    assert.equal(fitOutputTokens(0, 128_000, 1_000), DEFAULT_MAX_OUTPUT_TOKENS);
+    assert.equal(fitOutputTokens(Number.NaN, 128_000, 1_000), DEFAULT_MAX_OUTPUT_TOKENS);
+    assert.equal(fitOutputTokens(-5, 128_000, 1_000), DEFAULT_MAX_OUTPUT_TOKENS);
+    assert.equal(fitOutputTokens(4_000, 0, 1_000), 4_000);
+    assert.equal(fitOutputTokens(4_000, Number.NaN, 1_000), 4_000);
+    assert.equal(fitOutputTokens(4_000, -1, 1_000), 4_000);
+    assert.equal(fitOutputTokens(4_000, 8_000, Number.NaN), 4_000);
+    assert.equal(fitOutputTokens(8_000, 2_000, 1_500), MIN_FITTED_OUTPUT_TOKENS);
+
+    assert.equal(capThinkingBudget(0, 128_000, 1_000, 1_000), 0);
+    assert.equal(capThinkingBudget(Number.NaN, 128_000, 1_000, 1_000), 0);
+    assert.equal(capThinkingBudget(-1, 128_000, 1_000, 1_000), 0);
+    assert.equal(capThinkingBudget(5_000.9, 0, 1_000, 1_000), 5_000);
+    assert.equal(capThinkingBudget(5_000, Number.NaN, 1_000, 1_000), 5_000);
+    assert.equal(capThinkingBudget(8_000, 10_000, Number.NaN, Number.NaN), 8_000);
+    assert.equal(capThinkingBudget(8_000, 10_000, -5, -5), 8_000);
+    // usable is 2000: below the margin, still above the 1024 floor
+    assert.equal(capThinkingBudget(8_000, 10_000, 5_000, 1_976), MIN_THINKING_BUDGET);
+
+    assert.equal(maxToolOutputChars(0), 8_000);
+    assert.equal(maxToolOutputChars(-10), 8_000);
+    assert.equal(maxToolOutputChars(Number.NaN), 8_000);
+  });
+
+  it('sizes one tool result from the token budget, not a fixed 8k', () => {
+    const wide = maxToolOutputChars(Math.floor(200_000 * 0.8));
+    const narrow = maxToolOutputChars(Math.floor(32_768 * 0.8));
+    assert.ok(wide >= 400_000, `200k window should still hold a 400k file_read, got ${wide}`);
+    assert.ok(narrow < 80_000, `32k window must shrink tool output, got ${narrow}`);
+    assert.ok(narrow > 8_000, 'must not collapse back to an 8k tool cap');
+    assert.ok(Math.ceil(narrow / 3) <= Math.floor(32_768 * 0.8));
   });
 });

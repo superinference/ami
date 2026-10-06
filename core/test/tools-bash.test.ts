@@ -196,17 +196,25 @@ describe('bashTool – cwd', () => {
 // ---------------------------------------------------------------------------
 
 describe('bashTool – output truncation', () => {
-  it('truncates very long stdout', async () => {
-    // Generate ~70000 characters
+  it('keeps a 70k stdout that used to be cut at 30k', async () => {
     const result = await bashTool.execute(
       { command: 'python3 -c "print(\'x\' * 70000)"' },
       ctx(),
     );
-    // The output should contain the truncation marker
-    assert.ok(
-      result.output.includes('truncated') || result.output.length <= 70000,
-      'Very long output should be truncated',
+    assert.ok(result.output.includes('x'.repeat(1000)));
+    assert.ok(!result.output.includes('persisted'), result.output.slice(-200));
+    assert.ok(result.output.length > 60_000);
+  });
+
+  it('spills stdout above 200k and keeps the tail', async () => {
+    const result = await bashTool.execute(
+      { command: 'python3 -c "print(\'HEAD\' + \'x\' * 250000 + \'TAIL\')"' },
+      ctx(),
     );
+    assert.ok(result.output.includes('HEAD'), result.output.slice(0, 120));
+    assert.ok(result.output.includes('TAIL'), result.output.slice(-180));
+    assert.ok(result.output.includes('chars persisted'));
+    assert.ok(result.output.length < 250_000);
   });
 });
 

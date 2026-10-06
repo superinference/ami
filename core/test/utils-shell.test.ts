@@ -118,15 +118,24 @@ describe('execCommand – onData callback', () => {
 // ---------------------------------------------------------------------------
 
 describe('execCommand – output truncation', () => {
-  it('truncates very long stdout', async () => {
-    // Generate output longer than MAX_OUTPUT_CHARS (100000)
+  it('keeps a 120k stdout that used to be cut at 100k', async () => {
     const result = await execCommand(
       'python3 -c "print(\'x\' * 120000)"',
       { cwd: process.cwd() },
     );
-    if (result.stdout.length > 100000) {
-      assert.ok(result.stdout.includes('[truncated]'));
-    }
+    assert.ok(result.stdout.length > 110_000);
+    assert.ok(!result.stdout.includes('chars truncated'));
+  });
+
+  it('keeps the head and the tail past one megabyte', async () => {
+    const result = await execCommand(
+      'python3 -c "print(\'HEAD\' + \'x\' * 1200000 + \'TAIL\')"',
+      { cwd: process.cwd() },
+    );
+    assert.ok(result.stdout.startsWith('HEAD'));
+    assert.ok(result.stdout.includes('TAIL'));
+    assert.ok(result.stdout.includes('chars truncated'));
+    assert.ok(result.stdout.length < 1_200_000);
   });
 });
 
