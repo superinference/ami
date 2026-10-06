@@ -1,7 +1,7 @@
 /* eslint-disable security/detect-unsafe-regex -- Symbol extraction regexes are applied to controlled file content, not user input */
 import * as fs from 'fs';
 import * as path from 'path';
-import fg from 'fast-glob';
+import { glob } from 'tinyglobby';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -128,7 +128,7 @@ export class WorkspaceIndexer {
 
     let filePaths: string[];
     try {
-      filePaths = await fg(pattern, {
+      filePaths = await glob(pattern, {
         cwd: this.cwd,
         absolute: true,
         ignore: ignorePatterns,
@@ -136,6 +136,7 @@ export class WorkspaceIndexer {
         onlyFiles: true,
         followSymbolicLinks: false,
         deep: 10,
+        expandDirectories: false,
       });
 
       // Cap file count to prevent slow indexing on large repos

@@ -1,4 +1,6 @@
-import fg from 'fast-glob';
+// fast-glob pulls braces (GHSA-vfj7-8cjw-p6xm), which has no patched release.
+// expandDirectories stays off so a directory pattern is not rewritten.
+import { glob } from 'tinyglobby';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath } from './tool-utils';
 
@@ -35,12 +37,13 @@ export const globTool: ToolDefinition = {
     const { pattern, resolved } = v;
 
     try {
-      const entries = await fg(pattern, {
+      const entries = await glob(pattern, {
         cwd: resolved,
         ignore: ['**/node_modules/**', '**/.git/**'],
         dot: true,
         onlyFiles: true,
         absolute: false,
+        expandDirectories: false,
       });
 
       if (entries.length === 0) {

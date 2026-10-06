@@ -19,12 +19,12 @@
     "security": "npm run lint:security && npm run audit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.83",
-    "@ai-sdk/google": "^3.0.81",
-    "@ai-sdk/google-vertex": "^4.0.144",
-    "@ai-sdk/openai": "^3.0.70",
-    "ai": "^6.0.202",
-    "fast-glob": "^3.3.0",
+    "@ai-sdk/anthropic": "^3.0.89",
+    "@ai-sdk/google": "^3.0.86",
+    "@ai-sdk/google-vertex": "^4.0.152",
+    "@ai-sdk/openai": "^3.0.77",
+    "ai": "^6.0.214",
+    "tinyglobby": "^0.2.17",
     "zod": "^3.23.0"
   },
   "devDependencies": {
@@ -33,7 +33,7 @@
     "@typescript-eslint/parser": "^8.60.0",
     "eslint": "^8.57.1",
     "eslint-plugin-security": "^4.0.0",
-    "jscpd": "^4.2.4",
+    "jscpd": "^5.4.0",
     "tsx": "^4.7.0",
     "typescript": "^5.9.3"
   }
