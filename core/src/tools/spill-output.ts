@@ -15,6 +15,6 @@ export function spillToolText(cwd: string, prefix: string, text: string, limit: 
   const tailLen = Math.max(0, limit - headLen - 200);
   const omitted = Math.max(0, text.length - headLen - tailLen);
   return text.slice(0, headLen)
-    + `\n\n[... ${omitted} chars truncated, persisted to ${spillFile} — use file_read to view ...]\n\n`
+    + `\n\n[... ${omitted} chars persisted to ${spillFile} — truncated, use file_read to view the rest ...]\n\n`
     + text.slice(-tailLen);
 }
