@@ -154,6 +154,12 @@ export const grepTool: ToolDefinition = {
       return formatResult(fallback, pattern, headLimit, offset);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (/invalid regular expression|unterminated|invalid group/i.test(message)) {
+        return {
+          output: `Error: Invalid regular expression (${message}). Escape parentheses and other regex metacharacters, or search for a literal.`,
+          isError: true,
+        };
+      }
       return { output: `Error: Search failed (${message}). Neither rg nor grep is available.`, isError: true };
     }
   },
@@ -426,8 +432,13 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isSuiteLogLine(line: string): boolean {
+  return /"Action"\s*:/.test(line) && /"(?:Test|Package|Elapsed)"/.test(line);
+}
+
 function formatResult(output: string, pattern: string, limit: number = MAX_LINES, offset: number = 0): ToolResult {
-  const trimmed = output.trim();
+  const kept = output.split('\n').filter(line => line.trim().length > 0 && !isSuiteLogLine(line));
+  const trimmed = kept.join('\n').trim();
 
   if (trimmed.length === 0) {
     return { output: `No matches found for pattern: ${pattern}` };

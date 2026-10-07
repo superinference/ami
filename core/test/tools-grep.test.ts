@@ -236,6 +236,45 @@ describe('grepTool – alternation when only grep is installed', () => {
   });
 });
 
+describe('grepTool – invalid regex and suite logs', () => {
+  it('tells the model to escape an unclosed group instead of claiming grep is missing', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-grep-bin-'));
+    fs.symlinkSync('/usr/bin/grep', path.join(bin, 'grep'));
+    fs.writeFileSync(path.join(tmpDir, 'enforcer.go'), 'e, _ := NewEnforcer("examples/blp_model.conf")\n');
+    const saved = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await grepTool.execute(
+        { pattern: 'NewEnforcer|Enforce(', path: tmpDir, include: '*.go' },
+        ctx(),
+      );
+      assert.equal(result.isError, true);
+      assert.match(result.output, /Invalid regular expression/);
+      assert.equal(result.output.includes('Neither rg nor grep'), false);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it('omits go test JSON lines and keeps the source match', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'reports'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'reports', 'go-test-results.json'),
+      '{"Action":"pass","Package":"github.com/casbin/casbin/v2","Test":"TestBLPModel"}\n',
+    );
+    fs.writeFileSync(path.join(tmpDir, 'blp_test.go'), 'func TestBLPModel() {}\n');
+    const result = await grepTool.execute(
+      { pattern: 'TestBLPModel', path: tmpDir },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.match(result.output, /blp_test\.go/);
+    assert.equal(result.output.includes('"Action"'), false);
+    assert.equal(result.output.includes('go-test-results.json'), false);
+  });
+});
+
 describe('grepTool – in-process fallback when rg and grep are missing', () => {
   it('finds a symbol without rg or grep on PATH', async () => {
     const saved = process.env.PATH;

@@ -9,7 +9,7 @@ import { webFetchTool } from '../src/tools/web-fetch';
 import { webSearchTool } from '../src/tools/web-search';
 import { notebookEditTool } from '../src/tools/notebook-edit';
 import { getFileCache } from '../src/file-cache';
-import { isValidIP } from '../src/tools/web-utils';
+import { isValidIP, pinnedDnsLookup } from '../src/tools/web-utils';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -341,6 +341,32 @@ describe('web_fetch tool', () => {
     );
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('Blocked'));
+  });
+});
+
+describe('pinnedDnsLookup', () => {
+  it('answers Node all:true lookups so the pinned address is not undefined', async () => {
+    const server = http.createServer((_req, res) => { res.end('pinned-ok'); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = http.get({
+          hostname: 'example.com',
+          port,
+          path: '/',
+          lookup: pinnedDnsLookup('127.0.0.1'),
+        }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c as Buffer));
+          res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+        });
+        req.on('error', reject);
+      });
+      assert.equal(body, 'pinned-ok');
+    } finally {
+      server.close();
+    }
   });
 });
 

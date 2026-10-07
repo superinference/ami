@@ -81,6 +81,30 @@ export async function validateUrlSafety(url: string): Promise<{ error: string } 
   }
 }
 
+/**
+ * DNS pin for SSRF. Node calls this with `{ all: true }` and then reads
+ * `addresses[0].address`. A `(err, ip, family)` callback makes that
+ * `undefined` and the fetch fails with "Invalid IP address: undefined".
+ */
+export function pinnedDnsLookup(pinIP: string): NonNullable<http.RequestOptions['lookup']> {
+  const family = pinIP.includes(':') ? 6 : 4;
+  const lookup = (hostname: string, options: unknown, callback?: unknown) => {
+    let opts = options;
+    let cb = callback as (err: NodeJS.ErrnoException | null, address: unknown, extra?: number) => void;
+    if (typeof options === 'function') {
+      cb = options as typeof cb;
+      opts = {};
+    }
+    const all = typeof opts === 'object' && opts !== null && (opts as { all?: boolean }).all === true;
+    if (all) {
+      cb(null, [{ address: pinIP, family }]);
+      return;
+    }
+    cb(null, pinIP, family);
+  };
+  return lookup as NonNullable<http.RequestOptions['lookup']>;
+}
+
 export function isValidIP(ip: string): boolean {
   if (!ip || ip === 'undefined' || ip === 'null') return false;
   // v4 — flat form avoids security/detect-unsafe-regex (no repeated quantifier group)
@@ -196,9 +220,7 @@ function httpGetInternal(
     const requester = parsed.protocol === 'https:' ? https : http;
 
     const pinIP = resolvedIP && isValidIP(resolvedIP) ? resolvedIP : undefined;
-    const lookupOverride: http.RequestOptions['lookup'] = pinIP
-      ? (_hostname, _opts, cb) => { (cb as (err: null, address: string, family: number) => void)(null, pinIP, pinIP.includes(':') ? 6 : 4); }
-      : undefined;
+    const lookupOverride: http.RequestOptions['lookup'] = pinIP ? pinnedDnsLookup(pinIP) : undefined;
 
     const req = requester.get(
       url,
