@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 
 import {
@@ -11,6 +11,9 @@ import {
   fitOutputTokens,
   capThinkingBudget,
   maxToolOutputChars,
+  registerModelCapabilities,
+  clearDynamicCapabilities,
+  discoverFromModelList,
   DEFAULT_MAX_OUTPUT_TOKENS,
   OUTPUT_FIT_SAFETY_TOKENS,
   MIN_FITTED_OUTPUT_TOKENS,
@@ -195,6 +198,16 @@ describe('getModelCapabilities', () => {
     assert.equal(getModelCapabilities('gemini-2.0-flash'), null);
     assert.equal(getModelCapabilities('unknown-model'), null);
   });
+
+  it('returns null for GPT-6 family (chat models, no reasoning_effort)', () => {
+    assert.equal(getModelCapabilities('gpt-6-luna'), null);
+    assert.equal(getModelCapabilities('gpt-6-sol'), null);
+    assert.equal(getModelCapabilities('gpt-6-astra'), null);
+    assert.equal(getModelCapabilities('gpt-6.1-sol'), null);
+    assert.equal(getModelCapabilities('gpt-5.6-luna'), null);
+    assert.equal(getModelCapabilities('gpt-5.5'), null);
+    assert.equal(getModelCapabilities('gpt-5.4'), null);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -217,6 +230,13 @@ describe('isReasoningModel', () => {
     assert.equal(isReasoningModel('gpt-4-turbo'), false);
     assert.equal(isReasoningModel('gemini-2.0-flash'), false);
     assert.equal(isReasoningModel('llama-3'), false);
+  });
+
+  it('returns false for GPT-6 family', () => {
+    assert.equal(isReasoningModel('gpt-6-luna'), false);
+    assert.equal(isReasoningModel('gpt-6-sol'), false);
+    assert.equal(isReasoningModel('gpt-6-astra'), false);
+    assert.equal(isReasoningModel('gpt-6.1-sol'), false);
   });
 });
 
@@ -435,5 +455,245 @@ describe('output, thinking, and tool-char budgets agree', () => {
     assert.ok(narrow < 80_000, `32k window must shrink tool output, got ${narrow}`);
     assert.ok(narrow > 8_000, 'must not collapse back to an 8k tool cap');
     assert.ok(Math.ceil(narrow / 3) <= Math.floor(32_768 * 0.8));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GPT-6 family context windows
+// ---------------------------------------------------------------------------
+describe('GPT-6 family context windows', () => {
+  it('returns 1050000 for gpt-6-luna', () => {
+    assert.equal(getContextWindow('gpt-6-luna'), 1_050_000);
+  });
+
+  it('returns 1050000 for gpt-6-sol', () => {
+    assert.equal(getContextWindow('gpt-6-sol'), 1_050_000);
+  });
+
+  it('returns 1050000 for gpt-6-astra', () => {
+    assert.equal(getContextWindow('gpt-6-astra'), 1_050_000);
+  });
+
+  it('returns 1050000 for gpt-6.1-sol', () => {
+    assert.equal(getContextWindow('gpt-6.1-sol'), 1_050_000);
+  });
+
+  it('returns 1050000 for gpt-6 prefix match', () => {
+    assert.equal(getContextWindow('gpt-6-something-new'), 1_050_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dynamic model capability registry
+// ---------------------------------------------------------------------------
+describe('dynamic model capability registry', () => {
+  afterEach(() => {
+    clearDynamicCapabilities();
+  });
+
+  it('registerModelCapabilities overrides static for a known model', () => {
+    assert.equal(getModelCapabilities('gpt-4o'), null);
+    registerModelCapabilities('gpt-4o', {
+      reasoning: true, defaultThinkingLevel: 'low',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: false, maxThinkingBudget: 0,
+    });
+    const caps = getModelCapabilities('gpt-4o');
+    assert.notEqual(caps, null);
+    assert.equal(caps!.reasoning, true);
+  });
+
+  it('registerModelCapabilities with null explicitly marks as non-reasoning', () => {
+    registerModelCapabilities('custom-model', null);
+    assert.equal(getModelCapabilities('custom-model'), null);
+  });
+
+  it('clearDynamicCapabilities restores static behavior', () => {
+    registerModelCapabilities('o1', {
+      reasoning: false, defaultThinkingLevel: 'off',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: false, maxThinkingBudget: 0,
+    });
+    assert.equal(getModelCapabilities('o1')!.reasoning, false);
+    clearDynamicCapabilities();
+    assert.equal(getModelCapabilities('o1')!.reasoning, true);
+  });
+
+  it('is case-insensitive', () => {
+    registerModelCapabilities('GPT-6-Luna', null);
+    assert.equal(getModelCapabilities('gpt-6-luna'), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// discoverFromModelList
+// ---------------------------------------------------------------------------
+describe('discoverFromModelList', () => {
+  afterEach(() => {
+    clearDynamicCapabilities();
+  });
+
+  it('auto-classifies o-series models as reasoning', () => {
+    const records = [
+      { id: 'o4-mini-2025-04-16', object: 'model' },
+      { id: 'o3-2025-04-16', object: 'model' },
+    ];
+    const result = discoverFromModelList(records);
+    assert.ok(result.registered.includes('o4-mini-2025-04-16'));
+    assert.ok(result.registered.includes('o3-2025-04-16'));
+    const caps = getModelCapabilities('o4-mini-2025-04-16');
+    assert.notEqual(caps, null);
+    assert.equal(caps!.reasoning, true);
+    assert.equal(caps!.temperatureMustBeUnset, true);
+  });
+
+  it('auto-classifies gpt-6 models as non-reasoning', () => {
+    const records = [
+      { id: 'gpt-6-luna', object: 'model' },
+      { id: 'gpt-6-sol', object: 'model' },
+      { id: 'gpt-6-astra', object: 'model' },
+    ];
+    const result = discoverFromModelList(records);
+    assert.ok(result.registered.length === 3);
+    assert.equal(getModelCapabilities('gpt-6-luna'), null);
+    assert.equal(getModelCapabilities('gpt-6-sol'), null);
+    assert.equal(getModelCapabilities('gpt-6-astra'), null);
+    assert.equal(isReasoningModel('gpt-6-luna'), false);
+  });
+
+  it('picks up advertised context windows from records', () => {
+    const records = [
+      { id: 'new-model-x', object: 'model', max_input_tokens: 500_000 },
+    ];
+    discoverFromModelList(records);
+    assert.equal(getContextWindow('new-model-x'), 500_000);
+  });
+
+  it('does not re-register already discovered models', () => {
+    const records = [{ id: 'gpt-6-luna', object: 'model' }];
+    discoverFromModelList(records);
+    registerModelCapabilities('gpt-6-luna', {
+      reasoning: true, defaultThinkingLevel: 'high',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: false, maxThinkingBudget: 0,
+    });
+    discoverFromModelList(records);
+    assert.equal(getModelCapabilities('gpt-6-luna')!.reasoning, true);
+  });
+
+  it('returns registered ids and context windows', () => {
+    const records = [
+      { id: 'test-model-a', object: 'model', context_length: 262144 },
+      { id: 'test-model-b', object: 'model' },
+    ];
+    const result = discoverFromModelList(records);
+    assert.ok(result.registered.includes('test-model-a'));
+    assert.ok(result.registered.includes('test-model-b'));
+    assert.equal(result.contextWindows['test-model-a'], 262144);
+    assert.equal(result.contextWindows['test-model-b'], undefined);
+  });
+
+  it('handles empty records gracefully', () => {
+    const result = discoverFromModelList([]);
+    assert.deepEqual(result.registered, []);
+    assert.deepEqual(result.contextWindows, {});
+  });
+
+  it('handles records with missing id', () => {
+    const result = discoverFromModelList([{ object: 'model' }]);
+    assert.deepEqual(result.registered, []);
+  });
+
+  it('classifies o1 variant date-stamped IDs as reasoning', () => {
+    discoverFromModelList([
+      { id: 'o1-2025-12-17' },
+      { id: 'o3-mini-2025-01-31' },
+      { id: 'o4-mini-2025-04-16' },
+    ]);
+    assert.equal(isReasoningModel('o1-2025-12-17'), true);
+    assert.equal(isReasoningModel('o3-mini-2025-01-31'), true);
+    assert.equal(isReasoningModel('o4-mini-2025-04-16'), true);
+  });
+
+  it('does not classify non-o-series as reasoning', () => {
+    discoverFromModelList([
+      { id: 'gpt-4o' },
+      { id: 'chatgpt-4o-latest' },
+      { id: 'gpt-5.5' },
+    ]);
+    assert.equal(isReasoningModel('gpt-4o'), false);
+    assert.equal(isReasoningModel('chatgpt-4o-latest'), false);
+    assert.equal(isReasoningModel('gpt-5.5'), false);
+  });
+
+  it('mixed reasoning and non-reasoning models in one call', () => {
+    const result = discoverFromModelList([
+      { id: 'o3-2025-04-16' },
+      { id: 'gpt-6-luna' },
+      { id: 'o4-mini-2025-04-16' },
+      { id: 'gpt-6-sol' },
+    ]);
+    assert.equal(result.registered.length, 4);
+    assert.equal(isReasoningModel('o3-2025-04-16'), true);
+    assert.equal(isReasoningModel('gpt-6-luna'), false);
+    assert.equal(isReasoningModel('o4-mini-2025-04-16'), true);
+    assert.equal(isReasoningModel('gpt-6-sol'), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dynamic registry interaction with resolveTemperature
+// ---------------------------------------------------------------------------
+describe('dynamic registry + resolveTemperature', () => {
+  afterEach(() => {
+    clearDynamicCapabilities();
+  });
+
+  it('resolveTemperature returns undefined for dynamically registered reasoning model with thinking', () => {
+    registerModelCapabilities('dynamic-reasoner', {
+      reasoning: true, defaultThinkingLevel: 'medium',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: true, maxThinkingBudget: 0,
+    });
+    assert.equal(resolveTemperature('dynamic-reasoner', 0.5, { enabled: true }), undefined);
+  });
+
+  it('resolveTemperature returns configTemperature for dynamically registered non-reasoning model', () => {
+    registerModelCapabilities('dynamic-chat', null);
+    assert.equal(resolveTemperature('dynamic-chat', 0.7, undefined), 0.7);
+  });
+
+  it('resolveTemperature returns undefined for dynamically registered Claude-like model', () => {
+    registerModelCapabilities('custom-claude', {
+      reasoning: true, defaultThinkingLevel: 'medium',
+      supportsAdaptiveThinking: true, requiresTemperatureOne: true,
+      temperatureMustBeUnset: false, maxThinkingBudget: 128000,
+    });
+    assert.equal(resolveTemperature('custom-claude', 0.5, { enabled: true }), undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dynamic registry interaction with resolveThinkingBudget
+// ---------------------------------------------------------------------------
+describe('dynamic registry + resolveThinkingBudget', () => {
+  afterEach(() => {
+    clearDynamicCapabilities();
+  });
+
+  it('resolveThinkingBudget max uses dynamically registered maxThinkingBudget', () => {
+    registerModelCapabilities('custom-thinker', {
+      reasoning: true, defaultThinkingLevel: 'high',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: false, maxThinkingBudget: 65536,
+    });
+    const budget = resolveThinkingBudget('max', 'custom-thinker');
+    assert.equal(budget, 65536 - 8192);
+  });
+
+  it('resolveThinkingBudget max falls back to 128000 for unknown dynamic model', () => {
+    registerModelCapabilities('unknown-dynamic', null);
+    const budget = resolveThinkingBudget('max', 'unknown-dynamic');
+    assert.equal(budget, 128000 - 8192);
   });
 });

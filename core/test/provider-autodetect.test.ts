@@ -21,7 +21,7 @@ describe('inferProviderFromApiKey', () => {
     const result = inferProviderFromApiKey('sk-proj-abcdefghijklmnop');
     assert.ok(result);
     assert.equal(result.provider, 'openai');
-    assert.equal(result.defaultModel, 'o4-mini');
+    assert.equal(result.defaultModel, 'gpt-6-luna');
   });
 
   it('detects classic OpenAI key', () => {

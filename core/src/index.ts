@@ -55,7 +55,7 @@ export type {
 } from './types';
 export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem } from './types';
 export { buildSubsystems } from './types';
-export { getModelCapabilities } from './model-capabilities';
+export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList } from './model-capabilities';
 export { detectProvider, listModels, validateModel } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs } from './config';
 export type { ProjectConfig } from './config';

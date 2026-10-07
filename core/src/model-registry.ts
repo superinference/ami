@@ -3,6 +3,7 @@ import * as http from 'http';
 import { URL } from 'url';
 import type { ProviderConfig } from './types';
 import { MODEL_PREFERENCE } from './provider';
+import { discoverFromModelList } from './model-capabilities';
 
 const TIMEOUT_MS = 10000;
 
@@ -118,11 +119,13 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
   const data = await httpGetJSON(url, headers) as { data?: ModelInfo[] };
-  return (data.data || []).map(m => ({
+  const models = (data.data || []).map(m => ({
     id: m.id,
     name: m.id,
     owned_by: m.owned_by,
   }));
+  discoverFromModelList(models as unknown as Record<string, unknown>[]);
+  return models;
 }
 
 async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {

@@ -68,6 +68,7 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
     'claude-haiku-4-5-20251001', 'claude-3-5-sonnet-20241022',
   ],
   openai: [
+    'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'gpt-6.1-sol',
     'o4-mini', 'gpt-4o', 'o3-mini', 'gpt-4o-mini', 'gpt-4-turbo',
   ],
   groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],

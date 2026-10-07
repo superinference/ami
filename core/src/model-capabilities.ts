@@ -290,7 +290,7 @@ const REASONING_MODELS: Array<{
       supportsAdaptiveThinking: false, requiresTemperatureOne: false,
       temperatureMustBeUnset: true, maxThinkingBudget: 0 } },
 
-  // Google Gemini 2.5 — thinkingConfig
+  // Google Gemini 2.5+ — thinkingConfig
   { pattern: /gemini-2\.5-pro/,
     capabilities: { reasoning: true, defaultThinkingLevel: 'medium',
       supportsAdaptiveThinking: false, requiresTemperatureOne: false,
@@ -307,7 +307,59 @@ const REASONING_MODELS: Array<{
       temperatureMustBeUnset: false, maxThinkingBudget: 0 } },
 ];
 
+// ---------------------------------------------------------------------------
+// Dynamic model capability registry — populated at runtime from /v1/models
+// ---------------------------------------------------------------------------
+
+const dynamicCapabilities = new Map<string, ModelCapabilities | null>();
+
+export function registerModelCapabilities(modelId: string, caps: ModelCapabilities | null): void {
+  dynamicCapabilities.set(modelId.toLowerCase(), caps);
+}
+
+export function clearDynamicCapabilities(): void {
+  dynamicCapabilities.clear();
+}
+
+const OPENAI_REASONING_PATTERN = /^o[1-9]($|-)/;
+
+function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
+  if (OPENAI_REASONING_PATTERN.test(modelId)) {
+    return {
+      reasoning: true, defaultThinkingLevel: 'medium',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: true, maxThinkingBudget: 0,
+    };
+  }
+  return null;
+}
+
+export function discoverFromModelList(records: Record<string, unknown>[]): {
+  registered: string[];
+  contextWindows: Record<string, number>;
+} {
+  const registered: string[] = [];
+  const contextWindows: Record<string, number> = {};
+  for (const record of records) {
+    const id = String(record.id ?? record.name ?? '');
+    if (!id) continue;
+    const window = readAdvertisedContextWindow(record);
+    if (window !== undefined) {
+      CONTEXT_WINDOWS[id] = window;
+      contextWindows[id] = window;
+    }
+    if (!dynamicCapabilities.has(id.toLowerCase())) {
+      const caps = classifyOpenAIModel(id);
+      dynamicCapabilities.set(id.toLowerCase(), caps);
+      registered.push(id);
+    }
+  }
+  return { registered, contextWindows };
+}
+
 export function getModelCapabilities(modelId: string): ModelCapabilities | null {
+  const dynamic = dynamicCapabilities.get(modelId.toLowerCase());
+  if (dynamic !== undefined) return dynamic;
   for (const entry of REASONING_MODELS) {
     if (entry.pattern.test(modelId)) {
       return entry.capabilities;
