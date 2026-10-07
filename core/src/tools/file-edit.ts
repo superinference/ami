@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanForSecrets } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -91,7 +91,7 @@ async function writeEntireFile(
     }
   }
 
-  const secrets = scanForSecrets(content);
+  const secrets = scanAddedSecrets(oldContent, content);
   if (secrets.length > 0) {
     return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
   }
@@ -212,7 +212,7 @@ async function applySequentialEdits(
     };
   }
 
-  const secrets = scanForSecrets(content);
+  const secrets = scanAddedSecrets(rawContent, content);
   if (secrets.length > 0) {
     return { output: `Warning: Potential secrets detected in edited content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
   }
@@ -412,6 +412,10 @@ export const fileEditTool: ToolDefinition = {
       }
       if (replaceAll) {
         const replaced = content.split(normalizedOld).join(normalizedNew);
+        const addedSecrets = scanAddedSecrets(content, replaced);
+        if (addedSecrets.length > 0) {
+          return { output: `Warning: Potential secrets detected in edited content: ${addedSecrets.join(', ')}. Remove secrets before writing.`, isError: true };
+        }
         const finalContent = convertToLineEnding(replaced, originalEnding);
         await trackFileHistory(resolved, rawContent, context.cwd);
         const writeErr = commitWrite(resolved, finalContent, normalizeToLf(finalContent), context);
@@ -436,7 +440,7 @@ export const fileEditTool: ToolDefinition = {
       }
     }
 
-    const secrets = scanForSecrets(newContent);
+    const secrets = scanAddedSecrets(rawContent, newContent);
     if (secrets.length > 0) {
       return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
     }

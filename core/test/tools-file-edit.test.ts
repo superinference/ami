@@ -351,6 +351,101 @@ describe('fileEditTool – CRLF handling', () => {
     assert.ok(content.includes('ALPHA\r\nBETA'), 'Should convert newlines to match file');
   });
 
+  it('edits a file that already contains an aligned password constant', async () => {
+    const file = path.join(tmpDir, 'flags.go');
+    fs.writeFileSync(
+      file,
+      [
+        'package cli',
+        '',
+        'const (',
+        '    Password            = "placeholder"',
+        ')',
+        '',
+        'Usage: "Optional retry attempts."',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await fileEditTool.execute(
+      {
+        file_path: file,
+        edits: [
+          {
+            old_string: 'Usage: "Optional retry attempts."',
+            new_string: 'Usage: "Optional retry attempts. Must be greater than 0."',
+          },
+        ],
+      },
+      ctx(),
+    );
+
+    assert.equal(result.isError, false, result.output);
+    const written = fs.readFileSync(file, 'utf-8');
+    assert.match(written, /Must be greater than 0/);
+    assert.match(written, /Password\s+= "placeholder"/);
+  });
+
+  it('rejects an edit that introduces a password assignment', async () => {
+    const file = path.join(tmpDir, 'flags.go');
+    fs.writeFileSync(file, 'package cli\n\nvar x = 1\n');
+
+    const result = await fileEditTool.execute(
+      {
+        file_path: file,
+        old_string: 'var x = 1',
+        new_string: 'var x = 1\npassword = "my-secret-password-123"',
+      },
+      ctx(),
+    );
+
+    assert.equal(result.isError, true);
+    assert.match(result.output, /Potential secrets/);
+    assert.equal(fs.readFileSync(file, 'utf-8').includes('my-secret-password-123'), false);
+  });
+
+  it('replace_all still edits a file that already contains a password constant', async () => {
+    const file = path.join(tmpDir, 'flags.go');
+    fs.writeFileSync(file, 'Password            = "placeholder"\nname := "old"\nname := "old"\n');
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'name := "old"', new_string: 'name := "new"', replace_all: true },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.match(fs.readFileSync(file, 'utf-8'), /name := "new"/);
+  });
+
+  it('replace_all rejects a replacement that introduces a password assignment', async () => {
+    const file = path.join(tmpDir, 'flags.go');
+    fs.writeFileSync(file, 'slot := "empty"\nslot := "empty"\n');
+    const result = await fileEditTool.execute(
+      {
+        file_path: file,
+        old_string: 'slot := "empty"',
+        new_string: 'password = "my-secret-password-123"',
+        replace_all: true,
+      },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.output, /Potential secrets/);
+    assert.equal(fs.readFileSync(file, 'utf-8').includes('my-secret-password-123'), false);
+  });
+
+  it('rejects a new file that contains an API key', async () => {
+    const file = path.join(tmpDir, 'keys.txt');
+    const result = await fileEditTool.execute(
+      {
+        file_path: file,
+        new_string: 'key: sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef\n',
+      },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.output, /Potential secrets/);
+    assert.equal(fs.existsSync(file), false);
+  });
+
   it('preserves CRLF in multi-line replacement', async () => {
     const file = path.join(tmpDir, 'multiline-crlf.ts');
     fs.writeFileSync(file, 'const a = 1;\r\nconst b = 2;\r\nconst c = 3;\r\n');

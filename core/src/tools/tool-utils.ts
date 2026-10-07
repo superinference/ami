@@ -147,6 +147,25 @@ export function scanForSecrets(content: string): string[] {
   return found;
 }
 
+/**
+ * Scan only lines that this edit introduces. A file that already contains
+ * `Password = "placeholder"` must stay editable; a newly added secret must not.
+ */
+export function scanAddedSecrets(before: string, after: string): string[] {
+  const beforeCounts = new Map<string, number>();
+  for (const line of normalizeToLf(before).split('\n')) {
+    beforeCounts.set(line, (beforeCounts.get(line) ?? 0) + 1);
+  }
+  const added: string[] = [];
+  for (const line of normalizeToLf(after).split('\n')) {
+    const remaining = beforeCounts.get(line) ?? 0;
+    if (remaining > 0) beforeCounts.set(line, remaining - 1);
+    else added.push(line);
+  }
+  if (added.length === 0) return [];
+  return scanForSecrets(added.join('\n'));
+}
+
 // ---------------------------------------------------------------------------
 // CRLF-aware line ending helpers (shared by file-edit)
 // ---------------------------------------------------------------------------

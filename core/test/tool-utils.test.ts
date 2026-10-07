@@ -16,6 +16,7 @@ import {
   normalizeToLf,
   convertToLineEnding,
   scanForSecrets,
+  scanAddedSecrets,
 } from '../src/tools/tool-utils';
 
 // ---------------------------------------------------------------------------
@@ -484,6 +485,26 @@ describe('scanForSecrets', () => {
   it('returns empty array for clean content', () => {
     const found = scanForSecrets('const x = 42;\nconsole.log("hello world");');
     assert.equal(found.length, 0);
+  });
+
+  it('ignores a password constant that was already in the file', () => {
+    const before = 'package cli\n\nconst (\n    Password            = "placeholder"\n)\n\nUsage: "Optional retry attempts."\n';
+    const after = before.replace(
+      'Usage: "Optional retry attempts."',
+      'Usage: "Optional retry attempts. Must be greater than 0."',
+    );
+    assert.deepEqual(scanAddedSecrets(before, after), []);
+  });
+
+  it('returns nothing when the edit only deletes lines', () => {
+    assert.deepEqual(scanAddedSecrets('keep\npassword = "my-secret-password-123"\n', 'keep\n'), []);
+  });
+
+  it('flags a password assignment the edit introduces', () => {
+    const before = 'package cli\n\nvar x = 1\n';
+    const after = 'package cli\n\nvar x = 1\npassword = "my-secret-password-123"\n';
+    const found = scanAddedSecrets(before, after);
+    assert.ok(found.length > 0);
   });
 
   it('truncates matched secrets for safety', () => {
