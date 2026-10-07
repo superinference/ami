@@ -718,7 +718,7 @@ function promptTokensForFit(
   let text = systemPrompt ?? '';
   for (const msg of messages) {
     text += typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? '');
-    if (msg.tool_calls) text += JSON.stringify(msg.tool_calls);
+    if (msg.role === 'assistant' && msg.tool_calls) text += JSON.stringify(msg.tool_calls);
   }
   if (tools.length > 0) text += JSON.stringify(tools);
   return estimateTokens(text);
