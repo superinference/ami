@@ -358,6 +358,7 @@ export function discoverFromModelList(records: Record<string, unknown>[]): {
 }
 
 export function getModelCapabilities(modelId: string): ModelCapabilities | null {
+  if (typeof modelId !== 'string') return null;
   const dynamic = dynamicCapabilities.get(modelId.toLowerCase());
   if (dynamic !== undefined) return dynamic;
   for (const entry of REASONING_MODELS) {
