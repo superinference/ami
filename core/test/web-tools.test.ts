@@ -122,20 +122,12 @@ describe('web_fetch tool', () => {
             res.end('TAIL');
           } else if (req.url === '/over-download-cap') {
             res.writeHead(200, { 'Content-Type': 'text/plain' });
-            const chunk = 'y'.repeat(32_768);
-            let sent = 0;
-            const pump = () => {
-              while (sent < 1_048_576 + chunk.length) {
-                const ok = res.write(chunk);
-                sent += chunk.length;
-                if (!ok) {
-                  res.once('drain', pump);
-                  return;
-                }
-              }
-              res.end('ENDMARK');
-            };
-            pump();
+            // ENDMARK starts at the first byte past the cap, in the same
+            // response, so a reader that keeps the overflowing chunk fails.
+            const cap = 1_048_576;
+            const body = Buffer.alloc(cap + 'ENDMARK'.length, 0x79);
+            body.write('ENDMARK', cap);
+            res.end(body);
           } else {
             res.writeHead(404);
             res.end();

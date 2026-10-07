@@ -260,12 +260,19 @@ function httpGetInternal(
         };
         res.on('data', (chunk: Buffer) => {
           if (settled) return;
+          const room = MAX_HTTP_BODY_BYTES - totalBytes;
+          // Keep only the bytes inside the cap. The chunk that crosses it
+          // can contain the unread tail (Node may deliver that tail in the
+          // same buffer), and an exact landing on the cap must not read on.
+          if (chunk.length >= room) {
+            if (room > 0) chunks.push(chunk.subarray(0, room));
+            totalBytes = MAX_HTTP_BODY_BYTES;
+            finish(Buffer.concat(chunks).toString('utf-8'), true);
+            res.destroy();
+            return;
+          }
           totalBytes += chunk.length;
           chunks.push(chunk);
-          if (totalBytes > MAX_HTTP_BODY_BYTES) {
-            res.destroy();
-            finish(Buffer.concat(chunks).toString('utf-8'), true);
-          }
         });
         res.on('end', () => {
           finish(Buffer.concat(chunks).toString('utf-8'));
