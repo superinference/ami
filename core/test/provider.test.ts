@@ -15,6 +15,7 @@ import {
   fetchHuggingFaceContextWindow,
 } from '../src/provider';
 import { fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../src/model-capabilities';
+import { estimateTokens } from '../src/utils/tokens';
 import type { ToolDefinition, ProviderConfig, Message } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -489,10 +490,46 @@ describe('streamChatCompletion - streaming via AI SDK with mock server', () => {
       for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) {
         // drain
       }
-      const expected = fitOutputTokens(262_144, 32_768, 0);
+      const expected = fitOutputTokens(262_144, 32_768, estimateTokens('Hi'));
       assert.equal(seenMax, expected);
       assert.ok(expected < DEFAULT_MAX_OUTPUT_TOKENS);
       assert.ok(expected > 8_192);
+    } finally {
+      await new Promise<void>(resolve => cap.close(() => resolve()));
+    }
+  });
+
+  it('shrinks max_tokens when the prompt already fills the window', async () => {
+    let seenMax: unknown;
+    const cap = http.createServer(async (req, res) => {
+      const raw = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+      });
+      seenMax = JSON.parse(raw.toString()).max_tokens;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end('data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}\n\ndata: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}]}\n\ndata: [DONE]\n\n');
+    });
+    await new Promise<void>(resolve => cap.listen(0, '127.0.0.1', () => resolve()));
+    const capPort = (cap.address() as { port: number }).port;
+    const prompt = 'p'.repeat(20_000);
+    try {
+      const config = makeConfig({
+        baseUrl: `http://127.0.0.1:${capPort}/v1`,
+        model: 'test-model',
+        maxTokens: 32_768,
+        contextWindow: 8_192,
+      });
+      const ac = new AbortController();
+      for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: prompt }], [], ac.signal)) {
+        // drain
+      }
+      const fitted = fitOutputTokens(32_768, 8_192, estimateTokens(prompt));
+      const ignoredPrompt = fitOutputTokens(32_768, 8_192, 0);
+      assert.equal(seenMax, fitted);
+      assert.ok(fitted < ignoredPrompt);
     } finally {
       await new Promise<void>(resolve => cap.close(() => resolve()));
     }

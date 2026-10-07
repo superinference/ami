@@ -576,6 +576,13 @@ describe('detectDetachedGitDiscard', () => {
     assert.ok(detectDetachedGitDiscard('git checkout HEAD file.ts')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git checkout main src/a.go')?.includes(MSG));
     assert.ok(detectDetachedGitDiscard('git stash branch feature')?.includes(MSG));
+    const checkoutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-checkout-'));
+    const workFile = path.join(checkoutDir, 'file.ts');
+    fs.writeFileSync(workFile, 'export const n = 1;\n');
+    assert.ok(detectDetachedGitDiscard('git checkout file.ts', checkoutDir)?.includes(MSG));
+    assert.equal(detectDetachedGitDiscard('git checkout main', checkoutDir), null);
+    assert.equal(detectDetachedGitDiscard('git checkout file.ts'), null);
+    fs.rmSync(checkoutDir, { recursive: true, force: true });
   });
 
   it('detects git clean -f / -fd', () => {

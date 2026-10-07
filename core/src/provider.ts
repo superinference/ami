@@ -6,6 +6,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls } from './provider-transform';
+import { estimateTokens } from './utils/tokens';
 import type {
   ProviderConfig,
   Message,
@@ -709,6 +710,20 @@ export function buildThinkingOptions(
 // streamChatCompletion — main streaming function
 // ---------------------------------------------------------------------------
 
+function promptTokensForFit(
+  systemPrompt: string | undefined,
+  messages: Message[],
+  tools: ToolDefinition[],
+): number {
+  let text = systemPrompt ?? '';
+  for (const msg of messages) {
+    text += typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? '');
+    if (msg.tool_calls) text += JSON.stringify(msg.tool_calls);
+  }
+  if (tools.length > 0) text += JSON.stringify(tools);
+  return estimateTokens(text);
+}
+
 export async function* streamChatCompletion(
   config: ProviderConfig,
   messages: Message[],
@@ -799,7 +814,7 @@ export async function* streamChatCompletion(
       maxOutputTokens: fitOutputTokens(
         config.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
         config.contextWindow ?? getContextWindow(modelId),
-        0,
+        promptTokensForFit(systemPrompt, sanitized, tools),
       ),
       ...(effectiveTemperature !== undefined ? { temperature: effectiveTemperature } : {}),
       abortSignal,

@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
@@ -138,7 +140,18 @@ function parseGitInvocations(command: string): GitInvocation[] {
  * `git stash && tests && git stash pop` (stash without a later pop/apply is
  * still blocked).
  */
-export function detectDetachedGitDiscard(command: string): string | null {
+function checkoutPathExists(token: string, cwd?: string): boolean {
+  if (!cwd) return false;
+  if (token === '.' || token === '..') return false;
+  try {
+    const abs = path.resolve(cwd, token);
+    return fs.existsSync(abs) && fs.statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function detectDetachedGitDiscard(command: string, cwd?: string): string | null {
   const invocations = parseGitInvocations(command);
   const hasLaterPopOrApply = (from: number): boolean =>
     invocations.slice(from + 1).some(inv => inv.sub === 'stash' && STASH_POP_APPLY.has(inv.stashSub));
@@ -157,10 +170,13 @@ export function detectDetachedGitDiscard(command: string): string | null {
     if (sub === 'checkout') {
       if (rest.includes('--')) return DETACHED_GIT_DISCARD_MSG;
       // `git checkout <tree-ish> <path>` discards the worktree. A single
-      // positional (`git checkout main`, `git checkout -b feature`) is a
-      // branch switch and stays allowed.
+      // positional is a branch switch unless it names a file in cwd
+      // (`git checkout file.ts`). `git checkout -b feature` stays allowed.
       const positional = rest.filter(t => t !== '--' && !t.startsWith('-'));
       if (positional.length >= 2) return DETACHED_GIT_DISCARD_MSG;
+      if (positional.length === 1 && checkoutPathExists(positional[0], cwd)) {
+        return DETACHED_GIT_DISCARD_MSG;
+      }
     }
     if (sub === 'clean' && rest.some(t => t === '--force' || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(t))) {
       return DETACHED_GIT_DISCARD_MSG;
@@ -281,7 +297,7 @@ export const bashTool: ToolDefinition = {
     }
 
     if (context.detachedMode) {
-      const discard = detectDetachedGitDiscard(command);
+      const discard = detectDetachedGitDiscard(command, context.cwd);
       if (discard) {
         return { output: `Error: ${discard}`, isError: true };
       }

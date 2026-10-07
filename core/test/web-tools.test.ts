@@ -114,6 +114,28 @@ describe('web_fetch tool', () => {
             res.writeHead(200, { 'Content-Type': 'text/plain' });
             // Write 60000 characters of content
             res.end(`HEAD${'x'.repeat(60000)}TAIL`);
+          } else if (req.url === '/past-old-cap') {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.write('HEAD');
+            const chunk = 'x'.repeat(32_768);
+            for (let i = 0; i < 6; i++) res.write(chunk);
+            res.end('TAIL');
+          } else if (req.url === '/over-download-cap') {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            const chunk = 'y'.repeat(32_768);
+            let sent = 0;
+            const pump = () => {
+              while (sent < 1_048_576 + chunk.length) {
+                const ok = res.write(chunk);
+                sent += chunk.length;
+                if (!ok) {
+                  res.once('drain', pump);
+                  return;
+                }
+              }
+              res.end('ENDMARK');
+            };
+            pump();
           } else {
             res.writeHead(404);
             res.end();
@@ -211,6 +233,47 @@ describe('web_fetch tool', () => {
     assert.ok(result.output.includes('HEAD'));
     assert.ok(result.output.includes('TAIL'));
     assert.ok(result.output.length < 60000);
+  });
+
+  it('keeps the tail of a body that used to stop at 100k', async () => {
+    const result = await webFetchTool.execute(
+      { url: `${baseUrl}/past-old-cap` },
+      makeContext('/tmp', true),
+    );
+    assert.equal(result.isError, undefined);
+    assert.ok(result.output.includes('HEAD'));
+    assert.ok(result.output.includes('TAIL'), result.output.slice(-180));
+    assert.ok(!result.output.includes('Download stopped'));
+  });
+
+  it('stops a download past the body cap and does not invent the unread tail', async () => {
+    const result = await webFetchTool.execute(
+      { url: `${baseUrl}/over-download-cap` },
+      makeContext('/tmp', true),
+    );
+    assert.equal(result.isError, undefined);
+    assert.ok(result.output.includes('Download stopped at 1048576 bytes'));
+    assert.ok(!result.output.includes('ENDMARK'));
+  });
+
+  it('sends the page tail to the summary prompt', async () => {
+    let seen = '';
+    const result = await webFetchTool.execute(
+      { url: `${baseUrl}/large`, prompt: 'Where is TAIL?' },
+      {
+        ...makeContext('/tmp', true),
+        _engineFactory: () => ({
+          submit(prompt: string) {
+            seen = prompt;
+            return (async function* () { /* no summary text */ })();
+          },
+        }),
+      },
+    );
+    assert.equal(result.isError, undefined);
+    assert.ok(seen.includes('HEAD'));
+    assert.ok(seen.includes('TAIL'));
+    assert.ok(seen.includes('middle omitted'));
   });
 
   it('includes prompt in output when provided', async () => {

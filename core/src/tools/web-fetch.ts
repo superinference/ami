@@ -2,10 +2,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validateUrlSafety, stripHtml, httpGet } from './web-utils';
+import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES } from './web-utils';
 import { spillToolText } from './spill-output';
 
 const MAX_RESPONSE_LENGTH = 50000;
+
+/** Head and tail for a summary prompt. A head slice hides the end of the page. */
+export function summaryWindow(text: string, limit = 30_000): string {
+  if (text.length <= limit) return text;
+  const marker = '\n\n[... middle omitted from the summary prompt; the tail follows ...]\n\n';
+  const head = Math.floor(limit * 0.67);
+  const tail = Math.max(0, limit - head - marker.length);
+  return text.slice(0, head) + marker + text.slice(text.length - tail);
+}
 const MAX_URL_LENGTH = 2000;
 
 // --- Byte-limited LRU cache ---
@@ -213,9 +222,7 @@ export const webFetchTool: ToolDefinition = {
           const pdf = await pdfParse(pdfBuffer);
           const pdfText = (pdf.text || '').trim();
           if (pdfText.length > 100) {
-            const truncated = pdfText.length > MAX_RESPONSE_LENGTH
-              ? pdfText.slice(0, MAX_RESPONSE_LENGTH) + '\n\n[PDF content truncated]'
-              : pdfText;
+            const truncated = spillToolText(context.cwd, 'pdf', pdfText, MAX_RESPONSE_LENGTH);
             return {
               output: `URL: ${sanitizedUrl}\nType: PDF (${pdf.numpages} pages)\n\n${truncated}`,
               isError: false,
@@ -271,7 +278,7 @@ export const webFetchTool: ToolDefinition = {
 
       content = spillToolText(context.cwd, 'web-fetch', content, MAX_RESPONSE_LENGTH);
       if (truncated) {
-        content += '\n\n[Download stopped at 100000 bytes; the rest of the response was not read.]';
+        content += `\n\n[Download stopped at ${MAX_HTTP_BODY_BYTES} bytes; the rest of the response was not read.]`;
       }
 
       // Build the result
@@ -298,7 +305,7 @@ export const webFetchTool: ToolDefinition = {
             tokenBudget: 8000,
           });
           let summary = '';
-          const summarizePrompt = `Given this web page content, answer the following question/instruction:\n\nQuestion: ${input.prompt}\n\nContent:\n${output.slice(0, 30000)}`;
+          const summarizePrompt = `Given this web page content, answer the following question/instruction:\n\nQuestion: ${input.prompt}\n\nContent:\n${summaryWindow(output)}`;
           for await (const event of summarizeEngine.submit(summarizePrompt)) {
             if (event.type === 'text_delta') summary += event.text;
           }

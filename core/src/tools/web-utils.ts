@@ -144,6 +144,13 @@ const USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0';
 
 /**
+ * Hard cap on a single HTTP body. Large enough to keep the tail of a
+ * typical page or document, small enough that a hostile URL cannot
+ * stream without bound. Bytes past this cap are not read.
+ */
+export const MAX_HTTP_BODY_BYTES = 1_048_576;
+
+/**
  * Perform an HTTP(S) GET following redirects up to `maxRedirects` hops.
  * Returns the final response body as a string along with status metadata.
  */
@@ -255,7 +262,7 @@ function httpGetInternal(
           if (settled) return;
           totalBytes += chunk.length;
           chunks.push(chunk);
-          if (totalBytes > MAX_RESPONSE_LENGTH * 2) {
+          if (totalBytes > MAX_HTTP_BODY_BYTES) {
             res.destroy();
             finish(Buffer.concat(chunks).toString('utf-8'), true);
           }
