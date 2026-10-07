@@ -213,6 +213,29 @@ describe('grepTool – close with stderr', () => {
   });
 });
 
+describe('grepTool – alternation when only grep is installed', () => {
+  it('finds both sides of a pipe pattern without ripgrep', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-grep-bin-'));
+    fs.symlinkSync('/usr/bin/grep', path.join(bin, 'grep'));
+    fs.writeFileSync(path.join(tmpDir, 'blp_test.go'), 'func TestBLPModel() {}\n');
+    fs.writeFileSync(path.join(tmpDir, 'other.go'), 'func TestOther() {}\n');
+    const saved = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await grepTool.execute(
+        { pattern: 'BLP|TestOther', path: tmpDir, include: '*.go' },
+        ctx(),
+      );
+      assert.ok(!result.isError, result.output);
+      assert.match(result.output, /TestBLPModel/);
+      assert.match(result.output, /TestOther/);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('grepTool – in-process fallback when rg and grep are missing', () => {
   it('finds a symbol without rg or grep on PATH', async () => {
     const saved = process.env.PATH;

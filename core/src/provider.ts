@@ -489,9 +489,33 @@ export function withExtraBody(
   return wrapped;
 }
 
+/**
+ * OpenAI routes a conversation to one cache when every turn sends the same
+ * `prompt_cache_key`. vLLM and other compatible servers reject or ignore
+ * unknown fields, so the key is attached only for official OpenAI hosts.
+ * An explicit `extraBody.prompt_cache_key` is left unchanged.
+ */
+export function openAIPromptCacheBody(
+  extraBody: Record<string, unknown> | undefined,
+  cacheKey: string | undefined,
+  provider: string | undefined,
+  baseUrl: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!cacheKey) return extraBody;
+  const host = baseUrl ?? '';
+  const official =
+    host.includes('api.openai.com') ||
+    host.includes('openai.azure.com') ||
+    ((provider === 'openai' || provider === 'azure-openai') && host.length === 0);
+  if (!official) return extraBody;
+  if (extraBody && Object.prototype.hasOwnProperty.call(extraBody, 'prompt_cache_key')) {
+    return extraBody;
+  }
+  return { ...(extraBody ?? {}), prompt_cache_key: cacheKey };
+}
+
 export function resolveModel(config: ProviderConfig) {
   const { apiKey } = config;
-  const fetch = withExtraBody(config.extraBody);
   const fromKey = inferProviderFromApiKey(apiKey);
   const fromUrl = config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null;
   // An explicit endpoint is the request. Ambient credentials (Vertex project,
@@ -502,6 +526,7 @@ export function resolveModel(config: ProviderConfig) {
   const provider = (config.provider as ProviderName) || inferred?.provider;
   const model = config.model || inferred?.defaultModel || 'gpt-4o';
   const baseUrl = config.baseUrl || inferred?.defaultBaseUrl || '';
+  const fetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl));
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {

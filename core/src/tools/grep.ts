@@ -307,7 +307,9 @@ function buildGrepArgs(
   caseInsensitive: boolean,
   contextLines?: number,
 ): string[] {
-  const args: string[] = ['-r'];
+  // -E so `|` is alternation. Basic grep treats it as a literal, which made
+  // `BLP|Bell` and `blp_model|blp_policy` report no matches in the testbed.
+  const args: string[] = ['-r', '-E'];
 
   if (outputMode === 'files_with_matches') {
     args.push('-l');
@@ -408,12 +410,11 @@ function runSearch(
         return;
       }
 
-      // Exit code 1 for grep/rg means no matches (not an error)
-      if (code === null || (code !== 0 && code !== 1)) {
-        if (stderr.includes('not found') || stderr.includes('No such file')) {
-          resolve({ output: null });
-          return;
-        }
+      // Exit code 1 means no matches. Any other failure with no stdout
+      // (missing binary, invalid regex) tries the next searcher.
+      if (code !== 0 && code !== 1 && !stdout.trim()) {
+        resolve({ output: null });
+        return;
       }
 
       resolve({ output: stdout });

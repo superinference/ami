@@ -6,6 +6,7 @@ import {
   isPlainRecord,
   deepMergeRecords,
   withExtraBody,
+  openAIPromptCacheBody,
   resolveModel,
   streamChatCompletion,
 } from '../src/provider';
@@ -235,5 +236,68 @@ describe('streamChatCompletion — extraBody on the wire', () => {
     for await (const _chunk of streamChatCompletion(config, messages, [], ac.signal)) { /* drain */ }
     assert.ok(lastBody, 'server should have received a JSON body');
     assert.equal(lastBody!['chat_template_kwargs'], undefined);
+  });
+
+  it('sends one stable prompt_cache_key to an official OpenAI host', async () => {
+    const config: ProviderConfig = {
+      baseUrl: `http://127.0.0.1:${port}/api.openai.com/v1`,
+      apiKey: 'test-key',
+      provider: 'openai',
+      model: 'gpt-6-luna',
+      promptCacheKey: 'session-casbin',
+      extraBody: { max_completion_tokens: 32768 },
+    };
+    const ac = new AbortController();
+    for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) { /* drain */ }
+    assert.equal(lastBody!['prompt_cache_key'], 'session-casbin');
+    assert.equal(lastBody!['max_completion_tokens'], 32768);
+  });
+
+  it('does not send prompt_cache_key to a compatible server that is not OpenAI', async () => {
+    const config: ProviderConfig = {
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'test-key',
+      provider: 'openai',
+      model: 'Qwen/Qwen3.8-27B',
+      promptCacheKey: 'session-casbin',
+      extraBody: { max_completion_tokens: 16384 },
+    };
+    const ac = new AbortController();
+    for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) { /* drain */ }
+    assert.equal(lastBody!['prompt_cache_key'], undefined);
+    assert.equal(lastBody!['max_completion_tokens'], 16384);
+  });
+});
+
+describe('openAIPromptCacheBody', () => {
+  it('returns the original body when there is no cache key', () => {
+    const body = { max_completion_tokens: 1 };
+    assert.equal(openAIPromptCacheBody(body, undefined, 'openai', 'https://api.openai.com/v1'), body);
+    assert.equal(openAIPromptCacheBody(undefined, '', 'openai', ''), undefined);
+  });
+
+  it('adds the key for official hosts and an empty OpenAI base URL', () => {
+    assert.equal(
+      openAIPromptCacheBody({ reasoning_effort: 'none' }, 'sess', 'openai', 'https://api.openai.com/v1')!.prompt_cache_key,
+      'sess',
+    );
+    assert.equal(
+      openAIPromptCacheBody(undefined, 'sess', 'azure-openai', 'https://example.openai.azure.com')!.prompt_cache_key,
+      'sess',
+    );
+    assert.equal(openAIPromptCacheBody(undefined, 'sess', 'openai', '')!.prompt_cache_key, 'sess');
+    assert.equal(openAIPromptCacheBody(undefined, 'sess', 'openai', undefined)!.prompt_cache_key, 'sess');
+    assert.equal(openAIPromptCacheBody(undefined, 'sess', 'azure-openai', '')!.prompt_cache_key, 'sess');
+  });
+
+  it('keeps an explicit key and skips every other endpoint', () => {
+    const explicit = { prompt_cache_key: 'caller' };
+    assert.equal(
+      openAIPromptCacheBody(explicit, 'sess', 'openai', 'https://api.openai.com/v1'),
+      explicit,
+    );
+    assert.equal(openAIPromptCacheBody({ a: 1 }, 'sess', 'openai', 'http://localhost:8000/v1')!.prompt_cache_key, undefined);
+    assert.equal(openAIPromptCacheBody({ a: 1 }, 'sess', 'anthropic', 'https://api.anthropic.com')!.prompt_cache_key, undefined);
+    assert.equal(openAIPromptCacheBody(undefined, 'sess', 'google', '') , undefined);
   });
 });

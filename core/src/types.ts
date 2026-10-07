@@ -124,6 +124,12 @@ export interface ProviderConfig {
    * Anthropic/Google providers.
    */
   extraBody?: Record<string, unknown>;
+  /**
+   * Stable id for OpenAI prompt-cache routing. The same conversation must send
+   * the same key on every turn. Official OpenAI hosts only; other
+   * OpenAI-compatible servers never see `prompt_cache_key`.
+   */
+  promptCacheKey?: string;
 }
 
 export interface StreamChunk {
