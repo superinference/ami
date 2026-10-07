@@ -6,6 +6,7 @@ import { execCommand } from '../utils/shell';
 import { validateBashSecurity } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
+import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -350,18 +351,22 @@ export const bashTool: ToolDefinition = {
       onData: context.onProgress ? (chunk) => context.onProgress!(chunk) : undefined,
     });
 
-    if (result.exitCode === null && !result.stdout && result.stderr === 'Aborted') {
+    // Fold before any return. A failing suite is an error result, and the
+    // engine stores error output without the normal length cap.
+    const presented = presentCommandOutput(command, result.stdout, result.stderr);
+
+    if (result.exitCode === null && !presented.stdout && presented.stderr === 'Aborted') {
       return { output: 'Command aborted.', isError: true };
     }
 
     if (result.exitCode === null) {
       if (context.abortSignal?.aborted) {
         return {
-          output: formatOutput(result.stdout, result.stderr, null, 'Command aborted.'),
+          output: formatOutput(presented.stdout, presented.stderr, null, 'Command aborted.'),
           isError: true,
         };
       }
-      const combinedOutput = result.stdout + result.stderr;
+      const combinedOutput = presented.stdout + presented.stderr;
       if (looksLikeHungPrompt(combinedOutput)) {
         const lastLine = combinedOutput.trim().split('\n').pop();
         return {
@@ -380,20 +385,21 @@ export const bashTool: ToolDefinition = {
         };
       }
       return {
-        output: formatOutput(result.stdout, result.stderr, null, `Command timed out after ${timeout}ms.`),
+        output: formatOutput(presented.stdout, presented.stderr, null, `Command timed out after ${timeout}ms.`),
         isError: true,
       };
     }
 
-    // Persist large output to disk instead of truncating
-    let stdout = spillToolText(context.cwd, 'bash', result.stdout, MAX_OUTPUT_LENGTH);
+    // Already folded. Spill only non-suite output that is still over the cap.
+    let stdout = spillToolText(context.cwd, 'bash', presented.stdout, MAX_OUTPUT_LENGTH);
+    const stderr = presented.stderr;
 
     const noOutputExpected = /^\s*(mkdir|touch|mv|cp|rm|chmod|chown)\b/.test(command);
     if (noOutputExpected && !stdout.trim() && result.exitCode === 0) {
       stdout = '[Command completed successfully (no output expected)]';
     }
 
-    let output = formatOutput(stdout, result.stderr, result.exitCode === 0 ? 0 : null);
+    let output = formatOutput(stdout, stderr, result.exitCode === 0 ? 0 : null);
     const chaining = detectCommandChaining(command);
     if (chaining.chained && chaining.count > 2) {
       output += '\n\n[Note: This command chains ' + chaining.count +
@@ -422,6 +428,19 @@ export const bashTool: ToolDefinition = {
     };
   },
 };
+
+function presentCommandOutput(
+  command: string,
+  stdout: string,
+  stderr: string,
+): { stdout: string; stderr: string } {
+  const foldOut = isTestRunnerCommand(command) || looksLikeSuiteLog(stdout);
+  const foldErr = isTestRunnerCommand(command) || looksLikeSuiteLog(stderr);
+  return {
+    stdout: foldOut ? compactTestLog(stdout) : stdout,
+    stderr: foldErr ? compactTestLog(stderr) : stderr,
+  };
+}
 
 const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
   { pattern: /Transform failed|SyntaxError:.*Unexpected/i, hint: 'Your code has a syntax error (missing bracket, semicolon, or mismatched quotes). Use file_read to check the file you last edited.' },

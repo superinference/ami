@@ -206,6 +206,64 @@ describe('bashTool – output truncation', () => {
     assert.ok(result.output.length > 60_000);
   });
 
+  it('compacts a go test log instead of writing it into the repo', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-gotest-'));
+    try {
+      const payload = path.join(dir, 'suite.jsonl');
+      const lines: string[] = [];
+      for (let i = 0; i < 4000; i++) {
+        lines.push(`{"Action":"pass","Test":"TestOk${i}","Output":"${'p'.repeat(80)}"}`);
+      }
+      lines.splice(
+        2000,
+        0,
+        '{"Action":"output","Test":"TestBLPModel","Output":"panic: runtime error: invalid memory address or nil pointer dereference"}',
+        '{"Action":"fail","Test":"TestBLPModel"}',
+      );
+      fs.writeFileSync(payload, lines.join('\n'));
+      const result = await bashTool.execute(
+        { command: `go test -json ./... >/dev/null 2>&1; cat ${payload}` },
+        ctx({ cwd: dir }),
+      );
+      assert.equal(fs.existsSync(path.join(dir, '.superinference')), false);
+      assert.equal(result.output.includes('TestOk0'), false);
+      assert.match(result.output, /TestBLPModel/);
+      assert.equal(result.output.includes('chars persisted'), false);
+      assert.ok(result.output.length < 20_000, `output length ${result.output.length}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('compacts a cat of a saved go test json instead of returning the suite', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cat-json-'));
+    try {
+      const payload = path.join(dir, 'go-test-results.json');
+      const lines: string[] = [];
+      for (let i = 0; i < 4000; i++) {
+        lines.push(`{"Action":"pass","Test":"TestOk${i}","Output":"${'p'.repeat(80)}"}`);
+      }
+      lines.splice(
+        2000,
+        0,
+        '{"Action":"output","Test":"TestBLPModel","Output":"panic: runtime error: invalid memory address or nil pointer dereference"}',
+        '{"Action":"fail","Test":"TestBLPModel"}',
+      );
+      fs.writeFileSync(payload, lines.join('\n'));
+      const result = await bashTool.execute(
+        { command: `cat ${payload}` },
+        ctx({ cwd: dir }),
+      );
+      assert.equal(result.output.includes('TestOk0'), false);
+      assert.equal(result.output.includes('"Action":"pass"'), false);
+      assert.match(result.output, /TestBLPModel/);
+      assert.ok(result.output.length < 20_000, `output length ${result.output.length}`);
+      assert.equal(fs.existsSync(path.join(dir, '.superinference')), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('spills stdout above 200k and keeps the tail', async () => {
     const result = await bashTool.execute(
       { command: 'python3 -c "print(\'HEAD\' + \'x\' * 250000 + \'TAIL\')"' },

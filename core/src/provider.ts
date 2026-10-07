@@ -491,9 +491,12 @@ export function withExtraBody(
 export function resolveModel(config: ProviderConfig) {
   const { apiKey } = config;
   const fetch = withExtraBody(config.extraBody);
-  const inferred = inferProviderFromApiKey(apiKey)
-    || (config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null)
-    || inferProviderFromEnv();
+  const fromKey = inferProviderFromApiKey(apiKey);
+  const fromUrl = config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null;
+  // An explicit endpoint is the request. Ambient credentials (Vertex project,
+  // Groq key, …) must not replace it, or a gemini / OpenAI-compatible model
+  // is sent to the wrong SDK.
+  const inferred = fromKey || fromUrl || (config.baseUrl ? null : inferProviderFromEnv());
 
   const provider = (config.provider as ProviderName) || inferred?.provider;
   const model = config.model || inferred?.defaultModel || 'gpt-4o';

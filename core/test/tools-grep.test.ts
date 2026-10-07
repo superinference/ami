@@ -212,3 +212,18 @@ describe('grepTool – close with stderr', () => {
     assert.ok(result.output.includes('No matches'));
   });
 });
+
+describe('grepTool – in-process fallback when rg and grep are missing', () => {
+  it('finds a symbol without rg or grep on PATH', async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = '/nonexistent-bin';
+    try {
+      const result = await grepTool.execute({ pattern: 'nested', path: tmpDir }, ctx());
+      assert.ok(!result.isError, result.output);
+      assert.match(result.output, /nested\.ts/);
+      assert.match(result.output, /hello/);
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
+});

@@ -1,4 +1,6 @@
 import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath } from './tool-utils';
 
@@ -103,7 +105,10 @@ export const grepTool: ToolDefinition = {
     if (!pattern || pattern.length < 1) return { output: 'Error: pattern is required.', isError: true };
 
     // Try ripgrep first, fall back to grep
-    const rgArgs = buildRgArgs(pattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, headLimit, lineNumbers);
+    // Ask for one past the page so formatResult can say the list was cut.
+    // --max-count equal to head_limit hid later matches and dropped offset.
+    const fetchLimit = headLimit === 0 ? 0 : offset + Math.max(headLimit, 1) + 1;
+    const rgArgs = buildRgArgs(pattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers);
     let rgOutcome = await runSearch(rgArgs, 'rg', context, RG_TIMEOUT);
 
     if (rgOutcome.eagain) {
@@ -137,12 +142,104 @@ export const grepTool: ToolDefinition = {
       return formatResult(cleaned, pattern, headLimit, offset);
     }
 
-    return {
-      output: 'Error: Neither rg (ripgrep) nor grep is available on this system.',
-      isError: true,
-    };
+    // Slim eval images often have neither binary. Search in-process so the
+    // agent can still locate the failing symbol.
+    try {
+      const fallback = searchFilesForPattern(resolved, pattern, {
+        include,
+        caseInsensitive,
+        headLimit,
+        offset,
+      });
+      return formatResult(fallback, pattern, headLimit, offset);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { output: `Error: Search failed (${message}). Neither rg nor grep is available.`, isError: true };
+    }
   },
 };
+
+const FALLBACK_SKIP_DIRS = new Set(['node_modules', '.git', 'vendor', 'dist', 'build', '.svn']);
+const FALLBACK_MAX_FILES = 4000;
+const FALLBACK_MAX_FILE_BYTES = 1_000_000;
+
+/** Walk the tree when rg and grep are not installed. Output matches `path:line:text`. */
+export function searchFilesForPattern(
+  root: string,
+  pattern: string,
+  opts: { include?: string; caseInsensitive?: boolean; headLimit?: number; offset?: number },
+): string {
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern, opts.caseInsensitive ? 'i' : '');
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : String(err));
+  }
+  const includeTail = opts.include
+    ? opts.include.slice(opts.include.lastIndexOf('*') + 1)
+    : '';
+  const matches: string[] = [];
+  const page = opts.headLimit && opts.headLimit > 0 ? opts.headLimit : MAX_LINES;
+  const cap = opts.headLimit === 0 ? Number.POSITIVE_INFINITY : (opts.offset ?? 0) + page + 1;
+  let seen = 0;
+
+  const walk = (dir: string): void => {
+    if (matches.length >= cap || seen >= FALLBACK_MAX_FILES) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (matches.length >= cap || seen >= FALLBACK_MAX_FILES) return;
+      if (entry.isDirectory()) {
+        if (FALLBACK_SKIP_DIRS.has(entry.name)) continue;
+        walk(path.join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (includeTail && !entry.name.endsWith(includeTail) && entry.name !== opts.include) {
+        continue;
+      }
+      const filePath = path.join(dir, entry.name);
+      seen++;
+      let text: string;
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.size > FALLBACK_MAX_FILE_BYTES) continue;
+        text = fs.readFileSync(filePath, 'utf8');
+      } catch {
+        continue;
+      }
+      const rel = path.relative(root, filePath) || entry.name;
+      const fileLines = text.split('\n');
+      for (let i = 0; i < fileLines.length; i++) {
+        if (matches.length >= cap) return;
+        if (re.test(fileLines[i])) {
+          matches.push(`${rel}:${i + 1}:${fileLines[i]}`);
+        }
+      }
+    }
+  };
+
+  let rootStat: fs.Stats;
+  try {
+    rootStat = fs.statSync(root);
+  } catch {
+    return '';
+  }
+  if (rootStat.isFile()) {
+    const text = fs.readFileSync(root, 'utf8');
+    const rel = path.basename(root);
+    text.split('\n').forEach((line, i) => {
+      if (re.test(line)) matches.push(`${rel}:${i + 1}:${line}`);
+    });
+    return matches.join('\n');
+  }
+  walk(root);
+  return matches.join('\n');
+}
 
 function buildRgArgs(
   pattern: string,

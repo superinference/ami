@@ -285,3 +285,33 @@ describe('fileReadTool – filesRead tracking', () => {
     assert.ok(filesRead.has(file));
   });
 });
+
+describe('fileReadTool – suite logs', () => {
+  it('returns the failing test from a go test json file and does not page the passes', async () => {
+    const file = path.join(tmpDir, 'go-test-results.json');
+    const lines: string[] = [];
+    for (let i = 0; i < 4000; i++) {
+      lines.push(`{"Action":"pass","Test":"TestOk${i}","Output":"${'p'.repeat(80)}"}`);
+    }
+    lines.splice(
+      2000,
+      0,
+      '{"Action":"output","Test":"TestBLPModel","Output":"panic: runtime error: invalid memory address or nil pointer dereference"}',
+      '{"Action":"fail","Test":"TestBLPModel"}',
+    );
+    fs.writeFileSync(file, lines.join('\n'));
+    assert.ok(fs.statSync(file).size > 256 * 1024);
+
+    const full = await fileReadTool.execute({ file_path: file }, ctx());
+    assert.equal(full.isError, undefined);
+    assert.equal(full.output.includes('TestOk0'), false);
+    assert.equal(full.output.includes('"Action":"pass"'), false);
+    assert.match(full.output, /TestBLPModel/);
+    assert.match(full.output, /does not enter the prompt/);
+    assert.ok(full.output.length < 20_000, `output length ${full.output.length}`);
+
+    const paged = await fileReadTool.execute({ file_path: file, offset: 0, limit: 50 }, ctx());
+    assert.equal(paged.output.includes('TestOk0'), false);
+    assert.match(paged.output, /TestBLPModel/);
+  });
+});

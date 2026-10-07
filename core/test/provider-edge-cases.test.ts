@@ -385,6 +385,31 @@ describe('resolveModel - provider detection edge cases', () => {
     const result = resolveModel(config);
     assert.ok(result.provider.startsWith('openai'), `Expected openai, got ${result.provider}`);
   });
+
+  it('does not send gemini or a custom endpoint to Vertex because a project id is set', () => {
+    const savedProjectId = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    const savedVertex = process.env.CLAUDE_CODE_USE_VERTEX;
+    process.env.ANTHROPIC_VERTEX_PROJECT_ID = 'vertex-project';
+    process.env.CLAUDE_CODE_USE_VERTEX = '1';
+    try {
+      const gemini = resolveModel(makeConfig({
+        baseUrl: 'https://custom-proxy.example.com/v1',
+        model: 'gemini-2.0-flash',
+      }));
+      assert.ok(gemini.provider.startsWith('google'), `Expected google, got ${gemini.provider}`);
+
+      const custom = resolveModel(makeConfig({
+        baseUrl: 'https://totally-unknown-provider.example.com/v1',
+        model: 'my-custom-model',
+      }));
+      assert.ok(custom.provider.startsWith('openai'), `Expected openai, got ${custom.provider}`);
+    } finally {
+      if (savedProjectId !== undefined) process.env.ANTHROPIC_VERTEX_PROJECT_ID = savedProjectId;
+      else delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+      if (savedVertex !== undefined) process.env.CLAUDE_CODE_USE_VERTEX = savedVertex;
+      else delete process.env.CLAUDE_CODE_USE_VERTEX;
+    }
+  });
 });
 
 // ===========================================================================

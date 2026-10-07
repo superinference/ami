@@ -4,6 +4,7 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
 import { resolveFilePath } from './tool-utils';
 import { spillToolText } from './spill-output';
+import { compactTestLog, looksLikeSuiteLog } from './test-log';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
@@ -140,6 +141,14 @@ export const fileReadTool: ToolDefinition = {
     }
 
     const ext = path.extname(resolved).toLowerCase();
+
+    // A suite log is mostly passing tests. Reading or paging it would put
+    // that JSON into the prompt. Return the failing tests instead.
+    const suiteLog = await loadSuiteLog(resolved, stat.size, ext);
+    if (suiteLog !== null) {
+      context.filesRead?.add(resolved);
+      return { output: suiteLog };
+    }
 
     const MAX_READ_SIZE = 256 * 1024; // 256KB
     if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext) && input.offset === undefined && input.limit === undefined) {
@@ -391,6 +400,40 @@ export const fileReadTool: ToolDefinition = {
     return { output };
   },
 };
+
+const SUITE_LOG_EXTENSIONS = new Set(['.json', '.jsonl', '.log', '.txt', '.out']);
+const SUITE_LOG_MAX_BYTES = 8_000_000;
+
+async function loadSuiteLog(resolved: string, size: number, ext: string): Promise<string | null> {
+  if (size < 512 || size > 32_000_000) return null;
+  if (!SUITE_LOG_EXTENSIONS.has(ext) && size <= 256 * 1024) return null;
+  const fh = await fs.promises.open(resolved, 'r');
+  try {
+    const peek = Buffer.alloc(Math.min(size, 65_536));
+    await fh.read(peek, 0, peek.length, 0);
+    if (!looksLikeSuiteLog(peek.toString('utf-8'))) return null;
+  } finally {
+    await fh.close();
+  }
+  const content = size <= SUITE_LOG_MAX_BYTES
+    ? await fs.promises.readFile(resolved, 'utf-8')
+    : await readSuiteHeadAndTail(resolved, size);
+  if (!looksLikeSuiteLog(content)) return null;
+  return `File: ${resolved}\nPassing tests were omitted so this suite log does not enter the prompt.\n\n${compactTestLog(content)}`;
+}
+
+async function readSuiteHeadAndTail(resolved: string, size: number): Promise<string> {
+  const fh = await fs.promises.open(resolved, 'r');
+  try {
+    const head = Buffer.alloc(6_000_000);
+    const tail = Buffer.alloc(1_000_000);
+    await fh.read(head, 0, head.length, 0);
+    await fh.read(tail, 0, tail.length, Math.max(0, size - tail.length));
+    return `${head.toString('utf-8')}\n${tail.toString('utf-8')}`;
+  } finally {
+    await fh.close();
+  }
+}
 
 function parsePageRange(pages: string): { start: number; end: number; error?: string } {
   const trimmed = pages.trim();
