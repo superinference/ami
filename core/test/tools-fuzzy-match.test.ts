@@ -62,6 +62,61 @@ describe('fuzzyFindAndReplace – line_trimmed strategy', () => {
     assert.ok(result.strategy === 'line_trimmed' || result.strategy === 'exact' || result.strategy === 'whitespace_normalized' || result.strategy === 'indentation_flexible');
     assert.ok(result.newContent !== null);
   });
+
+  it('matches a block whose old_string ends with a newline when the file continues', () => {
+    const content = [
+      'func Render() {',
+      '\t\tcase func() bool:',
+      '\t\t\tif value() {',
+      '\t\t\t\treturn err',
+      '\t\t\t}',
+      '\t\t}',
+      '\t\treturn nil',
+      '',
+    ].join('\n');
+    const oldString = [
+      '\t\t\tcase func() bool:',
+      '\t\t\t\tif value() {',
+      '\t\t\t\t\treturn err',
+      '\t\t\t\t}',
+      '\t\t\t}',
+      '',
+    ].join('\n');
+    const newString = oldString.replace('return err', 'return nil');
+    const result = fuzzyFindAndReplace(content, oldString, newString);
+    assert.equal(result.error, null);
+    assert.equal(result.newContent, [
+      'func Render() {',
+      '\t\tcase func() bool:',
+      '\t\t\tif value() {',
+      '\t\t\t\treturn nil',
+      '\t\t\t}',
+      '\t\t}',
+      '\t\treturn nil',
+      '',
+    ].join('\n'));
+  });
+
+  it('does not treat two trailing newlines as optional', () => {
+    const content = 'alpha\nbeta\ngamma\n';
+    const result = fuzzyFindAndReplace(content, 'beta\n\n', 'BETA\n\n');
+    assert.equal(result.newContent, null);
+    assert.match(result.error ?? '', /not found/);
+  });
+
+  it('keeps one trailing newline when the matched block ends the file', () => {
+    const content = '\treturn err\n';
+    const result = fuzzyFindAndReplace(content, '\t\treturn err\n', '\t\treturn nil\n');
+    assert.equal(result.error, null);
+    assert.equal(result.newContent, '\treturn nil\n');
+  });
+
+  it('does not invent a newline when the file has none', () => {
+    const content = '\treturn err';
+    const result = fuzzyFindAndReplace(content, '\t\treturn err\n', '\t\treturn nil\n');
+    assert.equal(result.error, null);
+    assert.equal(result.newContent, '\treturn nil\n');
+  });
 });
 
 // ---------------------------------------------------------------------------

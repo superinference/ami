@@ -58,6 +58,18 @@ function findExact(content: string, pattern: string): MatchPosition[] {
 }
 
 /**
+ * Split on newlines. A single trailing newline ends the last line; it is not
+ * an extra blank line that the file must contain. A second trailing newline
+ * still means a blank line.
+ */
+function splitLogicalLines(value: string): { lines: string[]; terminated: boolean } {
+  const terminated = value.endsWith('\n');
+  const lines = value.split('\n');
+  if (terminated) lines.pop();
+  return { lines, terminated };
+}
+
+/**
  * Line-based matching helper used by strategies 2–4.
  *
  * Both `content` and `pattern` are split into lines, each line is transformed
@@ -72,8 +84,8 @@ function findByLine(
   pattern: string,
   normalizeLine: (line: string) => string,
 ): MatchPosition[] {
-  const contentLines = content.split('\n');
-  const patternLines = pattern.split('\n');
+  const { lines: contentLines, terminated: contentTerminated } = splitLogicalLines(content);
+  const { lines: patternLines, terminated: patternTerminated } = splitLogicalLines(pattern);
 
   const normContentLines = contentLines.map(normalizeLine);
   const normPatternLines = patternLines.map(normalizeLine);
@@ -98,7 +110,12 @@ function findByLine(
       }
       let end = start;
       for (let k = i; k < i + normPatternLines.length; k++) {
-        end += contentLines[k].length + (k < i + normPatternLines.length - 1 ? 1 : 0);
+        end += contentLines[k].length;
+        const lastPatternLine = k === i + normPatternLines.length - 1;
+        const newlineFollows = k < contentLines.length - 1 || contentTerminated;
+        if (!lastPatternLine || (patternTerminated && newlineFollows)) {
+          end += 1;
+        }
       }
       results.push({ start, end });
     }
