@@ -255,6 +255,32 @@ describe('BeliefTracker – shouldStop()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// shouldStop() — belief COLLAPSE must not be mislabeled as diminishing returns
+// ---------------------------------------------------------------------------
+
+describe('BeliefTracker – shouldStop() collapse vs convergence', () => {
+  it('does not report diminishing_returns when belief collapses to the floor', () => {
+    // Default config: initialBelief 0.3, eigThreshold 0.01, lambdaMinus 0.6.
+    // A single rejected tool drops belief 0.3 -> 0.18 -> clamped to the 0.25 floor,
+    // where eig() is forced to 0 by the rejection-posterior clamp. That is belief
+    // COLLAPSE (the agent is struggling), not CONVERGENCE, so the run must continue.
+    const tracker = new BeliefTracker({ enabled: true });
+    tracker.update(false, 0.3);
+    assert.equal(tracker.belief, 0.25);
+    assert.equal(tracker.shouldStop().type, 'none');
+  });
+
+  it('still reports diminishing_returns on genuine high-belief convergence', () => {
+    const tracker = new BeliefTracker({
+      enabled: true,
+      initialBelief: 0.95,
+      confidenceThreshold: 0.99,
+    });
+    assert.equal(tracker.shouldStop().type, 'diminishing_returns');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getState()
 // ---------------------------------------------------------------------------
 

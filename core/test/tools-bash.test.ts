@@ -657,6 +657,36 @@ describe('detectDetachedGitDiscard', () => {
     assert.equal(detectDetachedGitDiscard('git log -1'), null);
     assert.equal(detectDetachedGitDiscard('git diff'), null);
   });
+
+  // Finding [1]: `git checkout .` / `..` are the canonical discard-all commands.
+  it('blocks git checkout . / .. (discard-all worktree pathspecs)', () => {
+    assert.ok(detectDetachedGitDiscard('git checkout .')?.includes(MSG), 'git checkout . must be blocked');
+    assert.ok(detectDetachedGitDiscard('git checkout ..')?.includes(MSG), 'git checkout .. must be blocked');
+    assert.ok(detectDetachedGitDiscard('git checkout -- .')?.includes(MSG));
+    // genuine branch switch / creation still allowed
+    assert.equal(detectDetachedGitDiscard('git checkout main'), null);
+    assert.equal(detectDetachedGitDiscard('git checkout -b feature'), null);
+  });
+
+  // Finding [8]: quoted tokens are live in bash and must stay visible to the guard.
+  it('sees git subcommands/flags even when quoted', () => {
+    assert.ok(detectDetachedGitDiscard('git reset "--hard" HEAD')?.includes(MSG), 'quoted --hard must block');
+    assert.ok(detectDetachedGitDiscard("git reset '--hard' HEAD")?.includes(MSG), 'single-quoted --hard must block');
+    assert.ok(detectDetachedGitDiscard('git "stash"')?.includes(MSG), 'quoted stash subcommand must block');
+    assert.ok(detectDetachedGitDiscard('git clean "-f" .')?.includes(MSG), 'quoted -f must block');
+    // quoted legitimate pop must stay allowed (not collapse to a bare stash)
+    assert.equal(detectDetachedGitDiscard('git stash "pop"'), null, 'quoted pop must stay allowed');
+  });
+
+  // Finding [9]: a newline is a command boundary, not swallowed into `rest`.
+  it('treats newline as a command boundary (benign checkout not blocked)', () => {
+    assert.equal(detectDetachedGitDiscard('git checkout main\necho done'), null);
+    assert.equal(detectDetachedGitDiscard('git checkout -b fix\nnpm test'), null);
+    // regression: genuine worktree-discarding checkout on one line still blocked
+    assert.notEqual(detectDetachedGitDiscard('git checkout HEAD src/a.ts'), null);
+    // regression: && compound still correctly allowed
+    assert.equal(detectDetachedGitDiscard('git checkout main && echo done'), null);
+  });
 });
 
 describe('bashTool – detached git discard block', () => {

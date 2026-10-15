@@ -458,3 +458,80 @@ describe('taskTool – background agents stream output incrementally (regression
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sub-engine lifecycle — leak prevention (audit finding: subagent-leak)
+// ---------------------------------------------------------------------------
+
+describe('taskTool – sub-engine lifecycle', () => {
+  it('shuts down the sub-agent engine exactly once on the success path', async () => {
+    let shutdownCalls = 0;
+    const fakeFactory = (_cfg: unknown) => ({
+      async *submit(_p: string) {
+        yield { type: 'text_delta' as const, text: 'done' };
+      },
+      shutdown() { shutdownCalls++; },
+    });
+
+    const res = await taskTool.execute(
+      { prompt: 'list files', mode: 'explore' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+        _engineFactory: fakeFactory as any,
+      }),
+    );
+
+    assert.ok(!res.isError);
+    assert.equal(shutdownCalls, 1);
+  });
+
+  it('shuts down the sub-agent engine on the error (throw) path', async () => {
+    let shutdownCalls = 0;
+    const fakeFactory = (_cfg: unknown) => ({
+      submit: async function* (_p: string) {
+        throw new Error('stream blew up');
+      },
+      shutdown() { shutdownCalls++; },
+    });
+
+    const res = await taskTool.execute(
+      { prompt: 'do work', mode: 'general' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+        _engineFactory: fakeFactory as any,
+      }),
+    );
+
+    assert.ok(res.isError);
+    assert.equal(shutdownCalls, 1);
+  });
+
+  it('shuts down the sub-agent engine on the background path', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-bg-shutdown-'));
+    try {
+      let shutdownCalls = 0;
+      const fakeFactory = (_cfg: unknown) => ({
+        async *submit(_p: string) {
+          yield { type: 'text_delta' as const, text: 'bg done' };
+        },
+        shutdown() { shutdownCalls++; },
+      });
+
+      const res = await taskTool.execute(
+        { prompt: 'bg task', mode: 'explore', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: fakeFactory as any,
+        }),
+      );
+
+      assert.ok(!res.isError);
+      // Background stream consumption is async; wait for it to drain.
+      await new Promise(r => setTimeout(r, 100));
+      assert.equal(shutdownCalls, 1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

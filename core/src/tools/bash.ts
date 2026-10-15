@@ -75,7 +75,43 @@ const STASH_SUBCOMMANDS = new Set([
 ]);
 
 function isShellMeta(t: string): boolean {
-  return t === '&&' || t === '||' || t === ';' || t === '|' || t === '|&' || t === '&';
+  return t === '&&' || t === '||' || t === ';' || t === '|' || t === '|&' || t === '&' || t === '\n';
+}
+
+/**
+ * Tokenize a shell command for the git guards. Unlike a naive
+ * `replace(quotes).split(/\s+/)`, this removes the quote characters while
+ * keeping their content as live tokens (bash does the same), so a quoted flag
+ * or subcommand (`git reset "--hard"`, `git "stash"`) stays visible to the
+ * guard — and quoted whitespace does not split a token, so `echo "git stash"`
+ * stays a single argument rather than being parsed as a git invocation.
+ * Unquoted newlines/CRs become `\n` separator tokens so a command boundary is
+ * never silently swallowed into the next invocation's positionals.
+ */
+function tokenizeShell(command: string): string[] {
+  const tokens: string[] = [];
+  let cur = '';
+  let quote: '"' | "'" | null = null;
+  const flush = () => {
+    if (cur.length > 0) {
+      tokens.push(cur);
+      cur = '';
+    }
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '\n' || c === '\r') { flush(); tokens.push('\n'); continue; }
+    if (c === ' ' || c === '\t') { flush(); continue; }
+    cur += c;
+  }
+  flush();
+  return tokens;
 }
 
 interface GitInvocation {
@@ -99,8 +135,7 @@ function parseStashSubcommand(rest: string[]): string {
 }
 
 function parseGitInvocations(command: string): GitInvocation[] {
-  const stripped = command.replace(/"[^"]*"|'[^']*'/g, ' ');
-  const tokens = stripped.split(/\s+/).filter(Boolean);
+  const tokens = tokenizeShell(command);
   const invocations: GitInvocation[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i].replace(/^.*\//, '').replace(/[;&]+$/, '');
@@ -142,8 +177,12 @@ function parseGitInvocations(command: string): GitInvocation[] {
  * still blocked).
  */
 function checkoutPathExists(token: string, cwd?: string): boolean {
+  // `git checkout .`/`..` (and their `./`,`../` forms) are worktree pathspecs,
+  // not branches: they restore every tracked file from the index — the
+  // canonical "discard ALL working-tree changes" command. Always treat them as
+  // paths so a single-positional `git checkout .` is blocked.
+  if (token === '.' || token === '..' || token === './' || token === '../') return true;
   if (!cwd) return false;
-  if (token === '.' || token === '..') return false;
   try {
     const abs = path.resolve(cwd, token);
     return fs.existsSync(abs) && fs.statSync(abs).isFile();

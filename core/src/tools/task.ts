@@ -293,6 +293,8 @@ export const taskTool: ToolDefinition = {
           const errText = `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
           result += errText;
           w(errText);
+        } finally {
+          (subEngine as any).shutdown?.();
         }
         try { fs.closeSync(fd); } catch { /* already closed */ }
         if (!result) {
@@ -365,6 +367,8 @@ export const taskTool: ToolDefinition = {
         output: `Subagent error: ${err instanceof Error ? err.message : String(err)}`,
         isError: true,
       };
+    } finally {
+      (subEngine as any).shutdown?.();
     }
     context.abortSignal.removeEventListener('abort', forwardAbort);
 

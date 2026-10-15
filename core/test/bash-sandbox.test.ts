@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import {
   shouldUseSandbox,
   wrapWithSandbox,
+  wrapWithUnshare,
   getSandboxStatus,
   resetSandboxCache,
 } from '../src/tools/bash-sandbox';
@@ -127,6 +128,47 @@ describe('wrapWithSandbox', () => {
         assert.ok(!wrapped.includes('--net'));
       }
     }
+  });
+});
+
+// Finding [10]: the unshare wrapper advertises readOnlyPaths/writablePaths
+// isolation but never realizes it. Tested directly against wrapWithUnshare so
+// the reproducer is deterministic regardless of whether unshare is available
+// on the host running the test.
+describe('sandbox filesystem isolation — advertised but unenforced', () => {
+  const cfg = {
+    allowNetwork: false,
+    readOnlyPaths: ['/home', '/etc'],
+    writablePaths: ['/tmp'],
+    maxMemoryMB: 512,
+    maxProcesses: 8192,
+    timeout: 30000,
+  };
+
+  it('remounts readOnlyPaths read-only inside the mount namespace', () => {
+    const wrapped = wrapWithUnshare(
+      "python3 -c 'open(\"/home/user/.ssh/authorized_keys\",\"a\")'",
+      '/tmp',
+      cfg,
+    );
+    // RED: current wrapWithUnshare emits only namespace flags + ulimits + cd,
+    // so no bind/remount directive is present and these assertions fail.
+    assert.match(
+      wrapped,
+      /mount\s+-o\s+remount,ro|mount\s+--bind/,
+      'sandbox must remount readOnlyPaths read-only inside the mount namespace',
+    );
+    assert.ok(
+      /mount[^&|;]*\/home/.test(wrapped),
+      'readOnlyPaths entries must be passed to a mount directive',
+    );
+    assert.ok(
+      /mount[^&|;]*\/etc/.test(wrapped),
+      'every readOnlyPaths entry must be remounted',
+    );
+    // the actual command must still run after the remounts
+    assert.ok(wrapped.includes('unshare'));
+    assert.ok(wrapped.includes('authorized_keys'));
   });
 });
 

@@ -537,13 +537,13 @@ export function resolveModel(config: ProviderConfig) {
 
   // Native Anthropic SDK
   if (provider === 'anthropic' || model.startsWith('claude') || baseUrl.includes('anthropic.com')) {
-    return createAnthropic({ apiKey })(model);
+    return createAnthropic({ apiKey, baseURL: baseUrl || undefined })(model);
   }
 
   // Native Google Generative AI SDK
   if (provider === 'google' || provider === 'google-vertex' || model.startsWith('gemini') ||
       baseUrl.includes('generativelanguage.googleapis.com') || baseUrl.includes('aiplatform.googleapis.com')) {
-    return createGoogleGenerativeAI({ apiKey })(model);
+    return createGoogleGenerativeAI({ apiKey, baseURL: baseUrl || undefined })(model);
   }
 
   // Azure OpenAI uses the OpenAI SDK with azure-specific baseURL

@@ -2,6 +2,7 @@ import { SuperInferenceConfig, BeliefState, StopReason, DEFAULT_CONFIG } from '.
 
 export class BeliefTracker {
   private _bt: number;       // Current belief b_t
+  private _b0: number;       // Clamped initial belief b_0 (collapse reference)
   private _step: number = 0;
   private config: Required<SuperInferenceConfig>;
 
@@ -13,7 +14,8 @@ export class BeliefTracker {
     if (this.config.lambdaMinus <= 0 || this.config.lambdaMinus >= 1) {
       throw new RangeError(`lambdaMinus must be in (0, 1), got ${this.config.lambdaMinus}`);
     }
-    this._bt = Math.max(0.25, Math.min(0.95, this.config.initialBelief));
+    this._b0 = Math.max(0.25, Math.min(0.95, this.config.initialBelief));
+    this._bt = this._b0;
   }
 
   get belief(): number { return this._bt; }
@@ -104,7 +106,13 @@ export class BeliefTracker {
     if (this._bt >= this.config.confidenceThreshold) {
       return { type: 'confidence', detail: `Belief ${this._bt.toFixed(3)} ≥ κ=${this.config.confidenceThreshold}` };
     }
-    if (this.eig() < this.config.eigThreshold) {
+    // Diminishing returns means belief has CONVERGED (held or gained ground with
+    // little marginal information left), not COLLAPSED. At/near the 0.25 belief
+    // floor, eig() is forced to 0 by the clamp on the rejection posterior, so a
+    // sub-threshold EIG there signals a struggling agent (collapse), not
+    // convergence. Only stop for diminishing returns when belief has not regressed
+    // below its starting point; otherwise keep reasoning so the agent can recover.
+    if (this._bt >= this._b0 && this.eig() < this.config.eigThreshold) {
       return { type: 'diminishing_returns', detail: `EIG ${this.eig().toFixed(4)} < τ=${this.config.eigThreshold}` };
     }
     if (this._step >= this.config.maxSteps) {

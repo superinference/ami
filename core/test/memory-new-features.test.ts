@@ -176,6 +176,32 @@ describe('MemoryManager — resolveIncludes', () => {
     const resolved = await mgr.resolveIncludes('No includes here.', tmpDir);
     assert.ok(resolved.includes('No includes here'));
   });
+
+  it('resolves diamond (non-cyclic) includes on all paths', async () => {
+    const dir = path.join(tmpDir, 'includes');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'A.md'), '@include B.md\n@include C.md');
+    fs.writeFileSync(path.join(dir, 'B.md'), 'B-top\n@include common.md');
+    fs.writeFileSync(path.join(dir, 'C.md'), 'C-top\n@include common.md');
+    fs.writeFileSync(path.join(dir, 'common.md'), 'COMMON_MARKER');
+
+    const mgr = new MemoryManager(tmpDir);
+    const result = await mgr.resolveIncludes('@include A.md', path.join(dir, 'root.md'));
+
+    const occurrences = result.split('COMMON_MARKER').length - 1;
+    assert.equal(occurrences, 2, 'common.md must be inlined on both B and C branches');
+    assert.ok(!result.includes('[circular reference'), 'a diamond is not a cycle');
+  });
+
+  it('still detects true cycles after diamond fix', async () => {
+    const dir = path.join(tmpDir, 'includes');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.md'), '@include b.md');
+    fs.writeFileSync(path.join(dir, 'b.md'), '@include a.md');
+    const mgr = new MemoryManager(tmpDir);
+    const result = await mgr.resolveIncludes('@include b.md', path.join(dir, 'a.md'));
+    assert.ok(result.includes('[circular reference: b.md]'));
+  });
 });
 
 // ---------------------------------------------------------------------------

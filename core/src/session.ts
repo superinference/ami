@@ -101,7 +101,14 @@ export class SessionManager {
       }
     });
 
-    return this.readSessionFile(files[0]);
+    // Return the first file that parses successfully, falling through past any
+    // corrupt/truncated newest file (e.g. a save() interrupted mid-write) so
+    // intact older sessions are not hidden by a single unreadable file.
+    for (const file of files) {
+      const session = this.readSessionFile(file);
+      if (session) return session;
+    }
+    return null;
   }
 
   /**

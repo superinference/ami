@@ -69,6 +69,23 @@ describe('SessionManager', () => {
     assert.equal(latest.id, 's2');
   });
 
+  it('falls through to the newest readable session when newest file is corrupt', () => {
+    const s1 = makeSession('s1', [{ role: 'user', content: 'intact history' }]);
+    sm.save(s1);
+    const dir = sm.getSessionDir();
+    const past = new Date(Date.now() - 10000);
+    fs.utimesSync(path.join(dir, 's1.json'), past, past); // make intact one older
+
+    const corrupt = path.join(dir, 's2.json');
+    fs.writeFileSync(corrupt, '{ "id": "s2", "messages": [', 'utf-8'); // SIGKILL mid-write: truncated JSON
+    const now = new Date();
+    fs.utimesSync(corrupt, now, now); // make corrupt one newest
+
+    const latest = sm.loadLatest();
+    assert.ok(latest, 'loadLatest must fall through to the intact older session, not return null');
+    assert.equal(latest.id, 's1');
+  });
+
   it('list returns all sessions sorted by date descending', () => {
     sm.save(makeSession('a', [{ role: 'user', content: 'alpha message here' }]));
     sm.save(makeSession('b', [{ role: 'user', content: 'beta message here' }]));

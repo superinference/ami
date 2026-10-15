@@ -125,6 +125,7 @@ export const skillTool: ToolDefinition = {
       };
     } finally {
       context.abortSignal.removeEventListener('abort', forwardAbort);
+      (subEngine as any).shutdown?.();
     }
 
     return { output: result || '(skill produced no output)', isError: false };

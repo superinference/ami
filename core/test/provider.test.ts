@@ -198,6 +198,38 @@ describe('resolveModel - provider detection', () => {
   });
 });
 
+describe('resolveModel - native provider custom baseUrl (regression)', () => {
+  const withVertexUnset = (fn: () => void) => {
+    const sv = process.env.CLAUDE_CODE_USE_VERTEX;
+    const sp = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    const sg = process.env.GOOGLE_VERTEX_PROJECT;
+    delete process.env.CLAUDE_CODE_USE_VERTEX;
+    delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    delete process.env.GOOGLE_VERTEX_PROJECT;
+    try { fn(); } finally {
+      if (sv !== undefined) process.env.CLAUDE_CODE_USE_VERTEX = sv; else delete process.env.CLAUDE_CODE_USE_VERTEX;
+      if (sp !== undefined) process.env.ANTHROPIC_VERTEX_PROJECT_ID = sp; else delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+      if (sg !== undefined) process.env.GOOGLE_VERTEX_PROJECT = sg; else delete process.env.GOOGLE_VERTEX_PROJECT;
+    }
+  };
+
+  it('forwards custom baseUrl to the native Anthropic SDK', () => {
+    withVertexUnset(() => {
+      const m = resolveModel({ provider: 'anthropic', apiKey: 'proxy-key', baseUrl: 'https://claude-proxy.internal/v1', model: 'claude-sonnet-4-6' } as any);
+      assert.ok(m.provider.startsWith('anthropic'));
+      assert.strictEqual((m as any).config.baseURL, 'https://claude-proxy.internal/v1');
+    });
+  });
+
+  it('forwards custom baseUrl to the native Google SDK', () => {
+    withVertexUnset(() => {
+      const m = resolveModel({ provider: 'google', apiKey: 'proxy-key', baseUrl: 'https://gemini-proxy.internal/v1beta', model: 'gemini-2.5-pro' } as any);
+      assert.ok(m.provider.startsWith('google'));
+      assert.strictEqual((m as any).config.baseURL, 'https://gemini-proxy.internal/v1beta');
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // convertMessages - message format conversion
 // ---------------------------------------------------------------------------

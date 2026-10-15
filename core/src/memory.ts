@@ -382,7 +382,6 @@ export class MemoryManager {
     }
 
     const MAX_MEMORY_FILES = 200;
-    files = files.slice(0, MAX_MEMORY_FILES);
 
     const entries: MemoryEntry[] = [];
 
@@ -419,7 +418,9 @@ export class MemoryManager {
 
     entries.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));
 
-    return entries;
+    // Cap AFTER the recency sort so the newest memories are kept, not an
+    // arbitrary alphabetical (chronological-ascending) prefix of the dir.
+    return entries.slice(0, MAX_MEMORY_FILES);
   }
 
   /**
@@ -827,6 +828,11 @@ export class MemoryManager {
         const replacement = `[include not found: ${path.basename(includePath)}]`;
         result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
         searchFrom = pos + replacement.length;
+      } finally {
+        // Treat `seen` as an ancestor stack: remove this path once its subtree
+        // is resolved so a diamond (same file reached via two sibling branches)
+        // is not mistaken for a cycle. True cycles stay on the active path.
+        seen.delete(includePath);
       }
     }
 

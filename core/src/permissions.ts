@@ -903,6 +903,44 @@ export class PermissionManager {
   }
 
   /**
+   * Does an EXPLICIT deny apply to this call — a previously-recorded denial, or
+   * a matching rule (first match wins, like check()) whose action is 'deny'?
+   *
+   * Unlike check(), this deliberately ignores mode-level decisions
+   * ('deny-all' / 'dontAsk' / default 'ask'). Read-only tools are safe by
+   * design and must keep running under those modes (detached mode defaults to
+   * 'deny-all' yet relies on read-only tools), so the read-only path uses this
+   * to honor only a rule/denial the user set explicitly — closing the gap where
+   * an explicit `{tool:'grep', action:'deny'}` rule was silently bypassed.
+   */
+  hasExplicitDeny(toolName: string, input: Record<string, unknown>): boolean {
+    if (this.deniedCommands.has(denialKey(toolName, input))) return true;
+    for (const rule of this.rules) {
+      const toolMatches = rule.tool === '*' || rule.tool === toolName;
+      if (!toolMatches) continue;
+      if (rule.pattern) {
+        if (matchPattern(rule.pattern, this.inputToString(toolName, input))) {
+          return rule.action === 'deny';
+        }
+      } else {
+        return rule.action === 'deny';
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Remove every rule matching the predicate. Returns the number removed.
+   * Used to drop scoped rule sets (e.g. a persona's auto-allow rules) when
+   * that scope ends, so they do not accumulate or leak across switches.
+   */
+  removeRule(predicate: (rule: PermissionRule) => boolean): number {
+    const before = this.rules.length;
+    this.rules = this.rules.filter(r => !predicate(r));
+    return before - this.rules.length;
+  }
+
+  /**
    * Detect rules that are shadowed by higher-priority rules and will never fire.
    */
   detectShadowedRules(): Array<{ rule: PermissionRule; shadowedBy: PermissionRule }> {

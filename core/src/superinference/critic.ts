@@ -45,9 +45,17 @@ Respond with ONLY a JSON object:
 
       const parsed = this.extractJSON(response);
       if (parsed) {
+        const approved = !!parsed.approved;
+        const rawScore = Number(parsed.score);
+        // A missing/non-numeric score must not coerce an approval to 0 — that would
+        // DECREASE belief on what the critic actually approved. Default to full
+        // confidence (1.0) on approval and 0.0 on rejection; clamp valid numbers.
+        const score = Number.isFinite(rawScore)
+          ? Math.max(0, Math.min(1, rawScore))
+          : (approved ? 1.0 : 0.0);
         return {
-          approved: !!parsed.approved,
-          score: Math.max(0, Math.min(1, Number(parsed.score) || 0)),
+          approved,
+          score,
           reason: String(parsed.reason || ''),
         };
       }

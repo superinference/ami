@@ -91,7 +91,7 @@ export function wrapWithSandbox(
   return wrapWithResourceLimits(command, cfg);
 }
 
-function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): string {
+export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): string {
   const flags: string[] = ['--map-root-user', '--mount', '--pid', '--fork'];
 
   if (!cfg.allowNetwork) {
@@ -102,7 +102,26 @@ function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): stri
   const escapedCmd = command.replace(/'/g, "'\\''");
 
   const escapedCwd = cwd.replace(/'/g, "'\\''");
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}cd ${escapedCwd} && ${escapedCmd}'`;
+  const mounts = buildReadOnlyMounts(cfg);
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}cd ${escapedCwd} && ${escapedCmd}'`;
+}
+
+/**
+ * Realize the advertised readOnlyPaths inside the --mount namespace: bind each
+ * path onto itself and remount it read-only so a sandboxed command cannot write
+ * to it. Failures (e.g. a path that does not exist on this host) are tolerated
+ * so they never abort the user's command. Returns '' when no readOnlyPaths are
+ * configured. Runs before cd/command.
+ */
+function buildReadOnlyMounts(cfg: SandboxConfig): string {
+  return cfg.readOnlyPaths
+    .map((p) => {
+      // escapeShell single-quotes the path; re-escape those quotes so it is safe
+      // to embed inside the already single-quoted `bash -c '...'` body.
+      const esc = escapeShell(p).replace(/'/g, "'\\''");
+      return `mount --bind ${esc} ${esc} 2>/dev/null && mount -o remount,ro,bind ${esc} 2>/dev/null; `;
+    })
+    .join('');
 }
 
 function wrapWithResourceLimits(command: string, cfg: SandboxConfig): string {

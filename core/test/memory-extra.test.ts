@@ -567,4 +567,31 @@ describe('MemoryManager — loadMemories sorting', () => {
     assert.equal(memories[0].name, 'new');
     assert.equal(memories[1].name, 'old');
   });
+
+  it('keeps the newest memory when dir exceeds MAX_MEMORY_FILES (200)', () => {
+    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    for (let i = 0; i < 201; i++) {
+      const n = String(i).padStart(3, '0');
+      fs.writeFileSync(
+        path.join(memDir, `session-${n}.md`),
+        `---\nname: session-${n}\ntype: project\n---\nbody ${n}`,
+      );
+    }
+    // Read the SAME order loadMemories' readdirSync will yield (utimes doesn't reorder).
+    const order = fs.readdirSync(memDir).filter(f => f.endsWith('.md'));
+    assert.equal(order.length, 201);
+    const old = new Date('2020-01-01');
+    for (const f of order) fs.utimesSync(path.join(memDir, f), old, old);
+    // Pin the NEWEST mtime onto the entry the buggy pre-sort slice(0,200) throws away.
+    const dropped = order[200];
+    const newest = new Date('2025-06-01');
+    fs.utimesSync(path.join(memDir, dropped), newest, newest);
+    const newestName = path.basename(dropped, '.md');
+
+    const memories = new MemoryManager(tmpDir).loadMemories();
+    assert.equal(memories.length, 200);
+    assert.ok(memories.some(m => m.name === newestName), 'newest memory must not be dropped by the cap');
+    assert.equal(memories[0].name, newestName); // newest-first ordering preserved
+  });
 });

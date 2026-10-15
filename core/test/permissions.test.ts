@@ -137,6 +137,23 @@ describe('PermissionManager — rule management', () => {
     pm.addRule({ tool: 'bash', action: 'allow' });
     assert.equal(await pm.check('bash', { command: 'ls' }), 'allow');
   });
+
+  it('removeRule drops matching rules and returns the count', async () => {
+    const pm = new PermissionManager('ask');
+    const curl = { tool: 'bash', pattern: 'curl*', action: 'allow' as const };
+    pm.addRule(curl);
+    pm.addRule({ tool: 'bash', pattern: 'wget*', action: 'allow' });
+    assert.equal(await pm.check('bash', { command: 'curl http://x' }), 'allow');
+
+    // Remove only the curl rule (by identity) — wget stays.
+    const removed = pm.removeRule(r => r === curl);
+    assert.equal(removed, 1);
+    assert.equal(await pm.check('bash', { command: 'curl http://x' }), 'ask');
+    assert.equal(await pm.check('bash', { command: 'wget http://x' }), 'allow');
+
+    // Predicate matching nothing removes nothing.
+    assert.equal(pm.removeRule(() => false), 0);
+  });
 });
 
 describe('PermissionManager — persistence', () => {
@@ -567,5 +584,35 @@ describe('pipeline safety — allSegmentsKnown guard', () => {
   it('--flag=value blocked: fd --exec=rm is not safe', () => {
     const pm = new PermissionManager('auto-allow');
     assert.notEqual(pm.classifyBashCommand('fd pattern --exec=rm {} \\;'), 'safe');
+  });
+});
+
+describe('PermissionManager — hasExplicitDeny (read-only enforcement)', () => {
+  it('returns false under deny-all mode with no explicit rule (read-only stays safe)', () => {
+    const pm = new PermissionManager('deny-all');
+    assert.equal(pm.hasExplicitDeny('grep', { pattern: 'x' }), false);
+  });
+
+  it('returns true for a matching whole-tool deny rule', () => {
+    const pm = new PermissionManager('ask');
+    pm.addRule({ tool: 'grep', action: 'deny' });
+    assert.equal(pm.hasExplicitDeny('grep', { pattern: 'x' }), true);
+    assert.equal(pm.hasExplicitDeny('file_read', { file_path: 'a' }), false);
+  });
+
+  it('honors first-match-wins: an earlier allow rule beats a later deny', () => {
+    const pm = new PermissionManager('ask');
+    pm.addRule({ tool: 'grep', action: 'deny' });   // unshifted last -> lower priority
+    pm.addRule({ tool: 'grep', action: 'allow' });  // unshifted first -> wins
+    assert.equal(pm.hasExplicitDeny('grep', { pattern: 'x' }), false);
+  });
+
+  it('matches pattern deny rules and records prior denials', () => {
+    const pm = new PermissionManager('ask');
+    pm.addRule({ tool: 'file_read', pattern: '*secret*', action: 'deny' });
+    assert.equal(pm.hasExplicitDeny('file_read', { file_path: '/etc/secret.txt' }), true);
+    assert.equal(pm.hasExplicitDeny('file_read', { file_path: '/etc/public.txt' }), false);
+    pm.trackDenial('file_read', { file_path: '/etc/public.txt' });
+    assert.equal(pm.hasExplicitDeny('file_read', { file_path: '/etc/public.txt' }), true);
   });
 });

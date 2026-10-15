@@ -368,6 +368,58 @@ describe('skillTool — subagent execution', () => {
     assert.ok(r.output.includes('plain string error'));
   });
 
+  it('shuts down the sub-agent engine exactly once after completion (leak prevention)', async () => {
+    let shutdownCalls = 0;
+    const fakeFactory = (_cfg: any) => ({
+      async *submit(_p: string) {
+        yield { type: 'text_delta' as const, text: 'skill done' };
+      },
+      shutdown() { shutdownCalls++; },
+    });
+
+    const r = await skillTool.execute(
+      { skill: 'sub-skill' },
+      ctx({
+        _skillManager: {
+          getSkill: () => ({ name: 'sub-skill', context: 'subagent' }),
+          getSkillContent: () => 'Do stuff',
+          listSkills: () => [],
+        } as any,
+        _providerConfig: { baseUrl: 'http://test', apiKey: 'k', model: 'm' },
+        _engineFactory: fakeFactory as any,
+      }),
+    );
+
+    assert.ok(!r.isError);
+    assert.equal(shutdownCalls, 1);
+  });
+
+  it('shuts down the sub-agent engine when the stream throws (leak prevention)', async () => {
+    let shutdownCalls = 0;
+    const fakeFactory = (_cfg: any) => ({
+      submit: async function* (_p: string) {
+        throw new Error('skill stream boom');
+      },
+      shutdown() { shutdownCalls++; },
+    });
+
+    const r = await skillTool.execute(
+      { skill: 'sub-skill' },
+      ctx({
+        _skillManager: {
+          getSkill: () => ({ name: 'sub-skill', context: 'subagent' }),
+          getSkillContent: () => 'Do stuff',
+          listSkills: () => [],
+        } as any,
+        _providerConfig: { baseUrl: 'http://test', apiKey: 'k', model: 'm' },
+        _engineFactory: fakeFactory as any,
+      }),
+    );
+
+    assert.ok(r.isError);
+    assert.equal(shutdownCalls, 1);
+  });
+
   it('returns fallback when subagent produces no output', async () => {
     const r = await skillTool.execute(
       { skill: 'quiet-skill' },

@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as http from 'http';
 
 import { Critic } from '../src/superinference/critic';
+import { BeliefTracker } from '../src/superinference/belief';
 
 // ---------------------------------------------------------------------------
 // SSE mock server for Critic.evaluate()
@@ -243,8 +244,52 @@ describe('Critic.evaluate() — missing fields in JSON', () => {
 
     const result = await critic.evaluate('q', 'r', provider, ac.signal);
     assert.equal(result.approved, true);
-    assert.equal(result.score, 0); // Number(undefined) || 0
+    // An approval with a missing score must default to full confidence (1.0),
+    // not 0 — a score of 0 would DECREASE belief on what was actually an approval.
+    assert.equal(result.score, 1);
     assert.equal(result.reason, '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Critic.evaluate() — approval with missing/non-numeric score must not lower belief
+// ---------------------------------------------------------------------------
+describe('Critic.evaluate() — approval score default', () => {
+  let server: http.Server;
+  let port: number;
+
+  before(async () => {
+    const mock = await createSSEServer('{"approved": true, "reason": "looks correct"}');
+    server = mock.server;
+    port = mock.port;
+  });
+
+  after(() => {
+    server.close();
+  });
+
+  it('approval with missing score must not drive belief down', async () => {
+    const critic = new Critic();
+    const provider = {
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'test-key',
+      model: 'test-model',
+    };
+    const ac = new AbortController();
+
+    const decision = await critic.evaluate('task', 'output', provider, ac.signal);
+    assert.equal(decision.approved, true);
+    // RED (current code): score coerces to 0; GREEN (fixed): defaults to 1.0 on approval.
+    assert.equal(decision.score, 1.0);
+
+    // Feed the decision into BeliefTracker exactly as observeToolStep does.
+    const belief = new BeliefTracker(); // initialBelief 0.3, lambdaPlus 0.35
+    const start = belief.belief;
+    belief.update(decision.approved, decision.score);
+    assert.ok(
+      belief.belief > start,
+      `approval should raise belief, start=${start} now=${belief.belief}`,
+    );
   });
 });
 
