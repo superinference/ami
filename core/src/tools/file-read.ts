@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
 import { resolveFilePath } from './tool-utils';
 import { spillToolText } from './spill-output';
@@ -42,6 +42,65 @@ const MEDIA_TYPES: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
+
+/** Whether a path points to a supported image file (by extension). */
+export function isImagePath(p: string): boolean {
+  return IMAGE_EXTENSIONS.has(path.extname(p).toLowerCase());
+}
+
+/**
+ * Read an image file and return a base64 payload, downscaling/compressing large
+ * images with sharp when available (same policy file_read uses). Shared so the
+ * TUI/detached attach path encodes images identically to the file_read tool.
+ */
+export async function encodeImageFile(absPath: string): Promise<{ media_type: string; data: string }> {
+  const ext = path.extname(absPath).toLowerCase();
+  const imageBuffer = await fs.promises.readFile(absPath);
+  let finalBuffer = imageBuffer;
+  let finalMediaType = MEDIA_TYPES[ext] || 'application/octet-stream';
+  if (imageBuffer.length > 512 * 1024) {
+    try {
+      const sharp = require('sharp');
+      finalBuffer = await sharp(imageBuffer)
+        .resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      finalMediaType = 'image/jpeg';
+      const base64Length = finalBuffer.toString('base64').length;
+      if (Math.ceil(base64Length * 0.125) > 5000) {
+        try {
+          finalBuffer = await sharp(finalBuffer)
+            .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 40 })
+            .toBuffer();
+        } catch {}
+      }
+    } catch {
+      // sharp not available — use original bytes
+    }
+  }
+  return { media_type: finalMediaType, data: finalBuffer.toString('base64') };
+}
+
+/**
+ * Parse a tool-result output string into ImageContent block(s) when it is the
+ * image JSON that file_read emits ({type:'image',source:{type:'base64',...}}),
+ * else null. Fast-guarded so ordinary text outputs are never JSON.parsed.
+ */
+export function parseImageToolOutput(output: string): ImageContent[] | null {
+  if (typeof output !== 'string') return null;
+  const t = output.trimStart();
+  if (!t.startsWith('{')) return null;
+  if (!t.includes('"type":"image"') && !t.includes('"type": "image"')) return null;
+  try {
+    const parsed = JSON.parse(output);
+    if (parsed && parsed.type === 'image' && parsed.source && parsed.source.type === 'base64'
+        && typeof parsed.source.media_type === 'string' && typeof parsed.source.data === 'string') {
+      return [parsed as ImageContent];
+    }
+  } catch {}
+  return null;
+}
 
 async function readFileInRange(filePath: string, offset: number, limit: number): Promise<string> {
   const lines: string[] = [];
@@ -157,46 +216,15 @@ export const fileReadTool: ToolDefinition = {
 
     // Handle image files — return base64 with optional compression
     if (IMAGE_EXTENSIONS.has(ext)) {
-      const imageBuffer = await fs.promises.readFile(resolved);
-      const mediaType = MEDIA_TYPES[ext] || 'application/octet-stream';
-      let finalBuffer = imageBuffer;
-      let finalMediaType = mediaType;
-
-      // Compress large images (>512KB) if sharp is available
-      if (imageBuffer.length > 512 * 1024) {
-        try {
-          const sharp = require('sharp');
-          finalBuffer = await sharp(imageBuffer)
-            .resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-          finalMediaType = 'image/jpeg';
-
-          // Second pass: aggressive compression if still over token budget
-          const base64Length = finalBuffer.toString('base64').length;
-          const estimatedImageTokens = Math.ceil(base64Length * 0.125);
-          if (estimatedImageTokens > 5000) {
-            try {
-              finalBuffer = await sharp(finalBuffer)
-                .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
-                .jpeg({ quality: 40 })
-                .toBuffer();
-            } catch {}
-          }
-        } catch {
-          // sharp not available — use original
-        }
-      }
-
-      const base64 = finalBuffer.toString('base64');
+      const { media_type, data } = await encodeImageFile(resolved);
       context.filesRead?.add(resolved);
       return {
         output: JSON.stringify({
           type: 'image',
           source: {
             type: 'base64',
-            media_type: finalMediaType,
-            data: base64,
+            media_type,
+            data,
           },
         }),
       };

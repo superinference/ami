@@ -337,6 +337,12 @@ export interface EngineSubmitOptions {
   outputSchema?: Record<string, unknown>;
   /** Max retries for schema validation (default 3). */
   maxStructuredRetries?: number;
+  /**
+   * Image attachments for this user turn (e.g. drag-dropped or path-referenced
+   * files). Attached to the user message as multimodal content when the active
+   * model supports vision; otherwise ignored with a note.
+   */
+  images?: ImageContent[];
 }
 
 export interface ContextFile {

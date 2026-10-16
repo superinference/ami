@@ -373,6 +373,40 @@ export function isReasoningModel(modelId: string): boolean {
   return getModelCapabilities(modelId) !== null;
 }
 
+/**
+ * Model families that accept image input. A live /models payload can override
+ * this via registerModelCapabilities({ supportsVision }). The id may carry a
+ * provider prefix (e.g. 'openai/gpt-4o' or 'openrouter/anthropic/claude-...'),
+ * so we test every '/'-delimited suffix against the prefix table.
+ */
+const VISION_MODEL_PREFIXES: string[] = [
+  // OpenAI
+  'gpt-4o', 'gpt-4.1', 'gpt-5', 'gpt-6', 'o1', 'o3', 'o4', 'chatgpt-4o',
+  // Anthropic (all Claude 3+ are vision-capable)
+  'claude-3', 'claude-sonnet-', 'claude-opus-', 'claude-haiku-', 'claude-fable-',
+  // Google
+  'gemini-1.5', 'gemini-2', 'gemini-3', 'gemini-pro-vision',
+  // xAI
+  'grok-2-vision', 'grok-3', 'grok-4',
+  // Open-weight vision
+  'llama-3.2', 'llama-4', 'qwen2-vl', 'qwen2.5-vl', 'qwen3-vl', 'pixtral', 'llava', 'internvl',
+];
+
+/**
+ * Whether the given model can accept image input. Honors an explicitly
+ * registered `supportsVision` capability first, then falls back to the
+ * known-vision-family prefix table. Unknown models default to false so images
+ * are never sent blindly to a text-only model.
+ */
+export function modelSupportsVision(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  const explicit = getModelCapabilities(modelId)?.supportsVision;
+  if (explicit !== undefined) return explicit;
+  const id = modelId.toLowerCase();
+  const candidates = [id, ...id.split('/')];
+  return candidates.some(c => VISION_MODEL_PREFIXES.some(p => c.startsWith(p)));
+}
+
 const BUDGET_MAP: Record<ThinkingLevel, number> = {
   off: 0,
   low: 4096,

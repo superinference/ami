@@ -637,11 +637,12 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
         if (block.type === 'text') {
           return { type: 'text' as const, text: block.text };
         }
-        // ImageContent -> AI SDK image part
+        // ImageContent -> AI SDK image part. The AI SDK v6 ImagePart field is
+        // `mediaType` (not `mimeType`); using the wrong name drops the type.
         return {
           type: 'image' as const,
           image: block.source.data,
-          mimeType: block.source.media_type,
+          mediaType: block.source.media_type,
         };
       });
       return { role: 'user' as const, content: parts } as ModelMessage;

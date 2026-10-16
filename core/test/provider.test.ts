@@ -256,6 +256,29 @@ describe('convertMessages', () => {
     assert.equal(result[0].role, 'system');
   });
 
+  it('maps a user ImageContent block to an AI SDK image part using mediaType', () => {
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is in this image?' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAB' } },
+        ],
+      },
+    ];
+    const result = convertMessages(messages);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].role, 'user');
+    const parts = result[0].content as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(parts));
+    const img = parts.find(p => p.type === 'image')!;
+    assert.ok(img, 'should contain an image part');
+    assert.equal(img.image, 'AAAB');
+    // AI SDK v6 ImagePart uses `mediaType`; `mimeType` is ignored (media type lost).
+    assert.equal(img.mediaType, 'image/png');
+    assert.equal((img as Record<string, unknown>).mimeType, undefined);
+  });
+
   it('converts an assistant message with text content', () => {
     const messages: Message[] = [
       { role: 'assistant', content: 'I can help with that.' },

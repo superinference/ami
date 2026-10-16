@@ -14,12 +14,39 @@ import {
   registerModelCapabilities,
   clearDynamicCapabilities,
   discoverFromModelList,
+  modelSupportsVision,
   DEFAULT_MAX_OUTPUT_TOKENS,
   OUTPUT_FIT_SAFETY_TOKENS,
   MIN_FITTED_OUTPUT_TOKENS,
   MIN_THINKING_BUDGET,
   type ThinkingLevel,
 } from '../src/model-capabilities';
+
+describe('modelSupportsVision', () => {
+  afterEach(() => clearDynamicCapabilities());
+
+  it('returns true for known vision families (openai/anthropic/google), with or without provider prefix', () => {
+    for (const id of ['gpt-4o', 'gpt-4o-mini', 'claude-sonnet-5-5', 'claude-3-5-sonnet',
+                      'gemini-2.5-pro', 'openai/gpt-4o', 'openrouter/anthropic/claude-opus-5-5']) {
+      assert.equal(modelSupportsVision(id), true, `${id} should support vision`);
+    }
+  });
+
+  it('returns false for text-only / unknown models', () => {
+    for (const id of ['deepseek-chat', 'deepseek-reasoner', 'llama-3.3-70b-versatile', 'some-unknown-model', '']) {
+      assert.equal(modelSupportsVision(id), false, `${id} should not support vision`);
+    }
+  });
+
+  it('honors an explicitly registered supportsVision capability over the prefix table', () => {
+    registerModelCapabilities('deepseek-chat', {
+      reasoning: false, defaultThinkingLevel: 'off', supportsAdaptiveThinking: false,
+      requiresTemperatureOne: false, temperatureMustBeUnset: false, maxThinkingBudget: 0,
+      supportsVision: true,
+    });
+    assert.equal(modelSupportsVision('deepseek-chat'), true);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // getContextWindow

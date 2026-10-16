@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { fileReadTool } from '../src/tools/file-read';
+import { fileReadTool, isImagePath, parseImageToolOutput, encodeImageFile } from '../src/tools/file-read';
 import { getFileCache } from '../src/file-cache';
 import type { ToolContext } from '../src/types';
 
@@ -313,5 +313,44 @@ describe('fileReadTool – suite logs', () => {
     const paged = await fileReadTool.execute({ file_path: file, offset: 0, limit: 50 }, ctx());
     assert.equal(paged.output.includes('TestOk0'), false);
     assert.match(paged.output, /TestBLPModel/);
+  });
+});
+
+describe('image attachment helpers', () => {
+  it('isImagePath recognizes supported image extensions (case-insensitive) and rejects others', () => {
+    for (const p of ['/a/b.png', 'shot.JPG', './x.jpeg', 'y.gif', 'z.webp']) {
+      assert.equal(isImagePath(p), true, p);
+    }
+    for (const p of ['/a/b.txt', 'movie.mp4', 'doc.pdf', 'noext', 'a.svg']) {
+      assert.equal(isImagePath(p), false, p);
+    }
+  });
+
+  it('parseImageToolOutput returns ImageContent[] for file_read image JSON and null otherwise', () => {
+    const imageJson = JSON.stringify({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'QUJD' },
+    });
+    const parsed = parseImageToolOutput(imageJson);
+    assert.ok(parsed, 'should parse image JSON');
+    assert.equal(parsed!.length, 1);
+    assert.equal(parsed![0].type, 'image');
+    assert.equal(parsed![0].source.media_type, 'image/png');
+    assert.equal(parsed![0].source.data, 'QUJD');
+
+    // Non-image outputs must not be treated as images.
+    assert.equal(parseImageToolOutput('just some text output'), null);
+    assert.equal(parseImageToolOutput('{"type":"text","value":"hi"}'), null);
+    assert.equal(parseImageToolOutput('{"type":"image"'), null); // malformed JSON
+    assert.equal(parseImageToolOutput(''), null);
+  });
+
+  it('encodeImageFile reads a small image file and returns base64 + media type', async () => {
+    const p = path.join(tmpDir, 'pixel.png');
+    const bytes = Buffer.from('fake-png-bytes');
+    fs.writeFileSync(p, bytes);
+    const { media_type, data } = await encodeImageFile(p);
+    assert.equal(media_type, 'image/png');
+    assert.equal(data, bytes.toString('base64'));
   });
 });
