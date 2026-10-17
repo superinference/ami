@@ -22,6 +22,8 @@ export interface ProjectConfig {
   maxTurns?: number;
   tokenBudget?: number;
   persona?: string;
+  /** Managed policy: when non-empty, only these models are selectable. */
+  enforceAvailableModels?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -103,8 +105,19 @@ export function loadGlobalConfig(): ProjectConfig | null {
  * Load a managed/system-wide config from `/etc/superinference/config.json`.
  * Used by organizations to set defaults across all users on a machine.
  */
+/** Thrown when a present managed-config file fails to parse (fail-closed). */
+export class ManagedConfigError extends Error {}
+
 export function loadManagedConfig(): ProjectConfig | null {
-  return loadConfigFile('/etc/superinference/config.json');
+  const configPath = process.env.SUPERINFERENCE_MANAGED_CONFIG || '/etc/superinference/config.json';
+  if (!fs.existsSync(configPath)) return null;
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    return JSON.parse(stripJsoncComments(raw)) as ProjectConfig;
+  } catch (err) {
+    // A broken enterprise policy must fail closed, not be silently ignored.
+    throw new ManagedConfigError(`Managed config at ${configPath} failed to parse: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function loadConfigFile(configPath: string): ProjectConfig | null {
