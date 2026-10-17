@@ -203,3 +203,19 @@ describe('ProviderCoordinator', () => {
     assert.equal(coord.availableCredentials, 1);
   });
 });
+
+describe('ProviderCoordinator — fallback chain', () => {
+  const primary: ProviderConfig = { baseUrl: 'https://api.example.com/v1', apiKey: 'k', model: 'primary-model' };
+  it('steps through fallbackModels on successive errors, then exhausts', () => {
+    const subsystem: ProviderSubsystem = { primary, fallbackModels: ['fb-1', 'fb-2'] };
+    const c = new ProviderCoordinator(subsystem);
+    assert.equal(c.getConfig().model, 'primary-model');
+    assert.equal(c.hasFallback(), true);
+    assert.equal(c.recordError(), true);
+    assert.equal(c.getConfig().model, 'fb-1');
+    assert.equal(c.recordError(), true);
+    assert.equal(c.getConfig().model, 'fb-2');
+    assert.equal(c.recordError(), false, 'chain exhausted after 2 fallbacks');
+    assert.equal(c.getConfig().model, 'fb-2');
+  });
+});

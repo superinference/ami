@@ -19,6 +19,7 @@ export interface ExtendedUsageStats extends UsageStats {
   cacheHitRate: number;
   /** Estimated dollar savings from prompt caching. */
   cachedCostSavings: number;
+  byCategory?: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,14 @@ function matchPricing(model: string): PricingEntry {
 // CostTracker
 // ---------------------------------------------------------------------------
 
+/** Classify a tool call for per-category usage breakdown. */
+export function categorizeTool(name: string): 'mcp' | 'skill' | 'subagent' | 'builtin' {
+  if (name.startsWith('mcp__') || name.includes(':')) return 'mcp';
+  if (name === 'task' || name.startsWith('task_') || name === 'workflow') return 'subagent';
+  if (name === 'skill' || name.toLowerCase().startsWith('skill')) return 'skill';
+  return 'builtin';
+}
+
 export class CostTracker {
   private stats: UsageStats = {
     promptTokens: 0,
@@ -162,6 +171,7 @@ export class CostTracker {
   private _cachedPromptTokens = 0;
   private _uncachedPromptTokens = 0;
   private _cachedCostSavings = 0;
+  private _byCategory: Record<string, number> = {};
   private model: string;
 
   constructor(model: string) {
@@ -204,8 +214,12 @@ export class CostTracker {
     }
   }
 
-  trackToolCall(): void {
+  trackToolCall(toolName = ''): void {
     this.stats.toolCallCount++;
+    if (toolName) {
+      const cat = categorizeTool(toolName);
+      this._byCategory[cat] = (this._byCategory[cat] ?? 0) + 1;
+    }
   }
 
   trackTurn(): void {
@@ -224,6 +238,7 @@ export class CostTracker {
       uncachedPromptTokens: this._uncachedPromptTokens,
       cacheHitRate,
       cachedCostSavings: this._cachedCostSavings,
+      byCategory: { ...this._byCategory },
     };
   }
 
@@ -241,6 +256,7 @@ export class CostTracker {
     this._cachedPromptTokens = 0;
     this._uncachedPromptTokens = 0;
     this._cachedCostSavings = 0;
+    this._byCategory = {};
   }
 
   private estimateCostWithCache(

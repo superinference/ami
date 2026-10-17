@@ -1,7 +1,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { CostTracker, _resetPricingCache, _fetchPricing } from '../src/cost-tracker';
+import { CostTracker, categorizeTool, _resetPricingCache, _fetchPricing } from '../src/cost-tracker';
 
 // Ensure each test group uses the fallback table (no live fetch interference)
 beforeEach(() => {
@@ -239,5 +239,29 @@ describe('CostTracker – live pricing', () => {
     tracker.trackUsage({ promptTokens: 1_000_000, completionTokens: 1_000_000 });
     const stats = tracker.getStats();
     assert.ok(stats.totalCost > 0, 'live pricing should produce a positive cost');
+  });
+});
+
+describe('per-category tool usage breakdown', () => {
+  it('categorizeTool classifies mcp / subagent / skill / builtin', () => {
+    assert.equal(categorizeTool('mcp__github__create_issue'), 'mcp');
+    assert.equal(categorizeTool('github:create_issue'), 'mcp');
+    assert.equal(categorizeTool('task'), 'subagent');
+    assert.equal(categorizeTool('workflow'), 'subagent');
+    assert.equal(categorizeTool('skill'), 'skill');
+    assert.equal(categorizeTool('bash'), 'builtin');
+    assert.equal(categorizeTool('file_read'), 'builtin');
+  });
+  it('trackToolCall accumulates getStats().byCategory', () => {
+    const c = new CostTracker('gpt-4o');
+    c.trackToolCall('bash');
+    c.trackToolCall('file_read');
+    c.trackToolCall('mcp__x__y');
+    c.trackToolCall('task');
+    const stats = c.getStats();
+    assert.equal(stats.byCategory!.builtin, 2);
+    assert.equal(stats.byCategory!.mcp, 1);
+    assert.equal(stats.byCategory!.subagent, 1);
+    assert.equal(stats.toolCallCount, 4);
   });
 });

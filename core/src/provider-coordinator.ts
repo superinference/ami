@@ -17,7 +17,7 @@ const FALLBACK_COOLDOWN = 3;
 export class ProviderCoordinator {
   private subsystem: ProviderSubsystem;
   private state: CoordinatorState;
-  private usingFallback = false;
+  private fallbackIndex = 0; // 0 = primary; 1..N = position in the fallback chain
   private fallbackSuccessCount = 0;
   private rateLimits = new RateLimitTracker();
   private credentialPool: CredentialPool | null = null;
@@ -43,9 +43,16 @@ export class ProviderCoordinator {
     }
   }
 
+  /** Ordered fallback model chain (normalized; empty if none). */
+  private get chain(): string[] {
+    if (this.subsystem.fallbackModels && this.subsystem.fallbackModels.length) return this.subsystem.fallbackModels;
+    return this.subsystem.fallbackModel ? [this.subsystem.fallbackModel] : [];
+  }
+
   getConfig(): ProviderConfig {
-    const base = this.usingFallback && this.subsystem.fallbackModel
-      ? { ...this.subsystem.primary, model: this.subsystem.fallbackModel }
+    const activeModel = this.fallbackIndex > 0 ? this.chain[this.fallbackIndex - 1] : undefined;
+    const base = activeModel
+      ? { ...this.subsystem.primary, model: activeModel }
       : this.subsystem.primary;
 
     if (this.credentialPool) {
@@ -76,20 +83,21 @@ export class ProviderCoordinator {
 
   recordError(): boolean {
     this.state.errorCount++;
-    if (!this.usingFallback && this.subsystem.fallbackModel) {
-      this.usingFallback = true;
+    // Step one position down the fallback chain, if any remain.
+    if (this.fallbackIndex < this.chain.length) {
+      this.fallbackIndex++;
       this.state.usedFallback = true;
-      this.state.currentModel = this.subsystem.fallbackModel;
+      this.state.currentModel = this.chain[this.fallbackIndex - 1];
       return true;
     }
     return false;
   }
 
   recordSuccess(): void {
-    if (this.usingFallback) {
+    if (this.fallbackIndex > 0) {
       this.fallbackSuccessCount++;
       if (this.fallbackSuccessCount >= FALLBACK_COOLDOWN) {
-        this.usingFallback = false;
+        this.fallbackIndex = 0;
         this.fallbackSuccessCount = 0;
         this.state.currentModel = this.subsystem.primary.model || 'unknown';
       }
@@ -105,7 +113,7 @@ export class ProviderCoordinator {
   }
 
   hasFallback(): boolean {
-    return !!this.subsystem.fallbackModel;
+    return this.chain.length > 0;
   }
 
   updateRateLimits(headers: Record<string, string>): void {

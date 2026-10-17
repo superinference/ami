@@ -249,6 +249,8 @@ export interface EngineConfig {
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Model to fall back to on errors (e.g., 'gemini-2.0-flash' as fallback for 'gemini-1.5-pro'). */
   fallbackModel?: string;
+  /** Ordered fallback model chain (up to 3), stepped through on provider errors. */
+  fallbackModels?: string[];
   /** Cheap/fast model for auxiliary tasks (compaction, follow-up suggestions). Falls back to primary model if not set. */
   compactionModel?: string;
   /** Extended thinking/reasoning configuration. */
@@ -303,6 +305,8 @@ export interface EngineConfig {
 export interface ProviderSubsystem {
   primary: ProviderConfig;
   fallbackModel?: string;
+  /** Ordered fallback chain (normalized from fallbackModels + fallbackModel, deduped, capped). */
+  fallbackModels?: string[];
   compactionModel?: string;
   thinking?: ThinkingConfig;
 }
@@ -330,6 +334,11 @@ export function buildSubsystems(config: EngineConfig): {
     provider: {
       primary: config.provider,
       fallbackModel: config.fallbackModel,
+      fallbackModels: (() => {
+        const chain = [...(config.fallbackModels ?? []), ...(config.fallbackModel ? [config.fallbackModel] : [])]
+          .filter((m): m is string => !!m);
+        return [...new Set(chain)].slice(0, 3);
+      })(),
       compactionModel: config.compactionModel,
       thinking: config.thinking,
     },
