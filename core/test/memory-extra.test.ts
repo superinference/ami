@@ -89,6 +89,26 @@ describe('MemoryManager — injection detection in instructions', () => {
     assert.ok(!result.includes('do something bad'));
   });
 
+  it('loads user-global instructions from ~/.claude/CLAUDE.md', () => {
+    const fakeHome = createTmpDir();
+    const prevHome = process.env.HOME;
+    const prevUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      fs.mkdirSync(path.join(fakeHome, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHome, '.claude', 'CLAUDE.md'), 'USER_GLOBAL_SENTINEL_77');
+      // cwd is a separate tmp dir with no project instructions.
+      const mgr = new MemoryManager(tmpDir);
+      const ctx = mgr.getMemoryContext();
+      assert.ok(ctx.includes('USER_GLOBAL_SENTINEL_77'), 'user-global CLAUDE.md must be loaded');
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
+      cleanupTmpDir(fakeHome);
+    }
+  });
+
   it('inlines a Claude-Code @path import into project instructions', () => {
     fs.writeFileSync(path.join(tmpDir, 'extra.md'), 'IMPORTED_SENTINEL_42');
     fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), 'Base rules.\n\n@extra.md\n');

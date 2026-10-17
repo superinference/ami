@@ -192,12 +192,15 @@ export function httpGet(
     timeoutMs?: number;
     includeContentType?: boolean;
     resolvedIP?: string;
+    /** Also return the raw response bytes (bodyBuffer), uncorrupted by UTF-8
+     *  decoding — required for PDFs/images/other binary content. */
+    raw?: boolean;
   },
-): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
+): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
   const maxRedirects = options?.maxRedirects ?? 5;
   const timeoutMs = options?.timeoutMs ?? 30000;
 
-  return httpGetInternal(url, signal, maxRedirects, timeoutMs, options?.resolvedIP);
+  return httpGetInternal(url, signal, maxRedirects, timeoutMs, options?.resolvedIP, options?.raw);
 }
 
 function httpGetInternal(
@@ -206,7 +209,8 @@ function httpGetInternal(
   redirectsLeft: number,
   timeoutMs: number,
   resolvedIP?: string,
-): Promise<{ body: string; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
+  raw?: boolean,
+): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
   const MAX_RESPONSE_LENGTH = 50000;
 
   return new Promise((resolve, reject) => {
@@ -275,11 +279,14 @@ function httpGetInternal(
         const chunks: Buffer[] = [];
         let totalBytes = 0;
         let settled = false;
-        const finish = (body: string, truncated = false) => {
+        const finish = (truncated = false) => {
           if (settled) return;
           settled = true;
+          const buf = Buffer.concat(chunks);
           resolve({
-            body,
+            body: buf.toString('utf-8'),
+            // Preserve raw bytes for binary consumers (PDF/image/octet-stream).
+            ...(raw ? { bodyBuffer: buf } : {}),
             statusCode,
             contentType: res.headers['content-type'] ?? '',
             finalUrl: url,
@@ -295,7 +302,7 @@ function httpGetInternal(
           if (chunk.length >= room) {
             if (room > 0) chunks.push(chunk.subarray(0, room));
             totalBytes = MAX_HTTP_BODY_BYTES;
-            finish(Buffer.concat(chunks).toString('utf-8'), true);
+            finish(true);
             res.destroy();
             return;
           }
@@ -303,7 +310,7 @@ function httpGetInternal(
           chunks.push(chunk);
         });
         res.on('end', () => {
-          finish(Buffer.concat(chunks).toString('utf-8'));
+          finish();
         });
         res.on('error', (err) => {
           if (!settled) reject(err);

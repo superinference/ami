@@ -199,10 +199,10 @@ export const webFetchTool: ToolDefinition = {
     }
 
     try {
-      const { body, statusCode, contentType, finalUrl, truncated } = await httpGet(
+      const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated } = await httpGet(
         url,
         context.abortSignal,
-        { resolvedIP: pinnedIP },
+        { resolvedIP: pinnedIP, raw: true },
       );
 
       if (statusCode >= 400) {
@@ -223,7 +223,8 @@ export const webFetchTool: ToolDefinition = {
       if (contentType.includes('application/pdf') || body.startsWith('%PDF')) {
         try {
           const pdfParse = require('pdf-parse');
-          const pdfBuffer = Buffer.from(body, 'binary');
+          // Use the raw bytes — decoding via a UTF-8 string corrupts the PDF.
+          const pdfBuffer = bodyBuffer ?? Buffer.from(body, 'binary');
           const pdf = await pdfParse(pdfBuffer);
           const pdfText = (pdf.text || '').trim();
           if (pdfText.length > 100) {
@@ -269,8 +270,10 @@ export const webFetchTool: ToolDefinition = {
         const spillDir = path.join(context.cwd, '.superinference', 'tool-results');
         fs.mkdirSync(spillDir, { recursive: true });
         const spillFile = path.join(spillDir, `fetch-${Date.now()}.${ext}`);
-        fs.writeFileSync(spillFile, body);
-        return { output: `[Binary content (${contentType}, ${body.length} bytes) saved to ${spillFile}]` };
+        // Write the raw bytes, not the lossy UTF-8 string, so the saved file is intact.
+        const outBytes = bodyBuffer ?? Buffer.from(body, 'binary');
+        fs.writeFileSync(spillFile, outBytes);
+        return { output: `[Binary content (${contentType}, ${outBytes.length} bytes) saved to ${spillFile}]` };
       }
 
       // Convert HTML to markdown, leave other content types as-is

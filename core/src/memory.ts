@@ -506,8 +506,31 @@ export class MemoryManager {
    * suitable for injection into the system prompt. Returns empty string if
    * there are no instructions or memories.
    */
+  /**
+   * Load user-global instruction files (the equivalent of ~/.claude/CLAUDE.md).
+   * Reads the first existing instruction file from ~/.superinference/ then
+   * ~/.claude/, resolving @path imports. Returns '' when none exist.
+   */
+  loadUserGlobalInstructions(): string {
+    const sections: string[] = [];
+    for (const base of [path.join(os.homedir(), '.superinference'), path.join(os.homedir(), '.claude')]) {
+      const found = this.findInstructionFile(base);
+      if (!found) continue;
+      try {
+        const raw = fs.readFileSync(found, 'utf-8').trim();
+        if (raw) sections.push(this.resolveAtImports(sanitizeContent(raw, found), found));
+      } catch { /* unreadable — skip */ }
+    }
+    return sections.join('\n\n');
+  }
+
   getMemoryContext(): string {
     const sections: string[] = [];
+
+    const userGlobal = this.loadUserGlobalInstructions();
+    if (userGlobal) {
+      sections.push(`## User Instructions (global)\n\n${userGlobal}`);
+    }
 
     const instructions = this.loadProjectInstructions();
     if (instructions) {

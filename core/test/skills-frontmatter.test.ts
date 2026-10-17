@@ -51,6 +51,30 @@ describe('SkillManager — argumentHint parsing', () => {
   });
 });
 
+describe('SkillManager — agent tools frontmatter (comma-separated)', () => {
+  function writeAgent(name: string, frontmatter: string, body = 'Agent body.') {
+    const dir = path.join(tmpDir, '.superinference', 'agents');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${name}.md`), `---\n${frontmatter}\n---\n${body}`);
+  }
+
+  it('parses a bare comma-separated tools list (Claude Code style)', () => {
+    writeAgent('csv-agent', 'name: csv-agent\ndescription: x\ntools: file_read, grep, glob');
+    const mgr = new SkillManager(tmpDir);
+    const agent = mgr.getAgent('csv-agent');
+    assert.ok(agent, 'agent should be found');
+    assert.deepEqual(agent!.tools, ['file_read', 'grep', 'glob']);
+  });
+
+  it('still parses the bracketed array form', () => {
+    writeAgent('arr-agent', 'name: arr-agent\ndescription: x\ntools: [file_read, grep]');
+    const mgr = new SkillManager(tmpDir);
+    const agent = mgr.getAgent('arr-agent');
+    assert.ok(agent);
+    assert.deepEqual(agent!.tools, ['file_read', 'grep']);
+  });
+});
+
 describe('SkillManager — context parsing', () => {
   it('parses context: fork from frontmatter', () => {
     writeSkill('fork-skill', 'name: fork-skill\ndescription: Forked\ncontext: fork', 'Run in a fork.');

@@ -198,16 +198,21 @@ const BUILTIN_SKILLS: SkillDefinition[] = [
 ];
 
 /**
- * Parse a JSON-like array from a frontmatter value.
- * Accepts: `["*.ts", "*.py"]` or `[file_read, file_write]` (unquoted items).
+ * Parse a string list from a frontmatter value. Accepts both the bracketed
+ * JSON-style form (`["*.ts", "*.py"]` / `[file_read, file_write]`) and Claude
+ * Code's bare comma-separated form (`Glob, Grep, Read`).
  */
 function parseStringArray(raw: string | undefined): string[] | undefined {
   if (!raw) return undefined;
   const trimmed = raw.trim();
-  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return undefined;
-  const inner = trimmed.slice(1, -1).trim();
+  const inner = (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ? trimmed.slice(1, -1).trim()
+    : trimmed;
   if (!inner) return [];
-  return inner.split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
+  return inner
+    .split(',')
+    .map(s => s.trim().replace(/^["']|["']$/g, ''))
+    .filter(s => s.length > 0);
 }
 
 /**

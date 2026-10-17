@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as nodePath from 'path';
 import { webFetchTool } from '../src/tools/web-fetch';
 import type { ToolContext } from '../src/types';
 
@@ -206,6 +209,10 @@ describe('webFetchTool – HTTP server integration', () => {
       } else if (req.url === '/pdf-page') {
         res.writeHead(200, { 'Content-Type': 'application/pdf' });
         res.end('not-a-real-pdf');
+      } else if (req.url === '/binary') {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        // High bytes that UTF-8 decoding would mangle into U+FFFD.
+        res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01, 0xc3, 0x28]));
       } else {
         res.writeHead(404);
         res.end('Not Found');
@@ -248,6 +255,24 @@ describe('webFetchTool – HTTP server integration', () => {
     );
     assert.ok(!result.isError);
     assert.ok(result.output.includes('truncated'));
+  });
+
+  it('saves binary content with bytes intact (no UTF-8 corruption)', async () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wf-bin-'));
+    try {
+      const result = await webFetchTool.execute(
+        { url: `http://127.0.0.1:${port}/binary` },
+        ctx({ _allowLocalhostForTesting: true, cwd: tmp }),
+      );
+      assert.ok(!result.isError, result.output);
+      const m = result.output.match(/saved to (\S+)\]/);
+      assert.ok(m, `expected a saved-file path, got: ${result.output}`);
+      const saved = fs.readFileSync(m![1]);
+      assert.deepEqual([...saved], [0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01, 0xc3, 0x28],
+        'saved bytes must match the original exactly');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('returns error for HTTP 500', async () => {
