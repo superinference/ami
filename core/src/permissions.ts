@@ -275,7 +275,7 @@ export function stripSafeEnvVars(command: string): string {
  * These prevent catastrophic system damage regardless of settings.
  */
 const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
-  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|.*\s+)\/\s*$/,  description: 'rm -r on filesystem root' },
+  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|.*\s+)\/(?=\s|$|[;&|><])/,  description: 'rm -r on filesystem root' },
   { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|.*\s+)\/(home|etc|usr|var|bin|sbin|boot|lib|lib64)\b/, description: 'rm -r on system directory' },
   { pattern: /\bmkfs\b/, description: 'filesystem format' },
   { pattern: /\bdd\b.*\bof\s*=\s*\/dev\/[sh]d/, description: 'dd to block device' },
@@ -311,14 +311,20 @@ function normalizeForHardline(command: string): string {
   // (a) Substitute variable references with their assigned values. Covers both a
   // bare dangerous base (`name=rm`) and a full quoted command (`c='rm -rf /'`),
   // so `eval "$c"` is normalized to the real command.
+  // Optional assignment-prefix keywords (export/declare/typeset/readonly/local)
+  // must not let `export c=rm; $c -rf /` bypass the variable-indirection guard.
+  const ASSIGN_PREFIX = `(?:(?:export|declare|typeset|readonly|local)\\s+)?`;
   const assigns = new Map<string, string>();
   const baseAssignRe = new RegExp(
-    `(?:^|;|&&|\\|\\||\\n)\\s*([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|;|&|\\||$)`,
+    `(?:^|;|&&|\\|\\||\\n)\\s*${ASSIGN_PREFIX}([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|;|&|\\||$)`,
     'g',
   );
   let a: RegExpExecArray | null;
   while ((a = baseAssignRe.exec(command)) !== null) assigns.set(a[1], a[2]);
-  const quotedAssignRe = /(?:^|;|&&|\|\||\n)\s*([A-Za-z_][A-Za-z0-9_]*)=(['"])([\s\S]*?)\2/g;
+  const quotedAssignRe = new RegExp(
+    `(?:^|;|&&|\\|\\||\\n)\\s*${ASSIGN_PREFIX}([A-Za-z_][A-Za-z0-9_]*)=(['"])([\\s\\S]*?)\\2`,
+    'g',
+  );
   let q: RegExpExecArray | null;
   while ((q = quotedAssignRe.exec(command)) !== null) assigns.set(q[1], q[3]);
   if (assigns.size) {

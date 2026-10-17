@@ -470,11 +470,28 @@ describe('bashTool – git commit guard', () => {
     assert.ok(result.output.includes(GUARD_MSG));
   });
 
+  it('blocks git -C <dir> commit (global-option bypass)', async () => {
+    const result = await bashTool.execute({ command: 'git -C /tmp commit -m x' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+  });
+
+  it('blocks git -c k=v commit (global-config bypass)', async () => {
+    const result = await bashTool.execute({ command: 'git -c user.name=x commit -m y' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+  });
+
   it('does not block git log', async () => {
     const result = await bashTool.execute(
       { command: 'git log --oneline -1' },
       ctx(),
     );
+    assert.ok(!result.output.includes(GUARD_MSG));
+  });
+
+  it('does not false-positive on git log --grep=commit', async () => {
+    const result = await bashTool.execute({ command: 'git log --grep=commit' }, ctx());
     assert.ok(!result.output.includes(GUARD_MSG));
   });
 

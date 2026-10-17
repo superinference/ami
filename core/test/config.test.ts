@@ -220,6 +220,22 @@ describe('mergeConfigs', () => {
     assert.equal(result.provider, 'openai');
   });
 
+  it('preserves safeMode/maxWebSearchesPerSession/deferTools/alwaysLoadTools/fallbackModels', () => {
+    const project: ProjectConfig = {
+      safeMode: true,
+      maxWebSearchesPerSession: 3,
+      deferTools: true,
+      alwaysLoadTools: ['grep'],
+      fallbackModels: ['m1', 'm2'],
+    };
+    const result = mergeConfigs({}, {}, project, null);
+    assert.equal(result.safeMode, true);
+    assert.equal(result.maxWebSearchesPerSession, 3);
+    assert.equal(result.deferTools, true);
+    assert.deepEqual(result.alwaysLoadTools, ['grep']);
+    assert.deepEqual(result.fallbackModels, ['m1', 'm2']);
+  });
+
   it('project config overrides global config', () => {
     const global: ProjectConfig = { model: 'global-model', provider: 'openai' };
     const project: ProjectConfig = { model: 'project-model' };

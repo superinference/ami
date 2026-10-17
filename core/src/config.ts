@@ -28,6 +28,16 @@ export interface ProjectConfig {
   bashOutputMaxChars?: number;
   /** Anthropic prompt-cache TTL ('5m' default or '1h' extended-cache beta). */
   cacheTtl?: '5m' | '1h';
+  /** Safe mode: skip untrusted project-local hooks/MCP/memory/skills. */
+  safeMode?: boolean;
+  /** Session-wide cap on web_search tool calls. */
+  maxWebSearchesPerSession?: number;
+  /** Defer long-tail tools from the per-turn catalog until tool_search loads them. */
+  deferTools?: boolean;
+  /** Extra tool names to always keep loaded when deferTools is on. */
+  alwaysLoadTools?: string[];
+  /** Ordered fallback model chain stepped through on provider errors. */
+  fallbackModels?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +288,11 @@ export function mergeConfigs(
     if (layer.persona !== undefined) merged.persona = layer.persona;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
+    if (layer.safeMode !== undefined) merged.safeMode = layer.safeMode;
+    if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
+    if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
+    if (layer.alwaysLoadTools !== undefined) merged.alwaysLoadTools = layer.alwaysLoadTools;
+    if (layer.fallbackModels !== undefined) merged.fallbackModels = layer.fallbackModels;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower

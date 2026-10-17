@@ -5,6 +5,11 @@ import { detectHardlineCommand } from '../src/permissions';
 describe('Hardline command blocklist', () => {
   const blocked = [
     ['rm -rf /', 'rm -r on filesystem root'],
+    ['rm -rf / 2>/dev/null', 'rm -r on filesystem root (trailing redirect)'],
+    ['rm -rf / ; echo done', 'rm -r on filesystem root (trailing separator)'],
+    ['rm -fr / >~/log', 'rm -r on filesystem root (trailing redirect)'],
+    ['export c=rm; $c -rf /', 'rm -r via export-prefixed variable indirection'],
+    ['declare c=rm; $c -rf /', 'rm -r via declare-prefixed variable indirection'],
     ['rm -rf /etc', 'rm -r on system directory'],
     ['rm -rf /usr/local', 'rm -r on system directory'],
     ['rm -rf /var/log', 'rm -r on system directory'],
@@ -36,6 +41,8 @@ describe('Hardline command blocklist', () => {
     'ls -la',
     'rm file.txt',
     'rm -f temp.log',
+    'rm -rf /tmp/scratch',
+    'rm -rf ./build',
     'git status',
     'npm install express',
     'curl https://api.example.com/data',

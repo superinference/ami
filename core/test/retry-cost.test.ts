@@ -196,6 +196,29 @@ describe('streamChatCompletionWithRetry - retry on 429 with Retry-After', () => 
   });
 });
 
+describe('streamChatCompletionWithRetry - Retry-After: 0 floors to backoff', () => {
+  it('does not produce a zero delay on Retry-After: 0 (floors to exponential backoff)', async () => {
+    const mock = await createRetryServer(429, 1, { retryAfterSeconds: 0 });
+    try {
+      const config = makeConfig(mock.port);
+      const ac = new AbortController();
+      let capturedDelay = -1;
+      const chunks = await collectChunks(
+        streamChatCompletionWithRetry(config, defaultMessages, [], ac.signal, {
+          baseDelayMs: 40,
+          onRetry: (_attempt, _max, delayMs) => { capturedDelay = delayMs; },
+        }),
+      );
+      // Without the floor this would be 0 (Retry-After: 0 * 1000); with it, >= 40.
+      assert.ok(capturedDelay >= 40, `expected delay floored to >=40ms, got ${capturedDelay}`);
+      const content = chunks.filter((c) => c.type === 'content_delta');
+      assert.ok(content.length >= 1);
+    } finally {
+      mock.server.close();
+    }
+  });
+});
+
 describe('streamChatCompletionWithRetry - retry on 500/502/503', () => {
   it('retries on 500 and succeeds', async () => {
     const mock = await createRetryServer(500, 1);
