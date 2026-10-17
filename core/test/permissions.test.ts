@@ -273,6 +273,16 @@ describe('PermissionManager — isPathAllowed', () => {
     assert.equal(pm.isPathAllowed(path.join(tmpDir, 'id_rsa'), tmpDir), false);
   });
 
+  it('denies credential paths that the write-guard blocks (read parity)', () => {
+    const home = os.homedir();
+    // These have no sensitive basename/extension, so only the credential-path
+    // check catches them — previously readable.
+    assert.equal(pm.isPathAllowed(path.join(home, '.aws', 'credentials'), tmpDir), false);
+    assert.equal(pm.isPathAllowed(path.join(home, '.git-credentials'), tmpDir), false);
+    assert.equal(pm.isPathAllowed(path.join(home, '.kube', 'config'), tmpDir), false);
+    assert.equal(pm.isPathAllowed(path.join(home, '.docker', 'config.json'), tmpDir), false);
+  });
+
   it('denies absolute paths outside cwd and home', () => {
     assert.equal(pm.isPathAllowed('/opt/secret/data', tmpDir), false);
   });
@@ -653,6 +663,26 @@ describe('check() — server-scoped wildcard tool rules', () => {
     // hasExplicitDeny (the read-only / auto-allow enforcement path) also honors it
     assert.equal(pm.hasExplicitDeny('mcp:dangerous', {}), true);
     assert.equal(pm.hasExplicitDeny('other:safe', {}), false);
+  });
+});
+
+describe('credential-path reads are never auto-safe', () => {
+  it('classifies cat of an SSH private key as unsafe (requires a prompt)', () => {
+    const pm = new PermissionManager('ask');
+    assert.equal(pm.classifyBashCommand('cat ~/.ssh/id_rsa'), 'unsafe');
+    assert.equal(pm.classifyBashCommand('cat /home/u/.ssh/id_ed25519'), 'unsafe');
+  });
+  it('classifies head/less of .aws/credentials as unsafe', () => {
+    const pm = new PermissionManager('ask');
+    assert.equal(pm.classifyBashCommand('head -5 ~/.aws/credentials'), 'unsafe');
+  });
+  it('does not downgrade a destructive write to /etc/passwd', () => {
+    const pm = new PermissionManager('ask');
+    assert.equal(pm.classifyBashCommand('echo x > /etc/passwd'), 'destructive');
+  });
+  it('control: a normal cat stays safe', () => {
+    const pm = new PermissionManager('ask');
+    assert.equal(pm.classifyBashCommand('cat README.md'), 'safe');
   });
 });
 

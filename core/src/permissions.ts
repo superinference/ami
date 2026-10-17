@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { expandPath } from './utils/path';
-import { extractCommandPaths } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, isCredentialPath } from './tools/bash-security';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -700,6 +700,15 @@ export class PermissionManager {
    * Classify a bash command as safe, unsafe, or destructive.
    */
   classifyBashCommand(command: string): BashClassification {
+    const result = this.classifyBashCommandCore(command);
+    // Any command that touches a credential/secret path — even a read like
+    // `cat ~/.ssh/id_rsa` — must never be auto-'safe'; elevate to a prompt.
+    // Never downgrade a stronger verdict (destructive/unsafe) here.
+    if (result === 'safe' && commandTargetsCredentialPath(command.trim())) return 'unsafe';
+    return result;
+  }
+
+  private classifyBashCommandCore(command: string): BashClassification {
     const trimmed = command.trim();
     if (!trimmed) return 'safe';
 
@@ -827,7 +836,12 @@ export class PermissionManager {
       // File may not exist yet (write operation) — keep the normalized path
     }
 
-    // Block sensitive files
+    // Block sensitive files. Mirror the credential write-guard list so reads
+    // are no narrower than writes (.aws/credentials, .git-credentials,
+    // .kube/config, .docker/config.json, .gnupg/, .config/gcloud/, /etc/...).
+    if (isCredentialPath(resolved)) {
+      return false;
+    }
     const basename = path.basename(resolved).toLowerCase();
     const sensitiveNames = ['.env', 'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa'];
     const sensitiveExts = ['.pem', '.key', '.p12', '.pfx', '.keystore'];

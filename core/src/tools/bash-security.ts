@@ -844,9 +844,28 @@ const CREDENTIAL_PATH_PATTERNS: RegExp[] = [
   /\/etc\/(passwd|shadow|sudoers)\b/,
 ];
 
-function isCredentialPath(p: string): boolean {
+export function isCredentialPath(p: string): boolean {
   const norm = p.replace(/\\/g, '/');
   return CREDENTIAL_PATH_PATTERNS.some((re) => re.test(norm));
+}
+
+/**
+ * True if any path token in the command points at a known credential/secret
+ * file. Used to ensure even read-only commands (cat/head/less/…) touching
+ * secrets are never auto-classified 'safe' — they must prompt.
+ */
+export function commandTargetsCredentialPath(command: string): boolean {
+  try {
+    for (const p of extractCommandPaths(command)) {
+      if (isCredentialPath(p)) return true;
+    }
+  } catch { /* best-effort */ }
+  // Fall back to a raw token scan for paths extractCommandPaths does not model.
+  for (const tok of command.split(/[\s;|&]+/)) {
+    const t = tok.replace(/^["']|["']$/g, '');
+    if (t && isCredentialPath(t)) return true;
+  }
+  return false;
 }
 
 /**

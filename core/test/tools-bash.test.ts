@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
-import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion } from '../src/tools/bash';
+import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 import { detectHardlineCommand } from '../src/permissions';
 
@@ -932,6 +932,33 @@ describe('hardline evasion — nested wrap + command substitution', () => {
   it('control: a benign command stays allowed', () => {
     assert.equal(detectHardlineCommand('sh -c "ls -la"').blocked, false);
     assert.equal(detectHardlineCommand('git commit -m "rm stuff from docs"').blocked, false);
+  });
+});
+
+describe('resolveBashTimeout — BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS', () => {
+  const save = { d: process.env.BASH_DEFAULT_TIMEOUT_MS, m: process.env.BASH_MAX_TIMEOUT_MS };
+  const restore = () => {
+    if (save.d === undefined) delete process.env.BASH_DEFAULT_TIMEOUT_MS; else process.env.BASH_DEFAULT_TIMEOUT_MS = save.d;
+    if (save.m === undefined) delete process.env.BASH_MAX_TIMEOUT_MS; else process.env.BASH_MAX_TIMEOUT_MS = save.m;
+  };
+
+  it('defaults to 120000 with no env and no input', () => {
+    delete process.env.BASH_DEFAULT_TIMEOUT_MS; delete process.env.BASH_MAX_TIMEOUT_MS;
+    try { assert.equal(resolveBashTimeout(undefined), 120000); } finally { restore(); }
+  });
+  it('honors BASH_DEFAULT_TIMEOUT_MS when no per-call timeout is given', () => {
+    delete process.env.BASH_MAX_TIMEOUT_MS;
+    process.env.BASH_DEFAULT_TIMEOUT_MS = '250';
+    try { assert.equal(resolveBashTimeout(undefined), 250); } finally { restore(); }
+  });
+  it('clamps a per-call timeout to BASH_MAX_TIMEOUT_MS', () => {
+    delete process.env.BASH_DEFAULT_TIMEOUT_MS;
+    process.env.BASH_MAX_TIMEOUT_MS = '500';
+    try { assert.equal(resolveBashTimeout(99999), 500); } finally { restore(); }
+  });
+  it('ignores non-numeric env values', () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = 'nope'; delete process.env.BASH_MAX_TIMEOUT_MS;
+    try { assert.equal(resolveBashTimeout(undefined), 120000); } finally { restore(); }
   });
 });
 

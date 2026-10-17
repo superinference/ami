@@ -10,6 +10,26 @@ import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-l
 
 const MAX_OUTPUT_LENGTH = 200_000;
 const DEFAULT_TIMEOUT_MS = 120000;
+const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
+
+function parseEnvMs(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Resolve the effective bash timeout. Honors BASH_DEFAULT_TIMEOUT_MS (default
+ * when no per-call timeout) and BASH_MAX_TIMEOUT_MS (ceiling), matching Claude
+ * Code. A per-call `timeout` still wins but is clamped to the max.
+ */
+export function resolveBashTimeout(inputTimeout?: number): number {
+  const def = parseEnvMs('BASH_DEFAULT_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS;
+  const max = parseEnvMs('BASH_MAX_TIMEOUT_MS') ?? HARD_MAX_TIMEOUT_MS;
+  const requested = inputTimeout && inputTimeout > 0 ? inputTimeout : def;
+  return Math.min(requested, max);
+}
 
 let _cachedPermissionManager: InstanceType<typeof import('../permissions').PermissionManager> | null = null;
 
@@ -290,7 +310,7 @@ export const bashTool: ToolDefinition = {
       timeout: {
         type: 'number',
         description:
-          'Optional timeout in milliseconds. Defaults to 120000 (2 minutes).',
+          'Optional timeout in milliseconds. Defaults to 120000 (2 minutes), or BASH_DEFAULT_TIMEOUT_MS if set; capped at BASH_MAX_TIMEOUT_MS (default 1 hour).',
       },
       run_in_background: {
         type: 'boolean',
@@ -319,8 +339,7 @@ export const bashTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const command = input.command as string;
-    const MAX_TIMEOUT_MS = 3_600_000; // 1 hour
-    const timeout = Math.min((input.timeout as number) || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+    const timeout = resolveBashTimeout(input.timeout as number | undefined);
 
     if (!command || command.trim().length === 0) {
       return { output: 'Error: command must not be empty.', isError: true };
