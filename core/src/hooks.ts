@@ -230,6 +230,21 @@ export interface HookConfigFile {
  * Capitalized event names (PreToolUse) are lower-camel-cased (preToolUse).
  * Unknown shapes are skipped defensively.
  */
+/** Map Claude Code's capitalized tool names to AMI tool names so a matcher like
+ *  'Bash' or 'Edit|Write' actually gates the AMI tools at execution time. */
+const CLAUDE_TO_AMI_TOOL: Record<string, string> = {
+  Bash: 'bash', Read: 'file_read', Edit: 'file_edit', Write: 'file_edit',
+  MultiEdit: 'file_edit', Glob: 'glob', Grep: 'grep', LS: 'list_dir',
+  WebFetch: 'web_fetch', WebSearch: 'web_search', NotebookEdit: 'notebook_edit',
+  Task: 'task', TodoWrite: 'todo_write',
+};
+
+/** Translate the tool-name tokens in a hook matcher ('Edit|Write' → 'file_edit|
+ *  file_edit'). Unknown tokens (already-AMI names, custom regex) pass through. */
+export function translateHookMatcher(matcher: string): string {
+  return matcher.split('|').map(tok => CLAUDE_TO_AMI_TOOL[tok.trim()] ?? tok).join('|');
+}
+
 export function normalizeMapKeyedHooks(map: unknown): HookConfigEntry[] {
   if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
   const out: HookConfigEntry[] = [];
@@ -238,7 +253,8 @@ export function normalizeMapKeyedHooks(map: unknown): HookConfigEntry[] {
     if (!Array.isArray(groups)) continue;
     for (const group of groups) {
       if (!group || typeof group !== 'object') continue;
-      const matcher = typeof (group as any).matcher === 'string' ? (group as any).matcher : undefined;
+      const rawMatcher = typeof (group as any).matcher === 'string' ? (group as any).matcher : undefined;
+      const matcher = rawMatcher !== undefined ? translateHookMatcher(rawMatcher) : undefined;
       const innerHooks = (group as any).hooks;
       if (!Array.isArray(innerHooks)) continue;
       for (const hook of innerHooks) {

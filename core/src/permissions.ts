@@ -644,6 +644,11 @@ export class PermissionManager {
     if (this.mode === 'ask' && toolName === 'bash' && typeof input.command === 'string') {
       const classification = this.classifyBashCommand(input.command);
       if (classification === 'destructive') return 'ask';
+      // Credential/secret access always confirms, even under a wildcard allow —
+      // unless there is an explicit deny rule (which must still win below).
+      if (commandTargetsCredentialPath(input.command) && !this.hasExplicitDeny(toolName, input)) {
+        return 'ask';
+      }
     }
 
     // Evaluate rules in order (first match wins). AMI intentionally uses
@@ -1004,6 +1009,18 @@ export class PermissionManager {
       || (ruleTool.includes('*') && matchPattern(ruleTool, toolName));
   }
 
+  /** Coerce a persisted paramPattern into a validated Record<string,string>,
+   *  dropping non-string values (a malformed {"model":123} must not load as a
+   *  rule that matches nothing-or-everything). Returns undefined if nothing valid. */
+  private sanitizeParamPattern(raw: unknown): Record<string, string> | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
   /** All named-param globs in a rule's paramPattern must match the tool input. */
   private paramMatches(paramPattern: Record<string, string>, input: Record<string, unknown>): boolean {
     for (const [key, glob] of Object.entries(paramPattern)) {
@@ -1091,14 +1108,17 @@ export class PermissionManager {
             typeof rule.action === 'string' &&
             ['allow', 'deny', 'ask'].includes(rule.action)
           ) {
+            const paramPattern = this.sanitizeParamPattern(rule.paramPattern);
+            // A rule that specified a paramPattern but whose values were all
+            // invalid is malformed — skip it rather than load it as a broad
+            // (pattern-less) rule that would match far more than intended.
+            if (rule.paramPattern !== undefined && paramPattern === undefined) continue;
             this.rules.push({
               tool: rule.tool,
               pattern: typeof rule.pattern === 'string' ? rule.pattern : undefined,
               action: rule.action,
               reason: typeof rule.reason === 'string' ? rule.reason : undefined,
-              paramPattern: (rule.paramPattern && typeof rule.paramPattern === 'object' && !Array.isArray(rule.paramPattern))
-                ? rule.paramPattern as Record<string, string>
-                : undefined,
+              paramPattern,
             });
           }
         }

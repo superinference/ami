@@ -312,12 +312,18 @@ describe('httpGet — identifying User-Agent', () => {
     let captured = '';
     const server = http.createServer((req: any, res: any) => { captured = req.headers['user-agent'] || ''; res.end('ok'); });
     await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
+    // Clear any ambient override so we assert the DEFAULT UA, not an inherited one.
+    const prevUa = process.env.SUPERINFERENCE_WEB_USER_AGENT;
+    delete process.env.SUPERINFERENCE_WEB_USER_AGENT;
     try {
       const port = (server.address() as any).port;
       await httpGet(`http://127.0.0.1:${port}/`, new AbortController().signal, { resolvedIP: '127.0.0.1' });
       assert.match(captured, /AMI|SuperInference/i);
       assert.ok(!/Firefox/.test(captured), 'must not spoof Firefox by default');
-    } finally { server.close(); }
+    } finally {
+      if (prevUa !== undefined) process.env.SUPERINFERENCE_WEB_USER_AGENT = prevUa;
+      server.close();
+    }
   });
 
   it('honors SUPERINFERENCE_WEB_USER_AGENT override at call time', async () => {

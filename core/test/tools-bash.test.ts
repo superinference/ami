@@ -956,6 +956,11 @@ describe('resolveBashTimeout — BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS',
     process.env.BASH_MAX_TIMEOUT_MS = '500';
     try { assert.equal(resolveBashTimeout(99999), 500); } finally { restore(); }
   });
+  it('clamps the BASH_DEFAULT_TIMEOUT_MS default down to the max ceiling', () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = '99999';
+    process.env.BASH_MAX_TIMEOUT_MS = '500';
+    try { assert.equal(resolveBashTimeout(undefined), 500); } finally { restore(); }
+  });
   it('ignores non-numeric env values', () => {
     process.env.BASH_DEFAULT_TIMEOUT_MS = 'nope'; delete process.env.BASH_MAX_TIMEOUT_MS;
     try { assert.equal(resolveBashTimeout(undefined), 120000); } finally { restore(); }
@@ -987,6 +992,19 @@ describe('session transcript write guard', () => {
       assert.equal(res.isError, true, `expected block, got ${JSON.stringify(res)}`);
       assert.match(res.output, /session transcript|protected/i);
       assert.equal(fs.existsSync(dir), true, 'sessions directory must not be deleted');
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+  it('blocks find -delete of session transcripts', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess4-'));
+    try {
+      const dir = path.join(tmp, '.superinference', 'sessions');
+      fs.mkdirSync(dir, { recursive: true });
+      const target = path.join(dir, 's.jsonl');
+      fs.writeFileSync(target, '{"m":1}\n');
+      const res = await bashTool.execute({ command: `find ${dir} -name '*.jsonl' -delete` }, ctx({ cwd: tmp, detachedMode: true } as any));
+      assert.equal(res.isError, true, `expected block, got ${JSON.stringify(res)}`);
+      assert.match(res.output, /session transcript|protected/i);
+      assert.equal(fs.existsSync(target), true, 'transcript must not be deleted');
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
   it('control: writing a normal file is allowed', async () => {

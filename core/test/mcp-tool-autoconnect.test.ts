@@ -128,6 +128,15 @@ describe('qualifiedMcpToolName — API name-length limit (128)', () => {
     const b = qualifiedMcpToolName('s', 'b'.repeat(200));
     assert.notEqual(a, b);
   });
+  it('disambiguates tools that share the truncated prefix (only the hash differs)', () => {
+    // Same 200-char prefix, different tails — the truncated slice is identical,
+    // so only the hash suffix can distinguish them.
+    const prefix = 'z'.repeat(200);
+    const a = qualifiedMcpToolName('s', prefix + 'AAA');
+    const b = qualifiedMcpToolName('s', prefix + 'BBB');
+    assert.notEqual(a, b, 'hash suffix must disambiguate shared-prefix names');
+    assert.ok(a.length <= MAX_MCP_TOOL_NAME_LEN && b.length <= MAX_MCP_TOOL_NAME_LEN);
+  });
   it('createMcpTool uses the length-bounded name', () => {
     const tool = createMcpTool('server', 'y'.repeat(200), 'd', {});
     assert.ok(tool.name.length <= MAX_MCP_TOOL_NAME_LEN);

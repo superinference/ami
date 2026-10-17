@@ -921,10 +921,19 @@ export function detectSessionTranscriptWrite(command: string): { blocked: boolea
   // Match both writes INSIDE the sessions dir and destructive ops on the dir
   // itself (e.g. `rm -rf .superinference/sessions`): trailing slash OR end-of-token.
   const re = /(^|\/)\.superinference\/sessions(\/|$)/;
+  const norm = command.replace(/\\/g, '/');
   for (const t of collectWriteTargets(command)) {
     if (re.test(t.replace(/\\/g, '/'))) {
       return { blocked: true, description: `write to protected session transcript path "${t}"` };
     }
+  }
+  // `find <...sessions...> -delete` / `-exec rm`/`-execdir rm` deletes files
+  // without a write-intent verb that collectWriteTargets models — catch it.
+  // Use a looser path match (the dir token is followed by a space, not `/`).
+  const sessionsAnywhere = /(^|\/)\.superinference\/sessions(?![\w])/;
+  if (/\bfind\b/.test(norm) && sessionsAnywhere.test(norm) &&
+      (/\s-delete\b/.test(norm) || /-exec(dir)?\s+rm\b/.test(norm))) {
+    return { blocked: true, description: 'find-based deletion of a protected session transcript path' };
   }
   return { blocked: false, description: null };
 }

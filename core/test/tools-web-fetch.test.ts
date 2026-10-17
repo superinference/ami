@@ -27,6 +27,21 @@ describe('webFetchTool – disable kill-switch', () => {
       if (prev === undefined) delete process.env.CLAUDE_CODE_DISABLE_WEB_FETCH; else process.env.CLAUDE_CODE_DISABLE_WEB_FETCH = prev;
     }
   });
+
+  it('returns an error when SUPERINFERENCE_DISABLE_WEB_FETCH=1 (second OR branch)', async () => {
+    const prev = process.env.SUPERINFERENCE_DISABLE_WEB_FETCH;
+    const prevCc = process.env.CLAUDE_CODE_DISABLE_WEB_FETCH;
+    delete process.env.CLAUDE_CODE_DISABLE_WEB_FETCH;
+    process.env.SUPERINFERENCE_DISABLE_WEB_FETCH = '1';
+    try {
+      const res = await webFetchTool.execute({ url: 'https://example.com' }, ctx());
+      assert.equal(res.isError, true);
+      assert.match(res.output, /disabled/i);
+    } finally {
+      if (prev === undefined) delete process.env.SUPERINFERENCE_DISABLE_WEB_FETCH; else process.env.SUPERINFERENCE_DISABLE_WEB_FETCH = prev;
+      if (prevCc !== undefined) process.env.CLAUDE_CODE_DISABLE_WEB_FETCH = prevCc;
+    }
+  });
 });
 
 describe('webFetchTool – definition', () => {

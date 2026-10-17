@@ -17,6 +17,7 @@ import * as os from 'os';
 import {
   HookManager,
   normalizeMapKeyedHooks,
+  translateHookMatcher,
   type HookContext,
   type PreToolUseContext,
   type PostToolUseContext,
@@ -118,6 +119,24 @@ describe('loadFromFile — trusted workspace project hooks', () => {
 
     assert.equal(hm.getSummary().postToolUse, 0);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('translates Claude Code tool-name matchers to AMI names', () => {
+    assert.equal(translateHookMatcher('Bash'), 'bash');
+    assert.equal(translateHookMatcher('Edit|Write'), 'file_edit|file_edit');
+    assert.equal(translateHookMatcher('WebFetch'), 'web_fetch');
+    // Unknown/already-AMI tokens pass through.
+    assert.equal(translateHookMatcher('bash'), 'bash');
+    assert.equal(translateHookMatcher('custom_tool'), 'custom_tool');
+  });
+
+  it('map-keyed hooks carry a translated matcher through normalization', () => {
+    const entries = normalizeMapKeyedHooks({
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo x' }] }],
+    });
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].event, 'preToolUse');
+    assert.equal(entries[0].matcher, 'bash', 'matcher must be translated to the AMI tool name');
   });
 
   it('loads the Claude Code map-keyed hooks.json format (capitalized events)', () => {

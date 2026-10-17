@@ -684,6 +684,25 @@ describe('credential-path reads are never auto-safe', () => {
     const pm = new PermissionManager('ask');
     assert.equal(pm.classifyBashCommand('cat README.md'), 'safe');
   });
+
+  it('acceptEdits does NOT auto-allow a credential read (check gates it)', async () => {
+    const pm = new PermissionManager('acceptEdits');
+    assert.notEqual(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'allow');
+    // control: a normal safe command is still auto-allowed
+    assert.equal(await pm.check('bash', { command: 'cat README.md' }), 'allow');
+  });
+
+  it('ask mode force-prompts a credential read even under a wildcard allow rule', async () => {
+    const pm = new PermissionManager('ask', [{ tool: 'bash', pattern: 'cat *', action: 'allow' }]);
+    assert.equal(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'ask');
+    // control: a non-credential cat still honors the wildcard allow
+    assert.equal(await pm.check('bash', { command: 'cat README.md' }), 'allow');
+  });
+
+  it('ask mode: an explicit deny still wins over the credential force-prompt', async () => {
+    const pm = new PermissionManager('ask', [{ tool: 'bash', pattern: 'cat *', action: 'deny' }]);
+    assert.equal(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'deny');
+  });
 });
 
 describe('SAFE_COMMANDS — computational read-only utilities', () => {
@@ -738,6 +757,24 @@ describe('Tool(param:value) permission rules', () => {
       // The persisted paramPattern deny must still enforce after reload.
       assert.equal(loader.hasExplicitDeny('task', { model: 'opus-4-8' }), true);
       assert.equal(loader.hasExplicitDeny('task', { model: 'sonnet-5' }), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadRules drops non-string paramPattern values (malformed persisted rule)', () => {
+    const dir = makeTempDir();
+    try {
+      fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
+      // model:123 is invalid; the rule must not load as a paramPattern deny.
+      fs.writeFileSync(
+        path.join(dir, '.superinference', 'permissions.json'),
+        JSON.stringify({ mode: 'auto-allow', rules: [{ tool: 'task', action: 'deny', paramPattern: { model: 123 } }] }),
+      );
+      const pm = new PermissionManager('auto-allow', []);
+      pm.loadRules(dir);
+      // With the bad value dropped, paramPattern is undefined → not an all-matching deny.
+      assert.notEqual(pm.hasExplicitDeny('task', { model: 'opus-4-8' }), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
