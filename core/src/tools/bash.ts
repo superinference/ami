@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
-import { validateBashSecurity } from './bash-security';
+import { validateBashSecurity, detectCredentialPathWrite } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
@@ -357,6 +357,11 @@ export const bashTool: ToolDefinition = {
         output: `Error: ${secCheck.message}`,
         isError: true,
       };
+    }
+
+    const credWrite = detectCredentialPathWrite(command);
+    if (credWrite.blocked) {
+      return { output: `Error: blocked — ${credWrite.description} (credential path, not allowed)`, isError: true };
     }
 
     const sleepBlock = detectBlockedSleep(command, !!input.run_in_background, !!input.timeout);

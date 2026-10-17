@@ -288,6 +288,7 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /\bpkill\b.*\btsx\b/, description: 'pkill tsx would kill AMI — use kill <pid> to target a specific process' },
   { pattern: /\bkillall\b.*\btsx\b/, description: 'killall tsx would kill AMI — use kill <pid> to target a specific process' },
   { pattern: /\bpkill\b.*\bsuperinference\b/i, description: 'would kill AMI — use kill <pid> to target a specific process' },
+  { pattern: /\b(curl|wget|fetch|nc|ncat|http|https)\b[^\n]*\b(169\.254\.169\.254|metadata\.google\.internal|metadata\.google\.com|100\.100\.100\.200|instance-data)\b/i, description: 'cloud instance-metadata credential fetch (SSRF/credential-exfil vector)' },
 ];
 
 /**
@@ -627,7 +628,7 @@ export class PermissionManager {
 
     // Evaluate rules in order (first match wins)
     for (const rule of this.rules) {
-      const toolMatches = rule.tool === '*' || rule.tool === toolName;
+      const toolMatches = this.toolNameMatches(rule.tool, toolName);
       if (!toolMatches) continue;
 
       if (rule.pattern) {
@@ -656,7 +657,7 @@ export class PermissionManager {
    */
   checkDenyRules(toolName: string, input: string): DenyCheckResult {
     for (const rule of this.rules) {
-      if (rule.action === 'deny' && (rule.tool === toolName || rule.tool === '*')) {
+      if (rule.action === 'deny' && this.toolNameMatches(rule.tool, toolName)) {
         if (!rule.pattern || matchPattern(rule.pattern, input)) {
           return { denied: true, reason: rule.reason || `Denied by rule for ${rule.tool}` };
         }
@@ -952,10 +953,21 @@ export class PermissionManager {
    * to honor only a rule/denial the user set explicitly — closing the gap where
    * an explicit `{tool:'grep', action:'deny'}` rule was silently bypassed.
    */
+  /**
+   * Match a rule's tool field against a tool name, supporting glob/prefix
+   * wildcards (e.g. `github:*` to scope a rule to one MCP server) in addition to
+   * exact names and `*`. Lets allow/deny rules target a namespace without the
+   * over-broad `{tool:'*'}` grant.
+   */
+  private toolNameMatches(ruleTool: string, toolName: string): boolean {
+    return ruleTool === '*' || ruleTool === toolName
+      || (ruleTool.includes('*') && matchPattern(ruleTool, toolName));
+  }
+
   hasExplicitDeny(toolName: string, input: Record<string, unknown>): boolean {
     if (this.deniedCommands.has(denialKey(toolName, input))) return true;
     for (const rule of this.rules) {
-      const toolMatches = rule.tool === '*' || rule.tool === toolName;
+      const toolMatches = this.toolNameMatches(rule.tool, toolName);
       if (!toolMatches) continue;
       if (rule.pattern) {
         if (matchPattern(rule.pattern, this.inputToString(toolName, input))) {

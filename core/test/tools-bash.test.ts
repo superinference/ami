@@ -6,6 +6,7 @@ import * as os from 'os';
 import * as childProcess from 'child_process';
 import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
+import { detectHardlineCommand } from '../src/permissions';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
@@ -826,5 +827,52 @@ describe('detectSelfKill', () => {
   it('ignores PIDs inside quotes', () => {
     const result = detectSelfKill(`echo "kill ${process.pid}"`);
     assert.equal(result, null, 'Should ignore PIDs in quoted strings');
+  });
+});
+
+describe('credential-path write guard', () => {
+  it('blocks copying a key into ~/.ssh/authorized_keys and never writes the file', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cred-'));
+    try {
+      fs.mkdirSync(path.join(tmp, '.ssh'));
+      const src = path.join(tmp, 'pub');
+      fs.writeFileSync(src, 'ssh-ed25519 AAAA pwned');
+      const target = path.join(tmp, '.ssh', 'authorized_keys');
+      const res = await bashTool.execute({ command: `cp ${src} ${target}` }, ctx({ cwd: tmp, detachedMode: true } as any));
+      assert.equal(res.isError, true, `expected block, got ${JSON.stringify(res)}`);
+      assert.match(res.output, /credential path/i);
+      assert.equal(fs.existsSync(target), false, 'credential file must not be written');
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  it('blocks appending to ~/.aws/credentials via redirect', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cred2-'));
+    try {
+      fs.mkdirSync(path.join(tmp, '.aws'));
+      const target = path.join(tmp, '.aws', 'credentials');
+      const res = await bashTool.execute({ command: `echo pwned >> ${target}` }, ctx({ cwd: tmp, detachedMode: true } as any));
+      assert.equal(res.isError, true);
+      assert.equal(fs.existsSync(target), false);
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  it('control: a normal write to a non-credential path is allowed', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cred3-'));
+    try {
+      const res = await bashTool.execute({ command: `echo hi > ${path.join(tmp, 'notes.txt')}` }, ctx({ cwd: tmp, detachedMode: true } as any));
+      assert.ok(!res.isError, `normal write should be allowed, got ${JSON.stringify(res)}`);
+      assert.equal(fs.readFileSync(path.join(tmp, 'notes.txt'), 'utf8').trim(), 'hi');
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+});
+
+describe('cloud-metadata credential-fetch hardline', () => {
+  it('detectHardlineCommand blocks curl to 169.254.169.254', () => {
+    const r = detectHardlineCommand('curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/');
+    assert.equal(r.blocked, true);
+  });
+  it('blocks metadata.google.internal fetch; allows a normal curl', () => {
+    assert.equal(detectHardlineCommand('wget -qO- http://metadata.google.internal/computeMetadata/v1/').blocked, true);
+    assert.equal(detectHardlineCommand('curl -s https://example.com/api').blocked, false);
   });
 });

@@ -638,3 +638,20 @@ describe('detectHardlineCommand — evasion hardening', () => {
     assert.equal(await pm.check('bash', { command: 'rm -rf ./build' }), 'allow');
   });
 });
+
+describe('check() — server-scoped wildcard tool rules', () => {
+  it('a `github:*` allow rule matches github:create_issue but not gitlab:create_issue', async () => {
+    const pm = new PermissionManager('ask', [{ tool: 'github:*', action: 'allow' }]);
+    assert.equal(await pm.check('github:create_issue', { title: 'x' }), 'allow');
+    // gitlab has no matching allow -> default ask
+    assert.equal(await pm.check('gitlab:create_issue', { title: 'x' }), 'ask');
+  });
+
+  it('a `mcp:*` deny rule blocks the whole namespace', async () => {
+    const pm = new PermissionManager('ask', [{ tool: 'mcp:*', action: 'deny' }]);
+    assert.equal(await pm.check('mcp:dangerous', {}), 'deny');
+    // hasExplicitDeny (the read-only / auto-allow enforcement path) also honors it
+    assert.equal(pm.hasExplicitDeny('mcp:dangerous', {}), true);
+    assert.equal(pm.hasExplicitDeny('other:safe', {}), false);
+  });
+});

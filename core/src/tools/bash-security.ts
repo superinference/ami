@@ -828,6 +828,53 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   git: (a) => a.slice(1).filter(x => !x.startsWith('-')),
 };
 
+/**
+ * Credential / persistence paths that an autonomous agent must never write to or
+ * copy out of via bash — the SSH-key / cloud-cred exfil & persistence vector.
+ */
+const CREDENTIAL_PATH_PATTERNS: RegExp[] = [
+  /(^|\/)\.ssh\//,
+  /\.aws\/credentials/,
+  /\.config\/gcloud\//,
+  /(^|\/)\.gnupg\//,
+  /\.docker\/config\.json/,
+  /\.kube\/config/,
+  /(^|\/)\.netrc$/,
+  /(^|\/)\.git-credentials$/,
+  /\/etc\/(passwd|shadow|sudoers)\b/,
+];
+
+function isCredentialPath(p: string): boolean {
+  const norm = p.replace(/\\/g, '/');
+  return CREDENTIAL_PATH_PATTERNS.some((re) => re.test(norm));
+}
+
+/**
+ * Block write-intent bash commands that target (or copy out of) a credential
+ * path. Unconditional — runs regardless of permission mode. Covers cp/mv/tee/
+ * install/ln/dd/truncate/chmod/chown, `sed -i`, and `>`/`>>` redirects.
+ */
+export function detectCredentialPathWrite(command: string): { blocked: boolean; description: string | null } {
+  const writeIntent = /\b(cp|mv|tee|install|ln|dd|truncate|chmod|chown)\b|\bsed\b[^|]*\s-i\b|>>?\s*\S/;
+  if (!writeIntent.test(command)) return { blocked: false, description: null };
+
+  const targets: string[] = [];
+  for (const m of command.matchAll(/>>?\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
+    targets.push(m[1] ?? m[2] ?? m[3]);
+  }
+  for (const m of command.matchAll(/\bof=(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
+    targets.push(m[1] ?? m[2] ?? m[3]);
+  }
+  try { for (const p of extractCommandPaths(command)) targets.push(p); } catch { /* best-effort */ }
+
+  for (const t of targets) {
+    if (t && isCredentialPath(t)) {
+      return { blocked: true, description: `write to credential path "${t}"` };
+    }
+  }
+  return { blocked: false, description: null };
+}
+
 export function extractCommandPaths(command: string): string[] {
   const tokens = command.split(/\s+/);
   const cmd = tokens[0];
