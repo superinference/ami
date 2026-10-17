@@ -16,6 +16,7 @@ import * as os from 'os';
 
 import {
   HookManager,
+  normalizeMapKeyedHooks,
   type HookContext,
   type PreToolUseContext,
   type PostToolUseContext,
@@ -116,6 +117,24 @@ describe('loadFromFile — trusted workspace project hooks', () => {
     hm.loadFromFile(tmpDir);
 
     assert.equal(hm.getSummary().postToolUse, 0);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('loads the Claude Code map-keyed hooks.json format (capitalized events)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'hooks.json'), JSON.stringify({
+      hooks: {
+        PreToolUse: [{ matcher: 'bash', hooks: [{ type: 'command', command: 'echo ALLOW' }] }],
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'echo hi' }] }],
+      },
+    }));
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(tmpDir);
+    const summary = hm.getSummary();
+    assert.equal(summary.preToolUse, 1, 'PreToolUse map entry must register');
+    assert.equal(summary.userPromptSubmit, 1, 'UserPromptSubmit map entry must register');
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

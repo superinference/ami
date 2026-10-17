@@ -223,6 +223,34 @@ export interface HookConfigFile {
   hooks: HookConfigEntry[];
 }
 
+/**
+ * Translate Claude Code's map-keyed hooks.json into AMI's flat entry array:
+ *   { "PreToolUse": [{ matcher?, hooks: [{ type, command, ... }] }] }
+ * →  [{ event: 'preToolUse', matcher?, hook: { type, command, ... } }, ...]
+ * Capitalized event names (PreToolUse) are lower-camel-cased (preToolUse).
+ * Unknown shapes are skipped defensively.
+ */
+export function normalizeMapKeyedHooks(map: unknown): HookConfigEntry[] {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
+  const out: HookConfigEntry[] = [];
+  for (const [rawEvent, groups] of Object.entries(map as Record<string, unknown>)) {
+    const event = rawEvent.charAt(0).toLowerCase() + rawEvent.slice(1);
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      if (!group || typeof group !== 'object') continue;
+      const matcher = typeof (group as any).matcher === 'string' ? (group as any).matcher : undefined;
+      const innerHooks = (group as any).hooks;
+      if (!Array.isArray(innerHooks)) continue;
+      for (const hook of innerHooks) {
+        if (hook && typeof hook === 'object') {
+          out.push({ event, hook: hook as HookConfigEntry['hook'], ...(matcher ? { matcher } : {}) });
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string }>; shutdown?(): void };
 
 async function runCommandHookAsync(
@@ -400,8 +428,13 @@ export class HookManager extends EventEmitter {
       }
       try {
         const config: HookConfigFile = JSON.parse(raw);
-        if (!config.hooks || !Array.isArray(config.hooks)) continue;
-        for (const entry of config.hooks) {
+        // Accept both AMI's array form and Claude Code's map-keyed form
+        // ({ "PreToolUse": [{ matcher, hooks: [...] }] }).
+        const entries = Array.isArray(config.hooks)
+          ? config.hooks
+          : normalizeMapKeyedHooks(config.hooks);
+        if (!entries.length) continue;
+        for (const entry of entries) {
           entry._source = source;
           if (source === 'project' && !this._workspaceTrusted) {
             coreLog('hooks', `Skipping project hook (workspace not trusted): ${entry.event}`);
