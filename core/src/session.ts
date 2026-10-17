@@ -23,7 +23,15 @@ export interface SessionListEntry {
  * Truncate message content to avoid bloated session files.
  * Tool outputs and long user messages are capped at MAX_CONTENT_LENGTH chars.
  */
+/** Compaction summaries are the ONLY record of the pre-compaction conversation.
+ *  Truncating them loses history on --resume, so they are exempt from the cap. */
+const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
+
 function truncateMessage(msg: Message): Message {
+  if (msg.role === 'system' && typeof msg.content === 'string' &&
+      msg.content.startsWith(COMPACTION_SUMMARY_PREFIX)) {
+    return msg;
+  }
   if (msg.role === 'user' || msg.role === 'system') {
     if (typeof msg.content === 'string' && msg.content.length > MAX_CONTENT_LENGTH) {
       return { ...msg, content: msg.content.slice(0, MAX_CONTENT_LENGTH) + '\n... (truncated)' };

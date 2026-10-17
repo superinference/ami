@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 import type { SessionFact } from './session-memory';
 import { log as coreLog } from './logger';
 
@@ -257,6 +258,43 @@ export class MemoryManager {
    * For each directory level, only the highest-priority file found is used.
    * Files are concatenated with headers indicating their source path.
    */
+  /**
+   * Inline Claude-Code-style `@path` imports in instruction content. A bare
+   * `@relative/or/~/absolute/path` (at line start or after whitespace, outside
+   * fenced code) is replaced with the referenced file's content, recursively.
+   * Tokens that do not resolve to a real file (e.g. `@param`, `@scope/pkg`) are
+   * left untouched. Cycles and depth>5 are guarded.
+   */
+  resolveAtImports(content: string, basePath: string, depth = 0, seen: Set<string> = new Set()): string {
+    if (depth > 5) return content;
+    const lines = content.split('\n');
+    let inFence = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*```/.test(lines[i])) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      lines[i] = lines[i].replace(/(^|\s)@(~?[\w./~-]+)/g, (full, pre, p) => {
+        let resolved: string;
+        try {
+          resolved = p.startsWith('~')
+            ? path.join(os.homedir(), p.slice(1))
+            : path.resolve(path.dirname(basePath), p);
+        } catch { return full; }
+        if (seen.has(resolved)) return `${pre}[circular import: ${path.basename(resolved)}]`;
+        try {
+          if (!fs.statSync(resolved).isFile()) return full;
+          seen.add(resolved);
+          let imported = sanitizeContent(fs.readFileSync(resolved, 'utf-8').trim(), resolved);
+          imported = this.resolveAtImports(imported, resolved, depth + 1, seen);
+          seen.delete(resolved);
+          return `${pre}${imported}`;
+        } catch {
+          return full;
+        }
+      });
+    }
+    return lines.join('\n');
+  }
+
   loadProjectInstructions(): string {
     const sections: string[] = [];
     let currentDir = path.resolve(this.cwd);
@@ -269,7 +307,7 @@ export class MemoryManager {
         try {
           const raw = fs.readFileSync(found, 'utf-8').trim();
           if (raw) {
-            const content = sanitizeContent(raw, found);
+            const content = this.resolveAtImports(sanitizeContent(raw, found), found);
             const relativePath = path.relative(this.cwd, found) || path.basename(found);
             const label = depth === 0 ? relativePath : `(parent) ${relativePath}`;
             sections.push(`## ${label}\n\n${content}`);
@@ -286,7 +324,7 @@ export class MemoryManager {
           if (fs.statSync(localPath).isFile()) {
             const raw = fs.readFileSync(localPath, 'utf-8').trim();
             if (raw) {
-              const content = sanitizeContent(raw, localPath);
+              const content = this.resolveAtImports(sanitizeContent(raw, localPath), localPath);
               const relativePath = path.relative(this.cwd, localPath) || path.basename(localPath);
               const label = depth === 0 ? relativePath : `(parent) ${relativePath}`;
               sections.push(`## ${label}\n\n${content}`);
@@ -351,7 +389,7 @@ export class MemoryManager {
           const raw = fs.readFileSync(found, 'utf-8').trim();
           if (raw) {
             claimedPaths.add(found);
-            const content = sanitizeContent(raw, found);
+            const content = this.resolveAtImports(sanitizeContent(raw, found), found);
             sections.push(content);
           }
         } catch {}

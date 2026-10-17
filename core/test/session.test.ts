@@ -169,6 +169,16 @@ describe('SessionManager', () => {
     assert.equal(loaded.messages[0].content, 'short msg');
   });
 
+  it('does NOT truncate a compaction summary system message (preserves history on resume)', () => {
+    const summary = '[Previous conversation summary]\n' + 'S'.repeat(20000);
+    sm.save(makeSession('summary', [{ role: 'system', content: summary }]));
+    const loaded = sm.load('summary');
+    assert.ok(loaded);
+    const content = loaded.messages[0].content as string;
+    assert.ok(!content.includes('truncated'), 'compaction summary must not be truncated');
+    assert.equal(content.length, summary.length, 'full summary must be preserved');
+  });
+
   it('handles assistant messages without truncation', () => {
     sm.save(makeSession('asst', [{ role: 'assistant', content: 'z'.repeat(10000) }]));
     const loaded = sm.load('asst');
