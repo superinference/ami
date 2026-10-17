@@ -217,6 +217,8 @@ export interface EngineConfig {
   systemPrompt?: string;
   maxTurns?: number;
   maxTurnsCeiling?: number;
+  /** Max time (ms) to wait for MCP servers to connect before the first submit proceeds (default 3000). */
+  mcpStartupBudgetMs?: number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them, saving prompt tokens. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on (beyond the essential set + tool_search). */

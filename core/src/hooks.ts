@@ -158,6 +158,9 @@ export interface CommandHookConfig {
   if?: string;
   async?: boolean;
   asyncRewake?: boolean;
+  /** 'block' = a hook that times out or errors denies the action (fail-closed);
+   *  default 'allow' preserves today's fail-open behavior. */
+  onFailure?: 'block' | 'allow';
 }
 
 export interface PromptHookConfig {
@@ -1168,6 +1171,11 @@ export class HookManager extends EventEmitter {
           return trimmed;
         } catch (err: unknown) {
           coreLog('hooks', `Command hook error: ${err}`);
+          // Fail-closed: a guardrail hook that times out or errors must DENY,
+          // not silently allow the action through.
+          if ((config as CommandHookConfig).onFailure === 'block') {
+            return `DENY:Hook execution failed (fail-closed): ${err instanceof Error ? err.message : String(err)}`;
+          }
           return '';
         }
       }
