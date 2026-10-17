@@ -1078,10 +1078,11 @@ export async function* streamChatCompletionWithRetry(
           let delayMs: number;
           const retryAfterSeconds = chunk.retryAfter;
           if (statusCode === 429 && retryAfterSeconds != null) {
-            // Honor Retry-After, but never below the exponential backoff floor —
-            // a `Retry-After: 0` must not produce a zero delay that burns the
-            // entire retry budget in milliseconds.
-            delayMs = Math.max(retryAfterSeconds * 1000, baseDelay * Math.pow(2, attempt));
+            // Honor the server's Retry-After exactly, but floor it to baseDelay so
+            // a `Retry-After: 0` does not produce a zero delay that burns the whole
+            // retry budget in milliseconds. (Use a FIXED floor, not the growing
+            // exponential, so a legitimate small Retry-After is not inflated.)
+            delayMs = Math.max(retryAfterSeconds * 1000, baseDelay);
           } else {
             delayMs = baseDelay * Math.pow(2, attempt);
           }
