@@ -48,7 +48,7 @@ export interface WorkflowContext {
   workflow: (nameOrRef: string | { scriptPath: string }, args?: unknown) => Promise<unknown>;
 }
 
-const MAX_CONCURRENT = Math.max(4, Math.min(16, (require('os').cpus()?.length ?? 8) - 2));
+const DEFAULT_MAX_CONCURRENT = Math.max(4, Math.min(16, (require('os').cpus()?.length ?? 8) - 2));
 const MAX_AGENTS = 1000;
 const MAX_PIPELINE_ITEMS = 4096;
 
@@ -87,6 +87,7 @@ export class WorkflowRuntime extends EventEmitter {
   private _aborted = false;
   private readonly _agentHandler: AgentHandler;
   private readonly _budgetTotal: number | null;
+  private readonly _maxConcurrent: number;
   private readonly _logs: string[] = [];
   private readonly _phaseAgents = new Map<string, number>();
   private checkpoints: Map<string, unknown> = new Map();
@@ -98,12 +99,14 @@ export class WorkflowRuntime extends EventEmitter {
     budgetTotal?: number | null;
     workflowResolver?: WorkflowResolver | null;
     nestingDepth?: number;
+    maxConcurrent?: number;
   }) {
     super();
     this._agentHandler = options.agentHandler;
     this._budgetTotal = options.budgetTotal ?? null;
     this._workflowResolver = options.workflowResolver ?? null;
     this._nestingDepth = options.nestingDepth ?? 0;
+    this._maxConcurrent = Math.max(1, Math.min(256, Math.floor(options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT)));
   }
 
   get logs(): string[] { return [...this._logs]; }
@@ -160,6 +163,7 @@ export class WorkflowRuntime extends EventEmitter {
       }
 
       const childRuntime = new WorkflowRuntime({
+        maxConcurrent: this._maxConcurrent,
         agentHandler: this._agentHandler,
         budgetTotal: this._budgetTotal,
         workflowResolver: null,
@@ -292,7 +296,7 @@ export class WorkflowRuntime extends EventEmitter {
   }
 
   private async acquireSlot(): Promise<void> {
-    if (this._activeSemaphore < MAX_CONCURRENT) {
+    if (this._activeSemaphore < this._maxConcurrent) {
       this._activeSemaphore++;
       return;
     }
@@ -358,12 +362,14 @@ export async function executeWorkflow(
     budgetTotal?: number | null;
     abortSignal?: AbortSignal;
     workflowResolver?: WorkflowResolver | null;
+    maxConcurrent?: number;
   } = {},
 ): Promise<{ result: unknown; logs: string[]; agentCount: number }> {
   const runtime = new WorkflowRuntime({
     agentHandler,
     budgetTotal: options.budgetTotal,
     workflowResolver: options.workflowResolver,
+    maxConcurrent: options.maxConcurrent,
   });
 
   if (options.abortSignal) {

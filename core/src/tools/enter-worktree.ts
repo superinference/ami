@@ -47,6 +47,10 @@ export const enterWorktreeTool: ToolDefinition = {
         type: 'string',
         description: 'Path to an existing worktree to enter instead of creating a new one. Mutually exclusive with name.',
       },
+      base_ref: {
+        type: 'string',
+        description: 'Git ref (branch/tag/commit) to base the new worktree on. Defaults to origin/<default-branch>, then HEAD.',
+      },
     },
   },
   isReadOnly: false,
@@ -110,12 +114,23 @@ export const enterWorktreeTool: ToolDefinition = {
 
     const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' };
 
-    try {
-      const baseRef = `origin/${defaultBranch}`;
+    const requestedBaseRef = typeof input.base_ref === 'string' ? input.base_ref.trim() : '';
+    if (requestedBaseRef) {
+      // Explicit base ref: verify it resolves to a commit, else fail loud
+      // (do not silently fall back to HEAD and branch from the wrong place).
       try {
-        child_process.execSync(`git rev-parse --verify ${baseRef}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
-        child_process.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" "${baseRef}"`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        child_process.execSync(`git rev-parse --verify ${JSON.stringify(requestedBaseRef)}^{commit}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       } catch {
+        return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).`, isError: true };
+      }
+    }
+    try {
+      const baseRef = requestedBaseRef || `origin/${defaultBranch}`;
+      try {
+        child_process.execSync(`git rev-parse --verify ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        child_process.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+      } catch {
+        if (requestedBaseRef) throw new Error(`could not create worktree from base_ref "${requestedBaseRef}"`);
         child_process.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" HEAD`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       }
     } catch (e) {

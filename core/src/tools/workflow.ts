@@ -28,6 +28,10 @@ export const workflowTool: ToolDefinition = {
         type: 'string',
         description: 'Optional input value exposed to the script as the global `args`.',
       },
+      maxConcurrent: {
+        type: 'number',
+        description: 'Max agents running concurrently for this run (1-256). Lower for strict rate limits, higher for fast self-hosted providers. Defaults to a CPU-derived cap.',
+      },
     },
   },
   isReadOnly: true,
@@ -102,6 +106,7 @@ export const workflowTool: ToolDefinition = {
         args: input.args,
         abortSignal: context.abortSignal,
         workflowResolver,
+        maxConcurrent: typeof input.maxConcurrent === 'number' ? input.maxConcurrent : undefined,
       });
 
       const output = [

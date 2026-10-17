@@ -90,6 +90,8 @@ export interface ToolContext {
   _mcpManager?: any;
   _parentMessages?: Message[];
   _engineAddSystemReminder?: (msg: string) => void;
+  /** Signal the engine to load a deferred tool into the active set (tool_search select). */
+  _loadDeferredTool?: (name: string) => void;
   detachedMode?: boolean;
 }
 
@@ -215,6 +217,10 @@ export interface EngineConfig {
   systemPrompt?: string;
   maxTurns?: number;
   maxTurnsCeiling?: number;
+  /** Defer long-tail tools from the per-turn catalog until tool_search loads them, saving prompt tokens. */
+  deferTools?: boolean;
+  /** Extra tool names to always keep loaded when deferTools is on (beyond the essential set + tool_search). */
+  alwaysLoadTools?: string[];
   abortController?: AbortController;
   onPermissionRequest?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
   /** Centralized permission prompt handler. Both CLI and VSCode implement this interface. */

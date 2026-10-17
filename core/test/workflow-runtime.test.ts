@@ -386,3 +386,22 @@ return 'file-result'
     assert.ok(result.output.includes('not found'));
   });
 });
+
+describe('WorkflowRuntime — per-run maxConcurrent cap', () => {
+  const fanScript = `export const meta = { name: 'fan', description: 'x' };\nreturn await parallel(Array.from({length:6},(_,i)=>()=>agent('t'+i)));`;
+  function tracking() {
+    let live = 0, peak = 0;
+    const handler = async () => { live++; peak = Math.max(peak, live); await new Promise(r => setTimeout(r, 20)); live--; return 'ok'; };
+    return { handler, peak: () => peak };
+  }
+  it('caps concurrent agents at maxConcurrent=1', async () => {
+    const t = tracking();
+    await executeWorkflow(fanScript, t.handler, { maxConcurrent: 1 });
+    assert.ok(t.peak() <= 1, `peak ${t.peak()} must be <= 1`);
+  });
+  it('control: a high cap lets agents overlap', async () => {
+    const t = tracking();
+    await executeWorkflow(fanScript, t.handler, { maxConcurrent: 6 });
+    assert.ok(t.peak() >= 2, `peak ${t.peak()} must be >= 2`);
+  });
+});

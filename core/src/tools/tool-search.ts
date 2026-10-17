@@ -25,7 +25,7 @@ export const toolSearchTool: ToolDefinition = {
 
   async execute(
     input: Record<string, unknown>,
-    _context: ToolContext,
+    context: ToolContext,
   ): Promise<ToolResult> {
     const query = (input.query as string || '').trim();
 
@@ -39,6 +39,8 @@ export const toolSearchTool: ToolDefinition = {
       if (!tool) {
         return { output: `Tool "${toolName}" not found. Available: ${_allTools.map(t => t.name).join(', ')}`, isError: true };
       }
+      // Load it into the active set for subsequent turns (no-op unless deferTools is on).
+      context._loadDeferredTool?.(toolName);
       return {
         output: JSON.stringify({
           name: tool.name,
