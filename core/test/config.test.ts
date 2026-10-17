@@ -236,6 +236,18 @@ describe('mergeConfigs', () => {
     assert.deepEqual(result.fallbackModels, ['m1', 'm2']);
   });
 
+  it('applies the new fields through higher-priority layers (cli/local override project)', () => {
+    const project: ProjectConfig = { safeMode: false, maxWebSearchesPerSession: 1, deferTools: false, alwaysLoadTools: ['a'], fallbackModels: ['p'] };
+    const local: ProjectConfig = { safeMode: true, deferTools: true };
+    const cli: Partial<ProjectConfig> = { maxWebSearchesPerSession: 9, alwaysLoadTools: ['b'], fallbackModels: ['c'] };
+    const result = mergeConfigs(cli, {}, project, null, local);
+    assert.equal(result.safeMode, true, 'local overrides project');
+    assert.equal(result.deferTools, true, 'local overrides project');
+    assert.equal(result.maxWebSearchesPerSession, 9, 'cli overrides project');
+    assert.deepEqual(result.alwaysLoadTools, ['b'], 'cli overrides project');
+    assert.deepEqual(result.fallbackModels, ['c'], 'cli overrides project');
+  });
+
   it('project config overrides global config', () => {
     const global: ProjectConfig = { model: 'global-model', provider: 'openai' };
     const project: ProjectConfig = { model: 'project-model' };

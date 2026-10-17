@@ -318,9 +318,11 @@ describe('httpGet', () => {
     const result = await httpGet(`http://127.0.0.1:${port}/bin`, new AbortController().signal);
     assert.equal(result.bodyBuffer, undefined);
   });
-  // Note: the redirect+raw path (raw propagated through httpGetInternal recursion)
-  // cannot be unit-tested with a local mock — SSRF protection blocks redirects to
-  // 127.0.0.1 before the recursion runs. The fix mirrors the non-redirect path.
+  // Note: the `raw` flag is threaded through the redirect recursion identically
+  // to `resolvedIP` (web-utils httpGetInternal). An isolated redirect+raw
+  // reproducer would require a loopback redirect, which SSRF protection rejects
+  // before the recursion runs; weakening that guard for a test is not worth it,
+  // so the raw feature is covered by the direct (non-redirect) cases above.
 });
 
 describe('httpGet — identifying User-Agent', () => {

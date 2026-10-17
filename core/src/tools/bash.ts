@@ -80,10 +80,11 @@ function looksLikeHungPrompt(output: string): boolean {
 
 function detectGitCommit(command: string): boolean {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
-  // Allow global git options (-C <dir>, -c <k=v>, --git-dir=…, short flags)
-  // between `git` and `commit` so `git -C /x commit` / `git -c k=v commit`
-  // cannot bypass the git_commit-tool guard.
-  return /\bgit\s+(?:(?:-[cC]\s+\S+|--[a-z][\w-]*(?:=\S+)?|-[a-zA-Z]+)\s+)*commit\b/.test(stripped);
+  // Allow global git options between `git` and `commit` so none of
+  // `git -C /x commit`, `git -c k=v commit`, `git --git-dir=/x commit`, or the
+  // space-separated `git --work-tree /x commit` can bypass the git_commit guard.
+  // `commit(?![\w-])` avoids false-positives on `commit-graph`/`commit-tree`.
+  return /\bgit\s+(?:(?:-[cC]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)(?:=\S+|\s+\S+)|--[a-z][\w-]*(?:=\S+)?|-[a-zA-Z]+)\s+)*commit(?![\w-])/.test(stripped);
 }
 
 const DETACHED_GIT_DISCARD_MSG =

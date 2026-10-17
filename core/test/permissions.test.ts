@@ -366,6 +366,14 @@ describe('PermissionManager — classifyBashCommand', () => {
     assert.equal(pm.classifyBashCommand('find . -exec rm {} \\;'), 'destructive');
   });
 
+  it('does not classify find -execdir/-okdir command-runners as safe', () => {
+    assert.notEqual(pm.classifyBashCommand('find . -execdir sh -c "echo x" {} +'), 'safe');
+    assert.notEqual(pm.classifyBashCommand('find . -okdir cat {} +'), 'safe');
+    assert.notEqual(pm.classifyBashCommand('find . -ok rm {} \\;'), 'safe');
+    // control: a plain find is still safe
+    assert.equal(pm.classifyBashCommand('find . -name "*.ts"'), 'safe');
+  });
+
   it('classifies xargs rm as destructive', () => {
     assert.equal(pm.classifyBashCommand('echo file | xargs rm'), 'destructive');
   });
@@ -685,11 +693,16 @@ describe('credential-path reads are never auto-safe', () => {
     assert.equal(pm.classifyBashCommand('cat README.md'), 'safe');
   });
 
-  it('acceptEdits does NOT auto-allow a credential read (check gates it)', async () => {
+  it('acceptEdits prompts (ask) for a credential read rather than auto-allowing or denying', async () => {
     const pm = new PermissionManager('acceptEdits');
-    assert.notEqual(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'allow');
+    assert.equal(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'ask');
     // control: a normal safe command is still auto-allowed
     assert.equal(await pm.check('bash', { command: 'cat README.md' }), 'allow');
+  });
+
+  it('acceptEdits: an explicit deny still wins over the credential force-prompt', async () => {
+    const pm = new PermissionManager('acceptEdits', [{ tool: 'bash', pattern: 'cat *', action: 'deny' }]);
+    assert.equal(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'deny');
   });
 
   it('acceptEdits force-prompts a credential read even under a wildcard allow rule', async () => {

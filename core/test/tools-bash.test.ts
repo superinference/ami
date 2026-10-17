@@ -490,8 +490,25 @@ describe('bashTool – git commit guard', () => {
     assert.ok(!result.output.includes(GUARD_MSG));
   });
 
+  it('blocks git --work-tree <dir> commit (space-separated long-option bypass)', async () => {
+    const result = await bashTool.execute({ command: 'git --work-tree /srv/r commit -m x' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+  });
+
+  it('blocks git --git-dir /x commit (space-separated long-option bypass)', async () => {
+    const result = await bashTool.execute({ command: 'git --git-dir /srv/repo commit -m y' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes(GUARD_MSG));
+  });
+
   it('does not false-positive on git log --grep=commit', async () => {
     const result = await bashTool.execute({ command: 'git log --grep=commit' }, ctx());
+    assert.ok(!result.output.includes(GUARD_MSG));
+  });
+
+  it('does not false-positive on git commit-graph write', async () => {
+    const result = await bashTool.execute({ command: 'git commit-graph write' }, ctx());
     assert.ok(!result.output.includes(GUARD_MSG));
   });
 

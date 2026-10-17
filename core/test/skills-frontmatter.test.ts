@@ -96,6 +96,14 @@ describe('SkillManager — skill allowed-tools frontmatter (comma-separated)', (
     assert.ok(skill);
     assert.deepEqual(skill!.allowedTools, ['file_read', 'grep']);
   });
+
+  it('filters empty entries from an allowed-tools comma list', () => {
+    writeSkillAllowed('at-empties', 'name: at-empties\ndescription: x\nallowed-tools: file_read, , grep,');
+    const mgr = new SkillManager(tmpDir);
+    const skill = mgr.getSkill('at-empties');
+    assert.ok(skill);
+    assert.deepEqual(skill!.allowedTools, ['file_read', 'grep']);
+  });
 });
 
 describe('SkillManager — context parsing', () => {

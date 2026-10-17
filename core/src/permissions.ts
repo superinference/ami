@@ -275,7 +275,11 @@ export function stripSafeEnvVars(command: string): string {
  * These prevent catastrophic system damage regardless of settings.
  */
 const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
-  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|.*\s+)\/(?=\s|$|[;&|><])/,  description: 'rm -r on filesystem root' },
+  // Match `rm … /` targeting the filesystem root, including a trailing token/
+  // redirect (`rm -rf / 2>/dev/null`) and the catastrophic glob (`rm -rf /*`).
+  // The arg run is `[^;&|]*` so it cannot span a command separator and
+  // false-positive on a later bare `/` (e.g. `rm x.txt && ls /`).
+  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^;&|]*\s+)\/(?=\s|$|[;&|><*])/,  description: 'rm -r on filesystem root' },
   { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|.*\s+)\/(home|etc|usr|var|bin|sbin|boot|lib|lib64)\b/, description: 'rm -r on system directory' },
   { pattern: /\bmkfs\b/, description: 'filesystem format' },
   { pattern: /\bdd\b.*\bof\s*=\s*\/dev\/[sh]d/, description: 'dd to block device' },
@@ -327,6 +331,17 @@ function normalizeForHardline(command: string): string {
   );
   let q: RegExpExecArray | null;
   while ((q = quotedAssignRe.exec(command)) !== null) assigns.set(q[1], q[3]);
+  // Multiple space-separated assignments on one statement, e.g.
+  // `export a=1 c=rm` — scan every name=BASE pair within an assignment run
+  // (prefixed by export/declare/… or a leading bare assignment).
+  const runRe = /(?:^|;|&&|\|\||\n)\s*(?:(?:export|declare|typeset|readonly|local)\s+)?([^\n;|&]*)/g;
+  const pairRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|$)`, 'g');
+  let run: RegExpExecArray | null;
+  while ((run = runRe.exec(command)) !== null) {
+    let pr: RegExpExecArray | null;
+    pairRe.lastIndex = 0;
+    while ((pr = pairRe.exec(run[1])) !== null) assigns.set(pr[1], pr[2]);
+  }
   if (assigns.size) {
     out = out.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (full, name) =>
       assigns.has(name) ? assigns.get(name)! : full);
@@ -746,7 +761,7 @@ export class PermissionManager {
     // Flag-aware checks for commands that are safe/destructive depending on flags
     if (/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'unsafe'; // sed -i modifies files in place
     if (/\bfind\s+.*-delete\b/.test(trimmed)) return 'destructive';
-    if (/\bfind\s+.*-exec\s+rm\b/.test(trimmed)) return 'destructive';
+    if (/\bfind\s+.*-exec(dir)?\s+rm\b/.test(trimmed)) return 'destructive';
     if (/\bxargs\s+.*\brm\b/.test(trimmed)) return 'destructive';
     if (/\bxargs\s+.*\bmv\b/.test(trimmed)) return 'unsafe';
     if (/\bmake\s+(clean|install|distclean|uninstall)\b/.test(trimmed)) return 'unsafe';
@@ -807,8 +822,9 @@ export class PermissionManager {
 
     // sed without -i is read-only (prints to stdout)
     if (/\bsed\b/.test(trimmed) && !/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'safe';
-    // find without -delete/-exec/-execdir is read-only
-    if (/\bfind\b/.test(trimmed) && !/\b-delete\b/.test(trimmed) && !/\b-exec\b/.test(trimmed) && !/\b-execdir\b/.test(trimmed) && !/\b-ok\b/.test(trimmed)) return 'safe';
+    // find is read-only only without any command-running primary
+    // (-delete, -exec, -execdir, -ok, -okdir).
+    if (/\bfind\b/.test(trimmed) && !/\b-delete\b/.test(trimmed) && !/-exec(dir)?\b/.test(trimmed) && !/-ok(dir)?\b/.test(trimmed)) return 'safe';
 
     // Check if extracted paths target system directories
     const cmdPaths = extractCommandPaths(trimmed);
