@@ -435,7 +435,8 @@ export const bashTool: ToolDefinition = {
     }
 
     // Already folded. Spill only non-suite output that is still over the cap.
-    let stdout = spillToolText(context.cwd, 'bash', presented.stdout, MAX_OUTPUT_LENGTH);
+    const bashMaxChars = context.outputBudget?.bashMaxChars ?? MAX_OUTPUT_LENGTH;
+    let stdout = spillToolText(context.cwd, 'bash', presented.stdout, bashMaxChars);
     const stderr = presented.stderr;
 
     const noOutputExpected = /^\s*(mkdir|touch|mv|cp|rm|chmod|chown)\b/.test(command);

@@ -568,3 +568,24 @@ describe('taskTool – sub-engine lifecycle', () => {
     }
   });
 });
+
+describe('taskTool – thinking inheritance', () => {
+  it('passes the parent thinking config into the subagent EngineConfig', async () => {
+    let captured: any = null;
+    async function* fakeSubmit() { yield { type: 'text_delta' as const, text: 'ok' }; }
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-think-'));
+    try {
+      await taskTool.execute(
+        { prompt: 'do a thing', mode: 'explore' },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _parentThinking: { enabled: true, level: 'high' } as any,
+          _engineFactory: (cfg: any) => { captured = cfg; return { submit: fakeSubmit }; },
+        }),
+      );
+      assert.ok(captured, 'engine factory should have been called');
+      assert.deepEqual(captured.thinking, { enabled: true, level: 'high' });
+    } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+});

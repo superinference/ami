@@ -92,6 +92,10 @@ export interface ToolContext {
   _engineAddSystemReminder?: (msg: string) => void;
   /** Signal the engine to load a deferred tool into the active set (tool_search select). */
   _loadDeferredTool?: (name: string) => void;
+  /** Per-tool output budgets (e.g. inline bash stdout cap before spill). */
+  outputBudget?: { bashMaxChars?: number; taskTailLines?: number };
+  /** Parent engine's thinking config, inherited by subagents unless overridden. */
+  _parentThinking?: ThinkingConfig;
   detachedMode?: boolean;
 }
 
@@ -219,6 +223,8 @@ export interface EngineConfig {
   maxTurnsCeiling?: number;
   /** Max time (ms) to wait for MCP servers to connect before the first submit proceeds (default 3000). */
   mcpStartupBudgetMs?: number;
+  /** Cap (chars) on inline bash stdout before it is spilled to a file. */
+  bashOutputMaxChars?: number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them, saving prompt tokens. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on (beyond the essential set + tool_search). */

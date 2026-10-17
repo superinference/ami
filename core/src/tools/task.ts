@@ -201,6 +201,9 @@ export const taskTool: ToolDefinition = {
       abortController: subAbort,
       maxTurns: agentMaxTurns,
       detachedMode: !!context.detachedMode,
+      // Inherit the parent's thinking/effort config so subagents reason at the
+      // same level unless the agent type overrides it.
+      ...(context._parentThinking ? { thinking: context._parentThinking } : {}),
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip persona resolution (which would inject e.g. the code
       // persona bug-fixing workflow into a verification-only agent).

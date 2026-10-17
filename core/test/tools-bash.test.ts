@@ -876,3 +876,15 @@ describe('cloud-metadata credential-fetch hardline', () => {
     assert.equal(detectHardlineCommand('curl -s https://example.com/api').blocked, false);
   });
 });
+
+describe('bash output budget', () => {
+  it('honors context.outputBudget.bashMaxChars for inline stdout', async () => {
+    // Varied (non-repetitive) output so repetition-folding is not what shrinks it.
+    const cmd = `seq 1 2000`;
+    const small = await bashTool.execute({ command: cmd }, ctx({ outputBudget: { bashMaxChars: 800 } } as any));
+    const full = await bashTool.execute({ command: cmd }, ctx());
+    assert.ok(full.output.length > 4000, `default cap keeps most output, got ${full.output.length}`);
+    assert.ok(small.output.length < full.output.length, `budgeted output must be smaller: small=${small.output.length} full=${full.output.length}`);
+    assert.ok(small.output.length < 2500, `budgeted output should be spilled, got ${small.output.length}`);
+  });
+});
