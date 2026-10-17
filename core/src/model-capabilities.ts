@@ -403,6 +403,8 @@ export function modelSupportsVision(modelId: string): boolean {
   const explicit = getModelCapabilities(modelId)?.supportsVision;
   if (explicit !== undefined) return explicit;
   const id = modelId.toLowerCase();
+  // Text-only variants whose prefix would otherwise match the vision table.
+  if (/(o1-mini|o3-mini|o4-mini)/.test(id) || /llama-3\.2-(1b|3b)/.test(id)) return false;
   const candidates = [id, ...id.split('/')];
   return candidates.some(c => VISION_MODEL_PREFIXES.some(p => c.startsWith(p)));
 }

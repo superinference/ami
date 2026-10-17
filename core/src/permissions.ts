@@ -288,7 +288,7 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /\bpkill\b.*\btsx\b/, description: 'pkill tsx would kill AMI — use kill <pid> to target a specific process' },
   { pattern: /\bkillall\b.*\btsx\b/, description: 'killall tsx would kill AMI — use kill <pid> to target a specific process' },
   { pattern: /\bpkill\b.*\bsuperinference\b/i, description: 'would kill AMI — use kill <pid> to target a specific process' },
-  { pattern: /\b(curl|wget|fetch|nc|ncat|http|https)\b[^\n]*\b(169\.254\.169\.254|metadata\.google\.internal|metadata\.google\.com|100\.100\.100\.200|instance-data)\b/i, description: 'cloud instance-metadata credential fetch (SSRF/credential-exfil vector)' },
+  { pattern: /\b(curl|wget|fetch|nc|ncat|http|https)\b[^\n]*(?:\b(?:169\.254\.169\.254|metadata\.google\.internal|metadata\.google\.com|100\.100\.100\.200|instance-data)\b|fd00:ec2::254)/i, description: 'cloud instance-metadata credential fetch (SSRF/credential-exfil vector)' },
 ];
 
 /**
@@ -304,36 +304,52 @@ const HARDLINE_BASES = 'rm|dd|mkfs|shutdown|reboot|halt|poweroff|chmod|curl|wget
 function normalizeForHardline(command: string): string {
   let out = command;
 
-  // (b) Unwrap shell -c / eval quoted payloads and append the inner script.
-  const wrapRe = /\b(?:sh|bash|zsh|dash|ksh|eval)\b[^'"]*(['"])([\s\S]*?)\1/g;
-  let w: RegExpExecArray | null;
-  const inners: string[] = [];
-  while ((w = wrapRe.exec(command)) !== null) {
-    if (w[2]) inners.push(w[2]);
-  }
-  if (inners.length) out += '\n' + inners.join('\n');
-
-  // (a) Collect `name=rm` / `name=/path/rm` assignments of a dangerous base,
-  // then substitute $name / ${name} with the base so the patterns match.
-  const assignRe = new RegExp(
-    `(?:^|;|&&|\\|\\||\\n)\\s*([A-Za-z_][A-Za-z0-9_]*)=(?:["']?)(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?:["']?)(?=\\s|;|&|\\||$)`,
+  // (a) Substitute variable references with their assigned values. Covers both a
+  // bare dangerous base (`name=rm`) and a full quoted command (`c='rm -rf /'`),
+  // so `eval "$c"` is normalized to the real command.
+  const assigns = new Map<string, string>();
+  const baseAssignRe = new RegExp(
+    `(?:^|;|&&|\\|\\||\\n)\\s*([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|;|&|\\||$)`,
     'g',
   );
-  const assigns = new Map<string, string>();
   let a: RegExpExecArray | null;
-  while ((a = assignRe.exec(command)) !== null) assigns.set(a[1], a[2]);
+  while ((a = baseAssignRe.exec(command)) !== null) assigns.set(a[1], a[2]);
+  const quotedAssignRe = /(?:^|;|&&|\|\||\n)\s*([A-Za-z_][A-Za-z0-9_]*)=(['"])([\s\S]*?)\2/g;
+  let q: RegExpExecArray | null;
+  while ((q = quotedAssignRe.exec(command)) !== null) assigns.set(q[1], q[3]);
   if (assigns.size) {
     out = out.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (full, name) =>
       assigns.has(name) ? assigns.get(name)! : full);
+  }
+
+  // (b) Expose command-substitution-built bases: $(echo rm)/`which rm` -> rm.
+  out = out.replace(/\$\(\s*(?:echo|which|command\s+-v)\s+([^)]*)\)/g, '$1');
+  out = out.replace(/`\s*(?:echo|which|command\s+-v)\s+([^`]*)`/g, '$1');
+
+  // (c) Recursively unwrap sh/bash/eval -c quoted payloads (handles nesting),
+  // appending each inner script as its own line so end-anchored patterns match.
+  for (let depth = 0; depth < 5; depth++) {
+    const wrapRe = /\b(?:sh|bash|zsh|dash|ksh|eval)\b[^'"]*(['"])([\s\S]*?)\1/g;
+    const inners: string[] = [];
+    let w: RegExpExecArray | null;
+    while ((w = wrapRe.exec(out)) !== null) {
+      if (w[2] && !out.includes('\n' + w[2])) inners.push(w[2]);
+    }
+    if (!inners.length) break;
+    out += '\n' + inners.join('\n');
   }
   return out;
 }
 
 export function detectHardlineCommand(command: string): { blocked: boolean; description: string | null } {
   const normalized = normalizeForHardline(command);
+  // Test the original, the whole normalized string, AND each normalized line, so
+  // an end-anchored pattern (e.g. `rm -rf /$`) still matches a catastrophic
+  // statement that is not the last token of a multi-statement command.
+  const candidates = [command, normalized, ...normalized.split('\n')];
   for (const { pattern, description } of HARDLINE_PATTERNS) {
-    if (pattern.test(command) || (normalized !== command && pattern.test(normalized))) {
-      return { blocked: true, description };
+    for (const candidate of candidates) {
+      if (pattern.test(candidate)) return { blocked: true, description };
     }
   }
   return { blocked: false, description: null };
@@ -626,7 +642,8 @@ export class PermissionManager {
       if (classification === 'destructive') return 'ask';
     }
 
-    // Evaluate rules in order (first match wins)
+    // Evaluate rules in order (first match wins). AMI intentionally uses
+    // first-match so a prepended allow can override a broad deny and vice versa.
     for (const rule of this.rules) {
       const toolMatches = this.toolNameMatches(rule.tool, toolName);
       if (!toolMatches) continue;
@@ -966,13 +983,11 @@ export class PermissionManager {
 
   hasExplicitDeny(toolName: string, input: Record<string, unknown>): boolean {
     if (this.deniedCommands.has(denialKey(toolName, input))) return true;
+    // First-match semantics (consistent with check()).
     for (const rule of this.rules) {
-      const toolMatches = this.toolNameMatches(rule.tool, toolName);
-      if (!toolMatches) continue;
+      if (!this.toolNameMatches(rule.tool, toolName)) continue;
       if (rule.pattern) {
-        if (matchPattern(rule.pattern, this.inputToString(toolName, input))) {
-          return rule.action === 'deny';
-        }
+        if (matchPattern(rule.pattern, this.inputToString(toolName, input))) return rule.action === 'deny';
       } else {
         return rule.action === 'deny';
       }

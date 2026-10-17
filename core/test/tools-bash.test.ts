@@ -888,3 +888,49 @@ describe('bash output budget', () => {
     assert.ok(small.output.length < 2500, `budgeted output should be spilled, got ${small.output.length}`);
   });
 });
+
+describe('credential-path write guard — extended verbs & redirects', () => {
+  const cases: Array<[string, (t: string) => string]> = [
+    ['tee -a', (t) => `echo pwned | tee -a ${t}`],
+    ['install', (t) => `install -m600 /tmp/src ${t}`],
+    ['truncate', (t) => `truncate -s0 ${t}`],
+    ['chmod', (t) => `chmod 600 ${t}`],
+    ['>| noclobber', (t) => `echo pwned >| ${t}`],
+  ];
+  for (const [label, mk] of cases) {
+    it(`blocks ${label} to a credential path`, async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-credx-'));
+      try {
+        fs.mkdirSync(path.join(tmp, '.ssh'));
+        const target = path.join(tmp, '.ssh', 'authorized_keys');
+        const res = await bashTool.execute({ command: mk(target) }, ctx({ cwd: tmp, detachedMode: true } as any));
+        assert.equal(res.isError, true, `${label} must be blocked, got ${JSON.stringify(res)}`);
+        assert.equal(fs.existsSync(target), false, `${label} must not write the credential file`);
+      } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+    });
+  }
+});
+
+describe('cloud-metadata hardline — IPv6 + wrappers', () => {
+  it('blocks the AWS IMDS IPv6 endpoint fd00:ec2::254', () => {
+    assert.equal(detectHardlineCommand('curl http://[fd00:ec2::254]/latest/meta-data/iam/').blocked, true);
+  });
+});
+
+describe('hardline evasion — nested wrap + command substitution', () => {
+  const evaded = [
+    `sh -c "sh -c 'rm -rf /'"`,          // double-nested wrap
+    `$(echo rm) -rf /`,                   // command-sub base
+    "c='rm -rf /'; eval \"$c\"",        // quoted whole-command assignment + eval
+    'bash -c "rm -rf /"; echo after',    // catastrophic not at end of line
+  ];
+  for (const cmd of evaded) {
+    it(`blocks: ${cmd}`, () => {
+      assert.equal(detectHardlineCommand(cmd).blocked, true, `should block: ${cmd}`);
+    });
+  }
+  it('control: a benign command stays allowed', () => {
+    assert.equal(detectHardlineCommand('sh -c "ls -la"').blocked, false);
+    assert.equal(detectHardlineCommand('git commit -m "rm stuff from docs"').blocked, false);
+  });
+});

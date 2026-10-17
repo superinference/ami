@@ -859,13 +859,24 @@ export function detectCredentialPathWrite(command: string): { blocked: boolean; 
   if (!writeIntent.test(command)) return { blocked: false, description: null };
 
   const targets: string[] = [];
-  for (const m of command.matchAll(/>>?\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
+  // Redirect targets, incl. the `>|` noclobber-override form.
+  for (const m of command.matchAll(/>>?\|?\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
     targets.push(m[1] ?? m[2] ?? m[3]);
   }
   for (const m of command.matchAll(/\bof=(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
     targets.push(m[1] ?? m[2] ?? m[3]);
   }
   try { for (const p of extractCommandPaths(command)) targets.push(p); } catch { /* best-effort */ }
+  // For any write-intent verb, treat every non-flag token as a candidate target
+  // (covers tee/install/ln/truncate/chmod/chown whose args extractCommandPaths
+  // does not model). isCredentialPath filters to credential paths only.
+  if (/\b(cp|mv|tee|install|ln|dd|truncate|chmod|chown)\b/.test(command)) {
+    const VERB = /^(cp|mv|tee|install|ln|dd|truncate|chmod|chown|sed|echo|printf|cat|sudo|env)$/;
+    for (const tok of command.split(/[\s;|&]+/)) {
+      const t = tok.replace(/^["']|["']$/g, '');
+      if (t && !t.startsWith('-') && !t.includes('=') && !VERB.test(t)) targets.push(t);
+    }
+  }
 
   for (const t of targets) {
     if (t && isCredentialPath(t)) {

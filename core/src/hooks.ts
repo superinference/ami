@@ -179,6 +179,8 @@ export interface HttpHookConfig {
   url: string;
   headers?: Record<string, string>;
   timeout?: number;
+  /** 'block' = a hook that times out or errors denies the action (fail-closed). */
+  onFailure?: 'block' | 'allow';
   once?: boolean;
   if?: string;
   async?: boolean;
@@ -374,6 +376,20 @@ export class HookManager extends EventEmitter {
       { path: filePath, source: 'project' },
       { path: userHooksPath, source: 'user' },
     ];
+
+    // Plugin bundles contribute hooks.json (project-scoped ones gated by trust).
+    try {
+      const { discoverPlugins } = require('./plugins');
+      const pluginDirs: Array<[string, 'user' | 'project']> = [
+        [path.join(os.homedir(), '.superinference', 'plugins'), 'user'],
+        [path.join(cwd, '.superinference', 'plugins'), 'project'],
+      ];
+      for (const [dir, src] of pluginDirs) {
+        for (const bundle of discoverPlugins(dir)) {
+          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src });
+        }
+      }
+    } catch { /* plugins module optional */ }
 
     for (const { path: p, source } of sources) {
       let raw: string;
@@ -1234,6 +1250,8 @@ export class HookManager extends EventEmitter {
     const https = require('https');
     const url = new URL(config.url);
     const client = url.protocol === 'https:' ? https : http;
+    // Fail-closed: an HTTP hook that times out or errors DENIES when onFailure:block.
+    const onFail = () => config.onFailure === 'block' ? 'DENY:HTTP hook failed (fail-closed)' : '';
     return new Promise((resolve) => {
       const req = client.request(url, {
         method: 'POST',
@@ -1243,10 +1261,10 @@ export class HookManager extends EventEmitter {
         let body = '';
         res.on('data', (d: Buffer) => body += d);
         res.on('end', () => resolve(body));
-        res.on('error', () => resolve(''));
+        res.on('error', () => resolve(onFail()));
       });
-      req.on('timeout', () => { req.destroy(); resolve(''); });
-      req.on('error', () => resolve(''));
+      req.on('timeout', () => { req.destroy(); resolve(onFail()); });
+      req.on('error', () => resolve(onFail()));
       req.write(eventData);
       req.end();
     });

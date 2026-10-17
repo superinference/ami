@@ -24,6 +24,10 @@ export interface ProjectConfig {
   persona?: string;
   /** Managed policy: when non-empty, only these models are selectable. */
   enforceAvailableModels?: string[];
+  /** Cap (chars) on inline bash stdout before it is spilled to a file. */
+  bashOutputMaxChars?: number;
+  /** Anthropic prompt-cache TTL ('5m' default or '1h' extended-cache beta). */
+  cacheTtl?: '5m' | '1h';
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +276,14 @@ export function mergeConfigs(
     if (layer.maxTurns !== undefined) merged.maxTurns = layer.maxTurns;
     if (layer.tokenBudget !== undefined) merged.tokenBudget = layer.tokenBudget;
     if (layer.persona !== undefined) merged.persona = layer.persona;
+    if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
+    if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
+  }
+
+  // Managed allowlist is authoritative and MUST NOT be overridable by lower
+  // layers (project/local/env/cli) — otherwise managed enforcement is defeated.
+  if (managedConfig?.enforceAvailableModels) {
+    merged.enforceAvailableModels = managedConfig.enforceAvailableModels;
   }
 
   return merged;

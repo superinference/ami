@@ -220,6 +220,8 @@ export function redactSecrets(content: string): string {
   for (const re of tokenRes) out = out.replace(re, '[REDACTED-SECRET]');
   // key: "value" / token = 'value' style — redact the quoted value only.
   out = out.replace(/((?:password|secret|token|api_key)\s*[:=]\s*['"])[^'"]{8,}(['"])/gi, '$1[REDACTED-SECRET]$2');
+  // JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
+  out = out.replace(/("(?:password|secret|token|api_?key|access_?key|secret_?key|client_secret|auth)"\s*:\s*")[^"]{6,}(")/gi, '$1[REDACTED-SECRET]$2');
   return out;
 }
 

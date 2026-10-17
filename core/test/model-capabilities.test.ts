@@ -38,6 +38,15 @@ describe('modelSupportsVision', () => {
     }
   });
 
+  it('returns false for text-only variants that share a vision-family prefix', () => {
+    for (const id of ['o1-mini', 'o3-mini', 'o4-mini', 'llama-3.2-1b', 'llama-3.2-3b-instruct']) {
+      assert.equal(modelSupportsVision(id), false, `${id} is text-only`);
+    }
+    // but the full-size vision variants stay true
+    assert.equal(modelSupportsVision('o1'), true);
+    assert.equal(modelSupportsVision('llama-3.2-90b-vision'), true);
+  });
+
   it('honors an explicitly registered supportsVision capability over the prefix table', () => {
     registerModelCapabilities('deepseek-chat', {
       reasoning: false, defaultThinkingLevel: 'off', supportsAdaptiveThinking: false,

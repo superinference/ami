@@ -401,3 +401,24 @@ describe('ConfigService', () => {
     assert.equal(secondCalled, true);
   });
 });
+
+describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
+  it('carries managed enforceAvailableModels and makes it NON-overridable by cli/project', () => {
+    const merged = mergeConfigs(
+      { enforceAvailableModels: ['cli-tries-this'] }, // cliArgs (should NOT win)
+      {},
+      { enforceAvailableModels: ['project-tries'] },  // projectConfig (should NOT win)
+      null, null,
+      { enforceAvailableModels: ['managed-x', 'managed-y'] }, // managedConfig (authoritative)
+    );
+    assert.deepEqual(merged.enforceAvailableModels, ['managed-x', 'managed-y']);
+  });
+  it('merges bashOutputMaxChars from project config (overridable)', () => {
+    const merged = mergeConfigs({}, {}, { bashOutputMaxChars: 4096 }, null);
+    assert.equal(merged.bashOutputMaxChars, 4096);
+  });
+  it('merges cacheTtl from config so it is reachable', () => {
+    const merged = mergeConfigs({}, {}, { cacheTtl: '1h' }, null);
+    assert.equal(merged.cacheTtl, '1h');
+  });
+});
