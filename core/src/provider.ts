@@ -537,7 +537,11 @@ export function resolveModel(config: ProviderConfig) {
 
   // Native Anthropic SDK
   if (provider === 'anthropic' || model.startsWith('claude') || baseUrl.includes('anthropic.com')) {
-    return createAnthropic({ apiKey, baseURL: baseUrl || undefined })(model);
+    return createAnthropic({
+      apiKey,
+      baseURL: baseUrl || undefined,
+      ...(config.cacheTtl === '1h' ? { headers: { 'anthropic-beta': 'extended-cache-ttl-2025-04-11' } } : {}),
+    })(model);
   }
 
   // Native Google Generative AI SDK
@@ -754,6 +758,15 @@ function promptTokensForFit(
   return estimateTokens(text);
 }
 
+/**
+ * Build the Anthropic ephemeral cache-control object, honoring an optional TTL.
+ * '1h' requires Anthropic's extended-cache beta; default (undefined/'5m') uses
+ * the standard 5-minute ephemeral cache.
+ */
+export function buildAnthropicCacheControl(cacheTtl?: '5m' | '1h'): { type: 'ephemeral'; ttl?: '1h' } {
+  return cacheTtl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
+}
+
 export async function* streamChatCompletion(
   config: ProviderConfig,
   messages: Message[],
@@ -806,6 +819,7 @@ export async function* streamChatCompletion(
   // Apply per-message cache breakpoints for Anthropic prompt caching.
   // The AI SDK v4 expects cache_control on individual message content parts
   // via providerOptions, not as a top-level streamText option.
+  const cacheControl = buildAnthropicCacheControl(config.cacheTtl);
   if (isAnthropic) {
     const breakpointIndices = new Set<number>();
     if (systemPrompt && coreMessages.length > 0) breakpointIndices.add(0);
@@ -826,7 +840,7 @@ export async function* streamChatCompletion(
         ...((msg.providerOptions as Record<string, unknown>) || {}),
         anthropic: {
           ...((msg.providerOptions as Record<string, Record<string, unknown>>) || {}).anthropic,
-          cacheControl: { type: 'ephemeral' },
+          cacheControl,
         },
       };
     }
@@ -1017,7 +1031,7 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; requestTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
+  options?: { thinking?: ThinkingConfig; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
 ): AsyncGenerator<StreamChunk> {
   const timeoutMs = options?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
@@ -1038,8 +1052,20 @@ export async function* streamChatCompletionWithRetry(
     let contentStarted = false;
     let timedOut = false;
 
+    // Inactivity watchdog: kill a stream that goes quiet (connection open, no
+    // bytes) far sooner than the total request timeout. Reset on every chunk.
+    const idleMs = options?.idleTimeoutMs;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const resetIdle = () => {
+      if (!idleMs) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => requestAbort.abort(), idleMs);
+    };
+
     try {
+    resetIdle();
     for await (const chunk of streamChatCompletion(config, messages, tools, requestAbort.signal, options)) {
+      resetIdle();
       if (chunk.type === 'error' && !contentStarted) {
         const statusCode = extractStatusCode(chunk.error ?? '');
 
@@ -1103,6 +1129,7 @@ export async function* streamChatCompletionWithRetry(
       }
     } finally {
       clearTimeout(timeoutId);
+      if (idleTimer) clearTimeout(idleTimer);
       abortSignal.removeEventListener('abort', onCallerAbort);
     }
 

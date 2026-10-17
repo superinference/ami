@@ -115,6 +115,8 @@ export interface ProviderConfig {
   maxTokens?: number;
   temperature?: number;
   provider?: string;
+  /** Anthropic prompt-cache TTL. '1h' requires the extended-cache beta; default is the 5-minute ephemeral cache. */
+  cacheTtl?: '5m' | '1h';
   /**
    * Actual context window size reported by the serving backend (e.g. vLLM
    * max_model_len). When set, overrides the theoretical value from
@@ -225,6 +227,8 @@ export interface EngineConfig {
   mcpStartupBudgetMs?: number;
   /** Cap (chars) on inline bash stdout before it is spilled to a file. */
   bashOutputMaxChars?: number;
+  /** Inactivity watchdog (ms) for a stalled-but-open stream, distinct from the total request timeout. */
+  streamIdleTimeoutMs?: number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them, saving prompt tokens. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on (beyond the essential set + tool_search). */

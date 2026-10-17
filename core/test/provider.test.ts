@@ -7,6 +7,7 @@ import {
   streamChatCompletion,
   resolveModel,
   convertMessages,
+  buildAnthropicCacheControl,
   convertToolsForSDK,
   buildThinkingOptions,
   extractReasoningTokens,
@@ -1677,5 +1678,14 @@ describe('resolveContextWindow', () => {
       else process.env.HF_TOKEN = savedToken;
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
+  });
+});
+
+
+describe('buildAnthropicCacheControl', () => {
+  it('returns a 1h ttl when cacheTtl is 1h, plain ephemeral otherwise', () => {
+    assert.deepEqual(buildAnthropicCacheControl('1h'), { type: 'ephemeral', ttl: '1h' });
+    assert.deepEqual(buildAnthropicCacheControl('5m'), { type: 'ephemeral' });
+    assert.deepEqual(buildAnthropicCacheControl(undefined), { type: 'ephemeral' });
   });
 });
