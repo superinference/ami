@@ -270,6 +270,29 @@ describe('healOrphanedToolCalls', () => {
     assert.equal(result.length, 3);
   });
 
+  it('drops an orphaned tool_result whose tool_call_id has no matching assistant call', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'test' },
+      // orphaned tool_result (its assistant tool_call was truncated/compacted away)
+      { role: 'tool', tool_call_id: 'ghost', content: 'stale result' },
+      { role: 'assistant', content: 'ok' },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    assert.equal(result.find(m => m.role === 'tool'), undefined, 'orphaned tool_result must be dropped');
+    assert.equal(result.length, 2);
+  });
+
+  it('keeps a valid tool_result but drops an orphaned one in the same list', () => {
+    const msgs: Message[] = [
+      { role: 'assistant', content: null, tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'bash', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'tc1', content: 'valid' },
+      { role: 'tool', tool_call_id: 'ghost', content: 'orphan' },
+    ];
+    const result = healOrphanedToolCalls(msgs);
+    const toolMsgs = result.filter(m => m.role === 'tool') as Array<{ tool_call_id: string }>;
+    assert.deepEqual(toolMsgs.map(m => m.tool_call_id), ['tc1']);
+  });
+
   it('injects synthetic result for orphaned tool call', () => {
     const msgs: Message[] = [
       { role: 'user', content: 'test' },

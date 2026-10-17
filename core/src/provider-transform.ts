@@ -70,14 +70,25 @@ export function buildToolCacheBreakpoints(
 export function healOrphanedToolCalls(messages: Message[]): Message[] {
   const result: Message[] = [];
   const answeredIds = new Set<string>();
+  // All assistant-issued tool_call ids, so we can drop tool_results that refer
+  // to a call that no longer exists (compaction/truncation artifacts) — these
+  // otherwise cause a provider 400 ("tool_result refers to unknown tool_use") loop.
+  const issuedCallIds = new Set<string>();
 
   for (const msg of messages) {
     if (msg.role === 'tool') {
       answeredIds.add(msg.tool_call_id);
     }
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) issuedCallIds.add(tc.id);
+    }
   }
 
   for (const msg of messages) {
+    // Drop an orphaned tool_result (no matching assistant tool_call anywhere).
+    if (msg.role === 'tool' && !issuedCallIds.has(msg.tool_call_id)) {
+      continue;
+    }
     result.push(msg);
 
     if (msg.role === 'assistant' && msg.tool_calls) {

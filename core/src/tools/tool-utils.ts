@@ -201,6 +201,29 @@ export function scanForSecrets(content: string): string[] {
 }
 
 /**
+ * Replace detected secret tokens with a stable marker, preserving surrounding
+ * boundary characters. Used before writing shared transcripts (/export) so API
+ * keys and credentials never land in a file the user might paste or publish.
+ */
+export function redactSecrets(content: string): string {
+  let out = content;
+  // Token patterns (first 6 of SECRET_PATTERNS) capture a single boundary char
+  // then the secret; redact just the secret run.
+  const tokenRes = [
+    /(sk-ant-[a-zA-Z0-9-]{20,})/g,
+    /(sk-[a-zA-Z0-9]{20,})/g,
+    /(ghp_[a-zA-Z0-9]{36})/g,
+    /(gsk_[a-zA-Z0-9]{20,})/g,
+    /(AKIA[A-Z0-9]{16})/g,
+    /(AIza[a-zA-Z0-9_-]{35})/g,
+  ];
+  for (const re of tokenRes) out = out.replace(re, '[REDACTED-SECRET]');
+  // key: "value" / token = 'value' style — redact the quoted value only.
+  out = out.replace(/((?:password|secret|token|api_key)\s*[:=]\s*['"])[^'"]{8,}(['"])/gi, '$1[REDACTED-SECRET]$2');
+  return out;
+}
+
+/**
  * Scan only lines that this edit introduces. A file that already contains
  * `Password = "placeholder"` must stay editable; a newly added secret must not.
  */

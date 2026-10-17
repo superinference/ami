@@ -1,7 +1,24 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import { parseFrontmatter } from './memory';
+
+/**
+ * Expand inline live-command injections of the form !`cmd` in a (trusted,
+ * project-authored) skill/command body, substituting the command's stdout. Lets
+ * a packaged skill embed live repo state (e.g. !`git diff --staged`). Failures
+ * become a visible [error: ...] marker rather than throwing.
+ */
+function substituteBashInjections(content: string, cwd: string): string {
+  return content.replace(/!`([^`]+)`/g, (_m, cmd) => {
+    try {
+      return execSync(cmd, { cwd, timeout: 10_000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1_000_000 }).trim();
+    } catch (err) {
+      return `[error: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}]`;
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -343,6 +360,9 @@ export class SkillManager {
         content = content.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), () => value);
       }
     }
+
+    // Live command injection last, so $VARS/$ARGUMENTS can feed the commands.
+    content = substituteBashInjections(content, skillDir);
 
     return content;
   }

@@ -809,3 +809,33 @@ describe('SkillManager — direct .md name fallback', () => {
     assert.notEqual(s1!.name, s2!.name, 'skills should have different names');
   });
 });
+
+describe('skill inline bash injection', () => {
+  it('expands !`cmd` in a skill body to the command stdout', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-skill-inject-'));
+    try {
+      const skillDir = path.join(tmpDir, '.superinference', 'skills', 'inject');
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+        `---\nname: inject\ndescription: t\n---\nValue is !\`echo BASHINJECT_OK\``);
+      const mgr = new SkillManager(tmpDir);
+      const content = mgr.getSkillContent('inject');
+      assert.ok(content, 'skill content present');
+      assert.match(content!, /Value is BASHINJECT_OK/);
+      assert.ok(!content!.includes('echo BASHINJECT_OK'), 'literal command must not survive');
+    } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+
+  it('surfaces a failed injection as an [error: ...] marker, not a throw', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-skill-inject-err-'));
+    try {
+      const skillDir = path.join(tmpDir, '.superinference', 'skills', 'bad');
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+        `---\nname: bad\ndescription: t\n---\nX !\`exit 3\` Y`);
+      const mgr = new SkillManager(tmpDir);
+      const content = mgr.getSkillContent('bad');
+      assert.match(content!, /\[error:/);
+    } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+});
