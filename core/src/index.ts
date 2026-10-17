@@ -5,6 +5,8 @@ export { createDefaultTools } from './tools';
 export { MemoryManager, matchesPaths } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
 export { SkillManager } from './skills';
+export { discoverPlugins } from './plugins';
+export type { PluginBundle } from './plugins';
 export type { SkillDefinition, AgentDefinition } from './skills';
 export { CostTracker } from './cost-tracker';
 export type { ExtendedUsageStats } from './cost-tracker';

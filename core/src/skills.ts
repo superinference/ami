@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { parseFrontmatter } from './memory';
+import { discoverPlugins } from './plugins';
 
 /**
  * Expand inline live-command injections of the form !`cmd` in a (trusted,
@@ -442,6 +443,15 @@ export class SkillManager {
     const userDir = path.join(os.homedir(), '.superinference');
     this.loadSkillsDir(path.join(userDir, 'skills'));
     this.loadAgentsDir(path.join(userDir, 'agents'));
+
+    // 2b. Plugin bundles (~/.superinference/plugins and .superinference/plugins) —
+    // below project so project overrides, above built-ins.
+    for (const pluginsDir of [path.join(userDir, 'plugins'), path.join(this.cwd, '.superinference', 'plugins')]) {
+      for (const bundle of discoverPlugins(pluginsDir)) {
+        if (bundle.skillsDir) this.loadSkillsDir(bundle.skillsDir);
+        if (bundle.agentsDir) this.loadAgentsDir(bundle.agentsDir);
+      }
+    }
 
     // 3. Project skills and agents (.superinference/ in cwd) — highest priority
     this.loadSkillsDir(path.join(this.cwd, '.superinference', 'skills'));
