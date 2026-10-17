@@ -254,6 +254,7 @@ export const taskTool: ToolDefinition = {
       const subEngine = context._engineFactory(subConfig);
       (async () => {
         let result = '';
+        let sawError = false;
         const fd = fs.openSync(outputPath, 'w');
         const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
         try {
@@ -284,12 +285,14 @@ export const taskTool: ToolDefinition = {
               w(`${preview}${suffix}\n`);
             }
             if (event.type === 'error') {
+              sawError = true;
               const errText = `\nError: ${event.error}`;
               result += errText;
               w(errText);
             }
           }
         } catch (err) {
+          sawError = true;
           const errText = `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
           result += errText;
           w(errText);
@@ -304,10 +307,10 @@ export const taskTool: ToolDefinition = {
           const label = taskDescription || `${prompt.slice(0, 80)}`;
           const entry = (context.processManager as any).processes.get(taskId);
           if (entry) {
-            entry.status = 'completed';
-            entry.exitCode = 0;
+            entry.status = sawError ? 'failed' : 'completed';
+            entry.exitCode = sawError ? 1 : 0;
           }
-          context.processManager.emit('complete', { taskId, exitCode: 0, command: `[agent] ${label}`, description: `Background agent: ${label}` });
+          context.processManager.emit('complete', { taskId, exitCode: sawError ? 1 : 0, command: `[agent] ${label}`, description: `Background agent: ${label}` });
         }
       })().catch(() => {});
 

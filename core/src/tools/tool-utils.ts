@@ -80,6 +80,59 @@ export function resolveFilePath(
   return { resolved };
 }
 
+export type FileEncoding = 'utf-8' | 'utf-8-bom' | 'utf-16le' | 'utf-16be';
+
+/** Detect a text file's encoding from its leading BOM bytes (UTF-8 otherwise). */
+export function detectEncoding(buf: Buffer): FileEncoding {
+  if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) return 'utf-8-bom';
+  if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) return 'utf-16le';
+  if (buf.length >= 2 && buf[0] === 0xFE && buf[1] === 0xFF) return 'utf-16be';
+  return 'utf-8';
+}
+
+/** Decode a buffer to text, stripping any BOM and honoring UTF-16 byte order. */
+export function decodeBuffer(buf: Buffer): { text: string; encoding: FileEncoding } {
+  const encoding = detectEncoding(buf);
+  if (encoding === 'utf-8-bom') return { text: buf.subarray(3).toString('utf-8'), encoding };
+  if (encoding === 'utf-16le') return { text: buf.subarray(2).toString('utf16le'), encoding };
+  if (encoding === 'utf-16be') {
+    const body = Buffer.from(buf.subarray(2));
+    body.swap16();
+    return { text: body.toString('utf16le'), encoding };
+  }
+  return { text: buf.toString('utf-8'), encoding };
+}
+
+/** Re-encode text to a buffer in the given encoding, re-prepending any BOM. */
+export function encodeText(text: string, encoding: FileEncoding): Buffer {
+  if (encoding === 'utf-8-bom') return Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(text, 'utf-8')]);
+  if (encoding === 'utf-16le') return Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(text, 'utf16le')]);
+  if (encoding === 'utf-16be') {
+    const body = Buffer.from(text, 'utf16le');
+    body.swap16();
+    return Buffer.concat([Buffer.from([0xFE, 0xFF]), body]);
+  }
+  return Buffer.from(text, 'utf-8');
+}
+
+/**
+ * Fail-loud guard for search tools: confirm the resolved target is readable.
+ * Returns an isError ToolResult when the path is missing or unreadable, else
+ * null. This lets grep/glob distinguish "genuinely zero matches" from "the
+ * search could not run" — otherwise an agent that greps a mistyped or
+ * permission-denied path gets "No matches found" and wrongly concludes the
+ * symbol is absent.
+ */
+export function assertReadableTarget(resolved: string): ToolResult | null {
+  try {
+    fs.accessSync(resolved, fs.constants.R_OK);
+    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { output: `Error: search failed — cannot read "${resolved}": ${msg}`, isError: true };
+  }
+}
+
 /**
  * Validate a required pattern string and resolve a search path in one call.
  * Returns { pattern, resolved } on success, or { error } on validation failure.

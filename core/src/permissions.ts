@@ -290,9 +290,48 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /\bpkill\b.*\bsuperinference\b/i, description: 'would kill AMI — use kill <pid> to target a specific process' },
 ];
 
+/**
+ * Expand two documented evasions of the unconditional hardline guard so the
+ * patterns still fire: (a) a catastrophic base built via a bare assignment and
+ * referenced by variable (`c=rm; $c -rf /`), and (b) a quoted payload inside
+ * `sh -c '...'` / `bash -c "..."` / `eval '...'` where the trailing quote
+ * defeats the end-anchored patterns. Returns the original command augmented with
+ * the normalized/unwrapped forms (newline-joined) so pattern matching sees both.
+ */
+const HARDLINE_BASES = 'rm|dd|mkfs|shutdown|reboot|halt|poweroff|chmod|curl|wget|pkill|killall';
+
+function normalizeForHardline(command: string): string {
+  let out = command;
+
+  // (b) Unwrap shell -c / eval quoted payloads and append the inner script.
+  const wrapRe = /\b(?:sh|bash|zsh|dash|ksh|eval)\b[^'"]*(['"])([\s\S]*?)\1/g;
+  let w: RegExpExecArray | null;
+  const inners: string[] = [];
+  while ((w = wrapRe.exec(command)) !== null) {
+    if (w[2]) inners.push(w[2]);
+  }
+  if (inners.length) out += '\n' + inners.join('\n');
+
+  // (a) Collect `name=rm` / `name=/path/rm` assignments of a dangerous base,
+  // then substitute $name / ${name} with the base so the patterns match.
+  const assignRe = new RegExp(
+    `(?:^|;|&&|\\|\\||\\n)\\s*([A-Za-z_][A-Za-z0-9_]*)=(?:["']?)(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?:["']?)(?=\\s|;|&|\\||$)`,
+    'g',
+  );
+  const assigns = new Map<string, string>();
+  let a: RegExpExecArray | null;
+  while ((a = assignRe.exec(command)) !== null) assigns.set(a[1], a[2]);
+  if (assigns.size) {
+    out = out.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (full, name) =>
+      assigns.has(name) ? assigns.get(name)! : full);
+  }
+  return out;
+}
+
 export function detectHardlineCommand(command: string): { blocked: boolean; description: string | null } {
+  const normalized = normalizeForHardline(command);
   for (const { pattern, description } of HARDLINE_PATTERNS) {
-    if (pattern.test(command)) {
+    if (pattern.test(command) || (normalized !== command && pattern.test(normalized))) {
       return { blocked: true, description };
     }
   }

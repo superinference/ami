@@ -196,6 +196,39 @@ describe('taskTool – run_in_background', () => {
     }
   });
 
+  it('marks a background agent FAILED (exitCode 1) when the sub-engine errors', async () => {
+    async function* erroringSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'starting' };
+      yield { type: 'error' as const, error: 'boom from subagent' };
+    }
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-err-'));
+    const pm = new ProcessManager(tmpDir);
+    let completeEvent: any = null;
+    pm.on('complete', (e: any) => { completeEvent = e; });
+    try {
+      const result = await taskTool.execute(
+        { prompt: 'bg that fails', run_in_background: true },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _engineFactory: (_cfg) => ({ submit: erroringSubmit }),
+          processManager: pm,
+        }),
+      );
+      const taskId = result.output.match(/agent-[a-f0-9]+/)?.[0];
+      assert.ok(taskId);
+      await new Promise(r => setTimeout(r, 120));
+      const entry = (pm as any).processes.get(taskId);
+      assert.ok(entry, 'process entry should exist');
+      assert.equal(entry.status, 'failed', 'errored background agent must be marked failed');
+      assert.notEqual(entry.exitCode, 0, 'errored background agent must have non-zero exitCode');
+      assert.ok(completeEvent && completeEvent.exitCode !== 0, 'complete event must carry non-zero exitCode');
+    } finally {
+      pm.cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('writes output to file when background agent completes', async () => {
     async function* fakeSubmit(_prompt: string) {
       yield { type: 'text_delta' as const, text: 'async result' };

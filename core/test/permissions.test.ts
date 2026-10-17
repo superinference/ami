@@ -616,3 +616,25 @@ describe('PermissionManager — hasExplicitDeny (read-only enforcement)', () => 
     assert.equal(pm.hasExplicitDeny('file_read', { file_path: '/etc/public.txt' }), true);
   });
 });
+
+describe('detectHardlineCommand — evasion hardening', () => {
+  const evaded = [
+    "sh -c 'rm -rf /'",
+    'bash -c "rm -rf /"',
+    "eval 'rm -rf /'",
+    'c=rm; $c -rf /',
+    'r=/bin/rm; $r -rf /etc',
+  ];
+  for (const cmd of evaded) {
+    it(`blocks evaded catastrophic rm even in auto-allow: ${cmd}`, async () => {
+      const pm = new PermissionManager('auto-allow');
+      assert.equal(await pm.check('bash', { command: cmd }), 'deny', `must deny: ${cmd}`);
+    });
+  }
+  it('control: literal catastrophic rm stays blocked, benign stays allowed', async () => {
+    const pm = new PermissionManager('auto-allow');
+    assert.equal(await pm.check('bash', { command: 'rm -rf /' }), 'deny');
+    assert.equal(await pm.check('bash', { command: 'ls -la' }), 'allow');
+    assert.equal(await pm.check('bash', { command: 'rm -rf ./build' }), 'allow');
+  });
+});

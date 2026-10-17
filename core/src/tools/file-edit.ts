@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -54,7 +54,11 @@ function commitWrite(
 ): string | undefined {
   try {
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.writeFileSync(resolved, rawToWrite, 'utf-8');
+    // Preserve the existing file's encoding (UTF-16/BOM) instead of transcoding
+    // it to UTF-8; new files are written UTF-8.
+    let enc: ReturnType<typeof detectEncoding> = 'utf-8';
+    try { if (fs.existsSync(resolved)) enc = detectEncoding(fs.readFileSync(resolved).subarray(0, 4)); } catch { /* default utf-8 */ }
+    fs.writeFileSync(resolved, encodeText(rawToWrite, enc));
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return `Error writing file: ${message}`;
@@ -73,7 +77,7 @@ async function writeEntireFile(
   let oldContent = '';
   let fileExists = false;
   try {
-    oldContent = await fs.promises.readFile(resolved, 'utf-8');
+    oldContent = decodeBuffer(await fs.promises.readFile(resolved)).text;
     fileExists = true;
   } catch {}
   const isNew = !fileExists || oldContent.length === 0;
@@ -138,7 +142,7 @@ async function applySequentialEdits(
 ): Promise<ToolResult> {
   let rawContent: string;
   try {
-    rawContent = await fs.promises.readFile(resolved, 'utf-8');
+    rawContent = decodeBuffer(await fs.promises.readFile(resolved)).text;
   } catch (err) {
     return {
       output: `Error: Cannot read file "${resolved}": ${err instanceof Error ? err.message : String(err)}`,
@@ -354,7 +358,7 @@ export const fileEditTool: ToolDefinition = {
 
     let rawContent: string;
     try {
-      rawContent = await fs.promises.readFile(resolved, 'utf-8');
+      rawContent = decodeBuffer(await fs.promises.readFile(resolved)).text;
     } catch (err: unknown) {
       if ((err as { code?: string })?.code === 'ENOENT') {
         const dir = path.dirname(resolved);

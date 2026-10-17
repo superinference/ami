@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
-import { resolveFilePath } from './tool-utils';
+import { resolveFilePath, detectEncoding, decodeBuffer } from './tool-utils';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 
@@ -324,8 +324,20 @@ export const fileReadTool: ToolDefinition = {
       return { output: `[Binary file: ${ext} — ${path.basename(resolved)}. Use bash to inspect binary files.]` };
     }
 
+    // BOM sniff: UTF-16 / UTF-8-BOM files contain null bytes that would trip the
+    // binary gate; detect them up front so they are read as text (and the
+    // original encoding is preserved on edit) instead of refused as "[Binary file]".
+    let bomEncoding: ReturnType<typeof detectEncoding> = 'utf-8';
+    try {
+      const head = Buffer.alloc(4);
+      const fdHead = await fs.promises.open(resolved, 'r');
+      try { await fdHead.read(head, 0, 4, 0); } finally { await fdHead.close(); }
+      bomEncoding = detectEncoding(head);
+    } catch { /* fall through to normal handling */ }
+    const isBomText = bomEncoding !== 'utf-8';
+
     // Check for binary content
-    const isBinary = await checkBinary(resolved);
+    const isBinary = isBomText ? false : await checkBinary(resolved);
     if (isBinary) {
       return { output: '[Binary file]' };
     }
@@ -339,7 +351,8 @@ export const fileReadTool: ToolDefinition = {
     }
 
     // Use streaming for explicit range reads to avoid loading entire file
-    if (input.offset !== undefined || input.limit !== undefined) {
+    // (UTF-16/BOM files bypass streaming and are fully decoded below).
+    if (!isBomText && (input.offset !== undefined || input.limit !== undefined)) {
       fileCache.trackMtime(resolved, stat.mtimeMs);
       const rangeText = await readFileInRange(resolved, offset, limit);
       if (!rangeText) return { output: '(empty file)' };
@@ -352,8 +365,10 @@ export const fileReadTool: ToolDefinition = {
       return { output };
     }
 
-    // Read file content
-    const content = await fs.promises.readFile(resolved, 'utf-8');
+    // Read file content (decode UTF-16/BOM in its original encoding)
+    const content = isBomText
+      ? decodeBuffer(await fs.promises.readFile(resolved)).text
+      : await fs.promises.readFile(resolved, 'utf-8');
 
     if (content.length === 0) {
       return { output: '(empty file)' };

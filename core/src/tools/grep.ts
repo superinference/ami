@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validatePatternAndPath } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
 
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
@@ -102,6 +102,8 @@ export const grepTool: ToolDefinition = {
     const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
+    const unreadable = assertReadableTarget(resolved);
+    if (unreadable) return unreadable;
     if (!pattern || pattern.length < 1) return { output: 'Error: pattern is required.', isError: true };
 
     // Try ripgrep first, fall back to grep

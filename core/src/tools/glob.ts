@@ -2,7 +2,7 @@
 // expandDirectories stays off so a directory pattern is not rewritten.
 import { glob } from 'tinyglobby';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validatePatternAndPath } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
 
 const MAX_RESULTS = 200;
 
@@ -35,6 +35,8 @@ export const globTool: ToolDefinition = {
     const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
+    const unreadable = assertReadableTarget(resolved);
+    if (unreadable) return unreadable;
 
     try {
       const entries = await glob(pattern, {
