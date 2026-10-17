@@ -13,6 +13,8 @@ export type PermissionMode = 'ask' | 'auto-allow' | 'deny-all' | 'acceptEdits' |
 export interface PermissionRule {
   tool: string;       // tool name or '*'
   pattern?: string;   // glob pattern for args (e.g., "git *")
+  /** Glob match on named input params, e.g. { model: 'opus*' } for Tool(param:value). */
+  paramPattern?: Record<string, string>;
   action: 'allow' | 'deny' | 'ask';
   reason?: string;    // optional reason for deny rules
 }
@@ -66,6 +68,8 @@ const SAFE_COMMANDS = new Set([
   'fd', 'fdfind',
   // Directory tree (flag-validated)
   'tree',
+  // Computational / text read-only utilities (side-effect-free)
+  'seq', 'expr', 'printf', 'comm', 'cmp', 'numfmt', 'getconf', 'tsort', 'pr', 'fmt',
 ]);
 
 const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string> }> = {
@@ -647,6 +651,8 @@ export class PermissionManager {
     for (const rule of this.rules) {
       const toolMatches = this.toolNameMatches(rule.tool, toolName);
       if (!toolMatches) continue;
+      // Tool(param:value) matching — all named params must match their globs.
+      if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
 
       if (rule.pattern) {
         // Build a representative string from the input to match against
@@ -655,7 +661,7 @@ export class PermissionManager {
           return rule.action;
         }
       } else {
-        // No pattern -- rule applies to the whole tool
+        // No pattern -- rule applies to the whole tool (param match already gated above)
         return rule.action;
       }
     }
@@ -674,6 +680,9 @@ export class PermissionManager {
    */
   checkDenyRules(toolName: string, input: string): DenyCheckResult {
     for (const rule of this.rules) {
+      // paramPattern rules match structured named params, which this string-only
+      // check cannot evaluate — skip them (they are enforced by check()).
+      if (rule.paramPattern) continue;
       if (rule.action === 'deny' && this.toolNameMatches(rule.tool, toolName)) {
         if (!rule.pattern || matchPattern(rule.pattern, input)) {
           return { denied: true, reason: rule.reason || `Denied by rule for ${rule.tool}` };
@@ -981,11 +990,21 @@ export class PermissionManager {
       || (ruleTool.includes('*') && matchPattern(ruleTool, toolName));
   }
 
+  /** All named-param globs in a rule's paramPattern must match the tool input. */
+  private paramMatches(paramPattern: Record<string, string>, input: Record<string, unknown>): boolean {
+    for (const [key, glob] of Object.entries(paramPattern)) {
+      const v = input[key];
+      if (typeof v !== 'string' || !matchPattern(glob, v)) return false;
+    }
+    return true;
+  }
+
   hasExplicitDeny(toolName: string, input: Record<string, unknown>): boolean {
     if (this.deniedCommands.has(denialKey(toolName, input))) return true;
     // First-match semantics (consistent with check()).
     for (const rule of this.rules) {
       if (!this.toolNameMatches(rule.tool, toolName)) continue;
+      if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
       if (rule.pattern) {
         if (matchPattern(rule.pattern, this.inputToString(toolName, input))) return rule.action === 'deny';
       } else {
@@ -1016,6 +1035,9 @@ export class PermissionManager {
         if (this.rules[i].tool === this.rules[j].tool &&
             this.rules[i].action === 'allow' &&
             (this.rules[j].action === 'ask' || this.rules[j].action === 'deny') &&
+            // A paramPattern rule is narrow (matches only specific named params),
+            // so it never blanket-shadows a later allow.
+            !this.rules[j].paramPattern &&
             (!this.rules[j].pattern || this.rules[j].pattern === '*')) {
           shadows.push({ rule: this.rules[i], shadowedBy: this.rules[j] });
         }
@@ -1060,6 +1082,9 @@ export class PermissionManager {
               pattern: typeof rule.pattern === 'string' ? rule.pattern : undefined,
               action: rule.action,
               reason: typeof rule.reason === 'string' ? rule.reason : undefined,
+              paramPattern: (rule.paramPattern && typeof rule.paramPattern === 'object' && !Array.isArray(rule.paramPattern))
+                ? rule.paramPattern as Record<string, string>
+                : undefined,
             });
           }
         }

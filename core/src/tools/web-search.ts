@@ -141,6 +141,15 @@ export const webSearchTool: ToolDefinition = {
     if (q.error) return q.error;
     const query = q.query;
 
+    // Session-wide runaway cap.
+    const budget = context._webSearchBudget;
+    if (budget) {
+      budget.count++;
+      if (budget.count > budget.max) {
+        return { output: `Error: web search limit reached (${budget.max} per session) — too many searches.`, isError: true };
+      }
+    }
+
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
 
     try {

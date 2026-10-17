@@ -264,3 +264,14 @@ describe('parseDuckDuckGoResults', () => {
     assert.equal(results[1].url, 'https://two.com');
   });
 });
+
+describe('web_search — session-wide runaway cap', () => {
+  it('refuses once the per-session budget is exceeded (no fetch)', async () => {
+    const budget = { count: 0, max: 0 }; // already at cap → first call blocked
+    const ctx: any = { cwd: process.cwd(), abortSignal: new AbortController().signal, _webSearchBudget: budget };
+    const res = await webSearchTool.execute({ query: 'anything' }, ctx);
+    assert.equal(res.isError, true);
+    assert.match(res.output, /web search limit|too many searches/i);
+    assert.equal(budget.count, 1, 'budget counter must increment');
+  });
+});

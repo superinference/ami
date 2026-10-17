@@ -399,3 +399,27 @@ describe('gitCommitTool — integration', () => {
     assert.ok(gitCommitEntry.function.parameters.required?.includes('message'));
   });
 });
+
+describe('git_commit — attribution opt-out', () => {
+  it('omits the Co-Authored-By trailer when SUPERINFERENCE_DISABLE_CO_AUTHOR=1', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-git-noattr-'));
+    git('init', dir); git('config user.name "T"', dir); git('config user.email "t@t.t"', dir);
+    fs.writeFileSync(path.join(dir, 'f.txt'), 'hi\n');
+    const prev = process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR;
+    process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR = '1';
+    try {
+      const res = await gitCommitTool.execute({ message: 'feat: x', files: ['f.txt'] }, ctx(dir));
+      assert.equal(res.isError, false, JSON.stringify(res));
+      const msg = git('log -1 --format=%B', dir);
+      assert.ok(!/Co-Authored-By:\s*AMI/.test(msg), `trailer must be omitted, got: ${msg}`);
+    } finally {
+      if (prev === undefined) delete process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR; else process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('tool description documents the opt-out env var (no longer claims "always")', () => {
+    assert.match(gitCommitTool.description, /SUPERINFERENCE_DISABLE_CO_AUTHOR/);
+    assert.doesNotMatch(gitCommitTool.description, /always appended automatically/);
+  });
+});

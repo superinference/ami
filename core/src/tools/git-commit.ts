@@ -20,6 +20,10 @@ function buildCommitEnv(): NodeJS.ProcessEnv {
 
 function buildFinalMessage(message: string): string {
   const trimmed = message.trim();
+  // Attribution opt-out for user projects that don't want the byline.
+  if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') {
+    return trimmed;
+  }
   if (TRAILER_REGEX.test(trimmed)) {
     return trimmed;
   }
@@ -31,13 +35,13 @@ export const gitCommitTool: ToolDefinition = {
   description:
     'Create a git commit with automatic Co-Authored-By attribution for AMI. ' +
     'Use this instead of running git commit via bash. ' +
-    'Optionally stage files before committing. The Co-Authored-By trailer is always appended automatically.',
+    'Optionally stage files before committing. The Co-Authored-By trailer is appended automatically unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1 is set.',
   inputSchema: {
     type: 'object',
     properties: {
       message: {
         type: 'string',
-        description: 'The commit message. The Co-Authored-By trailer is appended automatically — do not include it.',
+        description: 'The commit message. The Co-Authored-By trailer is appended automatically (unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1) — do not include it.',
       },
       files: {
         type: 'array',

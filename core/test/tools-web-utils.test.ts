@@ -305,3 +305,36 @@ describe('httpGet', () => {
     );
   });
 });
+
+describe('httpGet — identifying User-Agent', () => {
+  it('sends an identifying User-Agent (not a spoofed browser)', async () => {
+    const http = require('http');
+    let captured = '';
+    const server = http.createServer((req: any, res: any) => { captured = req.headers['user-agent'] || ''; res.end('ok'); });
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
+    try {
+      const port = (server.address() as any).port;
+      await httpGet(`http://127.0.0.1:${port}/`, new AbortController().signal, { resolvedIP: '127.0.0.1' });
+      assert.match(captured, /AMI|SuperInference/i);
+      assert.ok(!/Firefox/.test(captured), 'must not spoof Firefox by default');
+    } finally { server.close(); }
+  });
+
+  it('honors SUPERINFERENCE_WEB_USER_AGENT override at call time', async () => {
+    const http = require('http');
+    let captured = '';
+    const server = http.createServer((req: any, res: any) => { captured = req.headers['user-agent'] || ''; res.end('ok'); });
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
+    const prev = process.env.SUPERINFERENCE_WEB_USER_AGENT;
+    process.env.SUPERINFERENCE_WEB_USER_AGENT = 'ZZCustomUA/9.9';
+    try {
+      const port = (server.address() as any).port;
+      await httpGet(`http://127.0.0.1:${port}/`, new AbortController().signal, { resolvedIP: '127.0.0.1' });
+      assert.equal(captured, 'ZZCustomUA/9.9');
+    } finally {
+      if (prev === undefined) delete process.env.SUPERINFERENCE_WEB_USER_AGENT;
+      else process.env.SUPERINFERENCE_WEB_USER_AGENT = prev;
+      server.close();
+    }
+  });
+});

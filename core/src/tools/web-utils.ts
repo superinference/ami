@@ -164,8 +164,14 @@ export function stripHtml(html: string): string {
   return text.trim();
 }
 
-const USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0';
+// Identify the agent so site operators can recognize/allowlist the traffic
+// (Claude Code's identify-yourself policy). Override with SUPERINFERENCE_WEB_USER_AGENT
+// (e.g. a browser UA) for sites that require it. Read at call time so the env var
+// takes effect regardless of import order and is unit-testable.
+export const DEFAULT_WEB_USER_AGENT = 'SuperInference-AMI/1.0 (+https://superinference.org)';
+export function getUserAgent(): string {
+  return process.env.SUPERINFERENCE_WEB_USER_AGENT || DEFAULT_WEB_USER_AGENT;
+}
 
 /**
  * Hard cap on a single HTTP body. Large enough to keep the tail of a
@@ -226,7 +232,7 @@ function httpGetInternal(
       url,
       {
         headers: {
-          'User-Agent': USER_AGENT,
+          'User-Agent': getUserAgent(),
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.5',
           'Accept-Encoding': 'identity',

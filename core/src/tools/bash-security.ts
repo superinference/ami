@@ -854,10 +854,10 @@ function isCredentialPath(p: string): boolean {
  * path. Unconditional — runs regardless of permission mode. Covers cp/mv/tee/
  * install/ln/dd/truncate/chmod/chown, `sed -i`, and `>`/`>>` redirects.
  */
-export function detectCredentialPathWrite(command: string): { blocked: boolean; description: string | null } {
-  const writeIntent = /\b(cp|mv|tee|install|ln|dd|truncate|chmod|chown)\b|\bsed\b[^|]*\s-i\b|>>?\s*\S/;
-  if (!writeIntent.test(command)) return { blocked: false, description: null };
-
+/** Collect candidate write-target paths from a write-intent bash command. */
+function collectWriteTargets(command: string): string[] {
+  const writeIntent = /\b(rm|cp|mv|tee|install|ln|dd|truncate|chmod|chown)\b|\bsed\b[^|]*\s-i\b|>>?\s*\S/;
+  if (!writeIntent.test(command)) return [];
   const targets: string[] = [];
   // Redirect targets, incl. the `>|` noclobber-override form.
   for (const m of command.matchAll(/>>?\|?\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
@@ -869,18 +869,42 @@ export function detectCredentialPathWrite(command: string): { blocked: boolean; 
   try { for (const p of extractCommandPaths(command)) targets.push(p); } catch { /* best-effort */ }
   // For any write-intent verb, treat every non-flag token as a candidate target
   // (covers tee/install/ln/truncate/chmod/chown whose args extractCommandPaths
-  // does not model). isCredentialPath filters to credential paths only.
-  if (/\b(cp|mv|tee|install|ln|dd|truncate|chmod|chown)\b/.test(command)) {
-    const VERB = /^(cp|mv|tee|install|ln|dd|truncate|chmod|chown|sed|echo|printf|cat|sudo|env)$/;
+  // does not model).
+  if (/\b(rm|cp|mv|tee|install|ln|dd|truncate|chmod|chown)\b/.test(command)) {
+    const VERB = /^(rm|cp|mv|tee|install|ln|dd|truncate|chmod|chown|sed|echo|printf|cat|sudo|env)$/;
     for (const tok of command.split(/[\s;|&]+/)) {
       const t = tok.replace(/^["']|["']$/g, '');
       if (t && !t.startsWith('-') && !t.includes('=') && !VERB.test(t)) targets.push(t);
     }
   }
+  return targets.filter(Boolean);
+}
 
-  for (const t of targets) {
-    if (t && isCredentialPath(t)) {
+/**
+ * Block write-intent bash commands that target (or copy out of) a credential
+ * path. Unconditional — runs regardless of permission mode. Covers cp/mv/tee/
+ * install/ln/dd/truncate/chmod/chown, `sed -i`, and `>`/`>>` redirects.
+ */
+export function detectCredentialPathWrite(command: string): { blocked: boolean; description: string | null } {
+  for (const t of collectWriteTargets(command)) {
+    if (isCredentialPath(t)) {
       return { blocked: true, description: `write to credential path "${t}"` };
+    }
+  }
+  return { blocked: false, description: null };
+}
+
+/**
+ * Block write-intent bash commands that would tamper with the agent's own
+ * session transcript store (.superinference/sessions/*.jsonl). Unconditional.
+ */
+export function detectSessionTranscriptWrite(command: string): { blocked: boolean; description: string | null } {
+  // Match both writes INSIDE the sessions dir and destructive ops on the dir
+  // itself (e.g. `rm -rf .superinference/sessions`): trailing slash OR end-of-token.
+  const re = /(^|\/)\.superinference\/sessions(\/|$)/;
+  for (const t of collectWriteTargets(command)) {
+    if (re.test(t.replace(/\\/g, '/'))) {
+      return { blocked: true, description: `write to protected session transcript path "${t}"` };
     }
   }
   return { blocked: false, description: null };

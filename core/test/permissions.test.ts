@@ -655,3 +655,69 @@ describe('check() — server-scoped wildcard tool rules', () => {
     assert.equal(pm.hasExplicitDeny('other:safe', {}), false);
   });
 });
+
+describe('SAFE_COMMANDS — computational read-only utilities', () => {
+  it('auto-allows all 10 added utilities in acceptEdits mode', async () => {
+    const pm = new PermissionManager('acceptEdits');
+    const cmds = [
+      'seq 1 10', 'expr 1 + 2', 'printf "%s" hi', 'comm a.txt b.txt', 'cmp a b',
+      'numfmt --to=iec 1024', 'getconf PAGESIZE', 'tsort deps.txt', 'pr -t f.txt', 'fmt -w 80 f.txt',
+    ];
+    for (const cmd of cmds) {
+      assert.equal(await pm.check('bash', { command: cmd }), 'allow', `${cmd} should be auto-allowed`);
+    }
+  });
+  it('classifies all 10 added utilities as safe', () => {
+    const pm = new PermissionManager('ask');
+    for (const cmd of [
+      'seq 1 100', 'expr 2 + 2', 'printf "%s\\n" hello', 'comm a b', 'cmp a b',
+      'numfmt --to=iec 2048', 'getconf LONG_BIT', 'tsort g.txt', 'pr -t x', 'fmt y',
+    ]) {
+      assert.equal(pm.classifyBashCommand(cmd), 'safe', `${cmd} should be safe`);
+    }
+  });
+});
+
+describe('Tool(param:value) permission rules', () => {
+  it('a paramPattern deny rule matches by input param, not by command/file_path', async () => {
+    const pm = new PermissionManager('auto-allow', [{ tool: 'task', paramPattern: { model: 'opus*' }, action: 'deny' }]);
+    // deny-rule enforcement path (used in all modes via hasExplicitDeny)
+    assert.equal(pm.hasExplicitDeny('task', { model: 'opus-4-8', prompt: 'x' }), true);
+    assert.equal(pm.hasExplicitDeny('task', { model: 'sonnet-5', prompt: 'x' }), false);
+  });
+  it('paramPattern also gates check() allow/ask rules', async () => {
+    const pm = new PermissionManager('ask', [{ tool: 'task', paramPattern: { model: 'opus*' }, action: 'deny' }]);
+    assert.equal(await pm.check('task', { model: 'opus-4-8' }), 'deny');
+    assert.notEqual(await pm.check('task', { model: 'sonnet-5' }), 'deny');
+  });
+
+  it('checkDenyRules does not blind-fire on a paramPattern-only deny rule', () => {
+    // A paramPattern rule has no `pattern`; checkDenyRules sees only a string
+    // input and must NOT deny every call just because rule.pattern is absent.
+    const pm = new PermissionManager('auto-allow', [{ tool: 'bash', paramPattern: { command: 'rm*' }, action: 'deny' }]);
+    assert.equal(pm.checkDenyRules('bash', 'ls -la').denied, false);
+  });
+
+  it('loadRules round-trips paramPattern (persistence does not drop it)', () => {
+    const dir = makeTempDir();
+    try {
+      const saver = new PermissionManager('auto-allow', [{ tool: 'task', paramPattern: { model: 'opus*' }, action: 'deny' }]);
+      saver.saveRules(dir);
+      const loader = new PermissionManager('auto-allow', []);
+      loader.loadRules(dir);
+      // The persisted paramPattern deny must still enforce after reload.
+      assert.equal(loader.hasExplicitDeny('task', { model: 'opus-4-8' }), true);
+      assert.equal(loader.hasExplicitDeny('task', { model: 'sonnet-5' }), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detectShadowedRules does not treat a narrow paramPattern deny as a blanket shadow', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'task', paramPattern: { model: 'opus*' }, action: 'deny' },
+      { tool: 'task', pattern: '*', action: 'allow' },
+    ]);
+    assert.equal(pm.detectShadowedRules().length, 0);
+  });
+});

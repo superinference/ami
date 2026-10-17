@@ -934,3 +934,39 @@ describe('hardline evasion — nested wrap + command substitution', () => {
     assert.equal(detectHardlineCommand('git commit -m "rm stuff from docs"').blocked, false);
   });
 });
+
+describe('session transcript write guard', () => {
+  it('blocks rm of a .superinference/sessions transcript and leaves it intact', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess-'));
+    try {
+      const dir = path.join(tmp, '.superinference', 'sessions');
+      fs.mkdirSync(dir, { recursive: true });
+      const target = path.join(dir, 's.jsonl');
+      fs.writeFileSync(target, '{"m":1}\n');
+      const res = await bashTool.execute({ command: `rm -f ${target}` }, ctx({ cwd: tmp, detachedMode: true } as any));
+      assert.equal(res.isError, true, `expected block, got ${JSON.stringify(res)}`);
+      assert.match(res.output, /session transcript|protected/i);
+      assert.equal(fs.existsSync(target), true, 'transcript must not be deleted');
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+  it('blocks destructive removal of the sessions directory itself and leaves it intact', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess3-'));
+    try {
+      const dir = path.join(tmp, '.superinference', 'sessions');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 's.jsonl'), '{"m":1}\n');
+      // No trailing slash: the dir itself is the target of rm -rf.
+      const res = await bashTool.execute({ command: `rm -rf ${dir}` }, ctx({ cwd: tmp, detachedMode: true } as any));
+      assert.equal(res.isError, true, `expected block, got ${JSON.stringify(res)}`);
+      assert.match(res.output, /session transcript|protected/i);
+      assert.equal(fs.existsSync(dir), true, 'sessions directory must not be deleted');
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+  it('control: writing a normal file is allowed', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess2-'));
+    try {
+      const res = await bashTool.execute({ command: `echo hi > ${path.join(tmp, 'notes.txt')}` }, ctx({ cwd: tmp, detachedMode: true } as any));
+      assert.ok(!res.isError);
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+});

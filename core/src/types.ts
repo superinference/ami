@@ -96,6 +96,8 @@ export interface ToolContext {
   outputBudget?: { bashMaxChars?: number; taskTailLines?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
   _parentThinking?: ThinkingConfig;
+  /** Session-wide web-search budget (shared mutable counter) to stop runaway loops. */
+  _webSearchBudget?: { count: number; max: number };
   detachedMode?: boolean;
 }
 
@@ -226,6 +228,8 @@ export interface EngineConfig {
   maxTurnsCeiling?: number;
   /** Max time (ms) to wait for MCP servers to connect before the first submit proceeds (default 3000). */
   mcpStartupBudgetMs?: number;
+  /** Session-wide cap on web_search tool calls (default 200) to stop runaway loops. */
+  maxWebSearchesPerSession?: number;
   /** Cap (chars) on inline bash stdout before it is spilled to a file. */
   bashOutputMaxChars?: number;
   /** Inactivity watchdog (ms) for a stalled-but-open stream, distinct from the total request timeout. */
@@ -301,6 +305,10 @@ export interface EngineConfig {
   _providerBaseDelayMs?: number;
   /** Maximum tool iterations before prompting to continue. Default 200. */
   maxToolIterations?: number;
+  /** Safe mode: skip loading untrusted project-local config — no project hooks
+   *  (.superinference/hooks.json), no MCP server auto-connect, and no project
+   *  memory/skills in the system prompt. For running in untrusted repos. */
+  safeMode?: boolean;
   /** Behavior when tool iteration limit is reached: 'stop' or 'confirm'. Default 'confirm'. */
   toolIterationBehavior?: 'stop' | 'confirm';
 }

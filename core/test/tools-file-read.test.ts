@@ -354,3 +354,71 @@ describe('image attachment helpers', () => {
     assert.equal(data, bytes.toString('base64'));
   });
 });
+
+describe('Read tool — size/regular-file guards + allow_large + large PDF', () => {
+  it('refuses an over-128MB image instead of loading it into memory', async () => {
+    const p = path.join(tmpDir, 'huge.png');
+    const fd = fs.openSync(p, 'w');
+    fs.ftruncateSync(fd, 130 * 1024 * 1024); // 130MB sparse
+    fs.closeSync(fd);
+    const res = await fileReadTool.execute({ file_path: p }, ctx());
+    assert.equal(res.isError, true);
+    assert.match(res.output, /128 MiB/);
+  });
+
+  it('refuses a non-regular file (unix socket) named like an image — fails fast, no hang', async () => {
+    // A unix domain socket with an image extension is a clean discriminator:
+    // it is not a directory (so the directory guard does not intercept it) and
+    // readFile on a socket errors fast — unlike a FIFO which would block. With
+    // the !isFile() guard the specific "not a regular file" message is produced.
+    const net = require('net');
+    const p = path.join(tmpDir, 'sock.png');
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(p, () => resolve());
+    });
+    try {
+      const res = await fileReadTool.execute({ file_path: p }, ctx());
+      assert.equal(res.isError, true);
+      assert.match(res.output, /not a regular file|pipe|device/i);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('refuses a non-regular file (FIFO) named like an image', async () => {
+    const p = path.join(tmpDir, 'pipe.png');
+    try {
+      require('child_process').execSync(`mkfifo ${JSON.stringify(p)}`);
+    } catch { return; /* mkfifo unavailable — skip */ }
+    const res = await fileReadTool.execute({ file_path: p }, ctx());
+    assert.equal(res.isError, true);
+    assert.match(res.output, /not a regular file|pipe|device/i);
+  });
+
+  it('advertises allow_large in the input schema so the model can pass it', () => {
+    const prop = (fileReadTool.inputSchema.properties as Record<string, unknown>).allow_large as { type?: string } | undefined;
+    assert.ok(prop, 'allow_large must be declared in inputSchema.properties');
+    assert.equal(prop.type, 'boolean');
+  });
+
+  it('allow_large reads a text file past the 256KB cap', async () => {
+    const p = path.join(tmpDir, 'big.txt');
+    fs.writeFileSync(p, 'HEADER_SENTINEL\n' + 'x'.repeat(300 * 1024));
+    const refused = await fileReadTool.execute({ file_path: p }, ctx());
+    assert.equal(refused.isError, true);
+    assert.match(refused.output, /exceeds 256KB limit/);
+    const allowed = await fileReadTool.execute({ file_path: p, allow_large: true }, ctx());
+    assert.ok(!allowed.isError, `allow_large should read, got ${JSON.stringify(allowed).slice(0, 200)}`);
+    assert.match(allowed.output, /HEADER_SENTINEL/);
+  });
+
+  it('a large PDF with no pages is not refused with the misleading size hint', async () => {
+    const p = path.join(tmpDir, 'big.pdf');
+    fs.writeFileSync(p, '%PDF-1.4\n' + 'x'.repeat(300 * 1024));
+    const res = await fileReadTool.execute({ file_path: p }, ctx());
+    // Whatever the PDF handler returns, it must NOT be the generic size-limit hint.
+    assert.ok(!res.output.includes('exceeds 256KB limit'), `PDF should not hit the size guard: ${res.output.slice(0, 160)}`);
+  });
+});

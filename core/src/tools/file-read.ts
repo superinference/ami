@@ -140,6 +140,10 @@ export const fileReadTool: ToolDefinition = {
         type: 'string',
         description: 'Page range for PDF files (e.g. "1-5", "3", "10-20"). Only applicable to PDF files. Max 20 pages per request.',
       },
+      allow_large: {
+        type: 'boolean',
+        description: 'Read a text file past the usual 256KB size limit in one call. Still subject to the token budget.',
+      },
     },
     required: ['file_path'],
   },
@@ -210,12 +214,23 @@ export const fileReadTool: ToolDefinition = {
     }
 
     const MAX_READ_SIZE = 256 * 1024; // 256KB
-    if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext) && input.offset === undefined && input.limit === undefined) {
-      return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections.`, isError: true };
+    // PDFs have their own page/spill handling; allow_large opts past the cap.
+    if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext)
+        && ext !== '.pdf' && input.offset === undefined && input.limit === undefined && !input.allow_large) {
+      return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections, or pass allow_large:true to read past the size cap (still subject to the token budget).`, isError: true };
     }
 
     // Handle image files — return base64 with optional compression
     if (IMAGE_EXTENSIONS.has(ext)) {
+      // Guard the decode path: never load a non-regular file (pipe/device named
+      // like an image) or an over-large image entirely into memory.
+      if (!stat.isFile()) {
+        return { output: `Error: not a regular file (pipe/device?): ${resolved}`, isError: true };
+      }
+      const MAX_IMAGE_BYTES = 128 * 1024 * 1024; // 128 MiB
+      if (stat.size > MAX_IMAGE_BYTES) {
+        return { output: `Error: image exceeds the 128 MiB limit (${(stat.size / 1024 / 1024).toFixed(0)} MiB).`, isError: true };
+      }
       const { media_type, data } = await encodeImageFile(resolved);
       context.filesRead?.add(resolved);
       return {
