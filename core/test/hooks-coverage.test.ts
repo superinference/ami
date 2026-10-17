@@ -128,6 +128,9 @@ describe('loadFromFile — trusted workspace project hooks', () => {
     // Unknown/already-AMI tokens pass through.
     assert.equal(translateHookMatcher('bash'), 'bash');
     assert.equal(translateHookMatcher('custom_tool'), 'custom_tool');
+    // Surrounding whitespace is trimmed for both mapped and unmapped tokens.
+    assert.equal(translateHookMatcher(' Bash | Write '), 'bash|file_edit');
+    assert.equal(translateHookMatcher(' custom '), 'custom');
   });
 
   it('map-keyed hooks carry a translated matcher through normalization', () => {

@@ -89,6 +89,44 @@ describe('MemoryManager — injection detection in instructions', () => {
     assert.ok(!result.includes('do something bad'));
   });
 
+  it('collectInstructionSources includes user-global instructions', async () => {
+    const fakeHome = createTmpDir();
+    const prevHome = process.env.HOME;
+    const prevUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      fs.mkdirSync(path.join(fakeHome, '.superinference'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHome, '.superinference', 'CLAUDE.md'), 'HOME_SI_SENTINEL_88');
+      const mgr = new MemoryManager(tmpDir);
+      const sources = await mgr.collectInstructionSources();
+      assert.ok(sources.some(s => s.content.includes('HOME_SI_SENTINEL_88')),
+        'user-global instructions must appear in collectInstructionSources');
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
+      cleanupTmpDir(fakeHome);
+    }
+  });
+
+  it('loads user-global instructions from ~/.superinference (preferred over ~/.claude)', () => {
+    const fakeHome = createTmpDir();
+    const prevHome = process.env.HOME;
+    const prevUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      fs.mkdirSync(path.join(fakeHome, '.superinference'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHome, '.superinference', 'CLAUDE.md'), 'SI_HOME_SENTINEL_99');
+      const mgr = new MemoryManager(tmpDir);
+      assert.ok(mgr.getMemoryContext().includes('SI_HOME_SENTINEL_99'));
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
+      cleanupTmpDir(fakeHome);
+    }
+  });
+
   it('loads user-global instructions from ~/.claude/CLAUDE.md', () => {
     const fakeHome = createTmpDir();
     const prevHome = process.env.HOME;

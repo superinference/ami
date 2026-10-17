@@ -271,7 +271,7 @@ function httpGetInternal(
               reject(new Error(ssrfResult.error));
               return;
             }
-            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, ssrfResult.resolvedIP).then(resolve, reject);
+            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, ssrfResult.resolvedIP, raw).then(resolve, reject);
           }, reject);
           return;
         }

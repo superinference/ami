@@ -1017,7 +1017,13 @@ export class MemoryManager {
       depth++;
     }
 
-    // 4. User memories
+    // 4. User-global instructions (~/.superinference, ~/.claude/CLAUDE.md)
+    const userGlobal = this.loadUserGlobalInstructions();
+    if (userGlobal) {
+      sources.push({ content: userGlobal, level: 'user', path: '<user-global>' });
+    }
+
+    // 5. User memories
     const memories = this.loadMemories();
     for (const mem of memories) {
       sources.push({ content: mem.content, level: 'user', path: mem.path });

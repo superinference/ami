@@ -73,6 +73,29 @@ describe('SkillManager — agent tools frontmatter (comma-separated)', () => {
     assert.ok(agent);
     assert.deepEqual(agent!.tools, ['file_read', 'grep']);
   });
+
+  it('filters empty entries from a comma list (trailing/double commas)', () => {
+    writeAgent('empties-agent', 'name: empties-agent\ndescription: x\ntools: file_read, , grep,');
+    const mgr = new SkillManager(tmpDir);
+    const agent = mgr.getAgent('empties-agent');
+    assert.ok(agent);
+    assert.deepEqual(agent!.tools, ['file_read', 'grep']);
+  });
+});
+
+describe('SkillManager — skill allowed-tools frontmatter (comma-separated)', () => {
+  function writeSkillAllowed(name: string, frontmatter: string) {
+    const dir = path.join(tmpDir, '.superinference', 'skills', name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\n${frontmatter}\n---\nBody.`);
+  }
+  it('parses a bare comma-separated allowed-tools list', () => {
+    writeSkillAllowed('at-skill', 'name: at-skill\ndescription: x\nallowed-tools: file_read, grep');
+    const mgr = new SkillManager(tmpDir);
+    const skill = mgr.getSkill('at-skill');
+    assert.ok(skill);
+    assert.deepEqual(skill!.allowedTools, ['file_read', 'grep']);
+  });
 });
 
 describe('SkillManager — context parsing', () => {

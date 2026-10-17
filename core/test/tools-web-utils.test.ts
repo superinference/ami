@@ -266,6 +266,9 @@ describe('httpGet', () => {
       } else if (req.url === '/error') {
         res.writeHead(500);
         res.end('Internal Server Error');
+      } else if (req.url === '/bin') {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(Buffer.from([0x00, 0xff, 0xfe, 0x89, 0x50]));
       } else {
         res.writeHead(404);
         res.end('not found');
@@ -304,6 +307,20 @@ describe('httpGet', () => {
       (err: Error) => err.message === 'Aborted',
     );
   });
+
+  it('raw:true returns bodyBuffer with exact bytes', async () => {
+    const result = await httpGet(`http://127.0.0.1:${port}/bin`, new AbortController().signal, { raw: true });
+    assert.ok(result.bodyBuffer, 'bodyBuffer must be present with raw:true');
+    assert.deepEqual([...result.bodyBuffer!], [0x00, 0xff, 0xfe, 0x89, 0x50]);
+  });
+
+  it('does not return bodyBuffer without raw', async () => {
+    const result = await httpGet(`http://127.0.0.1:${port}/bin`, new AbortController().signal);
+    assert.equal(result.bodyBuffer, undefined);
+  });
+  // Note: the redirect+raw path (raw propagated through httpGetInternal recursion)
+  // cannot be unit-tested with a local mock — SSRF protection blocks redirects to
+  // 127.0.0.1 before the recursion runs. The fix mirrors the non-redirect path.
 });
 
 describe('httpGet — identifying User-Agent', () => {

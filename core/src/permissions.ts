@@ -644,11 +644,14 @@ export class PermissionManager {
     if (this.mode === 'ask' && toolName === 'bash' && typeof input.command === 'string') {
       const classification = this.classifyBashCommand(input.command);
       if (classification === 'destructive') return 'ask';
-      // Credential/secret access always confirms, even under a wildcard allow —
-      // unless there is an explicit deny rule (which must still win below).
-      if (commandTargetsCredentialPath(input.command) && !this.hasExplicitDeny(toolName, input)) {
-        return 'ask';
-      }
+    }
+    // Credential/secret access always confirms in rule-evaluated modes (ask and
+    // acceptEdits), even under a wildcard allow — unless there is an explicit
+    // deny rule (which must still win below).
+    if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
+        toolName === 'bash' && typeof input.command === 'string' &&
+        commandTargetsCredentialPath(input.command) && !this.hasExplicitDeny(toolName, input)) {
+      return 'ask';
     }
 
     // Evaluate rules in order (first match wins). AMI intentionally uses
@@ -1014,11 +1017,17 @@ export class PermissionManager {
    *  rule that matches nothing-or-everything). Returns undefined if nothing valid. */
   private sanitizeParamPattern(raw: unknown): Record<string, string> | undefined {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const entries = Object.entries(raw as Record<string, unknown>);
+    if (entries.length === 0) return undefined;
+    // Strict: if ANY value is non-string the pattern is malformed. Keeping only
+    // the valid subset would silently widen the rule (fewer constraints → more
+    // matches), so reject the whole thing (loadRules then skips the rule).
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      if (typeof v === 'string') out[k] = v;
+    for (const [k, v] of entries) {
+      if (typeof v !== 'string') return undefined;
+      out[k] = v;
     }
-    return Object.keys(out).length > 0 ? out : undefined;
+    return out;
   }
 
   /** All named-param globs in a rule's paramPattern must match the tool input. */

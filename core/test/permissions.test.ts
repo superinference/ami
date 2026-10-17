@@ -692,6 +692,13 @@ describe('credential-path reads are never auto-safe', () => {
     assert.equal(await pm.check('bash', { command: 'cat README.md' }), 'allow');
   });
 
+  it('acceptEdits force-prompts a credential read even under a wildcard allow rule', async () => {
+    const pm = new PermissionManager('acceptEdits', [{ tool: 'bash', pattern: 'cat *', action: 'allow' }]);
+    assert.equal(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'ask');
+    // control: the wildcard allow still applies to a non-credential cat
+    assert.equal(await pm.check('bash', { command: 'cat README.md' }), 'allow');
+  });
+
   it('ask mode force-prompts a credential read even under a wildcard allow rule', async () => {
     const pm = new PermissionManager('ask', [{ tool: 'bash', pattern: 'cat *', action: 'allow' }]);
     assert.equal(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'ask');
@@ -775,6 +782,25 @@ describe('Tool(param:value) permission rules', () => {
       pm.loadRules(dir);
       // With the bad value dropped, paramPattern is undefined → not an all-matching deny.
       assert.notEqual(pm.hasExplicitDeny('task', { model: 'opus-4-8' }), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadRules skips a rule with a PARTIALLY malformed paramPattern (no silent widening)', () => {
+    const dir = makeTempDir();
+    try {
+      fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
+      // One valid key, one non-string: keeping only {command} would widen a deny
+      // meant to be constrained by both — the whole rule must be skipped.
+      fs.writeFileSync(
+        path.join(dir, '.superinference', 'permissions.json'),
+        JSON.stringify({ mode: 'auto-allow', rules: [{ tool: 'bash', action: 'deny', paramPattern: { command: 'rm*', extra: 123 } }] }),
+      );
+      const pm = new PermissionManager('auto-allow', []);
+      pm.loadRules(dir);
+      // Rule skipped → an rm command is NOT denied by this malformed rule.
+      assert.notEqual(pm.hasExplicitDeny('bash', { command: 'rm -rf x' }), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -242,7 +242,10 @@ const CLAUDE_TO_AMI_TOOL: Record<string, string> = {
 /** Translate the tool-name tokens in a hook matcher ('Edit|Write' → 'file_edit|
  *  file_edit'). Unknown tokens (already-AMI names, custom regex) pass through. */
 export function translateHookMatcher(matcher: string): string {
-  return matcher.split('|').map(tok => CLAUDE_TO_AMI_TOOL[tok.trim()] ?? tok).join('|');
+  return matcher.split('|').map(tok => {
+    const t = tok.trim();
+    return CLAUDE_TO_AMI_TOOL[t] ?? t;
+  }).join('|');
 }
 
 export function normalizeMapKeyedHooks(map: unknown): HookConfigEntry[] {
