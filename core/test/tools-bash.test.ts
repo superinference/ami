@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
-import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout } from '../src/tools/bash';
+import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout, detectGitCommit } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 import { detectHardlineCommand } from '../src/permissions';
 
@@ -438,6 +438,49 @@ describe('bashTool – command chaining detection', () => {
 // ---------------------------------------------------------------------------
 // Git commit guard
 // ---------------------------------------------------------------------------
+
+// Contract matrix: pins the FULL behavior of detectGitCommit so any future
+// rewrite that drifts (misses a threat case or adds a false-positive) fails
+// here — not a verification round later. Added after a tokenizer rewrite
+// silently stopped blocking path-qualified `git` (e.g. /usr/bin/git commit).
+describe('detectGitCommit — behavior contract (must-block / must-not-block)', () => {
+  const MUST_BLOCK = [
+    'git commit',
+    'git commit -m "x"',
+    'git commit --amend',
+    'git -C /tmp commit -m x',
+    'git -c user.name=x commit',
+    'git --git-dir=/x commit',
+    'git --git-dir /x commit',
+    'git --work-tree /srv commit -m y',
+    'git --namespace ns commit',
+    '/usr/bin/git commit -m x',
+    './git commit',
+    'git add . && git commit -m chained',
+    'git status; git commit -m after',
+    'echo hi | git commit -m piped',
+  ];
+  const MUST_NOT_BLOCK = [
+    'git status',
+    'git log --oneline',
+    'git log --grep=commit',
+    'git show HEAD',
+    'git commit-graph write',
+    'git commit-tree abc',
+    'echo "git commit"',
+    "echo 'git commit'",
+    'mygit commit',
+    'git-foo commit',
+    'npm run commit',
+    'cat commit.txt',
+  ];
+  for (const cmd of MUST_BLOCK) {
+    it(`BLOCKS: ${cmd}`, () => assert.equal(detectGitCommit(cmd), true, `expected blocked: ${cmd}`));
+  }
+  for (const cmd of MUST_NOT_BLOCK) {
+    it(`ALLOWS: ${cmd}`, () => assert.equal(detectGitCommit(cmd), false, `expected allowed: ${cmd}`));
+  }
+});
 
 describe('bashTool – git commit guard', () => {
   const GUARD_MSG = 'Use the git_commit tool instead';

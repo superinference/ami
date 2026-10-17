@@ -85,7 +85,7 @@ const GIT_VALUE_OPTS = new Set([
   '--super-prefix', '--config-env',
 ]);
 
-function detectGitCommit(command: string): boolean {
+export function detectGitCommit(command: string): boolean {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   // Tokenize (separators → spaces) and look for `git [global-opts…] commit`.
   // A linear scan avoids the ReDoS risk of a backtracking mega-regex while
