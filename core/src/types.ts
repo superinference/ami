@@ -212,6 +212,7 @@ export type EngineEvent =
   | { type: 'suggest_file_save'; content: string; suggestedPath: string; lineCount: number }
   | { type: 'user_question'; toolCallId: string; question: string; options: Array<{ label: string; description: string }>; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, unknown> }
   | { type: 'session_title'; title: string }
+  | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
   | { type: 'done'; totalTurns: number; exitReason: 'completed' | 'max_turns' | 'error' | 'abort' | 'session_timeout' | 'max_steps' | 'budget_exceeded' | 'hook_denied' | 'superinference_stop' | 'consecutive_errors' | 'escalation_terminate' | 'no_edit_stall' | 'keepalive_exhausted' | 'context_too_small' };
@@ -229,6 +230,10 @@ export interface EngineConfig {
   bashOutputMaxChars?: number;
   /** Inactivity watchdog (ms) for a stalled-but-open stream, distinct from the total request timeout. */
   streamIdleTimeoutMs?: number;
+  /** RSS threshold (bytes) that emits a one-time memory_warning with recovery steps (default 1.5 GiB). */
+  memoryWarningRssBytes?: number;
+  /** Injectable RSS reader for tests (defaults to process.memoryUsage().rss). */
+  memoryUsageReader?: () => number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them, saving prompt tokens. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on (beyond the essential set + tool_search). */
