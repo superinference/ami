@@ -259,6 +259,8 @@ export interface EngineConfig {
   hooks?: import('./hooks').HookManager;
   /** Persona name — changes system prompt identity and defaults. */
   persona?: string;
+  /** Named output style overlay appended to the system prompt (e.g. 'concise'). */
+  outputStyle?: string;
   /** Merged project-level configuration (from .superinference/config.json). */
   projectConfig?: import('./config').ProjectConfig;
   /** Maximum number of tool-call steps before forcing a summary. When reached,
