@@ -332,15 +332,15 @@ function normalizeForHardline(command: string): string {
   let q: RegExpExecArray | null;
   while ((q = quotedAssignRe.exec(command)) !== null) assigns.set(q[1], q[3]);
   // Multiple space-separated assignments on one statement, e.g.
-  // `export a=1 c=rm` — scan every name=BASE pair within an assignment run
-  // (prefixed by export/declare/… or a leading bare assignment).
-  const runRe = /(?:^|;|&&|\|\||\n)\s*(?:(?:export|declare|typeset|readonly|local)\s+)?([^\n;|&]*)/g;
+  // `export a=1 c=rm` — scan every name=BASE pair within each statement
+  // (prefixed by export/declare/… or a bare assignment run). Split first to
+  // keep the per-pair regex simple and ReDoS-safe.
   const pairRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|$)`, 'g');
-  let run: RegExpExecArray | null;
-  while ((run = runRe.exec(command)) !== null) {
+  for (const rawSeg of command.split(/[;\n]|&&|\|\|/)) {
+    const seg = rawSeg.replace(/^\s*(?:export|declare|typeset|readonly|local)\s+/, '');
     let pr: RegExpExecArray | null;
     pairRe.lastIndex = 0;
-    while ((pr = pairRe.exec(run[1])) !== null) assigns.set(pr[1], pr[2]);
+    while ((pr = pairRe.exec(seg)) !== null) assigns.set(pr[1], pr[2]);
   }
   if (assigns.size) {
     out = out.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (full, name) =>

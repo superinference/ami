@@ -78,13 +78,33 @@ function looksLikeHungPrompt(output: string): boolean {
   return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|password:|passphrase:|Press Enter|Continue\?|Overwrite\?|Are you sure/i.test(lastLine);
 }
 
+/** Global git options that take a separate value token (so the token after them
+ *  is a value, not the subcommand). */
+const GIT_VALUE_OPTS = new Set([
+  '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path',
+  '--super-prefix', '--config-env',
+]);
+
 function detectGitCommit(command: string): boolean {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
-  // Allow global git options between `git` and `commit` so none of
-  // `git -C /x commit`, `git -c k=v commit`, `git --git-dir=/x commit`, or the
-  // space-separated `git --work-tree /x commit` can bypass the git_commit guard.
-  // `commit(?![\w-])` avoids false-positives on `commit-graph`/`commit-tree`.
-  return /\bgit\s+(?:(?:-[cC]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)(?:=\S+|\s+\S+)|--[a-z][\w-]*(?:=\S+)?|-[a-zA-Z]+)\s+)*commit(?![\w-])/.test(stripped);
+  // Tokenize (separators → spaces) and look for `git [global-opts…] commit`.
+  // A linear scan avoids the ReDoS risk of a backtracking mega-regex while
+  // still catching `git -C /x commit`, `git -c k=v commit`,
+  // `git --git-dir /x commit`, `git --git-dir=/x commit`, etc. The final
+  // subcommand must be exactly `commit` (not `commit-graph`/`commit-tree`).
+  const tokens = stripped.replace(/[;&|()]/g, ' ').split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] !== 'git') continue;
+    let j = i + 1;
+    while (j < tokens.length) {
+      const t = tokens[j];
+      if (GIT_VALUE_OPTS.has(t)) { j += 2; continue; }        // option + value token
+      if (t.startsWith('-')) { j += 1; continue; }            // --opt=val / boolean / short flags
+      break;                                                  // first positional = subcommand
+    }
+    if (j < tokens.length && tokens[j] === 'commit') return true;
+  }
+  return false;
 }
 
 const DETACHED_GIT_DISCARD_MSG =
