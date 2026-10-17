@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { createMcpTool } from '../src/tools/mcp-tool';
+import { createMcpTool, qualifiedMcpToolName, MAX_MCP_TOOL_NAME_LEN } from '../src/tools/mcp-tool';
 
 function makeContext(mcpManager: any): any {
   return {
@@ -110,5 +110,26 @@ describe('MCP tool auto-connect on execute', () => {
     const result = await tool.execute({}, makeContext(null));
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('MCP not initialized'));
+  });
+});
+
+describe('qualifiedMcpToolName — API name-length limit (128)', () => {
+  it('keeps a short name intact', () => {
+    assert.equal(qualifiedMcpToolName('kali', 'nmap_scan'), 'mcp__kali__nmap_scan');
+  });
+  it('truncates an over-long qualified name to <=128 chars with a hash suffix', () => {
+    const longTool = 'x'.repeat(200);
+    const name = qualifiedMcpToolName('server', longTool);
+    assert.ok(name.length <= MAX_MCP_TOOL_NAME_LEN, `name length ${name.length} must be <= 128`);
+    assert.ok(name.startsWith('mcp__server__'));
+  });
+  it('produces distinct names for distinct over-long tools (hash disambiguates)', () => {
+    const a = qualifiedMcpToolName('s', 'a'.repeat(200));
+    const b = qualifiedMcpToolName('s', 'b'.repeat(200));
+    assert.notEqual(a, b);
+  });
+  it('createMcpTool uses the length-bounded name', () => {
+    const tool = createMcpTool('server', 'y'.repeat(200), 'd', {});
+    assert.ok(tool.name.length <= MAX_MCP_TOOL_NAME_LEN);
   });
 });

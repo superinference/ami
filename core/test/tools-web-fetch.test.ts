@@ -15,6 +15,20 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 // Tool definition
 // ---------------------------------------------------------------------------
 
+describe('webFetchTool – disable kill-switch', () => {
+  it('returns an error when CLAUDE_CODE_DISABLE_WEB_FETCH=1 (no network call)', async () => {
+    const prev = process.env.CLAUDE_CODE_DISABLE_WEB_FETCH;
+    process.env.CLAUDE_CODE_DISABLE_WEB_FETCH = '1';
+    try {
+      const res = await webFetchTool.execute({ url: 'https://example.com' }, ctx());
+      assert.equal(res.isError, true);
+      assert.match(res.output, /disabled/i);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_DISABLE_WEB_FETCH; else process.env.CLAUDE_CODE_DISABLE_WEB_FETCH = prev;
+    }
+  });
+});
+
 describe('webFetchTool – definition', () => {
   it('has the correct name', () => {
     assert.equal(webFetchTool.name, 'web_fetch');

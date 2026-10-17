@@ -114,6 +114,11 @@ export const webFetchTool: ToolDefinition = {
     let url = input.url as string;
     const prompt = (input.prompt as string) ?? '';
 
+    // Operator kill-switch (Claude Code parity): disable outbound web_fetch.
+    if (process.env.CLAUDE_CODE_DISABLE_WEB_FETCH === '1' || process.env.SUPERINFERENCE_DISABLE_WEB_FETCH === '1') {
+      return { output: 'Error: web_fetch is disabled (CLAUDE_CODE_DISABLE_WEB_FETCH / SUPERINFERENCE_DISABLE_WEB_FETCH).', isError: true };
+    }
+
     if (!url || url.trim().length === 0) {
       return { output: 'Error: url must not be empty.', isError: true };
     }
