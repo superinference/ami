@@ -512,6 +512,14 @@ describe('bashTool – git commit guard', () => {
     assert.ok(!result.output.includes(GUARD_MSG));
   });
 
+  it('blocks a path-qualified git binary (/usr/bin/git commit, ./git commit)', async () => {
+    for (const cmd of ['/usr/bin/git commit -m x', './git commit -m y']) {
+      const result = await bashTool.execute({ command: cmd }, ctx());
+      assert.equal(result.isError, true, `expected block for: ${cmd}`);
+      assert.ok(result.output.includes(GUARD_MSG), `expected guard for: ${cmd}`);
+    }
+  });
+
   it('does not block git status', async () => {
     const result = await bashTool.execute(
       { command: 'git status' },

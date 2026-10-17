@@ -280,7 +280,7 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   // The arg run is `[^;&|]*` so it cannot span a command separator and
   // false-positive on a later bare `/` (e.g. `rm x.txt && ls /`).
   { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^;&|]*\s+)\/(?=\s|$|[;&|><*])/,  description: 'rm -r on filesystem root' },
-  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|.*\s+)\/(home|etc|usr|var|bin|sbin|boot|lib|lib64)\b/, description: 'rm -r on system directory' },
+  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^;&|]*\s+)\/(home|etc|usr|var|bin|sbin|boot|lib|lib64)\b/, description: 'rm -r on system directory' },
   { pattern: /\bmkfs\b/, description: 'filesystem format' },
   { pattern: /\bdd\b.*\bof\s*=\s*\/dev\/[sh]d/, description: 'dd to block device' },
   { pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, description: 'fork bomb' },
@@ -335,7 +335,7 @@ function normalizeForHardline(command: string): string {
   // `export a=1 c=rm` — scan every name=BASE pair within each statement
   // (prefixed by export/declare/… or a bare assignment run). Split first to
   // keep the per-pair regex simple and ReDoS-safe.
-  const pairRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|$)`, 'g');
+  const pairRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|$|[|&])`, 'g');
   for (const rawSeg of command.split(/[;\n]|&&|\|\|/)) {
     const seg = rawSeg.replace(/^\s*(?:export|declare|typeset|readonly|local)\s+/, '');
     let pr: RegExpExecArray | null;
@@ -761,7 +761,7 @@ export class PermissionManager {
     // Flag-aware checks for commands that are safe/destructive depending on flags
     if (/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'unsafe'; // sed -i modifies files in place
     if (/\bfind\s+.*-delete\b/.test(trimmed)) return 'destructive';
-    if (/\bfind\s+.*-exec(dir)?\s+rm\b/.test(trimmed)) return 'destructive';
+    if (/\bfind\s+.*-(?:exec|ok)(dir)?\s+rm\b/.test(trimmed)) return 'destructive';
     if (/\bxargs\s+.*\brm\b/.test(trimmed)) return 'destructive';
     if (/\bxargs\s+.*\bmv\b/.test(trimmed)) return 'unsafe';
     if (/\bmake\s+(clean|install|distclean|uninstall)\b/.test(trimmed)) return 'unsafe';
@@ -824,7 +824,7 @@ export class PermissionManager {
     if (/\bsed\b/.test(trimmed) && !/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'safe';
     // find is read-only only without any command-running primary
     // (-delete, -exec, -execdir, -ok, -okdir).
-    if (/\bfind\b/.test(trimmed) && !/\b-delete\b/.test(trimmed) && !/-exec(dir)?\b/.test(trimmed) && !/-ok(dir)?\b/.test(trimmed)) return 'safe';
+    if (/\bfind\b/.test(trimmed) && !/(^|\s)-delete\b/.test(trimmed) && !/(^|\s)-exec(dir)?\b/.test(trimmed) && !/(^|\s)-ok(dir)?\b/.test(trimmed)) return 'safe';
 
     // Check if extracted paths target system directories
     const cmdPaths = extractCommandPaths(trimmed);

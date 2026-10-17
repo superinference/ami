@@ -94,7 +94,9 @@ function detectGitCommit(command: string): boolean {
   // subcommand must be exactly `commit` (not `commit-graph`/`commit-tree`).
   const tokens = stripped.replace(/[;&|()]/g, ' ').split(/\s+/).filter(Boolean);
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] !== 'git') continue;
+    // Strip any path prefix so `/usr/bin/git` and `./git` are still recognized
+    // (the old \bgit regex matched these because `/` is a word boundary).
+    if (tokens[i].replace(/^.*\//, '') !== 'git') continue;
     let j = i + 1;
     while (j < tokens.length) {
       const t = tokens[j];

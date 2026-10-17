@@ -217,6 +217,27 @@ describe('streamChatCompletionWithRetry - Retry-After: 0 floors to backoff', () 
       mock.server.close();
     }
   });
+
+  it('honors a small Retry-After EXACTLY across attempts (fixed floor, not exponential)', async () => {
+    // 2 failures with Retry-After:1 then success. With a FIXED baseDelay floor,
+    // every delay must be exactly 1000ms; an exponential floor would inflate the
+    // 2nd delay to 2000ms (baseDelay*2^1).
+    const mock = await createRetryServer(429, 2, { retryAfterSeconds: 1 });
+    try {
+      const config = makeConfig(mock.port);
+      const ac = new AbortController();
+      const delays: number[] = [];
+      await collectChunks(
+        streamChatCompletionWithRetry(config, defaultMessages, [], ac.signal, {
+          baseDelayMs: 1000,
+          onRetry: (_a, _m, delayMs) => { delays.push(delayMs); },
+        }),
+      );
+      assert.deepEqual(delays, [1000, 1000], `every Retry-After:1 delay must be 1000ms (no exponential inflation), got ${JSON.stringify(delays)}`);
+    } finally {
+      mock.server.close();
+    }
+  });
 });
 
 describe('streamChatCompletionWithRetry - retry on 500/502/503', () => {

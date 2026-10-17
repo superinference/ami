@@ -374,6 +374,17 @@ describe('PermissionManager — classifyBashCommand', () => {
     assert.equal(pm.classifyBashCommand('find . -name "*.ts"'), 'safe');
   });
 
+  it('classifies find -okdir rm / -ok rm as destructive', () => {
+    assert.equal(pm.classifyBashCommand('find . -okdir rm {} +'), 'destructive');
+    assert.equal(pm.classifyBashCommand('find . -ok rm {} \\;'), 'destructive');
+  });
+
+  it('does not false-positive on -ok/-exec substrings inside a name arg', () => {
+    // '-ok'/'-exec' appear inside the glob but are not find primaries.
+    assert.equal(pm.classifyBashCommand("find . -name '*-ok*.txt'"), 'safe');
+    assert.equal(pm.classifyBashCommand("find . -name '*-exec*'"), 'safe');
+  });
+
   it('classifies xargs rm as destructive', () => {
     assert.equal(pm.classifyBashCommand('echo file | xargs rm'), 'destructive');
   });
