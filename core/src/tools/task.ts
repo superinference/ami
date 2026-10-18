@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
-import { ToolRegistry, createDefaultTools } from './index';
+import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */

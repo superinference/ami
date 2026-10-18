@@ -40,6 +40,48 @@ export interface DenyCheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// Permission verdict hold-over
+// ---------------------------------------------------------------------------
+
+export interface PermissionVerdict {
+  decision: 'allow' | 'deny' | 'ask';
+  rule?: string;
+  source?: string;
+  reason?: string;
+}
+
+export function verdictRank(decision: string): number {
+  switch (decision) {
+    case 'deny': return 3;
+    case 'modify': return 2;
+    case 'ask': return 2;
+    case 'allow': return 1;
+    default: return 0;
+  }
+}
+
+export function holdsOver(held: PermissionVerdict, answer: PermissionVerdict): boolean {
+  const heldRank = verdictRank(held.decision);
+  const answerRank = verdictRank(answer.decision);
+  if (answerRank > heldRank) return false;
+  if (heldRank > answerRank) return true;
+  const heldHasAttribution = held.rule !== undefined || held.source !== undefined;
+  const answerHasAttribution = answer.rule !== undefined || answer.source !== undefined;
+  return heldHasAttribution && !answerHasAttribution;
+}
+
+export function mostRestrictiveVerdict(verdicts: PermissionVerdict[]): PermissionVerdict {
+  if (verdicts.length === 0) return { decision: 'allow' };
+  let best = verdicts[0];
+  for (let i = 1; i < verdicts.length; i++) {
+    if (holdsOver(verdicts[i], best)) {
+      best = verdicts[i];
+    }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -647,6 +689,7 @@ export class PermissionManager {
   private mode: PermissionMode = 'ask';
   private rules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
+  private _disableBypass = false;
 
   // Denial circuit breaker — abort after too many consecutive or total denials
   private consecutiveDenials = 0;
@@ -750,6 +793,13 @@ export class PermissionManager {
       return 'ask';
     }
 
+    // Policy memo: return cached decision for this exact tool+input if available
+    if (this._memo) {
+      const inputHash = this._hashInput(input);
+      const cached = this._memo.get(toolName, inputHash);
+      if (cached !== null) return cached;
+    }
+
     // Evaluate rules in order (first match wins). AMI intentionally uses
     // first-match so a prepended allow can override a broad deny and vice versa.
     for (const rule of this.rules) {
@@ -762,15 +812,18 @@ export class PermissionManager {
         // Build a representative string from the input to match against
         const inputStr = this.inputToString(toolName, input);
         if (matchPattern(rule.pattern, inputStr)) {
+          if (this._memo) this._memo.set(toolName, this._hashInput(input), rule.action);
           return rule.action;
         }
       } else {
         // No pattern -- rule applies to the whole tool (param match already gated above)
+        if (this._memo) this._memo.set(toolName, this._hashInput(input), rule.action);
         return rule.action;
       }
     }
 
     // Default: 'ask' mode means non-read-only tools require a prompt
+    if (this._memo) this._memo.set(toolName, this._hashInput(input), 'ask');
     return 'ask';
   }
 
@@ -1068,9 +1121,29 @@ export class PermissionManager {
 
   /**
    * Set the permission mode.
+   * Returns true if the mode was set successfully, false if blocked by policy.
    */
-  setMode(mode: PermissionMode): void {
+  setMode(mode: PermissionMode): boolean {
+    if (this._disableBypass && (mode === 'bypassPermissions' || mode === 'auto-allow')) {
+      return false; // blocked by managed policy
+    }
     this.mode = mode;
+    return true;
+  }
+
+  /**
+   * Enable or disable the bypass-permissions guard.
+   * When enabled, setMode() rejects 'bypassPermissions' and 'auto-allow'.
+   */
+  setDisableBypass(disable: boolean): void {
+    this._disableBypass = disable;
+  }
+
+  /**
+   * Check whether bypass is disabled by managed policy.
+   */
+  isDisableBypass(): boolean {
+    return this._disableBypass;
   }
 
   /**
@@ -1253,6 +1326,33 @@ export class PermissionManager {
   }
 
   // -------------------------------------------------------------------------
+  // Policy memo (permission cache)
+  // -------------------------------------------------------------------------
+
+  private _memo: PolicyMemo | null = null;
+
+  enableMemo(ttlMs?: number): void {
+    this._memo = new PolicyMemo(ttlMs);
+  }
+
+  disableMemo(): void {
+    this._memo = null;
+  }
+
+  getMemo(): PolicyMemo | null {
+    return this._memo;
+  }
+
+  private _hashInput(input: Record<string, unknown>): string {
+    const str = JSON.stringify(input);
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    return hash.toString(36);
+  }
+
+  // -------------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------------
 
@@ -1263,5 +1363,82 @@ export class PermissionManager {
     if (typeof input.command === 'string') return input.command;
     if (typeof input.file_path === 'string') return input.file_path;
     return JSON.stringify(input);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PolicyMemo — memoize permission decisions across bursts of tool calls
+// ---------------------------------------------------------------------------
+
+const POLICY_MEMO_MAX_ENTRIES = 1000;
+
+interface MemoEntry {
+  decision: 'allow' | 'deny' | 'ask';
+  expiresAt: number;
+  lastAccess: number;
+}
+
+export class PolicyMemo {
+  private readonly _ttlMs: number;
+  private readonly _cache = new Map<string, MemoEntry>();
+
+  constructor(ttlMs: number = 5000) {
+    this._ttlMs = ttlMs;
+  }
+
+  get(toolName: string, inputHash: string): 'allow' | 'deny' | 'ask' | null {
+    const key = `${toolName}:${inputHash}`;
+    const entry = this._cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this._cache.delete(key);
+      return null;
+    }
+    entry.lastAccess = Date.now();
+    return entry.decision;
+  }
+
+  set(toolName: string, inputHash: string, decision: 'allow' | 'deny' | 'ask'): void {
+    const key = `${toolName}:${inputHash}`;
+    this._cache.set(key, {
+      decision,
+      expiresAt: Date.now() + this._ttlMs,
+      lastAccess: Date.now(),
+    });
+    if (this._cache.size > POLICY_MEMO_MAX_ENTRIES) {
+      this._evictLRU();
+    }
+  }
+
+  clear(): void {
+    this._cache.clear();
+  }
+
+  size(): number {
+    return this._cache.size;
+  }
+
+  prune(): number {
+    const now = Date.now();
+    let removed = 0;
+    for (const [key, entry] of this._cache) {
+      if (now > entry.expiresAt) {
+        this._cache.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  private _evictLRU(): void {
+    let oldestKey: string | null = null;
+    let oldestAccess = Infinity;
+    for (const [key, entry] of this._cache) {
+      if (entry.lastAccess < oldestAccess) {
+        oldestAccess = entry.lastAccess;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) this._cache.delete(oldestKey);
   }
 }

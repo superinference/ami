@@ -7,6 +7,8 @@ const GIT_NO_PROMPT_ENV = {
   GIT_ASKPASS: '',
 };
 
+export const MAX_WORKTREES = 10;
+
 const EPHEMERAL_WORKTREE_PATTERNS = [
   /^agent-[0-9a-f]{7,}$/,
   /^wf_[0-9a-f]{8}-[0-9a-f]{3}-\d+$/,
@@ -188,6 +190,76 @@ export function copyWorktreeIncludes(sourceCwd: string, worktreePath: string): s
   }
 
   return copied;
+}
+
+export function validateWorktreeGitFile(worktreePath: string): { valid: boolean; error?: string } {
+  const gitPath = path.join(worktreePath, '.git');
+  try {
+    const stat = fs.lstatSync(gitPath);
+    if (stat.isDirectory()) {
+      return { valid: true };
+    }
+    if (!stat.isFile()) {
+      return { valid: false, error: 'not a file or directory' };
+    }
+  } catch {
+    return { valid: false, error: 'missing .git' };
+  }
+
+  let content: string;
+  try {
+    content = fs.readFileSync(gitPath, 'utf-8').trim();
+  } catch {
+    return { valid: false, error: 'unreadable .git file' };
+  }
+
+  if (!content.startsWith('gitdir:')) {
+    return { valid: false, error: 'invalid .git file: missing gitdir: prefix' };
+  }
+
+  const gitdir = content.slice('gitdir:'.length).trim();
+  if (!gitdir) {
+    return { valid: false, error: 'invalid .git file: empty gitdir path' };
+  }
+
+  const resolvedGitdir = path.isAbsolute(gitdir)
+    ? gitdir
+    : path.resolve(worktreePath, gitdir);
+
+  if (!fs.existsSync(resolvedGitdir)) {
+    return { valid: false, error: 'stale worktree: gitdir target does not exist' };
+  }
+
+  return { valid: true };
+}
+
+export function findStaleWorktrees(repoPath: string): string[] {
+  const worktreeDir = path.join(repoPath, '.superinference', 'worktrees');
+  if (!fs.existsSync(worktreeDir)) return [];
+
+  const stale: string[] = [];
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(worktreeDir);
+  } catch {
+    return [];
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(worktreeDir, entry);
+    try {
+      const stat = fs.statSync(fullPath);
+      if (!stat.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const result = validateWorktreeGitFile(fullPath);
+    if (!result.valid) {
+      stale.push(fullPath);
+    }
+  }
+
+  return stale;
 }
 
 function copyDirRecursive(src: string, dest: string): void {

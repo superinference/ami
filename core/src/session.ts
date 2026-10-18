@@ -227,3 +227,229 @@ export class SessionManager {
     return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Session diff / file-change tracking
+// ---------------------------------------------------------------------------
+
+export interface FileChange {
+  path: string;
+  type: 'create' | 'modify' | 'delete' | 'rename';
+  timestamp: number;
+  toolCallId?: string;
+  originalContent?: string;
+  size?: number;
+}
+
+export class SessionDiffTracker {
+  private _changes: FileChange[] = [];
+  private _maxChanges: number;
+  private _seenPaths = new Set<string>();
+
+  constructor(maxChanges: number = 10_000) {
+    this._maxChanges = maxChanges;
+  }
+
+  recordChange(change: FileChange): boolean {
+    if (this._changes.length >= this._maxChanges) return false;
+    this._changes.push(change);
+    this._seenPaths.add(change.path);
+    return true;
+  }
+
+  getChanges(): readonly FileChange[] {
+    return this._changes;
+  }
+
+  getChangesForPath(filePath: string): FileChange[] {
+    return this._changes.filter(c => c.path === filePath);
+  }
+
+  getModifiedPaths(): string[] {
+    return [...this._seenPaths];
+  }
+
+  getChangeCount(): number {
+    return this._changes.length;
+  }
+
+  getChangesSince(timestamp: number): FileChange[] {
+    return this._changes.filter(c => c.timestamp >= timestamp);
+  }
+
+  getChangesByType(type: FileChange['type']): FileChange[] {
+    return this._changes.filter(c => c.type === type);
+  }
+
+  hasChanges(): boolean {
+    return this._changes.length > 0;
+  }
+
+  getSummary(): { creates: number; modifies: number; deletes: number; renames: number; uniquePaths: number } {
+    let creates = 0, modifies = 0, deletes = 0, renames = 0;
+    for (const c of this._changes) {
+      if (c.type === 'create') creates++;
+      else if (c.type === 'modify') modifies++;
+      else if (c.type === 'delete') deletes++;
+      else if (c.type === 'rename') renames++;
+    }
+    return { creates, modifies, deletes, renames, uniquePaths: this._seenPaths.size };
+  }
+
+  clear(): void {
+    this._changes = [];
+    this._seenPaths.clear();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session lock file — prevents two Engine instances from sharing one session
+// directory, which can corrupt state files and analytics.
+// ---------------------------------------------------------------------------
+
+export const SESSION_LOCK_FILE = '.session.lock';
+
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    if (err?.code === 'ESRCH') return false;
+    // EPERM means the process exists but we can't signal it
+    if (err?.code === 'EPERM') return true;
+    return false;
+  }
+}
+
+export function acquireSessionLock(
+  sessionDir: string,
+): { acquired: boolean; pid?: number; release: () => void } {
+  const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
+
+  if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
+
+  try {
+    fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+    return {
+      acquired: true,
+      release: () => {
+        try { fs.unlinkSync(lockPath); } catch {}
+      },
+    };
+  } catch (err: any) {
+    if (err?.code !== 'EEXIST') throw err;
+
+    // Lock file exists — check if holder is still alive
+    let existingPid: number;
+    try {
+      existingPid = parseInt(fs.readFileSync(lockPath, 'utf-8').trim(), 10);
+    } catch {
+      // Can't read the lock file — remove and retry
+      try { fs.unlinkSync(lockPath); } catch {}
+      return acquireSessionLock(sessionDir);
+    }
+
+    if (Number.isNaN(existingPid) || !isPidAlive(existingPid)) {
+      // Stale lock — reclaim
+      try { fs.unlinkSync(lockPath); } catch {}
+      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+      return {
+        acquired: true,
+        release: () => {
+          try { fs.unlinkSync(lockPath); } catch {}
+        },
+      };
+    }
+
+    return { acquired: false, pid: existingPid, release: () => {} };
+  }
+}
+
+export function isSessionLocked(sessionDir: string): boolean {
+  const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
+  if (!fs.existsSync(lockPath)) return false;
+
+  try {
+    const pid = parseInt(fs.readFileSync(lockPath, 'utf-8').trim(), 10);
+    if (Number.isNaN(pid)) return false;
+    return isPidAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Transcript integrity — JSONL transcript files used by headless / Agent SDK
+// sessions.  A crash can truncate the last line; resuming must detect and
+// drop the corrupted tail rather than losing the entire file.
+// ---------------------------------------------------------------------------
+
+export const TRANSCRIPT_FILE_EXTENSION = '.jsonl';
+
+export function validateTranscriptLine(line: string): boolean {
+  if (!line || !line.trim()) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.type !== 'string') return false;
+  if (obj.timestamp === undefined) return false;
+  if (typeof obj.timestamp !== 'number' && typeof obj.timestamp !== 'string') return false;
+  return true;
+}
+
+export function repairTranscriptFile(
+  filePath: string,
+): { repairedLines: number; droppedLines: number } {
+  if (!fs.existsSync(filePath)) {
+    return { repairedLines: 0, droppedLines: 0 };
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  if (!raw.trim()) {
+    return { repairedLines: 0, droppedLines: 0 };
+  }
+
+  const lines = raw.split('\n').filter(l => l.trim() !== '');
+  const valid: string[] = [];
+  let droppedLines = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (validateTranscriptLine(lines[i])) {
+      valid.push(lines[i]);
+    } else if (i === lines.length - 1) {
+      // Last line is truncated/corrupt — drop it silently
+      droppedLines++;
+    } else {
+      // Mid-file corruption — also drop
+      droppedLines++;
+    }
+  }
+
+  if (droppedLines > 0) {
+    fs.writeFileSync(filePath, valid.map(l => l + '\n').join(''));
+  }
+
+  return { repairedLines: valid.length, droppedLines };
+}
+
+export function safeAppendTranscript(
+  filePath: string,
+  entry: Record<string, unknown>,
+): void {
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.appendFileSync(filePath, JSON.stringify(entry) + '\n');
+  } catch {
+    /* best effort — transcript loss is preferable to crashing the session */
+  }
+}

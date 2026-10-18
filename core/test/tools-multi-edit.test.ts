@@ -208,7 +208,7 @@ describe('fileEditTool – edits', () => {
     }, ctx());
 
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('times'));
+    assert.ok(result.output.includes('locations'));
   });
 });
 

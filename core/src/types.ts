@@ -150,6 +150,9 @@ export interface ProviderConfig {
    * OpenAI-compatible servers never see `prompt_cache_key`.
    */
   promptCacheKey?: string;
+  /** Extra headers merged into every LLM API request. Used for gateway hint
+   *  headers (request class, agent type, compaction state). */
+  extraHeaders?: Record<string, string>;
 }
 
 export interface StreamChunk {
@@ -170,6 +173,7 @@ export interface StreamChunk {
     totalTokens: number;
     reasoningTokens?: number;
     cachedPromptTokens?: number;
+    cacheCreationTokens?: number;
   };
   error?: string;
   /** Present on error chunks — the Retry-After value in seconds from the response header, if any. */
@@ -204,6 +208,7 @@ export interface ThinkingConfig {
   enabled: boolean;
   level: ThinkingLevel;
   budgetTokens?: number;
+  type?: 'enabled' | 'disabled';
 }
 
 export type EngineEvent =
@@ -227,7 +232,7 @@ export type EngineEvent =
   | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
-  | { type: 'done'; totalTurns: number; exitReason: 'completed' | 'max_turns' | 'error' | 'abort' | 'session_timeout' | 'max_steps' | 'budget_exceeded' | 'hook_denied' | 'superinference_stop' | 'consecutive_errors' | 'escalation_terminate' | 'no_edit_stall' | 'keepalive_exhausted' | 'context_too_small' };
+  | { type: 'done'; totalTurns: number; exitReason: 'completed' | 'max_turns' | 'error' | 'abort' | 'session_timeout' | 'max_steps' | 'budget_exceeded' | 'hook_denied' | 'superinference_stop' | 'consecutive_errors' | 'escalation_terminate' | 'no_edit_stall' | 'keepalive_exhausted' | 'context_too_small' | 'usage_limit_watchdog' };
 
 export interface EngineConfig {
   provider: ProviderConfig;
@@ -242,6 +247,8 @@ export interface EngineConfig {
   maxWebSearchesPerSession?: number;
   /** Cap (chars) on inline bash stdout before it is spilled to a file. */
   bashOutputMaxChars?: number;
+  /** Cap (chars) on inline background task output before it is spilled to a file. */
+  taskOutputMaxChars?: number;
   /** Inactivity watchdog (ms) for a stalled-but-open stream, distinct from the total request timeout. */
   streamIdleTimeoutMs?: number;
   /** RSS threshold (bytes) that emits a one-time memory_warning with recovery steps (default 1.5 GiB). */
@@ -333,6 +340,27 @@ export interface EngineConfig {
   idleCompactionMinTokens?: number;
   /** Milliseconds of inactivity after a turn before proactive compaction fires (default 3 240 000 = 54 min). */
   idleCompactionDelayMs?: number;
+  /** Maximum milliseconds to wait for a usage-limit retry-after in detached mode.
+   *  If the Retry-After header exceeds this, the session terminates instead of
+   *  waiting indefinitely. Default: 300 000 (5 min). Set 0 to disable. */
+  maxUsageLimitWaitMs?: number;
+  /** Maximum delay cap for exponential backoff on overloaded (529) retries, in ms.
+   *  Prevents unbounded waits. Default: 60 000 (1 min). Env: SUPERINFERENCE_OVERLOADED_RETRY_MAX_DELAY_MS. */
+  overloadedRetryMaxDelayMs?: number;
+  /** Base delay for overloaded (529) retries, in ms. Default: 1000.
+   *  Env: SUPERINFERENCE_OVERLOADED_RETRY_BASE_DELAY_MS. */
+  overloadedRetryBaseDelayMs?: number;
+  /** Maximum total wall-clock time for all retry attempts, in ms. If total retry
+   *  time exceeds this, stop retrying. Default: 0 (no limit).
+   *  Env: SUPERINFERENCE_RETRY_MAX_TOTAL_WAIT_MS. */
+  retryMaxTotalWaitMs?: number;
+  /** Maximum retries specifically for non-streaming timeout fallbacks.
+   *  Env: SUPERINFERENCE_NONSTREAMING_TIMEOUT_RETRIES. */
+  nonstreamingTimeoutRetries?: number;
+  /** Enable gateway hint headers on LLM requests (x-superinference-request-class,
+   *  x-superinference-agent-type, x-superinference-compaction).
+   *  Env: SUPERINFERENCE_GATEWAY_HINT_HEADERS=1. */
+  gatewayHintHeaders?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,4 +443,70 @@ export interface ContextFile {
   path: string;
   content: string;
   language?: string;
+}
+
+// ---------------------------------------------------------------------------
+// EngineConfig validation & sanitization
+// ---------------------------------------------------------------------------
+
+export function validateEngineConfig(config: Partial<EngineConfig>): { valid: boolean; warnings: string[] } {
+  const warnings: string[] = [];
+  let valid = true;
+
+  if (config.maxTurns !== undefined) {
+    if (!Number.isInteger(config.maxTurns) || config.maxTurns < 1) {
+      warnings.push('maxTurns must be a positive integer');
+      valid = false;
+    } else if (config.maxTurns > 10000) {
+      warnings.push('maxTurns exceeds 10000 — likely misconfigured');
+    }
+  }
+  if (config.maxSessionMs !== undefined) {
+    if (config.maxSessionMs <= 0) { warnings.push('maxSessionMs must be positive'); valid = false; }
+    else if (config.maxSessionMs > 86_400_000) { warnings.push('maxSessionMs exceeds 24 hours'); valid = false; }
+    else if (config.maxSessionMs > 3_600_000) { warnings.push('maxSessionMs exceeds 1 hour — are you sure?'); }
+  }
+  if (config.maxBudgetUsd !== undefined) {
+    if (config.maxBudgetUsd <= 0) { warnings.push('maxBudgetUsd must be positive'); valid = false; }
+    else if (config.maxBudgetUsd > 1000) { warnings.push('maxBudgetUsd exceeds $1000'); valid = false; }
+    else if (config.maxBudgetUsd > 100) { warnings.push('maxBudgetUsd exceeds $100 — are you sure?'); }
+  }
+  if (config.maxAgentDepth !== undefined) {
+    if (!Number.isInteger(config.maxAgentDepth) || config.maxAgentDepth < 1 || config.maxAgentDepth > 20) {
+      warnings.push('maxAgentDepth must be 1-20');
+      valid = false;
+    } else if (config.maxAgentDepth > 10) {
+      warnings.push('maxAgentDepth > 10 — deep nesting may be expensive');
+    }
+  }
+  if (config.maxUsageLimitWaitMs !== undefined && config.maxUsageLimitWaitMs < 0) {
+    warnings.push('maxUsageLimitWaitMs must be non-negative');
+    valid = false;
+  }
+  if (config.requestTimeoutMs !== undefined) {
+    if (config.requestTimeoutMs < 1000 || config.requestTimeoutMs > 600_000) {
+      warnings.push('requestTimeoutMs must be 1000-600000');
+      valid = false;
+    } else if (config.requestTimeoutMs > 300_000) {
+      warnings.push('requestTimeoutMs > 5min may cause timeouts elsewhere');
+    }
+  }
+  if (config.tokenBudget !== undefined && config.tokenBudget <= 0) {
+    warnings.push('tokenBudget must be positive');
+    valid = false;
+  }
+
+  return { valid, warnings };
+}
+
+export function sanitizeEngineConfig(config: Partial<EngineConfig>): Partial<EngineConfig> {
+  const out = { ...config };
+  if (out.maxTurns !== undefined) out.maxTurns = Math.max(1, Math.min(10000, Math.round(out.maxTurns)));
+  if (out.maxSessionMs !== undefined) out.maxSessionMs = Math.max(1, Math.min(86_400_000, out.maxSessionMs));
+  if (out.maxBudgetUsd !== undefined) out.maxBudgetUsd = Math.max(0.01, Math.min(1000, out.maxBudgetUsd));
+  if (out.maxAgentDepth !== undefined) out.maxAgentDepth = Math.max(1, Math.min(20, Math.round(out.maxAgentDepth)));
+  if (out.maxUsageLimitWaitMs !== undefined) out.maxUsageLimitWaitMs = Math.max(0, out.maxUsageLimitWaitMs);
+  if (out.requestTimeoutMs !== undefined) out.requestTimeoutMs = Math.max(1000, Math.min(600_000, out.requestTimeoutMs));
+  if (out.tokenBudget !== undefined) out.tokenBudget = Math.max(1, out.tokenBudget);
+  return out;
 }

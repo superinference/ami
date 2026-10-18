@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -74,6 +74,10 @@ async function writeEntireFile(
   content: string,
   context: ToolContext,
 ): Promise<ToolResult> {
+  if (isBlockedPath(resolved)) {
+    return { output: `Error: Cannot edit device or special file: ${resolved}`, isError: true };
+  }
+
   let oldContent = '';
   let fileExists = false;
   try {
@@ -296,8 +300,18 @@ export const fileEditTool: ToolDefinition = {
       return { output: 'Error: file_path must not be empty.', isError: true };
     }
 
+    // Block device/special files before path resolution so the guard fires
+    // regardless of workspace boundaries.
+    if (isBlockedPath(filePath)) {
+      return { output: `Error: Cannot edit device or special file: ${filePath}`, isError: true };
+    }
+
     const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
     if (pathError) return pathError;
+
+    if (isBlockedPath(resolved)) {
+      return { output: `Error: Cannot edit device or special file: ${resolved}`, isError: true };
+    }
 
     if (resolved.endsWith('.ipynb')) {
       return {

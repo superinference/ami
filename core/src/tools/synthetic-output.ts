@@ -1,4 +1,4 @@
-import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { ToolDefinition, ToolResult } from '../types';
 
 export const syntheticOutputTool: ToolDefinition = {
   name: 'structured_output',

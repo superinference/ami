@@ -395,6 +395,75 @@ export class CacheMissDiagnostics {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cost tracking safety — bounds checking, serialization for persistence
+// ---------------------------------------------------------------------------
+
+export const MAX_REASONABLE_COST_USD = 1000;
+export const MAX_REASONABLE_TOKENS = 100_000_000;
+
+export function validateCostEntry(
+  cost: number,
+  inputTokens: number,
+  outputTokens: number,
+): { valid: boolean; reason?: string } {
+  if (cost < 0) return { valid: false, reason: 'Negative cost' };
+  if (inputTokens < 0) return { valid: false, reason: 'Negative input token count' };
+  if (outputTokens < 0) return { valid: false, reason: 'Negative output token count' };
+  const totalTokens = inputTokens + outputTokens;
+  if (cost > MAX_REASONABLE_COST_USD) {
+    return { valid: true, reason: `Cost $${cost.toFixed(2)} exceeds $${MAX_REASONABLE_COST_USD} threshold` };
+  }
+  if (totalTokens > MAX_REASONABLE_TOKENS) {
+    return { valid: true, reason: `Token count ${totalTokens} exceeds ${MAX_REASONABLE_TOKENS} threshold` };
+  }
+  return { valid: true };
+}
+
+interface CostState {
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  requestCount: number;
+}
+
+export function serializeCostState(tracker: CostState): string {
+  return JSON.stringify({
+    totalCost: tracker.totalCost,
+    totalInputTokens: tracker.totalInputTokens,
+    totalOutputTokens: tracker.totalOutputTokens,
+    requestCount: tracker.requestCount,
+    version: 1,
+  });
+}
+
+export function deserializeCostState(json: string): CostState | null {
+  try {
+    const parsed = JSON.parse(json);
+    if (
+      typeof parsed !== 'object' || parsed === null ||
+      typeof parsed.totalCost !== 'number' ||
+      typeof parsed.totalInputTokens !== 'number' ||
+      typeof parsed.totalOutputTokens !== 'number' ||
+      typeof parsed.requestCount !== 'number'
+    ) {
+      return null;
+    }
+    if (parsed.totalCost < 0 || parsed.totalInputTokens < 0 ||
+        parsed.totalOutputTokens < 0 || parsed.requestCount < 0) {
+      return null;
+    }
+    return {
+      totalCost: parsed.totalCost,
+      totalInputTokens: parsed.totalInputTokens,
+      totalOutputTokens: parsed.totalOutputTokens,
+      requestCount: parsed.requestCount,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Reset the live pricing cache (for testing). */
 export function _resetPricingCache(): void {
   livePricing = null;

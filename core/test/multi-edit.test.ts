@@ -65,7 +65,7 @@ describe('multi_edit tool', () => {
     }, ctx());
 
     assert.ok(result.isError);
-    assert.ok(result.output.includes('found') && result.output.includes('times'), `Expected error about multiple matches, got: ${result.output.slice(0, 200)}`);
+    assert.ok(result.output.includes('matches') && result.output.includes('locations'), `Expected error about multiple matches, got: ${result.output.slice(0, 200)}`);
   });
 
   it('reports partial success', async () => {

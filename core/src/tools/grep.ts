@@ -11,6 +11,17 @@ interface SearchOutcome {
   output: string | null;
   timedOut?: boolean;
   eagain?: boolean;
+  /** Non-null when the search process exited with an error (code > 1) or was killed by a signal. */
+  searchError?: string;
+}
+
+/**
+ * Returns true when the exit code means "no matches" (exit code 1 for grep/rg/ag).
+ * Exit code 0 means matches were found; any code > 1 signals an actual error
+ * (2 = invalid regex or permission error, 127 = command not found, etc.).
+ */
+export function isGrepNoMatchExit(exitCode: number): boolean {
+  return exitCode === 1;
 }
 
 export const grepTool: ToolDefinition = {
@@ -124,8 +135,16 @@ export const grepTool: ToolDefinition = {
 
     if (rgOutcome.output !== null) {
       const cleaned = rgOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
-      return formatResult(cleaned, pattern, headLimit, offset);
+      const result = formatResult(cleaned, pattern, headLimit, offset);
+      if (rgOutcome.searchError && !result.isError) {
+        result.output += `\n\n[Warning: search exited with error: ${rgOutcome.searchError}]`;
+      }
+      return result;
     }
+
+    // Track search errors for reporting when all searchers fail
+    const searchErrors: string[] = [];
+    if (rgOutcome.searchError) searchErrors.push(`rg: ${rgOutcome.searchError}`);
 
     // Fallback to grep
     const grepOutcome = await runSearch(
@@ -141,11 +160,17 @@ export const grepTool: ToolDefinition = {
 
     if (grepOutcome.output !== null) {
       const cleaned = grepOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
-      return formatResult(cleaned, pattern, headLimit, offset);
+      const result = formatResult(cleaned, pattern, headLimit, offset);
+      if (grepOutcome.searchError && !result.isError) {
+        result.output += `\n\n[Warning: search exited with error: ${grepOutcome.searchError}]`;
+      }
+      return result;
     }
+    if (grepOutcome.searchError) searchErrors.push(`grep: ${grepOutcome.searchError}`);
 
     // Slim eval images often have neither binary. Search in-process so the
-    // agent can still locate the failing symbol.
+    // agent can still locate the failing symbol (and get a better error for
+    // invalid regex patterns than the raw process stderr).
     try {
       const fallback = searchFilesForPattern(resolved, pattern, {
         include,
@@ -159,6 +184,13 @@ export const grepTool: ToolDefinition = {
       if (/invalid regular expression|unterminated|invalid group/i.test(message)) {
         return {
           output: `Error: Invalid regular expression (${message}). Escape parentheses and other regex metacharacters, or search for a literal.`,
+          isError: true,
+        };
+      }
+      // Surface the external searcher errors when the in-process fallback also fails
+      if (searchErrors.length > 0) {
+        return {
+          output: `Error: Search failed.\n${searchErrors.join('\n')}`,
           isError: true,
         };
       }
@@ -407,7 +439,7 @@ function runSearch(
       resolve({ output: null });
     });
 
-    child.on('close', (code: number | null) => {
+    child.on('close', (code: number | null, signal: string | null) => {
       if (timer) clearTimeout(timer);
       if (context.abortSignal) {
         context.abortSignal.removeEventListener('abort', onAbort);
@@ -418,14 +450,27 @@ function runSearch(
         return;
       }
 
-      // Exit code 1 means no matches. Any other failure with no stdout
-      // (missing binary, invalid regex) tries the next searcher.
-      if (code !== 0 && code !== 1 && !stdout.trim()) {
-        resolve({ output: null });
+      // Killed by a signal (SIGTERM, SIGKILL, etc.) — not a normal exit.
+      if (signal) {
+        resolve({ output: stdout || null, searchError: `Search was terminated by signal ${signal}` });
         return;
       }
 
-      resolve({ output: stdout });
+      // Exit code 1 means no matches — a normal result, not an error.
+      if (code === 0 || isGrepNoMatchExit(code ?? 0)) {
+        resolve({ output: stdout });
+        return;
+      }
+
+      // Exit code > 1: actual error (invalid regex, permission denied, etc.).
+      // If we got some stdout, return it but note the error. If no stdout,
+      // signal that this searcher failed so we try the next one.
+      const errMsg = stderr.trim() || `Search process exited with code ${code}`;
+      if (!stdout.trim()) {
+        resolve({ output: null, searchError: errMsg });
+        return;
+      }
+      resolve({ output: stdout, searchError: errMsg });
     });
   });
 }

@@ -1,0 +1,195 @@
+/**
+ * Tests for the device/special-file guard in file-edit (Gap 11).
+ *
+ * Verifies that file_edit blocks writes to /dev/*, /proc/self/*, and that
+ * the shared isBlockedPath helper (moved to tool-utils) works correctly.
+ */
+
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { fileEditTool } from '../src/tools/file-edit';
+import { isBlockedPath, BLOCKED_PATHS } from '../src/tools/tool-utils';
+import type { ToolContext } from '../src/types';
+
+let tmpDir: string;
+
+function ctx(overrides?: Partial<ToolContext>): ToolContext {
+  return {
+    cwd: tmpDir,
+    abortSignal: new AbortController().signal,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-edit-blocked-'));
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// isBlockedPath (unit — from tool-utils)
+// ---------------------------------------------------------------------------
+
+describe('isBlockedPath', () => {
+  it('blocks /dev/null', () => {
+    assert.equal(isBlockedPath('/dev/null'), true);
+  });
+
+  it('blocks /dev/zero', () => {
+    assert.equal(isBlockedPath('/dev/zero'), true);
+  });
+
+  it('blocks /dev/random', () => {
+    assert.equal(isBlockedPath('/dev/random'), true);
+  });
+
+  it('blocks /dev/urandom', () => {
+    assert.equal(isBlockedPath('/dev/urandom'), true);
+  });
+
+  it('blocks /dev/stdin', () => {
+    assert.equal(isBlockedPath('/dev/stdin'), true);
+  });
+
+  it('blocks /dev/stdout', () => {
+    assert.equal(isBlockedPath('/dev/stdout'), true);
+  });
+
+  it('blocks /dev/stderr', () => {
+    assert.equal(isBlockedPath('/dev/stderr'), true);
+  });
+
+  it('blocks /dev/fd/3 (prefix match)', () => {
+    assert.equal(isBlockedPath('/dev/fd/3'), true);
+  });
+
+  it('blocks /dev/tcp/127.0.0.1/80 (prefix match)', () => {
+    assert.equal(isBlockedPath('/dev/tcp/127.0.0.1/80'), true);
+  });
+
+  it('blocks /dev/udp/127.0.0.1/53 (prefix match)', () => {
+    assert.equal(isBlockedPath('/dev/udp/127.0.0.1/53'), true);
+  });
+
+  it('blocks /proc/self/fd/0 (prefix match)', () => {
+    assert.equal(isBlockedPath('/proc/self/fd/0'), true);
+  });
+
+  it('blocks /proc/self/mem', () => {
+    assert.equal(isBlockedPath('/proc/self/mem'), true);
+  });
+
+  it('does NOT block a normal file path', () => {
+    assert.equal(isBlockedPath('/home/user/project/file.ts'), false);
+  });
+
+  it('does NOT block /tmp/testfile', () => {
+    assert.equal(isBlockedPath('/tmp/testfile'), false);
+  });
+
+  it('normalizes Windows backslashes before checking', () => {
+    assert.equal(isBlockedPath('\\dev\\null'), true);
+  });
+
+  it('BLOCKED_PATHS array is exported and non-empty', () => {
+    assert.ok(Array.isArray(BLOCKED_PATHS));
+    assert.ok(BLOCKED_PATHS.length > 0);
+    assert.ok(BLOCKED_PATHS.includes('/dev/null'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// file_edit execute() — blocked paths
+// ---------------------------------------------------------------------------
+
+describe('fileEditTool – blocked device/special file paths', () => {
+  it('returns isError for /dev/null (write mode)', async () => {
+    const result = await fileEditTool.execute(
+      { file_path: '/dev/null', new_string: 'test content' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('Cannot edit device or special file'),
+      `Expected blocked-path error but got: ${result.output}`,
+    );
+    assert.ok(result.output.includes('/dev/null'));
+  });
+
+  it('returns isError for /proc/self/mem (write mode)', async () => {
+    const result = await fileEditTool.execute(
+      { file_path: '/proc/self/mem', new_string: 'test content' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('Cannot edit device or special file'),
+      `Expected blocked-path error but got: ${result.output}`,
+    );
+    assert.ok(result.output.includes('/proc/self/mem'));
+  });
+
+  it('returns isError for /dev/fd/3 (write mode)', async () => {
+    const result = await fileEditTool.execute(
+      { file_path: '/dev/fd/3', new_string: 'test content' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('Cannot edit device or special file'),
+      `Expected blocked-path error but got: ${result.output}`,
+    );
+  });
+
+  it('returns isError for /dev/zero (edit mode with old_string)', async () => {
+    const result = await fileEditTool.execute(
+      { file_path: '/dev/zero', old_string: 'old', new_string: 'new' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('Cannot edit device or special file'),
+      `Expected blocked-path error but got: ${result.output}`,
+    );
+  });
+
+  it('returns isError for /dev/tcp/127.0.0.1/80', async () => {
+    const result = await fileEditTool.execute(
+      { file_path: '/dev/tcp/127.0.0.1/80', new_string: 'test' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('Cannot edit device or special file'),
+      `Expected blocked-path error but got: ${result.output}`,
+    );
+  });
+
+  it('returns isError for /dev/random (sequential edits mode)', async () => {
+    const result = await fileEditTool.execute(
+      { file_path: '/dev/random', edits: [{ old_string: 'a', new_string: 'b' }] },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('Cannot edit device or special file'),
+      `Expected blocked-path error but got: ${result.output}`,
+    );
+  });
+
+  it('does NOT block a normal file in the workspace', async () => {
+    const filePath = path.join(tmpDir, 'normal.txt');
+    const result = await fileEditTool.execute(
+      { file_path: filePath, new_string: 'hello world' },
+      ctx(),
+    );
+    // Should succeed (not blocked by device guard)
+    assert.notEqual(result.output.includes('Cannot edit device or special file'), true);
+  });
+});

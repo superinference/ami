@@ -13,6 +13,43 @@ export interface SessionFact {
   confidence: number;
 }
 
+export const MAX_MEMORY_ENTRIES = 100;
+export const MAX_MEMORY_ENTRY_CHARS = 2000;
+
+const SUSPICIOUS_PATTERNS = [
+  /<script/i,
+  /javascript:/i,
+  /data:text\/html/i,
+  /\beval\s*\(/,
+  /\bFunction\s*\(/,
+  /__proto__/,
+  /constructor\.prototype/,
+];
+
+export function validateMemoryEntry(entry: string): { valid: boolean; reason?: string } {
+  if (!entry || entry.trim().length === 0) {
+    return { valid: false, reason: 'empty' };
+  }
+  if (entry.length > MAX_MEMORY_ENTRY_CHARS) {
+    return { valid: false, reason: 'too_long' };
+  }
+  for (const pattern of SUSPICIOUS_PATTERNS) {
+    if (pattern.test(entry)) {
+      return { valid: false, reason: 'suspicious_content' };
+    }
+  }
+  return { valid: true };
+}
+
+export function sanitizeMemoryEntry(entry: string): string {
+  let sanitized = entry.trim();
+  sanitized = sanitized.replace(/<[^>]*>/g, '');
+  if (sanitized.length > MAX_MEMORY_ENTRY_CHARS) {
+    sanitized = sanitized.slice(0, MAX_MEMORY_ENTRY_CHARS - 15) + '... [truncated]';
+  }
+  return sanitized;
+}
+
 const EXTRACTION_PROMPT = `Extract key facts from these tool results that would be useful to remember across conversation turns. Return a JSON array of objects with the following shape:
 
 [
@@ -116,18 +153,29 @@ export class SessionMemoryExtractor {
     const merged = [...existing];
 
     for (const newFact of newFacts) {
+      const validation = validateMemoryEntry(newFact.fact);
+      if (!validation.valid) {
+        coreLog('session-memory', `Skipping invalid fact: ${validation.reason}`);
+        continue;
+      }
+      newFact.fact = sanitizeMemoryEntry(newFact.fact);
+
       const duplicateIndex = merged.findIndex(
         e => e.fact.toLowerCase() === newFact.fact.toLowerCase(),
       );
 
       if (duplicateIndex >= 0) {
-        // Keep the higher-confidence version
         if (newFact.confidence > merged[duplicateIndex].confidence) {
           merged[duplicateIndex] = newFact;
         }
       } else {
         merged.push(newFact);
       }
+    }
+
+    if (merged.length > MAX_MEMORY_ENTRIES) {
+      merged.sort((a, b) => b.confidence - a.confidence);
+      return merged.slice(0, MAX_MEMORY_ENTRIES);
     }
 
     return merged;

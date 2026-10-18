@@ -1,0 +1,57 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { detectDangerousRm } from '../src/tools/bash-security';
+
+describe('detectDangerousRm', () => {
+  it('returns false for commands without rm', () => {
+    assert.equal(detectDangerousRm('ls -la').dangerous, false);
+    assert.equal(detectDangerousRm('echo hello').dangerous, false);
+    assert.equal(detectDangerousRm('cp file1 file2').dangerous, false);
+  });
+
+  it('returns false for rm with literal paths', () => {
+    assert.equal(detectDangerousRm('rm -rf /tmp/test').dangerous, false);
+    assert.equal(detectDangerousRm('rm file.txt').dangerous, false);
+    assert.equal(detectDangerousRm('rm -rf dist/').dangerous, false);
+  });
+
+  it('detects rm with unguarded variable', () => {
+    const result = detectDangerousRm('rm -rf $DIR');
+    assert.equal(result.dangerous, true);
+    assert.equal(result.variable, 'DIR');
+    assert.ok(result.suggestion!.includes('${DIR:?}'));
+  });
+
+  it('detects rm -rf with ${VAR} (no guard)', () => {
+    const result = detectDangerousRm('rm -rf ${BUILD_DIR}');
+    assert.equal(result.dangerous, true);
+    assert.equal(result.variable, 'BUILD_DIR');
+  });
+
+  it('allows rm with ${VAR:?} guard', () => {
+    const result = detectDangerousRm('rm -rf "${DIR:?}"');
+    assert.equal(result.dangerous, false);
+  });
+
+  it('allows rm with ${VAR:-default} guard', () => {
+    const result = detectDangerousRm('rm -rf "${DIR:-/tmp/safe}"');
+    assert.equal(result.dangerous, false);
+  });
+
+  it('detects rm -f with unguarded variable', () => {
+    const result = detectDangerousRm('rm -f $FILE');
+    assert.equal(result.dangerous, true);
+    assert.equal(result.variable, 'FILE');
+  });
+
+  it('detects rm -rfi with variable', () => {
+    const result = detectDangerousRm('rm -rfi $OUTDIR/build');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('provides suggestion with guard syntax', () => {
+    const result = detectDangerousRm('rm -rf $DEPLOY_DIR');
+    assert.ok(result.suggestion);
+    assert.ok(result.suggestion!.includes('${DEPLOY_DIR:?}'));
+  });
+});

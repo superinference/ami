@@ -181,6 +181,47 @@ export function getUserAgent(): string {
 export const MAX_HTTP_BODY_BYTES = 1_048_576;
 
 /**
+ * Pre-flight Content-Length ceiling. If the server announces a body
+ * larger than this we reject before downloading any bytes.
+ */
+export const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Content-Types that indicate executable or opaque binary payloads —
+ * the tool should refuse to download these rather than letting them
+ * reach the LLM context (or disk).
+ */
+export const BLOCKED_CONTENT_TYPES = new Set([
+  'application/octet-stream',
+  'application/x-executable',
+  'application/x-sharedlib',
+  'application/x-mach-binary',
+  'application/vnd.microsoft.portable-executable',
+]);
+
+/**
+ * Cloud metadata endpoints. Requests to these should be blocked even
+ * when `isPrivateIP` / `BLOCKED_HOSTNAMES` wouldn't catch them (e.g.
+ * ECS task-metadata at 169.254.170.2, IMDSv2 IPv6 at fd00:ec2::254).
+ */
+const METADATA_HOSTS = new Set([
+  '169.254.169.254',
+  'metadata.google.internal',
+  '169.254.170.2',
+  'fd00:ec2::254',
+]);
+
+export function isMetadataEndpoint(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return METADATA_HOSTS.has(host);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Perform an HTTP(S) GET following redirects up to `maxRedirects` hops.
  * Returns the final response body as a string along with status metadata.
  */

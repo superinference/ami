@@ -551,3 +551,94 @@ export function resolveTemperature(
 
   return configTemperature;
 }
+
+// ---------------------------------------------------------------------------
+// Model switch safety
+// ---------------------------------------------------------------------------
+
+/**
+ * Rough per-token pricing (USD) for compaction cost estimation.
+ * Values are order-of-magnitude estimates; unknown models get zero.
+ */
+const TOKEN_PRICING: Record<string, { input: number; output: number }> = {
+  'claude-opus':   { input: 15e-6,  output: 75e-6 },
+  'claude-sonnet': { input: 3e-6,   output: 15e-6 },
+  'claude-haiku':  { input: 0.25e-6, output: 1.25e-6 },
+  'claude-fable':  { input: 3e-6,   output: 15e-6 },
+  'gpt-4o':        { input: 2.5e-6, output: 10e-6 },
+  'gpt-4o-mini':   { input: 0.15e-6, output: 0.6e-6 },
+  'gpt-4.1':       { input: 2e-6,   output: 8e-6 },
+  'o3':            { input: 10e-6,  output: 40e-6 },
+  'o4-mini':       { input: 1.1e-6, output: 4.4e-6 },
+  'gemini-2.5':    { input: 1.25e-6, output: 10e-6 },
+  'deepseek':      { input: 0.27e-6, output: 1.1e-6 },
+};
+
+function lookupPricing(modelId: string): { input: number; output: number } | null {
+  const lower = modelId.toLowerCase();
+  for (const [prefix, pricing] of Object.entries(TOKEN_PRICING)) {
+    if (lower.includes(prefix)) return pricing;
+  }
+  return null;
+}
+
+/**
+ * Whether a model switch requires compaction to avoid exceeding the target
+ * model's context window.
+ *
+ * Returns true when the current token usage fills more than 90% of the
+ * target model's context window, meaning a switch without compaction risks
+ * an immediate context_length_exceeded error.
+ */
+export function modelSwitchNeedsCompaction(
+  currentModel: string,
+  targetModel: string,
+  currentTokens: number,
+): boolean {
+  const targetWindow = getContextWindow(targetModel);
+  return currentTokens > targetWindow * 0.9;
+}
+
+/**
+ * Human-readable warning about a model switch when the target model has a
+ * smaller context window.  Returns `null` if the switch is safe.
+ */
+export function getModelSwitchWarning(
+  currentModel: string,
+  targetModel: string,
+  currentTokens: number,
+): string | null {
+  const currentWindow = getContextWindow(currentModel);
+  const targetWindow = getContextWindow(targetModel);
+
+  if (targetWindow >= currentWindow) return null;
+
+  if (currentTokens > targetWindow) {
+    return `Critical: conversation uses ${currentTokens} tokens but ${targetModel} only supports ${targetWindow}. Compaction required before switching.`;
+  }
+
+  if (currentTokens > targetWindow * 0.8) {
+    return `Warning: conversation uses ${currentTokens} tokens and ${targetModel} supports ${targetWindow}. Consider compacting before switching.`;
+  }
+
+  return `Note: ${targetModel} has a smaller context window (${targetWindow}) than ${currentModel} (${currentWindow}).`;
+}
+
+/**
+ * Rough cost estimate for running a compaction summary on a model.
+ *
+ * Assumes compaction reads all `tokens` as input and produces ~10% as output
+ * (the summary). Returns `{ inputCost: 0, outputCost: 0 }` for unknown models.
+ */
+export function estimateCompactionCost(
+  modelId: string,
+  tokens: number,
+): { inputCost: number; outputCost: number } {
+  const pricing = lookupPricing(modelId);
+  if (!pricing) return { inputCost: 0, outputCost: 0 };
+  const outputTokens = Math.ceil(tokens * 0.1);
+  return {
+    inputCost: tokens * pricing.input,
+    outputCost: outputTokens * pricing.output,
+  };
+}

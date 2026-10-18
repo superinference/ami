@@ -257,6 +257,66 @@ function matchGlob(pattern: string, filePath: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Skill argument safety — prevent memory exhaustion from oversized args
+// ---------------------------------------------------------------------------
+
+export const MAX_SKILL_ARG_NAMES = 64;
+export const MAX_SKILL_ARG_NAME_LENGTH = 64;
+export const MAX_SKILL_ARG_VALUE_LENGTH = 10_000;
+export const MAX_SKILL_ARG_TOTAL_CHARS = 100_000;
+
+export function sanitizeSkillArgs(args: Record<string, string>): Record<string, string> {
+  const keys = Object.keys(args);
+  const limitedKeys = keys.slice(0, MAX_SKILL_ARG_NAMES);
+  const result: Record<string, string> = {};
+  let totalChars = 0;
+
+  for (const rawKey of limitedKeys) {
+    const key = rawKey.length > MAX_SKILL_ARG_NAME_LENGTH
+      ? rawKey.slice(0, MAX_SKILL_ARG_NAME_LENGTH)
+      : rawKey;
+    let value = typeof args[rawKey] === 'string' ? args[rawKey] : String(args[rawKey]);
+    if (value.length > MAX_SKILL_ARG_VALUE_LENGTH) {
+      value = value.slice(0, MAX_SKILL_ARG_VALUE_LENGTH);
+    }
+    if (totalChars + key.length + value.length > MAX_SKILL_ARG_TOTAL_CHARS) {
+      break;
+    }
+    totalChars += key.length + value.length;
+    result[key] = value;
+  }
+
+  return result;
+}
+
+export function validateSkillArgs(args: Record<string, string>): { valid: boolean; warnings: string[] } {
+  const warnings: string[] = [];
+  const keys = Object.keys(args);
+
+  if (keys.length > MAX_SKILL_ARG_NAMES) {
+    warnings.push(`Too many arguments: ${keys.length} (max ${MAX_SKILL_ARG_NAMES})`);
+  }
+
+  let totalChars = 0;
+  for (const key of keys) {
+    if (key.length > MAX_SKILL_ARG_NAME_LENGTH) {
+      warnings.push(`Argument name too long: "${key.slice(0, 20)}..." (${key.length} chars, max ${MAX_SKILL_ARG_NAME_LENGTH})`);
+    }
+    const value = typeof args[key] === 'string' ? args[key] : String(args[key]);
+    if (value.length > MAX_SKILL_ARG_VALUE_LENGTH) {
+      warnings.push(`Argument value too long for "${key.slice(0, 20)}": ${value.length} chars (max ${MAX_SKILL_ARG_VALUE_LENGTH})`);
+    }
+    totalChars += key.length + value.length;
+  }
+
+  if (totalChars > MAX_SKILL_ARG_TOTAL_CHARS) {
+    warnings.push(`Total argument size ${totalChars} exceeds limit ${MAX_SKILL_ARG_TOTAL_CHARS}`);
+  }
+
+  return { valid: true, warnings };
+}
+
+// ---------------------------------------------------------------------------
 // Variable substitution
 // ---------------------------------------------------------------------------
 
@@ -348,21 +408,22 @@ export class SkillManager {
 
     let content = substituteVars(skill.content, skillDir, this.cwd, skill.model);
 
-    // Apply user-supplied args
+    // Apply user-supplied args (sanitized to prevent memory exhaustion)
     if (args) {
+      const safeArgs = sanitizeSkillArgs(args);
       // $ARGUMENTS — the full argument string
-      if (args.ARGUMENTS !== undefined) {
-        content = content.replace(/\$ARGUMENTS/g, () => args.ARGUMENTS);
-        content = content.replace(/\$\{ARGUMENTS\}/g, () => args.ARGUMENTS);
+      if (safeArgs.ARGUMENTS !== undefined) {
+        content = content.replace(/\$ARGUMENTS/g, () => safeArgs.ARGUMENTS);
+        content = content.replace(/\$\{ARGUMENTS\}/g, () => safeArgs.ARGUMENTS);
         // Positional: $0 = full, $1-$9 = tokens
-        const tokens = args.ARGUMENTS.split(/\s+/).filter(Boolean);
-        content = content.replace(/\$0/g, () => args.ARGUMENTS);
+        const tokens = safeArgs.ARGUMENTS.split(/\s+/).filter(Boolean);
+        content = content.replace(/\$0/g, () => safeArgs.ARGUMENTS);
         for (let i = 1; i <= 9; i++) {
           const val = tokens[i - 1] || '';
           content = content.replace(new RegExp(`\\$${i}`, 'g'), () => val);
         }
       }
-      for (const [key, value] of Object.entries(args)) {
+      for (const [key, value] of Object.entries(safeArgs)) {
         if (key === 'ARGUMENTS') continue;
         content = content.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), () => value);
       }

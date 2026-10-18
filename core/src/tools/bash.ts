@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
-import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration } from './bash-security';
+import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
@@ -424,6 +424,25 @@ export const bashTool: ToolDefinition = {
       return { output: 'Error: command must not be empty.', isError: true };
     }
 
+    // Nuclear command blocklist — un-bypassable, runs before ALL other checks.
+    // No flag, mode, or env var can disable this. Even --yolo cannot override it.
+    const nuclear = detectNuclearCommand(command);
+    if (nuclear.blocked) {
+      return {
+        output: [
+          `Error: BLOCKED — ${nuclear.reason}.`,
+          `Command: ${command.length > 200 ? command.slice(0, 200) + '...' : command}`,
+          '',
+          'This command is on the nuclear blocklist and is NEVER allowed, regardless of',
+          'permission mode (including --yolo). These are commands that can cause',
+          'unrecoverable system-wide damage (filesystem destruction, disk wipe, fork bomb).',
+          '',
+          'If you need to delete files, target a specific directory instead of root paths.',
+        ].join('\n'),
+        isError: true,
+      };
+    }
+
     if (!fs.existsSync(context.cwd)) {
       return {
         output: `Error: working directory "${context.cwd}" does not exist. It may have been deleted or moved. Use /add-dir to set a new working directory.`,
@@ -454,6 +473,11 @@ export const bashTool: ToolDefinition = {
         output: `Error: ${selfKill} Use kill <pid> with the specific child process PID instead.`,
         isError: true,
       };
+    }
+
+    const codeLoadCheck = detectCodeLoadingEnvSet(command);
+    if (codeLoadCheck.blocked) {
+      return { output: `Error: Setting ${codeLoadCheck.variable} is blocked — it can load arbitrary code into child processes.`, isError: true };
     }
 
     const forcePush = detectForcePushToProtected(command);
@@ -613,6 +637,16 @@ const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
   { pattern: /ENOENT.*no such file/i, hint: 'File or directory does not exist. Use list_dir to check what files are available.' },
   { pattern: /TypeError:.*is not a function/i, hint: 'A function call is wrong. Use file_read to check the export names and signatures in the imported module.' },
   { pattern: /ReferenceError:.*is not defined/i, hint: 'A variable or import is missing. Check your imports and variable declarations with file_read.' },
+  { pattern: /EACCES.*permission denied/i, hint: 'Permission denied. Check file permissions with ls -la, or use a different directory.' },
+  { pattern: /EADDRINUSE/i, hint: 'Port already in use. Try a different port or find and kill the process using it (lsof -i :PORT).' },
+  { pattern: /ENOMEM|Cannot allocate memory|out of memory/i, hint: 'Out of memory. Try reducing the workload, closing other processes, or increasing available memory.' },
+  { pattern: /ETIMEDOUT|ECONNREFUSED|ECONNRESET/i, hint: 'Network error. Check if the target service is running and reachable.' },
+  { pattern: /EPIPE|broken pipe/i, hint: 'Broken pipe. The receiving process terminated before all input was consumed.' },
+  { pattern: /EMFILE|ENFILE|too many open files/i, hint: 'Too many open files. Close unused file handles or increase the ulimit (ulimit -n).' },
+  { pattern: /TS\d+:/i, hint: 'TypeScript compilation error. Use file_read to check the file at the reported line number.' },
+  { pattern: /error\[E\d+\]/i, hint: 'Rust compilation error. Check the file and line number in the error message.' },
+  { pattern: /npm ERR!.*ERESOLVE/i, hint: 'NPM dependency resolution conflict. Try npm install --legacy-peer-deps or check package.json version constraints.' },
+  { pattern: /fatal: not a git repository/i, hint: 'Not inside a git repository. Check the current directory.' },
 ];
 
 function diagnoseError(output: string): string | null {

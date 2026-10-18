@@ -26,6 +26,8 @@ export interface ProjectConfig {
   enforceAvailableModels?: string[];
   /** Cap (chars) on inline bash stdout before it is spilled to a file. */
   bashOutputMaxChars?: number;
+  /** Cap (chars) on inline background task output before it is spilled to a file. */
+  taskOutputMaxChars?: number;
   /** Anthropic prompt-cache TTL ('5m' default or '1h' extended-cache beta). */
   cacheTtl?: '5m' | '1h';
   /** Safe mode: skip untrusted project-local hooks/MCP/memory/skills. */
@@ -38,6 +40,10 @@ export interface ProjectConfig {
   alwaysLoadTools?: string[];
   /** Ordered fallback model chain stepped through on provider errors. */
   fallbackModels?: string[];
+  /** MCP allowlist: when non-empty, only these MCP servers may be connected. */
+  allowedMcpServers?: string[];
+  /** Managed MCP server definitions pushed by enterprise policy. */
+  managedMcpServers?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,12 +293,15 @@ export function mergeConfigs(
     if (layer.tokenBudget !== undefined) merged.tokenBudget = layer.tokenBudget;
     if (layer.persona !== undefined) merged.persona = layer.persona;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
+    if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
     if (layer.safeMode !== undefined) merged.safeMode = layer.safeMode;
     if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
     if (layer.alwaysLoadTools !== undefined) merged.alwaysLoadTools = layer.alwaysLoadTools;
     if (layer.fallbackModels !== undefined) merged.fallbackModels = layer.fallbackModels;
+    if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = layer.allowedMcpServers;
+    if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -300,6 +309,80 @@ export function mergeConfigs(
   if (managedConfig?.enforceAvailableModels) {
     merged.enforceAvailableModels = managedConfig.enforceAvailableModels;
   }
+  // Managed MCP allowlist is also authoritative.
+  if (managedConfig?.allowedMcpServers) {
+    merged.allowedMcpServers = managedConfig.allowedMcpServers;
+  }
+  if (managedConfig?.managedMcpServers) {
+    merged.managedMcpServers = managedConfig.managedMcpServers;
+  }
 
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Config file safety — atomic writes, stale .tmp cleanup, JSON validation
+// ---------------------------------------------------------------------------
+
+export const CONFIG_WRITE_TIMEOUT_MS = 5000;
+
+export function validateConfigJson(content: string): { valid: boolean; error?: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err) {
+    return { valid: false, error: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: false, error: `Expected a JSON object, got ${parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed}` };
+  }
+  return { valid: true };
+}
+
+export function safeWriteConfig(filePath: string, data: Record<string, unknown>): void {
+  const tmpPath = filePath + '.tmp';
+  const json = JSON.stringify(data, null, 2) + '\n';
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(tmpPath, json, 'utf-8');
+    try {
+      fs.renameSync(tmpPath, filePath);
+    } catch {
+      fs.writeFileSync(filePath, json, 'utf-8');
+      try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    }
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    throw err;
+  }
+}
+
+export function cleanupStaleConfigTmp(filePath: string): boolean {
+  const tmpPath = filePath + '.tmp';
+  try {
+    if (!fs.existsSync(tmpPath)) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const content = fs.readFileSync(tmpPath, 'utf-8');
+    const validation = validateConfigJson(content);
+    if (validation.valid) {
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch {
+        fs.writeFileSync(filePath, content, 'utf-8');
+        fs.unlinkSync(tmpPath);
+      }
+    } else {
+      fs.unlinkSync(tmpPath);
+    }
+    return true;
+  } catch {
+    try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    return true;
+  }
 }

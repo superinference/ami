@@ -8,6 +8,57 @@ import { FlowManager } from './flow-manager';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024; // 5 MB per task
 
+/** Time to wait after SIGTERM before escalating to SIGKILL. */
+export const GRACEFUL_SHUTDOWN_MS = 1500;
+
+/** Maximum concurrent background processes per session. */
+export const MAX_BACKGROUND_PROCESSES = 20;
+
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code !== 'ESRCH';
+  }
+}
+
+export async function forceKillAfterTimeout(pid: number, timeoutMs: number = GRACEFUL_SHUTDOWN_MS): Promise<boolean> {
+  if (!isProcessAlive(pid)) return false;
+  try { process.kill(pid, 'SIGTERM'); } catch { return false; }
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isProcessAlive(pid)) return true;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  if (!isProcessAlive(pid)) return true;
+  try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+  return true;
+}
+
+const INFINITE_LOOP_PATTERNS = [
+  /\bwhile\s+true\s*;?\s*do\b/,
+  /\bwhile\s*\(\s*true\s*\)/,
+  /\bwhile\s+:\s*;?\s*do\b/,
+  /\bfor\s*\(\s*;\s*;\s*\)/,
+  /\byes\s*\|/,
+  /\bcat\s+\/dev\/urandom\b/,
+  /\btail\s+-f\s+\/dev\/null\b/,
+];
+
+export function validateBackgroundCommand(command: string): { allowed: boolean; reason?: string } {
+  if (!command || !command.trim()) return { allowed: false, reason: 'empty command' };
+  for (const pattern of INFINITE_LOOP_PATTERNS) {
+    if (pattern.test(command)) {
+      return { allowed: false, reason: 'command may create an infinite loop' };
+    }
+  }
+  if (/>\s*\/dev\/null\s*2>&1\s*$/.test(command) || /&>\s*\/dev\/null\s*$/.test(command)) {
+    return { allowed: false, reason: 'command discards all output to /dev/null' };
+  }
+  return { allowed: true };
+}
+
 export interface BackgroundProcess {
   taskId: string;
   pid: number;

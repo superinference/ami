@@ -32,7 +32,7 @@ describe('fuzzyFindAndReplace – exact strategy', () => {
     assert.ok(result.error !== null);
     assert.equal(result.matchCount, 2);
     assert.equal(result.newContent, null);
-    assert.ok(result.error!.includes('found 2 times'));
+    assert.ok(result.error!.includes('2 locations'));
   });
 
   it('handles multi-line exact match', () => {

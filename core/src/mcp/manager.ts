@@ -5,6 +5,16 @@ import * as path from 'path';
 import { log as coreLog } from '../logger';
 import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
 
+const DEFAULT_MCP_DESCRIPTION_LENGTH = 2048;
+function getMcpMaxDescriptionLength(): number {
+  const env = process.env.SUPERINFERENCE_MAX_MCP_DESCRIPTION_LENGTH;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (!Number.isNaN(n) && n > 0) return n;
+  }
+  return DEFAULT_MCP_DESCRIPTION_LENGTH;
+}
+
 export interface McpServerConfig {
   command: string;
   args?: string[];
@@ -64,11 +74,38 @@ export class McpManager extends EventEmitter {
   _idleTimeoutMs = 30 * 60 * 1000;
   private _idleCheckTimer: ReturnType<typeof setInterval> | null = null;
 
+  private _allowedServers: Set<string> | null = null;
+  private _deniedServers: string[] = [];
+
   setRootPaths(paths: string[]): void {
     this.rootPaths = paths;
   }
 
+  setAllowedServers(serverNames: string[]): void {
+    this._allowedServers = new Set(serverNames);
+    this._deniedServers = [];
+  }
+
+  isServerAllowed(serverName: string): boolean {
+    if (this._allowedServers === null) return true;
+    return this._allowedServers.has(serverName);
+  }
+
+  getDeniedServers(): string[] {
+    return [...this._deniedServers];
+  }
+
+  private enforceAllowlist(name: string): void {
+    if (this._allowedServers !== null && !this._allowedServers.has(name)) {
+      if (!this._deniedServers.includes(name)) {
+        this._deniedServers.push(name);
+      }
+      throw new Error(`MCP server "${name}" is not in the allowed servers list`);
+    }
+  }
+
   addServer(name: string, config: McpServerConfig): void {
+    this.enforceAllowlist(name);
     if (this.clients.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
     }
@@ -135,6 +172,7 @@ export class McpManager extends EventEmitter {
   }
 
   addPendingServer(name: string, config: McpServerConfig): void {
+    this.enforceAllowlist(name);
     if (this.clients.has(name) || this.pendingServers.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
     }
@@ -371,8 +409,8 @@ export class McpManager extends EventEmitter {
     return client.callTool(toolName, args, options);
   }
 
-  async listResources(serverFilter?: string): Promise<Array<{uri: string; name?: string; mimeType?: string; server: string}>> {
-    const results: Array<{uri: string; name?: string; mimeType?: string; server: string}> = [];
+  async listResources(serverFilter?: string): Promise<Array<McpResource & { server: string }>> {
+    const results: Array<McpResource & { server: string }> = [];
     for (const [name, client] of this.clients) {
       if (serverFilter && name !== serverFilter) continue;
       try {
@@ -380,7 +418,12 @@ export class McpManager extends EventEmitter {
         for (const r of resources) {
           results.push({ ...r, server: name });
         }
-      } catch {}
+      } catch (err) {
+        if (err instanceof McpSessionExpiredError) {
+          coreLog('mcp', `Session expired for ${name} during listResources, scheduling reconnect`);
+          this.emit('session-expired', name);
+        }
+      }
     }
     return results;
   }
@@ -388,7 +431,15 @@ export class McpManager extends EventEmitter {
   async readResource(serverName: string, uri: string): Promise<unknown> {
     const client = this.clients.get(serverName);
     if (!client) throw new Error(`MCP server "${serverName}" not connected`);
-    return client.readResource(uri);
+    try {
+      return await client.readResource(uri);
+    } catch (err) {
+      if (err instanceof McpSessionExpiredError) {
+        coreLog('mcp', `Session expired for ${serverName} during readResource`);
+        this.emit('session-expired', serverName);
+      }
+      throw err;
+    }
   }
 
   async listPrompts(serverFilter?: string): Promise<Array<McpPrompt & { server: string }>> {
@@ -484,7 +535,7 @@ export class McpManager extends EventEmitter {
     };
   }
 
-  truncateDescription(description: string, maxLength: number = 2048): string {
+  truncateDescription(description: string, maxLength: number = getMcpMaxDescriptionLength()): string {
     if (description.length <= maxLength) return description;
     return description.slice(0, maxLength - 3) + '...';
   }
@@ -533,6 +584,7 @@ export class McpManager extends EventEmitter {
     this.pendingServers.clear();
     this.serverErrors.clear();
     this._lastUsedAt.clear();
+    this._deniedServers = [];
   }
 
   loadFromConfig(configPath: string): void {
@@ -632,6 +684,68 @@ export class McpManager extends EventEmitter {
     return undefined;
   }
 
+}
+
+export const MAX_MCP_TOOLS_PER_SERVER = 200;
+export const MAX_MCP_TOOL_NAME_LENGTH = 128;
+
+const ALLOWED_SCHEMA_KEYS = new Set([
+  'type', 'properties', 'required', 'additionalProperties',
+  'description', 'title', '$schema', 'definitions', '$defs',
+  'allOf', 'anyOf', 'oneOf', 'not', 'if', 'then', 'else',
+  'enum', 'const', 'default', 'examples',
+]);
+
+export function validateMcpToolSchema(schema: unknown): { valid: boolean; error?: string } {
+  if (schema === null || schema === undefined) {
+    return { valid: false, error: 'Schema is null or undefined' };
+  }
+  if (typeof schema !== 'object' || Array.isArray(schema)) {
+    return { valid: false, error: 'Schema must be a non-array object' };
+  }
+  const s = schema as Record<string, unknown>;
+  if (s.type !== 'object') {
+    return { valid: false, error: `Schema root type must be 'object', got '${String(s.type)}'` };
+  }
+  if (s.properties !== undefined) {
+    if (typeof s.properties !== 'object' || s.properties === null || Array.isArray(s.properties)) {
+      return { valid: false, error: 'Schema properties must be a non-array object' };
+    }
+  }
+  if (s.required !== undefined) {
+    if (!Array.isArray(s.required)) {
+      return { valid: false, error: 'Schema required must be an array' };
+    }
+    for (const item of s.required) {
+      if (typeof item !== 'string') {
+        return { valid: false, error: `Schema required items must be strings, got ${typeof item}` };
+      }
+    }
+    if (s.properties !== undefined) {
+      const props = s.properties as Record<string, unknown>;
+      for (const key of s.required as string[]) {
+        if (!(key in props)) {
+          return { valid: false, error: `Required key '${key}' is not defined in properties` };
+        }
+      }
+    }
+  }
+  return { valid: true };
+}
+
+export function sanitizeMcpToolSchema(schema: unknown): object {
+  const validation = validateMcpToolSchema(schema);
+  if (!validation.valid) {
+    return { type: 'object', properties: {} };
+  }
+  const s = schema as Record<string, unknown>;
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(s)) {
+    if (ALLOWED_SCHEMA_KEYS.has(key)) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
 }
 
 export function expandEnvVars(value: string): string {

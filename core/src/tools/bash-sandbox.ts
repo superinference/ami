@@ -7,6 +7,9 @@ export interface SandboxConfig {
   maxMemoryMB: number;
   maxProcesses: number;
   timeout: number;
+  hiddenEnvVars?: string[];
+  hiddenFiles?: string[];
+  allowedDomains?: string[];
 }
 
 const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
@@ -94,7 +97,13 @@ export function wrapWithSandbox(
 export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): string {
   const flags: string[] = ['--map-root-user', '--mount', '--pid', '--fork'];
 
+  const hasAllowedDomains =
+    cfg.allowedDomains && cfg.allowedDomains.length > 0;
+
   if (!cfg.allowNetwork) {
+    // Always create a network namespace. When allowedDomains is set we keep
+    // --net so we get our own namespace but add iptables rules inside it
+    // instead of blanket-blocking all traffic.
     flags.push('--net');
   }
 
@@ -103,7 +112,12 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
 
   const escapedCwd = cwd.replace(/'/g, "'\\''");
   const mounts = buildReadOnlyMounts(cfg);
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}cd ${escapedCwd} && ${escapedCmd}'`;
+  const credentialScrub = buildCredentialScrub(cfg);
+  const networkRules =
+    !cfg.allowNetwork && hasAllowedDomains
+      ? buildNetworkAllowlist(cfg.allowedDomains!)
+      : '';
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${credentialScrub}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
 }
 
 /**
@@ -124,8 +138,59 @@ function buildReadOnlyMounts(cfg: SandboxConfig): string {
     .join('');
 }
 
+/**
+ * Build shell commands to scrub sensitive credentials from the sandbox
+ * environment. Unsets listed env vars and bind-mounts /dev/null over listed
+ * files so their contents are invisible inside the namespace.
+ */
+export function buildCredentialScrub(cfg: SandboxConfig): string {
+  let cmds = '';
+  if (cfg.hiddenEnvVars && cfg.hiddenEnvVars.length > 0) {
+    cmds += 'unset ' + cfg.hiddenEnvVars.join(' ') + '; ';
+  }
+  if (cfg.hiddenFiles && cfg.hiddenFiles.length > 0) {
+    for (const f of cfg.hiddenFiles) {
+      const esc = f.replace(/'/g, "'\\''");
+      cmds += "mount --bind /dev/null '" + esc + "' 2>/dev/null; ";
+    }
+  }
+  return cmds;
+}
+
+/**
+ * Build iptables rules that allow outbound traffic only to the listed domains
+ * (plus loopback and DNS). Returns '' for an empty list. Meant to run inside
+ * a network namespace created by unshare --net.
+ */
+export function buildNetworkAllowlist(domains: string[]): string {
+  if (domains.length === 0) return '';
+  let rules = '';
+  // Allow loopback always
+  rules += 'iptables -A OUTPUT -o lo -j ACCEPT 2>/dev/null; ';
+  // Allow DNS
+  rules += 'iptables -A OUTPUT -p udp --dport 53 -j ACCEPT 2>/dev/null; ';
+  rules += 'iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT 2>/dev/null; ';
+  // Allow each domain
+  for (const d of domains) {
+    const esc = d.replace(/'/g, "'\\''");
+    rules +=
+      "for ip in $(getent ahosts '" +
+      esc +
+      "' 2>/dev/null | awk '{print $1}' | sort -u); do iptables -A OUTPUT -d $ip -j ACCEPT 2>/dev/null; done; ";
+  }
+  // Default deny outbound
+  rules += 'iptables -A OUTPUT -j DROP 2>/dev/null; ';
+  return rules;
+}
+
 function wrapWithResourceLimits(command: string, cfg: SandboxConfig): string {
-  return `${buildUlimits(cfg)}${command}`;
+  // In resource-limits-only mode (non-Linux or no unshare), we can still hide
+  // env vars (no mount namespace available, so file hiding is skipped).
+  let envScrub = '';
+  if (cfg.hiddenEnvVars && cfg.hiddenEnvVars.length > 0) {
+    envScrub = 'unset ' + cfg.hiddenEnvVars.join(' ') + '; ';
+  }
+  return `${buildUlimits(cfg)}${envScrub}${command}`;
 }
 
 function buildUlimits(cfg: SandboxConfig): string {

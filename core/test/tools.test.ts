@@ -347,8 +347,8 @@ describe('file_edit tool', () => {
       makeContext(tmpDir),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('found 3 times'));
-    assert.ok(result.output.includes('must be unique'));
+    assert.ok(result.output.includes('3 locations'));
+    assert.ok(result.output.includes('replace_all'));
   });
 
   it('returns error when old_string equals new_string', async () => {

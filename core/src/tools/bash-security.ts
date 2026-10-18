@@ -994,6 +994,124 @@ export function detectSessionTranscriptWrite(command: string): { blocked: boolea
 }
 
 // ---------------------------------------------------------------------------
+// Nuclear command blocklist — un-bypassable, no flag/mode/env can disable
+// ---------------------------------------------------------------------------
+// These commands can brick a machine or cause unrecoverable mass data loss.
+// Blocked unconditionally, even in --yolo mode.
+
+const NUCLEAR_RM_TARGETS = new Set(['/', '/*', '/home', '/root', '/etc', '/usr', '/var', '/bin', '/sbin', '/lib', '/lib64', '/boot', '/opt', '/sys', '/proc', '/dev']);
+const HOME_EXPANSIONS = /^(?:~\/?|\$HOME\/?|\$\{HOME\}\/?|\$\(echo\s+~\)\/?|\$\(eval\s+echo\s+~\)\/?|\/home\/\w+\/?)$/;
+const RM_RF_RE = /\brm\b[^;]*(?:-\w*[rf]\w*\s+[^;]*-\w*[rf]\w*|-\w*r\w*f\w*|-\w*f\w*r\w*|--recursive\b[^;]*--force\b|--force\b[^;]*--recursive\b)/;
+const DISK_WIPE_RE = /\b(?:mkfs|mkfs\.\w+|wipefs|shred)\b[^|;]*(?:\/dev\/[a-z]|\/dev\/mapper\/)/;
+const DD_WIPE_RE = /\bdd\b[^|;]*(?:of\s*=\s*\/dev\/(?:sd|hd|vd|nvme|xvd|loop|mapper)|of\s*=\s*\/dev\/(?:zero|null|urandom))/;
+const FORK_BOMB_RE = /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/;
+const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*|command\s+|\\|\/(?:usr\/)?(?:s?bin)\/)/;
+
+export interface NuclearCheckResult {
+  blocked: boolean;
+  reason?: string;
+}
+
+export function detectNuclearCommand(command: string): NuclearCheckResult {
+  if (!command || !command.trim()) return { blocked: false };
+
+  const stripped = stripInvisibleUnicode(command);
+  const normalized = stripped.replace(/\s+/g, ' ').trim();
+
+  if (FORK_BOMB_RE.test(normalized)) {
+    return { blocked: true, reason: 'fork bomb detected — would crash the system by spawning infinite processes' };
+  }
+
+  // Check each semicolon/&&/||-separated segment independently so that
+  // "echo hi; rm -rf /" is caught even though the full string doesn't
+  // start with rm.
+  const segments = normalized.split(/\s*(?:;|&&|\|\|)\s*/);
+  for (const segment of segments) {
+    const result = checkSegment(segment);
+    if (result.blocked) return result;
+  }
+
+  return { blocked: false };
+}
+
+function stripCommandPrefix(segment: string): string {
+  let s = segment.trim();
+  let prev = '';
+  while (prev !== s) {
+    prev = s;
+    s = s.replace(COMMAND_PREFIX_RE, '').trim();
+  }
+  return s;
+}
+
+function stripQuotes(s: string): string {
+  return s.replace(/^["']|["']$/g, '');
+}
+
+function checkSegment(segment: string): NuclearCheckResult {
+  const bare = stripCommandPrefix(segment);
+
+  if (DD_WIPE_RE.test(bare)) {
+    return { blocked: true, reason: 'dd targeting a block device — would wipe the disk' };
+  }
+
+  if (DISK_WIPE_RE.test(bare)) {
+    return { blocked: true, reason: 'filesystem format/wipe command — would destroy the disk' };
+  }
+
+  if (RM_RF_RE.test(bare)) {
+    const targets = extractRmTargets(bare);
+    for (const target of targets) {
+      const unquoted = stripQuotes(target);
+      const clean = unquoted.replace(/\/+$/, '') || '/';
+      if (NUCLEAR_RM_TARGETS.has(clean)) {
+        return { blocked: true, reason: `rm -rf targeting ${clean} — would destroy the filesystem` };
+      }
+      if (HOME_EXPANSIONS.test(unquoted)) {
+        return { blocked: true, reason: 'rm -rf targeting home directory — would destroy all user data' };
+      }
+    }
+  }
+
+  return { blocked: false };
+}
+
+function extractRmTargets(command: string): string[] {
+  const targets: string[] = [];
+  const tokens = command.split(/\s+/);
+  let pastRm = false;
+  for (const tok of tokens) {
+    if (!pastRm) {
+      if (/\brm$/.test(tok)) pastRm = true;
+      continue;
+    }
+    if (tok.startsWith('-') && !tok.startsWith('/')) continue;
+    if (tok === '--') continue;
+    targets.push(tok);
+  }
+  return targets;
+}
+
+// ---------------------------------------------------------------------------
+// Dangerous rm detector — flags `rm` with unguarded variables
+// ---------------------------------------------------------------------------
+
+export function detectDangerousRm(command: string): { dangerous: boolean; suggestion?: string; variable?: string } {
+  if (!/\brm\b/.test(command)) return { dangerous: false };
+  const rmWithVar = /\brm\s+(?:-[rfdi]+\s+)*\$\{?(\w+)\}?/;
+  const match = command.match(rmWithVar);
+  if (!match) return { dangerous: false };
+  const varName = match[1];
+  const guardedPattern = new RegExp(`\\$\\{${varName}:[-?]`);
+  if (guardedPattern.test(command)) return { dangerous: false };
+  return {
+    dangerous: true,
+    variable: varName,
+    suggestion: `Use \${${varName}:?} guard: rm -rf "\${${varName}:?}"`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Data-exfiltration detector
 // ---------------------------------------------------------------------------
 // Blocks commands that combine bulk file reads with outbound network transfer.
@@ -1093,6 +1211,54 @@ export function extractCommandPaths(command: string): string[] {
   const effectiveArgs = ddIdx >= 0 ? args.slice(ddIdx + 1) : args;
   const extractor = PATH_COMMANDS[cmd];
   return extractor ? extractor(effectiveArgs) : [];
+}
+
+// ---------------------------------------------------------------------------
+// Code-loading & policy-source variable protection
+// ---------------------------------------------------------------------------
+
+export const CODE_LOADING_VARIABLES = [
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'LD_AUDIT',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  'BASH_ENV',
+  'ENV',
+  'ZDOTDIR',
+  'NODE_OPTIONS',
+] as const;
+
+export const POLICY_SOURCE_VARIABLES = [
+  'SUPERINFERENCE_MANAGED_SETTINGS_PATH',
+  'SUPERINFERENCE_CONFIG_DIR',
+] as const;
+
+const PINNED_VARIABLES_UPPER = new Set(
+  [...CODE_LOADING_VARIABLES, ...POLICY_SOURCE_VARIABLES].map(v => v.toUpperCase()),
+);
+
+export function detectCodeLoadingEnvSet(command: string): { blocked: boolean; variable?: string } {
+  const patterns = [
+    /\bexport\s+([A-Za-z_]\w*)=/g,
+    /\bdeclare\s+-x\s+([A-Za-z_]\w*)=/g,
+    /\bunset\s+([A-Za-z_]\w*)/g,
+    /\benv\s+(?:-\S+\s+)*([A-Za-z_]\w*)=/g,
+    /(?:^|(?<=\s|;|&&|\|\|))([A-Za-z_]\w*)=\S+\s+\S/g,
+  ];
+
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(command)) !== null) {
+      const varName = m[1];
+      if (varName && PINNED_VARIABLES_UPPER.has(varName.toUpperCase())) {
+        return { blocked: true, variable: varName };
+      }
+    }
+  }
+  return { blocked: false };
 }
 
 export {

@@ -5,6 +5,17 @@ import { spawn } from 'child_process';
 import type { Message, AssistantMessage } from './types';
 import { log as coreLog } from './logger';
 import { EventEmitter } from 'events';
+import { canHookEvent } from './hook-protection';
+import { verdictRank } from './permissions';
+
+// ---------------------------------------------------------------------------
+// Hook output sanitization — strip system-reminder tags to prevent injection
+// ---------------------------------------------------------------------------
+
+const SYSTEM_TAG_RE = /<\/?system-reminder>/gi;
+export function sanitizeHookOutput(output: string): string {
+  return output.replace(SYSTEM_TAG_RE, '[tag-escaped]');
+}
 
 export type HookFn = (context: HookContext) => Promise<void>;
 
@@ -141,6 +152,55 @@ export type FileChangeHookFn = (context: FileChangeContext) => Promise<void>;
 export type CwdChangedHookFn = (context: CwdChangedContext) => Promise<void>;
 export type ElicitationHookFn = (context: ElicitationContext) => Promise<void>;
 export type StopFailureHookFn = (context: StopFailureContext) => Promise<void>;
+
+// ---------------------------------------------------------------------------
+// Hook validation and safety
+// ---------------------------------------------------------------------------
+
+export const MAX_HOOK_TIMEOUT_MS = 30_000;
+export const MAX_HOOKS_PER_EVENT = 10;
+
+export const BLOCKED_HOOK_COMMANDS: ReadonlySet<string> = new Set([
+  'rm -rf /',
+  'mkfs',
+  'dd if=',
+  ':(){',
+  'fork bomb',
+  'shutdown',
+  'reboot',
+  'init 0',
+  'init 6',
+  'halt',
+]);
+
+const DEVICE_WRITE_RE = />\s*\/dev\/[a-z]/;
+const SYSTEM_CHMOD_RE = /chmod\s+777\s+\/(etc|usr|bin|sbin)/;
+const MAX_HOOK_COMMAND_LENGTH = 4096;
+
+export function validateHookCommand(command: string): { valid: boolean; reason?: string } {
+  if (!command || !command.trim()) {
+    return { valid: false, reason: 'Hook command must not be empty' };
+  }
+  if (command.length > MAX_HOOK_COMMAND_LENGTH) {
+    return { valid: false, reason: `Hook command exceeds maximum length of ${MAX_HOOK_COMMAND_LENGTH} characters` };
+  }
+  for (const blocked of BLOCKED_HOOK_COMMANDS) {
+    if (command.includes(blocked)) {
+      return { valid: false, reason: `Hook command contains blocked pattern: ${blocked}` };
+    }
+  }
+  if (DEVICE_WRITE_RE.test(command)) {
+    return { valid: false, reason: 'Hook command must not write to device files' };
+  }
+  if (SYSTEM_CHMOD_RE.test(command)) {
+    return { valid: false, reason: 'Hook command must not chmod 777 system directories' };
+  }
+  return { valid: true };
+}
+
+export function validateHookTimeout(timeoutMs: number): number {
+  return Math.max(100, Math.min(timeoutMs, MAX_HOOK_TIMEOUT_MS));
+}
 
 // ---------------------------------------------------------------------------
 // HookManager
@@ -328,6 +388,15 @@ export class HookManager extends EventEmitter {
   private _workspaceTrusted = false;
   private _callbackHooks: Map<string, HookCallback[]> = new Map();
 
+  // Gap 1: Tier-aware verdict hold-over
+  private _hookTiers = new WeakMap<Function, string>();
+  private _denyRulesHold = false;
+
+  /**
+   * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
+   */
+  setDenyRulesHold(hold: boolean): void { this._denyRulesHold = hold; }
+
   constructor() {
     super();
   }
@@ -485,6 +554,13 @@ export class HookManager extends EventEmitter {
         const hookConfig = entry.hook;
         if (!hookConfig) return;
         const matcher = entry.matcher;
+        const tier = entry._source || 'user';
+
+        // Gap 15: Block user-tier hooks on protected events
+        if (!canHookEvent(entry.event, tier as import('./hook-protection').HookTier)) {
+          coreLog('hooks', `Blocked ${tier}-tier hook on protected event "${entry.event}"`);
+          return;
+        }
 
         switch (entry.event) {
         case 'preToolUse': {
@@ -509,7 +585,7 @@ export class HookManager extends EventEmitter {
             if (result.startsWith('SYSTEM:')) return { action: 'allow', additionalContext: result.slice(7).trim() };
             return { action: 'allow' };
           };
-          this.onPreToolUse(fn);
+          this.onPreToolUse(fn, tier);
           break;
         }
         case 'postToolUse': {
@@ -540,7 +616,7 @@ export class HookManager extends EventEmitter {
             if (result.startsWith('DENY:')) return { action: 'deny', reason: result.slice(5).trim() };
             return { action: 'allow' };
           };
-          this.onPreSampling(fn);
+          this.onPreSampling(fn, tier);
           break;
         }
         case 'postSampling': {
@@ -874,16 +950,18 @@ export class HookManager extends EventEmitter {
 
   // ---- New registration methods ----
 
-  onPreToolUse(fn: PreToolUseHookFn): void {
+  onPreToolUse(fn: PreToolUseHookFn, tier?: string): void {
     this.preToolUseHooks.push(fn);
+    this._hookTiers.set(fn, tier || 'user');
   }
 
   onPostToolUse(fn: PostToolUseHookFn): void {
     this.postToolUseHooks.push(fn);
   }
 
-  onPreSampling(fn: PreSamplingHookFn): void {
+  onPreSampling(fn: PreSamplingHookFn, tier?: string): void {
     this.preSamplingHooks.push(fn);
+    this._hookTiers.set(fn, tier || 'user');
   }
 
   onSessionStart(fn: SessionHookFn): void { this.sessionStartHooks.push(fn); }
@@ -1172,17 +1250,37 @@ export class HookManager extends EventEmitter {
 
   /**
    * Shared decision-hook executor. First deny wins; modify decisions are
-   * accumulated (later hooks override earlier ones). Errors are logged.
+   * accumulated (later hooks override earlier ones).
+   *
+   * Gap 2: Fail-closed — if a hook throws, we return deny immediately rather
+   *   than silently allowing the action through.
+   *
+   * Gap 1: Tier-aware hold-over — when _denyRulesHold is true, a user-tier
+   *   hook cannot loosen a verdict set by a higher-privilege tier.
    */
   private async executeDecisionHooks<T extends HookContext>(
     hooks: Array<(ctx: T) => Promise<HookDecision>>,
     ctx: T,
   ): Promise<HookDecision> {
     let accumulated: HookDecision = { action: 'allow' };
+    // Track the strictest verdict from non-user tiers for hold-over logic
+    let preUserVerdict: HookDecision | null = null;
 
     for (const hook of hooks) {
       try {
         const decision = await hook(ctx);
+
+        // Gap 1: When denyRulesHold is active, track pre-user-tier verdict
+        if (this._denyRulesHold) {
+          const hookTier = this._hookTiers.get(hook) || 'user';
+          if (hookTier !== 'user' && hookTier !== 'project' && hookTier !== 'config') {
+            // This is a builtin/org hook — record its verdict if strictest so far
+            if (!preUserVerdict || verdictRank(decision.action) > verdictRank(preUserVerdict.action)) {
+              preUserVerdict = decision;
+            }
+          }
+        }
+
         if (decision.action === 'deny') {
           return decision;
         }
@@ -1193,12 +1291,22 @@ export class HookManager extends EventEmitter {
             updatedMessages: decision.updatedMessages ?? (accumulated.action === 'modify' ? accumulated.updatedMessages : undefined),
             additionalContext: decision.additionalContext ?? accumulated.additionalContext,
           };
-        } else if (decision.additionalContext) {
-          accumulated = { ...accumulated, additionalContext: decision.additionalContext };
+        } else if (decision.action === 'allow') {
+          // An explicit "allow" can loosen a prior "modify"; the hold-over
+          // check at the end guards against user-tier loosening.
+          accumulated = { action: 'allow', additionalContext: decision.additionalContext ?? accumulated.additionalContext };
         }
       } catch (err) {
-        coreLog('hooks', 'Hook error', { error: String(err) });
+        // Gap 2: Fail-closed — hook errors deny the action
+        coreLog('hooks', 'Hook error (fail-closed)', { error: String(err) });
+        return { action: 'deny' as const, reason: `Hook verification failed (fail-closed): ${err instanceof Error ? err.message : String(err)}` };
       }
+    }
+
+    // Gap 1: If denyRulesHold is active and a privileged tier had a stricter
+    // verdict than the accumulated result, hold the privileged verdict.
+    if (this._denyRulesHold && preUserVerdict && verdictRank(preUserVerdict.action) > verdictRank(accumulated.action)) {
+      return { action: 'deny' as const, reason: 'Org-tier verdict held over user-tier loosening (denyRulesHold)' };
     }
 
     return accumulated;
@@ -1236,7 +1344,7 @@ export class HookManager extends EventEmitter {
           } catch {
             // Not JSON — fall back to prefix detection
           }
-          return trimmed;
+          return sanitizeHookOutput(trimmed);
         } catch (err: unknown) {
           coreLog('hooks', `Command hook error: ${err}`);
           // Fail-closed: a guardrail hook that times out or errors must DENY,
@@ -1294,7 +1402,7 @@ export class HookManager extends EventEmitter {
     if (config.asyncRewake && result.startsWith('DENY:')) {
       this.emit('hookRewake', { event: 'prompt', message: result });
     }
-    return result;
+    return sanitizeHookOutput(result);
   }
 
   private async runHttpHook(config: HttpHookConfig, eventData: string): Promise<string> {
@@ -1312,7 +1420,7 @@ export class HookManager extends EventEmitter {
       }, (res: any) => {
         let body = '';
         res.on('data', (d: Buffer) => body += d);
-        res.on('end', () => resolve(body));
+        res.on('end', () => resolve(sanitizeHookOutput(body)));
         res.on('error', () => resolve(onFail()));
       });
       req.on('timeout', () => { req.destroy(); resolve(onFail()); });
@@ -1351,7 +1459,7 @@ export class HookManager extends EventEmitter {
       coreLog('hooks', `Agent hook error: ${err}`);
     }
     engine.shutdown?.();
-    return result;
+    return sanitizeHookOutput(result);
   }
 
   private removeHookOnce<T>(hookArray: T[], hookFn: T): void {

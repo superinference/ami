@@ -355,7 +355,7 @@ export function fuzzyFindAndReplace(
         newContent: null,
         strategy: name,
         matchCount: matches.length,
-        error: `old_string found ${matches.length} times (strategy: ${name}). The old_string must be unique. Add more surrounding context to make it unique, or use replace_all: true to replace every occurrence.`,
+        error: `old_string matches ${matches.length} locations (strategy: ${name}). Add more surrounding context to make it unique, or use replace_all: true to replace all occurrences.`,
       };
     }
 

@@ -2,6 +2,22 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { ToolResult } from '../types';
 
+// ---------------------------------------------------------------------------
+// Device / special-file blocklist — shared by file_read and file_edit
+// ---------------------------------------------------------------------------
+
+export const BLOCKED_PATHS = [
+  '/dev/zero', '/dev/null', '/dev/random', '/dev/urandom',
+  '/dev/stdin', '/dev/stdout', '/dev/stderr',
+  '/dev/fd/', '/dev/tcp/', '/dev/udp/',
+  '/proc/self/fd/', '/proc/self/mem',
+];
+
+export function isBlockedPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  return BLOCKED_PATHS.some(bp => normalized === bp || normalized.startsWith(bp));
+}
+
 /**
  * Validate that a required string input field is present and non-empty.
  * Returns a ToolResult error if invalid, or null if valid.

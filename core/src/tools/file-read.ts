@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
-import { resolveFilePath, detectEncoding, decodeBuffer } from './tool-utils';
+import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath } from './tool-utils';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 
@@ -10,17 +10,64 @@ const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
 const MAX_FILE_READ_TOKENS = 25_000;
 
-const BLOCKED_PATHS = [
-  '/dev/zero', '/dev/null', '/dev/random', '/dev/urandom',
-  '/dev/stdin', '/dev/stdout', '/dev/stderr',
-  '/dev/fd/', '/dev/tcp/', '/dev/udp/',
-  '/proc/self/fd/', '/proc/self/mem',
-];
+/** Maximum image file size allowed (128 MiB). */
+export const MAX_IMAGE_FILE_BYTES = 128 * 1024 * 1024;
 
-function isBlockedPath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/');
-  return BLOCKED_PATHS.some(bp => normalized === bp || normalized.startsWith(bp));
+const ALL_IMAGE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
+  '.svg', '.ico', '.tiff', '.heic', '.heif', '.avif',
+]);
+
+/** Whether the file path has an image extension (broad set including non-viewable). */
+export function isImageExtension(filePath: string): boolean {
+  return ALL_IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
+
+/**
+ * Validate an image file before loading it into memory.
+ * Rejects non-regular files (pipes, devices, sockets) and files over 128 MiB.
+ */
+export function validateImageFile(filePath: string): { valid: boolean; error?: string } {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch {
+    return { valid: false, error: 'File not found or not accessible' };
+  }
+  if (!stat.isFile()) {
+    return { valid: false, error: 'Not a regular file' };
+  }
+  if (stat.size > MAX_IMAGE_FILE_BYTES) {
+    return { valid: false, error: 'Image file too large (>128 MB)' };
+  }
+  return { valid: true };
+}
+
+export const KNOWN_BINARY_EXTENSIONS = new Set([
+  // Executables & shared libraries
+  '.exe', '.dll', '.so', '.dylib', '.o', '.a', '.lib', '.bin',
+  '.wasm', '.class', '.pyc', '.pyo', '.dex',
+  // Archives & compressed
+  '.zip', '.gz', '.tar', '.bz2', '.xz', '.7z', '.rar', '.lz4', '.zst',
+  '.jar', '.war', '.iso', '.img', '.dmg',
+  // Databases
+  '.dat', '.db', '.sqlite', '.sqlite3', '.mdb',
+  // Office / documents (binary formats)
+  '.xlsm', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt',
+  '.odt', '.ods', '.odp',
+  // Data serialisation
+  '.parquet', '.avro', '.orc', '.feather', '.arrow',
+  '.protobuf', '.pb', '.msgpack',
+  // Media — audio
+  '.mp3', '.wav', '.flac', '.ogg', '.aac', '.m4a', '.opus', '.wma',
+  // Media — video
+  '.mp4', '.avi', '.mov', '.mkv', '.webm',
+  // Media — image (non-viewable; viewable images handled separately)
+  '.heic', '.heif',
+  // E-books
+  '.epub', '.mobi',
+]);
+
 
 function isUNCPath(filePath: string): boolean {
   return filePath.startsWith('\\\\') || filePath.startsWith('//');
@@ -334,8 +381,7 @@ export const fileReadTool: ToolDefinition = {
     }
 
     // Fast-reject known binary extensions before reading bytes
-    const BINARY_EXTENSIONS = new Set(['.exe', '.dll', '.so', '.dylib', '.o', '.a', '.lib', '.bin', '.dat', '.db', '.sqlite', '.wasm', '.class', '.pyc', '.pyo', '.jar', '.war', '.zip', '.gz', '.tar', '.bz2', '.xz', '.7z', '.rar', '.iso', '.img', '.dmg', '.mp3', '.mp4', '.avi', '.mov', '.mkv', '.wav', '.flac', '.ogg', '.webm']);
-    if (BINARY_EXTENSIONS.has(ext)) {
+    if (KNOWN_BINARY_EXTENSIONS.has(ext)) {
       return { output: `[Binary file: ${ext} — ${path.basename(resolved)}. Use bash to inspect binary files.]` };
     }
 
@@ -509,6 +555,26 @@ function parsePageRange(pages: string): { start: number; end: number; error?: st
     return { start: 0, end: 0, error: `Page range too large (max 20 pages per request).` };
   }
   return { start, end };
+}
+
+export function isBinaryByExtension(ext: string): boolean {
+  return KNOWN_BINARY_EXTENSIONS.has(ext.toLowerCase());
+}
+
+export async function checkBinaryContent(filePath: string): Promise<boolean> {
+  const fd = await fs.promises.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(BINARY_CHECK_BYTES);
+    const { bytesRead } = await fd.read(buffer, 0, BINARY_CHECK_BYTES, 0);
+    if (bytesRead === 0) return false;
+    let nullCount = 0;
+    for (let i = 0; i < bytesRead; i++) {
+      if (buffer[i] === 0) nullCount++;
+    }
+    return nullCount / bytesRead > 0.01;
+  } finally {
+    await fd.close();
+  }
 }
 
 async function checkBinary(filePath: string): Promise<boolean> {

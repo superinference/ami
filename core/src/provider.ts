@@ -461,6 +461,23 @@ export function deepMergeRecords(
   return out;
 }
 
+export function withExtraHeaders(
+  extraHeaders: Record<string, string> | undefined,
+  baseFetch: typeof globalThis.fetch = globalThis.fetch,
+): typeof globalThis.fetch | undefined {
+  if (!extraHeaders || Object.keys(extraHeaders).length === 0) return undefined;
+  const wrapped: typeof globalThis.fetch = (input, init) => {
+    const existingHeaders = init?.headers ?? {};
+    const merged = existingHeaders instanceof Headers
+      ? (() => { const h = new Headers(existingHeaders); for (const [k, v] of Object.entries(extraHeaders)) h.set(k, v); return h; })()
+      : Array.isArray(existingHeaders)
+        ? [...existingHeaders, ...Object.entries(extraHeaders)]
+        : { ...existingHeaders, ...extraHeaders };
+    return baseFetch(input, { ...init, headers: merged });
+  };
+  return wrapped;
+}
+
 /**
  * Build a `fetch` wrapper that deep-merges `extraBody` into the JSON request
  * body of every outgoing OpenAI-compatible request. Returns `undefined` when
@@ -526,7 +543,8 @@ export function resolveModel(config: ProviderConfig) {
   const provider = (config.provider as ProviderName) || inferred?.provider;
   const model = config.model || inferred?.defaultModel || 'gpt-4o';
   const baseUrl = config.baseUrl || inferred?.defaultBaseUrl || '';
-  const fetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl));
+  const headerFetch = withExtraHeaders(config.extraHeaders);
+  const fetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? globalThis.fetch);
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
@@ -1031,11 +1049,14 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
+  options?: { thinking?: ThinkingConfig; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
 ): AsyncGenerator<StreamChunk> {
   const timeoutMs = options?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
   const baseDelay = options?.baseDelayMs ?? BASE_DELAY_MS;
+  const maxDelay = options?.maxDelayMs ?? 60_000;
+  const maxTotalWait = options?.maxTotalWaitMs ?? 0;
+  const retryStart = maxTotalWait > 0 ? Date.now() : 0;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (abortSignal.aborted) {
@@ -1075,16 +1096,17 @@ export async function* streamChatCompletionWithRetry(
         }
 
         if (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode) && attempt < maxRetries) {
+          if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
+            yield chunk;
+            return;
+          }
+
           let delayMs: number;
           const retryAfterSeconds = chunk.retryAfter;
           if (statusCode === 429 && retryAfterSeconds != null) {
-            // Honor the server's Retry-After exactly, but floor it to baseDelay so
-            // a `Retry-After: 0` does not produce a zero delay that burns the whole
-            // retry budget in milliseconds. (Use a FIXED floor, not the growing
-            // exponential, so a legitimate small Retry-After is not inflated.)
             delayMs = Math.max(retryAfterSeconds * 1000, baseDelay);
           } else {
-            delayMs = baseDelay * Math.pow(2, attempt);
+            delayMs = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
           }
 
           if (options?.onRetry) {
@@ -1149,11 +1171,16 @@ export async function* streamChatCompletionWithRetry(
       }
       // No content yet — treat like a retryable error
       if (attempt < maxRetries) {
+        if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
+          yield { type: 'error', error: `Retry time limit exceeded (${maxTotalWait}ms)` };
+          return;
+        }
+        const timeoutDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
         if (options?.onRetry) {
-          options.onRetry(attempt + 1, maxRetries, baseDelay, 0);
+          options.onRetry(attempt + 1, maxRetries, timeoutDelay, 0);
         }
         try {
-          await sleep(baseDelay * Math.pow(2, attempt), abortSignal);
+          await sleep(timeoutDelay, abortSignal);
         } catch {
           yield { type: 'error', error: 'Request aborted' };
           return;
@@ -1171,4 +1198,100 @@ export async function* streamChatCompletionWithRetry(
   }
 
   yield { type: 'error', error: `Max retries (${maxRetries}) exceeded` };
+}
+
+// ---------------------------------------------------------------------------
+// Credential sanitization — strip secrets from error messages
+// ---------------------------------------------------------------------------
+
+export const CREDENTIAL_PATTERNS: RegExp[] = [
+  /sk-[a-zA-Z0-9_-]{10,}/g,
+  /sk-ant-[a-zA-Z0-9_-]{10,}/g,
+  /sk-or-[a-zA-Z0-9_-]{10,}/g,
+  /key-[a-zA-Z0-9_-]{10,}/g,
+  /Bearer\s+[a-zA-Z0-9_.\-/+=]{10,}/gi,
+  /\b[a-zA-Z0-9._%+-]+:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+/g,
+  /(?:x-api-key|authorization|x-goog-api-key)[:\s]+[^\s,;]{10,}/gi,
+  /AIzaSy[a-zA-Z0-9_-]{30,}/g,
+  /gsk_[a-zA-Z0-9_-]{10,}/g,
+  /xai-[a-zA-Z0-9_-]{10,}/g,
+  /hf_[a-zA-Z0-9_-]{10,}/g,
+];
+
+export function sanitizeErrorMessage(error: Error | string): string {
+  const msg = error instanceof Error ? error.message : error;
+  let sanitized = msg;
+  for (const pattern of CREDENTIAL_PATTERNS) {
+    sanitized = sanitized.replace(new RegExp(pattern.source, pattern.flags), '[REDACTED]');
+  }
+  return sanitized;
+}
+
+// ---------------------------------------------------------------------------
+// Retry-After header parsing
+// ---------------------------------------------------------------------------
+
+export const MAX_RETRY_AFTER_MS = 3_600_000;
+const DEFAULT_RETRY_AFTER_MS = 60_000;
+const MIN_RETRY_AFTER_MS = 1_000;
+
+export function parseRetryAfterHeader(header: string | null | undefined): number {
+  if (!header || !header.trim()) return DEFAULT_RETRY_AFTER_MS;
+  const trimmed = header.trim();
+  const numeric = Number(trimmed);
+  if (!isNaN(numeric) && isFinite(numeric)) {
+    const ms = numeric * 1000;
+    return Math.max(MIN_RETRY_AFTER_MS, Math.min(ms, MAX_RETRY_AFTER_MS));
+  }
+  const date = Date.parse(trimmed);
+  if (!isNaN(date)) {
+    const delayMs = date - Date.now();
+    if (delayMs <= 0) return MIN_RETRY_AFTER_MS;
+    return Math.max(MIN_RETRY_AFTER_MS, Math.min(delayMs, MAX_RETRY_AFTER_MS));
+  }
+  return DEFAULT_RETRY_AFTER_MS;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt cache tracking — detect cache thrashing from mid-session tool loads
+// ---------------------------------------------------------------------------
+
+export const CACHE_MISS_WARN_THRESHOLD = 3;
+
+export class PromptCacheTracker {
+  private _hits = 0;
+  private _misses = 0;
+  private _consecutiveMisses = 0;
+
+  recordCacheHit(promptTokens: number, cachedTokens: number): void {
+    this._hits++;
+    this._consecutiveMisses = 0;
+  }
+
+  recordCacheMiss(promptTokens: number, cachedTokens: number): void {
+    this._misses++;
+    this._consecutiveMisses++;
+  }
+
+  getHitRate(): number {
+    const total = this._hits + this._misses;
+    if (total === 0) return 0;
+    return this._hits / total;
+  }
+
+  getTotalRequests(): number {
+    return this._hits + this._misses;
+  }
+
+  getConsecutiveMisses(): number {
+    return this._consecutiveMisses;
+  }
+
+  resetConsecutiveMisses(): void {
+    this._consecutiveMisses = 0;
+  }
+
+  shouldWarnAboutMisses(): boolean {
+    return this._consecutiveMisses >= CACHE_MISS_WARN_THRESHOLD;
+  }
 }
