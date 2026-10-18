@@ -289,3 +289,17 @@ describe('grepTool – in-process fallback when rg and grep are missing', () => 
     }
   });
 });
+
+describe('grepTool – file_path alias', () => {
+  it('accepts file_path as alias for path', async () => {
+    const result = await grepTool.execute({ pattern: 'nested', file_path: path.join(tmpDir, 'sub') }, ctx());
+    assert.ok(!result.isError, result.output);
+    assert.match(result.output, /nested/);
+  });
+
+  it('prefers path over file_path when both are provided', async () => {
+    const result = await grepTool.execute({ pattern: 'hello', path: tmpDir, file_path: '/nonexistent' }, ctx());
+    assert.ok(!result.isError, result.output);
+    assert.match(result.output, /hello/);
+  });
+});

@@ -110,7 +110,8 @@ export const grepTool: ToolDefinition = {
     const fileType = input.type as string | undefined;
     const beforeContext = input.before_context as number | undefined;
     const afterContext = input.after_context as number | undefined;
-    const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd);
+    const searchPath = (input.path ?? input.file_path) as string | undefined;
+    const v = validatePatternAndPath(input.pattern, searchPath, context.cwd);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
     const unreadable = assertReadableTarget(resolved);
