@@ -361,15 +361,16 @@ export function redactSecrets(content: string): string {
   );
 
   // 4. URL credentials — https://user:password@host (password >= 4 chars).
+  // Passwords may contain @, so match greedily up to the last @ before a host.
   out = out.replace(
-    /(https?:\/\/[^:@/\s]+:)[^@/\s]{4,}(@)/g,
-    '$1[REDACTED-SECRET]$2',
+    /(https?:\/\/[^:@/\s]+:)(.{4,}?)(@[^@/\s]+)/g,
+    '$1[REDACTED-SECRET]$3',
   );
 
   // 5. Database / messaging connection strings — same pattern for known schemes.
   out = out.replace(
-    /((?:mysql|postgres|postgresql|mongodb|redis|amqp):\/\/[^:@/\s]+:)[^@/\s]{4,}(@)/g,
-    '$1[REDACTED-SECRET]$2',
+    /((?:mysql|postgres|postgresql|mongodb|redis|amqp):\/\/[^:@/\s]+:)(.{4,}?)(@[^@/\s]+)/g,
+    '$1[REDACTED-SECRET]$3',
   );
 
   // 6. key: "value" / token = 'value' style — redact the quoted value only.

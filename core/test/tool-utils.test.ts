@@ -676,3 +676,43 @@ describe('redactSecrets – freeze protection', () => {
     assert.ok(!result.includes('sk-ant-abcdefghijklmnopqrstuvwxyz1234567890'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// redactSecrets — URL passwords with special characters
+// ---------------------------------------------------------------------------
+describe('redactSecrets – URL password special chars', () => {
+  it('redacts password containing @ symbol', () => {
+    const url = 'https://user:p@ssword@host.com/path';
+    const result = redactSecrets(url);
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('p@ssword'));
+    assert.ok(result.includes('@host.com'));
+  });
+
+  it('redacts URL-encoded password with %40 (@)', () => {
+    const url = 'https://admin:p%40ss+w0rd@db.example.com:5432/mydb';
+    const result = redactSecrets(url);
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('p%40ss+w0rd'));
+  });
+
+  it('redacts database connection string password', () => {
+    const url = 'postgres://user:Pa$$w0rd!@host:5432/db';
+    const result = redactSecrets(url);
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('Pa$$w0rd!'));
+  });
+
+  it('redacts mongodb connection string password', () => {
+    const url = 'mongodb://admin:s3cr3t@cluster.mongodb.net/db';
+    const result = redactSecrets(url);
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('s3cr3t'));
+  });
+
+  it('does not redact short passwords (< 4 chars)', () => {
+    const url = 'https://user:abc@host.com/path';
+    const result = redactSecrets(url);
+    assert.equal(result, url);
+  });
+});
