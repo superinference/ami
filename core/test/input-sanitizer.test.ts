@@ -36,6 +36,44 @@ describe('sanitizeToolInput', () => {
     const result = sanitizeToolInput({});
     assert.deepEqual(result, {});
   });
+
+  it('strips __proto__ keys (prototype pollution)', () => {
+    const obj = Object.create(null);
+    obj.command = 'ls';
+    obj['__proto__'] = { isAdmin: true };
+    const result = sanitizeToolInput(obj);
+    assert.equal(result.command, 'ls');
+    assert.ok(!Object.hasOwn(result, '__proto__'));
+  });
+
+  it('strips constructor key', () => {
+    const obj = Object.create(null);
+    obj.command = 'ls';
+    obj['constructor'] = 'Function';
+    const result = sanitizeToolInput(obj);
+    assert.equal(result.command, 'ls');
+    assert.ok(!Object.hasOwn(result, 'constructor'));
+  });
+
+  it('strips prototype key', () => {
+    const obj = Object.create(null);
+    obj.command = 'ls';
+    obj['prototype'] = { polluted: true };
+    const result = sanitizeToolInput(obj);
+    assert.equal(result.command, 'ls');
+    assert.ok(!Object.hasOwn(result, 'prototype'));
+  });
+
+  it('strips __proto__ in nested objects', () => {
+    const obj = Object.create(null);
+    const inner = Object.create(null);
+    inner['__proto__'] = { hack: true };
+    inner.name = 'test';
+    obj.config = inner;
+    const result = sanitizeToolInput(obj);
+    assert.ok(!Object.hasOwn(result.config as any, '__proto__'));
+    assert.equal((result.config as any).name, 'test');
+  });
 });
 
 describe('validateRequiredFields', () => {

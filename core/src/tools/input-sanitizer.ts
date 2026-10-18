@@ -1,6 +1,9 @@
+const POISONED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export function sanitizeToolInput(input: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
+    if (POISONED_KEYS.has(key)) continue;
     if (typeof value === 'string') {
       result[key] = value.replace(/\x00/g, '').trim();
     } else if (value && typeof value === 'object' && !Array.isArray(value)) {
