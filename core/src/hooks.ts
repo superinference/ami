@@ -154,6 +154,54 @@ export type ElicitationHookFn = (context: ElicitationContext) => Promise<void>;
 export type StopFailureHookFn = (context: StopFailureContext) => Promise<void>;
 
 // ---------------------------------------------------------------------------
+// Hook concurrency limiter — at most N of one event execute at a time
+// ---------------------------------------------------------------------------
+
+export const MAX_CONCURRENT_PER_EVENT = 12;
+
+export class EventConcurrencyLimiter {
+  private active = new Map<string, number>();
+  private waiters = new Map<string, Array<() => void>>();
+
+  constructor(private maxConcurrent = MAX_CONCURRENT_PER_EVENT) {}
+
+  async acquire(event: string): Promise<void> {
+    const current = this.active.get(event) ?? 0;
+    if (current < this.maxConcurrent) {
+      this.active.set(event, current + 1);
+      return;
+    }
+    await new Promise<void>(resolve => {
+      const queue = this.waiters.get(event) ?? [];
+      queue.push(resolve);
+      this.waiters.set(event, queue);
+    });
+  }
+
+  release(event: string): void {
+    const current = this.active.get(event) ?? 1;
+    const queue = this.waiters.get(event);
+    if (queue && queue.length > 0) {
+      const next = queue.shift()!;
+      if (queue.length === 0) this.waiters.delete(event);
+      next();
+    } else {
+      const next = current - 1;
+      if (next <= 0) this.active.delete(event);
+      else this.active.set(event, next);
+    }
+  }
+
+  getActive(event: string): number {
+    return this.active.get(event) ?? 0;
+  }
+
+  getWaiting(event: string): number {
+    return this.waiters.get(event)?.length ?? 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Hook validation and safety
 // ---------------------------------------------------------------------------
 
@@ -391,6 +439,7 @@ export class HookManager extends EventEmitter {
   // Gap 1: Tier-aware verdict hold-over
   private _hookTiers = new WeakMap<Function, string>();
   private _denyRulesHold = false;
+  private _concurrency = new EventConcurrencyLimiter();
 
   /**
    * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
@@ -427,14 +476,16 @@ export class HookManager extends EventEmitter {
   async executeCallbacks(event: string, data: unknown): Promise<HookDecisionOutput | void> {
     const hooks = this._callbackHooks.get(event);
     if (!hooks || hooks.length === 0) return;
-    for (const cb of hooks) {
-      try {
-        const result = await cb(event, data);
-        if (result && typeof result === 'object') return result as HookDecisionOutput;
-      } catch (err) {
-        coreLog('hooks', `Callback hook error for event "${event}": ${err}`);
+    return this.withConcurrencyGate(`cb:${event}`, async () => {
+      for (const cb of hooks) {
+        try {
+          const result = await cb(event, data);
+          if (result && typeof result === 'object') return result as HookDecisionOutput;
+        } catch (err) {
+          coreLog('hooks', `Callback hook error for event "${event}": ${err}`);
+        }
       }
-    }
+    });
   }
 
   private buildHookEnv(event: string, toolName?: string): Record<string, string> {
@@ -988,37 +1039,54 @@ export class HookManager extends EventEmitter {
   onElicitationResult(fn: ElicitationHookFn): void { this.elicitationResultHooks.push(fn); }
   onStopFailure(fn: StopFailureHookFn): void { this.stopFailureHooks.push(fn); }
 
+  // ---- Concurrency-gated execution helper ----
+
+  private async withConcurrencyGate<T>(event: string, fn: () => Promise<T>): Promise<T> {
+    await this._concurrency.acquire(event);
+    try {
+      return await fn();
+    } finally {
+      this._concurrency.release(event);
+    }
+  }
+
   // ---- Existing execution methods (backward-compatible, now with error logging) ----
 
   async executePostSampling(ctx: HookContext): Promise<void> {
-    for (const hook of this.postSamplingHooks) {
-      try {
-        await hook(ctx);
-      } catch (err) {
-        coreLog('hooks', 'Hook error', { error: String(err) });
+    return this.withConcurrencyGate('postSampling', async () => {
+      for (const hook of this.postSamplingHooks) {
+        try {
+          await hook(ctx);
+        } catch (err) {
+          coreLog('hooks', 'Hook error', { error: String(err) });
+        }
       }
-    }
+    });
   }
 
   async executeStop(ctx: HookContext): Promise<void> {
-    for (let i = 0; i < this.stopHooks.length; i++) {
-      try {
-        await this.stopHooks[i](ctx);
-      } catch (err) {
-        coreLog('hooks', 'Hook error', { error: String(err) });
-        await this.executeStopFailure({ error: String(err), hookIndex: i });
+    return this.withConcurrencyGate('stop', async () => {
+      for (let i = 0; i < this.stopHooks.length; i++) {
+        try {
+          await this.stopHooks[i](ctx);
+        } catch (err) {
+          coreLog('hooks', 'Hook error', { error: String(err) });
+          await this.executeStopFailure({ error: String(err), hookIndex: i });
+        }
       }
-    }
+    });
   }
 
   async executeError(ctx: HookContext): Promise<void> {
-    for (const hook of this.errorHooks) {
-      try {
-        await hook(ctx);
-      } catch (err) {
-        coreLog('hooks', 'Hook error', { error: String(err) });
+    return this.withConcurrencyGate('error', async () => {
+      for (const hook of this.errorHooks) {
+        try {
+          await hook(ctx);
+        } catch (err) {
+          coreLog('hooks', 'Hook error', { error: String(err) });
+        }
       }
-    }
+    });
   }
 
   // ---- New execution methods ----
@@ -1028,23 +1096,26 @@ export class HookManager extends EventEmitter {
    * (later modify hooks can override earlier ones).
    */
   async executePreToolUse(ctx: PreToolUseContext): Promise<HookDecision> {
-    return this.executeDecisionHooks(this.preToolUseHooks, ctx);
+    return this.withConcurrencyGate('preToolUse', () =>
+      this.executeDecisionHooks(this.preToolUseHooks, ctx));
   }
 
   /**
    * Execute post-tool-use hooks. Returns the last additionalContext if any hook provides one.
    */
   async executePostToolUse(ctx: PostToolUseContext): Promise<{ additionalContext?: string } | void> {
-    let additionalContext: string | undefined;
-    for (const hook of this.postToolUseHooks) {
-      try {
-        const result = await hook(ctx);
-        if (result && result.additionalContext) additionalContext = result.additionalContext;
-      } catch (err) {
-        coreLog('hooks', 'Hook error', { error: String(err) });
+    return this.withConcurrencyGate('postToolUse', async () => {
+      let additionalContext: string | undefined;
+      for (const hook of this.postToolUseHooks) {
+        try {
+          const result = await hook(ctx);
+          if (result && result.additionalContext) additionalContext = result.additionalContext;
+        } catch (err) {
+          coreLog('hooks', 'Hook error', { error: String(err) });
+        }
       }
-    }
-    if (additionalContext) return { additionalContext };
+      if (additionalContext) return { additionalContext };
+    });
   }
 
   /**
@@ -1052,165 +1123,212 @@ export class HookManager extends EventEmitter {
    * (later modify hooks can override earlier ones).
    */
   async executePreSampling(ctx: PreSamplingContext): Promise<HookDecision> {
-    return this.executeDecisionHooks(this.preSamplingHooks, ctx);
+    return this.withConcurrencyGate('preSampling', () =>
+      this.executeDecisionHooks(this.preSamplingHooks, ctx));
   }
 
   async executeSessionStart(ctx: SessionContext): Promise<{ initialUserMessage?: string } | void> {
-    let initialUserMessage: string | undefined;
-    for (const hook of this.sessionStartHooks) {
-      try {
-        const result = await hook(ctx);
-        if (result && result.initialUserMessage) initialUserMessage = result.initialUserMessage;
-      } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
-    if (initialUserMessage) return { initialUserMessage };
+    return this.withConcurrencyGate('sessionStart', async () => {
+      let initialUserMessage: string | undefined;
+      for (const hook of this.sessionStartHooks) {
+        try {
+          const result = await hook(ctx);
+          if (result && result.initialUserMessage) initialUserMessage = result.initialUserMessage;
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+      if (initialUserMessage) return { initialUserMessage };
+    });
   }
 
   async executeSessionEnd(ctx: SessionContext): Promise<void> {
-    for (const hook of this.sessionEndHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('sessionEnd', async () => {
+      for (const hook of this.sessionEndHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeSubagentStart(ctx: SubagentContext): Promise<void> {
-    for (const hook of this.subagentStartHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('subagentStart', async () => {
+      for (const hook of this.subagentStartHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeSubagentStop(ctx: SubagentContext): Promise<void> {
-    for (const hook of this.subagentStopHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('subagentStop', async () => {
+      for (const hook of this.subagentStopHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executePreCompact(ctx: CompactContext): Promise<void> {
-    coreLog('hooks', `[compact] Pre-compact triggered: ${ctx.messageCount} messages, ~${ctx.tokenEstimate} tokens`);
-    for (const hook of this.preCompactHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('preCompact', async () => {
+      coreLog('hooks', `[compact] Pre-compact triggered: ${ctx.messageCount} messages, ~${ctx.tokenEstimate} tokens`);
+      for (const hook of this.preCompactHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executePostCompact(ctx: CompactContext): Promise<void> {
-    for (const hook of this.postCompactHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('postCompact', async () => {
+      for (const hook of this.postCompactHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executePermissionRequest(ctx: PermissionContext): Promise<{ action?: 'allow' | 'deny'; reason?: string } | void> {
-    for (const hook of this.permissionRequestHooks) {
-      try {
-        const result = await hook(ctx);
-        if (result && result.action) return result;
-      } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('permissionRequest', async () => {
+      for (const hook of this.permissionRequestHooks) {
+        try {
+          const result = await hook(ctx);
+          if (result && result.action) return result;
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executePermissionDenied(ctx: PermissionContext): Promise<{ retry?: boolean } | void> {
-    for (const hook of this.permissionDeniedHooks) {
-      try {
-        const result = await hook(ctx);
-        if (result && (result as any).action === 'allow') {
-          return { retry: true };
-        }
-      } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
-    if (ctx.retry) return { retry: true };
+    return this.withConcurrencyGate('permissionDenied', async () => {
+      for (const hook of this.permissionDeniedHooks) {
+        try {
+          const result = await hook(ctx);
+          if (result && (result as any).action === 'allow') {
+            return { retry: true };
+          }
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+      if (ctx.retry) return { retry: true };
+    });
   }
 
   async executeUserPromptSubmit(ctx: UserPromptContext): Promise<{ additionalContext?: string } | void> {
-    let additionalContext: string | undefined;
-    for (const hook of this.userPromptSubmitHooks) {
-      try {
-        const result = await hook(ctx);
-        if (result && result.additionalContext) additionalContext = result.additionalContext;
-      } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
-    if (additionalContext) return { additionalContext };
+    return this.withConcurrencyGate('userPromptSubmit', async () => {
+      let additionalContext: string | undefined;
+      for (const hook of this.userPromptSubmitHooks) {
+        try {
+          const result = await hook(ctx);
+          if (result && result.additionalContext) additionalContext = result.additionalContext;
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+      if (additionalContext) return { additionalContext };
+    });
   }
 
   async executeTaskCreated(ctx: TaskEventContext): Promise<void> {
-    for (const hook of this.taskCreatedHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('taskCreated', async () => {
+      for (const hook of this.taskCreatedHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeTaskCompleted(ctx: TaskEventContext): Promise<void> {
-    for (const hook of this.taskCompletedHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('taskCompleted', async () => {
+      for (const hook of this.taskCompletedHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executePostToolUseFailure(ctx: PostToolUseContext): Promise<void> {
-    for (const hook of this.postToolUseFailureHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('postToolUseFailure', async () => {
+      for (const hook of this.postToolUseFailureHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeNotification(ctx: NotificationContext): Promise<void> {
-    for (const hook of this.notificationHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('notification', async () => {
+      for (const hook of this.notificationHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeSetup(ctx: SessionContext): Promise<void> {
-    for (const hook of this.setupHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('setup', async () => {
+      for (const hook of this.setupHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeConfigChange(ctx: ConfigChangeContext): Promise<void> {
-    for (const hook of this.configChangeHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('configChange', async () => {
+      for (const hook of this.configChangeHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeInstructionsLoaded(ctx: InstructionsContext): Promise<void> {
-    for (const hook of this.instructionsLoadedHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('instructionsLoaded', async () => {
+      for (const hook of this.instructionsLoadedHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeWorktreeCreate(ctx: WorktreeContext): Promise<void> {
-    for (const hook of this.worktreeCreateHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('worktreeCreate', async () => {
+      for (const hook of this.worktreeCreateHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeWorktreeRemove(ctx: WorktreeContext): Promise<void> {
-    for (const hook of this.worktreeRemoveHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('worktreeRemove', async () => {
+      for (const hook of this.worktreeRemoveHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeCwdChanged(ctx: CwdChangedContext): Promise<void> {
-    for (const hook of this.cwdChangedHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('cwdChanged', async () => {
+      for (const hook of this.cwdChangedHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeFileChanged(ctx: FileChangeContext): Promise<void> {
-    for (const hook of this.fileChangedHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('fileChanged', async () => {
+      for (const hook of this.fileChangedHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeElicitation(ctx: ElicitationContext): Promise<void> {
-    for (const hook of this.elicitationHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('elicitation', async () => {
+      for (const hook of this.elicitationHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeElicitationResult(ctx: ElicitationContext): Promise<void> {
-    for (const hook of this.elicitationResultHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('elicitationResult', async () => {
+      for (const hook of this.elicitationResultHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   async executeStopFailure(ctx: StopFailureContext): Promise<void> {
-    for (const hook of this.stopFailureHooks) {
-      try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-    }
+    return this.withConcurrencyGate('stopFailure', async () => {
+      for (const hook of this.stopFailureHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
   }
 
   getSummary(): Record<string, number> {

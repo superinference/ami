@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { HookManager, type HookContext } from '../src/hooks';
+import { HookManager, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, type HookContext } from '../src/hooks';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -185,5 +185,67 @@ describe('HookManager – empty', () => {
     await hm.executePostSampling(makeContext());
     await hm.executeStop(makeContext());
     await hm.executeError(makeContext());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EventConcurrencyLimiter
+// ---------------------------------------------------------------------------
+describe('EventConcurrencyLimiter', () => {
+  it('exports MAX_CONCURRENT_PER_EVENT = 12', () => {
+    assert.equal(MAX_CONCURRENT_PER_EVENT, 12);
+  });
+
+  it('allows up to max concurrent acquires', async () => {
+    const limiter = new EventConcurrencyLimiter(3);
+    await limiter.acquire('test');
+    await limiter.acquire('test');
+    await limiter.acquire('test');
+    assert.equal(limiter.getActive('test'), 3);
+    limiter.release('test');
+    assert.equal(limiter.getActive('test'), 2);
+    limiter.release('test');
+    limiter.release('test');
+    assert.equal(limiter.getActive('test'), 0);
+  });
+
+  it('queues acquires beyond the limit', async () => {
+    const limiter = new EventConcurrencyLimiter(2);
+    await limiter.acquire('ev');
+    await limiter.acquire('ev');
+    assert.equal(limiter.getActive('ev'), 2);
+
+    let thirdResolved = false;
+    const thirdPromise = limiter.acquire('ev').then(() => { thirdResolved = true; });
+    assert.equal(limiter.getWaiting('ev'), 1);
+    assert.equal(thirdResolved, false);
+
+    limiter.release('ev');
+    await thirdPromise;
+    assert.equal(thirdResolved, true);
+    assert.equal(limiter.getActive('ev'), 2);
+    assert.equal(limiter.getWaiting('ev'), 0);
+
+    limiter.release('ev');
+    limiter.release('ev');
+  });
+
+  it('tracks events independently', async () => {
+    const limiter = new EventConcurrencyLimiter(1);
+    await limiter.acquire('a');
+    await limiter.acquire('b');
+    assert.equal(limiter.getActive('a'), 1);
+    assert.equal(limiter.getActive('b'), 1);
+    limiter.release('a');
+    limiter.release('b');
+  });
+
+  it('hooks execute through concurrency gate', async () => {
+    const hm = new HookManager();
+    const log: string[] = [];
+    hm.onPostSampling(async () => { log.push('hook1'); });
+    hm.onPostSampling(async () => { log.push('hook2'); });
+    await hm.executePostSampling(makeContext());
+    assert.deepEqual(log, ['hook1', 'hook2']);
   });
 });
