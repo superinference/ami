@@ -17,6 +17,7 @@ import {
   convertToLineEnding,
   scanForSecrets,
   scanAddedSecrets,
+  redactSecrets,
   isNonUtfEncoding,
   detectEncoding,
   decodeBuffer,
@@ -622,5 +623,56 @@ describe('encoding round-trip', () => {
     const { text: decoded, encoding } = decodeBuffer(buf);
     assert.equal(decoded, text);
     assert.equal(encoding, 'utf-16be');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanForSecrets — freeze protection on long unbroken text
+// ---------------------------------------------------------------------------
+describe('scanForSecrets – freeze protection', () => {
+  it('does not hang on a 100KB unbroken alphanumeric line', () => {
+    const longLine = 'a'.repeat(100_000);
+    const start = Date.now();
+    const found = scanForSecrets(longLine);
+    const elapsed = Date.now() - start;
+    assert.equal(found.length, 0);
+    assert.ok(elapsed < 1000, `scanForSecrets took ${elapsed}ms on long line — should be < 1s`);
+  });
+
+  it('still detects secrets within the first 500 chars of a line', () => {
+    const secret = 'sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef';
+    const line = secret + 'x'.repeat(10_000);
+    const found = scanForSecrets(line);
+    assert.ok(found.length > 0, 'should detect secret at start of long line');
+  });
+
+  it('does not detect secrets past the line scan limit', () => {
+    const padding = 'x'.repeat(600);
+    const secret = 'sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef';
+    const line = padding + secret;
+    const found = scanForSecrets(line);
+    assert.equal(found.length, 0, 'secret past 500-char limit should not be scanned');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// redactSecrets — freeze protection on long unbroken text
+// ---------------------------------------------------------------------------
+describe('redactSecrets – freeze protection', () => {
+  it('does not hang on a 200KB unbroken base64 blob', () => {
+    const base64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    let blob = '';
+    for (let i = 0; i < 200_000; i++) blob += base64Chars[i % base64Chars.length];
+    const start = Date.now();
+    redactSecrets(blob);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 2000, `redactSecrets took ${elapsed}ms on 200KB blob — should be < 2s`);
+  });
+
+  it('still redacts secrets within the per-line limit', () => {
+    const line = 'token: sk-ant-abcdefghijklmnopqrstuvwxyz1234567890 end';
+    const result = redactSecrets(line);
+    assert.ok(result.includes('[REDACTED-SECRET]'), 'should redact short-line secret');
+    assert.ok(!result.includes('sk-ant-abcdefghijklmnopqrstuvwxyz1234567890'));
   });
 });

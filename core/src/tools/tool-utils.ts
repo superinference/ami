@@ -308,10 +308,18 @@ const SECRET_PATTERNS = [
   /(?:password|secret|token|api_key)\s*[:=]\s*['"][^'"]{8,}['"]/i,
 ];
 
+const MAX_SCAN_LINE_LENGTH = 500;
+
 export function scanForSecrets(content: string): string[] {
+  const lines = content.split('\n');
+  const safeBuf: string[] = [];
+  for (const line of lines) {
+    safeBuf.push(line.length > MAX_SCAN_LINE_LENGTH ? line.slice(0, MAX_SCAN_LINE_LENGTH) : line);
+  }
+  const safe = safeBuf.join('\n');
   const found: string[] = [];
   for (const pattern of SECRET_PATTERNS) {
-    const match = content.match(pattern);
+    const match = safe.match(pattern);
     if (match) found.push(match[0].slice(0, 20) + '...');
   }
   return found;
@@ -323,7 +331,10 @@ export function scanForSecrets(content: string): string[] {
  * keys and credentials never land in a file the user might paste or publish.
  */
 export function redactSecrets(content: string): string {
-  let out = content;
+  const lines = content.split('\n');
+  let out = lines.map(line =>
+    line.length > MAX_SCAN_LINE_LENGTH * 2 ? line.slice(0, MAX_SCAN_LINE_LENGTH * 2) + '…' : line,
+  ).join('\n');
 
   // 1. Private key blocks — must run before token patterns to avoid partial matches.
   out = out.replace(
