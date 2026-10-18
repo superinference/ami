@@ -70,11 +70,36 @@ const SENSITIVE_PATH_PREFIXES = [
   '/proc/', '/sys/',
 ];
 
+const SENSITIVE_HOME_DIRS = [
+  '.ssh',
+  '.aws',
+  '.gnupg',
+  '.config/gh',
+];
+
+const SENSITIVE_HOME_FILES = [
+  '.git-credentials',
+  '.config/git/credentials',
+  '.npmrc',
+  '.netrc',
+  '_netrc',
+  '.docker/config.json',
+  '.claude/.credentials.json',
+  '.kube/config',
+];
+
 export function isSensitivePath(filePath: string): boolean {
   const normalized = path.resolve(filePath);
   if (SENSITIVE_PATH_PREFIXES.some(p => normalized === p || normalized.startsWith(p))) return true;
   const home = process.env.HOME || process.env.USERPROFILE || '';
-  if (home && normalized.startsWith(path.join(home, '.ssh') + path.sep)) return true;
+  if (!home) return false;
+  for (const dir of SENSITIVE_HOME_DIRS) {
+    const dirPath = path.join(home, dir);
+    if (normalized === dirPath || normalized.startsWith(dirPath + path.sep)) return true;
+  }
+  for (const file of SENSITIVE_HOME_FILES) {
+    if (normalized === path.join(home, file)) return true;
+  }
   return false;
 }
 

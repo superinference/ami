@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { resolveFilePath, isSensitivePath, safeReadFile, safeLstat } from '../src/tools/tool-utils';
+import { verifyWriteTarget } from '../src/tools/file-edit';
 
 function makeTmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'si-symlink-'));
@@ -19,11 +20,67 @@ describe('isSensitivePath', () => {
     const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
     assert.ok(isSensitivePath(path.join(home, '.ssh', 'id_rsa')));
   });
+  it('blocks ~/.aws/credentials', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.aws', 'credentials')));
+  });
+  it('blocks ~/.aws/config', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.aws', 'config')));
+  });
+  it('blocks ~/.gnupg/secring.gpg', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.gnupg', 'secring.gpg')));
+  });
+  it('blocks ~/.git-credentials', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.git-credentials')));
+  });
+  it('blocks ~/.config/git/credentials', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.config', 'git', 'credentials')));
+  });
+  it('blocks ~/.npmrc', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.npmrc')));
+  });
+  it('blocks ~/.netrc', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.netrc')));
+  });
+  it('blocks ~/_netrc', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '_netrc')));
+  });
+  it('blocks ~/.docker/config.json', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.docker', 'config.json')));
+  });
+  it('blocks ~/.claude/.credentials.json', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.claude', '.credentials.json')));
+  });
+  it('blocks ~/.config/gh/hosts.yml', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.config', 'gh', 'hosts.yml')));
+  });
+  it('blocks ~/.kube/config', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.kube', 'config')));
+  });
   it('allows /etc/hostname', () => assert.ok(!isSensitivePath('/etc/hostname')));
   it('allows /tmp/safe', () => assert.ok(!isSensitivePath('/tmp/safe')));
   it('allows home dir itself', () => {
     const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
     assert.ok(!isSensitivePath(home));
+  });
+  it('allows ~/.docker dir itself (not a file match)', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(!isSensitivePath(path.join(home, '.docker')));
+  });
+  it('allows ~/.config (not in sensitive dirs)', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(!isSensitivePath(path.join(home, '.config')));
   });
 });
 
@@ -208,5 +265,55 @@ describe('safeLstat — non-following stat', () => {
     const result = safeLstat('ghost.txt', cwd);
     assert.ok(result.error);
     assert.ok(result.error!.isError);
+  });
+});
+
+describe('verifyWriteTarget — pre-write symlink TOCTOU guard', () => {
+  const dirs: string[] = [];
+  after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+
+  it('allows writing to a regular file inside the workspace', () => {
+    const cwd = makeTmp(); dirs.push(cwd);
+    fs.writeFileSync(path.join(cwd, 'ok.txt'), 'hello');
+    const err = verifyWriteTarget(path.join(cwd, 'ok.txt'), cwd);
+    assert.equal(err, undefined);
+  });
+
+  it('allows writing to a non-existent file (no symlink to escape through)', () => {
+    const cwd = makeTmp(); dirs.push(cwd);
+    const err = verifyWriteTarget(path.join(cwd, 'new-file.txt'), cwd);
+    assert.equal(err, undefined);
+  });
+
+  it('allows a symlink that resolves inside the workspace', () => {
+    const cwd = makeTmp(); dirs.push(cwd);
+    fs.writeFileSync(path.join(cwd, 'real.txt'), 'data');
+    fs.symlinkSync(path.join(cwd, 'real.txt'), path.join(cwd, 'link.txt'));
+    const err = verifyWriteTarget(path.join(cwd, 'link.txt'), cwd);
+    assert.equal(err, undefined);
+  });
+
+  it('blocks a symlink that resolves outside the workspace', () => {
+    const cwd = makeTmp(); dirs.push(cwd);
+    const outside = makeTmp(); dirs.push(outside);
+    const outsideFile = path.join(outside, 'secret.txt');
+    fs.writeFileSync(outsideFile, 'sensitive');
+    fs.symlinkSync(outsideFile, path.join(cwd, 'escape.txt'));
+    const err = verifyWriteTarget(path.join(cwd, 'escape.txt'), cwd);
+    assert.ok(err);
+    assert.ok(err!.includes('outside the workspace'));
+    assert.ok(err!.includes('symlink'));
+  });
+
+  it('blocks a symlink chain that escapes the workspace', () => {
+    const cwd = makeTmp(); dirs.push(cwd);
+    const outside = makeTmp(); dirs.push(outside);
+    const outsideFile = path.join(outside, 'target.txt');
+    fs.writeFileSync(outsideFile, 'chained');
+    fs.symlinkSync(outsideFile, path.join(cwd, 'hop1.txt'));
+    fs.symlinkSync(path.join(cwd, 'hop1.txt'), path.join(cwd, 'hop2.txt'));
+    const err = verifyWriteTarget(path.join(cwd, 'hop2.txt'), cwd);
+    assert.ok(err);
+    assert.ok(err!.includes('outside the workspace'));
   });
 });

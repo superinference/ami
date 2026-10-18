@@ -897,12 +897,18 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
 const CREDENTIAL_PATH_PATTERNS: RegExp[] = [
   /(^|\/)\.ssh\//,
   /\.aws\/credentials/,
+  /\.aws\/config$/,
   /\.config\/gcloud\//,
   /(^|\/)\.gnupg\//,
   /\.docker\/config\.json/,
   /\.kube\/config/,
   /(^|\/)\.netrc$/,
+  /(^|\/)_netrc$/,
   /(^|\/)\.git-credentials$/,
+  /\.config\/git\/credentials$/,
+  /\.config\/gh\//,
+  /(^|\/)\.npmrc$/,
+  /\.claude\/\.credentials\.json$/,
   /\/etc\/(passwd|shadow|sudoers)\b/,
 ];
 
