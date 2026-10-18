@@ -7,6 +7,13 @@ import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
 
+const GREP_FLAG_RE = /^(-[lcrniw]+\s+)+/;
+
+export function stripGrepFlags(pattern: string): string {
+  const stripped = pattern.replace(GREP_FLAG_RE, '');
+  return stripped || pattern;
+}
+
 interface SearchOutcome {
   output: string | null;
   timedOut?: boolean;
@@ -118,11 +125,15 @@ export const grepTool: ToolDefinition = {
     if (unreadable) return unreadable;
     if (!pattern || pattern.length < 1) return { output: 'Error: pattern is required.', isError: true };
 
+    // Strip common grep flags the model sometimes embeds in the pattern string
+    // (e.g. "-l pattern" or "-r -c pattern"). We handle these via our own args.
+    const cleanedPattern = stripGrepFlags(pattern);
+
     // Try ripgrep first, fall back to grep
     // Ask for one past the page so formatResult can say the list was cut.
     // --max-count equal to head_limit hid later matches and dropped offset.
     const fetchLimit = headLimit === 0 ? 0 : offset + Math.max(headLimit, 1) + 1;
-    const rgArgs = buildRgArgs(pattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers);
+    const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers);
     let rgOutcome = await runSearch(rgArgs, 'rg', context, RG_TIMEOUT);
 
     if (rgOutcome.eagain) {
@@ -149,7 +160,7 @@ export const grepTool: ToolDefinition = {
 
     // Fallback to grep
     const grepOutcome = await runSearch(
-      buildGrepArgs(pattern, resolved, include, outputMode, caseInsensitive, contextLines),
+      buildGrepArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines),
       'grep',
       context,
       RG_TIMEOUT,
@@ -173,7 +184,7 @@ export const grepTool: ToolDefinition = {
     // agent can still locate the failing symbol (and get a better error for
     // invalid regex patterns than the raw process stderr).
     try {
-      const fallback = searchFilesForPattern(resolved, pattern, {
+      const fallback = searchFilesForPattern(resolved, cleanedPattern, {
         include,
         caseInsensitive,
         headLimit,

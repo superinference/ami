@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { grepTool } from '../src/tools/grep';
+import { grepTool, stripGrepFlags } from '../src/tools/grep';
 import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
@@ -300,6 +300,56 @@ describe('grepTool – file_path alias', () => {
   it('prefers path over file_path when both are provided', async () => {
     const result = await grepTool.execute({ pattern: 'hello', path: tmpDir, file_path: '/nonexistent' }, ctx());
     assert.ok(!result.isError, result.output);
+    assert.match(result.output, /hello/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripGrepFlags — strip grep-style flags from pattern strings
+// ---------------------------------------------------------------------------
+describe('stripGrepFlags', () => {
+  it('strips single flag prefix from pattern', () => {
+    assert.equal(stripGrepFlags('-l pattern'), 'pattern');
+  });
+
+  it('strips multiple flags from pattern', () => {
+    assert.equal(stripGrepFlags('-r -c pattern'), 'pattern');
+  });
+
+  it('strips combined flags', () => {
+    assert.equal(stripGrepFlags('-rn pattern'), 'pattern');
+  });
+
+  it('leaves plain patterns unchanged', () => {
+    assert.equal(stripGrepFlags('myFunction'), 'myFunction');
+  });
+
+  it('leaves patterns starting with dash but not a flag unchanged', () => {
+    assert.equal(stripGrepFlags('-myOption'), '-myOption');
+  });
+
+  it('returns original pattern if stripping would empty it', () => {
+    assert.equal(stripGrepFlags('-l '), '-l ');
+  });
+
+  it('strips flags with model-like pattern: -i -w searchTerm', () => {
+    assert.equal(stripGrepFlags('-i -w searchTerm'), 'searchTerm');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// grep tool — flag stripping integration
+// ---------------------------------------------------------------------------
+describe('grepTool – strips embedded flags from pattern', () => {
+  it('finds matches when pattern has embedded -l flag', async () => {
+    const result = await grepTool.execute({ pattern: '-l hello', path: tmpDir }, ctx());
+    assert.ok(!result.isError, `Expected success, got: ${result.output}`);
+    assert.match(result.output, /hello/);
+  });
+
+  it('finds matches when pattern has embedded -rn flags', async () => {
+    const result = await grepTool.execute({ pattern: '-rn hello', path: tmpDir }, ctx());
+    assert.ok(!result.isError, `Expected success, got: ${result.output}`);
     assert.match(result.output, /hello/);
   });
 });
