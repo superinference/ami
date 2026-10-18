@@ -69,11 +69,23 @@ describe('commandTargetsCredentialPath', () => {
   it('detects cat ~/.claude/.credentials.json', () => {
     assert.ok(commandTargetsCredentialPath('cat ~/.claude/.credentials.json'));
   });
+  it('detects grep -f ~/.ssh/id_rsa (flag takes file path)', () => {
+    assert.ok(commandTargetsCredentialPath('grep -f ~/.ssh/id_rsa pattern .'));
+  });
+  it('detects grep --file=~/.aws/credentials', () => {
+    assert.ok(commandTargetsCredentialPath('grep --file=~/.aws/credentials pattern .'));
+  });
+  it('detects sort -o ~/.npmrc (writes via flag)', () => {
+    assert.ok(commandTargetsCredentialPath('sort -o ~/.npmrc input.txt'));
+  });
   it('allows cat README.md', () => {
     assert.ok(!commandTargetsCredentialPath('cat README.md'));
   });
   it('allows ls -la', () => {
     assert.ok(!commandTargetsCredentialPath('ls -la'));
+  });
+  it('allows grep --color=auto (non-path option value)', () => {
+    assert.ok(!commandTargetsCredentialPath('grep --color=auto pattern file.txt'));
   });
 });
 

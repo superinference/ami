@@ -52,7 +52,7 @@ describe('createDefaultTools', () => {
 });
 
 // ---- bash-security.ts ----
-import { validateBashSecurity, extractCommandPaths } from '../src/tools/bash-security';
+import { validateBashSecurity, extractCommandPaths, extractOptionValuePaths } from '../src/tools/bash-security';
 
 describe('bash-security — validateBashSecurity', () => {
   it('validates safe commands', () => {
@@ -157,6 +157,75 @@ describe('bash-security — extractCommandPaths', () => {
   it('handles mkdir commands', () => {
     const r = extractCommandPaths('mkdir -p /tmp/test/dir');
     assert.ok(Array.isArray(r));
+  });
+
+  it('extracts paths from --key=value option tokens', () => {
+    const r = extractCommandPaths('grep --file=/etc/shadow pattern .');
+    assert.ok(r.includes('/etc/shadow'), 'should extract path from --file=');
+  });
+
+  it('extracts paths from -f VALUE flag pairs (grep)', () => {
+    const r = extractCommandPaths('grep -f /etc/shadow pattern .');
+    assert.ok(r.includes('/etc/shadow'), 'should extract path from -f flag');
+  });
+
+  it('extracts paths from sort --output=value', () => {
+    const r = extractCommandPaths('sort --output=/tmp/result.txt input.txt');
+    assert.ok(r.includes('/tmp/result.txt'), 'should extract path from --output=');
+  });
+
+  it('extracts paths from sort -o VALUE', () => {
+    const r = extractCommandPaths('sort -o /tmp/result.txt input.txt');
+    assert.ok(r.includes('/tmp/result.txt'), 'should extract path from -o flag');
+  });
+
+  it('extracts paths from tar -f VALUE', () => {
+    const r = extractCommandPaths('tar -f ./archive.tar -C /tmp/extract');
+    assert.ok(r.includes('./archive.tar'), 'should extract -f path');
+    assert.ok(r.includes('/tmp/extract'), 'should extract -C path');
+  });
+
+  it('does not extract non-path option values', () => {
+    const r = extractCommandPaths('grep --color=auto pattern file.txt');
+    assert.ok(!r.includes('auto'), 'should not extract non-path value "auto"');
+  });
+
+  it('extracts tilde-home paths from option values', () => {
+    const r = extractCommandPaths('grep --file=~/.ssh/id_rsa pattern .');
+    assert.ok(r.includes('~/.ssh/id_rsa'), 'should extract tilde-home path');
+  });
+});
+
+describe('bash-security — extractOptionValuePaths', () => {
+  it('extracts --key=value paths', () => {
+    const r = extractOptionValuePaths('grep', ['--file=/etc/shadow', 'pattern', '.']);
+    assert.ok(r.includes('/etc/shadow'));
+  });
+
+  it('extracts -f VALUE pairs for known commands', () => {
+    const r = extractOptionValuePaths('grep', ['-f', '/etc/shadow', 'pattern']);
+    assert.ok(r.includes('/etc/shadow'));
+  });
+
+  it('skips -f VALUE for commands without FILE_TAKING_FLAGS', () => {
+    const r = extractOptionValuePaths('cat', ['-f', '/etc/shadow']);
+    assert.ok(!r.includes('/etc/shadow'), 'cat has no FILE_TAKING_FLAGS for -f');
+  });
+
+  it('extracts multiple option paths', () => {
+    const r = extractOptionValuePaths('tar', ['-f', './archive.tar', '-C', '/tmp/out']);
+    assert.ok(r.includes('./archive.tar'));
+    assert.ok(r.includes('/tmp/out'));
+  });
+
+  it('skips non-path option values', () => {
+    const r = extractOptionValuePaths('grep', ['--color=auto', 'pattern']);
+    assert.equal(r.length, 0, 'auto is not a path');
+  });
+
+  it('handles --key="quoted/path"', () => {
+    const r = extractOptionValuePaths('grep', ['--file="/tmp/patterns.txt"', 'test']);
+    assert.ok(r.includes('/tmp/patterns.txt'));
   });
 });
 

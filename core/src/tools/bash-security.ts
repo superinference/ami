@@ -890,6 +890,47 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   git: (a) => a.slice(1).filter(x => !x.startsWith('-')),
 };
 
+const FILE_TAKING_FLAGS: Record<string, Set<string>> = {
+  grep: new Set(['-f', '--file', '--include-from']),
+  rg: new Set(['-f', '--file']),
+  sort: new Set(['-o', '--output']),
+  xargs: new Set(['-a', '--arg-file']),
+  tar: new Set(['-f', '--file', '-C', '--directory']),
+  curl: new Set(['-o', '--output', '-K', '--config']),
+  wget: new Set(['-O', '--output-document', '-i', '--input-file']),
+  rsync: new Set(['--include-from', '--exclude-from', '--files-from']),
+  tee: new Set([]),
+  dd: new Set([]),
+};
+
+function looksLikePath(value: string): boolean {
+  return /^[/~.]/.test(value) || value.includes('/');
+}
+
+export function extractOptionValuePaths(cmd: string, args: string[]): string[] {
+  const paths: string[] = [];
+  const flagSet = FILE_TAKING_FLAGS[cmd];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    const eqIdx = arg.indexOf('=');
+    if (arg.startsWith('-') && eqIdx > 0) {
+      const value = arg.slice(eqIdx + 1).replace(/^["']|["']$/g, '');
+      if (value && looksLikePath(value)) paths.push(value);
+      continue;
+    }
+
+    if (flagSet && arg.startsWith('-') && flagSet.has(arg) && i + 1 < args.length) {
+      const value = args[i + 1].replace(/^["']|["']$/g, '');
+      if (value) paths.push(value);
+      i++;
+    }
+  }
+
+  return paths;
+}
+
 /**
  * Credential / persistence paths that an autonomous agent must never write to or
  * copy out of via bash — the SSH-key / cloud-cred exfil & persistence vector.
@@ -962,6 +1003,12 @@ function collectWriteTargets(command: string): string[] {
     for (const tok of command.split(/[\s;|&]+/)) {
       const t = tok.replace(/^["']|["']$/g, '');
       if (t && !t.startsWith('-') && !t.includes('=') && !VERB.test(t)) targets.push(t);
+      // Extract path values from --key=value tokens (e.g. --output=~/.ssh/authorized_keys)
+      const eqIdx = t.indexOf('=');
+      if (t.startsWith('-') && eqIdx > 0) {
+        const val = t.slice(eqIdx + 1).replace(/^["']|["']$/g, '');
+        if (val && looksLikePath(val)) targets.push(val);
+      }
     }
   }
   return targets.filter(Boolean);
@@ -1269,7 +1316,9 @@ export function extractCommandPaths(command: string): string[] {
   const ddIdx = args.indexOf('--');
   const effectiveArgs = ddIdx >= 0 ? args.slice(ddIdx + 1) : args;
   const extractor = PATH_COMMANDS[cmd];
-  return extractor ? extractor(effectiveArgs) : [];
+  const positional = extractor ? extractor(effectiveArgs) : [];
+  const optionPaths = extractOptionValuePaths(cmd, args);
+  return [...positional, ...optionPaths];
 }
 
 // ---------------------------------------------------------------------------
