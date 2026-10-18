@@ -5,6 +5,7 @@ import {
   parseModId,
   normalizeModName,
   modNamesMatch,
+  validateModId,
   ManagedModsEnforcer,
   type ModInfo,
   type ManagedModsPolicy,
@@ -162,6 +163,43 @@ describe('modNamesMatch', () => {
   });
 });
 
+describe('validateModId', () => {
+  it('accepts normal IDs', () => {
+    assert.ok(validateModId('my-mod@npm'));
+    assert.ok(validateModId('simple-plugin'));
+    assert.ok(validateModId('@scope/pkg@npm'));
+  });
+
+  it('rejects __proto__', () => {
+    assert.equal(validateModId('__proto__'), false);
+  });
+
+  it('rejects constructor in path', () => {
+    assert.equal(validateModId('foo/constructor'), false);
+  });
+
+  it('rejects prototype in id', () => {
+    assert.equal(validateModId('pkg@prototype'), false);
+  });
+
+  it('rejects toString', () => {
+    assert.equal(validateModId('toString'), false);
+  });
+
+  it('rejects valueOf', () => {
+    assert.equal(validateModId('valueOf'), false);
+  });
+
+  it('rejects hasOwnProperty', () => {
+    assert.equal(validateModId('hasOwnProperty'), false);
+  });
+
+  it('accepts IDs containing but not matching dangerous strings', () => {
+    assert.ok(validateModId('my-prototype-tool'));
+    assert.ok(validateModId('constructors'));
+  });
+});
+
 describe('ManagedModsEnforcer', () => {
   it('check allows builtin', () => {
     const enforcer = new ManagedModsEnforcer(activePolicy);
@@ -203,5 +241,24 @@ describe('ManagedModsEnforcer', () => {
     assert.equal(enforcer.check(userMod), false);
     enforcer.updatePolicy(inactivePolicy);
     assert.equal(enforcer.check(userMod), true);
+  });
+
+  it('static shouldBlock returns blocked:false when policy is null', () => {
+    assert.deepEqual(ManagedModsEnforcer.shouldBlock(userMod, null), { blocked: false });
+  });
+
+  it('static shouldBlock returns blocked:false when allowManagedModsOnly is false', () => {
+    assert.deepEqual(ManagedModsEnforcer.shouldBlock(userMod, inactivePolicy), { blocked: false });
+  });
+
+  it('static shouldBlock returns blocked:true for user mod with active policy', () => {
+    const result = ManagedModsEnforcer.shouldBlock(userMod, activePolicy);
+    assert.equal(result.blocked, true);
+    assert.ok(result.reason);
+  });
+
+  it('static shouldBlock returns blocked:false for builtin mod', () => {
+    const result = ManagedModsEnforcer.shouldBlock(builtinMod, activePolicy);
+    assert.equal(result.blocked, false);
   });
 });
