@@ -420,6 +420,10 @@ export const bashTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const command = input.command as string;
+    // Accept `command_description` as alias for `description` — models sometimes use the wrong name
+    if (input.command_description && !input.description) {
+      input.description = input.command_description;
+    }
     const timeout = resolveBashTimeout(input.timeout as number | undefined);
 
     if (!command || command.trim().length === 0) {

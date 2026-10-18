@@ -1100,3 +1100,40 @@ describe('session transcript write guard', () => {
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
 });
+
+// ---------------------------------------------------------------------------
+// command_description alias
+// ---------------------------------------------------------------------------
+
+describe('bashTool – command_description alias', () => {
+  it('accepts command_description as alias for description in background tasks', async () => {
+    const pm = {
+      spawn: (cmd: string, opts: any) => {
+        assert.equal(opts.description, 'List files');
+        return 'task-1';
+      },
+      get: () => ({ pid: 123 }),
+    };
+    const res = await bashTool.execute(
+      { command: 'ls', run_in_background: true, command_description: 'List files' },
+      ctx({ processManager: pm } as any),
+    );
+    assert.ok(!res.isError);
+    assert.ok(res.output.includes('task-1'));
+  });
+
+  it('prefers description over command_description when both present', async () => {
+    const pm = {
+      spawn: (cmd: string, opts: any) => {
+        assert.equal(opts.description, 'real description');
+        return 'task-2';
+      },
+      get: () => ({ pid: 456 }),
+    };
+    const res = await bashTool.execute(
+      { command: 'ls', run_in_background: true, description: 'real description', command_description: 'alias desc' },
+      ctx({ processManager: pm } as any),
+    );
+    assert.ok(!res.isError);
+  });
+});
