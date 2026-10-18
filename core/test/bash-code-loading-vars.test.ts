@@ -5,6 +5,7 @@ import {
   POLICY_SOURCE_VARIABLES,
   detectCodeLoadingEnvSet,
   detectBashArgv0Assignment,
+  detectBashpidAssignment,
 } from '../src/tools/bash-security';
 
 describe('CODE_LOADING_VARIABLES', () => {
@@ -257,6 +258,52 @@ describe('bash tool blocks BASH_ARGV0 assignment', () => {
     const ctx = { cwd: process.cwd(), abortSignal: new AbortController().signal };
     const result = await bashTool.execute(
       { command: 'echo "argv0 is $BASH_ARGV0"' },
+      ctx,
+    );
+    assert.ok(!result.isError);
+  });
+});
+
+describe('detectBashpidAssignment', () => {
+  it('blocks BASHPID=value', () => {
+    const r = detectBashpidAssignment('BASHPID=12345');
+    assert.ok(r.blocked);
+    assert.ok(r.reason!.includes('BASHPID'));
+  });
+
+  it('blocks BASHPID = $(command)', () => {
+    const r = detectBashpidAssignment('BASHPID = $(echo test)');
+    assert.ok(r.blocked);
+  });
+
+  it('allows echo $BASHPID', () => {
+    const r = detectBashpidAssignment('echo $BASHPID');
+    assert.ok(!r.blocked);
+  });
+
+  it('allows reading BASHPID in conditional', () => {
+    const r = detectBashpidAssignment('if [ "$BASHPID" -ne 0 ]; then echo ok; fi');
+    assert.ok(!r.blocked);
+  });
+});
+
+describe('BASHPID assignment blocked by bash tool', () => {
+  it('returns isError for BASHPID assignment', async () => {
+    const { bashTool } = await import('../src/tools/bash');
+    const ctx = { cwd: process.cwd(), abortSignal: new AbortController().signal };
+    const result = await bashTool.execute(
+      { command: 'BASHPID=$((1+1))' },
+      ctx,
+    );
+    assert.ok(result.isError);
+    assert.ok(result.output.includes('BASHPID'));
+  });
+
+  it('allows referencing BASHPID in echo', async () => {
+    const { bashTool } = await import('../src/tools/bash');
+    const ctx = { cwd: process.cwd(), abortSignal: new AbortController().signal };
+    const result = await bashTool.execute(
+      { command: 'echo "pid is $BASHPID"' },
       ctx,
     );
     assert.ok(!result.isError);

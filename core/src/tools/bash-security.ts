@@ -1381,6 +1381,13 @@ export function detectBashArgv0Assignment(command: string): { blocked: boolean; 
   return { blocked: false };
 }
 
+export function detectBashpidAssignment(command: string): { blocked: boolean; reason?: string } {
+  if (/\bBASHPID\s*=/.test(command)) {
+    return { blocked: true, reason: 'BASHPID assignment with arithmetic expression can execute code — blocked' };
+  }
+  return { blocked: false };
+}
+
 export {
   validateControlCharacters,
   validateCarriageReturn,
