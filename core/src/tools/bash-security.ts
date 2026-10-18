@@ -1,4 +1,5 @@
 import { parseBashAST, extractCommands, CommandNode } from './bash-parser';
+import { normalizeCommand } from './command-normalize';
 
 export interface SecurityCheckResult {
   safe: boolean;
@@ -1016,7 +1017,7 @@ export function detectNuclearCommand(command: string): NuclearCheckResult {
   if (!command || !command.trim()) return { blocked: false };
 
   const stripped = stripInvisibleUnicode(command);
-  const normalized = stripped.replace(/\s+/g, ' ').trim();
+  const normalized = normalizeCommand(stripped);
 
   if (FORK_BOMB_RE.test(normalized)) {
     return { blocked: true, reason: 'fork bomb detected — would crash the system by spawning infinite processes' };
@@ -1124,7 +1125,7 @@ const PIPE_OR_REDIRECT = /[|]|<\s*\//;
 
 export function detectDataExfiltration(command: string): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
-  const norm = stripped.replace(/\s+/g, ' ').trim();
+  const norm = normalizeCommand(stripped);
 
   // 1. Pipe: file-read | network-send
   if (PIPE_OR_REDIRECT.test(norm)) {

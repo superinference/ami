@@ -7,10 +7,12 @@ import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscrip
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
+import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 const DEFAULT_TIMEOUT_MS = 120000;
 const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
+const _bashCache = new BashResultCache();
 
 function parseEnvMs(name: string): number | undefined {
   const raw = process.env[name];
@@ -513,6 +515,12 @@ export const bashTool: ToolDefinition = {
 
     const readOnly = isReadOnlyBashCommand(command);
 
+    const effectiveCwd = context.cwd;
+    if (isCacheableReadOnly(command)) {
+      const cached = _bashCache.get(command, effectiveCwd);
+      if (cached !== null) return { output: cached, metadata: { readOnly: true, cached: true } };
+    }
+
     if (input.run_in_background && context.processManager) {
       const desc = (input.description as string) || command.slice(0, 80);
       const taskId = context.processManager.spawn(command, {
@@ -609,6 +617,12 @@ export const bashTool: ToolDefinition = {
     const isRealError = result.exitCode !== 0 && !exitCodeInfo?.isNonError;
     const exitInfo = result.exitCode !== 0 ? `\n[exit code: ${result.exitCode}${exitCodeInfo ? ' ' + exitCodeInfo.message : ''}]` : '';
     output = `${output}${exitInfo}`.trim();
+
+    if (!isRealError && isCacheableReadOnly(command)) {
+      _bashCache.set(command, effectiveCwd, output);
+    } else if (!readOnly && !isRealError) {
+      _bashCache.invalidateForCwd(effectiveCwd);
+    }
 
     return {
       output,

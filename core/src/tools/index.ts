@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolInputSchema } from '../types';
+import { ToolRegistryGuard, type ToolConflict } from './tool-registry-guard';
 import { bashTool } from './bash';
 import { fileReadTool } from './file-read';
 import { fileEditTool } from './file-edit';
@@ -40,8 +41,10 @@ import { scoutTool } from './scout';
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
+  private _guard = new ToolRegistryGuard();
 
-  register(tool: ToolDefinition): void {
+  register(tool: ToolDefinition, source = 'core'): void {
+    this._guard.register(tool.name, source);
     this.tools.set(tool.name, tool);
   }
 
@@ -51,6 +54,10 @@ export class ToolRegistry {
 
   getAll(): ToolDefinition[] {
     return Array.from(this.tools.values());
+  }
+
+  getConflicts(): readonly ToolConflict[] {
+    return this._guard.getConflicts();
   }
 
   toOpenAIFormat(): Array<{

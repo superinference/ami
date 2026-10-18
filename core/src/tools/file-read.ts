@@ -5,6 +5,7 @@ import { getFileCache } from '../file-cache';
 import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath } from './tool-utils';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
+import { suggestSimilarPaths } from './path-suggest';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
@@ -228,13 +229,9 @@ export const fileReadTool: ToolDefinition = {
     try {
       await fs.promises.access(resolved, fs.constants.R_OK);
     } catch {
-      const dir = path.dirname(resolved);
-      const base = path.basename(resolved);
       let suggestions = '';
-      try {
-        const files = fs.readdirSync(dir).filter(f => f.includes(base.slice(0, 3)) || base.includes(f.slice(0, 3)));
-        if (files.length > 0) suggestions = `\nDid you mean: ${files.slice(0, 5).join(', ')}?`;
-      } catch {}
+      const similar = suggestSimilarPaths(resolved, path.dirname(resolved));
+      if (similar.length > 0) suggestions = `\nDid you mean: ${similar.join(', ')}?`;
       return {
         output: `Error: File not found or not readable: ${resolved}${suggestions}`,
         isError: true,
