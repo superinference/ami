@@ -352,4 +352,16 @@ describe('grepTool – strips embedded flags from pattern', () => {
     assert.ok(!result.isError, `Expected success, got: ${result.output}`);
     assert.match(result.output, /hello/);
   });
+
+  it('strips flags in in-process fallback when rg and grep are missing', async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = '/nonexistent-bin';
+    try {
+      const result = await grepTool.execute({ pattern: '-l nested', path: tmpDir }, ctx());
+      assert.ok(!result.isError, `Expected success, got: ${result.output}`);
+      assert.match(result.output, /nested/);
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
 });
