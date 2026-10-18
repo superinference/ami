@@ -46,6 +46,22 @@ function notifyLsp(resolved: string, content: string, context: ToolContext): voi
   } catch {}
 }
 
+export function verifyWriteTarget(resolved: string, cwd: string): string | undefined {
+  try {
+    const stat = fs.lstatSync(resolved);
+    if (stat.isSymbolicLink()) {
+      const target = fs.realpathSync(resolved);
+      const cwdAbs = path.resolve(cwd);
+      if (!target.startsWith(cwdAbs + path.sep) && target !== cwdAbs) {
+        return `Error: "${resolved}" is a symlink resolving to "${target}" outside the workspace — write blocked.`;
+      }
+    }
+  } catch {
+    // File doesn't exist yet — no symlink to escape through
+  }
+  return undefined;
+}
+
 function commitWrite(
   resolved: string,
   rawToWrite: string,
@@ -54,8 +70,8 @@ function commitWrite(
 ): string | undefined {
   try {
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    // Preserve the existing file's encoding (UTF-16/BOM) instead of transcoding
-    // it to UTF-8; new files are written UTF-8.
+    const symlinkErr = verifyWriteTarget(resolved, context.cwd);
+    if (symlinkErr) return symlinkErr;
     let enc: ReturnType<typeof detectEncoding> = 'utf-8';
     try { if (fs.existsSync(resolved)) enc = detectEncoding(fs.readFileSync(resolved).subarray(0, 4)); } catch { /* default utf-8 */ }
     fs.writeFileSync(resolved, encodeText(rawToWrite, enc));
