@@ -357,6 +357,92 @@ describe('FileCache – integration with real files', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Content-hash fallback (mtime same, content changed)
+// ---------------------------------------------------------------------------
+describe('FileCache – content hash fallback', () => {
+  it('detects content change even when mtime stays the same', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'same-mtime.txt');
+      fs.writeFileSync(filePath, 'version 1');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, 'version 1', stat.mtimeMs);
+      assert.equal(cache.hasChanged(filePath), false);
+
+      // Write different content but reset mtime to the same value
+      fs.writeFileSync(filePath, 'version 2');
+      fs.utimesSync(filePath, stat.atimeMs / 1000, stat.mtimeMs / 1000);
+
+      // mtime matches, but content differs — hash fallback should catch it
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('returns false when content is identical (hash matches)', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'identical.txt');
+      fs.writeFileSync(filePath, 'unchanged');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, 'unchanged', stat.mtimeMs);
+
+      // File untouched — mtime matches, content matches
+      assert.equal(cache.hasChanged(filePath), false);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('skips hash check for mtime-only entries (no content cached)', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'mtime-only.txt');
+      fs.writeFileSync(filePath, 'tracked');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.trackMtime(filePath, stat.mtimeMs);
+
+      // File untouched — mtime matches, no content hash to compare
+      assert.equal(cache.hasChanged(filePath), false);
+
+      // Now change content AND mtime — should detect via mtime
+      fs.writeFileSync(filePath, 'changed');
+      const newMtime = stat.mtimeMs + 1000;
+      fs.utimesSync(filePath, stat.atimeMs / 1000, newMtime / 1000);
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('contentHash is stored in FileState', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'hash.txt');
+      fs.writeFileSync(filePath, 'test content');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, 'test content', stat.mtimeMs);
+
+      const cached = cache.get(filePath);
+      assert.ok(cached);
+      assert.ok(cached!.contentHash);
+      assert.equal(cached!.contentHash.length, 64); // SHA-256 hex
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
 describe('FileCache – setWritten', () => {
   it('caches content after a real write so get() succeeds', () => {
     const tmpDir = makeTmpDir();

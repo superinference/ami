@@ -1,10 +1,16 @@
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 
 export interface FileState {
   path: string;
   content: string;
   mtime: number;
+  contentHash: string;
   tokenEstimate: number;
+}
+
+function hashContent(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex');
 }
 
 /**
@@ -21,6 +27,7 @@ export class FileCache {
       path,
       content,
       mtime,
+      contentHash: hashContent(content),
       tokenEstimate: Math.ceil(content.length / 4),
     });
   }
@@ -42,9 +49,9 @@ export class FileCache {
 
   /**
    * Check if a file has changed since the last read.
-   * Returns true when the file's mtime on disk differs from the cached value,
-   * or when the file cannot be stat'd (e.g. deleted).
-   * Returns false if the file is not in the cache.
+   * Compares mtime first (fast path). When mtime matches but the filesystem
+   * has coarse timestamps (e.g. ext4 1-second, NFS), falls back to a content
+   * hash comparison so rapid writes within the same tick are still detected.
    */
   hasChanged(path: string): boolean {
     const cached = this.cache.get(path);
@@ -52,9 +59,11 @@ export class FileCache {
 
     try {
       const stat = fs.statSync(path);
-      return stat.mtimeMs !== cached.mtime;
+      if (stat.mtimeMs !== cached.mtime) return true;
+      if (!cached.content) return false;
+      const currentContent = fs.readFileSync(path, 'utf-8');
+      return hashContent(currentContent) !== cached.contentHash;
     } catch {
-      // File no longer accessible — treat as changed
       return true;
     }
   }
@@ -66,7 +75,7 @@ export class FileCache {
    */
   trackMtime(path: string, mtime: number): void {
     if (!this.cache.has(path)) {
-      this.cache.set(path, { path, content: '', mtime, tokenEstimate: 0 });
+      this.cache.set(path, { path, content: '', mtime, contentHash: '', tokenEstimate: 0 });
     }
   }
 
