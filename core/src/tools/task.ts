@@ -148,6 +148,11 @@ export const taskTool: ToolDefinition = {
         type: 'string',
         description: 'Resume a previously stopped agent by task ID or name. The prompt is sent as a follow-up message to the existing agent context.',
       },
+      effort: {
+        type: 'string',
+        description: 'Reasoning effort for this subagent. Controls thinking depth.',
+        enum: ['low', 'medium', 'high', 'max'],
+      },
     },
     required: ['prompt'],
   },
@@ -162,6 +167,7 @@ export const taskTool: ToolDefinition = {
     const subagentType = input.subagent_type as string | undefined;
     const taskDescription = input.description as string | undefined;
     const resumeTarget = input.resume as string | undefined;
+    const effortOverride = input.effort as string | undefined;
 
     if (!prompt || prompt.trim().length === 0) {
       return { output: 'Error: prompt must not be empty.', isError: true };
@@ -295,9 +301,9 @@ export const taskTool: ToolDefinition = {
       detachedMode: !!context.detachedMode,
       agentDepth: childDepth._agentDepth,
       maxAgentDepth: childDepth._maxAgentDepth,
-      // Inherit the parent's thinking/effort config so subagents reason at the
-      // same level unless the agent type overrides it.
-      ...(context._parentThinking ? { thinking: context._parentThinking } : {}),
+      ...(effortOverride
+        ? { thinking: { level: effortOverride as any } }
+        : context._parentThinking ? { thinking: context._parentThinking } : {}),
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip persona resolution (which would inject e.g. the code
       // persona bug-fixing workflow into a verification-only agent).

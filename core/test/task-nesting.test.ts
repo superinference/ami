@@ -133,3 +133,23 @@ describe('task tool filtering respects agent depth', () => {
     assert.ok(!result.some(t => t.name === 'task'), 'task blocked when maxDepth=0');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task tool input schema — effort parameter
+// ---------------------------------------------------------------------------
+
+describe('task tool inputSchema — effort parameter', () => {
+  it('effort enum includes low, medium, high, max', async () => {
+    const { taskTool } = await import('../src/tools/task');
+    const props = taskTool.inputSchema.properties as Record<string, any>;
+    assert.ok(props.effort, 'effort property must exist');
+    assert.deepEqual(props.effort.enum, ['low', 'medium', 'high', 'max']);
+    assert.equal(props.effort.type, 'string');
+  });
+
+  it('effort is optional (not required)', async () => {
+    const { taskTool } = await import('../src/tools/task');
+    const required = taskTool.inputSchema.required as string[];
+    assert.ok(!required.includes('effort'), 'effort must not be required');
+  });
+});
