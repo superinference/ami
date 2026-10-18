@@ -1308,6 +1308,18 @@ export function detectCodeLoadingEnvSet(command: string): { blocked: boolean; va
   return { blocked: false };
 }
 
+/**
+ * Detect BASH_ARGV0 assignment used to masquerade a command's process name.
+ * `BASH_ARGV0=fake_name real_command` makes the process appear as `fake_name`
+ * in `ps` and `$0`, which can bypass pattern-matching permission checks.
+ */
+export function detectBashArgv0Assignment(command: string): { blocked: boolean; reason?: string } {
+  if (/\bBASH_ARGV0\s*=/.test(command)) {
+    return { blocked: true, reason: 'BASH_ARGV0 assignment can masquerade process name — blocks permission-check bypass' };
+  }
+  return { blocked: false };
+}
+
 export {
   validateControlCharacters,
   validateCarriageReturn,

@@ -4,6 +4,7 @@ import {
   CODE_LOADING_VARIABLES,
   POLICY_SOURCE_VARIABLES,
   detectCodeLoadingEnvSet,
+  detectBashArgv0Assignment,
 } from '../src/tools/bash-security';
 
 describe('CODE_LOADING_VARIABLES', () => {
@@ -203,6 +204,61 @@ describe('bash tool blocks code-loading env set', () => {
     const { bashTool } = await import('../src/tools/bash');
     const ctx = { cwd: process.cwd(), abortSignal: new AbortController().signal };
     const result = await bashTool.execute({ command: 'echo hello' }, ctx);
+    assert.ok(!result.isError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BASH_ARGV0 assignment detection
+// ---------------------------------------------------------------------------
+
+describe('detectBashArgv0Assignment', () => {
+  it('blocks BASH_ARGV0= prefix assignment', () => {
+    const result = detectBashArgv0Assignment('BASH_ARGV0=httpd /bin/sh');
+    assert.ok(result.blocked);
+    assert.ok(result.reason!.includes('BASH_ARGV0'));
+  });
+
+  it('blocks BASH_ARGV0 with export', () => {
+    const result = detectBashArgv0Assignment('export BASH_ARGV0=sshd');
+    assert.ok(result.blocked);
+  });
+
+  it('blocks BASH_ARGV0 with spaces around =', () => {
+    const result = detectBashArgv0Assignment('BASH_ARGV0 = legit_name bash evil.sh');
+    assert.ok(result.blocked);
+  });
+
+  it('allows commands without BASH_ARGV0', () => {
+    const result = detectBashArgv0Assignment('echo hello world');
+    assert.ok(!result.blocked);
+  });
+
+  it('allows reading BASH_ARGV0 (no assignment)', () => {
+    const result = detectBashArgv0Assignment('echo $BASH_ARGV0');
+    assert.ok(!result.blocked);
+  });
+});
+
+describe('bash tool blocks BASH_ARGV0 assignment', () => {
+  it('returns error for BASH_ARGV0 assignment', async () => {
+    const { bashTool } = await import('../src/tools/bash');
+    const ctx = { cwd: process.cwd(), abortSignal: new AbortController().signal };
+    const result = await bashTool.execute(
+      { command: 'BASH_ARGV0=httpd /bin/sh -c "echo hi"' },
+      ctx,
+    );
+    assert.ok(result.isError);
+    assert.ok(result.output.includes('BASH_ARGV0'));
+  });
+
+  it('allows referencing BASH_ARGV0 in echo', async () => {
+    const { bashTool } = await import('../src/tools/bash');
+    const ctx = { cwd: process.cwd(), abortSignal: new AbortController().signal };
+    const result = await bashTool.execute(
+      { command: 'echo "argv0 is $BASH_ARGV0"' },
+      ctx,
+    );
     assert.ok(!result.isError);
   });
 });

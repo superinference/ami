@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
-import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand } from './bash-security';
+import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
@@ -484,6 +484,11 @@ export const bashTool: ToolDefinition = {
     const codeLoadCheck = detectCodeLoadingEnvSet(command);
     if (codeLoadCheck.blocked) {
       return { output: `Error: Setting ${codeLoadCheck.variable} is blocked — it can load arbitrary code into child processes.`, isError: true };
+    }
+
+    const argv0Check = detectBashArgv0Assignment(command);
+    if (argv0Check.blocked) {
+      return { output: `Error: ${argv0Check.reason}`, isError: true };
     }
 
     const forcePush = detectForcePushToProtected(command);
