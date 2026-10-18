@@ -492,6 +492,12 @@ function validateJqDangerous(command: string): SecurityCheckResult {
   if (/\bjq\b/.test(command) && /\bsystem\s*\(/.test(command)) {
     return fail(CHECK_IDS.JQ_DANGEROUS, 'jq system() calls can execute arbitrary commands');
   }
+  if (/\b[gm]?awk\b/.test(command) && /\bsystem\s*\(/.test(command)) {
+    return fail(CHECK_IDS.JQ_DANGEROUS, 'awk system() calls can execute arbitrary commands');
+  }
+  if (/\b[gm]?awk\b/.test(command) && /\|\s*getline\b/.test(command)) {
+    return fail(CHECK_IDS.JQ_DANGEROUS, 'awk pipe-to-getline can execute arbitrary commands');
+  }
   return PASS;
 }
 

@@ -1771,6 +1771,14 @@ describe('PermissionManager — classifyBashCommand additional coverage', () => 
     assert.equal(pm.classifyBashCommand('jq ".data[]" file.json'), 'safe');
   });
 
+  it('classifies awk with system() call as unsafe', () => {
+    assert.equal(pm.classifyBashCommand('awk \'{ system("rm x") }\' file'), 'unsafe');
+  });
+
+  it('classifies awk pipe-to-getline as unsafe', () => {
+    assert.equal(pm.classifyBashCommand('awk \'{ "whoami" | getline u }\' file'), 'unsafe');
+  });
+
   it('classifies xargs with safe target as safe', () => {
     assert.equal(pm.classifyBashCommand('echo file | xargs cat'), 'safe');
     assert.equal(pm.classifyBashCommand('echo file | xargs grep pattern'), 'safe');

