@@ -1065,7 +1065,7 @@ const RM_RF_RE = /\brm\b[^;]*(?:-\w*[rf]\w*\s+[^;]*-\w*[rf]\w*|-\w*r\w*f\w*|-\w*
 const DISK_WIPE_RE = /\b(?:mkfs|mkfs\.\w+|wipefs|shred)\b[^|;]*(?:\/dev\/[a-z]|\/dev\/mapper\/)/;
 const DD_WIPE_RE = /\bdd\b[^|;]*(?:of\s*=\s*\/dev\/(?:sd|hd|vd|nvme|xvd|loop|mapper)|of\s*=\s*\/dev\/(?:zero|null|urandom))/;
 const FORK_BOMB_RE = /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/;
-const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*|command\s+|\\|\/(?:usr\/)?(?:s?bin)\/)/;
+const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*(?:\S+=\S+\s+)*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+|command\s+|\\|\/(?:usr\/)?(?:s?bin)\/)/;
 
 export interface NuclearCheckResult {
   blocked: boolean;
@@ -1099,9 +1099,9 @@ export function detectNuclearCommand(command: string): NuclearCheckResult {
 }
 
 /**
- * Extract and check commands nested inside `bash -c "..."` or `sh -c "..."`.
- * Without this, `bash -c "rm -rf /"` bypasses the segment-based check because
- * the nuclear payload is inside a quoted string argument.
+ * Extract and check commands nested inside `bash -c "..."` / `sh -c "..."` and
+ * `$(...)` command substitutions. Without this, nuclear payloads inside quoted
+ * string arguments or subshells bypass the segment-based check.
  */
 function checkNestedShellCommands(command: string): NuclearCheckResult {
   const shellExecRe = /\b(?:ba)?sh\s+-c\s+/g;
@@ -1118,6 +1118,21 @@ function checkNestedShellCommands(command: string): NuclearCheckResult {
       }
     }
   }
+
+  // Check inside $(...) command substitutions
+  const subshellRe = /\$\(([^)]+)\)/g;
+  let subMatch;
+  while ((subMatch = subshellRe.exec(command)) !== null) {
+    const inner = subMatch[1];
+    const innerSegments = inner.split(/\s*(?:;|&&|\|\|)\s*/);
+    for (const seg of innerSegments) {
+      const result = checkSegment(seg);
+      if (result.blocked) {
+        return { blocked: true, reason: `${result.reason} (inside subshell)` };
+      }
+    }
+  }
+
   return { blocked: false };
 }
 

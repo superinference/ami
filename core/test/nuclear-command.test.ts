@@ -312,4 +312,77 @@ describe('detectNuclearCommand', () => {
       assert.equal(result.blocked, true);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Inline env var prefix evasion — VAR=val rm -rf /
+  // -----------------------------------------------------------------------
+
+  describe('rm with inline env var prefix (evasion)', () => {
+    it('blocks: TZ=UTC rm -rf /', () => {
+      const result = detectNuclearCommand('TZ=UTC rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks: TZ="$HOME" rm -rf /', () => {
+      const result = detectNuclearCommand('TZ="$HOME" rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+
+    it("blocks: LANG='C' rm -rf /", () => {
+      const result = detectNuclearCommand("LANG='C' rm -rf /");
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks: FOO=bar BAZ=qux rm -rf /', () => {
+      const result = detectNuclearCommand('FOO=bar BAZ=qux rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks: env FOO=bar rm -rf /', () => {
+      const result = detectNuclearCommand('env FOO=bar rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+
+    it('allows: TZ=UTC rm -rf ./build', () => {
+      const result = detectNuclearCommand('TZ=UTC rm -rf ./build');
+      assert.equal(result.blocked, false);
+    });
+
+    it('allows: FOO=bar ls -la', () => {
+      const result = detectNuclearCommand('FOO=bar ls -la');
+      assert.equal(result.blocked, false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Subshell evasion — $(...) hiding nuclear commands
+  // -----------------------------------------------------------------------
+
+  describe('subshell evasion — $(...)', () => {
+    it('blocks: $(rm -rf /)', () => {
+      const result = detectNuclearCommand('$(rm -rf /)');
+      assert.equal(result.blocked, true);
+      assert.ok(result.reason!.includes('subshell'));
+    });
+
+    it('blocks: echo $(rm -rf /)', () => {
+      const result = detectNuclearCommand('echo $(rm -rf /)');
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks: $(mkfs.ext4 /dev/sda1)', () => {
+      const result = detectNuclearCommand('$(mkfs.ext4 /dev/sda1)');
+      assert.equal(result.blocked, true);
+    });
+
+    it('allows: echo $(date)', () => {
+      const result = detectNuclearCommand('echo $(date)');
+      assert.equal(result.blocked, false);
+    });
+
+    it('allows: echo $(ls -la /tmp)', () => {
+      const result = detectNuclearCommand('echo $(ls -la /tmp)');
+      assert.equal(result.blocked, false);
+    });
+  });
 });
