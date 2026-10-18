@@ -480,6 +480,61 @@ describe('scanForSecrets', () => {
     assert.ok(found.length > 0);
   });
 
+  it('detects GitLab personal access tokens (glpat-)', () => {
+    const found = scanForSecrets('GITLAB_TOKEN=glpat-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab runner tokens (glrt-)', () => {
+    const found = scanForSecrets('RUNNER_TOKEN=glrt-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab OAuth tokens (gloas-)', () => {
+    const found = scanForSecrets('token=gloas-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab agent tokens (glagent-)', () => {
+    const found = scanForSecrets('token=glagent-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab deploy tokens (gldt-)', () => {
+    const found = scanForSecrets('DEPLOY_TOKEN=gldt-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab SCIM/OAuth tokens (glsoat-)', () => {
+    const found = scanForSecrets('SCIM_TOKEN=glsoat-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab CI job tokens (glcbt-)', () => {
+    const found = scanForSecrets('CI_JOB_TOKEN=glcbt-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab feed tokens (glft-)', () => {
+    const found = scanForSecrets('FEED_TOKEN=glft-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab feature flags client tokens (glffct-)', () => {
+    const found = scanForSecrets('FF_TOKEN=glffct-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab incoming mail tokens (glimt-)', () => {
+    const found = scanForSecrets('MAIL_TOKEN=glimt-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitLab pipeline trigger tokens (glptt-)', () => {
+    const found = scanForSecrets('TRIGGER_TOKEN=glptt-abcdefghijklmnopqrstuvwx');
+    assert.ok(found.length > 0);
+  });
+
   it('detects password assignments', () => {
     const found = scanForSecrets('password = "my-secret-password-123"');
     assert.ok(found.length > 0);
@@ -674,6 +729,83 @@ describe('redactSecrets – freeze protection', () => {
     const result = redactSecrets(line);
     assert.ok(result.includes('[REDACTED-SECRET]'), 'should redact short-line secret');
     assert.ok(!result.includes('sk-ant-abcdefghijklmnopqrstuvwxyz1234567890'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// redactSecrets — GitLab token families
+// ---------------------------------------------------------------------------
+describe('redactSecrets – GitLab tokens', () => {
+  it('redacts GitLab personal access tokens (glpat-)', () => {
+    const result = redactSecrets('export GITLAB_TOKEN=glpat-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glpat-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab runner tokens (glrt-)', () => {
+    const result = redactSecrets('RUNNER_TOKEN=glrt-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glrt-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab OAuth tokens (gloas-)', () => {
+    const result = redactSecrets('Authorization: gloas-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('gloas-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab agent tokens (glagent-)', () => {
+    const result = redactSecrets('config: glagent-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glagent-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab deploy tokens (gldt-)', () => {
+    const result = redactSecrets('deploy_token=gldt-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('gldt-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab SCIM/OAuth tokens (glsoat-)', () => {
+    const result = redactSecrets('scim_key: glsoat-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glsoat-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab CI job tokens (glcbt-)', () => {
+    const result = redactSecrets('CI_JOB_TOKEN=glcbt-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glcbt-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab feed tokens (glft-)', () => {
+    const result = redactSecrets('feed=glft-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glft-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab feature flags client tokens (glffct-)', () => {
+    const result = redactSecrets('ff_client_token=glffct-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glffct-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab incoming mail tokens (glimt-)', () => {
+    const result = redactSecrets('mail_token: glimt-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glimt-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('redacts GitLab pipeline trigger tokens (glptt-)', () => {
+    const result = redactSecrets('trigger=glptt-abcdefghijklmnopqrstuvwx');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glptt-abcdefghijklmnopqrstuvwx'));
+  });
+
+  it('does not false-positive on "gl" followed by non-token text', () => {
+    const text = 'global variable gladiator glorious';
+    const result = redactSecrets(text);
+    assert.equal(result, text);
   });
 });
 

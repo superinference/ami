@@ -330,6 +330,7 @@ const SECRET_PATTERNS = [
   /(?:^|[^a-zA-Z0-9])(?:gsk_[a-zA-Z0-9]{20,})/,                      // Groq
   /(?:^|[^a-zA-Z0-9])(?:AKIA[A-Z0-9]{16})/,                          // AWS
   /(?:^|[^a-zA-Z0-9])(?:AIza[a-zA-Z0-9_-]{35})/,                     // Google
+  /(?:^|[^a-zA-Z0-9])(?:gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/,  // GitLab
   /(?:password|secret|token|api_key)\s*[:=]\s*['"][^'"]{8,}['"]/i,
 ];
 
@@ -376,6 +377,7 @@ export function redactSecrets(content: string): string {
     /(gsk_[a-zA-Z0-9]{20,})/g,
     /(AKIA[A-Z0-9]{16})/g,
     /(AIza[a-zA-Z0-9_-]{35})/g,
+    /(gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/g,
   ];
   for (const re of tokenRes) out = out.replace(re, '[REDACTED-SECRET]');
 
