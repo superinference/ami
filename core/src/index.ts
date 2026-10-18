@@ -16,7 +16,7 @@ export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
 export { classifyError } from './error-classifier';
 export type { ClassifiedError, ErrorCategory } from './error-classifier';
-export { HookManager, sanitizeHookOutput } from './hooks';
+export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT } from './hooks';
 export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn } from './hooks';
 export { verdictRank, holdsOver } from './permissions';
 export { SessionMemoryExtractor } from './session-memory';
@@ -126,3 +126,5 @@ export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, SafeMode
 export type { SafeModeConfig, BlockedResource } from './safe-mode';
 export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker } from './request-signature';
 export type { RequestSignature } from './request-signature';
+export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';
+export type { SecurityPattern, SecurityFinding } from './code-security-patterns';
