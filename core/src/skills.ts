@@ -53,6 +53,8 @@ export interface AgentDefinition {
   disallowedTools?: string[];
   /** Permission mode override for sub-agent invocation. */
   permissionMode?: 'auto-allow' | 'ask' | 'deny-all';
+  /** Token budget for auto-compaction inside this subagent's context window. */
+  autoCompactWindow?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +638,9 @@ export class SkillManager {
     const pm = frontmatter['permission-mode'];
     const permissionMode = (pm === 'auto-allow' || pm === 'ask' || pm === 'deny-all') ? pm : undefined;
 
+    const compactRaw = frontmatter['auto-compact-window'];
+    const autoCompactWindow = compactRaw ? parseInt(compactRaw, 10) : undefined;
+
     return {
       name,
       description: frontmatter.description || '',
@@ -646,6 +651,7 @@ export class SkillManager {
       tools: parseStringArray(frontmatter.tools),
       disallowedTools: parseStringArray(frontmatter['disallowed-tools']),
       permissionMode,
+      autoCompactWindow: autoCompactWindow && !isNaN(autoCompactWindow) ? autoCompactWindow : undefined,
     };
   }
 }

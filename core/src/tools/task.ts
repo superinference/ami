@@ -216,6 +216,7 @@ export const taskTool: ToolDefinition = {
     let agentModel: string | undefined;
     let agentMaxTurns: number | undefined;
     let agentPermissionMode: string | undefined;
+    let agentTokenBudget: number | undefined;
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -227,6 +228,7 @@ export const taskTool: ToolDefinition = {
       agentModel = agentDef.model;
       agentMaxTurns = agentDef.maxTurns;
       agentPermissionMode = agentDef.permissionMode;
+      agentTokenBudget = agentDef.autoCompactWindow;
 
       if (agentDef.tools && agentDef.tools.length > 0) {
         const allowed = new Set(agentDef.tools);
@@ -308,6 +310,7 @@ export const taskTool: ToolDefinition = {
       // identity — skip persona resolution (which would inject e.g. the code
       // persona bug-fixing workflow into a verification-only agent).
       ...(agentSystemPrompt ? { systemPrompt: agentSystemPrompt } : {}),
+      ...(agentTokenBudget ? { tokenBudget: agentTokenBudget } : {}),
     };
 
     if (!context._engineFactory) {

@@ -139,3 +139,39 @@ describe('SkillManager — context parsing', () => {
     assert.equal(skill!.context, undefined);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent auto-compact-window frontmatter
+// ---------------------------------------------------------------------------
+
+describe('SkillManager — agent auto-compact-window parsing', () => {
+  function writeAgent(name: string, frontmatter: string, body = 'Agent body.') {
+    const dir = path.join(tmpDir, '.superinference', 'agents');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${name}.md`), `---\n${frontmatter}\n---\n${body}`);
+  }
+
+  it('parses auto-compact-window as a number', () => {
+    writeAgent('compact-agent', 'name: compact-agent\ndescription: x\nauto-compact-window: 50000');
+    const mgr = new SkillManager(tmpDir);
+    const agent = mgr.getAgent('compact-agent');
+    assert.ok(agent, 'agent should be found');
+    assert.equal(agent!.autoCompactWindow, 50000);
+  });
+
+  it('returns undefined when auto-compact-window is absent', () => {
+    writeAgent('no-compact', 'name: no-compact\ndescription: x');
+    const mgr = new SkillManager(tmpDir);
+    const agent = mgr.getAgent('no-compact');
+    assert.ok(agent);
+    assert.equal(agent!.autoCompactWindow, undefined);
+  });
+
+  it('ignores non-numeric auto-compact-window values', () => {
+    writeAgent('bad-compact', 'name: bad-compact\ndescription: x\nauto-compact-window: lots');
+    const mgr = new SkillManager(tmpDir);
+    const agent = mgr.getAgent('bad-compact');
+    assert.ok(agent);
+    assert.equal(agent!.autoCompactWindow, undefined);
+  });
+});
