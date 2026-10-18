@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { spillToolText } from './spill-output';
+import { boundMcpResponse } from '../mcp/client';
 
 /** Max tool-name length accepted by the OpenAI/Anthropic APIs. A qualified MCP
  *  name longer than this poisons every request, so it must be shortened. */
@@ -57,8 +58,9 @@ export function createMcpTool(serverName: string, toolName: string, description:
           timeoutPromise,
         ]);
         clearTimeout(timer!);
-        const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-        return { output: spillToolText(context.cwd, 'mcp', text, 100_000) };
+        const raw = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        const bounded = boundMcpResponse(raw);
+        return { output: spillToolText(context.cwd, 'mcp', bounded.content, 100_000), metadata: bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined };
       } catch (err) {
         clearTimeout(timer!);
         return { output: `MCP tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };

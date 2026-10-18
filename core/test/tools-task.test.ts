@@ -321,8 +321,8 @@ describe('taskTool – default mode gives write tools (regression)', () => {
       `default mode must include bash for running commands; got: [${capturedTools.join(', ')}]`);
     assert.ok(capturedTools.includes('file_read'),
       'default mode must include file_read');
-    assert.ok(!capturedTools.includes('task'),
-      'default mode must not include recursive task tool');
+    assert.ok(capturedTools.includes('task'),
+      'default mode includes task tool for depth-aware nesting (depth 0 < max 5)');
   });
 
   it('explicit explore mode still restricts to read-only tools', async () => {

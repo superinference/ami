@@ -33,6 +33,7 @@ const CHECK_IDS = {
   BACKSLASH_WHITESPACE: 34,
   MALFORMED_TOKEN: 35,
   SAFE_HEREDOC: 36,
+  INVISIBLE_UNICODE: 37,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -40,6 +41,48 @@ const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
 
 const UNICODE_WS_RE =
   new RegExp("[\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]");
+
+/**
+ * Regex matching invisible/zero-width Unicode characters that can be embedded
+ * in bash commands to bypass pattern-matching security checks. Covers:
+ *   U+00AD  soft hyphen
+ *   U+034F  combining grapheme joiner
+ *   U+061C  Arabic letter mark
+ *   U+180E  Mongolian vowel separator
+ *   U+200B  zero-width space (ZWSP)
+ *   U+200C  zero-width non-joiner (ZWNJ)
+ *   U+200D  zero-width joiner (ZWJ)
+ *   U+200E  left-to-right mark
+ *   U+200F  right-to-left mark
+ *   U+2060  word joiner
+ *   U+2062  invisible times
+ *   U+2063  invisible separator
+ *   U+2064  invisible plus
+ *   U+206A-U+206F  deprecated formatting characters
+ *   U+FEFF  byte order mark / zero-width no-break space
+ */
+const INVISIBLE_UNICODE_RE =
+  /[\u00AD\u034F\u061C\u180E\u200B-\u200F\u2060\u2062-\u2064\u206A-\u206F\uFEFF]/;
+
+const INVISIBLE_UNICODE_RE_GLOBAL =
+  /[\u00AD\u034F\u061C\u180E\u200B-\u200F\u2060\u2062-\u2064\u206A-\u206F\uFEFF]/g;
+
+/**
+ * Strip all invisible/zero-width Unicode characters from the input string.
+ * These characters render as nothing visible but can break pattern matching
+ * (e.g. 'r\u200Bm' looks like 'rm' to a human but won't match /\brm\b/).
+ */
+export function stripInvisibleUnicode(input: string): string {
+  return input.replace(INVISIBLE_UNICODE_RE_GLOBAL, '');
+}
+
+/**
+ * Returns true if the input contains any invisible/zero-width Unicode
+ * characters that could be used to evade bash command classification.
+ */
+export function detectInvisibleUnicode(input: string): boolean {
+  return INVISIBLE_UNICODE_RE.test(input);
+}
 
 const ZSH_DANGEROUS_COMMANDS = new Set([
   'zmodload', 'emulate',
@@ -247,6 +290,13 @@ function validateObfuscatedFlags(command: string): SecurityCheckResult {
 function validateUnicodeWhitespace(command: string): SecurityCheckResult {
   if (UNICODE_WS_RE.test(command)) {
     return fail(CHECK_IDS.UNICODE_WHITESPACE, 'Command contains Unicode whitespace characters that could cause parsing inconsistencies');
+  }
+  return PASS;
+}
+
+function validateInvisibleUnicode(command: string): SecurityCheckResult {
+  if (detectInvisibleUnicode(command)) {
+    return fail(CHECK_IDS.INVISIBLE_UNICODE, 'Command contains invisible zero-width Unicode characters that could bypass security checks');
   }
   return PASS;
 }
@@ -706,6 +756,11 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   const detached = options?.detachedMode === true;
   let result: SecurityCheckResult;
 
+  // Invisible Unicode check — must run FIRST, before any pattern matching,
+  // because zero-width characters can split tokens and evade all regexes below.
+  result = validateInvisibleUnicode(command);
+  if (!result.safe) return result;
+
   // Pre-validators (run before any content extraction)
   result = validateShellQuoteBug(command);
   if (!result.safe) return result;
@@ -938,6 +993,98 @@ export function detectSessionTranscriptWrite(command: string): { blocked: boolea
   return { blocked: false, description: null };
 }
 
+// ---------------------------------------------------------------------------
+// Data-exfiltration detector
+// ---------------------------------------------------------------------------
+// Blocks commands that combine bulk file reads with outbound network transfer.
+// Standalone tar, standalone curl, etc. are fine — it's the combination that
+// signals data exfiltration.
+
+const FILE_READ_CMDS = /\b(tar|zip|cat|base64|dd|gzip|bzip2|xz|zcat|head|tail|xxd|od)\b/;
+const NETWORK_SEND_CMDS = /\b(curl|wget|nc|ncat|netcat|socat)\b/;
+const PIPE_OR_REDIRECT = /[|]|<\s*\//;
+
+export function detectDataExfiltration(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  const norm = stripped.replace(/\s+/g, ' ').trim();
+
+  // 1. Pipe: file-read | network-send
+  if (PIPE_OR_REDIRECT.test(norm)) {
+    const segments = norm.split(/\|/);
+    for (let i = 0; i < segments.length - 1; i++) {
+      const left = segments[i].trim();
+      const right = segments.slice(i + 1).join('|').trim();
+      if (FILE_READ_CMDS.test(left) && NETWORK_SEND_CMDS.test(right)) {
+        return { blocked: true, reason: 'bulk file data piped to a network command' };
+      }
+    }
+  }
+
+  // 2. curl/wget posting file contents: -d @/path, --data-binary @/path,
+  //    -F "file=@/path", --upload-file /path, -T /path, --post-file=/path
+  if (/\bcurl\b/.test(norm)) {
+    if (/(?:-d\s+@|--data-binary\s+@|--data\s+@)\//.test(norm)) {
+      return { blocked: true, reason: 'curl posting local file contents' };
+    }
+    if (/-F\s+[^\s]*@\//.test(norm) || /-F\s+"[^"]*@\//.test(norm) || /-F\s+'[^']*@\//.test(norm)) {
+      return { blocked: true, reason: 'curl uploading local file via form field' };
+    }
+    if (/(?:--upload-file|-T)\s+\//.test(norm)) {
+      return { blocked: true, reason: 'curl uploading local file' };
+    }
+  }
+  if (/\bwget\b/.test(norm) && /--post-file[= ]\s*\//.test(norm)) {
+    return { blocked: true, reason: 'wget posting local file contents' };
+  }
+
+  // 3. scp with -r (recursive = bulk): scp -r[p...] /local user@host:
+  if (/\bscp\b/.test(norm) && /-[^\s]*r/.test(norm) && /\S+@\S+:/.test(norm)) {
+    return { blocked: true, reason: 'recursive scp to remote host (bulk transfer)' };
+  }
+
+  // 4. rsync to remote (src is local path, dst contains user@host:)
+  if (/\brsync\b/.test(norm)) {
+    const tokens = norm.split(/\s+/);
+    const nonFlagTokens = tokens.filter(t => !t.startsWith('-') && t !== 'rsync');
+    // rsync <options> <src> <dst> — dst is remote if it has user@host:
+    if (nonFlagTokens.length >= 2) {
+      const dst = nonFlagTokens[nonFlagTokens.length - 1];
+      const src = nonFlagTokens[nonFlagTokens.length - 2];
+      if (/\S+@\S+:/.test(dst) && !/@/.test(src)) {
+        return { blocked: true, reason: 'rsync uploading local data to remote host' };
+      }
+    }
+  }
+
+  // 5. nc/netcat with file redirect: nc host port < /path
+  if (/\b(nc|ncat|netcat)\b/.test(norm) && /<\s*\//.test(norm)) {
+    return { blocked: true, reason: 'netcat sending local file to remote host' };
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// System directory write guard
+// ---------------------------------------------------------------------------
+
+const SYSTEM_DIR_PREFIXES = [
+  '/etc', '/usr', '/bin', '/sbin', '/var',
+  '/sys', '/proc', '/dev', '/boot', '/lib', '/lib64', '/opt',
+];
+
+function isSystemDirPath(p: string): boolean {
+  const resolved = require('path').resolve(p);
+  return SYSTEM_DIR_PREFIXES.some(
+    sd => resolved === sd || resolved.startsWith(sd + '/'),
+  );
+}
+
+export function commandTargetsSystemDir(command: string): boolean {
+  const targets = collectWriteTargets(command);
+  return targets.some(t => isSystemDirPath(t));
+}
+
 export function extractCommandPaths(command: string): string[] {
   const tokens = command.split(/\s+/);
   const cmd = tokens[0];
@@ -978,6 +1125,25 @@ export {
   validateRedirections,
   validateBackslashEscapedWhitespace,
   validateMalformedTokenInjection,
+  validateInvisibleUnicode,
   stripSafeHeredocSubstitutions,
   CHECK_IDS,
+  SENSITIVE_ENV_RE,
+  redactEnvVarsInOutput,
 };
+
+const SENSITIVE_ENV_RE =
+  /(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|AWS[_-]SECRET|GITHUB[_-]TOKEN|OPENAI[_-]?KEY|ANTHROPIC[_-]?KEY|DATABASE[_-]URL|DB[_-]PASS)/i;
+
+function redactEnvVarsInOutput(output: string): string {
+  if (!output) return output;
+  return output.replace(
+    /^((?:export\s+|declare\s+-x\s+)?)([A-Za-z_][A-Za-z0-9_]*)=(["']?)(.+?)\3$/gm,
+    (_match, prefix, name, quote, _value) => {
+      if (SENSITIVE_ENV_RE.test(name)) {
+        return `${prefix}${name}=${quote}[REDACTED]${quote}`;
+      }
+      return _match;
+    },
+  );
+}

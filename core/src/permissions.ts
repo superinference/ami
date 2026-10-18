@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { expandPath } from './utils/path';
-import { extractCommandPaths, commandTargetsCredentialPath, isCredentialPath } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath } from './tools/bash-security';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -391,6 +391,62 @@ export function detectCommandChaining(command: string): { chained: boolean; oper
   return { chained: operators.length > 0, operators, count: segments.length };
 }
 
+// ---------------------------------------------------------------------------
+// Build-configuration file guard (supply-chain attack surface)
+// ---------------------------------------------------------------------------
+
+/**
+ * Basenames of build/CI/package-manager config files that can be weaponized
+ * for supply-chain attacks. These require explicit approval even in
+ * `acceptEdits` mode.
+ */
+const BUILD_CONFIG_BASENAMES = new Set([
+  // Make
+  'makefile', 'gnumakefile',
+  // Docker
+  'dockerfile', 'docker-compose.yml', 'docker-compose.yaml', '.dockerignore',
+  // CI
+  '.gitlab-ci.yml', '.gitlab-ci.yaml', 'jenkinsfile',
+  // Python packaging
+  'pyproject.toml', 'setup.py', 'setup.cfg',
+  // Rust
+  'cargo.toml',
+  // Go
+  'go.mod', 'go.sum',
+  // Node/npm/yarn
+  '.npmrc', '.yarnrc', '.yarnrc.yml',
+  // Env files
+  '.env', '.env.local', '.env.production',
+]);
+
+/**
+ * Path patterns (checked against the full normalized path) for build config
+ * files whose identity depends on directory context, not just the basename.
+ */
+const BUILD_CONFIG_PATH_PATTERNS: RegExp[] = [
+  // GitHub Actions workflows
+  /\/\.github\/workflows\/[^/]+\.ya?ml$/,
+  // CircleCI
+  /\/\.circleci\/config\.ya?ml$/,
+];
+
+/**
+ * Return true if `filePath` names a build-configuration file that should
+ * require explicit approval even in `acceptEdits` mode.
+ */
+export function isBuildConfigFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  const basename = path.basename(normalized).toLowerCase();
+
+  if (BUILD_CONFIG_BASENAMES.has(basename)) return true;
+
+  for (const pattern of BUILD_CONFIG_PATH_PATTERNS) {
+    if (pattern.test(normalized)) return true;
+  }
+
+  return false;
+}
+
 /** System directories that should never be written to. */
 const SYSTEM_DIRECTORIES = [
   '/etc', '/usr', '/bin', '/sbin', '/var',
@@ -620,6 +676,12 @@ export class PermissionManager {
       if (hardline.blocked) return 'deny';
     }
 
+    // dangerouslyDisableSandbox always requires explicit confirmation
+    if (toolName === 'bash' && input.dangerouslyDisableSandbox === true) {
+      if (this.mode === 'deny-all' || this.mode === 'dontAsk') return 'deny';
+      return 'ask';
+    }
+
     // Fast path: mode-level overrides
     if (this.mode === 'auto-allow') return 'allow';
     if (this.mode === 'deny-all') return 'deny';
@@ -648,7 +710,13 @@ export class PermissionManager {
     // acceptEdits: auto-allow file-mutating tools and safe bash
     if (this.mode === 'acceptEdits') {
       const editTools = new Set(['file_edit', 'file_write', 'notebook_edit', 'multi_edit']);
-      if (editTools.has(toolName)) return 'allow';
+      if (editTools.has(toolName)) {
+        // Build-config files can be weaponized for supply-chain attacks —
+        // require explicit approval even in acceptEdits mode.
+        const filePath = (input.file_path || input.path || '') as string;
+        if (filePath && isBuildConfigFile(filePath)) return 'ask';
+        return 'allow';
+      }
       if (toolName === 'bash' && typeof input.command === 'string') {
         const classification = this.classifyBashCommand(input.command);
         if (classification === 'safe') return 'allow';
@@ -672,6 +740,13 @@ export class PermissionManager {
     if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
         toolName === 'bash' && typeof input.command === 'string' &&
         commandTargetsCredentialPath(input.command) && !this.hasExplicitDeny(toolName, input)) {
+      return 'ask';
+    }
+    // System directory write guard — commands that write to /etc, /usr, /boot,
+    // etc. always require explicit approval, even under a wildcard allow rule.
+    if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
+        toolName === 'bash' && typeof input.command === 'string' &&
+        commandTargetsSystemDir(input.command)) {
       return 'ask';
     }
 

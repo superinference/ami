@@ -19,6 +19,86 @@ export function resetAgentRegistry(): void {
   agentNameRegistry.clear();
 }
 
+const DEFAULT_MAX_AGENT_DEPTH = 5;
+export const DEFAULT_MAX_AGENTS_PER_SESSION = 50;
+export const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
+
+/**
+ * Check whether spawning a new agent is allowed under session and concurrency caps.
+ * Returns null if allowed, or an error string if blocked.
+ */
+export function checkAgentCaps(context: {
+  _agentSpawnCount?: { value: number };
+  _maxAgentsPerSession?: number;
+  _maxConcurrentAgents?: number;
+  processManager?: any;
+}): string | null {
+  const sessionCap = context._maxAgentsPerSession ?? DEFAULT_MAX_AGENTS_PER_SESSION;
+  const spawnCount = context._agentSpawnCount?.value ?? 0;
+  if (spawnCount >= sessionCap) {
+    return `Agent session cap reached (${sessionCap}). ${spawnCount} agents already spawned this session. Increase _maxAgentsPerSession to raise the limit.`;
+  }
+
+  const concurrentCap = context._maxConcurrentAgents ?? DEFAULT_MAX_CONCURRENT_AGENTS;
+  if (context.processManager) {
+    let running = 0;
+    const processes = (context.processManager as any).processes;
+    if (processes && typeof processes.values === 'function') {
+      for (const entry of processes.values()) {
+        if (entry.command?.startsWith('[agent]') && entry.status === 'running') {
+          running++;
+        }
+      }
+    }
+    if (running >= concurrentCap) {
+      return `Concurrent agent cap reached (${concurrentCap}). ${running} agents currently running. Wait for agents to complete or increase _maxConcurrentAgents.`;
+    }
+  }
+
+  return null;
+}
+
+function incrementSpawnCount(context: { _agentSpawnCount?: { value: number } }): void {
+  if (!context._agentSpawnCount) {
+    context._agentSpawnCount = { value: 0 };
+  }
+  context._agentSpawnCount.value++;
+}
+
+export function shouldAllowNestedTask(currentDepth: number, maxDepth: number): boolean {
+  return currentDepth < maxDepth;
+}
+
+export function getSubagentDepthContext(currentDepth: number, maxDepth: number): { _agentDepth: number; _maxAgentDepth: number } {
+  return { _agentDepth: currentDepth + 1, _maxAgentDepth: maxDepth };
+}
+
+/**
+ * Filter the tool set for an agent based on mode and nesting depth.
+ * Exported for testing; used internally by the task tool execute method.
+ */
+export function filterToolsForAgent(
+  allTools: ToolDefinition[],
+  mode: string,
+  agentDepth?: number,
+  maxAgentDepth?: number,
+): ToolDefinition[] {
+  const readOnlyNames = new Set([
+    'file_read', 'grep', 'glob', 'list_dir', 'search_symbols',
+    'web_search', 'web_fetch',
+  ]);
+
+  if (mode === 'explore') {
+    return allTools.filter(t => readOnlyNames.has(t.name));
+  }
+
+  const depth = agentDepth ?? 0;
+  const maxDepth = maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
+  const allowNested = shouldAllowNestedTask(depth, maxDepth);
+
+  return allTools.filter(t => allowNested || t.name !== 'task');
+}
+
 export const taskTool: ToolDefinition = {
   name: 'task',
   description:
@@ -32,7 +112,7 @@ export const taskTool: ToolDefinition = {
       },
       mode: {
         type: 'string',
-        description: 'Agent mode. "explore" gives read-only tools only. "general" gives all tools except task (no recursion). "fork" clones parent conversation context.',
+        description: 'Agent mode. "explore" gives read-only tools only. "general" gives all tools including nested task (up to max depth). "fork" clones parent conversation context.',
         enum: ['explore', 'general', 'fork'],
       },
       isolation: {
@@ -95,6 +175,12 @@ export const taskTool: ToolDefinition = {
       };
     }
 
+    // Enforce session and concurrency caps before any spawn work
+    const capError = checkAgentCaps(context);
+    if (capError) {
+      return { output: `Error: ${capError}`, isError: true };
+    }
+
     const MODEL_ALIASES: Record<string, string> = {
       'sonnet': 'claude-sonnet-4',
       'opus': 'claude-opus-4',
@@ -114,11 +200,10 @@ export const taskTool: ToolDefinition = {
       }
     }
 
+    const currentDepth = context._agentDepth ?? 0;
+    const maxDepth = context._maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
+
     const allTools = createDefaultTools(context.cwd);
-    const readOnlyNames = new Set([
-      'file_read', 'grep', 'glob', 'list_dir', 'search_symbols',
-      'web_search', 'web_fetch',
-    ]);
 
     let tools: ToolDefinition[];
     let agentSystemPrompt: string | undefined;
@@ -139,21 +224,27 @@ export const taskTool: ToolDefinition = {
 
       if (agentDef.tools && agentDef.tools.length > 0) {
         const allowed = new Set(agentDef.tools);
-        tools = allTools.getAll().filter(t => allowed.has(t.name) && t.name !== 'task');
+        tools = allTools.getAll().filter(t => allowed.has(t.name));
+        if (!shouldAllowNestedTask(currentDepth, maxDepth)) {
+          tools = tools.filter(t => t.name !== 'task');
+        }
       } else if (agentDef.disallowedTools && agentDef.disallowedTools.length > 0) {
-        const disallowed = new Set([...agentDef.disallowedTools, 'task']);
+        const disallowed = new Set(agentDef.disallowedTools);
         tools = allTools.getAll().filter(t => !disallowed.has(t.name));
+        if (!shouldAllowNestedTask(currentDepth, maxDepth)) {
+          tools = tools.filter(t => t.name !== 'task');
+        }
       } else {
-        tools = allTools.getAll().filter(t => t.name !== 'task');
+        tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
       }
       effectiveMode = 'general';
     } else if (mode === 'explore') {
-      tools = allTools.getAll().filter(t => readOnlyNames.has(t.name));
+      tools = filterToolsForAgent(allTools.getAll(), 'explore', currentDepth, maxDepth);
     } else if (mode === 'fork') {
-      tools = allTools.getAll().filter(t => t.name !== 'task');
+      tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
       effectiveMode = 'general';
     } else {
-      tools = allTools.getAll().filter(t => t.name !== 'task');
+      tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
     }
 
     const subAbort = new AbortController();
@@ -191,6 +282,7 @@ export const taskTool: ToolDefinition = {
       agentPermissionMode ||
       (effectiveMode === 'explore' ? 'auto-allow' : 'ask');
 
+    const childDepth = getSubagentDepthContext(currentDepth, maxDepth);
     const subConfig: EngineConfig = {
       provider: providerConfig,
       cwd: effectiveCwd,
@@ -201,6 +293,8 @@ export const taskTool: ToolDefinition = {
       abortController: subAbort,
       maxTurns: agentMaxTurns,
       detachedMode: !!context.detachedMode,
+      agentDepth: childDepth._agentDepth,
+      maxAgentDepth: childDepth._maxAgentDepth,
       // Inherit the parent's thinking/effort config so subagents reason at the
       // same level unless the agent type overrides it.
       ...(context._parentThinking ? { thinking: context._parentThinking } : {}),
@@ -223,6 +317,7 @@ export const taskTool: ToolDefinition = {
     const agentName = input.name as string | undefined;
 
     if (runInBackground) {
+      incrementSpawnCount(context);
       const taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
       if (agentName) {
         agentNameRegistry.set(agentName, taskId);
@@ -320,6 +415,7 @@ export const taskTool: ToolDefinition = {
       return { output: `Background agent started: ${taskId}\nUse task_output to check results.` };
     }
 
+    incrementSpawnCount(context);
     const subEngine = context._engineFactory(subConfig);
     const taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
     if (agentName) {

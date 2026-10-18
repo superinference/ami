@@ -1207,7 +1207,8 @@ describe('taskTool — subagent_type', () => {
     const toolNames = capturedConfig.tools.map((t: any) => t.name);
     assert.ok(!toolNames.includes('bash'));
     assert.ok(!toolNames.includes('file_write'));
-    assert.ok(!toolNames.includes('task'));
+    // task is NOT in disallowedTools, so at depth 0 it's included
+    assert.ok(toolNames.includes('task'), 'task allowed when not in disallowedTools');
   });
 
   it('uses agent model when specified', async () => {

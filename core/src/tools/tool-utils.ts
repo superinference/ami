@@ -48,6 +48,20 @@ export interface ToolDescriptionContext {
  * Resolve a file path relative to cwd and validate it's inside the workspace.
  * Returns the resolved path or a ToolResult error.
  */
+
+const SENSITIVE_PATH_PREFIXES = [
+  '/etc/shadow', '/etc/passwd', '/etc/sudoers',
+  '/proc/', '/sys/',
+];
+
+export function isSensitivePath(filePath: string): boolean {
+  const normalized = path.resolve(filePath);
+  if (SENSITIVE_PATH_PREFIXES.some(p => normalized === p || normalized.startsWith(p))) return true;
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  if (home && normalized.startsWith(path.join(home, '.ssh') + path.sep)) return true;
+  return false;
+}
+
 export function resolveFilePath(
   filePath: string,
   cwd: string,
@@ -55,6 +69,9 @@ export function resolveFilePath(
   const resolved = path.isAbsolute(filePath)
     ? filePath
     : path.resolve(cwd, filePath);
+  if (isSensitivePath(resolved)) {
+    return { resolved, error: { output: `Error: access to "${filePath}" is blocked — sensitive system path.`, isError: true } };
+  }
   const cwdAbs = path.resolve(cwd);
   if (!path.resolve(resolved).startsWith(cwdAbs + path.sep) &&
       path.resolve(resolved) !== cwdAbs) {
@@ -78,6 +95,62 @@ export function resolveFilePath(
     }
   }
   return { resolved };
+}
+
+/**
+ * Read a file with lstat-based symlink verification to close the TOCTOU gap.
+ * Validates the path is inside the workspace AND that the final target (after
+ * any symlink chain) resolves within the workspace. Uses lstat right before
+ * reading to reduce the window for a race.
+ */
+export function safeReadFile(
+  filePath: string,
+  cwd: string,
+): { content: string; encoding: FileEncoding; error?: undefined } | { error: ToolResult; content?: undefined; encoding?: undefined } {
+  const { resolved, error } = resolveFilePath(filePath, cwd);
+  if (error) return { error };
+
+  try {
+    const stat = fs.lstatSync(resolved);
+    if (stat.isSymbolicLink()) {
+      const target = fs.realpathSync(resolved);
+      const cwdAbs = path.resolve(cwd);
+      if (!target.startsWith(cwdAbs + path.sep) && target !== cwdAbs) {
+        return { error: { output: `Error: "${filePath}" is a symlink resolving outside the workspace.`, isError: true } };
+      }
+    }
+
+    const buf = fs.readFileSync(resolved);
+    const { text, encoding } = decodeBuffer(buf);
+    return { content: text, encoding };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { error: { output: `Error: cannot read "${filePath}": ${msg}`, isError: true } };
+  }
+}
+
+/**
+ * Get file metadata using lstat (does NOT follow symlinks).
+ * Returns the raw lstat result so callers can distinguish regular files
+ * from symlinks and detect symlink-escape attacks.
+ */
+export function safeLstat(
+  filePath: string,
+  cwd: string,
+): { stat: fs.Stats; error?: undefined } | { error: ToolResult; stat?: undefined } {
+  const cwdAbs = path.resolve(cwd);
+  const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+  if (!path.resolve(resolved).startsWith(cwdAbs + path.sep) && path.resolve(resolved) !== cwdAbs) {
+    return { error: { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true } };
+  }
+
+  try {
+    const stat = fs.lstatSync(resolved);
+    return { stat };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { error: { output: `Error: cannot stat "${filePath}": ${msg}`, isError: true } };
+  }
 }
 
 export type FileEncoding = 'utf-8' | 'utf-8-bom' | 'utf-16le' | 'utf-16be';
@@ -207,7 +280,14 @@ export function scanForSecrets(content: string): string[] {
  */
 export function redactSecrets(content: string): string {
   let out = content;
-  // Token patterns (first 6 of SECRET_PATTERNS) capture a single boundary char
+
+  // 1. Private key blocks — must run before token patterns to avoid partial matches.
+  out = out.replace(
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    '[REDACTED-PRIVATE-KEY]',
+  );
+
+  // 2. Token patterns (first 6 of SECRET_PATTERNS) capture a single boundary char
   // then the secret; redact just the secret run.
   const tokenRes = [
     /(sk-ant-[a-zA-Z0-9-]{20,})/g,
@@ -218,9 +298,28 @@ export function redactSecrets(content: string): string {
     /(AIza[a-zA-Z0-9_-]{35})/g,
   ];
   for (const re of tokenRes) out = out.replace(re, '[REDACTED-SECRET]');
-  // key: "value" / token = 'value' style — redact the quoted value only.
+
+  // 3. Bearer / Basic auth headers — redact long token values (>= 20 chars).
+  out = out.replace(
+    /((?:Bearer|Basic)\s+)[A-Za-z0-9+/=_.~-]{20,}/g,
+    '$1[REDACTED-SECRET]',
+  );
+
+  // 4. URL credentials — https://user:password@host (password >= 4 chars).
+  out = out.replace(
+    /(https?:\/\/[^:@/\s]+:)[^@/\s]{4,}(@)/g,
+    '$1[REDACTED-SECRET]$2',
+  );
+
+  // 5. Database / messaging connection strings — same pattern for known schemes.
+  out = out.replace(
+    /((?:mysql|postgres|postgresql|mongodb|redis|amqp):\/\/[^:@/\s]+:)[^@/\s]{4,}(@)/g,
+    '$1[REDACTED-SECRET]$2',
+  );
+
+  // 6. key: "value" / token = 'value' style — redact the quoted value only.
   out = out.replace(/((?:password|secret|token|api_key)\s*[:=]\s*['"])[^'"]{8,}(['"])/gi, '$1[REDACTED-SECRET]$2');
-  // JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
+  // 7. JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
   out = out.replace(/("(?:password|secret|token|api_?key|access_?key|secret_?key|client_secret|auth)"\s*:\s*")[^"]{6,}(")/gi, '$1[REDACTED-SECRET]$2');
   return out;
 }
@@ -252,6 +351,40 @@ export function detectLineEnding(content: string): '\r\n' | '\n' {
   const crlf = (content.match(/\r\n/g) || []).length;
   const lf = (content.match(/(?<!\r)\n/g) || []).length;
   return crlf > lf ? '\r\n' : '\n';
+}
+
+import type { ToolCallContent } from '../types';
+
+export function toolCallFingerprint(toolName: string, input: Record<string, unknown>): string {
+  const sortedKeys = Object.keys(input).sort();
+  const parts = sortedKeys.map(k => `${k}=${JSON.stringify(input[k])}`);
+  return `${toolName}:${parts.join('&')}`;
+}
+
+export function deduplicateToolCalls(
+  calls: ToolCallContent[],
+): { deduplicated: ToolCallContent[]; removedCount: number; removedIds: string[] } {
+  const seen = new Set<string>();
+  const deduplicated: ToolCallContent[] = [];
+  const removedIds: string[] = [];
+
+  for (const call of calls) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(call.function.arguments);
+    } catch {
+      parsed = { _raw: call.function.arguments };
+    }
+    const fp = toolCallFingerprint(call.function.name, parsed);
+    if (seen.has(fp)) {
+      removedIds.push(call.id);
+    } else {
+      seen.add(fp);
+      deduplicated.push(call);
+    }
+  }
+
+  return { deduplicated, removedCount: removedIds.length, removedIds };
 }
 
 export function normalizeToLf(text: string): string {

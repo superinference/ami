@@ -99,6 +99,16 @@ export interface ToolContext {
   /** Session-wide web-search budget (shared mutable counter) to stop runaway loops. */
   _webSearchBudget?: { count: number; max: number };
   detachedMode?: boolean;
+  /** Current subagent nesting depth (0 = top-level). */
+  _agentDepth?: number;
+  /** Maximum subagent nesting depth (default 5). */
+  _maxAgentDepth?: number;
+  /** Shared mutable counter: total agents spawned this session (never decreases). */
+  _agentSpawnCount?: { value: number };
+  /** Max total agents allowed in a single session (default 50). */
+  _maxAgentsPerSession?: number;
+  /** Max concurrently running agents (default 10). */
+  _maxConcurrentAgents?: number;
 }
 
 export interface ToolDefinition {
@@ -291,6 +301,10 @@ export interface EngineConfig {
   enableTitleGeneration?: boolean;
   /** When true, the engine is running in non-interactive (detached / --prompt) mode. */
   detachedMode?: boolean;
+  /** Current subagent nesting depth — propagated to child ToolContext. */
+  agentDepth?: number;
+  /** Maximum subagent nesting depth (default 5). */
+  maxAgentDepth?: number;
   /** Maximum USD budget for the session. If set, the engine stops when total cost exceeds this amount. */
   maxBudgetUsd?: number;
   /** Wall-clock session limit in milliseconds. If set, the engine stops when elapsed time exceeds this. */
@@ -309,8 +323,16 @@ export interface EngineConfig {
    *  (.superinference/hooks.json), no MCP server auto-connect, and no project
    *  memory/skills in the system prompt. For running in untrusted repos. */
   safeMode?: boolean;
+  /** Bare mode: strip system prompt to minimal identity + date. No persona,
+   *  memory, skills, project config, or tool instructions. For benchmarking
+   *  and raw LLM interaction. */
+  bareMode?: boolean;
   /** Behavior when tool iteration limit is reached: 'stop' or 'confirm'. Default 'confirm'. */
   toolIterationBehavior?: 'stop' | 'confirm';
+  /** Minimum estimated tokens before idle compaction will run (default 200 000). */
+  idleCompactionMinTokens?: number;
+  /** Milliseconds of inactivity after a turn before proactive compaction fires (default 3 240 000 = 54 min). */
+  idleCompactionDelayMs?: number;
 }
 
 // ---------------------------------------------------------------------------

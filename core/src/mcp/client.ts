@@ -1,6 +1,40 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 
+export const DEFAULT_MCP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+const MIN_MCP_BUFFER = 1024;            // 1 KB
+const MAX_MCP_BUFFER = 100 * 1024 * 1024; // 100 MB
+
+export function boundMcpResponse(
+  content: string,
+  maxBytes: number = DEFAULT_MCP_MAX_RESPONSE_BYTES,
+): { content: string; truncated: boolean; originalBytes: number } {
+  const originalBytes = Buffer.byteLength(content, 'utf-8');
+  if (originalBytes <= maxBytes) {
+    return { content, truncated: false, originalBytes };
+  }
+  const buf = Buffer.from(content, 'utf-8');
+  let end = maxBytes;
+  // Walk back to avoid splitting a multi-byte UTF-8 character
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  const truncated = buf.subarray(0, end).toString('utf-8');
+  return {
+    content: `${truncated}\n\n[Response truncated: ${originalBytes} bytes → ${maxBytes} bytes. Set MCP_MAX_RESPONSE_BYTES to increase limit.]`,
+    truncated: true,
+    originalBytes,
+  };
+}
+
+export function validateMcpBufferSize(size: unknown): number {
+  if (size === undefined || size === null) return DEFAULT_MCP_MAX_RESPONSE_BYTES;
+  const n = typeof size === 'string' ? Number(size) : Number(size);
+  if (!Number.isFinite(n)) return DEFAULT_MCP_MAX_RESPONSE_BYTES;
+  if (n < MIN_MCP_BUFFER) return MIN_MCP_BUFFER;
+  if (n > MAX_MCP_BUFFER) return MAX_MCP_BUFFER;
+  return n;
+}
+
 export interface McpToolAnnotations {
   title?: string;
   readOnlyHint?: boolean;

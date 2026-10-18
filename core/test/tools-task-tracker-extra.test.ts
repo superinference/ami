@@ -405,8 +405,8 @@ describe('taskTool — execute with engine factory', () => {
     assert.ok(capturedConfig);
     assert.equal(capturedConfig.permissionMode, 'ask');
     const toolNames = capturedConfig.tools.map((t: any) => t.name);
-    // 'task' should be excluded to prevent recursion
-    assert.ok(!toolNames.includes('task'), 'task tool should not appear in general mode');
+    // With depth-aware nesting, task IS included at depth 0 (under max 5)
+    assert.ok(toolNames.includes('task'), 'task tool included for depth-aware nesting at depth 0');
     // but other writable tools should be present
     assert.ok(toolNames.includes('bash') || toolNames.length > 0);
   });

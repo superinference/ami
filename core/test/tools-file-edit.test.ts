@@ -213,7 +213,7 @@ describe('fileEditTool – error cases', () => {
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('found') && result.output.includes('times'));
+    assert.ok(result.output.includes('matches') && result.output.includes('locations'));
   });
 });
 

@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
-import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite } from './bash-security';
+import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
@@ -271,6 +271,28 @@ export function detectDetachedGitDiscard(command: string, cwd?: string): string 
   return null;
 }
 
+const PROTECTED_BRANCHES = /\b(main|master|production|release|develop)\b/;
+
+export function detectForcePushToProtected(command: string): string | null {
+  const norm = command.replace(/\s+/g, ' ').trim();
+  if (!/\bgit\s+push\b/.test(norm)) return null;
+  if (!/--force\b|-f\b|--force-with-lease\b/.test(norm)) return null;
+  // Don't match inside echo, printf, or quoted strings used as args to other cmds
+  if (/^\s*(echo|printf)\b/.test(norm)) return null;
+  const args = norm.split(/\s+/);
+  const gitIdx = args.indexOf('git');
+  if (gitIdx < 0) return null;
+  const pushIdx = args.indexOf('push', gitIdx);
+  if (pushIdx < 0) return null;
+  const afterPush = args.slice(pushIdx + 1).filter(a => !a.startsWith('-'));
+  for (const a of afterPush) {
+    if (PROTECTED_BRANCHES.test(a)) {
+      return `Force push to protected branch "${a}" is blocked. Use a feature branch instead.`;
+    }
+  }
+  return null;
+}
+
 export function detectSelfKill(command: string): string | null {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   const pid = process.pid;
@@ -291,22 +313,53 @@ function detectBlockedSleep(command: string, runInBackground: boolean, hasCustom
   return null;
 }
 
-const SENSITIVE_ENV_PATTERNS = [
-  /_KEY$/i, /_SECRET$/i, /_TOKEN$/i, /_PASSWORD$/i, /_CREDENTIALS$/i,
-  /^AWS_/i, /^AZURE_/i, /^GCP_/i,
-  /^GOOGLE_APPLICATION_CREDENTIALS$/i,
-  /^DATABASE_URL$/i, /^REDIS_URL$/i,
-  /^SSH_AUTH_SOCK$/i, /^GIT_ASKPASS$/i,
-  /^NPM_TOKEN$/i, /^DOCKER_/i, /^JWT_/i,
+export const SENSITIVE_ENV_SET = new Set([
+  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+  'AWS_SECURITY_TOKEN',
+  'GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_API_KEY',
+  'AZURE_CLIENT_SECRET', 'AZURE_TENANT_ID',
+  'DATABASE_URL', 'REDIS_URL',
+  'NPM_TOKEN', 'PYPI_TOKEN',
+  'SSH_AUTH_SOCK', 'GIT_ASKPASS',
+]);
+
+const SENSITIVE_SUFFIX_PATTERNS = [
+  /_KEY$/i, /_SECRET$/i, /_TOKEN$/i, /_PASSWORD$/i,
+  /_CREDENTIALS$/i, /_PRIVATE_KEY$/i, /_API_KEY$/i,
 ];
 
-function scrubEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+const SAFE_PREFIX_RE = /^(PATH|HOME|USER|SHELL|TERM|LANG|DISPLAY|TMPDIR|PWD|OLDPWD|HOSTNAME|LOGNAME|SHLVL|_)$/i;
+const SAFE_PREFIX_PATTERNS = [
+  /^LC_/i, /^XDG_/i, /^SUPERINFERENCE_/i, /^NODE_/i,
+  /^COLORTERM$/i, /^COLUMNS$/i, /^LINES$/i,
+  /^NO_COLOR$/i, /^FORCE_COLOR$/i,
+];
+
+function isSafeEnvVar(key: string): boolean {
+  if (SAFE_PREFIX_RE.test(key)) return true;
+  return SAFE_PREFIX_PATTERNS.some(p => p.test(key));
+}
+
+function isSensitiveEnvVar(key: string): boolean {
+  if (SENSITIVE_ENV_SET.has(key)) return true;
+  if (isSafeEnvVar(key)) return false;
+  return SENSITIVE_SUFFIX_PATTERNS.some(p => p.test(key));
+}
+
+export function sanitizeEnvForSubprocess(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
   for (const key of Object.keys(env)) {
-    if (SENSITIVE_ENV_PATTERNS.some(p => p.test(key))) {
-      delete env[key];
+    if (!isSensitiveEnvVar(key)) {
+      out[key] = env[key];
     }
   }
+  return out;
+}
+
+function scrubEnv(): NodeJS.ProcessEnv {
+  const env = sanitizeEnvForSubprocess({ ...process.env }) as NodeJS.ProcessEnv;
   env.GIT_EDITOR = 'false';
   env.GIT_PAGER = 'cat';
   env.EDITOR = 'false';
@@ -371,6 +424,13 @@ export const bashTool: ToolDefinition = {
       return { output: 'Error: command must not be empty.', isError: true };
     }
 
+    if (!fs.existsSync(context.cwd)) {
+      return {
+        output: `Error: working directory "${context.cwd}" does not exist. It may have been deleted or moved. Use /add-dir to set a new working directory.`,
+        isError: true,
+      };
+    }
+
     if (detectGitCommit(command)) {
       return {
         output:
@@ -396,6 +456,11 @@ export const bashTool: ToolDefinition = {
       };
     }
 
+    const forcePush = detectForcePushToProtected(command);
+    if (forcePush) {
+      return { output: `Error: ${forcePush}`, isError: true };
+    }
+
     const secCheck = validateBashSecurity(command, { detachedMode: context.detachedMode });
     if (!secCheck.safe) {
       return {
@@ -412,6 +477,11 @@ export const bashTool: ToolDefinition = {
     const sessionWrite = detectSessionTranscriptWrite(command);
     if (sessionWrite.blocked) {
       return { output: `Error: blocked — ${sessionWrite.description} (session transcript is protected)`, isError: true };
+    }
+
+    const exfil = detectDataExfiltration(command);
+    if (exfil.blocked) {
+      return { output: `Error: blocked — ${exfil.reason} (data exfiltration risk)`, isError: true };
     }
 
     const sleepBlock = detectBlockedSleep(command, !!input.run_in_background, !!input.timeout);

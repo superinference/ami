@@ -1,6 +1,37 @@
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
+import type { SkillDefinition } from '../skills';
+
+/**
+ * Filter tools for a skill based on its allowedTools and disallowedTools settings.
+ * Exported for testability.
+ *
+ * Logic:
+ * 1. If allowedTools is set, whitelist to only those tools.
+ * 2. Otherwise, include all tools minus 'skill'.
+ * 3. If disallowedTools is set, remove those tools from the result.
+ */
+export function filterToolsForSkill(
+  allTools: ToolDefinition[],
+  skill: SkillDefinition | null | undefined,
+): ToolDefinition[] {
+  let tools: ToolDefinition[];
+
+  if (skill?.allowedTools && skill.allowedTools.length > 0) {
+    const allowed = new Set(skill.allowedTools);
+    tools = allTools.filter(t => allowed.has(t.name));
+  } else {
+    tools = allTools.filter(t => t.name !== 'skill');
+  }
+
+  if (skill?.disallowedTools && skill.disallowedTools.length > 0) {
+    const disallowed = new Set(skill.disallowedTools);
+    tools = tools.filter(t => !disallowed.has(t.name));
+  }
+
+  return tools;
+}
 
 export const skillTool: ToolDefinition = {
   name: 'skill',
@@ -71,14 +102,7 @@ export const skillTool: ToolDefinition = {
       return { output: `Skill "${skillName}" activated inline. Following its instructions.` };
     }
     const allTools = createDefaultTools(context.cwd);
-    let tools: ToolDefinition[];
-
-    if (skill?.allowedTools && skill.allowedTools.length > 0) {
-      const allowed = new Set(skill.allowedTools);
-      tools = allTools.getAll().filter(t => allowed.has(t.name));
-    } else {
-      tools = allTools.getAll().filter(t => t.name !== 'skill');
-    }
+    const tools = filterToolsForSkill(allTools.getAll(), skill);
 
     const subAbort = new AbortController();
     const forwardAbort = () => subAbort.abort();

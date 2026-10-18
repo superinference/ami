@@ -275,6 +275,126 @@ export class CostTracker {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cache miss diagnostics
+// ---------------------------------------------------------------------------
+
+export type CacheMissCause =
+  | 'tool_definitions_changed'
+  | 'system_prompt_changed'
+  | 'idle_past_ttl'
+  | 'thinking_mode_changed'
+  | 'model_switched'
+  | 'first_request'
+  | 'unknown';
+
+export interface CacheDiagRequest {
+  toolDefHash: string;
+  systemPromptHash: string;
+  thinkingMode: string;
+  model: string;
+}
+
+const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+export function fingerprint(input: string): string {
+  const len = input.length;
+  const head = input.slice(0, 100);
+  const tail = input.slice(-100);
+  let hash = 0;
+  const sample = head + tail;
+  for (let i = 0; i < sample.length; i++) {
+    hash = ((hash << 5) - hash + sample.charCodeAt(i)) | 0;
+  }
+  return `${len}:${hash >>> 0}`;
+}
+
+export class CacheMissDiagnostics {
+  private causes = new Map<CacheMissCause, number>();
+  private lastCause: CacheMissCause | null = null;
+  private prev: CacheDiagRequest | null = null;
+  private lastRequestTime = 0;
+  private cacheTtlMs: number;
+  private isFirstRequest = true;
+
+  constructor(cacheTtlMs?: number) {
+    this.cacheTtlMs = cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+  }
+
+  recordRequest(opts: CacheDiagRequest): void {
+    this._pendingRequest = opts;
+    this._pendingRequestTime = Date.now();
+  }
+
+  private _pendingRequest: CacheDiagRequest | null = null;
+  private _pendingRequestTime = 0;
+
+  recordResponse(cacheReadTokens: number, _cacheCreationTokens: number): void {
+    const req = this._pendingRequest;
+    if (!req) return;
+    this._pendingRequest = null;
+
+    const isMiss = cacheReadTokens === 0;
+
+    if (isMiss) {
+      const cause = this.diagnoseCause(req, this._pendingRequestTime);
+      this.lastCause = cause;
+      this.causes.set(cause, (this.causes.get(cause) ?? 0) + 1);
+    }
+
+    this.prev = req;
+    this.lastRequestTime = this._pendingRequestTime;
+    this.isFirstRequest = false;
+  }
+
+  private diagnoseCause(req: CacheDiagRequest, requestTime: number): CacheMissCause {
+    if (this.isFirstRequest || !this.prev) return 'first_request';
+
+    // Priority order: model > idle > tool defs > system prompt > thinking > unknown
+    if (req.model !== this.prev.model) return 'model_switched';
+
+    if (this.lastRequestTime > 0) {
+      const elapsed = requestTime - this.lastRequestTime;
+      if (elapsed > this.cacheTtlMs) return 'idle_past_ttl';
+    }
+
+    if (req.toolDefHash !== this.prev.toolDefHash) return 'tool_definitions_changed';
+    if (req.systemPromptHash !== this.prev.systemPromptHash) return 'system_prompt_changed';
+    if (req.thinkingMode !== this.prev.thinkingMode) return 'thinking_mode_changed';
+
+    return 'unknown';
+  }
+
+  getLastMissCause(): CacheMissCause | null {
+    return this.lastCause;
+  }
+
+  getCacheMissCauses(): Map<CacheMissCause, number> {
+    return new Map(this.causes);
+  }
+
+  getTotalMisses(): number {
+    let total = 0;
+    for (const count of this.causes.values()) total += count;
+    return total;
+  }
+
+  /** For testing: override the last request timestamp to simulate idle. */
+  _setLastRequestTime(ts: number): void {
+    this.lastRequestTime = ts;
+  }
+
+  reset(): void {
+    this.causes.clear();
+    this.lastCause = null;
+    this.prev = null;
+    this.lastRequestTime = 0;
+    this.isFirstRequest = true;
+    this._pendingRequest = null;
+    this._pendingRequestTime = 0;
+  }
+}
+
 /** Reset the live pricing cache (for testing). */
 export function _resetPricingCache(): void {
   livePricing = null;

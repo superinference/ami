@@ -153,7 +153,10 @@ describe('resolveFilePath', () => {
     const r = resolveFilePath('/etc/passwd', tmpDir);
     assert.ok(r.error);
     assert.ok(r.error!.isError);
-    assert.ok(r.error!.output.includes('outside the workspace'));
+    assert.ok(
+      r.error!.output.includes('outside the workspace') || r.error!.output.includes('sensitive system path'),
+      `Expected workspace or sensitive path error, got: ${r.error!.output}`,
+    );
   });
 
   it('allows the workspace root itself', () => {

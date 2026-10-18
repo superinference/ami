@@ -35,6 +35,7 @@ export interface SkillDefinition {
   model?: string;         // Override model for this skill
   userInvocable?: boolean; // Can user invoke via /skill-name (default true)
   allowedTools?: string[]; // Restrict which tools this skill can use
+  disallowedTools?: string[]; // Tools to exclude (blacklist, applied after allowedTools)
   argumentHint?: string;  // Hint text for the argument (e.g., "<file-path>")
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
@@ -547,6 +548,7 @@ export class SkillManager {
       model: frontmatter.model || undefined,
       userInvocable,
       allowedTools: parseStringArray(frontmatter['allowed-tools']),
+      disallowedTools: parseStringArray(frontmatter['disallowed-tools']),
       argumentHint: frontmatter['argument-hint'] || undefined,
       context,
       disableModelInvocation: frontmatter['disable-model-invocation'] === 'true',

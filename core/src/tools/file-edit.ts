@@ -200,7 +200,7 @@ async function applySequentialEdits(
         applied.push(`Edit ${i + 1}: replaced ${result.matchCount} occurrences`);
         continue;
       }
-      failed.push(`Edit ${i + 1}: ${result.error}`);
+      failed.push(`Edit ${i + 1}: old_string matches ${result.matchCount} locations. Add more surrounding context to make it unique, or use replace_all: true to replace all occurrences.`);
       continue;
     }
 
@@ -430,7 +430,7 @@ export const fileEditTool: ToolDefinition = {
         };
       }
       return {
-        output: `Error: ${result.error}`,
+        output: `Error: old_string matches ${result.matchCount} locations in ${resolved}. Add more surrounding context to make it unique, or use replace_all: true to replace all ${result.matchCount} occurrences.`,
         isError: true,
       };
     }

@@ -58,6 +58,12 @@ export class McpManager extends EventEmitter {
   private pendingServers = new Map<string, PendingServerInfo>();
   private serverErrors = new Map<string, string>();
 
+  /** Timestamp (ms) of the last tool call per server name. */
+  _lastUsedAt = new Map<string, number>();
+  /** Idle timeout in ms — servers unused for this long are stopped. Default 30 min. */
+  _idleTimeoutMs = 30 * 60 * 1000;
+  private _idleCheckTimer: ReturnType<typeof setInterval> | null = null;
+
   setRootPaths(paths: string[]): void {
     this.rootPaths = paths;
   }
@@ -322,6 +328,8 @@ export class McpManager extends EventEmitter {
       await client.connect();
     }
 
+    this._lastUsedAt.set(name, Date.now());
+
     const tools = await client.listTools();
     for (const tool of tools) {
       const key = `${name}:${tool.name}`;
@@ -349,6 +357,7 @@ export class McpManager extends EventEmitter {
     if (colonIdx === -1) {
       const entry = this.findToolByName(qualifiedName);
       if (!entry) throw new Error(`MCP tool '${qualifiedName}' not found`);
+      this._lastUsedAt.set(entry.serverName, Date.now());
       const client = this.clients.get(entry.serverName);
       if (!client) throw new Error(`MCP server '${entry.serverName}' not connected`);
       return client.callTool(qualifiedName, args, options);
@@ -356,6 +365,7 @@ export class McpManager extends EventEmitter {
 
     const serverName = qualifiedName.slice(0, colonIdx);
     const toolName = qualifiedName.slice(colonIdx + 1);
+    this._lastUsedAt.set(serverName, Date.now());
     const client = this.clients.get(serverName);
     if (!client) throw new Error(`MCP server '${serverName}' not found`);
     return client.callTool(toolName, args, options);
@@ -479,8 +489,39 @@ export class McpManager extends EventEmitter {
     return description.slice(0, maxLength - 3) + '...';
   }
 
+  startIdleChecker(intervalMs = 60_000): void {
+    this.stopIdleChecker();
+    this._idleCheckTimer = setInterval(() => {
+      this._evictIdleServers();
+    }, intervalMs);
+    this._idleCheckTimer.unref();
+  }
+
+  stopIdleChecker(): void {
+    if (this._idleCheckTimer !== null) {
+      clearInterval(this._idleCheckTimer);
+      this._idleCheckTimer = null;
+    }
+  }
+
+  _evictIdleServers(): string[] {
+    const now = Date.now();
+    const evicted: string[] = [];
+    for (const [name] of this.clients) {
+      const lastUsed = this._lastUsedAt.get(name);
+      if (lastUsed !== undefined && now - lastUsed > this._idleTimeoutMs) {
+        coreLog('mcp', `Idle timeout: stopping server '${name}' (idle ${Math.round((now - lastUsed) / 1000)}s)`);
+        this.stopServer(name).catch(() => {});
+        this._lastUsedAt.delete(name);
+        evicted.push(name);
+      }
+    }
+    return evicted;
+  }
+
   disconnectAll(): void {
     this.stopHealthChecks();
+    this.stopIdleChecker();
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }
@@ -491,6 +532,7 @@ export class McpManager extends EventEmitter {
     this._allTools.clear();
     this.pendingServers.clear();
     this.serverErrors.clear();
+    this._lastUsedAt.clear();
   }
 
   loadFromConfig(configPath: string): void {
