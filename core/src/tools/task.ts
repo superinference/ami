@@ -276,10 +276,13 @@ export const taskTool: ToolDefinition = {
     }
 
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };
+    const envSubagentModel = process.env.SUPERINFERENCE_SUBAGENT_MODEL;
     if (modelOverride) {
       providerConfig.model = modelOverride;
     } else if (agentModel) {
       providerConfig.model = agentModel;
+    } else if (envSubagentModel) {
+      providerConfig.model = MODEL_ALIASES[envSubagentModel] || envSubagentModel;
     }
 
     // Permission mode priority:

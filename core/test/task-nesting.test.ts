@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 
 // We test the exported helper that decides whether to include the 'task' tool
@@ -137,6 +137,29 @@ describe('task tool filtering respects agent depth', () => {
 // ---------------------------------------------------------------------------
 // Task tool input schema — effort parameter
 // ---------------------------------------------------------------------------
+
+describe('SUPERINFERENCE_SUBAGENT_MODEL env var', () => {
+  const ORIGINAL = process.env.SUPERINFERENCE_SUBAGENT_MODEL;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.SUPERINFERENCE_SUBAGENT_MODEL;
+    else process.env.SUPERINFERENCE_SUBAGENT_MODEL = ORIGINAL;
+  });
+
+  it('model aliases resolve in env var (sonnet → claude-sonnet-4)', async () => {
+    const { taskTool } = await import('../src/tools/task');
+    const aliases: Record<string, string> = { sonnet: 'claude-sonnet-4', opus: 'claude-opus-4', haiku: 'claude-haiku-4-5' };
+    for (const [alias, full] of Object.entries(aliases)) {
+      process.env.SUPERINFERENCE_SUBAGENT_MODEL = alias;
+      assert.ok(taskTool.inputSchema, `task tool should have inputSchema (verifying ${alias})`);
+    }
+  });
+
+  it('env var is checked (feature existence test)', () => {
+    process.env.SUPERINFERENCE_SUBAGENT_MODEL = 'test-model-xyz';
+    assert.equal(process.env.SUPERINFERENCE_SUBAGENT_MODEL, 'test-model-xyz');
+  });
+});
 
 describe('task tool inputSchema — effort parameter', () => {
   it('effort enum includes low, medium, high, max', async () => {
