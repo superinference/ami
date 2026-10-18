@@ -281,4 +281,44 @@ describe('SENSITIVE_ENV_SET', () => {
   it('contains GITHUB_APP_PRIVATE_KEY', () => {
     assert.ok(SENSITIVE_ENV_SET.has('GITHUB_APP_PRIVATE_KEY'));
   });
+
+  it('contains GH_ENTERPRISE_TOKEN', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('GH_ENTERPRISE_TOKEN'));
+  });
+
+  it('contains GITHUB_ENTERPRISE_TOKEN', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('GITHUB_ENTERPRISE_TOKEN'));
+  });
+
+  it('contains ANTHROPIC_AUTH_TOKEN', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('ANTHROPIC_AUTH_TOKEN'));
+  });
+
+  it('contains NODE_AUTH_TOKEN', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('NODE_AUTH_TOKEN'));
+  });
+
+  it('contains YARN_NPM_AUTH_TOKEN', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('YARN_NPM_AUTH_TOKEN'));
+  });
+
+  it('contains YARN_NPM_AUTH_IDENT', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('YARN_NPM_AUTH_IDENT'));
+  });
+
+  it('contains COREPACK_NPM_TOKEN', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('COREPACK_NPM_TOKEN'));
+  });
+
+  it('contains COREPACK_NPM_PASSWORD', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('COREPACK_NPM_PASSWORD'));
+  });
+
+  it('contains COREPACK_NPM_USERNAME', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('COREPACK_NPM_USERNAME'));
+  });
+
+  it('contains BUN_CONFIG_TOKEN', () => {
+    assert.ok(SENSITIVE_ENV_SET.has('BUN_CONFIG_TOKEN'));
+  });
 });
