@@ -17,6 +17,10 @@ import {
   convertToLineEnding,
   scanForSecrets,
   scanAddedSecrets,
+  isNonUtfEncoding,
+  detectEncoding,
+  decodeBuffer,
+  encodeText,
 } from '../src/tools/tool-utils';
 
 // ---------------------------------------------------------------------------
@@ -516,5 +520,107 @@ describe('scanForSecrets', () => {
       assert.ok(f.endsWith('...'));
       assert.ok(f.length <= 25);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isNonUtfEncoding
+// ---------------------------------------------------------------------------
+
+describe('isNonUtfEncoding', () => {
+  it('returns false for valid UTF-8 text', () => {
+    const buf = Buffer.from('Hello, world! 日本語テスト', 'utf-8');
+    assert.equal(isNonUtfEncoding(buf), false);
+  });
+
+  it('returns false for ASCII-only text', () => {
+    const buf = Buffer.from('plain ascii text 1234');
+    assert.equal(isNonUtfEncoding(buf), false);
+  });
+
+  it('returns false for UTF-8-BOM text', () => {
+    const buf = Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from('hello', 'utf-8')]);
+    assert.equal(isNonUtfEncoding(buf), false);
+  });
+
+  it('returns false for UTF-16LE text', () => {
+    const buf = Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from('hello', 'utf16le')]);
+    assert.equal(isNonUtfEncoding(buf), false);
+  });
+
+  it('returns false for UTF-16BE text', () => {
+    const buf = Buffer.concat([Buffer.from([0xFE, 0xFF]), Buffer.from('hello', 'utf16le')]);
+    assert.equal(isNonUtfEncoding(buf), false);
+  });
+
+  it('returns true for Shift-JIS-like invalid UTF-8 sequences', () => {
+    // Shift-JIS encoded text has many high bytes that don't form valid UTF-8
+    const shiftJisBytes = Buffer.from([
+      0x82, 0xB1, 0x82, 0xCC, 0x83, 0x65, 0x83, 0x4C, // "このテキ" in Shift-JIS
+      0x83, 0x58, 0x83, 0x67, 0x82, 0xCD, // "ストは"
+      0x53, 0x68, 0x69, 0x66, 0x74, 0x2D, 0x4A, 0x49, 0x53, // "Shift-JIS"
+    ]);
+    assert.equal(isNonUtfEncoding(shiftJisBytes), true);
+  });
+
+  it('returns true for Windows-1252-like invalid UTF-8 sequences', () => {
+    // Windows-1252 has bytes 0x80-0x9F that are invalid UTF-8 lead bytes
+    const win1252Bytes = Buffer.from([
+      0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, // "Hello "
+      0x93, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x94, // "world" with smart quotes
+      0x20, 0x80, 0x31, 0x30, 0x30, // " €100"
+    ]);
+    assert.equal(isNonUtfEncoding(win1252Bytes), true);
+  });
+
+  it('returns false for empty buffer', () => {
+    assert.equal(isNonUtfEncoding(Buffer.alloc(0)), false);
+  });
+
+  it('returns false for buffer with few isolated non-UTF-8 bytes', () => {
+    // 2 invalid bytes is below the threshold of 3
+    const buf = Buffer.from([0x48, 0x65, 0x6C, 0x80, 0x6C, 0x6F, 0x80]);
+    assert.equal(isNonUtfEncoding(buf), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectEncoding / decodeBuffer / encodeText round-trip
+// ---------------------------------------------------------------------------
+
+describe('encoding round-trip', () => {
+  it('round-trips UTF-8', () => {
+    const text = 'Hello, 世界!';
+    const buf = encodeText(text, 'utf-8');
+    const { text: decoded, encoding } = decodeBuffer(buf);
+    assert.equal(decoded, text);
+    assert.equal(encoding, 'utf-8');
+  });
+
+  it('round-trips UTF-8-BOM', () => {
+    const text = 'BOM test';
+    const buf = encodeText(text, 'utf-8-bom');
+    assert.deepEqual(buf.subarray(0, 3), Buffer.from([0xEF, 0xBB, 0xBF]));
+    const { text: decoded, encoding } = decodeBuffer(buf);
+    assert.equal(decoded, text);
+    assert.equal(encoding, 'utf-8-bom');
+  });
+
+  it('round-trips UTF-16LE', () => {
+    const text = 'UTF-16LE test';
+    const buf = encodeText(text, 'utf-16le');
+    assert.deepEqual(buf.subarray(0, 2), Buffer.from([0xFF, 0xFE]));
+    const { text: decoded, encoding } = decodeBuffer(buf);
+    assert.equal(decoded, text);
+    assert.equal(encoding, 'utf-16le');
+  });
+
+  it('round-trips UTF-16BE', () => {
+    const text = 'UTF-16BE test';
+    const buf = encodeText(text, 'utf-16be');
+    assert.deepEqual(buf.subarray(0, 2), Buffer.from([0xFE, 0xFF]));
+    const { text: decoded, encoding } = decodeBuffer(buf);
+    assert.equal(decoded, text);
+    assert.equal(encoding, 'utf-16be');
   });
 });

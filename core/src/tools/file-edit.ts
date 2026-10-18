@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -80,10 +80,20 @@ async function writeEntireFile(
 
   let oldContent = '';
   let fileExists = false;
+  let nonUtfResult: ToolResult | null = null;
   try {
-    oldContent = decodeBuffer(await fs.promises.readFile(resolved)).text;
-    fileExists = true;
+    const rawBuf = await fs.promises.readFile(resolved);
+    if (isNonUtfEncoding(rawBuf)) {
+      nonUtfResult = {
+        output: `Error: "${resolved}" appears to use a non-UTF encoding (Shift-JIS, GBK, Windows-1252, or similar). Editing it as UTF-8 would silently corrupt the file. Use a dedicated encoding-aware editor instead.`,
+        isError: true,
+      };
+    } else {
+      oldContent = decodeBuffer(rawBuf).text;
+      fileExists = true;
+    }
   } catch {}
+  if (nonUtfResult) return nonUtfResult;
   const isNew = !fileExists || oldContent.length === 0;
 
   if (fileExists && oldContent.length > 0 && context.filesRead && !context.filesRead.has(resolved)) {
@@ -146,7 +156,14 @@ async function applySequentialEdits(
 ): Promise<ToolResult> {
   let rawContent: string;
   try {
-    rawContent = decodeBuffer(await fs.promises.readFile(resolved)).text;
+    const rawBuf = await fs.promises.readFile(resolved);
+    if (isNonUtfEncoding(rawBuf)) {
+      return {
+        output: `Error: "${resolved}" appears to use a non-UTF encoding (Shift-JIS, GBK, Windows-1252, or similar). Editing it as UTF-8 would silently corrupt the file. Use a dedicated encoding-aware editor instead.`,
+        isError: true,
+      };
+    }
+    rawContent = decodeBuffer(rawBuf).text;
   } catch (err) {
     return {
       output: `Error: Cannot read file "${resolved}": ${err instanceof Error ? err.message : String(err)}`,
@@ -372,7 +389,14 @@ export const fileEditTool: ToolDefinition = {
 
     let rawContent: string;
     try {
-      rawContent = decodeBuffer(await fs.promises.readFile(resolved)).text;
+      const rawBuf = await fs.promises.readFile(resolved);
+      if (isNonUtfEncoding(rawBuf)) {
+        return {
+          output: `Error: "${resolved}" appears to use a non-UTF encoding (Shift-JIS, GBK, Windows-1252, or similar). Editing it as UTF-8 would silently corrupt the file. Use a dedicated encoding-aware editor instead.`,
+          isError: true,
+        };
+      }
+      rawContent = decodeBuffer(rawBuf).text;
     } catch (err: unknown) {
       if ((err as { code?: string })?.code === 'ENOENT') {
         const dir = path.dirname(resolved);

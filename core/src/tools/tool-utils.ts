@@ -192,6 +192,34 @@ export function decodeBuffer(buf: Buffer): { text: string; encoding: FileEncodin
   return { text: buf.toString('utf-8'), encoding };
 }
 
+/**
+ * Check whether a buffer contains non-UTF-8 high bytes that indicate
+ * a legacy encoding (Shift-JIS, GBK, Windows-1252, ISO-8859-x).
+ * Editing such files as UTF-8 would silently corrupt them.
+ */
+export function isNonUtfEncoding(buf: Buffer): boolean {
+  const enc = detectEncoding(buf);
+  if (enc !== 'utf-8') return false;
+  let invalidUtf8Runs = 0;
+  for (let i = 0; i < Math.min(buf.length, 8192); i++) {
+    const b = buf[i];
+    if (b < 0x80) continue;
+    if ((b & 0xE0) === 0xC0) {
+      if (i + 1 >= buf.length || (buf[i + 1] & 0xC0) !== 0x80) { invalidUtf8Runs++; continue; }
+      i += 1;
+    } else if ((b & 0xF0) === 0xE0) {
+      if (i + 2 >= buf.length || (buf[i + 1] & 0xC0) !== 0x80 || (buf[i + 2] & 0xC0) !== 0x80) { invalidUtf8Runs++; continue; }
+      i += 2;
+    } else if ((b & 0xF8) === 0xF0) {
+      if (i + 3 >= buf.length || (buf[i + 1] & 0xC0) !== 0x80 || (buf[i + 2] & 0xC0) !== 0x80 || (buf[i + 3] & 0xC0) !== 0x80) { invalidUtf8Runs++; continue; }
+      i += 3;
+    } else {
+      invalidUtf8Runs++;
+    }
+  }
+  return invalidUtf8Runs >= 3;
+}
+
 /** Re-encode text to a buffer in the given encoding, re-prepending any BOM. */
 export function encodeText(text: string, encoding: FileEncoding): Buffer {
   if (encoding === 'utf-8-bom') return Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(text, 'utf-8')]);

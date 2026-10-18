@@ -459,3 +459,50 @@ describe('fileEditTool – CRLF handling', () => {
     assert.ok(content.includes('const b = 20;\r\nconst d = 40;'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Non-UTF encoding protection
+// ---------------------------------------------------------------------------
+
+describe('file-edit — non-UTF encoding protection', () => {
+  it('refuses to write entire file when existing file is non-UTF', async () => {
+    const file = path.join(tmpDir, 'shift-jis.txt');
+    // Write Shift-JIS-like content with many invalid UTF-8 sequences
+    fs.writeFileSync(file, Buffer.from([
+      0x82, 0xB1, 0x82, 0xCC, 0x83, 0x65, 0x83, 0x4C,
+      0x83, 0x58, 0x83, 0x67, 0x82, 0xCD, 0x53, 0x68,
+    ]));
+    const result = await fileEditTool.execute(
+      { file_path: file, content: 'overwritten' },
+      ctx(),
+    );
+    assert.ok(result.isError);
+    assert.ok(result.output.includes('non-UTF encoding'));
+  });
+
+  it('refuses to edit (replace) in non-UTF file', async () => {
+    const file = path.join(tmpDir, 'win1252.txt');
+    fs.writeFileSync(file, Buffer.from([
+      0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20,
+      0x93, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x94,
+      0x20, 0x80, 0x31, 0x30, 0x30,
+    ]));
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'world', new_string: 'earth' },
+      ctx(),
+    );
+    assert.ok(result.isError);
+    assert.ok(result.output.includes('non-UTF encoding'));
+  });
+
+  it('allows editing valid UTF-8 files', async () => {
+    const file = path.join(tmpDir, 'utf8.txt');
+    fs.writeFileSync(file, 'Hello 世界\n', 'utf-8');
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: '世界', new_string: '地球' },
+      ctx({ filesRead: new Set([file]) }),
+    );
+    assert.ok(!result.isError, `unexpected error: ${result.output}`);
+    assert.ok(fs.readFileSync(file, 'utf-8').includes('地球'));
+  });
+});
