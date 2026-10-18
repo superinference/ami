@@ -291,7 +291,9 @@ export const fileReadTool: ToolDefinition = {
 
     // Handle PDF files — extract text
     if (ext === '.pdf') {
-      const pagesParam = input.pages as string | undefined;
+      const rawPages = input.pages as string | undefined;
+      // Treat empty/whitespace-only pages as omitted (models sometimes pass "")
+      const pagesParam = rawPages && rawPages.trim().length > 0 ? rawPages : undefined;
       try {
         const pdfParse = require('pdf-parse');
         const pdfBuffer = await fs.promises.readFile(resolved);

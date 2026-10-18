@@ -421,4 +421,19 @@ describe('Read tool — size/regular-file guards + allow_large + large PDF', () 
     // Whatever the PDF handler returns, it must NOT be the generic size-limit hint.
     assert.ok(!res.output.includes('exceeds 256KB limit'), `PDF should not hit the size guard: ${res.output.slice(0, 160)}`);
   });
+
+  it('treats empty pages parameter as omitted (no error)', async () => {
+    const p = path.join(tmpDir, 'empty-pages.pdf');
+    fs.writeFileSync(p, '%PDF-1.4\n' + 'x'.repeat(100));
+    const res = await fileReadTool.execute({ file_path: p, pages: '' }, ctx());
+    // Should NOT return "Invalid page range" error
+    assert.ok(!res.output.includes('Invalid page range'), `empty pages should be treated as omitted: ${res.output.slice(0, 200)}`);
+  });
+
+  it('treats whitespace-only pages parameter as omitted', async () => {
+    const p = path.join(tmpDir, 'ws-pages.pdf');
+    fs.writeFileSync(p, '%PDF-1.4\n' + 'x'.repeat(100));
+    const res = await fileReadTool.execute({ file_path: p, pages: '   ' }, ctx());
+    assert.ok(!res.output.includes('Invalid page range'), `whitespace-only pages should be treated as omitted: ${res.output.slice(0, 200)}`);
+  });
 });
