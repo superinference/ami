@@ -1,13 +1,15 @@
 const POISONED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const MAX_SANITIZE_DEPTH = 20;
 
-export function sanitizeToolInput(input: Record<string, unknown>): Record<string, unknown> {
+export function sanitizeToolInput(input: Record<string, unknown>, depth: number = 0): Record<string, unknown> {
+  if (depth >= MAX_SANITIZE_DEPTH) return {};
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
     if (POISONED_KEYS.has(key)) continue;
     if (typeof value === 'string') {
       result[key] = value.replace(/\x00/g, '').trim();
     } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-      result[key] = sanitizeToolInput(value as Record<string, unknown>);
+      result[key] = sanitizeToolInput(value as Record<string, unknown>, depth + 1);
     } else {
       result[key] = value;
     }

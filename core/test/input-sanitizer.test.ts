@@ -74,6 +74,31 @@ describe('sanitizeToolInput', () => {
     assert.ok(!Object.hasOwn(result.config as any, '__proto__'));
     assert.equal((result.config as any).name, 'test');
   });
+
+  it('truncates deeply nested objects at max depth', () => {
+    let current: Record<string, unknown> = { leaf: 'value' };
+    for (let i = 0; i < 25; i++) {
+      current = { nested: current };
+    }
+    const result = sanitizeToolInput(current);
+    let depth = 0;
+    let node: any = result;
+    while (node && typeof node === 'object' && node.nested) {
+      depth++;
+      node = node.nested;
+    }
+    assert.ok(depth <= 20, `Expected depth <= 20, got ${depth}`);
+  });
+
+  it('returns empty object at max depth', () => {
+    const result = sanitizeToolInput({ deep: 'value' }, 20);
+    assert.deepEqual(result, {});
+  });
+
+  it('processes objects just under max depth', () => {
+    const result = sanitizeToolInput({ name: '  test  ' }, 19);
+    assert.equal(result.name, 'test');
+  });
 });
 
 describe('validateRequiredFields', () => {
