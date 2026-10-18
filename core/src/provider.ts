@@ -4,6 +4,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
+import { gzipSync } from 'node:zlib';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
@@ -506,6 +507,26 @@ export function withExtraBody(
   return wrapped;
 }
 
+const GZIP_THRESHOLD_BYTES = 1024;
+
+export function withGzipCompression(
+  baseFetch: typeof globalThis.fetch = globalThis.fetch,
+): typeof globalThis.fetch {
+  return (input, init) => {
+    if (init && typeof init.body === 'string' && init.body.length > GZIP_THRESHOLD_BYTES) {
+      const compressed = gzipSync(Buffer.from(init.body, 'utf-8'));
+      const existingHeaders = init.headers ?? {};
+      const merged = existingHeaders instanceof Headers
+        ? (() => { const h = new Headers(existingHeaders); h.set('content-encoding', 'gzip'); return h; })()
+        : Array.isArray(existingHeaders)
+          ? [...existingHeaders, ['content-encoding', 'gzip']]
+          : { ...existingHeaders, 'content-encoding': 'gzip' };
+      return baseFetch(input, { ...init, body: compressed, headers: merged });
+    }
+    return baseFetch(input, init);
+  };
+}
+
 /**
  * OpenAI routes a conversation to one cache when every turn sends the same
  * `prompt_cache_key`. vLLM and other compatible servers reject or ignore
@@ -558,6 +579,7 @@ export function resolveModel(config: ProviderConfig) {
     return createAnthropic({
       apiKey,
       baseURL: baseUrl || undefined,
+      fetch: withGzipCompression(headerFetch ?? globalThis.fetch),
       ...(config.cacheTtl === '1h' ? { headers: { 'anthropic-beta': 'extended-cache-ttl-2025-04-11' } } : {}),
     })(model);
   }

@@ -1,11 +1,13 @@
 import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as http from 'http';
+import { gunzipSync } from 'node:zlib';
 
 import {
   isPlainRecord,
   deepMergeRecords,
   withExtraBody,
+  withGzipCompression,
   openAIPromptCacheBody,
   resolveModel,
   streamChatCompletion,
@@ -299,5 +301,103 @@ describe('openAIPromptCacheBody', () => {
     assert.equal(openAIPromptCacheBody({ a: 1 }, 'sess', 'openai', 'http://localhost:8000/v1')!.prompt_cache_key, undefined);
     assert.equal(openAIPromptCacheBody({ a: 1 }, 'sess', 'anthropic', 'https://api.anthropic.com')!.prompt_cache_key, undefined);
     assert.equal(openAIPromptCacheBody(undefined, 'sess', 'google', '') , undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withGzipCompression
+// ---------------------------------------------------------------------------
+describe('withGzipCompression', () => {
+  const okResp = () => new Response('ok', { status: 200 });
+
+  it('compresses bodies exceeding 1KB', async () => {
+    let capturedBody: Buffer | undefined;
+    let capturedHeaders: Record<string, string> = {};
+    const base = async (_input: any, init?: any) => {
+      capturedBody = init?.body;
+      const h = init?.headers || {};
+      capturedHeaders = typeof h === 'object' && !Array.isArray(h) && !(h instanceof Headers) ? h : {};
+      return okResp();
+    };
+    const f = withGzipCompression(base as typeof fetch);
+    const bigBody = JSON.stringify({ data: 'x'.repeat(2000) });
+    await f('http://api.anthropic.com/v1', { method: 'POST', body: bigBody });
+    assert.ok(capturedBody instanceof Buffer, 'body should be a Buffer');
+    assert.equal(capturedHeaders['content-encoding'], 'gzip');
+    const decompressed = gunzipSync(capturedBody!).toString('utf-8');
+    assert.equal(decompressed, bigBody);
+  });
+
+  it('passes through small bodies unchanged', async () => {
+    let capturedBody: any;
+    const base = async (_input: any, init?: any) => { capturedBody = init?.body; return okResp(); };
+    const f = withGzipCompression(base as typeof fetch);
+    const smallBody = '{"ok":true}';
+    await f('http://api.anthropic.com/v1', { method: 'POST', body: smallBody });
+    assert.equal(capturedBody, smallBody);
+  });
+
+  it('passes through non-string bodies unchanged', async () => {
+    let capturedBody: any;
+    const base = async (_input: any, init?: any) => { capturedBody = init?.body; return okResp(); };
+    const f = withGzipCompression(base as typeof fetch);
+    const buf = Buffer.from('binary data');
+    await f('http://api.anthropic.com/v1', { method: 'POST', body: buf as any });
+    assert.equal(capturedBody, buf);
+  });
+
+  it('handles init with no body', async () => {
+    let called = false;
+    const base = async () => { called = true; return okResp(); };
+    const f = withGzipCompression(base as typeof fetch);
+    await f('http://api.anthropic.com/v1', {});
+    assert.ok(called);
+  });
+
+  it('handles undefined init', async () => {
+    let called = false;
+    const base = async () => { called = true; return okResp(); };
+    const f = withGzipCompression(base as typeof fetch);
+    await f('http://api.anthropic.com/v1');
+    assert.ok(called);
+  });
+
+  it('merges gzip header with existing Headers instance', async () => {
+    let capturedHeaders: Headers | undefined;
+    const base = async (_input: any, init?: any) => {
+      capturedHeaders = init?.headers;
+      return okResp();
+    };
+    const f = withGzipCompression(base as typeof fetch);
+    const headers = new Headers({ 'authorization': 'Bearer key' });
+    await f('http://x/v1', { method: 'POST', body: 'x'.repeat(2000), headers });
+    assert.ok(capturedHeaders instanceof Headers);
+    assert.equal(capturedHeaders!.get('content-encoding'), 'gzip');
+    assert.equal(capturedHeaders!.get('authorization'), 'Bearer key');
+  });
+
+  it('merges gzip header with array-style headers', async () => {
+    let capturedHeaders: any;
+    const base = async (_input: any, init?: any) => { capturedHeaders = init?.headers; return okResp(); };
+    const f = withGzipCompression(base as typeof fetch);
+    const headers: [string, string][] = [['x-custom', 'val']];
+    await f('http://x/v1', { method: 'POST', body: 'x'.repeat(2000), headers });
+    assert.ok(Array.isArray(capturedHeaders));
+    const encodingEntry = capturedHeaders.find((e: any) => e[0] === 'content-encoding');
+    assert.ok(encodingEntry, 'should contain content-encoding');
+    assert.equal(encodingEntry![1], 'gzip');
+  });
+
+  it('defaults to globalThis.fetch when no base fetch is given', async () => {
+    const original = globalThis.fetch;
+    let seen = false;
+    globalThis.fetch = (async () => { seen = true; return okResp(); }) as typeof fetch;
+    try {
+      const f = withGzipCompression();
+      await f('http://x/v1', { method: 'POST', body: '{"a":1}' });
+      assert.ok(seen);
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });
