@@ -67,6 +67,26 @@ export function buildToolCacheBreakpoints(
   return { [tools.length - 1]: { type: 'ephemeral' } };
 }
 
+/**
+ * Strip empty/whitespace-only text content blocks from Anthropic messages.
+ * Anthropic rejects any text block with empty text. If stripping leaves
+ * an assistant with no content, replace it with '(continued)'.
+ */
+export function stripEmptyTextBlocks(messages: Array<Record<string, unknown>>): void {
+  for (const m of messages) {
+    if (Array.isArray(m.content)) {
+      m.content = (m.content as Array<Record<string, unknown>>).filter(
+        (p) => !(p.type === 'text' && (typeof p.text !== 'string' || (p.text as string).trim() === ''))
+      );
+      if ((m.content as unknown[]).length === 0 && m.role === 'assistant') {
+        m.content = [{ type: 'text' as const, text: '(continued)' }];
+      }
+    } else if (typeof m.content === 'string' && m.content.trim() === '' && m.role === 'assistant') {
+      m.content = '(continued)';
+    }
+  }
+}
+
 export function healOrphanedToolCalls(messages: Message[]): Message[] {
   const result: Message[] = [];
   const answeredIds = new Set<string>();

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { sanitizeToolCallIds, buildConversationCachePoints, buildToolCacheBreakpoints, healOrphanedToolCalls } from '../src/provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, buildToolCacheBreakpoints, healOrphanedToolCalls, stripEmptyTextBlocks } from '../src/provider-transform';
 import type { Message, ToolDefinition } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -358,5 +358,110 @@ describe('healOrphanedToolCalls', () => {
     const result = healOrphanedToolCalls(msgs);
     const toolMsgs = result.filter(m => m.role === 'tool');
     assert.equal(toolMsgs.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripEmptyTextBlocks
+// ---------------------------------------------------------------------------
+describe('stripEmptyTextBlocks', () => {
+  it('removes text blocks with empty string text', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'assistant', content: [{ type: 'text', text: '' }, { type: 'text', text: 'hello' }] },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal((msgs[0].content as any[]).length, 1);
+    assert.equal((msgs[0].content as any[])[0].text, 'hello');
+  });
+
+  it('removes text blocks with whitespace-only text', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'assistant', content: [{ type: 'text', text: '   \n\t  ' }, { type: 'tool_use', id: 'x' }] },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal((msgs[0].content as any[]).length, 1);
+    assert.equal((msgs[0].content as any[])[0].type, 'tool_use');
+  });
+
+  it('removes text blocks with non-string text field', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'assistant', content: [{ type: 'text' }, { type: 'text', text: 'ok' }] },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal((msgs[0].content as any[]).length, 1);
+    assert.equal((msgs[0].content as any[])[0].text, 'ok');
+  });
+
+  it('replaces empty assistant content array with (continued)', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'assistant', content: [{ type: 'text', text: '' }] },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.deepEqual(msgs[0].content, [{ type: 'text', text: '(continued)' }]);
+  });
+
+  it('does not replace empty user content array', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'user', content: [{ type: 'text', text: '' }] },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal((msgs[0].content as any[]).length, 0);
+  });
+
+  it('replaces empty string assistant content with (continued)', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'assistant', content: '' },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal(msgs[0].content, '(continued)');
+  });
+
+  it('replaces whitespace-only string assistant content with (continued)', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'assistant', content: '  \n  ' },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal(msgs[0].content, '(continued)');
+  });
+
+  it('does not modify non-empty string content', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'assistant', content: 'real text' },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal(msgs[0].content, 'real text');
+  });
+
+  it('does not replace empty string user content', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'user', content: '' },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal(msgs[0].content, '');
+  });
+
+  it('preserves non-text content blocks', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tc1', name: 'bash', input: {} },
+          { type: 'text', text: 'done' },
+        ],
+      },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.equal((msgs[0].content as any[]).length, 2);
+  });
+
+  it('handles mixed messages in a single call', () => {
+    const msgs: Array<Record<string, unknown>> = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: [{ type: 'text', text: '' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+    ];
+    stripEmptyTextBlocks(msgs);
+    assert.deepEqual(msgs[1].content, [{ type: 'text', text: '(continued)' }]);
+    assert.equal((msgs[2].content as any[])[0].text, 'ok');
   });
 });

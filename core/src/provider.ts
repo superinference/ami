@@ -5,7 +5,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow } from './model-capabilities';
-import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls } from './provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import type {
   ProviderConfig,
@@ -817,21 +817,8 @@ export async function* streamChatCompletion(
   const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
   const coreMessages = convertMessages(sanitized);
 
-  // Anthropic rejects any text content block with empty text. Strip them.
   if (isAnthropic) {
-    for (const msg of coreMessages) {
-      const m = msg as Record<string, unknown>;
-      if (Array.isArray(m.content)) {
-        m.content = (m.content as Record<string, unknown>[]).filter(
-          (p) => !(p.type === 'text' && (typeof p.text !== 'string' || p.text.trim() === ''))
-        );
-        if ((m.content as unknown[]).length === 0 && m.role === 'assistant') {
-          m.content = [{ type: 'text' as const, text: '(continued)' }];
-        }
-      } else if (typeof m.content === 'string' && m.content.trim() === '' && m.role === 'assistant') {
-        m.content = '(continued)';
-      }
-    }
+    stripEmptyTextBlocks(coreMessages as Array<Record<string, unknown>>);
   }
 
   // Apply per-message cache breakpoints for Anthropic prompt caching.
