@@ -7,6 +7,7 @@ import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
 
+// eslint-disable-next-line security/detect-unsafe-regex -- [lcrniw] and \s are disjoint sets, no overlap
 const GREP_FLAG_RE = /^(-[lcrniw]+\s+)+/;
 
 export function stripGrepFlags(pattern: string): string {

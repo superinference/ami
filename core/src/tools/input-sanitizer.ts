@@ -30,10 +30,10 @@ export function validateRequiredFields(
 }
 
 const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?previous\s+instructions/i,
-  /ignore\s+(all\s+)?(your|my|the)\s+rules/i,
+  /ignore\s+(?:all\s+)?previous\s+instructions/i, // eslint-disable-line security/detect-unsafe-regex -- "all" starts with [a-z], disjoint from \s
+  /ignore\s+(?:all\s+)?(?:your|my|the)\s+rules/i, // eslint-disable-line security/detect-unsafe-regex -- same: non-capturing, no overlap
   /you\s+are\s+now\s+\w+\.\s*ignore/i,
-  /disregard\s+(all\s+)?(prior|previous|above)/i,
+  /disregard\s+(?:all\s+)?(?:prior|previous|above)/i, // eslint-disable-line security/detect-unsafe-regex -- same: non-capturing, no overlap
   /<system>.*<\/system>/is,
   /\[system\].*\[\/system\]/is,
   /new\s+instructions?\s*:\s*ignore/i,

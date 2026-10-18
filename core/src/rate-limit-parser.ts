@@ -48,6 +48,7 @@ function parseIntHeader(value: string | undefined): number | null {
 
 function parseResetHeader(value: string | undefined): Date | null {
   if (!value) return null;
+  // eslint-disable-next-line security/detect-unsafe-regex -- fully anchored, linear
   const secMatch = value.trim().match(/^(\d+(?:\.\d+)?)s?$/);
   if (secMatch) {
     return new Date(Date.now() + parseFloat(secMatch[1]) * 1000);

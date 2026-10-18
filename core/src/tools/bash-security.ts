@@ -1065,6 +1065,7 @@ const RM_RF_RE = /\brm\b[^;]*(?:-\w*[rf]\w*\s+[^;]*-\w*[rf]\w*|-\w*r\w*f\w*|-\w*
 const DISK_WIPE_RE = /\b(?:mkfs|mkfs\.\w+|wipefs|shred)\b[^|;]*(?:\/dev\/[a-z]|\/dev\/mapper\/)/;
 const DD_WIPE_RE = /\bdd\b[^|;]*(?:of\s*=\s*\/dev\/(?:sd|hd|vd|nvme|xvd|loop|mapper)|of\s*=\s*\/dev\/(?:zero|null|urandom))/;
 const FORK_BOMB_RE = /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/;
+// eslint-disable-next-line security/detect-unsafe-regex -- each inner group always advances (greedy \S+ then \s+), linear
 const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*(?:\S+=\S+\s+)*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+|command\s+|\\|\/(?:usr\/)?(?:s?bin)\/)/;
 
 export interface NuclearCheckResult {
@@ -1219,6 +1220,7 @@ function extractRmTargets(command: string): string[] {
 
 export function detectDangerousRm(command: string): { dangerous: boolean; suggestion?: string; variable?: string } {
   if (!/\brm\b/.test(command)) return { dangerous: false };
+  // eslint-disable-next-line security/detect-unsafe-regex -- [rfdi] and \s are disjoint, no overlap
   const rmWithVar = /\brm\s+(?:-[rfdi]+\s+)*\$\{?(\w+)\}?/;
   const match = command.match(rmWithVar);
   if (!match) return { dangerous: false };
@@ -1367,8 +1369,8 @@ export function detectCodeLoadingEnvSet(command: string): { blocked: boolean; va
     /\bexport\s+([A-Za-z_]\w*)=/g,
     /\bdeclare\s+-x\s+([A-Za-z_]\w*)=/g,
     /\bunset\s+([A-Za-z_]\w*)/g,
-    /\benv\s+(?:-\S+\s+)*([A-Za-z_]\w*)=/g,
-    /(?:^|(?<=\s|;|&&|\|\|))([A-Za-z_]\w*)=\S+\s+\S/g,
+    /\benv\s+(?:-\S+\s+)*([A-Za-z_]\w*)=/g, // eslint-disable-line security/detect-unsafe-regex -- \S and \s are disjoint, each iteration advances
+    /(?:^|(?<=\s|;|&&|\|\|))([A-Za-z_]\w*)=\S+\s+\S/g, // eslint-disable-line security/detect-unsafe-regex -- lookbehind is constant-length per alternative, linear
   ];
 
   for (const re of patterns) {
@@ -1445,13 +1447,18 @@ const SENSITIVE_ENV_RE =
 
 function redactEnvVarsInOutput(output: string): string {
   if (!output) return output;
-  return output.replace(
-    /^((?:export\s+|declare\s+-x\s+)?)([A-Za-z_][A-Za-z0-9_]*)=(["']?)(.+?)\3$/gm,
-    (_match, prefix, name, quote, _value) => {
-      if (SENSITIVE_ENV_RE.test(name)) {
-        return `${prefix}${name}=${quote}[REDACTED]${quote}`;
-      }
-      return _match;
-    },
-  );
+  return output.split('\n').map(line => {
+    // eslint-disable-next-line security/detect-unsafe-regex -- anchored both sides, (.*) is linear with $
+    const m = line.match(/^((?:export\s+|declare\s+-x\s+)?)([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!m) return line;
+    const [, prefix, name, rest] = m;
+    if (!SENSITIVE_ENV_RE.test(name)) return line;
+    if (rest.startsWith('"') && rest.endsWith('"') && rest.length > 1) {
+      return `${prefix}${name}="[REDACTED]"`;
+    }
+    if (rest.startsWith("'") && rest.endsWith("'") && rest.length > 1) {
+      return `${prefix}${name}='[REDACTED]'`;
+    }
+    return `${prefix}${name}=[REDACTED]`;
+  }).join('\n');
 }
