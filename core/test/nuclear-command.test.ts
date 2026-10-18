@@ -256,4 +256,60 @@ describe('detectNuclearCommand', () => {
       assert.equal(result.reason, undefined);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Nested shell commands: bash -c / sh -c
+  // -----------------------------------------------------------------------
+
+  describe('nested shell commands (bash -c / sh -c)', () => {
+    it('blocks rm -rf / inside bash -c with double quotes', () => {
+      const result = detectNuclearCommand('bash -c "rm -rf /"');
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks rm -rf / inside sh -c with single quotes', () => {
+      const result = detectNuclearCommand("sh -c 'rm -rf /'");
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks rm -rf / inside bash -c with compound commands', () => {
+      const result = detectNuclearCommand('bash -c "echo hi; rm -rf /"');
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks dd wipe inside bash -c', () => {
+      const result = detectNuclearCommand('bash -c "dd if=/dev/zero of=/dev/sda"');
+      assert.equal(result.blocked, true);
+    });
+
+    it('allows safe commands inside bash -c', () => {
+      const result = detectNuclearCommand('bash -c "echo hello && ls -la"');
+      assert.equal(result.blocked, false);
+    });
+
+    it('allows bash -c with safe rm', () => {
+      const result = detectNuclearCommand('bash -c "rm -rf /tmp/mydir"');
+      assert.equal(result.blocked, false);
+    });
+
+    it('blocks nuclear command inside bash -c with $-quote', () => {
+      const result = detectNuclearCommand("bash -c $'rm -rf /'");
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks nuclear command prefixed before bash -c', () => {
+      const result = detectNuclearCommand('echo start; bash -c "rm -rf /"');
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks mkfs inside sh -c', () => {
+      const result = detectNuclearCommand('sh -c "mkfs.ext4 /dev/sda1"');
+      assert.equal(result.blocked, true);
+    });
+
+    it('blocks rm -rf /home via nested bash -c', () => {
+      const result = detectNuclearCommand('bash -c "rm -rf /home"');
+      assert.equal(result.blocked, true);
+    });
+  });
 });

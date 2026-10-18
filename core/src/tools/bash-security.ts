@@ -1032,7 +1032,53 @@ export function detectNuclearCommand(command: string): NuclearCheckResult {
     if (result.blocked) return result;
   }
 
+  // Check inside `bash -c "..."` / `sh -c "..."` nested commands.
+  const nestedResult = checkNestedShellCommands(normalized);
+  if (nestedResult.blocked) return nestedResult;
+
   return { blocked: false };
+}
+
+/**
+ * Extract and check commands nested inside `bash -c "..."` or `sh -c "..."`.
+ * Without this, `bash -c "rm -rf /"` bypasses the segment-based check because
+ * the nuclear payload is inside a quoted string argument.
+ */
+function checkNestedShellCommands(command: string): NuclearCheckResult {
+  const shellExecRe = /\b(?:ba)?sh\s+-c\s+/g;
+  let match;
+  while ((match = shellExecRe.exec(command)) !== null) {
+    const afterFlag = command.slice(match.index + match[0].length);
+    const inner = extractQuotedArg(afterFlag);
+    if (!inner) continue;
+    const innerSegments = inner.split(/\s*(?:;|&&|\|\|)\s*/);
+    for (const seg of innerSegments) {
+      const result = checkSegment(seg);
+      if (result.blocked) {
+        return { blocked: true, reason: `${result.reason} (inside bash -c)` };
+      }
+    }
+  }
+  return { blocked: false };
+}
+
+function extractQuotedArg(s: string): string | null {
+  const trimmed = s.trimStart();
+  if (trimmed.startsWith('"')) {
+    const end = trimmed.indexOf('"', 1);
+    if (end !== -1) return trimmed.slice(1, end);
+  }
+  if (trimmed.startsWith("'")) {
+    const end = trimmed.indexOf("'", 1);
+    if (end !== -1) return trimmed.slice(1, end);
+  }
+  if (trimmed.startsWith('$\'')) {
+    const end = trimmed.indexOf("'", 2);
+    if (end !== -1) return trimmed.slice(2, end);
+  }
+  // Unquoted: take until whitespace or shell meta
+  const unquoted = trimmed.match(/^(\S+)/);
+  return unquoted ? unquoted[1] : null;
 }
 
 function stripCommandPrefix(segment: string): string {
