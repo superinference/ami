@@ -209,6 +209,9 @@ describe('webFetchTool – HTTP server integration', () => {
       } else if (req.url === '/pdf-page') {
         res.writeHead(200, { 'Content-Type': 'application/pdf' });
         res.end('not-a-real-pdf');
+      } else if (req.url === '/long-text') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('ABCDEFGHIJ'.repeat(10_000));
       } else if (req.url === '/binary') {
         res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
         // High bytes that UTF-8 decoding would mangle into U+FFFD.
@@ -300,5 +303,33 @@ describe('webFetchTool – HTTP server integration', () => {
     );
     // pdf-parse may not be available, so it should fall back to error
     assert.ok(result.isError || result.output.includes('PDF'));
+  });
+
+  it('reports unread characters for large text responses', async () => {
+    const result = await webFetchTool.execute(
+      { url: `http://127.0.0.1:${port}/long-text` },
+      ctx({ _allowLocalhostForTesting: true }),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('characters unread'));
+    assert.ok(result.output.includes('offset='));
+  });
+
+  it('applies offset to skip content from the beginning', async () => {
+    const result = await webFetchTool.execute(
+      { url: `http://127.0.0.1:${port}/long-text`, offset: 1000 },
+      ctx({ _allowLocalhostForTesting: true }),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(!result.output.startsWith('ABCDE'));
+  });
+
+  it('returns empty message when offset exceeds content length', async () => {
+    const result = await webFetchTool.execute(
+      { url: `http://127.0.0.1:${port}/plain-text`, offset: 999999 },
+      ctx({ _allowLocalhostForTesting: true }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('No content at offset'));
   });
 });

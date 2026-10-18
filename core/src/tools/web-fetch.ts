@@ -101,6 +101,10 @@ export const webFetchTool: ToolDefinition = {
         items: { type: 'string' },
         description: 'Block fetching from these domains.',
       },
+      offset: {
+        type: 'number',
+        description: 'Character offset into the page text to start reading from. Use when a previous fetch reported truncated content.',
+      },
     },
     required: ['url'],
   },
@@ -113,6 +117,7 @@ export const webFetchTool: ToolDefinition = {
   ): Promise<ToolResult> {
     let url = input.url as string;
     const prompt = (input.prompt as string) ?? '';
+    const textOffset = (input.offset as number) ?? 0;
 
     // Operator kill-switch (Claude Code parity): disable outbound web_fetch.
     if (process.env.CLAUDE_CODE_DISABLE_WEB_FETCH === '1' || process.env.SUPERINFERENCE_DISABLE_WEB_FETCH === '1') {
@@ -192,7 +197,7 @@ export const webFetchTool: ToolDefinition = {
     }
 
     // Response cache check (after SSRF to prevent cache bypass)
-    const cacheKey = prompt ? `${url}\0${prompt}` : url;
+    const cacheKey = `${url}\0${prompt}\0${textOffset}`;
     const cached = getCached(cacheKey);
     if (cached !== null) {
       return { output: cached };
@@ -284,7 +289,19 @@ export const webFetchTool: ToolDefinition = {
         content = body;
       }
 
+      const totalLength = content.length;
+      if (textOffset > 0) {
+        if (textOffset >= totalLength) {
+          return { output: `No content at offset ${textOffset} (total length: ${totalLength} characters).` };
+        }
+        content = content.slice(textOffset);
+      }
       content = spillToolText(context.cwd, 'web-fetch', content, MAX_RESPONSE_LENGTH);
+      const endOffset = textOffset + Math.min(content.length, MAX_RESPONSE_LENGTH);
+      const unread = totalLength - endOffset;
+      if (unread > 0) {
+        content += `\n\n[${unread.toLocaleString()} characters unread. Use offset=${endOffset} to continue reading.]`;
+      }
       if (truncated) {
         content += `\n\n[Download stopped at ${MAX_HTTP_BODY_BYTES} bytes; the rest of the response was not read.]`;
       }
