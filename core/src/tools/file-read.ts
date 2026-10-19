@@ -282,10 +282,27 @@ export const fileReadTool: ToolDefinition = {
     }
 
     const MAX_READ_SIZE = 256 * 1024; // 256KB
+    const PARTIAL_VIEW_LINES = 200;
     // PDFs have their own page/spill handling; allow_large opts past the cap.
     if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext)
         && ext !== '.pdf' && input.offset === undefined && input.limit === undefined && !input.allow_large) {
-      return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections, or pass allow_large:true to read past the size cap (still subject to the token budget).`, isError: true };
+      try {
+        const fd = fs.openSync(resolved, 'r');
+        const buf = Buffer.alloc(MAX_READ_SIZE);
+        const bytesRead = fs.readSync(fd, buf, 0, MAX_READ_SIZE, 0);
+        fs.closeSync(fd);
+        const partial = buf.slice(0, bytesRead).toString('utf-8');
+        const lines = partial.split('\n').slice(0, PARTIAL_VIEW_LINES);
+        const numbered = lines.map((l, i) => `${i + 1}\t${l}`).join('\n');
+        const sizeKB = (stat.size / 1024).toFixed(0);
+        const totalLines = partial.split('\n').length;
+        context.filesRead?.add(resolved);
+        return {
+          output: `[PARTIAL VIEW — file is ${sizeKB}KB, showing first ${lines.length} of ~${totalLines}+ lines. Use offset/limit for other sections, or allow_large:true for the full file.]\n${numbered}`,
+        };
+      } catch {
+        return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections, or pass allow_large:true to read past the size cap (still subject to the token budget).`, isError: true };
+      }
     }
 
     // Handle image files — return base64 with optional compression

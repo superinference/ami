@@ -492,12 +492,34 @@ describe('Read tool — size/regular-file guards + allow_large + large PDF', () 
     assert.equal(prop.type, 'boolean');
   });
 
+  it('large file without allow_large returns PARTIAL view (not isError)', async () => {
+    const p = path.join(tmpDir, 'big.txt');
+    // Each line ~20 chars, need >256KB total = >13000 lines
+    const lines = Array.from({ length: 15000 }, (_, i) => `LINE_${String(i + 1).padStart(5, '0')}_CONTENT`);
+    fs.writeFileSync(p, lines.join('\n'));
+    assert.ok(fs.statSync(p).size > 256 * 1024, 'test file must exceed 256KB');
+    const res = await fileReadTool.execute({ file_path: p }, ctx());
+    assert.ok(!res.isError, `should not be an error, got: ${res.output.slice(0, 200)}`);
+    assert.match(res.output, /\[PARTIAL VIEW/);
+    assert.match(res.output, /showing first 200/);
+    assert.match(res.output, /1\tLINE_00001_CONTENT/);
+    assert.match(res.output, /200\tLINE_00200_CONTENT/);
+    assert.ok(!res.output.includes('LINE_00201_CONTENT'), 'should not include line 201');
+  });
+
+  it('PARTIAL view tracks the file in filesRead', async () => {
+    const p = path.join(tmpDir, 'big-tracked.txt');
+    fs.writeFileSync(p, 'x\n'.repeat(300 * 1024));
+    const filesRead = new Set<string>();
+    const c = ctx({ filesRead });
+    await fileReadTool.execute({ file_path: p }, c);
+    assert.ok([...filesRead].some(f => f.endsWith('big-tracked.txt')),
+      'PARTIAL view should add the file to filesRead');
+  });
+
   it('allow_large reads a text file past the 256KB cap', async () => {
     const p = path.join(tmpDir, 'big.txt');
     fs.writeFileSync(p, 'HEADER_SENTINEL\n' + 'x'.repeat(300 * 1024));
-    const refused = await fileReadTool.execute({ file_path: p }, ctx());
-    assert.equal(refused.isError, true);
-    assert.match(refused.output, /exceeds 256KB limit/);
     const allowed = await fileReadTool.execute({ file_path: p, allow_large: true }, ctx());
     assert.ok(!allowed.isError, `allow_large should read, got ${JSON.stringify(allowed).slice(0, 200)}`);
     assert.match(allowed.output, /HEADER_SENTINEL/);
