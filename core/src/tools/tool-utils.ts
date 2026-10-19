@@ -98,6 +98,7 @@ const SENSITIVE_HOME_DIRS = [
   '.aws',
   '.gnupg',
   '.config/gh',
+  '.claude/backups',
 ];
 
 const SENSITIVE_HOME_FILES = [
@@ -108,6 +109,7 @@ const SENSITIVE_HOME_FILES = [
   '_netrc',
   '.docker/config.json',
   '.claude/.credentials.json',
+  '.claude.json',
   '.kube/config',
 ];
 
