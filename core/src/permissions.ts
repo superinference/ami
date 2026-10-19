@@ -638,12 +638,12 @@ function extractBaseCommands(command: string): string[] {
     return null;
   });
 
-  // 3. Split on pipes, semicolons, && and ||
-  const segments = command.split(/\s*(?:\|\||&&|[|;])\s*/);
+  // 3. Split on pipes, semicolons, newlines, && and ||
+  const segments = command.split(/\s*(?:\|\||&&|[|;\n])\s*/);
 
   for (const segment of segments) {
     const trimmed = segment.trim();
-    if (!trimmed) continue;
+    if (!trimmed || trimmed.startsWith('#')) continue;
 
     const tokens = trimmed.split(/\s+/);
     let i = 0;
@@ -1034,7 +1034,9 @@ export class PermissionManager {
   }
 
   private classifyBashCommandCore(command: string): BashClassification {
-    const trimmed = command.trim();
+    // Strip shell comment lines — they are no-ops in bash
+    const stripped = command.split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
+    const trimmed = stripped.trim();
     if (!trimmed) return 'safe';
 
     // Unwrap shell control structures so classification sees the body
