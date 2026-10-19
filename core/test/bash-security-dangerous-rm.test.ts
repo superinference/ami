@@ -54,4 +54,38 @@ describe('detectDangerousRm', () => {
     assert.ok(result.suggestion);
     assert.ok(result.suggestion!.includes('${DEPLOY_DIR:?}'));
   });
+
+  // --- Command substitution targets (Gap #23) ---
+
+  it('detects rm -rf with $() command substitution', () => {
+    const result = detectDangerousRm('rm -rf "$(pwd)"');
+    assert.equal(result.dangerous, true);
+    assert.ok(result.suggestion!.includes('command substitution'));
+  });
+
+  it('detects rm -rf with $() without quotes', () => {
+    const result = detectDangerousRm('rm -rf $(echo /tmp)');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('detects rm -rf with backtick substitution', () => {
+    const result = detectDangerousRm('rm -rf `pwd`');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('detects rm -rf with nested command substitution', () => {
+    const result = detectDangerousRm('rm -rf "$(basename $(pwd))"');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('detects rm -f with command substitution', () => {
+    const result = detectDangerousRm('rm -f $(find /tmp -name "*.log")');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('still allows rm -rf with literal paths (no regression)', () => {
+    assert.equal(detectDangerousRm('rm -rf /tmp/test').dangerous, false);
+    assert.equal(detectDangerousRm('rm -rf dist/').dangerous, false);
+    assert.equal(detectDangerousRm('rm file.txt').dangerous, false);
+  });
 });
