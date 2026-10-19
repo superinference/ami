@@ -1026,6 +1026,20 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   sed: (a) => a.filter(x => !x.startsWith('-') && !/^s[/|]/.test(x)),
   awk: (a) => a.filter(x => !x.startsWith('-') && !x.startsWith("'")),
   git: (a) => a.slice(1).filter(x => !x.startsWith('-')),
+  tac: (a) => a.filter(x => !x.startsWith('-')),
+  rev: (a) => a.filter(x => !x.startsWith('-')),
+  nl: (a) => a.filter(x => !x.startsWith('-')),
+  paste: (a) => a.filter(x => !x.startsWith('-')),
+  uniq: (a) => a.filter(x => !x.startsWith('-')),
+  cut: (a) => a.filter(x => !x.startsWith('-')),
+  comm: (a) => a.filter(x => !x.startsWith('-')),
+  join: (a) => a.filter(x => !x.startsWith('-')),
+  less: (a) => a.filter(x => !x.startsWith('-')),
+  more: (a) => a.filter(x => !x.startsWith('-')),
+  fmt: (a) => a.filter(x => !x.startsWith('-')),
+  column: (a) => a.filter(x => !x.startsWith('-')),
+  egrep: (a) => { const idx = a.findIndex(x => !x.startsWith('-')); return idx >= 0 ? a.slice(idx + 1).filter(x => !x.startsWith('-')) : []; },
+  fgrep: (a) => { const idx = a.findIndex(x => !x.startsWith('-')); return idx >= 0 ? a.slice(idx + 1).filter(x => !x.startsWith('-')) : []; },
 };
 
 const FILE_TAKING_FLAGS: Record<string, Set<string>> = {
@@ -1513,6 +1527,92 @@ export function extractCommandPaths(command: string): string[] {
   const positional = extractor ? extractor(effectiveArgs) : [];
   const optionPaths = extractOptionValuePaths(cmd, args);
   return [...positional, ...optionPaths];
+}
+
+// ---------------------------------------------------------------------------
+// Input redirection path extraction (Gap #34, #43)
+// ---------------------------------------------------------------------------
+// Extracts file paths from bash input redirections (`< file`).
+// Does NOT flag heredocs (`<< WORD`), herestrings (`<<< string`),
+// or `/dev/null` (safe no-op).
+
+export function extractInputRedirectionPaths(command: string): string[] {
+  const paths: string[] = [];
+  const len = command.length;
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+
+  while (i < len) {
+    const ch = command[i];
+
+    if (ch === '\\' && !inSingle && i + 1 < len) {
+      i += 2;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      i++;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      i++;
+      continue;
+    }
+
+    if (ch === '<' && !inSingle && !inDouble) {
+      // Check for heredoc (<<) or herestring (<<<)
+      if (i + 1 < len && command[i + 1] === '<') {
+        // Skip << or <<< — not input redirections
+        i += command[i + 2] === '<' ? 3 : 2;
+        continue;
+      }
+
+      // Skip optional fd number before < (e.g. 0< file)
+      let start = i + 1;
+      // Skip whitespace after <
+      while (start < len && (command[start] === ' ' || command[start] === '\t')) start++;
+      if (start >= len) break;
+
+      // Extract the path (possibly quoted)
+      let path = '';
+      if (command[start] === '"') {
+        const end = command.indexOf('"', start + 1);
+        if (end > start) {
+          path = command.slice(start + 1, end);
+          i = end + 1;
+        } else {
+          i = start + 1;
+          continue;
+        }
+      } else if (command[start] === "'") {
+        const end = command.indexOf("'", start + 1);
+        if (end > start) {
+          path = command.slice(start + 1, end);
+          i = end + 1;
+        } else {
+          i = start + 1;
+          continue;
+        }
+      } else {
+        let end = start;
+        while (end < len && !/[\s;|&<>()]/.test(command[end])) end++;
+        path = command.slice(start, end);
+        i = end;
+      }
+
+      // Skip /dev/null (safe no-op) and variable expansions
+      if (path && path !== '/dev/null' && !path.startsWith('/dev/fd/')) {
+        paths.push(path);
+      }
+      continue;
+    }
+
+    i++;
+  }
+
+  return paths;
 }
 
 // ---------------------------------------------------------------------------
