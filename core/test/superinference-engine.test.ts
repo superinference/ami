@@ -338,3 +338,31 @@ describe('SuperInferenceEngine – partial config merging', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 9. getRetriever() and getMemoryGate() accessor methods
+// ---------------------------------------------------------------------------
+
+describe('SuperInferenceEngine – accessor methods', () => {
+  it('getRetriever() returns the retriever instance', () => {
+    const engine = new SuperInferenceEngine();
+    assert.equal(engine.getRetriever(), engine.retriever);
+  });
+
+  it('getMemoryGate() returns the memoryGate instance', () => {
+    const engine = new SuperInferenceEngine();
+    assert.equal(engine.getMemoryGate(), engine.memoryGate);
+  });
+
+  it('getRetriever() has correct noise level', () => {
+    const engine = new SuperInferenceEngine({ noiseLevel: 0.25 });
+    assert.equal(engine.getRetriever().noiseLevel, 0.25);
+  });
+
+  it('getMemoryGate() tracks entries after gating', () => {
+    const engine = new SuperInferenceEngine();
+    const mg = engine.getMemoryGate();
+    mg.gate('q', 'r', { approved: true, score: 0.9 }, 0.5, 1);
+    assert.equal(mg.getEntries().length, 1);
+  });
+});
