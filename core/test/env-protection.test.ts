@@ -107,13 +107,14 @@ describe('constant sets', () => {
     assert.equal(POLICY_VARIABLES.size, 9);
   });
 
-  it('CODE_LOADING_VARIABLES contains 10 entries', () => {
-    assert.equal(CODE_LOADING_VARIABLES.size, 10);
+  it('CODE_LOADING_VARIABLES contains 11 entries', () => {
+    assert.equal(CODE_LOADING_VARIABLES.size, 11);
     assert.ok(CODE_LOADING_VARIABLES.has('LD_PRELOAD'));
     assert.ok(CODE_LOADING_VARIABLES.has('LD_LIBRARY_PATH'));
     assert.ok(CODE_LOADING_VARIABLES.has('LD_AUDIT'));
     assert.ok(CODE_LOADING_VARIABLES.has('DYLD_INSERT_LIBRARIES'));
     assert.ok(CODE_LOADING_VARIABLES.has('NODE_OPTIONS'));
+    assert.ok(CODE_LOADING_VARIABLES.has('PROMPT_COMMAND'));
   });
 
   it('TELEMETRY_VARIABLES contains 3 entries', () => {

