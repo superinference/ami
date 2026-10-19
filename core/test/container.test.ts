@@ -89,6 +89,17 @@ describe('detectRuntime', () => {
       assert.ok(result === 'docker' || result === 'podman');
     }
   });
+
+  it('returns null when no runtime is on PATH', () => {
+    const saved = process.env.PATH;
+    process.env.PATH = '/nonexistent-bin-only';
+    try {
+      const result = detectRuntime();
+      assert.equal(result, null);
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -135,6 +146,35 @@ describe('resolveRuntime', () => {
       SRC.indexOf('\n}\n', SRC.indexOf('function resolveRuntime')) + 3,
     );
     assert.ok(fnBody.includes('return null'));
+  });
+
+  it('returns the preferred runtime when it exists', () => {
+    const result = resolveRuntime('docker');
+    if (result !== null) {
+      assert.equal(result, 'docker');
+    }
+  });
+
+  it('returns null when preferred runtime is unavailable', () => {
+    const saved = process.env.PATH;
+    process.env.PATH = '/nonexistent-bin-only';
+    try {
+      const result = resolveRuntime('docker');
+      assert.equal(result, null);
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
+
+  it('returns null when preferred podman is unavailable', () => {
+    const saved = process.env.PATH;
+    process.env.PATH = '/nonexistent-bin-only';
+    try {
+      const result = resolveRuntime('podman');
+      assert.equal(result, null);
+    } finally {
+      process.env.PATH = saved;
+    }
   });
 });
 

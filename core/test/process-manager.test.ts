@@ -512,4 +512,69 @@ describe('ProcessManager — EBADF regression coverage', () => {
     pm.cleanup();
     assert.equal(pm.runningCount(), 0);
   });
+
+  it('getOutputSize returns positive value for task with output', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('echo getOutputSize-test', { cwd: tmpDir });
+    await waitForComplete(pm, id);
+    const size = pm.getOutputSize(id);
+    assert.ok(size > 0, `Expected positive output size, got ${size}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Background timeout
+// ---------------------------------------------------------------------------
+
+describe('ProcessManager – background timeout', () => {
+  let tmpDir: string;
+  let pm: ProcessManager;
+
+  afterEach(async () => { await cleanupPm(pm); fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('kills process after timeoutMs expires', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.spawn('sleep 300', { cwd: tmpDir, timeoutMs: 500 });
+    const event = await waitForComplete(pm, id, 5000);
+    const task = pm.get(id);
+    assert.equal(task!.status, 'killed');
+    const output = pm.getOutput(id, 0);
+    assert.ok(output!.output.includes('time limit'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// monitorMcp — health check failure
+// ---------------------------------------------------------------------------
+
+describe('ProcessManager – monitorMcp health check', () => {
+  let tmpDir: string;
+  let pm: ProcessManager;
+
+  afterEach(async () => { await cleanupPm(pm); fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('emits complete when health check returns false', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    let checkCount = 0;
+    const id = pm.monitorMcp('fail-server', async () => {
+      checkCount++;
+      return false;
+    }, 100);
+    const event = await waitForComplete(pm, id, 5000);
+    assert.equal(event.exitCode, 1);
+    assert.ok(checkCount >= 1);
+  });
+
+  it('emits complete when health check throws', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    const id = pm.monitorMcp('error-server', async () => {
+      throw new Error('check failed');
+    }, 100);
+    const event = await waitForComplete(pm, id, 5000);
+    assert.equal(event.exitCode, 1);
+  });
 });
