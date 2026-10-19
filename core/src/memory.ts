@@ -5,6 +5,17 @@ import * as os from 'os';
 import type { SessionFact } from './session-memory';
 import { log as coreLog } from './logger';
 
+const BINARY_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.tif',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.zip', '.gz', '.tar', '.bz2', '.xz', '.7z', '.rar', '.zst',
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a', '.lib',
+  '.wasm', '.pyc', '.class', '.jar',
+  '.mp3', '.mp4', '.wav', '.avi', '.mkv', '.mov', '.flac', '.ogg',
+  '.ttf', '.otf', '.woff', '.woff2', '.eot',
+  '.sqlite', '.db', '.lock',
+]);
+
 const INVISIBLE_CHARS_RE = /[­͏؜᠎​-‏⁠-⁤⁪-⁯﻿]/g;
 const SYSTEM_TAG_RE = /<\/?(?:system-reminder|system|anthropic|claude|cc[a-z]*)[^>]*>/gi;
 
@@ -889,6 +900,14 @@ export class MemoryManager {
       }
       seen.add(includePath);
       try {
+        const ext = path.extname(includePath).toLowerCase();
+        if (BINARY_EXTENSIONS.has(ext)) {
+          const replacement = `[binary file skipped: ${path.basename(includePath)}]`;
+          result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
+          searchFrom = pos + replacement.length;
+          seen.delete(includePath);
+          continue;
+        }
         let included = await fsp.readFile(includePath, 'utf-8');
         included = sanitizeContent(included, includePath);
         included = await this.resolveIncludes(included, includePath, depth + 1, seen);

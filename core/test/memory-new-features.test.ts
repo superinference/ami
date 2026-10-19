@@ -193,6 +193,38 @@ describe('MemoryManager — resolveIncludes', () => {
     assert.ok(!result.includes('[circular reference'), 'a diamond is not a cycle');
   });
 
+  it('skips binary files in @include directives', async () => {
+    const dir = path.join(tmpDir, 'includes');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    fs.writeFileSync(path.join(dir, 'data.pdf'), 'fake pdf content');
+
+    const mgr = new MemoryManager(tmpDir);
+    const result = await mgr.resolveIncludes(
+      'Before\n@include image.png\nMiddle\n@include data.pdf\nAfter',
+      path.join(dir, 'root.md'),
+    );
+    assert.ok(result.includes('[binary file skipped: image.png]'));
+    assert.ok(result.includes('[binary file skipped: data.pdf]'));
+    assert.ok(result.includes('Before'));
+    assert.ok(result.includes('After'));
+  });
+
+  it('includes text files but skips binary extensions', async () => {
+    const dir = path.join(tmpDir, 'includes');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'notes.md'), 'TEXT_CONTENT');
+    fs.writeFileSync(path.join(dir, 'archive.zip'), 'fake zip');
+
+    const mgr = new MemoryManager(tmpDir);
+    const result = await mgr.resolveIncludes(
+      '@include notes.md\n@include archive.zip',
+      path.join(dir, 'root.md'),
+    );
+    assert.ok(result.includes('TEXT_CONTENT'));
+    assert.ok(result.includes('[binary file skipped: archive.zip]'));
+  });
+
   it('still detects true cycles after diamond fix', async () => {
     const dir = path.join(tmpDir, 'includes');
     fs.mkdirSync(dir, { recursive: true });

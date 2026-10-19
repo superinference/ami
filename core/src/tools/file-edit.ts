@@ -47,11 +47,12 @@ function notifyLsp(resolved: string, content: string, context: ToolContext): voi
 }
 
 export function verifyWriteTarget(resolved: string, cwd: string): string | undefined {
+  const cwdAbs = path.resolve(cwd);
+
   try {
     const stat = fs.lstatSync(resolved);
     if (stat.isSymbolicLink()) {
       const target = fs.realpathSync(resolved);
-      const cwdAbs = path.resolve(cwd);
       if (!target.startsWith(cwdAbs + path.sep) && target !== cwdAbs) {
         return `Error: "${resolved}" is a symlink resolving to "${target}" outside the workspace — write blocked.`;
       }
@@ -59,6 +60,25 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
   } catch {
     // File doesn't exist yet — no symlink to escape through
   }
+
+  // Check parent directories for symlinks escaping the workspace
+  let dir = path.dirname(path.resolve(resolved));
+  while (dir.startsWith(cwdAbs + path.sep) || dir === cwdAbs) {
+    if (dir === cwdAbs) break;
+    try {
+      const dirStat = fs.lstatSync(dir);
+      if (dirStat.isSymbolicLink()) {
+        const realDir = fs.realpathSync(dir);
+        if (!realDir.startsWith(cwdAbs + path.sep) && realDir !== cwdAbs) {
+          return `Error: parent directory "${dir}" is a symlink resolving to "${realDir}" outside the workspace — write blocked.`;
+        }
+      }
+    } catch {
+      // Directory doesn't exist yet — will be created by mkdirSync
+    }
+    dir = path.dirname(dir);
+  }
+
   return undefined;
 }
 
