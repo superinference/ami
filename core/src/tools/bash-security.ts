@@ -55,6 +55,7 @@ const CHECK_IDS = {
   SHELL_STARTUP_WRITE: 55,
   DANGLING_OPERATOR: 56,
   SELF_PROCESS_KILL: 57,
+  GIT_WORKTREE_ESCAPE: 58,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -796,7 +797,7 @@ function validateASTCommands(command: string): SecurityCheckResult {
 
 const MAX_AUTO_APPROVE_LENGTH = 10_000;
 
-export function validateBashSecurity(command: string, options?: { detachedMode?: boolean }): SecurityCheckResult {
+export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean }): SecurityCheckResult {
   if (command.length > MAX_AUTO_APPROVE_LENGTH) {
     return fail(CHECK_IDS.COMMAND_TOO_LONG, `Command is ${command.length} characters (limit ${MAX_AUTO_APPROVE_LENGTH}) — too long to auto-approve`);
   }
@@ -964,6 +965,16 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     const selfKill = detectSelfProcessKill(command);
     if (selfKill.blocked) {
       return fail(CHECK_IDS.SELF_PROCESS_KILL, selfKill.reason!);
+    }
+  }
+
+  // Git worktree escape — in worktree-isolated sessions, blocks git commands
+  // that redirect operations outside the worktree via GIT_DIR, -C, --git-dir,
+  // or --work-tree flags/env vars.
+  if (options?.worktreeIsolation) {
+    const worktreeCheck = detectGitWorktreeEscape(command);
+    if (worktreeCheck.blocked) {
+      return fail(CHECK_IDS.GIT_WORKTREE_ESCAPE, worktreeCheck.reason!);
     }
   }
 
@@ -3033,6 +3044,61 @@ export function detectSelfProcessKill(command: string): { blocked: boolean; reas
     const pattern = killPgrep[1].replace(/^["']|["']$/g, '');
     if (SELF_PROCESS_NAMES.has(pattern)) {
       return { blocked: true, reason: `kill with pgrep -f ${pattern} — would kill the CLI process` };
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Git worktree escape detector
+// ---------------------------------------------------------------------------
+// In worktree-isolated sessions, blocks git commands that redirect operations
+// outside the worktree boundary using GIT_DIR, GIT_WORK_TREE env vars,
+// or --git-dir, --work-tree, -C flags. Safe read-only operations like
+// `git -C . status` are allowed when -C targets the current directory.
+
+export function detectGitWorktreeEscape(command: string): { blocked: boolean; reason?: string } {
+  if (!command) return { blocked: false };
+
+  const stripped = stripInvisibleUnicode(command);
+
+  // Block GIT_DIR env var — redirects git's object store
+  if (/\bGIT_DIR\s*=/.test(stripped)) {
+    return { blocked: true, reason: 'GIT_DIR= can redirect git operations outside the worktree' };
+  }
+
+  // Block GIT_WORK_TREE env var — redirects the working tree
+  if (/\bGIT_WORK_TREE\s*=/.test(stripped)) {
+    return { blocked: true, reason: 'GIT_WORK_TREE= can redirect git operations outside the worktree' };
+  }
+
+  // Block GIT_CEILING_DIRECTORIES manipulation — can bypass directory ownership checks
+  if (/\bGIT_CEILING_DIRECTORIES\s*=/.test(stripped)) {
+    return { blocked: true, reason: 'GIT_CEILING_DIRECTORIES= can bypass git directory ownership checks' };
+  }
+
+  // Only check git-specific flags if a git command is present
+  if (!/\bgit\b/.test(stripped)) return { blocked: false };
+
+  // Block --git-dir flag — redirects git's object store
+  if (/\bgit\b[^;|&]*\s--git-dir[\s=]/.test(stripped)) {
+    return { blocked: true, reason: '--git-dir can redirect git operations outside the worktree' };
+  }
+
+  // Block --work-tree flag — redirects the working tree
+  if (/\bgit\b[^;|&]*\s--work-tree[\s=]/.test(stripped)) {
+    return { blocked: true, reason: '--work-tree can redirect git operations outside the worktree' };
+  }
+
+  // Block git -C with paths that escape — allow -C . and -C ./subdir
+  const gitCMatch = stripped.match(/\bgit\s+-C\s+(\S+)/);
+  if (gitCMatch) {
+    const target = gitCMatch[1]!.replace(/^["']|["']$/g, '');
+    if (target !== '.' && !target.startsWith('./') && target !== '..') {
+      if (target.startsWith('/') || target.startsWith('..') || target.startsWith('~')) {
+        return { blocked: true, reason: `git -C ${target} can redirect git operations outside the worktree` };
+      }
     }
   }
 

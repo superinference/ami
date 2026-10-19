@@ -1,4 +1,6 @@
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as os from 'os';
 
 export interface WorkflowMeta {
   name: string;
@@ -48,7 +50,25 @@ export interface WorkflowContext {
   workflow: (nameOrRef: string | { scriptPath: string }, args?: unknown) => Promise<unknown>;
 }
 
-const DEFAULT_MAX_CONCURRENT = Math.max(4, Math.min(16, (require('os').cpus()?.length ?? 8) - 2));
+export function detectCpuCount(): number {
+  const osCpus = os.cpus()?.length ?? 8;
+  try {
+    const raw = fs.readFileSync('/sys/fs/cgroup/cpu.max', 'utf-8').trim();
+    const [quotaStr, periodStr] = raw.split(/\s+/);
+    if (quotaStr !== 'max') {
+      const quota = parseInt(quotaStr!, 10);
+      const period = parseInt(periodStr!, 10);
+      if (quota > 0 && period > 0) return Math.max(1, Math.floor(quota / period));
+    }
+  } catch { /* not in a cgroup-v2 container */ }
+  try {
+    const quota = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf-8').trim(), 10);
+    const period = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf-8').trim(), 10);
+    if (quota > 0 && period > 0) return Math.max(1, Math.floor(quota / period));
+  } catch { /* not in a cgroup-v1 container */ }
+  return osCpus;
+}
+const DEFAULT_MAX_CONCURRENT = Math.max(4, Math.min(16, detectCpuCount() - 2));
 const MAX_AGENTS = 1000;
 const MAX_PIPELINE_ITEMS = 4096;
 

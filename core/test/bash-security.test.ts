@@ -35,6 +35,7 @@ import {
   validateProcessSubstitution,
   detectAliasRedefinition,
   detectSourceExecution,
+  detectGitWorktreeEscape,
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
@@ -3427,5 +3428,111 @@ describe('detectSourceExecution', () => {
       const r = validateBashSecurity('source ./venv/bin/activate', { detachedMode: true });
       assert.equal(r.safe, true);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGitWorktreeEscape
+// ---------------------------------------------------------------------------
+
+describe('detectGitWorktreeEscape', () => {
+  it('blocks GIT_DIR env var', () => {
+    const r = detectGitWorktreeEscape('GIT_DIR=/tmp/other git status');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('GIT_DIR'));
+  });
+
+  it('blocks GIT_WORK_TREE env var', () => {
+    const r = detectGitWorktreeEscape('GIT_WORK_TREE=/other/path git status');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('GIT_WORK_TREE'));
+  });
+
+  it('blocks GIT_CEILING_DIRECTORIES env var', () => {
+    const r = detectGitWorktreeEscape('GIT_CEILING_DIRECTORIES=/ git status');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('GIT_CEILING_DIRECTORIES'));
+  });
+
+  it('blocks --git-dir flag', () => {
+    const r = detectGitWorktreeEscape('git --git-dir=/other/.git status');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--git-dir'));
+  });
+
+  it('blocks --git-dir= flag', () => {
+    const r = detectGitWorktreeEscape('git --git-dir=/other/.git log');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks --work-tree flag', () => {
+    const r = detectGitWorktreeEscape('git --work-tree=/other/repo diff');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--work-tree'));
+  });
+
+  it('blocks git -C with absolute path', () => {
+    const r = detectGitWorktreeEscape('git -C /other/repo status');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('-C'));
+  });
+
+  it('blocks git -C with parent traversal', () => {
+    const r = detectGitWorktreeEscape('git -C ../../outside status');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks git -C with home dir', () => {
+    const r = detectGitWorktreeEscape('git -C ~/other-repo log');
+    assert.equal(r.blocked, true);
+  });
+
+  it('allows git -C . (current directory)', () => {
+    const r = detectGitWorktreeEscape('git -C . status');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git -C with relative subdirectory', () => {
+    const r = detectGitWorktreeEscape('git -C ./subdir status');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows normal git commands', () => {
+    assert.equal(detectGitWorktreeEscape('git status').blocked, false);
+    assert.equal(detectGitWorktreeEscape('git log --oneline').blocked, false);
+    assert.equal(detectGitWorktreeEscape('git diff HEAD~1').blocked, false);
+    assert.equal(detectGitWorktreeEscape('git commit -m "test"').blocked, false);
+    assert.equal(detectGitWorktreeEscape('git push origin main').blocked, false);
+  });
+
+  it('allows non-git commands', () => {
+    assert.equal(detectGitWorktreeEscape('ls -la').blocked, false);
+    assert.equal(detectGitWorktreeEscape('cat file.txt').blocked, false);
+    assert.equal(detectGitWorktreeEscape('').blocked, false);
+  });
+
+  it('blocks GIT_DIR even with export prefix', () => {
+    const r = detectGitWorktreeEscape('export GIT_DIR=/tmp/evil');
+    assert.equal(r.blocked, true);
+  });
+
+  it('only triggers in worktree mode via validateBashSecurity', () => {
+    const normal = validateBashSecurity('GIT_DIR=/tmp/other git status');
+    assert.equal(normal.safe, true);
+
+    const worktree = validateBashSecurity('GIT_DIR=/tmp/other git status', { worktreeIsolation: true });
+    assert.equal(worktree.safe, false);
+    assert.equal(worktree.checkId, CHECK_IDS.GIT_WORKTREE_ESCAPE);
+  });
+
+  it('blocks --git-dir in worktree mode via validateBashSecurity', () => {
+    const r = validateBashSecurity('git --git-dir=/other/.git log', { worktreeIsolation: true });
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.GIT_WORKTREE_ESCAPE);
+  });
+
+  it('allows normal git in worktree mode via validateBashSecurity', () => {
+    const r = validateBashSecurity('git status', { worktreeIsolation: true });
+    assert.equal(r.safe, true);
   });
 });

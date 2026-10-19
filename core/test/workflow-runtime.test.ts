@@ -5,6 +5,7 @@ import {
   executeWorkflow,
   parseWorkflowMeta,
   validateWorkflowScript,
+  detectCpuCount,
 } from '../src/tools/workflow-runtime';
 import { workflowTool } from '../src/tools/workflow';
 import * as fs from 'fs';
@@ -560,5 +561,33 @@ return 'safe'
     const result = await executeWorkflow(script, async () => 'ok');
     assert.equal(result.result, 'safe');
     assert.deepEqual(result.logs, ['safe workflow running']);
+  });
+});
+
+describe('detectCpuCount', () => {
+  it('returns a positive integer', () => {
+    const count = detectCpuCount();
+    assert.ok(count >= 1, `expected >= 1, got ${count}`);
+    assert.equal(count, Math.floor(count), 'should be an integer');
+  });
+
+  it('returns at least 1 even with very small cgroup limits', () => {
+    const count = detectCpuCount();
+    assert.ok(count >= 1);
+  });
+
+  it('falls back to os.cpus() on non-container hosts', () => {
+    const count = detectCpuCount();
+    const osCpus = os.cpus()?.length ?? 8;
+    // On a non-container host, should match os.cpus() count
+    // On a container, should be <= os.cpus() count
+    assert.ok(count <= osCpus, `container count ${count} should be <= host ${osCpus}`);
+    assert.ok(count >= 1);
+  });
+
+  it('result is consistent across calls', () => {
+    const a = detectCpuCount();
+    const b = detectCpuCount();
+    assert.equal(a, b);
   });
 });

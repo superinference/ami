@@ -994,6 +994,60 @@ describe('bashTool -- exit code interpretation', () => {
     }
   });
 
+  it('interprets egrep exit code 1 as no matches', async () => {
+    const result = await bashTool.execute(
+      { command: 'egrep nonexistentpattern /dev/null' },
+      makeCtx(),
+    );
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('no matches found'));
+  });
+
+  it('interprets fgrep exit code 1 as no matches', async () => {
+    const result = await bashTool.execute(
+      { command: 'fgrep nonexistentpattern /dev/null' },
+      makeCtx(),
+    );
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('no matches found'));
+  });
+
+  it('interprets git grep exit code 1 as no matches', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-git-grep-'));
+    try {
+      const { execSync } = await import('child_process');
+      execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
+      fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hello\n');
+      execSync('git add a.txt && git commit -m init', { cwd: tmpDir, stdio: 'pipe' });
+      const result = await bashTool.execute(
+        { command: 'git grep nonexistentpattern_xyzzy' },
+        makeCtx({ cwd: tmpDir }),
+      );
+      assert.equal(result.isError, false);
+      assert.ok(result.output.includes('no matches') || result.output.includes('not an error'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('interprets git diff exit code 1 as no differences', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-git-diff-'));
+    try {
+      const { execSync } = await import('child_process');
+      execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
+      fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hello\n');
+      execSync('git add a.txt && git commit -m init', { cwd: tmpDir, stdio: 'pipe' });
+      fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'world\n');
+      const result = await bashTool.execute(
+        { command: 'git diff' },
+        makeCtx({ cwd: tmpDir }),
+      );
+      assert.equal(result.isError, false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('interprets exit code 127 as command not found', async () => {
     const result = await bashTool.execute(
       { command: 'nonexistent_command_xyz_abc' },
