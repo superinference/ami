@@ -713,8 +713,12 @@ function interpretExitCode(command: string, exitCode: number): ExitCodeInfo | nu
   const parts = command.trim().split(/[|;&]\s*/);
   const lastCmd = parts[parts.length - 1].trim().split(/\s+/)[0];
   const base = lastCmd || command.trim().split(/\s+/)[0];
-  if (exitCode === 1 && (base === 'grep' || base === 'rg')) return { message: '(no matches found — not an error)', isNonError: true };
+  if (exitCode === 1 && (base === 'grep' || base === 'egrep' || base === 'fgrep' || base === 'rg')) return { message: '(no matches found — not an error)', isNonError: true };
   if (exitCode === 1 && base === 'diff') return { message: '(files differ — not an error)', isNonError: true };
+  if (exitCode === 1 && base === 'git') {
+    const args = command.trim().split(/\s+/).slice(1);
+    if (args[0] === 'grep' || args[0] === 'diff') return { message: '(no matches/differences found — not an error)', isNonError: true };
+  }
   if (exitCode === 1 && (base === 'test' || base === '[')) return { message: '(condition is false)', isNonError: true };
   if (exitCode === 1 && base === 'find') return { message: '(some paths were inaccessible)', isNonError: true };
   if (exitCode === 2 && base === 'grep') return { message: '(error in grep pattern or file access)' };

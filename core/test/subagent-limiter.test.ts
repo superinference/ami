@@ -5,12 +5,15 @@ import { SubagentLimiter } from '../src/subagent-limiter';
 describe('SubagentLimiter', () => {
   let savedMax: string | undefined;
   let savedDepth: string | undefined;
+  let savedLifetime: string | undefined;
 
   beforeEach(() => {
     savedMax = process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS;
     savedDepth = process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    savedLifetime = process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION;
     delete process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS;
     delete process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    delete process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION;
   });
 
   afterEach(() => {
@@ -18,6 +21,8 @@ describe('SubagentLimiter', () => {
     else delete process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS;
     if (savedDepth !== undefined) process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH = savedDepth;
     else delete process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    if (savedLifetime !== undefined) process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION = savedLifetime;
+    else delete process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION;
   });
 
   it('defaults to maxConcurrent=20', () => {
@@ -178,5 +183,132 @@ describe('SubagentLimiter — depth control', () => {
     assert.equal(limiter.maxDepth, 2);
     assert.equal(limiter.canSpawnAtDepth(2), true);
     assert.equal(limiter.canSpawnAtDepth(3), false);
+  });
+});
+
+describe('SubagentLimiter — lifetime budget', () => {
+  let savedLifetime: string | undefined;
+
+  beforeEach(() => {
+    savedLifetime = process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION;
+    delete process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION;
+  });
+
+  afterEach(() => {
+    if (savedLifetime !== undefined) process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION = savedLifetime;
+    else delete process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION;
+  });
+
+  it('defaults to maxLifetime=200', () => {
+    const limiter = new SubagentLimiter();
+    assert.equal(limiter.maxLifetime, 200);
+  });
+
+  it('accepts explicit maxLifetime', () => {
+    const limiter = new SubagentLimiter(20, 0, 50);
+    assert.equal(limiter.maxLifetime, 50);
+  });
+
+  it('reads maxLifetime from env var', () => {
+    process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION = '100';
+    const limiter = new SubagentLimiter();
+    assert.equal(limiter.maxLifetime, 100);
+  });
+
+  it('lifetimeCount starts at zero', () => {
+    const limiter = new SubagentLimiter();
+    assert.equal(limiter.lifetimeCount, 0);
+  });
+
+  it('acquire increments lifetimeCount', async () => {
+    const limiter = new SubagentLimiter(20, 0, 200);
+    await limiter.acquire();
+    assert.equal(limiter.lifetimeCount, 1);
+    await limiter.acquire();
+    assert.equal(limiter.lifetimeCount, 2);
+    limiter.release();
+    limiter.release();
+  });
+
+  it('lifetimeCount is not decremented by release', async () => {
+    const limiter = new SubagentLimiter(20, 0, 200);
+    await limiter.acquire();
+    await limiter.acquire();
+    limiter.release();
+    limiter.release();
+    assert.equal(limiter.lifetimeCount, 2);
+    assert.equal(limiter.activeCount, 0);
+  });
+
+  it('isLifetimeBudgetExhausted returns false when under limit', async () => {
+    const limiter = new SubagentLimiter(20, 0, 3);
+    assert.equal(limiter.isLifetimeBudgetExhausted(), false);
+    await limiter.acquire();
+    limiter.release();
+    assert.equal(limiter.isLifetimeBudgetExhausted(), false);
+  });
+
+  it('isLifetimeBudgetExhausted returns true when at limit', async () => {
+    const limiter = new SubagentLimiter(20, 0, 2);
+    await limiter.acquire();
+    limiter.release();
+    await limiter.acquire();
+    limiter.release();
+    assert.equal(limiter.isLifetimeBudgetExhausted(), true);
+  });
+
+  it('acquire throws when lifetime budget is exhausted', async () => {
+    const limiter = new SubagentLimiter(20, 0, 2);
+    await limiter.acquire();
+    limiter.release();
+    await limiter.acquire();
+    limiter.release();
+    await assert.rejects(
+      limiter.acquire(),
+      { message: /Session subagent limit reached/ },
+    );
+  });
+
+  it('run() respects lifetime budget', async () => {
+    const limiter = new SubagentLimiter(20, 0, 2);
+    await limiter.run(async () => 'first');
+    await limiter.run(async () => 'second');
+    await assert.rejects(
+      limiter.run(async () => 'third'),
+      { message: /Session subagent limit reached/ },
+    );
+  });
+
+  it('reset clears lifetime count', async () => {
+    const limiter = new SubagentLimiter(20, 0, 2);
+    await limiter.acquire();
+    limiter.release();
+    await limiter.acquire();
+    limiter.release();
+    assert.equal(limiter.isLifetimeBudgetExhausted(), true);
+    limiter.reset();
+    assert.equal(limiter.lifetimeCount, 0);
+    assert.equal(limiter.isLifetimeBudgetExhausted(), false);
+    await limiter.acquire();
+    limiter.release();
+  });
+
+  it('queued acquires also check lifetime budget', async () => {
+    const limiter = new SubagentLimiter(1, 0, 2);
+    await limiter.acquire();
+    assert.equal(limiter.lifetimeCount, 1);
+
+    const second = limiter.acquire();
+    assert.equal(limiter.queuedCount, 1);
+
+    limiter.release();
+    await second;
+    assert.equal(limiter.lifetimeCount, 2);
+    limiter.release();
+
+    await assert.rejects(
+      limiter.acquire(),
+      { message: /Session subagent limit reached/ },
+    );
   });
 });

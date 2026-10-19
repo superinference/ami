@@ -150,7 +150,7 @@ describe('classifyError — output_too_large', () => {
 // Content filter
 // ---------------------------------------------------------------------------
 describe('classifyError — content_filter', () => {
-  const expected = { category: 'content_filter' as const, retryable: true, shouldCompact: false, shouldFallback: false };
+  const expected = { category: 'content_filter' as const, retryable: false, shouldCompact: false, shouldFallback: false };
 
   it('detects "content_filter"', () => {
     assertClassification(classifyError('content_filter triggered'), expected);
@@ -314,8 +314,8 @@ describe('classifyError — cross-cutting', () => {
   });
 
   it('retryable categories have retryable=true', () => {
-    const retryableCategories = ['rate_limited', 'context_overflow', 'output_too_large', 'content_filter', 'model_unavailable', 'server_error', 'network_error'];
-    const triggers = ['HTTP 429 Too Many Requests', 'context too long', 'output too large', 'content_filter triggered', 'HTTP 503 Service Unavailable', 'HTTP 500 Internal Server Error', 'ECONNREFUSED'];
+    const retryableCategories = ['rate_limited', 'context_overflow', 'output_too_large', 'model_unavailable', 'server_error', 'network_error'];
+    const triggers = ['HTTP 429 Too Many Requests', 'context too long', 'output too large', 'HTTP 503 Service Unavailable', 'HTTP 500 Internal Server Error', 'ECONNREFUSED'];
 
     for (let i = 0; i < retryableCategories.length; i++) {
       const result = classifyError(triggers[i]);
@@ -336,6 +336,9 @@ describe('classifyError — cross-cutting', () => {
 
     const result4 = classifyError('Repetitive output detected');
     assert.equal(result4.retryable, false);
+
+    const result5 = classifyError('content_filter triggered');
+    assert.equal(result5.retryable, false, 'content_filter should not be retryable — policy decisions are not transient');
   });
 
   it('only context_overflow has shouldCompact=true', () => {

@@ -101,13 +101,13 @@ export function classifyError(error: string): ClassifiedError {
     return { category: 'output_too_large', message: error, retryable: true, shouldCompact: false, shouldFallback: false };
   }
 
-  // Content filter — retryable, the model can rephrase to avoid the trigger
+  // Content filter — not retryable; these are policy decisions, not transient errors
   if (
     lower.includes('content_filter') ||
     lower.includes('content_management') ||
     lower.includes('content policy')
   ) {
-    return { category: 'content_filter', message: error, retryable: true, shouldCompact: false, shouldFallback: false };
+    return { category: 'content_filter', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
   // Model unavailable / overloaded — retryable, should try fallback model
@@ -156,7 +156,7 @@ const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   model_unavailable: 'Model temporarily unavailable — retrying.',
   auth_error: 'Authentication error — check your API key.',
   output_too_large: 'Model output exceeded size limit — retrying with smaller output.',
-  content_filter: 'Response filtered by content policy — retrying.',
+  content_filter: 'Response blocked by content policy.',
   server_error: 'Provider server error — retrying.',
   network_error: 'Network error — retrying connection.',
   repetition: 'Repetitive output detected.',
