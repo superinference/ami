@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as nodePath from 'path';
-import { webFetchTool } from '../src/tools/web-fetch';
+import { webFetchTool, MAX_FETCH_DEADLINE_MS } from '../src/tools/web-fetch';
 import type { ToolContext } from '../src/types';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
@@ -331,5 +331,34 @@ describe('webFetchTool – HTTP server integration', () => {
     );
     assert.ok(!result.isError);
     assert.ok(result.output.includes('No content at offset'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overall deadline
+// ---------------------------------------------------------------------------
+
+describe('webFetchTool — overall deadline', () => {
+  it('MAX_FETCH_DEADLINE_MS is 300000', () => {
+    assert.equal(MAX_FETCH_DEADLINE_MS, 300_000);
+  });
+
+  it('returns deadline error when server never responds', async () => {
+    const http = await import('http');
+    const server = http.createServer((_req, _res) => {
+      // Never respond — let the deadline trigger
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address() as { port: number };
+    try {
+      const result = await webFetchTool.execute(
+        { url: `http://127.0.0.1:${addr.port}/hang`, prompt: 'test' },
+        ctx({ _allowLocalhostForTesting: true, _fetchDeadlineMs: 500 } as any),
+      );
+      assert.equal(result.isError, true);
+      assert.ok(result.output.includes('exceeded') || result.output.includes('deadline') || result.output.includes('Error'));
+    } finally {
+      server.close();
+    }
   });
 });

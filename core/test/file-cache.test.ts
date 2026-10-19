@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { FileCache, getFileCache } from '../src/file-cache';
+import { FileCache, getFileCache, MAX_CACHE_BYTES } from '../src/file-cache';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -466,5 +466,81 @@ describe('FileCache – setWritten', () => {
     // so a later file_edit would not spuriously claim the file was modified.
     assert.equal(cache.hasChanged('/no/such/file/for-stat.txt'), false);
     assert.equal(cache.get('/no/such/file/for-stat.txt'), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// totalBytes tracking
+// ---------------------------------------------------------------------------
+
+describe('FileCache — totalBytes tracking', () => {
+  it('tracks bytes on set', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'hello', 1);
+    assert.equal(cache.getTotalBytes(), Buffer.byteLength('hello', 'utf-8'));
+  });
+
+  it('accumulates bytes across entries', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'hello', 1);
+    cache.set('/b.txt', 'world!', 2);
+    assert.equal(cache.getTotalBytes(), Buffer.byteLength('hello') + Buffer.byteLength('world!'));
+  });
+
+  it('adjusts bytes when updating existing entry', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'short', 1);
+    const before = cache.getTotalBytes();
+    cache.set('/a.txt', 'a much longer string now', 2);
+    assert.equal(cache.getTotalBytes(), Buffer.byteLength('a much longer string now'));
+    assert.notEqual(cache.getTotalBytes(), before);
+  });
+
+  it('subtracts bytes on delete', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'hello', 1);
+    cache.set('/b.txt', 'world', 2);
+    cache.delete('/a.txt');
+    assert.equal(cache.getTotalBytes(), Buffer.byteLength('world'));
+  });
+
+  it('resets bytes on clear', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'hello', 1);
+    cache.clear();
+    assert.equal(cache.getTotalBytes(), 0);
+  });
+
+  it('includes bytes in getStats', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'hello', 1);
+    const stats = cache.getStats();
+    assert.equal(stats.bytes, Buffer.byteLength('hello'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16 MB eviction
+// ---------------------------------------------------------------------------
+
+describe('FileCache — 16 MB eviction', () => {
+  it('MAX_CACHE_BYTES is 16 MB', () => {
+    assert.equal(MAX_CACHE_BYTES, 16 * 1024 * 1024);
+  });
+
+  it('evicts oldest entry when exceeding limit', () => {
+    const cache = new FileCache();
+    const chunk = 'x'.repeat(MAX_CACHE_BYTES - 100);
+    cache.set('/old.txt', chunk, 1);
+    cache.set('/new.txt', 'y'.repeat(200), 2);
+    assert.equal(cache.getStats().files, 1);
+    assert.ok(cache.getTotalBytes() <= MAX_CACHE_BYTES);
+  });
+
+  it('does not evict when under limit', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'hello', 1);
+    cache.set('/b.txt', 'world', 2);
+    assert.equal(cache.getStats().files, 2);
   });
 });
