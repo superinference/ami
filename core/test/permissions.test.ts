@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations } from '../src/permissions';
+import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations, stripEnvVarPrefix } from '../src/permissions';
 import type { PermissionMode, PermissionRule } from '../src/permissions';
 
 function makeTempDir(): string {
@@ -1098,5 +1098,103 @@ describe('check() — destructive bash commands cannot be auto-approved by allow
       { tool: 'file_edit', pattern: '*', action: 'allow' },
     ]);
     assert.equal(await pm.check('file_edit', { file_path: '/etc/important' }), 'allow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// env-var prefix stripping — prevents FOO=bar rm bypass
+// ---------------------------------------------------------------------------
+
+describe('check() — env-var prefix bypass prevention', () => {
+  it('deny rule matches command with env var prefix', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'FOO=bar rm -rf /' }), 'deny');
+  });
+
+  it('deny rule matches with multiple env vars', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'A=1 B=2 C=3 rm -rf /' }), 'deny');
+  });
+
+  it('deny rule matches quoted env var values', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'PATH="/usr/bin" rm important.txt' }), 'deny');
+  });
+
+  it('env var prefix in compound command is stripped per sub-command', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo ok && FOO=bar rm -rf /' }), 'deny');
+  });
+
+  it('env var assignment without command is not stripped', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'FOO=*', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'FOO=bar' }), 'allow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap #8: Env var prefix bypass in permission matching
+// ---------------------------------------------------------------------------
+
+describe('PermissionManager — env var prefix stripping (Gap #8)', () => {
+  it('deny rule matches command behind simple env var prefix', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'TZ=UTC python script.py' }), 'deny');
+  });
+
+  it('deny rule matches command behind quoted env var prefix', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'FOO="bar baz" python script.py' }), 'deny');
+  });
+
+  it('deny rule matches command behind multiple env vars', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'A=1 B=2 C=3 python evil.py' }), 'deny');
+  });
+
+  it('allow rule matches command behind env var prefix', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'GIT_DIR=/foo git status' }), 'allow');
+  });
+
+  it('allow rule rejects compound command with env prefix when second part does not match', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'GIT_DIR=/foo git status && echo bad' }), 'ask');
+  });
+
+  it('checkDenyRules matches through env var prefix', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny', reason: 'no python' },
+    ]);
+    const result = pm.checkDenyRules('bash', 'ENV_VAR=value python hack.py');
+    assert.equal(result.denied, true);
+    assert.equal(result.reason, 'no python');
+  });
+
+  it('commands without env prefix still match normally', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'git status' }), 'allow');
   });
 });

@@ -697,19 +697,25 @@ function splitCompoundCommand(cmd: string): string[] {
  *    - allow rules: ALL sub-commands must match (prevents "git status && rm -rf /")
  *    - deny rules: ANY sub-command matching triggers deny
  */
+export function stripEnvVarPrefix(cmd: string): string {
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint alternation
+  return cmd.replace(/^(\s*[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
+}
+
 function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
   const normalized = normalizeLineContinuations(command);
   const subCommands = splitCompoundCommand(normalized);
 
   if (subCommands.length <= 1) {
-    return matchPattern(pattern, normalized);
+    const stripped = stripEnvVarPrefix(normalized);
+    return matchPattern(pattern, stripped);
   }
 
   if (ruleAction === 'allow') {
-    return subCommands.every(sub => matchPattern(pattern, sub));
+    return subCommands.every(sub => matchPattern(pattern, stripEnvVarPrefix(sub)));
   }
   // deny / ask: any sub-command match triggers
-  return subCommands.some(sub => matchPattern(pattern, sub));
+  return subCommands.some(sub => matchPattern(pattern, stripEnvVarPrefix(sub)));
 }
 
 /**
