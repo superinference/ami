@@ -46,6 +46,7 @@ const CHECK_IDS = {
   CONTAINER_ESCAPE: 46,
   PACKAGE_MANAGER_HIJACK: 47,
   NETWORK_MANIPULATION: 48,
+  DATA_EXFILTRATION: 49,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -896,6 +897,17 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // Data exfiltration — blocks curl/wget commands that post or upload
+  // sensitive files (credentials, SSH keys, /etc/passwd, etc.) to remote
+  // servers, plus bulk file-read-to-network pipes, recursive scp/rsync
+  // to remote hosts, and netcat with local file redirect.
+  {
+    const dataExfil = detectDataExfiltration(command);
+    if (dataExfil.blocked) {
+      return fail(CHECK_IDS.DATA_EXFILTRATION, dataExfil.reason!);
+    }
+  }
+
   result = validateObfuscatedFlags(command);
   if (!result.safe) return result;
 
@@ -1396,29 +1408,47 @@ export function detectDataExfiltration(command: string): { blocked: boolean; rea
     }
   }
 
-  // 2. curl/wget posting file contents: -d @/path, --data-binary @/path,
-  //    -F "file=@/path", --upload-file /path, -T /path, --post-file=/path
+  // 2. curl posting/uploading sensitive file contents via @-prefixed data flags,
+  //    form uploads, or --upload-file/-T. Only blocks when the target path is a
+  //    known credential/sensitive path (via isCredentialPath).
   if (/\bcurl\b/.test(norm)) {
-    if (/(?:-d\s+@|--data-binary\s+@|--data\s+@)\//.test(norm)) {
-      return { blocked: true, reason: 'curl posting local file contents' };
+    // -d @path, --data @path, --data-binary @path
+    for (const m of norm.matchAll(/(?:-d|--data|--data-binary)\s+@["']?([^\s"']+)["']?/g)) {
+      if (isCredentialPath(m[1])) {
+        return { blocked: true, reason: `curl posting sensitive file contents (${m[1]})` };
+      }
     }
-    if (/-F\s+[^\s]*@\//.test(norm) || /-F\s+"[^"]*@\//.test(norm) || /-F\s+'[^']*@\//.test(norm)) {
-      return { blocked: true, reason: 'curl uploading local file via form field' };
+
+    // -F field=@path, --form field=@path
+    for (const m of norm.matchAll(/(?:-F|--form)\s+["']?[^@\s]*@["']?([^\s"']+)["']?/g)) {
+      if (isCredentialPath(m[1])) {
+        return { blocked: true, reason: `curl uploading sensitive file via form field (${m[1]})` };
+      }
     }
-    if (/(?:--upload-file|-T)\s+\//.test(norm)) {
-      return { blocked: true, reason: 'curl uploading local file' };
+
+    // --upload-file path, -T path
+    for (const m of norm.matchAll(/(?:--upload-file|-T)\s+["']?([^\s"']+)["']?/g)) {
+      if (isCredentialPath(m[1])) {
+        return { blocked: true, reason: `curl uploading sensitive file (${m[1]})` };
+      }
     }
-  }
-  if (/\bwget\b/.test(norm) && /--post-file[= ]\s*\//.test(norm)) {
-    return { blocked: true, reason: 'wget posting local file contents' };
   }
 
-  // 3. scp with -r (recursive = bulk): scp -r[p...] /local user@host:
+  // 3. wget --post-file=path with sensitive path
+  if (/\bwget\b/.test(norm)) {
+    for (const m of norm.matchAll(/--post-file[= ]["']?([^\s"']+)["']?/g)) {
+      if (isCredentialPath(m[1])) {
+        return { blocked: true, reason: `wget posting sensitive file contents (${m[1]})` };
+      }
+    }
+  }
+
+  // 4. scp with -r (recursive = bulk): scp -r[p...] /local user@host:
   if (/\bscp\b/.test(norm) && /-[^\s]*r/.test(norm) && /\S+@\S+:/.test(norm)) {
     return { blocked: true, reason: 'recursive scp to remote host (bulk transfer)' };
   }
 
-  // 4. rsync to remote (src is local path, dst contains user@host:)
+  // 5. rsync to remote (src is local path, dst contains user@host:)
   if (/\brsync\b/.test(norm)) {
     const tokens = norm.split(/\s+/);
     const nonFlagTokens = tokens.filter(t => !t.startsWith('-') && t !== 'rsync');
@@ -1432,7 +1462,7 @@ export function detectDataExfiltration(command: string): { blocked: boolean; rea
     }
   }
 
-  // 5. nc/netcat with file redirect: nc host port < /path
+  // 6. nc/netcat with file redirect: nc host port < /path
   if (/\b(nc|ncat|netcat)\b/.test(norm) && /<\s*\//.test(norm)) {
     return { blocked: true, reason: 'netcat sending local file to remote host' };
   }
