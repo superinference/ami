@@ -16,6 +16,7 @@ const BINARY_EXTENSIONS = new Set([
   '.sqlite', '.db', '.lock',
 ]);
 
+// eslint-disable-next-line security/detect-bidi-characters -- intentional: regex must contain the bidi chars it strips
 const INVISIBLE_CHARS_RE = /[­͏؜᠎​-‏⁠-⁤⁪-⁯﻿]/g;
 const SYSTEM_TAG_RE = /<\/?(?:system-reminder|system|anthropic|claude|cc[a-z]*)[^>]*>/gi;
 

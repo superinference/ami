@@ -567,6 +567,7 @@ export function parsePageRange(pages: string): { start: number; end: number; err
   if (/,/.test(trimmed)) {
     return { start: 0, end: 0, error: `Page lists like "${pages}" are not supported. Read each page or range separately (e.g. pages: "6", then pages: "9", then pages: "15").` };
   }
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint \d and literal '-'
   const match = trimmed.match(/^(\d+)(?:-(\d+))?$/);
   if (!match) {
     return { start: 0, end: 0, error: `Invalid page range "${pages}". Use "3" or "1-5".` };

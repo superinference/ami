@@ -95,6 +95,7 @@ export function mostRestrictiveVerdict(verdicts: PermissionVerdict[]): Permissio
 const SAFE_COMMANDS = new Set([
   'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'pwd',
   'which', 'whoami', 'date', 'uname', 'hostname',
+  'cd', // directory change — no side effects on the filesystem
   'id', 'df', 'du', 'file', 'stat', 'readlink', 'basename', 'dirname',
   'sort', 'uniq', 'diff', 'tr', 'cut', 'less', 'more',
   'test', 'true', 'false', 'type', 'man', 'help',

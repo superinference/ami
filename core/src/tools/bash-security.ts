@@ -1454,6 +1454,7 @@ export function detectDangerousRm(command: string): { dangerous: boolean; sugges
   }
 
   // Detect rm targeting a backslash-only path (e.g. `rm -rf \`)
+  // eslint-disable-next-line security/detect-unsafe-regex -- [rfdi] and \s are disjoint, no overlap
   if (/\brm\s+(?:-[rfdi]+\s+)*\\(?:\s|$)/.test(command)) {
     return { dangerous: true, suggestion: 'rm targeting a backslash-only path' };
   }
@@ -2992,17 +2993,21 @@ export function detectSelfProcessKill(command: string): { blocked: boolean; reas
   const stripped = stripInvisibleUnicode(command);
 
   // kill $$ — kills own process
+  // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are complementary, no backtrack
   if (/\bkill\s+(?:-\S+\s+)*\$\$/.test(stripped)) {
     return { blocked: true, reason: 'kill $$ — would terminate the current process' };
   }
 
   // pkill -P $$ — kills child processes
+  // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are complementary, no backtrack
   if (/\bpkill\s+(?:-\S+\s+)*-P\s+\$\$/.test(stripped)) {
     return { blocked: true, reason: 'pkill -P $$ — would kill all child processes' };
   }
 
   // pkill -f / pkill --full with CLI-matching pattern
+  // eslint-disable-next-line security/detect-unsafe-regex -- \S/\s and \w/\s are complementary, no backtrack
   const pkillFull = /\bpkill\s+(?:-[\w]+\s+)*(?:-f|--full)\s+(?:-\S+\s+)*(\S+)/.exec(stripped)
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are complementary, no backtrack
     ?? /\bpkill\s+(?:-\S+)*f(?:\S*)\s+(?:-\S+\s+)*(\S+)/.exec(stripped);
   if (pkillFull) {
     const pattern = pkillFull[1].replace(/^["']|["']$/g, '');
@@ -3012,6 +3017,7 @@ export function detectSelfProcessKill(command: string): { blocked: boolean; reas
   }
 
   // killall targeting CLI process names
+  // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are complementary, no backtrack
   const killall = /\bkillall\s+(?:-\S+\s+)*(\S+)/.exec(stripped);
   if (killall) {
     const target = killall[1].replace(/^["']|["']$/g, '');
@@ -3021,6 +3027,7 @@ export function detectSelfProcessKill(command: string): { blocked: boolean; reas
   }
 
   // kill $(pgrep -f ...) with CLI-matching pattern
+  // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are complementary, no backtrack
   const killPgrep = /\bkill\s+(?:-\S+\s+)*\$\(pgrep\s+(?:-\S+\s+)*(?:-f|--full)\s+(\S+)\)/.exec(stripped);
   if (killPgrep) {
     const pattern = killPgrep[1].replace(/^["']|["']$/g, '');
