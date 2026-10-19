@@ -483,6 +483,16 @@ const BUILD_CONFIG_PATH_PATTERNS: RegExp[] = [
   /\/\.husky\//,
   // Git hooks directory — writing here runs code on git operations
   /\/\.git\/hooks\//,
+  // SSH directory — authorized_keys, config, known_hosts, private keys
+  /\/\.ssh\//,
+  // GPG keys and config
+  /\/\.gnupg\//,
+  // AWS credentials and config
+  /\/\.aws\//,
+  // Kubernetes configs
+  /\/\.kube\//,
+  // Docker credentials and config
+  /\/\.docker\//,
 ];
 
 /**

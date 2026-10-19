@@ -1295,6 +1295,29 @@ describe('isBuildConfigFile — shell startup + .husky (Gap #53, #77)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// SSH and sensitive dot-directory protection
+// ---------------------------------------------------------------------------
+
+describe('isBuildConfigFile — SSH and sensitive dot-directories', () => {
+  it('flags ~/.ssh/authorized_keys', () => assert.ok(isBuildConfigFile('~/.ssh/authorized_keys')));
+  it('flags /home/user/.ssh/config', () => assert.ok(isBuildConfigFile('/home/user/.ssh/config')));
+  it('flags /home/user/.ssh/known_hosts', () => assert.ok(isBuildConfigFile('/home/user/.ssh/known_hosts')));
+  it('flags /home/user/.ssh/id_rsa', () => assert.ok(isBuildConfigFile('/home/user/.ssh/id_rsa')));
+  it('flags /home/user/.ssh/id_ed25519', () => assert.ok(isBuildConfigFile('/home/user/.ssh/id_ed25519')));
+  it('flags /home/user/.gnupg/pubring.kbx', () => assert.ok(isBuildConfigFile('/home/user/.gnupg/pubring.kbx')));
+  it('flags /home/user/.gnupg/trustdb.gpg', () => assert.ok(isBuildConfigFile('/home/user/.gnupg/trustdb.gpg')));
+  it('flags /home/user/.aws/credentials', () => assert.ok(isBuildConfigFile('/home/user/.aws/credentials')));
+  it('flags /home/user/.aws/config', () => assert.ok(isBuildConfigFile('/home/user/.aws/config')));
+  it('flags /home/user/.kube/config', () => assert.ok(isBuildConfigFile('/home/user/.kube/config')));
+  it('flags /home/user/.docker/config.json', () => assert.ok(isBuildConfigFile('/home/user/.docker/config.json')));
+  it('does NOT flag non-sensitive dotfiles', () => {
+    assert.ok(!isBuildConfigFile('/home/user/.vscode/settings.json'));
+    assert.ok(!isBuildConfigFile('/home/user/.cache/something'));
+    assert.ok(!isBuildConfigFile('/home/user/.local/share/app'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Gap #32: Deny rules fire in auto-allow mode
 // ---------------------------------------------------------------------------
 
