@@ -16,6 +16,7 @@ import {
   validateBackslashEscapedWhitespace,
   validateMalformedTokenInjection,
   validateBashSecurity,
+  joinLineContinuations,
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
@@ -496,5 +497,38 @@ describe('sanitizeToolOutput', () => {
 
   it('handles clean output unchanged', () => {
     assert.equal(sanitizeToolOutput('hello world'), 'hello world');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// joinLineContinuations
+// ---------------------------------------------------------------------------
+describe('joinLineContinuations', () => {
+  it('joins backslash-newline into single token', () => {
+    assert.equal(joinLineContinuations('r\\\nm'), 'rm');
+  });
+
+  it('joins multiple continuations in one command', () => {
+    assert.equal(joinLineContinuations('r\\\nm -r\\\nf /'), 'rm -rf /');
+  });
+
+  it('preserves commands without continuations', () => {
+    assert.equal(joinLineContinuations('ls -la'), 'ls -la');
+  });
+
+  it('preserves escaped backslash before newline (not a continuation)', () => {
+    assert.equal(joinLineContinuations('echo hello'), 'echo hello');
+  });
+
+  it('handles empty string', () => {
+    assert.equal(joinLineContinuations(''), '');
+  });
+
+  it('handles only continuation', () => {
+    assert.equal(joinLineContinuations('\\\n'), '');
+  });
+
+  it('handles continuation at end of command', () => {
+    assert.equal(joinLineContinuations('echo hello\\\n'), 'echo hello');
   });
 });

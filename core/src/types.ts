@@ -358,6 +358,12 @@ export interface EngineConfig {
   /** Maximum retries specifically for non-streaming timeout fallbacks.
    *  Env: SUPERINFERENCE_NONSTREAMING_TIMEOUT_RETRIES. */
   nonstreamingTimeoutRetries?: number;
+  /** Maximum transient error retries (connection resets, 502/503/529). Default: 5.
+   *  Env: SUPERINFERENCE_MAX_TRANSIENT_RETRIES. */
+  maxTransientRetries?: number;
+  /** Maximum delay cap for transient error backoff, in ms. Default: 30 000 (30s).
+   *  Env: SUPERINFERENCE_TRANSIENT_RETRY_MAX_DELAY_MS. */
+  transientRetryMaxDelayMs?: number;
   /** Enable gateway hint headers on LLM requests (x-superinference-request-class,
    *  x-superinference-agent-type, x-superinference-compaction).
    *  Env: SUPERINFERENCE_GATEWAY_HINT_HEADERS=1. */
