@@ -392,20 +392,34 @@ return 'file-result'
 
 describe('WorkflowRuntime — per-run maxConcurrent cap', () => {
   const fanScript = `export const meta = { name: 'fan', description: 'x' };\nreturn await parallel(Array.from({length:6},(_,i)=>()=>agent('t'+i)));`;
-  function tracking() {
+  function tracking(delayMs = 20) {
     let live = 0, peak = 0;
-    const handler = async () => { live++; peak = Math.max(peak, live); await new Promise(r => setTimeout(r, 20)); live--; return 'ok'; };
+    const handler = async () => { live++; peak = Math.max(peak, live); await new Promise(r => setTimeout(r, delayMs)); live--; return 'ok'; };
     return { handler, peak: () => peak };
   }
   it('caps concurrent agents at maxConcurrent=1', async () => {
-    const t = tracking();
-    await executeWorkflow(fanScript, t.handler, { maxConcurrent: 1 });
-    assert.ok(t.peak() <= 1, `peak ${t.peak()} must be <= 1`);
+    const orig = process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS;
+    process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS = '0';
+    try {
+      const t = tracking();
+      await executeWorkflow(fanScript, t.handler, { maxConcurrent: 1 });
+      assert.ok(t.peak() <= 1, `peak ${t.peak()} must be <= 1`);
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS = orig;
+      else delete process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS;
+    }
   });
   it('control: a high cap lets agents overlap', async () => {
-    const t = tracking();
-    await executeWorkflow(fanScript, t.handler, { maxConcurrent: 6 });
-    assert.ok(t.peak() >= 2, `peak ${t.peak()} must be >= 2`);
+    const orig = process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS;
+    process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS = '0';
+    try {
+      const t = tracking();
+      await executeWorkflow(fanScript, t.handler, { maxConcurrent: 6 });
+      assert.ok(t.peak() >= 2, `peak ${t.peak()} must be >= 2`);
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS = orig;
+      else delete process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS;
+    }
   });
 });
 
@@ -678,5 +692,63 @@ describe('getMaxConcurrent', () => {
     } finally {
       if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
     }
+  });
+});
+
+describe('WorkflowRuntime — parallel stagger', () => {
+  it('staggers parallel agent launches with default delay', async () => {
+    const starts: number[] = [];
+    const handler: AgentHandler = async () => {
+      starts.push(Date.now());
+      return 'ok';
+    };
+    const runtime = new WorkflowRuntime({ agentHandler: handler });
+    const ctx = runtime.createContext(null);
+    const results = await ctx.parallel([
+      () => ctx.agent('task1'),
+      () => ctx.agent('task2'),
+      () => ctx.agent('task3'),
+    ]);
+    assert.equal(results.length, 3);
+    assert.ok(results.every(r => r === 'ok'));
+    // With 50ms stagger, second should start ≥40ms after first
+    if (starts.length >= 2) {
+      assert.ok(starts[1]! - starts[0]! >= 30, `stagger too short: ${starts[1]! - starts[0]!}ms`);
+    }
+  });
+
+  it('skips stagger when AMI_WORKFLOW_PREFIX_STAGGER_MS=0', async () => {
+    const orig = process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS;
+    process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS = '0';
+    try {
+      const starts: number[] = [];
+      const handler: AgentHandler = async () => {
+        starts.push(Date.now());
+        return 'ok';
+      };
+      const runtime = new WorkflowRuntime({ agentHandler: handler });
+      const ctx = runtime.createContext(null);
+      await ctx.parallel([
+        () => ctx.agent('task1'),
+        () => ctx.agent('task2'),
+      ]);
+      // Without stagger, both should start nearly simultaneously
+      if (starts.length >= 2) {
+        assert.ok(starts[1]! - starts[0]! < 30, `should be near-simultaneous: ${starts[1]! - starts[0]!}ms`);
+      }
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS = orig;
+      else delete process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS;
+    }
+  });
+
+  it('does not stagger single-thunk parallel', async () => {
+    const handler: AgentHandler = async () => 'ok';
+    const runtime = new WorkflowRuntime({ agentHandler: handler });
+    const ctx = runtime.createContext(null);
+    const t0 = Date.now();
+    const results = await ctx.parallel([() => ctx.agent('solo')]);
+    assert.equal(results.length, 1);
+    assert.ok(Date.now() - t0 < 200, 'single thunk should not wait');
   });
 });

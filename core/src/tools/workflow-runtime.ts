@@ -270,21 +270,29 @@ export class WorkflowRuntime extends EventEmitter {
   }
 
   private createParallel(): <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>> {
+    const staggerMs = parseInt(process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS ?? '', 10);
+    const STAGGER_DELAY = Number.isFinite(staggerMs) ? staggerMs : 50;
+
     return async <T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>> => {
       if (thunks.length > MAX_PIPELINE_ITEMS) {
         throw new Error(`parallel() limit exceeded: ${thunks.length} > ${MAX_PIPELINE_ITEMS}`);
       }
 
-      const results = await Promise.all(
-        thunks.map(async (thunk) => {
-          try {
-            return await thunk();
-          } catch {
-            return null;
-          }
-        }),
-      );
-      return results;
+      if (STAGGER_DELAY <= 0 || thunks.length <= 1) {
+        return Promise.all(
+          thunks.map(async (thunk) => {
+            try { return await thunk(); } catch { return null; }
+          }),
+        );
+      }
+
+      // Stagger launches so subsequent agents hit the prompt cache
+      const results: Array<Promise<T | null>> = [];
+      for (let i = 0; i < thunks.length; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, STAGGER_DELAY));
+        results.push(thunks[i]!().catch(() => null as T | null));
+      }
+      return Promise.all(results);
     };
   }
 
