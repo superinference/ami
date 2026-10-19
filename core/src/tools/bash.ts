@@ -97,17 +97,25 @@ export function injectFindMaxdepth(command: string): string {
   }).join('');
 }
 
-const FILE_READ_COMMANDS = /^\s*(?:cat|head|tail|less|more|bat|batcat)\b/;
+const FILE_READ_COMMANDS = /^\s*(?:cat|head|tail|less|more|bat|batcat|grep|egrep|fgrep|sed\s+-n)\b/;
+const GREP_COMMANDS = /^\s*(?:grep|egrep|fgrep)\b/;
 
 export function extractBashReadPaths(command: string, cwd: string): string[] {
   const paths: string[] = [];
   const segments = command.split(/[;&|]+/).map(s => s.trim());
   for (const seg of segments) {
     if (!FILE_READ_COMMANDS.test(seg)) continue;
+    const isGrep = GREP_COMMANDS.test(seg);
     const tokens = seg.split(/\s+/).filter(Boolean);
+    let patternSkipped = false;
     for (let i = 1; i < tokens.length; i++) {
       const t = tokens[i];
       if (t.startsWith('-')) continue;
+      if (t.startsWith('"') || t.startsWith("'")) {
+        if (isGrep && !patternSkipped) { patternSkipped = true; continue; }
+        continue;
+      }
+      if (isGrep && !patternSkipped) { patternSkipped = true; continue; }
       const resolved = path.isAbsolute(t) ? t : path.resolve(cwd, t);
       paths.push(resolved);
     }

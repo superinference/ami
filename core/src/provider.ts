@@ -1057,6 +1057,14 @@ function extractStatusCode(errorText: string): number | null {
   return null;
 }
 
+const NETWORK_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+export function isNetworkError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  if (code && NETWORK_ERROR_CODES.has(code)) return true;
+  const msg = err instanceof Error ? err.message : '';
+  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up/i.test(msg);
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
 
 export async function* streamChatCompletionWithRetry(
@@ -1087,6 +1095,7 @@ export async function* streamChatCompletionWithRetry(
 
     let contentStarted = false;
     let timedOut = false;
+    let networkRetry = false;
 
     // Inactivity watchdog: kill a stream that goes quiet (connection open, no
     // bytes) far sooner than the total request timeout. Reset on every chunk.
@@ -1165,6 +1174,8 @@ export async function* streamChatCompletionWithRetry(
         timedOut = true;
       } else if (requestAbort.signal.aborted && !abortSignal.aborted) {
         timedOut = true;
+      } else if (!contentStarted && attempt < maxRetries && isNetworkError(err)) {
+        networkRetry = true;
       } else {
         throw err;
       }
@@ -1204,6 +1215,24 @@ export async function* streamChatCompletionWithRetry(
       }
       yield { type: 'error', error: `Request timed out after ${timeoutMs}ms` };
       return;
+    }
+
+    if (networkRetry) {
+      if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
+        yield { type: 'error', error: 'Network error (retry time limit exceeded)' };
+        return;
+      }
+      const netDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+      if (options?.onRetry) {
+        options.onRetry(attempt + 1, maxRetries, netDelay, 0);
+      }
+      try {
+        await sleep(netDelay, abortSignal);
+      } catch {
+        yield { type: 'error', error: 'Request aborted' };
+        return;
+      }
+      continue;
     }
 
     // If we got here via 'break' (retry), the inner loop ended without return — continue outer loop

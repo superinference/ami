@@ -1281,6 +1281,32 @@ describe('extractBashReadPaths', () => {
     assert.equal(paths.length, 1);
     assert.ok(paths[0].endsWith('/src/main.ts'));
   });
+
+  it('tracks grep on a single file', () => {
+    const paths = extractBashReadPaths('grep -n "TODO" /src/main.ts', '/cwd');
+    assert.ok(paths.some(p => p.endsWith('/src/main.ts')));
+  });
+
+  it('tracks egrep', () => {
+    const paths = extractBashReadPaths('egrep "pattern" myfile.ts', '/project');
+    assert.equal(paths.length, 1);
+    assert.ok(paths[0].endsWith('/myfile.ts'));
+  });
+
+  it('tracks fgrep', () => {
+    const paths = extractBashReadPaths('fgrep "literal" /tmp/log.txt', '/cwd');
+    assert.deepEqual(paths, ['/tmp/log.txt']);
+  });
+
+  it('tracks sed -n (print mode)', () => {
+    const paths = extractBashReadPaths('sed -n "10,20p" /src/config.ts', '/cwd');
+    assert.deepEqual(paths, ['/src/config.ts']);
+  });
+
+  it('does not track sed without -n (modifies file)', () => {
+    const paths = extractBashReadPaths('sed "s/old/new/g" /src/config.ts', '/cwd');
+    assert.deepEqual(paths, []);
+  });
 });
 
 // ---------------------------------------------------------------------------

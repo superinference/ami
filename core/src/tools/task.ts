@@ -9,6 +9,8 @@ import { SessionManager } from '../session';
 /** Auto-background threshold for foreground agents exceeding this duration. */
 const AUTO_BG_MS = 120_000; // eslint-disable-line @typescript-eslint/no-unused-vars
 
+const SUBAGENT_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
 const agentNameRegistry = new Map<string, string>();
 
 export function getAgentByName(name: string): string | undefined {
@@ -367,8 +369,19 @@ export const taskTool: ToolDefinition = {
         let sawError = false;
         const fd = fs.openSync(outputPath, 'w');
         const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
+        const bgStallMs = parseInt(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS ?? '', 10) || SUBAGENT_STALL_TIMEOUT_MS;
+        let bgStallTimer: ReturnType<typeof setTimeout> | null = null;
+        let bgStalled = false;
+        const resetBgStall = () => {
+          if (bgStallTimer) clearTimeout(bgStallTimer);
+          bgStallTimer = setTimeout(() => { bgStalled = true; (subEngine as any).shutdown?.(); }, bgStallMs);
+        };
+        const clearBgStall = () => { if (bgStallTimer) { clearTimeout(bgStallTimer); bgStallTimer = null; } };
+        resetBgStall();
         try {
           for await (const event of subEngine.submit(effectivePrompt)) {
+            resetBgStall();
+            if (bgStalled) break;
             if (event.type === 'thinking_delta') {
               w(event.text);
             }
@@ -401,12 +414,19 @@ export const taskTool: ToolDefinition = {
               w(errText);
             }
           }
+          if (bgStalled) {
+            sawError = true;
+            const msg = `\n[Subagent stalled — no events for ${Math.round(bgStallMs / 1000)}s, terminated]`;
+            result += msg;
+            w(msg);
+          }
         } catch (err) {
           sawError = true;
           const errText = `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
           result += errText;
           w(errText);
         } finally {
+          clearBgStall();
           (subEngine as any).shutdown?.();
         }
         try { fs.closeSync(fd); } catch { /* already closed */ }
@@ -455,8 +475,23 @@ export const taskTool: ToolDefinition = {
     let totalTokens = 0;
     const recentActivities: string[] = [];
 
+    const stallTimeoutMs = parseInt(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS ?? '', 10) || SUBAGENT_STALL_TIMEOUT_MS;
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    let stalled = false;
+    const resetStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        subAbort.abort('subagent stalled — no events for ' + Math.round(stallTimeoutMs / 1000) + 's');
+      }, stallTimeoutMs);
+    };
+    const clearStallTimer = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } };
+    resetStallTimer();
+
     try {
       for await (const event of subEngine.submit(effectivePromptForSubmit)) {
+        resetStallTimer();
+        if (stalled) break;
         if (event.type === 'text_delta') {
           resultText += event.text;
         }
@@ -472,6 +507,9 @@ export const taskTool: ToolDefinition = {
           totalTokens = (event as any).stats?.totalTokens ?? totalTokens;
         }
       }
+      if (stalled) {
+        resultText += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]`;
+      }
     } catch (err) {
       context.abortSignal.removeEventListener('abort', forwardAbort);
       if (context._hookManager) {
@@ -482,6 +520,7 @@ export const taskTool: ToolDefinition = {
         isError: true,
       };
     } finally {
+      clearStallTimer();
       (subEngine as any).shutdown?.();
     }
     context.abortSignal.removeEventListener('abort', forwardAbort);

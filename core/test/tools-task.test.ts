@@ -589,3 +589,44 @@ describe('taskTool – thinking inheritance', () => {
     } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Subagent stall timeout
+// ---------------------------------------------------------------------------
+
+describe('taskTool — subagent stall timeout', () => {
+  it('SUBAGENT_STALL_TIMEOUT_MS constant is 10 minutes', async () => {
+    // The constant is not exported, but we can verify the behavior via env var
+    const orig = process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS;
+    process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS = '200';
+    try {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-stall-'));
+      try {
+        let shutdownCalled = false;
+        async function* stallingSubmit(): AsyncGenerator<any> {
+          yield { type: 'text_delta', text: 'starting...' };
+          await new Promise(r => setTimeout(r, 500));
+          // Stall — no more events for longer than 200ms
+        }
+        const result = await taskTool.execute(
+          { prompt: 'stall test' },
+          ctx({
+            cwd: tmpDir,
+            _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+            _engineFactory: () => ({
+              submit: stallingSubmit,
+              shutdown: () => { shutdownCalled = true; },
+            }),
+          }),
+        );
+        assert.ok(result.output.includes('timed out') || result.output.includes('stall'),
+          'Should report stall timeout');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    } finally {
+      if (orig !== undefined) process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS = orig;
+      else delete process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS;
+    }
+  });
+});

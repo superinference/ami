@@ -5,6 +5,7 @@ import {
   CREDENTIAL_PATTERNS,
   parseRetryAfterHeader,
   MAX_RETRY_AFTER_MS,
+  isNetworkError,
 } from '../../core/src/provider';
 
 describe('sanitizeErrorMessage', () => {
@@ -145,5 +146,36 @@ describe('parseRetryAfterHeader', () => {
 describe('MAX_RETRY_AFTER_MS', () => {
   it('equals 1 hour in milliseconds', () => {
     assert.equal(MAX_RETRY_AFTER_MS, 3_600_000);
+  });
+});
+
+describe('isNetworkError', () => {
+  it('returns true for ECONNRESET', () => {
+    assert.ok(isNetworkError(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })));
+  });
+
+  it('returns true for ECONNREFUSED', () => {
+    assert.ok(isNetworkError(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })));
+  });
+
+  it('returns true for ETIMEDOUT', () => {
+    assert.ok(isNetworkError(Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' })));
+  });
+
+  it('returns true for EHOSTUNREACH', () => {
+    assert.ok(isNetworkError(Object.assign(new Error(''), { code: 'EHOSTUNREACH' })));
+  });
+
+  it('returns true for socket hang up in message', () => {
+    assert.ok(isNetworkError(new Error('socket hang up')));
+  });
+
+  it('returns false for auth errors', () => {
+    assert.equal(isNetworkError(new Error('401 Unauthorized')), false);
+  });
+
+  it('returns false for non-Error values', () => {
+    assert.equal(isNetworkError('string'), false);
+    assert.equal(isNetworkError(null), false);
   });
 });
