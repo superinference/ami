@@ -274,4 +274,29 @@ describe('web_search — session-wide runaway cap', () => {
     assert.match(res.output, /web search limit|too many searches/i);
     assert.equal(budget.count, 1, 'budget counter must increment');
   });
+
+  it('refills budget based on elapsed time', async () => {
+    const twoHoursAgo = Date.now() - 2 * 3_600_000;
+    const budget = { count: 10, max: 5, lastRefillTime: twoHoursAgo, refillRate: 3 };
+    const ctx: any = { cwd: process.cwd(), abortSignal: AbortSignal.abort(), _webSearchBudget: budget };
+    await webSearchTool.execute({ query: 'test' }, ctx);
+    assert.ok(budget.count <= 5, `Budget should have been refilled, count: ${budget.count}`);
+  });
+
+  it('does not refill when no time has passed', async () => {
+    const budget = { count: 4, max: 5, lastRefillTime: Date.now(), refillRate: 10 };
+    const ctx: any = { cwd: process.cwd(), abortSignal: AbortSignal.abort(), _webSearchBudget: budget };
+    await webSearchTool.execute({ query: 'test' }, ctx);
+    assert.equal(budget.count, 5, 'Count should increment by 1 without refill');
+  });
+
+  it('allows search when under budget', async () => {
+    const budget = { count: 0, max: 100 };
+    const ac = new AbortController();
+    ac.abort();
+    const ctx: any = { cwd: process.cwd(), abortSignal: ac.signal, _webSearchBudget: budget };
+    const res = await webSearchTool.execute({ query: 'test' }, ctx);
+    assert.equal(budget.count, 1);
+    assert.ok(!res.output.includes('web search limit'), 'Should not hit limit');
+  });
 });
