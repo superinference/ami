@@ -519,7 +519,7 @@ export function withGzipCompression(
       const merged = existingHeaders instanceof Headers
         ? (() => { const h = new Headers(existingHeaders); h.set('content-encoding', 'gzip'); return h; })()
         : Array.isArray(existingHeaders)
-          ? [...existingHeaders, ['content-encoding', 'gzip']]
+          ? [...existingHeaders, ['content-encoding', 'gzip'] as [string, string]]
           : { ...existingHeaders, 'content-encoding': 'gzip' };
       return baseFetch(input, { ...init, body: compressed, headers: merged });
     }

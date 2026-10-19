@@ -153,6 +153,7 @@ export interface ProviderConfig {
   /** Extra headers merged into every LLM API request. Used for gateway hint
    *  headers (request class, agent type, compaction state). */
   extraHeaders?: Record<string, string>;
+  fallbackModel?: string;
 }
 
 export interface StreamChunk {
