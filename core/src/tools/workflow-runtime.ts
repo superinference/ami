@@ -68,7 +68,15 @@ export function detectCpuCount(): number {
   } catch { /* not in a cgroup-v1 container */ }
   return osCpus;
 }
-const DEFAULT_MAX_CONCURRENT = Math.max(4, Math.min(16, detectCpuCount() - 2));
+export function getMaxConcurrent(): number {
+  const env = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (n >= 1 && n <= 256) return n;
+  }
+  return Math.max(4, Math.min(16, detectCpuCount() - 2));
+}
+const DEFAULT_MAX_CONCURRENT = getMaxConcurrent();
 const MAX_AGENTS = 1000;
 const MAX_PIPELINE_ITEMS = 4096;
 

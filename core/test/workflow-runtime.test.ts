@@ -6,6 +6,7 @@ import {
   parseWorkflowMeta,
   validateWorkflowScript,
   detectCpuCount,
+  getMaxConcurrent,
 } from '../src/tools/workflow-runtime';
 import { workflowTool } from '../src/tools/workflow';
 import * as fs from 'fs';
@@ -589,5 +590,93 @@ describe('detectCpuCount', () => {
     const a = detectCpuCount();
     const b = detectCpuCount();
     assert.equal(a, b);
+  });
+});
+
+describe('getMaxConcurrent', () => {
+  it('returns a value between 1 and 256', () => {
+    const val = getMaxConcurrent();
+    assert.ok(val >= 1 && val <= 256, `expected 1-256, got ${val}`);
+  });
+
+  it('reads AMI_WORKFLOW_MAX_CONCURRENT_AGENTS env var', () => {
+    const orig = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = '32';
+    try {
+      assert.equal(getMaxConcurrent(), 32);
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
+      else delete process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    }
+  });
+
+  it('accepts boundary value 1', () => {
+    const orig = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = '1';
+    try {
+      assert.equal(getMaxConcurrent(), 1);
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
+      else delete process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    }
+  });
+
+  it('accepts boundary value 256', () => {
+    const orig = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = '256';
+    try {
+      assert.equal(getMaxConcurrent(), 256);
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
+      else delete process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    }
+  });
+
+  it('rejects out-of-range value (too high)', () => {
+    const orig = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = '500';
+    try {
+      const val = getMaxConcurrent();
+      assert.ok(val >= 4 && val <= 16, 'should fall back to CPU-based default');
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
+      else delete process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    }
+  });
+
+  it('rejects out-of-range value (zero)', () => {
+    const orig = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = '0';
+    try {
+      const val = getMaxConcurrent();
+      assert.ok(val >= 4 && val <= 16, 'should fall back to CPU-based default');
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
+      else delete process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    }
+  });
+
+  it('rejects non-numeric value', () => {
+    const orig = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = 'fast';
+    try {
+      const val = getMaxConcurrent();
+      assert.ok(val >= 4 && val <= 16, 'should fall back to CPU-based default');
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
+      else delete process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    }
+  });
+
+  it('defaults to CPU-based calculation when env var not set', () => {
+    const orig = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    delete process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
+    try {
+      const val = getMaxConcurrent();
+      const expected = Math.max(4, Math.min(16, detectCpuCount() - 2));
+      assert.equal(val, expected);
+    } finally {
+      if (orig !== undefined) process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS = orig;
+    }
   });
 });
