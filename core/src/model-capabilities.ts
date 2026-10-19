@@ -290,6 +290,12 @@ const REASONING_MODELS: Array<{
       supportsAdaptiveThinking: false, requiresTemperatureOne: false,
       temperatureMustBeUnset: true, maxThinkingBudget: 0 } },
 
+  // OpenAI GPT-5+ — reasoning models with reasoning_effort
+  { pattern: /^gpt-(?:[5-9]|\d{2,})/,
+    capabilities: { reasoning: true, defaultThinkingLevel: 'medium',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: true, maxThinkingBudget: 0 } },
+
   // Google Gemini 2.5+ — thinkingConfig
   { pattern: /gemini-2\.5-pro/,
     capabilities: { reasoning: true, defaultThinkingLevel: 'medium',
@@ -322,6 +328,7 @@ export function clearDynamicCapabilities(): void {
 }
 
 const OPENAI_REASONING_PATTERN = /^o[1-9]($|-)/;
+const GPT_VERSION_PATTERN = /^gpt-(\d+)(?:\.(\d+))?/;
 
 function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
   if (OPENAI_REASONING_PATTERN.test(modelId)) {
@@ -331,7 +338,28 @@ function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
       temperatureMustBeUnset: true, maxThinkingBudget: 0,
     };
   }
+  const gptMatch = GPT_VERSION_PATTERN.exec(modelId);
+  if (gptMatch) {
+    const major = parseInt(gptMatch[1]!, 10);
+    if (major >= 5) {
+      return {
+        reasoning: true, defaultThinkingLevel: 'medium',
+        supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+        temperatureMustBeUnset: true, maxThinkingBudget: 0,
+      };
+    }
+  }
   return null;
+}
+
+/**
+ * Returns true if the model requires the /v1/responses endpoint for tool use.
+ * gpt-6+ models do not support function tools with reasoning on /v1/chat/completions.
+ */
+export function requiresResponsesAPI(modelId: string): boolean {
+  const match = GPT_VERSION_PATTERN.exec(modelId);
+  if (!match) return false;
+  return parseInt(match[1]!, 10) >= 6;
 }
 
 export function discoverFromModelList(records: Record<string, unknown>[]): {

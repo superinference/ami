@@ -14,6 +14,7 @@ import {
   registerModelCapabilities,
   clearDynamicCapabilities,
   clampEffortLevel,
+  requiresResponsesAPI,
   discoverFromModelList,
   modelSupportsVision,
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -236,14 +237,23 @@ describe('getModelCapabilities', () => {
     assert.equal(getModelCapabilities('unknown-model'), null);
   });
 
-  it('returns null for GPT-6 family (chat models, no reasoning_effort)', () => {
-    assert.equal(getModelCapabilities('gpt-6-luna'), null);
-    assert.equal(getModelCapabilities('gpt-6-sol'), null);
-    assert.equal(getModelCapabilities('gpt-6-astra'), null);
-    assert.equal(getModelCapabilities('gpt-6.1-sol'), null);
-    assert.equal(getModelCapabilities('gpt-5.6-luna'), null);
-    assert.equal(getModelCapabilities('gpt-5.5'), null);
-    assert.equal(getModelCapabilities('gpt-5.4'), null);
+  it('classifies GPT-5+ as reasoning models via dynamic classification', () => {
+    clearDynamicCapabilities();
+    const caps6 = getModelCapabilities('gpt-6-luna');
+    assert.notEqual(caps6, null, 'gpt-6-luna should be classified as reasoning');
+    assert.equal(caps6!.reasoning, true);
+    assert.equal(caps6!.temperatureMustBeUnset, true);
+
+    const caps5 = getModelCapabilities('gpt-5');
+    assert.notEqual(caps5, null, 'gpt-5 should be classified as reasoning');
+    assert.equal(caps5!.reasoning, true);
+
+    const caps56 = getModelCapabilities('gpt-5.6-sol');
+    assert.notEqual(caps56, null, 'gpt-5.6-sol should be classified as reasoning');
+    assert.equal(caps56!.reasoning, true);
+
+    assert.equal(getModelCapabilities('gpt-4o'), null, 'gpt-4o should not be reasoning');
+    assert.equal(getModelCapabilities('gpt-4-turbo'), null, 'gpt-4-turbo should not be reasoning');
   });
 });
 
@@ -269,11 +279,13 @@ describe('isReasoningModel', () => {
     assert.equal(isReasoningModel('llama-3'), false);
   });
 
-  it('returns false for GPT-6 family', () => {
-    assert.equal(isReasoningModel('gpt-6-luna'), false);
-    assert.equal(isReasoningModel('gpt-6-sol'), false);
-    assert.equal(isReasoningModel('gpt-6-astra'), false);
-    assert.equal(isReasoningModel('gpt-6.1-sol'), false);
+  it('returns true for GPT-5+ family (reasoning models)', () => {
+    assert.equal(isReasoningModel('gpt-6-luna'), true);
+    assert.equal(isReasoningModel('gpt-6-sol'), true);
+    assert.equal(isReasoningModel('gpt-6-astra'), true);
+    assert.equal(isReasoningModel('gpt-6.1-sol'), true);
+    assert.equal(isReasoningModel('gpt-5'), true);
+    assert.equal(isReasoningModel('gpt-5.6-luna'), true);
   });
 });
 
@@ -584,7 +596,7 @@ describe('discoverFromModelList', () => {
     assert.equal(caps!.temperatureMustBeUnset, true);
   });
 
-  it('auto-classifies gpt-6 models as non-reasoning', () => {
+  it('auto-classifies gpt-6 models as reasoning', () => {
     const records = [
       { id: 'gpt-6-luna', object: 'model' },
       { id: 'gpt-6-sol', object: 'model' },
@@ -592,10 +604,12 @@ describe('discoverFromModelList', () => {
     ];
     const result = discoverFromModelList(records);
     assert.ok(result.registered.length === 3);
-    assert.equal(getModelCapabilities('gpt-6-luna'), null);
-    assert.equal(getModelCapabilities('gpt-6-sol'), null);
-    assert.equal(getModelCapabilities('gpt-6-astra'), null);
-    assert.equal(isReasoningModel('gpt-6-luna'), false);
+    const caps = getModelCapabilities('gpt-6-luna');
+    assert.notEqual(caps, null, 'gpt-6-luna should be reasoning');
+    assert.equal(caps!.reasoning, true);
+    assert.equal(caps!.temperatureMustBeUnset, true);
+    assert.equal(isReasoningModel('gpt-6-luna'), true);
+    assert.equal(isReasoningModel('gpt-6-sol'), true);
   });
 
   it('picks up advertised context windows from records', () => {
@@ -652,15 +666,22 @@ describe('discoverFromModelList', () => {
     assert.equal(isReasoningModel('o4-mini-2025-04-16'), true);
   });
 
-  it('does not classify non-o-series as reasoning', () => {
+  it('does not classify gpt-4 as reasoning', () => {
     discoverFromModelList([
       { id: 'gpt-4o' },
       { id: 'chatgpt-4o-latest' },
-      { id: 'gpt-5.5' },
     ]);
     assert.equal(isReasoningModel('gpt-4o'), false);
     assert.equal(isReasoningModel('chatgpt-4o-latest'), false);
-    assert.equal(isReasoningModel('gpt-5.5'), false);
+  });
+
+  it('classifies gpt-5+ as reasoning via discover', () => {
+    discoverFromModelList([
+      { id: 'gpt-5.5' },
+      { id: 'gpt-6-luna' },
+    ]);
+    assert.equal(isReasoningModel('gpt-5.5'), true);
+    assert.equal(isReasoningModel('gpt-6-luna'), true);
   });
 
   it('mixed reasoning and non-reasoning models in one call', () => {
@@ -668,13 +689,13 @@ describe('discoverFromModelList', () => {
       { id: 'o3-2025-04-16' },
       { id: 'gpt-6-luna' },
       { id: 'o4-mini-2025-04-16' },
-      { id: 'gpt-6-sol' },
+      { id: 'gpt-4o' },
     ]);
     assert.equal(result.registered.length, 4);
     assert.equal(isReasoningModel('o3-2025-04-16'), true);
-    assert.equal(isReasoningModel('gpt-6-luna'), false);
+    assert.equal(isReasoningModel('gpt-6-luna'), true);
     assert.equal(isReasoningModel('o4-mini-2025-04-16'), true);
-    assert.equal(isReasoningModel('gpt-6-sol'), false);
+    assert.equal(isReasoningModel('gpt-4o'), false);
   });
 });
 
@@ -778,5 +799,39 @@ describe('clampEffortLevel', () => {
         }
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requiresResponsesAPI
+// ---------------------------------------------------------------------------
+describe('requiresResponsesAPI', () => {
+  it('returns true for gpt-6+ models', () => {
+    assert.equal(requiresResponsesAPI('gpt-6-luna'), true);
+    assert.equal(requiresResponsesAPI('gpt-6-astra'), true);
+    assert.equal(requiresResponsesAPI('gpt-6.1-sol'), true);
+    assert.equal(requiresResponsesAPI('gpt-6'), true);
+    assert.equal(requiresResponsesAPI('gpt-6-sol'), true);
+  });
+
+  it('returns false for gpt-5 family (chat completions still work)', () => {
+    assert.equal(requiresResponsesAPI('gpt-5'), false);
+    assert.equal(requiresResponsesAPI('gpt-5.6-luna'), false);
+    assert.equal(requiresResponsesAPI('gpt-5.5'), false);
+    assert.equal(requiresResponsesAPI('gpt-5.4-pro'), false);
+  });
+
+  it('returns false for gpt-4 and older', () => {
+    assert.equal(requiresResponsesAPI('gpt-4o'), false);
+    assert.equal(requiresResponsesAPI('gpt-4-turbo'), false);
+    assert.equal(requiresResponsesAPI('gpt-3.5-turbo'), false);
+  });
+
+  it('returns false for non-GPT models', () => {
+    assert.equal(requiresResponsesAPI('o3'), false);
+    assert.equal(requiresResponsesAPI('o4-mini'), false);
+    assert.equal(requiresResponsesAPI('claude-opus-4'), false);
+    assert.equal(requiresResponsesAPI('gemini-2.5-pro'), false);
+    assert.equal(requiresResponsesAPI('deepseek-r1'), false);
   });
 });

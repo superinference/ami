@@ -5,7 +5,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
 import { gzipSync } from 'node:zlib';
-import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow } from './model-capabilities';
+import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import type {
@@ -604,6 +604,11 @@ export function resolveModel(config: ProviderConfig) {
   // All OpenAI-compatible providers (groq, mistral, xai, deepseek, etc.)
   const effectiveBaseUrl = baseUrl || PROVIDER_BASE_URLS[provider as ProviderName] || 'https://api.openai.com/v1';
   const openai = createOpenAI({ baseURL: effectiveBaseUrl, apiKey, fetch });
+  // gpt-6+ on OpenAI require /v1/responses for tool use with reasoning
+  const isOpenAI = !baseUrl || effectiveBaseUrl.includes('api.openai.com');
+  if (isOpenAI && requiresResponsesAPI(model)) {
+    return openai.responses(model);
+  }
   return openai.chat(model);
 }
 
