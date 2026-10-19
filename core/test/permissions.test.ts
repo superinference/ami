@@ -1052,3 +1052,51 @@ describe('PermissionManager — line continuation normalization (Gap #93)', () =
     assert.equal(normalizeLineContinuations('path\\to\\file'), 'path\\to\\file');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gap #83 — wildcard allow rules downgraded to ask for destructive bash
+// ---------------------------------------------------------------------------
+
+describe('check() — destructive bash commands cannot be auto-approved by allow rules', () => {
+  it('wildcard allow rule downgrades to ask for rm -rf', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: '*', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'rm -rf node_modules' }), 'ask');
+  });
+
+  it('wildcard allow rule still allows safe commands', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: '*', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo hello' }), 'allow');
+  });
+
+  it('explicit deny still wins over destructive downgrade', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'rm -rf /' }), 'deny');
+  });
+
+  it('tool-wide allow rule (no pattern) downgrades for destructive', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'rm important.txt' }), 'ask');
+  });
+
+  it('tool-wide allow rule (no pattern) allows safe commands', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'ls -la' }), 'allow');
+  });
+
+  it('non-bash tools are not affected by destructive downgrade', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'file_edit', pattern: '*', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('file_edit', { file_path: '/etc/important' }), 'allow');
+  });
+});
