@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { estimateTokens, estimateToolCallTokens, estimateMessageTokens } from '../src/token-estimator';
+import { estimateTokens, estimateToolCallTokens, estimateMessageTokens, estimateConversationTokens } from '../src/token-estimator';
 
 describe('estimateTokens', () => {
   it('returns 0 for empty string', () => {
@@ -69,5 +69,58 @@ describe('estimateMessageTokens', () => {
       content: [{ type: 'text', text: 'Check this file' }],
     } as any);
     assert.ok(estimate > 3);
+  });
+
+  it('handles undefined content', () => {
+    const estimate = estimateMessageTokens({ role: 'assistant', content: undefined });
+    assert.equal(estimate, 4);
+  });
+
+  it('handles array content with non-text parts', () => {
+    const estimate = estimateMessageTokens({
+      role: 'user',
+      content: [
+        { type: 'image', source: { data: 'base64data' } },
+        { type: 'text', text: 'Describe this image' },
+      ],
+    } as any);
+    assert.ok(estimate > 4);
+  });
+
+  it('handles array content with no text parts', () => {
+    const estimate = estimateMessageTokens({
+      role: 'user',
+      content: [{ type: 'image', source: { data: 'base64data' } }],
+    } as any);
+    assert.equal(estimate, 4);
+  });
+});
+
+describe('estimateConversationTokens', () => {
+  it('returns framing overhead for empty conversation', () => {
+    const estimate = estimateConversationTokens([]);
+    assert.equal(estimate, 3);
+  });
+
+  it('sums message tokens plus framing', () => {
+    const messages = [
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there' },
+    ];
+    const estimate = estimateConversationTokens(messages);
+    const msg1 = estimateMessageTokens(messages[0]);
+    const msg2 = estimateMessageTokens(messages[1]);
+    assert.equal(estimate, 3 + msg1 + msg2);
+  });
+
+  it('handles multiple messages with tool calls', () => {
+    const messages = [
+      { role: 'user', content: 'Fix the bug' },
+      { role: 'assistant', content: null },
+      { role: 'tool', content: 'output' },
+      { role: 'assistant', content: 'Done' },
+    ];
+    const estimate = estimateConversationTokens(messages);
+    assert.ok(estimate > 3 + 4 * 4);
   });
 });
