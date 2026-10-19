@@ -496,6 +496,11 @@ describe('detectHardlineCommand', () => {
     ['pkill -9 tsx', 'pkill tsx would kill AMI'],
     ['pkill -f superinference', 'would kill AMI'],
     ['pkill -9 -f superinference', 'would kill AMI'],
+    // macOS /private/* paths (Gap #67)
+    ['rm -rf /private/etc', 'macOS system directory'],
+    ['rm -rf /private/var', 'macOS system directory'],
+    ['rm -rf /private/tmp', 'macOS system directory'],
+    ['rm -rf /private/home', 'macOS system directory'],
   ] as const;
 
   for (const [cmd] of blocked) {
