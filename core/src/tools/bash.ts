@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
-import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput } from './bash-security';
+import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
@@ -426,7 +426,7 @@ export const bashTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const command = input.command as string;
+    let command = input.command as string;
     // Accept `command_description` as alias for `description` — models sometimes use the wrong name
     if (input.command_description && !input.description) {
       input.description = input.command_description;
@@ -436,6 +436,10 @@ export const bashTool: ToolDefinition = {
     if (!command || command.trim().length === 0) {
       return { output: 'Error: command must not be empty.', isError: true };
     }
+
+    // Join backslash-newline continuations before all checks so split
+    // commands like r\<NL>m can't evade detection.
+    command = joinLineContinuations(command);
 
     // Nuclear command blocklist — un-bypassable, runs before ALL other checks.
     // No flag, mode, or env var can disable this. Even --yolo cannot override it.

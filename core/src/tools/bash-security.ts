@@ -54,6 +54,7 @@ const CHECK_IDS = {
   FILE_COMMAND_ARBITRARY_READ: 54,
   SHELL_STARTUP_WRITE: 55,
   DANGLING_OPERATOR: 56,
+  SELF_PROCESS_KILL: 57,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -954,6 +955,15 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     const startupCheck = detectShellStartupWrite(command);
     if (startupCheck.blocked) {
       return fail(CHECK_IDS.SHELL_STARTUP_WRITE, startupCheck.reason!);
+    }
+  }
+
+  // Self-process kill — blocks pkill/killall/kill targeting the CLI process
+  // itself (node, tsx, superinference, ami) or kill $$ / pkill -P $$.
+  {
+    const selfKill = detectSelfProcessKill(command);
+    if (selfKill.blocked) {
+      return fail(CHECK_IDS.SELF_PROCESS_KILL, selfKill.reason!);
     }
   }
 
@@ -2968,4 +2978,65 @@ function expandOutsideQuotes(input: string, pattern: RegExp, replacement: string
   }
   result += input.slice(lastIndex);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Self-process kill detection — blocks commands that would kill the CLI itself
+// ---------------------------------------------------------------------------
+
+const SELF_PROCESS_NAMES = new Set(['node', 'tsx', 'superinference', 'ami']);
+
+export function detectSelfProcessKill(command: string): { blocked: boolean; reason?: string } {
+  if (!command) return { blocked: false };
+
+  const stripped = stripInvisibleUnicode(command);
+
+  // kill $$ — kills own process
+  if (/\bkill\s+(?:-\S+\s+)*\$\$/.test(stripped)) {
+    return { blocked: true, reason: 'kill $$ — would terminate the current process' };
+  }
+
+  // pkill -P $$ — kills child processes
+  if (/\bpkill\s+(?:-\S+\s+)*-P\s+\$\$/.test(stripped)) {
+    return { blocked: true, reason: 'pkill -P $$ — would kill all child processes' };
+  }
+
+  // pkill -f / pkill --full with CLI-matching pattern
+  const pkillFull = /\bpkill\s+(?:-[\w]+\s+)*(?:-f|--full)\s+(?:-\S+\s+)*(\S+)/.exec(stripped)
+    ?? /\bpkill\s+(?:-\S+)*f(?:\S*)\s+(?:-\S+\s+)*(\S+)/.exec(stripped);
+  if (pkillFull) {
+    const pattern = pkillFull[1].replace(/^["']|["']$/g, '');
+    if (SELF_PROCESS_NAMES.has(pattern)) {
+      return { blocked: true, reason: `pkill -f ${pattern} — would kill the CLI process` };
+    }
+  }
+
+  // killall targeting CLI process names
+  const killall = /\bkillall\s+(?:-\S+\s+)*(\S+)/.exec(stripped);
+  if (killall) {
+    const target = killall[1].replace(/^["']|["']$/g, '');
+    if (SELF_PROCESS_NAMES.has(target)) {
+      return { blocked: true, reason: `killall ${target} — would kill the CLI process` };
+    }
+  }
+
+  // kill $(pgrep -f ...) with CLI-matching pattern
+  const killPgrep = /\bkill\s+(?:-\S+\s+)*\$\(pgrep\s+(?:-\S+\s+)*(?:-f|--full)\s+(\S+)\)/.exec(stripped);
+  if (killPgrep) {
+    const pattern = killPgrep[1].replace(/^["']|["']$/g, '');
+    if (SELF_PROCESS_NAMES.has(pattern)) {
+      return { blocked: true, reason: `kill with pgrep -f ${pattern} — would kill the CLI process` };
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Line continuation joining — collapses backslash-newline sequences so
+// split commands like r\<NL>m are reassembled before security checks.
+// ---------------------------------------------------------------------------
+
+export function joinLineContinuations(command: string): string {
+  return command.replace(/\\\n/g, '');
 }
