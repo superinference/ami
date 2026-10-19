@@ -1017,6 +1017,7 @@ describe('bashTool -- exit code interpretation', () => {
     try {
       const { execSync } = await import('child_process');
       execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
+      execSync('git config user.email "test@test.com" && git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
       fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hello\n');
       execSync('git add a.txt && git commit -m init', { cwd: tmpDir, stdio: 'pipe' });
       const result = await bashTool.execute(
@@ -1035,6 +1036,7 @@ describe('bashTool -- exit code interpretation', () => {
     try {
       const { execSync } = await import('child_process');
       execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
+      execSync('git config user.email "test@test.com" && git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
       fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'hello\n');
       execSync('git add a.txt && git commit -m init', { cwd: tmpDir, stdio: 'pipe' });
       fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'world\n');
