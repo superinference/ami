@@ -5,12 +5,16 @@
  * - McpClient.onToolProgress (callback registration)
  * - McpClient states (disconnected → connecting → ready → error)
  * - McpManager health check start/stop
+ * - MCP tool call timeout (configurable via SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS)
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { McpManager, findMcpConfigPaths, isTransientConnectError } from '../src/mcp/manager';
 import { McpClient } from '../src/mcp/client';
+import { DEFAULT_MCP_TOOL_TIMEOUT_MS, getMcpToolTimeout } from '../src/tools/mcp-tool';
 
 let manager: McpManager;
 
@@ -200,5 +204,75 @@ describe('isTransientConnectError', () => {
     assert.equal(isTransientConnectError('string error'), false);
     assert.equal(isTransientConnectError(42), false);
     assert.equal(isTransientConnectError(null), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP tool call timeout
+// ---------------------------------------------------------------------------
+
+describe('MCP tool call timeout', () => {
+  const envKey = 'SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS';
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env[envKey];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env[envKey];
+    } else {
+      process.env[envKey] = savedEnv;
+    }
+  });
+
+  it('DEFAULT_MCP_TOOL_TIMEOUT_MS is 5 minutes (300000ms)', () => {
+    assert.equal(DEFAULT_MCP_TOOL_TIMEOUT_MS, 300_000);
+  });
+
+  it('getMcpToolTimeout returns default when env var is unset', () => {
+    delete process.env[envKey];
+    assert.equal(getMcpToolTimeout(), 300_000);
+  });
+
+  it('getMcpToolTimeout returns default when env var is empty', () => {
+    process.env[envKey] = '';
+    assert.equal(getMcpToolTimeout(), 300_000);
+  });
+
+  it('getMcpToolTimeout reads a custom value from env', () => {
+    process.env[envKey] = '60000';
+    assert.equal(getMcpToolTimeout(), 60_000);
+  });
+
+  it('getMcpToolTimeout ignores non-numeric values', () => {
+    process.env[envKey] = 'abc';
+    assert.equal(getMcpToolTimeout(), 300_000);
+  });
+
+  it('getMcpToolTimeout ignores zero', () => {
+    process.env[envKey] = '0';
+    assert.equal(getMcpToolTimeout(), 300_000);
+  });
+
+  it('getMcpToolTimeout ignores negative values', () => {
+    process.env[envKey] = '-1000';
+    assert.equal(getMcpToolTimeout(), 300_000);
+  });
+
+  it('getMcpToolTimeout ignores Infinity', () => {
+    process.env[envKey] = 'Infinity';
+    assert.equal(getMcpToolTimeout(), 300_000);
+  });
+
+  it('source code uses Promise.race with timeout for tool calls', () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'tools', 'mcp-tool.ts'), 'utf-8',
+    );
+    assert.ok(src.includes('Promise.race'), 'must use Promise.race for timeout');
+    assert.ok(src.includes('getMcpToolTimeout()'), 'must call getMcpToolTimeout()');
+    assert.ok(src.includes('timed out after'), 'must include descriptive timeout message');
+    assert.ok(src.includes('SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS'), 'must reference env var');
   });
 });

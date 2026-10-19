@@ -2,6 +2,19 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { spillToolText } from './spill-output';
 import { boundMcpResponse } from '../mcp/client';
 
+/** Default MCP tool call timeout: 5 minutes (300 000 ms). */
+export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000;
+
+/** Read the MCP tool timeout from the environment, falling back to the default.
+ *  Invalid or non-positive values are silently replaced by the default. */
+export function getMcpToolTimeout(): number {
+  const raw = process.env.SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_MCP_TOOL_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_MCP_TOOL_TIMEOUT_MS;
+  return n;
+}
+
 /** Max tool-name length accepted by the OpenAI/Anthropic APIs. A qualified MCP
  *  name longer than this poisons every request, so it must be shortened. */
 export const MAX_MCP_TOOL_NAME_LEN = 128;
@@ -46,10 +59,12 @@ export function createMcpTool(serverName: string, toolName: string, description:
         }
       }
 
-      const MCP_TOOL_TIMEOUT = 100_000_000; // ~27.8 hours
+      const timeoutMs = getMcpToolTimeout();
       let timer: ReturnType<typeof setTimeout>;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('MCP tool timeout')), MCP_TOOL_TIMEOUT);
+        timer = setTimeout(() => reject(new Error(
+          `MCP tool call timed out after ${Math.round(timeoutMs / 1000)} seconds. The MCP server may be unresponsive.`
+        )), timeoutMs);
         timer.unref();
       });
       try {
