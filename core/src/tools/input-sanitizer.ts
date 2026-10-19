@@ -35,6 +35,29 @@ export function sanitizeToolInput(input: Record<string, unknown>, depth: number 
   return result;
 }
 
+export function recoverJsonStringFields(
+  input: Record<string, unknown>,
+  schema?: { properties?: Record<string, { type?: string }> },
+): Record<string, unknown> {
+  if (!schema?.properties) return input;
+  const result = { ...input };
+  for (const [key, propSchema] of Object.entries(schema.properties)) {
+    const value = result[key];
+    if (typeof value !== 'string') continue;
+    const expectedType = propSchema.type;
+    if (expectedType !== 'array' && expectedType !== 'object') continue;
+    const trimmed = value.trim();
+    const isArrayLike = trimmed.startsWith('[') && trimmed.endsWith(']');
+    const isObjectLike = trimmed.startsWith('{') && trimmed.endsWith('}');
+    if ((expectedType === 'array' && isArrayLike) || (expectedType === 'object' && isObjectLike)) {
+      try {
+        result[key] = JSON.parse(trimmed);
+      } catch { /* keep original string */ }
+    }
+  }
+  return result;
+}
+
 export function validateRequiredFields(
   input: Record<string, unknown>,
   required: string[],

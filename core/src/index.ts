@@ -111,7 +111,7 @@ export type { ToolConflict } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
 export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration } from './conversation-summary';
 export type { ConversationMeta } from './conversation-summary';
-export { sanitizeToolInput, validateRequiredFields, detectPromptInjection } from './tools/input-sanitizer';
+export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recoverJsonStringFields } from './tools/input-sanitizer';
 export { isProtectedLogTier, canModifyLog, UILogGuard } from './ui-log-guard';
 export type { LogTier, LogEntry } from './ui-log-guard';
 export { validateEngineConfig, sanitizeEngineConfig } from './types';
