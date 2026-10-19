@@ -94,4 +94,63 @@ describe('Skillbook', () => {
     const results = skillbook.search('   ');
     assert.equal(results.length, 0);
   });
+
+  it('TAG neutral increments neutralCount', () => {
+    const entry = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['n'], issue: 'n', insight: 'n' } });
+    skillbook.apply({ type: 'TAG', id: entry!.id, feedback: 'neutral' });
+    skillbook.apply({ type: 'TAG', id: entry!.id, feedback: 'neutral' });
+    const updated = skillbook.getAll()[0];
+    assert.equal(updated.neutralCount, 2);
+  });
+
+  it('REMOVE returns the removed entry', () => {
+    const entry = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['rm'], issue: 'rm', insight: 'rm' } });
+    const removed = skillbook.apply({ type: 'REMOVE', id: entry!.id });
+    assert.ok(removed);
+    assert.equal(removed!.id, entry!.id);
+    assert.equal(skillbook.getAll().length, 0);
+  });
+
+  it('REMOVE returns null for non-existent entry', () => {
+    const removed = skillbook.apply({ type: 'REMOVE', id: 'nonexistent' });
+    assert.equal(removed, null);
+  });
+
+  it('handles corrupt skillbook file gracefully', () => {
+    const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-corrupt-'));
+    const siDir = path.join(corruptDir, '.superinference');
+    fs.mkdirSync(siDir, { recursive: true });
+    fs.writeFileSync(path.join(siDir, 'skillbook.json'), 'NOT VALID JSON{{{');
+    const sb = new Skillbook(corruptDir);
+    assert.equal(sb.getAll().length, 0);
+    fs.rmSync(corruptDir, { recursive: true, force: true });
+  });
+
+  it('TAG returns null for non-existent entry', () => {
+    const result = skillbook.apply({ type: 'TAG', id: 'nonexistent', feedback: 'helpful' });
+    assert.equal(result, null);
+  });
+
+  it('UPDATE returns null for non-existent entry', () => {
+    const result = skillbook.apply({ type: 'UPDATE', id: 'nonexistent', insight: 'new' });
+    assert.equal(result, null);
+  });
+
+  it('getBySection filters correctly', () => {
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['a'], issue: 'a', insight: 'a' } });
+    skillbook.apply({ type: 'ADD', entry: { section: 'harness', keywords: ['b'], issue: 'b', insight: 'b' } });
+    assert.equal(skillbook.getBySection('context').length, 1);
+    assert.equal(skillbook.getBySection('harness').length, 1);
+  });
+
+  it('getContext returns empty string when no helpful entries', () => {
+    const context = skillbook.getContext();
+    assert.equal(context, '');
+  });
+
+  it('UPDATE modifies keywords', () => {
+    const entry = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['old'], issue: 'x', insight: 'x' } });
+    skillbook.apply({ type: 'UPDATE', id: entry!.id, keywords: ['new', 'keywords'] });
+    assert.deepEqual(skillbook.getAll()[0].keywords, ['new', 'keywords']);
+  });
 });
