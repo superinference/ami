@@ -40,6 +40,8 @@ export interface PostToolUseContext extends HookContext {
   toolInput: Record<string, unknown>;
   toolOutput: string;
   isError: boolean;
+  /** Elapsed time for the tool execution in milliseconds. */
+  durationMs?: number;
 }
 
 export interface PreSamplingContext extends HookContext {
@@ -649,7 +651,7 @@ export class HookManager extends EventEmitter {
           const fn: PostToolUseHookFn = async (ctx) => {
             if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return;
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
-            const eventData = JSON.stringify({ event: 'postToolUse', toolName: ctx.toolName, isError: ctx.isError });
+            const eventData = JSON.stringify({ event: 'postToolUse', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             const result = await runner();
@@ -854,7 +856,7 @@ export class HookManager extends EventEmitter {
           const fn: PostToolUseHookFn = async (ctx) => {
             if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return;
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
-            const eventData = JSON.stringify({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError });
+            const eventData = JSON.stringify({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
