@@ -894,3 +894,63 @@ describe('validateFilePath', () => {
     assert.equal(validateFilePath('/home/user/日本語ファイル.txt'), null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// redactSecrets — unquoted key=value assignments (Gap #1)
+// ---------------------------------------------------------------------------
+
+describe('redactSecrets — unquoted key=value (Gap #1)', () => {
+  it('redacts unquoted PASSWORD=value', () => {
+    const result = redactSecrets('PASSWORD=mysecret123');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('mysecret123'));
+  });
+
+  it('redacts export API_KEY=value', () => {
+    const result = redactSecrets('export API_KEY=abc123456789');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('abc123456789'));
+  });
+
+  it('redacts TOKEN=value', () => {
+    const result = redactSecrets('TOKEN=abcdefghij');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('abcdefghij'));
+  });
+
+  it('redacts SECRET=value', () => {
+    const result = redactSecrets('SECRET=myverysecretval');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('myverysecretval'));
+  });
+
+  it('redacts GITHUB_TOKEN=value', () => {
+    const result = redactSecrets('GITHUB_TOKEN=ghnotapattern');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('ghnotapattern'));
+  });
+
+  it('redacts DATABASE_URL=value', () => {
+    const result = redactSecrets('DATABASE_URL=postgres://user:pass@host/db');
+    assert.ok(result.includes('[REDACTED'));
+    assert.ok(!result.includes('user:pass'));
+  });
+
+  it('does NOT redact non-sensitive keys like PATH', () => {
+    const result = redactSecrets('PATH=/usr/bin');
+    assert.equal(result, 'PATH=/usr/bin');
+  });
+
+  it('does NOT redact short values (< 6 chars)', () => {
+    const result = redactSecrets('TOKEN=abc');
+    assert.equal(result, 'TOKEN=abc');
+  });
+
+  it('handles multi-line with mixed redactable keys', () => {
+    const input = 'HOME=/home/user\nAPI_KEY=supersecretkey123\nPATH=/usr/bin';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('supersecretkey123'));
+    assert.ok(result.includes('HOME=/home/user'));
+    assert.ok(result.includes('PATH=/usr/bin'));
+  });
+});

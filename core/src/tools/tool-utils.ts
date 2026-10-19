@@ -415,6 +415,9 @@ export function redactSecrets(content: string): string {
   out = out.replace(/((?:password|secret|token|api_key)\s*[:=]\s*['"])[^'"]{8,}(['"])/gi, '$1[REDACTED-SECRET]$2');
   // 7. JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
   out = out.replace(/("(?:password|secret|token|api_?key|access_?key|secret_?key|client_secret|auth)"\s*:\s*")[^"]{6,}(")/gi, '$1[REDACTED-SECRET]$2');
+  // 8. Unquoted KEY=value assignments (e.g. PASSWORD=mysecret, export API_KEY=abc123).
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored (^|\s), fixed keyword alternation, no overlap
+  out = out.replace(/((?:^|\s)(?:export\s+)?(?:PASSWORD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|SECRET_?KEY|CLIENT_SECRET|AUTH|PRIVATE_?KEY|GITHUB_?TOKEN|OPENAI_?KEY|ANTHROPIC_?KEY|DATABASE_?URL|DB_?PASS(?:WORD)?)\s*=\s*)\S{6,}/gim, '$1[REDACTED-SECRET]');
   return out;
 }
 
