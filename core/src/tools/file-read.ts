@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
-import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath } from './tool-utils';
+import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath, validateFilePath } from './tool-utils';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 import { suggestSimilarPaths } from './path-suggest';
@@ -213,6 +213,9 @@ export const fileReadTool: ToolDefinition = {
     if (isUNCPath(filePath)) {
       return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${filePath}`, isError: true };
     }
+
+    const nullCheck = validateFilePath(filePath);
+    if (nullCheck) return nullCheck;
 
     const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
     if (pathError) return pathError;

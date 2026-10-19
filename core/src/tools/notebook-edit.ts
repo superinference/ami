@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
+import { validateFilePath } from './tool-utils';
 
 interface NotebookCell {
   cell_type: string;
@@ -69,6 +70,9 @@ export const notebookEditTool: ToolDefinition = {
     let editMode = (input.edit_mode as string) ?? 'replace';
 
     // --- Validate inputs ---
+    const nullCheck = validateFilePath(notebookPath || '');
+    if (nullCheck) return nullCheck;
+
     if (!notebookPath || notebookPath.trim().length === 0) {
       return {
         output: 'Error: notebook_path must not be empty.',

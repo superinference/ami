@@ -19,6 +19,17 @@ export function isBlockedPath(filePath: string): boolean {
 }
 
 /**
+ * Reject file paths containing NUL bytes — prevents silent truncation
+ * attacks that could bypass path checks or crash fs operations.
+ */
+export function validateFilePath(filePath: string): ToolResult | null {
+  if (filePath.includes('\x00')) {
+    return { output: 'Error: file path contains a null byte.', isError: true };
+  }
+  return null;
+}
+
+/**
  * Validate that a required string input field is present and non-empty.
  * Returns a ToolResult error if invalid, or null if valid.
  */

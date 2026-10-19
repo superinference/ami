@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -332,6 +332,9 @@ export const fileEditTool: ToolDefinition = {
     if (!filePath || filePath.trim().length === 0) {
       return { output: 'Error: file_path must not be empty.', isError: true };
     }
+
+    const nullCheck = validateFilePath(filePath);
+    if (nullCheck) return nullCheck;
 
     // Block device/special files before path resolution so the guard fires
     // regardless of workspace boundaries.
