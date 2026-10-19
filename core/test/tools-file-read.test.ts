@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { fileReadTool, isImagePath, parseImageToolOutput, encodeImageFile } from '../src/tools/file-read';
+import { fileReadTool, isImagePath, parseImageToolOutput, encodeImageFile, isImageExtension, validateImageFile, isBinaryByExtension, checkBinaryContent } from '../src/tools/file-read';
 import { getFileCache } from '../src/file-cache';
 import type { ToolContext } from '../src/types';
 
@@ -524,5 +524,109 @@ describe('Read tool — size/regular-file guards + allow_large + large PDF', () 
     fs.writeFileSync(p, '%PDF-1.4\n' + 'x'.repeat(100));
     const res = await fileReadTool.execute({ file_path: p, pages: '   ' }, ctx());
     assert.ok(!res.output.includes('Invalid page range'), `whitespace-only pages should be treated as omitted: ${res.output.slice(0, 200)}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isImageExtension
+// ---------------------------------------------------------------------------
+
+describe('isImageExtension', () => {
+  it('recognizes common image extensions', () => {
+    assert.equal(isImageExtension('photo.png'), true);
+    assert.equal(isImageExtension('photo.jpg'), true);
+    assert.equal(isImageExtension('photo.jpeg'), true);
+    assert.equal(isImageExtension('photo.gif'), true);
+    assert.equal(isImageExtension('photo.webp'), true);
+    assert.equal(isImageExtension('photo.svg'), true);
+  });
+
+  it('is case-insensitive', () => {
+    assert.equal(isImageExtension('photo.PNG'), true);
+    assert.equal(isImageExtension('photo.JPG'), true);
+  });
+
+  it('rejects non-image extensions', () => {
+    assert.equal(isImageExtension('file.ts'), false);
+    assert.equal(isImageExtension('file.txt'), false);
+    assert.equal(isImageExtension('file.json'), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateImageFile
+// ---------------------------------------------------------------------------
+
+describe('validateImageFile', () => {
+  it('returns valid for a regular file', () => {
+    const p = path.join(tmpDir, 'img.png');
+    fs.writeFileSync(p, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const result = validateImageFile(p);
+    assert.equal(result.valid, true);
+  });
+
+  it('returns error for non-existent file', () => {
+    const result = validateImageFile(path.join(tmpDir, 'nope.png'));
+    assert.equal(result.valid, false);
+    assert.ok(result.error!.includes('not found') || result.error!.includes('not accessible'));
+  });
+
+  it('returns error for directory', () => {
+    const result = validateImageFile(tmpDir);
+    assert.equal(result.valid, false);
+    assert.ok(result.error!.includes('Not a regular file'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isBinaryByExtension
+// ---------------------------------------------------------------------------
+
+describe('isBinaryByExtension', () => {
+  it('detects binary extensions', () => {
+    assert.equal(isBinaryByExtension('.exe'), true);
+    assert.equal(isBinaryByExtension('.zip'), true);
+    assert.equal(isBinaryByExtension('.sqlite'), true);
+    assert.equal(isBinaryByExtension('.mp4'), true);
+    assert.equal(isBinaryByExtension('.wasm'), true);
+  });
+
+  it('is case-insensitive', () => {
+    assert.equal(isBinaryByExtension('.EXE'), true);
+    assert.equal(isBinaryByExtension('.ZIP'), true);
+  });
+
+  it('rejects text extensions', () => {
+    assert.equal(isBinaryByExtension('.ts'), false);
+    assert.equal(isBinaryByExtension('.txt'), false);
+    assert.equal(isBinaryByExtension('.json'), false);
+    assert.equal(isBinaryByExtension('.md'), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkBinaryContent
+// ---------------------------------------------------------------------------
+
+describe('checkBinaryContent', () => {
+  it('returns false for text file', async () => {
+    const p = path.join(tmpDir, 'text.txt');
+    fs.writeFileSync(p, 'Hello, world!');
+    assert.equal(await checkBinaryContent(p), false);
+  });
+
+  it('returns true for file with many null bytes', async () => {
+    const p = path.join(tmpDir, 'binary.bin');
+    const buf = Buffer.alloc(1000);
+    buf.fill(0, 0, 100);
+    buf.write('some text', 100);
+    fs.writeFileSync(p, buf);
+    assert.equal(await checkBinaryContent(p), true);
+  });
+
+  it('returns false for empty file', async () => {
+    const p = path.join(tmpDir, 'empty.txt');
+    fs.writeFileSync(p, '');
+    assert.equal(await checkBinaryContent(p), false);
   });
 });

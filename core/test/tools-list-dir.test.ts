@@ -141,3 +141,32 @@ describe('listDirTool – relative paths', () => {
     assert.ok(result.output.includes('0 entries'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Workspace boundary enforcement
+// ---------------------------------------------------------------------------
+
+describe('listDirTool – workspace boundary', () => {
+  it('rejects path outside workspace', async () => {
+    const result = await listDirTool.execute({ path: '/tmp' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('outside'));
+  });
+
+  it('rejects symlink escaping workspace', async () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-outside-'));
+    try {
+      const symPath = path.join(tmpDir, 'escape-link');
+      try {
+        fs.symlinkSync(outsideDir, symPath);
+      } catch {
+        return;
+      }
+      const result = await listDirTool.execute({ path: symPath }, ctx());
+      assert.equal(result.isError, true);
+      assert.ok(result.output.includes('symlink') || result.output.includes('outside'));
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+});
