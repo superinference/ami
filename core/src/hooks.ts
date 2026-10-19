@@ -485,6 +485,7 @@ export class HookManager extends EventEmitter {
           coreLog('hooks', `Callback hook error for event "${event}": ${err}`);
         }
       }
+      return undefined as unknown as HookDecisionOutput | void;
     });
   }
 
@@ -1104,7 +1105,7 @@ export class HookManager extends EventEmitter {
    * Execute post-tool-use hooks. Returns the last additionalContext if any hook provides one.
    */
   async executePostToolUse(ctx: PostToolUseContext): Promise<{ additionalContext?: string } | void> {
-    return this.withConcurrencyGate('postToolUse', async () => {
+    return this.withConcurrencyGate('postToolUse', async (): Promise<{ additionalContext?: string } | void> => {
       let additionalContext: string | undefined;
       for (const hook of this.postToolUseHooks) {
         try {
@@ -1128,7 +1129,7 @@ export class HookManager extends EventEmitter {
   }
 
   async executeSessionStart(ctx: SessionContext): Promise<{ initialUserMessage?: string } | void> {
-    return this.withConcurrencyGate('sessionStart', async () => {
+    return this.withConcurrencyGate('sessionStart', async (): Promise<{ initialUserMessage?: string } | void> => {
       let initialUserMessage: string | undefined;
       for (const hook of this.sessionStartHooks) {
         try {
@@ -1182,7 +1183,7 @@ export class HookManager extends EventEmitter {
   }
 
   async executePermissionRequest(ctx: PermissionContext): Promise<{ action?: 'allow' | 'deny'; reason?: string } | void> {
-    return this.withConcurrencyGate('permissionRequest', async () => {
+    return this.withConcurrencyGate('permissionRequest', async (): Promise<{ action?: 'allow' | 'deny'; reason?: string } | void> => {
       for (const hook of this.permissionRequestHooks) {
         try {
           const result = await hook(ctx);
@@ -1193,7 +1194,7 @@ export class HookManager extends EventEmitter {
   }
 
   async executePermissionDenied(ctx: PermissionContext): Promise<{ retry?: boolean } | void> {
-    return this.withConcurrencyGate('permissionDenied', async () => {
+    return this.withConcurrencyGate('permissionDenied', async (): Promise<{ retry?: boolean } | void> => {
       for (const hook of this.permissionDeniedHooks) {
         try {
           const result = await hook(ctx);
@@ -1207,7 +1208,7 @@ export class HookManager extends EventEmitter {
   }
 
   async executeUserPromptSubmit(ctx: UserPromptContext): Promise<{ additionalContext?: string } | void> {
-    return this.withConcurrencyGate('userPromptSubmit', async () => {
+    return this.withConcurrencyGate('userPromptSubmit', async (): Promise<{ additionalContext?: string } | void> => {
       let additionalContext: string | undefined;
       for (const hook of this.userPromptSubmitHooks) {
         try {

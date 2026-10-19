@@ -306,14 +306,14 @@ export const taskTool: ToolDefinition = {
       detachedMode: !!context.detachedMode,
       agentDepth: childDepth._agentDepth,
       maxAgentDepth: childDepth._maxAgentDepth,
-      ...(effortOverride
-        ? { thinking: { level: effortOverride as any } }
-        : context._parentThinking ? { thinking: context._parentThinking } : {}),
+      thinking: effortOverride
+        ? { enabled: true, level: effortOverride as any }
+        : context._parentThinking || undefined,
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip persona resolution (which would inject e.g. the code
       // persona bug-fixing workflow into a verification-only agent).
-      ...(agentSystemPrompt ? { systemPrompt: agentSystemPrompt } : {}),
-      ...(agentTokenBudget ? { tokenBudget: agentTokenBudget } : {}),
+      systemPrompt: agentSystemPrompt || undefined,
+      tokenBudget: agentTokenBudget || undefined,
     };
 
     if (!context._engineFactory) {
