@@ -21,7 +21,8 @@ describe('CODE_LOADING_VARIABLES', () => {
     assert.ok(CODE_LOADING_VARIABLES.includes('ZDOTDIR'));
     assert.ok(CODE_LOADING_VARIABLES.includes('NODE_OPTIONS'));
     assert.ok(CODE_LOADING_VARIABLES.includes('PROMPT_COMMAND'));
-    assert.equal(CODE_LOADING_VARIABLES.length, 11);
+    assert.ok(CODE_LOADING_VARIABLES.includes('PATH'));
+    assert.equal(CODE_LOADING_VARIABLES.length, 12);
   });
 });
 
@@ -129,7 +130,7 @@ describe('detectCodeLoadingEnvSet', () => {
   });
 
   describe('safe variables are NOT blocked', () => {
-    const safeVars = ['PATH', 'HOME', 'TERM', 'EDITOR', 'VISUAL', 'LANG',
+    const safeVars = ['HOME', 'TERM', 'EDITOR', 'VISUAL', 'LANG',
       'LC_ALL', 'USER', 'SHELL', 'TMPDIR', 'GOPATH', 'JAVA_HOME', 'PYTHONPATH'];
 
     for (const v of safeVars) {

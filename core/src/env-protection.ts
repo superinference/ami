@@ -29,6 +29,7 @@ export const CODE_LOADING_VARIABLES = new Set([
   'ZDOTDIR',
   'NODE_OPTIONS',
   'PROMPT_COMMAND',
+  'PATH',
 ]);
 
 // Telemetry control variables

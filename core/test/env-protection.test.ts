@@ -35,8 +35,8 @@ describe('isPinnedVariable', () => {
     assert.equal(isPinnedVariable('HOME'), false);
   });
 
-  it('returns false for PATH', () => {
-    assert.equal(isPinnedVariable('PATH'), false);
+  it('returns true for PATH (code-loading)', () => {
+    assert.equal(isPinnedVariable('PATH'), true);
   });
 
   it('returns false for empty string', () => {
@@ -63,6 +63,7 @@ describe('getPinCategory', () => {
     assert.equal(getPinCategory('DYLD_INSERT_LIBRARIES'), 'code_loading');
     assert.equal(getPinCategory('NODE_OPTIONS'), 'code_loading');
     assert.equal(getPinCategory('BASH_ENV'), 'code_loading');
+    assert.equal(getPinCategory('PATH'), 'code_loading');
   });
 
   it('returns telemetry for telemetry variables', () => {
@@ -107,14 +108,15 @@ describe('constant sets', () => {
     assert.equal(POLICY_VARIABLES.size, 9);
   });
 
-  it('CODE_LOADING_VARIABLES contains 11 entries', () => {
-    assert.equal(CODE_LOADING_VARIABLES.size, 11);
+  it('CODE_LOADING_VARIABLES contains 12 entries', () => {
+    assert.equal(CODE_LOADING_VARIABLES.size, 12);
     assert.ok(CODE_LOADING_VARIABLES.has('LD_PRELOAD'));
     assert.ok(CODE_LOADING_VARIABLES.has('LD_LIBRARY_PATH'));
     assert.ok(CODE_LOADING_VARIABLES.has('LD_AUDIT'));
     assert.ok(CODE_LOADING_VARIABLES.has('DYLD_INSERT_LIBRARIES'));
     assert.ok(CODE_LOADING_VARIABLES.has('NODE_OPTIONS'));
     assert.ok(CODE_LOADING_VARIABLES.has('PROMPT_COMMAND'));
+    assert.ok(CODE_LOADING_VARIABLES.has('PATH'));
   });
 
   it('TELEMETRY_VARIABLES contains 3 entries', () => {

