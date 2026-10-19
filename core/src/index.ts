@@ -86,6 +86,7 @@ export { levenshteinDistance, suggestSimilarPaths } from './tools/path-suggest';
 export type { TurnData, TurnSummary } from './turn-metrics';
 export { TurnMetrics } from './turn-metrics';
 export { isGrepNoMatchExit, stripGrepFlags } from './tools/grep';
+export { expandBraces, estimateBraceExpansions } from './brace-expansion';
 
 // Features awaiting consumer wiring — exported for dead-code compliance (see AGENTS.md Dead Code Policy)
 export { AdmissionLog } from './admission-log';
