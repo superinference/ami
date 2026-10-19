@@ -433,3 +433,68 @@ describe('detectZshRegexConditional', () => {
     assert.equal(r.blocked, false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// stripOsc8Hyperlinks + sanitizeToolOutput
+// ---------------------------------------------------------------------------
+
+import { stripOsc8Hyperlinks, sanitizeToolOutput } from '../src/tools/bash-security';
+
+describe('stripOsc8Hyperlinks', () => {
+  it('strips OSC 8 hyperlink sequences (ST terminator)', () => {
+    const input = '\x1b]8;;https://evil.com\x1b\\Click here\x1b]8;;\x1b\\';
+    assert.equal(stripOsc8Hyperlinks(input), 'Click here');
+  });
+
+  it('strips OSC 8 hyperlink sequences (BEL terminator)', () => {
+    const input = '\x1b]8;;https://evil.com\x07Click here\x1b]8;;\x07';
+    assert.equal(stripOsc8Hyperlinks(input), 'Click here');
+  });
+
+  it('preserves normal text without hyperlinks', () => {
+    assert.equal(stripOsc8Hyperlinks('normal output'), 'normal output');
+  });
+
+  it('preserves standard ANSI color codes', () => {
+    const colored = '\x1b[31mred text\x1b[0m';
+    assert.equal(stripOsc8Hyperlinks(colored), colored);
+  });
+
+  it('strips multiple hyperlinks in one string', () => {
+    const input = 'before \x1b]8;;https://a.com\x1b\\link1\x1b]8;;\x1b\\ middle \x1b]8;;https://b.com\x1b\\link2\x1b]8;;\x1b\\ after';
+    assert.equal(stripOsc8Hyperlinks(input), 'before link1 middle link2 after');
+  });
+
+  it('handles empty input', () => {
+    assert.equal(stripOsc8Hyperlinks(''), '');
+  });
+
+  it('handles hyperlink with params', () => {
+    const input = '\x1b]8;id=test;https://evil.com\x1b\\Click\x1b]8;;\x1b\\';
+    assert.equal(stripOsc8Hyperlinks(input), 'Click');
+  });
+
+  it('strips hyperlink disguising rm as ls', () => {
+    const input = '\x1b]8;;https://evil.com\x1b\\ls -la\x1b]8;;\x1b\\';
+    assert.equal(stripOsc8Hyperlinks(input), 'ls -la');
+  });
+});
+
+describe('sanitizeToolOutput', () => {
+  it('strips both hyperlinks and redacts env vars', () => {
+    const input = '\x1b]8;;https://evil.com\x1b\\output\x1b]8;;\x1b\\\nexport API_KEY=supersecret123';
+    const result = sanitizeToolOutput(input);
+    assert.ok(!result.includes('evil.com'));
+    assert.ok(!result.includes('supersecret123'));
+    assert.ok(result.includes('[REDACTED]'));
+    assert.ok(result.includes('output'));
+  });
+
+  it('handles empty input', () => {
+    assert.equal(sanitizeToolOutput(''), '');
+  });
+
+  it('handles clean output unchanged', () => {
+    assert.equal(sanitizeToolOutput('hello world'), 'hello world');
+  });
+});

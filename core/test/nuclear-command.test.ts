@@ -385,4 +385,91 @@ describe('detectNuclearCommand', () => {
       assert.equal(result.blocked, false);
     });
   });
+
+  describe('IaC destroy commands', () => {
+    it('blocks: terraform destroy', () => {
+      assert.equal(detectNuclearCommand('terraform destroy').blocked, true);
+    });
+
+    it('blocks: terraform apply -destroy', () => {
+      assert.equal(detectNuclearCommand('terraform apply -destroy').blocked, true);
+    });
+
+    it('blocks: terraform destroy -auto-approve', () => {
+      assert.equal(detectNuclearCommand('terraform destroy -auto-approve').blocked, true);
+    });
+
+    it('blocks: tofu destroy', () => {
+      assert.equal(detectNuclearCommand('tofu destroy').blocked, true);
+    });
+
+    it('blocks: pulumi destroy', () => {
+      assert.equal(detectNuclearCommand('pulumi destroy').blocked, true);
+    });
+
+    it('blocks: pulumi destroy --yes', () => {
+      assert.equal(detectNuclearCommand('pulumi destroy --yes').blocked, true);
+    });
+
+    it('blocks: cdk destroy', () => {
+      assert.equal(detectNuclearCommand('cdk destroy').blocked, true);
+    });
+
+    it('blocks: cdk destroy MyStack', () => {
+      assert.equal(detectNuclearCommand('cdk destroy MyStack').blocked, true);
+    });
+
+    it('blocks: cdktf destroy', () => {
+      assert.equal(detectNuclearCommand('cdktf destroy').blocked, true);
+    });
+
+    it('blocks: sudo terraform destroy', () => {
+      assert.equal(detectNuclearCommand('sudo terraform destroy').blocked, true);
+    });
+
+    it('blocks: terraform destroy inside bash -c', () => {
+      assert.equal(detectNuclearCommand('bash -c "terraform destroy"').blocked, true);
+    });
+
+    it('blocks: terraform destroy in compound command', () => {
+      assert.equal(detectNuclearCommand('cd infra && terraform destroy').blocked, true);
+    });
+
+    it('allows: terraform plan', () => {
+      assert.equal(detectNuclearCommand('terraform plan').blocked, false);
+    });
+
+    it('allows: terraform apply', () => {
+      assert.equal(detectNuclearCommand('terraform apply').blocked, false);
+    });
+
+    it('allows: terraform init', () => {
+      assert.equal(detectNuclearCommand('terraform init').blocked, false);
+    });
+
+    it('allows: pulumi up', () => {
+      assert.equal(detectNuclearCommand('pulumi up').blocked, false);
+    });
+
+    it('allows: pulumi preview', () => {
+      assert.equal(detectNuclearCommand('pulumi preview').blocked, false);
+    });
+
+    it('allows: cdk deploy', () => {
+      assert.equal(detectNuclearCommand('cdk deploy').blocked, false);
+    });
+
+    it('allows: cdk synth', () => {
+      assert.equal(detectNuclearCommand('cdk synth').blocked, false);
+    });
+
+    it('allows: cdk diff', () => {
+      assert.equal(detectNuclearCommand('cdk diff').blocked, false);
+    });
+
+    it('reason mentions IaC', () => {
+      const result = detectNuclearCommand('terraform destroy');
+      assert.ok(result.reason?.includes('IaC'));
+    });
+  });
 });
