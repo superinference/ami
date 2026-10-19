@@ -21,6 +21,7 @@ describe('isCredentialPath', () => {
     ['~/.git-credentials', '.git-credentials'],
     ['~/.config/git/credentials', '.config/git/credentials'],
     ['~/.config/gh/hosts.yml', '.config/gh/hosts.yml'],
+    ['~/.config/glab-cli/config.yml', '.config/glab-cli/config.yml'],
     ['~/.npmrc', '.npmrc'],
     ['~/.claude/.credentials.json', '.claude/.credentials.json'],
     ['/etc/shadow', '/etc/shadow'],
@@ -68,6 +69,9 @@ describe('commandTargetsCredentialPath', () => {
   });
   it('detects cat ~/.claude/.credentials.json', () => {
     assert.ok(commandTargetsCredentialPath('cat ~/.claude/.credentials.json'));
+  });
+  it('detects cat ~/.config/glab-cli/config.yml', () => {
+    assert.ok(commandTargetsCredentialPath('cat ~/.config/glab-cli/config.yml'));
   });
   it('detects grep -f ~/.ssh/id_rsa (flag takes file path)', () => {
     assert.ok(commandTargetsCredentialPath('grep -f ~/.ssh/id_rsa pattern .'));
