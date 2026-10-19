@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { sanitizeToolInput, validateRequiredFields, detectPromptInjection } from '../src/tools/input-sanitizer';
+import {
+  sanitizeToolInput,
+  validateRequiredFields,
+  detectPromptInjection,
+  stripInvisibleUnicode,
+  normalizeCommandForDisplay,
+} from '../src/tools/input-sanitizer';
 
 describe('sanitizeToolInput', () => {
   it('strips null bytes from string fields', () => {
@@ -167,5 +173,92 @@ describe('detectPromptInjection', () => {
   it('allows technical text that mentions "ignore"', () => {
     const result = detectPromptInjection('Add .gitignore with node_modules');
     assert.equal(result.suspicious, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripInvisibleUnicode
+// ---------------------------------------------------------------------------
+
+describe('stripInvisibleUnicode', () => {
+  it('removes zero-width space (U+200B)', () => {
+    assert.equal(stripInvisibleUnicode('rm​ -rf /'), 'rm -rf /');
+  });
+
+  it('removes zero-width non-joiner (U+200C)', () => {
+    assert.equal(stripInvisibleUnicode('a‌b'), 'ab');
+  });
+
+  it('removes zero-width joiner (U+200D)', () => {
+    assert.equal(stripInvisibleUnicode('a‍b'), 'ab');
+  });
+
+  it('removes BOM (U+FEFF)', () => {
+    assert.equal(stripInvisibleUnicode('﻿hello'), 'hello');
+  });
+
+  it('removes soft hyphen (U+00AD)', () => {
+    assert.equal(stripInvisibleUnicode('pass­word'), 'password');
+  });
+
+  it('removes bidirectional overrides (U+202A-U+202E)', () => {
+    assert.equal(stripInvisibleUnicode('abc‪def‮ghi'), 'abcdefghi');
+  });
+
+  it('removes bidirectional isolates (U+2066-U+2069)', () => {
+    assert.equal(stripInvisibleUnicode('⁦rm -rf /⁩'), 'rm -rf /');
+  });
+
+  it('preserves normal ASCII text', () => {
+    assert.equal(stripInvisibleUnicode('hello world'), 'hello world');
+  });
+
+  it('preserves spaces and newlines', () => {
+    assert.equal(stripInvisibleUnicode('line1\nline2\n'), 'line1\nline2\n');
+  });
+
+  it('preserves tabs (not invisible — they are visible whitespace)', () => {
+    assert.equal(stripInvisibleUnicode('a\tb'), 'a\tb');
+  });
+
+  it('handles empty string', () => {
+    assert.equal(stripInvisibleUnicode(''), '');
+  });
+
+  it('strips multiple invisible chars in one pass', () => {
+    assert.equal(
+      stripInvisibleUnicode('​rm‌ ‍-rf­ /﻿'),
+      'rm -rf /',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeCommandForDisplay
+// ---------------------------------------------------------------------------
+
+describe('normalizeCommandForDisplay', () => {
+  it('replaces tabs with four spaces', () => {
+    assert.equal(normalizeCommandForDisplay('rm\t-rf'), 'rm    -rf');
+  });
+
+  it('strips invisible Unicode AND replaces tabs', () => {
+    assert.equal(
+      normalizeCommandForDisplay('​rm\t-rf​ /'),
+      'rm    -rf /');
+  });
+
+  it('preserves normal commands', () => {
+    assert.equal(normalizeCommandForDisplay('ls -la'), 'ls -la');
+  });
+
+  it('strips bidi override that could hide command text', () => {
+    assert.equal(
+      normalizeCommandForDisplay('echo safe‮rm -rf /‬'),
+      'echo saferm -rf /');
+  });
+
+  it('handles empty string', () => {
+    assert.equal(normalizeCommandForDisplay(''), '');
   });
 });

@@ -1,3 +1,21 @@
+// ---------------------------------------------------------------------------
+// Invisible Unicode stripping — prevents hidden characters in permission
+// prompts from concealing part of a command from the user.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line security/detect-bidi-characters -- intentional: this regex MUST contain bidi chars to strip them
+const INVISIBLE_RE = new RegExp('[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB]', 'g');
+
+export function stripInvisibleUnicode(text: string): string {
+  return text.replace(INVISIBLE_RE, '');
+}
+
+export function normalizeCommandForDisplay(command: string): string {
+  return stripInvisibleUnicode(command).replace(/\t/g, '    ');
+}
+
+// ---------------------------------------------------------------------------
+
 const POISONED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_SANITIZE_DEPTH = 20;
 
