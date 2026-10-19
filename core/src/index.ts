@@ -14,7 +14,7 @@ export { PermissionManager, containsUnquotedExpansion, isBuildConfigFile } from 
 export { safeReadFile, safeLstat } from './tools/tool-utils';
 export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES } from './mcp/client';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
-export { classifyError } from './error-classifier';
+export { classifyError, friendlyErrorMessage } from './error-classifier';
 export type { ClassifiedError, ErrorCategory } from './error-classifier';
 export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT } from './hooks';
 export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn } from './hooks';
