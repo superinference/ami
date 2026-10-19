@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -93,6 +93,13 @@ async function writeEntireFile(
   if (isBlockedPath(resolved)) {
     return { output: `Error: Cannot edit device or special file: ${resolved}`, isError: true };
   }
+
+  try {
+    const targetStat = await fs.promises.stat(resolved);
+    if (targetStat.isDirectory()) {
+      return { output: `Error: "${sanitizePathForDisplay(resolved)}" is a directory, not a file. Specify a file path instead.`, isError: true };
+    }
+  } catch {}
 
   let oldContent = '';
   let fileExists = false;
@@ -358,6 +365,13 @@ export const fileEditTool: ToolDefinition = {
     if (!writePathCheck.valid) {
       return { output: writePathCheck.error!, isError: true };
     }
+
+    try {
+      const targetStat = await fs.promises.stat(resolved);
+      if (targetStat.isDirectory()) {
+        return { output: `Error: "${sanitizePathForDisplay(resolved)}" is a directory, not a file. Specify a file path instead.`, isError: true };
+      }
+    } catch {}
 
     if (resolved.endsWith('.ipynb')) {
       return {
