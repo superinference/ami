@@ -2032,3 +2032,50 @@ describe('McpManager — startHealthChecks idempotent', () => {
     manager.stopHealthChecks();
   });
 });
+
+// ---------------------------------------------------------------------------
+// McpManager — tool conflict detection
+// ---------------------------------------------------------------------------
+
+describe('McpManager — getToolConflicts', () => {
+  it('returns empty when no conflicts', () => {
+    const manager = new McpManager();
+    const allTools = (manager as any)._allTools as Map<string, { serverName: string; schema: { name: string } }>;
+    allTools.set('server-a:readFile', { serverName: 'server-a', schema: { name: 'readFile' } as any });
+    allTools.set('server-b:writeFile', { serverName: 'server-b', schema: { name: 'writeFile' } as any });
+    const conflicts = manager.getToolConflicts();
+    assert.equal(conflicts.length, 0);
+  });
+
+  it('detects conflict when two servers provide same tool name', () => {
+    const manager = new McpManager();
+    const allTools = (manager as any)._allTools as Map<string, { serverName: string; schema: { name: string } }>;
+    allTools.set('server-a:readFile', { serverName: 'server-a', schema: { name: 'readFile' } as any });
+    allTools.set('server-b:readFile', { serverName: 'server-b', schema: { name: 'readFile' } as any });
+    const conflicts = manager.getToolConflicts();
+    assert.equal(conflicts.length, 1);
+    assert.equal(conflicts[0].toolName, 'readFile');
+    assert.deepEqual(conflicts[0].servers.sort(), ['server-a', 'server-b']);
+  });
+
+  it('detects multiple conflicts', () => {
+    const manager = new McpManager();
+    const allTools = (manager as any)._allTools as Map<string, { serverName: string; schema: { name: string } }>;
+    allTools.set('a:read', { serverName: 'a', schema: { name: 'read' } as any });
+    allTools.set('b:read', { serverName: 'b', schema: { name: 'read' } as any });
+    allTools.set('a:write', { serverName: 'a', schema: { name: 'write' } as any });
+    allTools.set('c:write', { serverName: 'c', schema: { name: 'write' } as any });
+    const conflicts = manager.getToolConflicts();
+    assert.equal(conflicts.length, 2);
+    const names = conflicts.map(c => c.toolName).sort();
+    assert.deepEqual(names, ['read', 'write']);
+  });
+
+  it('does not report same server twice for a tool', () => {
+    const manager = new McpManager();
+    const allTools = (manager as any)._allTools as Map<string, { serverName: string; schema: { name: string } }>;
+    allTools.set('a:read', { serverName: 'a', schema: { name: 'read' } as any });
+    const conflicts = manager.getToolConflicts();
+    assert.equal(conflicts.length, 0);
+  });
+});

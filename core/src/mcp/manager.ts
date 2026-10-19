@@ -386,6 +386,10 @@ export class McpManager extends EventEmitter {
         for (const tool of tools) {
           const key = `${name}:${tool.name}`;
           const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
+          const existing = this.findToolByName(tool.name);
+          if (existing && existing.serverName !== name) {
+            coreLog('mcp', `tool name conflict: "${tool.name}" provided by both "${existing.serverName}" and "${name}" — use qualified name "${key}" to disambiguate`);
+          }
           this._allTools.set(key, { serverName: name, schema });
         }
         return;
@@ -492,6 +496,20 @@ export class McpManager extends EventEmitter {
 
   getAllTools(): Array<{ serverName: string; schema: McpToolSchema }> {
     return Array.from(this._allTools.values());
+  }
+
+  getToolConflicts(): Array<{ toolName: string; servers: string[] }> {
+    const byName = new Map<string, string[]>();
+    for (const entry of this._allTools.values()) {
+      const list = byName.get(entry.schema.name) ?? [];
+      list.push(entry.serverName);
+      byName.set(entry.schema.name, list);
+    }
+    const conflicts: Array<{ toolName: string; servers: string[] }> = [];
+    for (const [toolName, servers] of byName) {
+      if (servers.length > 1) conflicts.push({ toolName, servers });
+    }
+    return conflicts;
   }
 
   getServerStatus(name: string): McpServerStatus | null {
@@ -673,6 +691,10 @@ export class McpManager extends EventEmitter {
       for (const tool of tools) {
         const key = `${name}:${tool.name}`;
         const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
+        const existing = this.findToolByName(tool.name);
+        if (existing && existing.serverName !== name) {
+          coreLog('mcp', `tool name conflict: "${tool.name}" provided by both "${existing.serverName}" and "${name}" — use qualified name "${key}" to disambiguate`);
+        }
         this._allTools.set(key, { serverName: name, schema });
       }
     } catch (err) {
