@@ -215,14 +215,14 @@ describe('validateASTCommands', () => {
     assert.equal(r.safe, false);
   });
 
-  it('blocks dd command', () => {
+  it('dd now handled by detectDangerousDd — safe dd passes AST', () => {
     const r = validateASTCommands('dd if=/dev/zero of=disk.img');
-    assert.equal(r.safe, false);
+    assert.equal(r.safe, true);
   });
 
-  it('blocks crontab', () => {
+  it('crontab now handled by detectPersistenceCommands — passes AST', () => {
     const r = validateASTCommands('crontab -e');
-    assert.equal(r.safe, false);
+    assert.equal(r.safe, true);
   });
 
   it('blocks mount', () => {

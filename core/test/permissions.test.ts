@@ -1282,6 +1282,12 @@ describe('isBuildConfigFile — shell startup + .husky (Gap #53, #77)', () => {
   it('flags .gitconfig', () => assert.ok(isBuildConfigFile('.gitconfig')));
   it('flags .husky/pre-commit', () => assert.ok(isBuildConfigFile('/project/.husky/pre-commit')));
   it('flags .husky/_/husky.sh', () => assert.ok(isBuildConfigFile('/project/.husky/_/husky.sh')));
+  it('flags package.json (scripts run on npm install)', () => assert.ok(isBuildConfigFile('package.json')));
+  it('flags package-lock.json', () => assert.ok(isBuildConfigFile('package-lock.json')));
+  it('flags pnpm-lock.yaml', () => assert.ok(isBuildConfigFile('pnpm-lock.yaml')));
+  it('flags yarn.lock', () => assert.ok(isBuildConfigFile('yarn.lock')));
+  it('flags .git/hooks/pre-commit', () => assert.ok(isBuildConfigFile('/project/.git/hooks/pre-commit')));
+  it('flags .git/hooks/post-checkout', () => assert.ok(isBuildConfigFile('/project/.git/hooks/post-checkout')));
   it('does NOT flag regular source files', () => {
     assert.ok(!isBuildConfigFile('src/index.ts'));
     assert.ok(!isBuildConfigFile('README.md'));

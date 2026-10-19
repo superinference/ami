@@ -212,16 +212,16 @@ describe('AST integration with bash-security', () => {
     assert.ok(result.message.includes('nc'));
   });
 
-  it('blocks dd in a compound command', () => {
-    const result = validateASTCommands('ls && dd if=/dev/zero of=/dev/sda');
+  it('dd handled by detectDangerousDd not AST blocker — device read blocked by validateBashSecurity', () => {
+    const result = validateBashSecurity('ls && dd if=/dev/sda of=out');
     assert.equal(result.safe, false);
-    assert.ok(result.message.includes('dd'));
+    assert.ok(result.message!.includes('dd'));
   });
 
-  it('blocks crontab in a subshell', () => {
-    const result = validateASTCommands('(crontab -e)');
+  it('crontab handled by detectPersistenceCommands — crontab -e blocked by validateBashSecurity', () => {
+    const result = validateBashSecurity('(crontab -e)');
     assert.equal(result.safe, false);
-    assert.ok(result.message.includes('crontab'));
+    assert.ok(result.message!.includes('crontab'));
   });
 
   it('blocks mount behind semicolons', () => {

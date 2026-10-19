@@ -456,8 +456,10 @@ const BUILD_CONFIG_BASENAMES = new Set([
   'cargo.toml',
   // Go
   'go.mod', 'go.sum',
-  // Node/npm/yarn
+  // Node/npm/yarn — package.json scripts run arbitrary code on npm install
+  'package.json', 'package-lock.json',
   '.npmrc', '.yarnrc', '.yarnrc.yml',
+  'pnpm-lock.yaml', 'yarn.lock',
   // Env files
   '.env', '.env.local', '.env.production',
   // Shell startup / login files
@@ -479,6 +481,8 @@ const BUILD_CONFIG_PATH_PATTERNS: RegExp[] = [
   /\/\.circleci\/config\.ya?ml$/,
   // Husky git hooks
   /\/\.husky\//,
+  // Git hooks directory — writing here runs code on git operations
+  /\/\.git\/hooks\//,
 ];
 
 /**
