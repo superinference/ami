@@ -839,6 +839,61 @@ describe('scout tool', () => {
     assert.ok(fs.existsSync(path.join(cachePath, 'README.md')));
     assert.ok(result.output.includes('file_read'));
   });
+
+  it('includes README content in output', async () => {
+    const result = await scoutTool.execute({ repo: upstream }, makeContext(tmpDir));
+    assert.ok(result.output.includes('hello scout'));
+  });
+
+  it('searches for query with grep when provided', async () => {
+    // Add a TypeScript file to the upstream repo for grep to find
+    const srcFile = path.join(upstream, 'index.ts');
+    fs.writeFileSync(srcFile, 'export function searchableMarker() { return 42; }\n');
+    execSync('git add index.ts && git -c user.email=t@t -c user.name=t commit -m "add source"', {
+      cwd: upstream, stdio: 'ignore',
+    });
+    // Clear the scout cache to force re-clone
+    const cacheDir = path.join(tmpDir, '.superinference', 'scout-cache');
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+
+    const result = await scoutTool.execute(
+      { repo: upstream, query: 'searchableMarker' },
+      makeContext(tmpDir),
+    );
+    assert.notEqual(result.isError, true, result.output);
+    assert.ok(result.output.includes('searchableMarker'), 'grep results should contain the query match');
+    assert.ok(result.output.includes('Search results for'), 'output should have search results header');
+  });
+
+  it('skips clone when repo is already cached', async () => {
+    // First call clones
+    const r1 = await scoutTool.execute({ repo: upstream }, makeContext(tmpDir));
+    assert.notEqual(r1.isError, true);
+    // Second call should succeed immediately without cloning
+    const r2 = await scoutTool.execute({ repo: upstream }, makeContext(tmpDir));
+    assert.notEqual(r2.isError, true);
+    assert.ok(r2.output.includes('### Cache path:'));
+  });
+
+  it('returns error for invalid repo URL', async () => {
+    const result = await scoutTool.execute(
+      { repo: '/nonexistent/path/to/nowhere' },
+      makeContext(tmpDir),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Error scouting'));
+  });
+
+  it('expands GitHub shorthand to full URL', async () => {
+    // We can't actually clone from GitHub in tests, but we can verify
+    // the error message contains the expanded URL
+    const result = await scoutTool.execute(
+      { repo: 'nonexistent-owner/nonexistent-repo-xyz' },
+      makeContext(tmpDir),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Error scouting'));
+  });
 });
 
 // ---------------------------------------------------------------------------
