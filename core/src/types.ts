@@ -282,6 +282,8 @@ export interface EngineConfig {
   compactionModel?: string;
   /** Extended thinking/reasoning configuration. */
   thinking?: ThinkingConfig;
+  /** Cap the reasoning effort level (e.g. 'medium' prevents 'high'/'max'). */
+  maxEffortLevel?: string;
   /** SuperInference belief tracking. shouldStop() ends the session only when enforcing is true. */
   superinference?: SuperInferenceConfig;
   /** Lifecycle hooks for post-sampling, stop, and error events. */

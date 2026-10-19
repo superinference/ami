@@ -328,7 +328,15 @@ export function clearDynamicCapabilities(): void {
 }
 
 const OPENAI_REASONING_PATTERN = /^o[1-9]($|-)/;
-const GPT_VERSION_PATTERN = /^gpt-(\d+)(?:\.(\d+))?/;
+function parseGptMajorVersion(modelId: string): number | null {
+  if (!modelId.startsWith('gpt-')) return null;
+  const afterPrefix = modelId.slice(4);
+  const digitEnd = afterPrefix.search(/\D/);
+  const majorStr = digitEnd === -1 ? afterPrefix : afterPrefix.slice(0, digitEnd);
+  if (!majorStr) return null;
+  const major = parseInt(majorStr, 10);
+  return Number.isFinite(major) ? major : null;
+}
 
 function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
   if (OPENAI_REASONING_PATTERN.test(modelId)) {
@@ -338,16 +346,13 @@ function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
       temperatureMustBeUnset: true, maxThinkingBudget: 0,
     };
   }
-  const gptMatch = GPT_VERSION_PATTERN.exec(modelId);
-  if (gptMatch) {
-    const major = parseInt(gptMatch[1]!, 10);
-    if (major >= 5) {
-      return {
-        reasoning: true, defaultThinkingLevel: 'medium',
-        supportsAdaptiveThinking: false, requiresTemperatureOne: false,
-        temperatureMustBeUnset: true, maxThinkingBudget: 0,
-      };
-    }
+  const major = parseGptMajorVersion(modelId);
+  if (major !== null && major >= 5) {
+    return {
+      reasoning: true, defaultThinkingLevel: 'medium',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: true, maxThinkingBudget: 0,
+    };
   }
   return null;
 }
@@ -357,9 +362,8 @@ function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
  * gpt-6+ models do not support function tools with reasoning on /v1/chat/completions.
  */
 export function requiresResponsesAPI(modelId: string): boolean {
-  const match = GPT_VERSION_PATTERN.exec(modelId);
-  if (!match) return false;
-  return parseInt(match[1]!, 10) >= 6;
+  const major = parseGptMajorVersion(modelId);
+  return major !== null && major >= 6;
 }
 
 export function discoverFromModelList(records: Record<string, unknown>[]): {
