@@ -74,6 +74,40 @@ describe('planModeTool — execute', () => {
     assert.ok(result.output.includes('Already in plan mode'));
     setPlanModeActive(false);
   });
+
+  it('returns error for unknown action', async () => {
+    const result = await planModeTool.execute({ action: 'bogus' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Unknown action'));
+    assert.ok(result.output.includes('bogus'));
+  });
+
+  it('verify reports status when in plan mode', async () => {
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    const result = await planModeTool.execute({ action: 'verify' }, ctx());
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('Plan mode active'));
+    assert.ok(result.output.includes('Plan file:'));
+    setPlanModeActive(false);
+  });
+
+  it('verify reports not in plan mode when inactive', async () => {
+    const result = await planModeTool.execute({ action: 'verify' }, ctx());
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('Not in plan mode'));
+  });
+
+  it('exit includes plan content from written file', async () => {
+    const fs = require('fs');
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    const { getPlanFilePath } = require('../src/tools/plan-mode');
+    const planFile = getPlanFilePath();
+    assert.ok(planFile, 'Plan file path should be set');
+    fs.writeFileSync(planFile, '## My Plan\n- Step 1\n- Step 2\n');
+    const result = await planModeTool.execute({ action: 'exit' }, ctx());
+    assert.ok(result.output.includes('## My Plan'));
+    assert.ok(result.output.includes('Step 1'));
+  });
 });
 
 // ---------------------------------------------------------------------------
