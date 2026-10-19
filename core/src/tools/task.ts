@@ -515,8 +515,12 @@ export const taskTool: ToolDefinition = {
       if (context._hookManager) {
         context._hookManager.executeSubagentStop({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});
       }
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const output = resultText.trim()
+        ? `[Partial output before error]\n\n${resultText.trim()}\n\n[Error]\n${errMsg}`
+        : `Subagent error: ${errMsg}`;
       return {
-        output: `Subagent error: ${err instanceof Error ? err.message : String(err)}`,
+        output,
         isError: true,
       };
     } finally {

@@ -135,6 +135,54 @@ describe('taskTool – execute error handling', () => {
     assert.ok(result.output.includes('engine exploded'));
   });
 
+  it('preserves accumulated resultText when foreground subagent throws mid-stream', async () => {
+    async function* fakeSubmit(_prompt: string) {
+      yield { type: 'text_delta' as const, text: 'partial work done' };
+      yield { type: 'text_delta' as const, text: ' and more progress' };
+      throw new Error('rate limit exceeded');
+    }
+
+    const result = await taskTool.execute(
+      { prompt: 'mid-stream crash' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+        _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
+      }),
+    );
+    assert.ok(result.isError, 'should be marked as error');
+    assert.ok(result.output.includes('partial work done'),
+      `partial output must be preserved, got: "${result.output}"`);
+    assert.ok(result.output.includes('and more progress'),
+      `all accumulated text must be preserved, got: "${result.output}"`);
+    assert.ok(result.output.includes('rate limit exceeded'),
+      `error message must be present, got: "${result.output}"`);
+    assert.ok(result.output.includes('[Partial output before error]'),
+      `should have partial output header, got: "${result.output}"`);
+    assert.ok(result.output.includes('[Error]'),
+      `should have error header, got: "${result.output}"`);
+  });
+
+  it('returns only error message when no resultText accumulated before throw', async () => {
+    async function* fakeSubmit(_prompt: string): AsyncGenerator<any> {
+      throw new Error('immediate failure');
+    }
+
+    const result = await taskTool.execute(
+      { prompt: 'immediate crash' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+        _engineFactory: (_cfg) => ({ submit: fakeSubmit }),
+      }),
+    );
+    assert.ok(result.isError, 'should be marked as error');
+    assert.ok(result.output.includes('immediate failure'),
+      `error message must be present, got: "${result.output}"`);
+    assert.ok(result.output.startsWith('Subagent error:'),
+      `no partial output header when no text accumulated, got: "${result.output}"`);
+    assert.ok(!result.output.includes('[Partial output before error]'),
+      `should NOT have partial output header when no text was accumulated`);
+  });
+
   it('returns fallback message when subagent produces no output', async () => {
     async function* fakeSubmit(_prompt: string) {
       yield { type: 'turn_complete' as const };
