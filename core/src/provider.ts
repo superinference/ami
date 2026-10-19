@@ -1065,7 +1065,26 @@ export function isNetworkError(err: unknown): boolean {
   return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up/i.test(msg);
 }
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
+// ---------------------------------------------------------------------------
+// SSL/TLS certificate error detection — fail fast with actionable hints
+// ---------------------------------------------------------------------------
+
+const SSL_ERROR_CODES = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+]);
+
+export function isSslError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  if (code && SSL_ERROR_CODES.has(code)) return true;
+  const msg = err instanceof Error ? err.message : '';
+  return /self signed certificate|certificate has expired|unable to get local issuer certificate/i.test(msg);
+}
+
+export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
 
 export async function* streamChatCompletionWithRetry(
   config: ProviderConfig,
@@ -1074,7 +1093,8 @@ export async function* streamChatCompletionWithRetry(
   abortSignal: AbortSignal,
   options?: { thinking?: ThinkingConfig; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
 ): AsyncGenerator<StreamChunk> {
-  const timeoutMs = options?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const envTimeout = Number(process.env.SUPERINFERENCE_API_TIMEOUT_MS);
+  const timeoutMs = options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS);
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
   const baseDelay = options?.baseDelayMs ?? BASE_DELAY_MS;
   const maxDelay = options?.maxDelayMs ?? 60_000;
@@ -1174,6 +1194,15 @@ export async function* streamChatCompletionWithRetry(
         timedOut = true;
       } else if (requestAbort.signal.aborted && !abortSignal.aborted) {
         timedOut = true;
+      } else if (isSslError(err)) {
+        // SSL/TLS errors are not transient — fail immediately with actionable hints
+        const original = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `SSL/TLS certificate error: ${original}. Possible fixes: ` +
+          '(1) Set NODE_EXTRA_CA_CERTS=/path/to/ca-bundle.crt for corporate proxies ' +
+          '(2) Check if a TLS-inspecting proxy needs its CA certificate added ' +
+          "(3) Verify server certificates haven't expired",
+        );
       } else if (!contentStarted && attempt < maxRetries && isNetworkError(err)) {
         networkRetry = true;
       } else {

@@ -6,6 +6,8 @@ import {
   parseRetryAfterHeader,
   MAX_RETRY_AFTER_MS,
   isNetworkError,
+  isSslError,
+  DEFAULT_REQUEST_TIMEOUT_MS,
 } from '../../core/src/provider';
 
 describe('sanitizeErrorMessage', () => {
@@ -177,5 +179,78 @@ describe('isNetworkError', () => {
   it('returns false for non-Error values', () => {
     assert.equal(isNetworkError('string'), false);
     assert.equal(isNetworkError(null), false);
+  });
+});
+
+describe('isSslError', () => {
+  it('returns true for UNABLE_TO_VERIFY_LEAF_SIGNATURE code', () => {
+    assert.ok(isSslError(Object.assign(new Error('unable to verify'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' })));
+  });
+
+  it('returns true for CERT_HAS_EXPIRED code', () => {
+    assert.ok(isSslError(Object.assign(new Error('cert expired'), { code: 'CERT_HAS_EXPIRED' })));
+  });
+
+  it('returns true for DEPTH_ZERO_SELF_SIGNED_CERT code', () => {
+    assert.ok(isSslError(Object.assign(new Error('self signed'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' })));
+  });
+
+  it('returns true for "self signed certificate" message', () => {
+    assert.ok(isSslError(new Error('self signed certificate in chain')));
+  });
+
+  it('returns false for ECONNRESET (network error, not SSL)', () => {
+    assert.equal(isSslError(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })), false);
+  });
+
+  it('returns false for "401 Unauthorized" (auth error, not SSL)', () => {
+    assert.equal(isSslError(new Error('401 Unauthorized')), false);
+  });
+});
+
+describe('SUPERINFERENCE_API_TIMEOUT_MS env var', () => {
+  it('DEFAULT_REQUEST_TIMEOUT_MS is 300000 (5 minutes)', () => {
+    assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 300_000);
+  });
+
+  it('env var override is wired into streamChatCompletionWithRetry source', async () => {
+    // Verify the source code contains the env var check pattern.
+    // This is a structural test: the env var must be read and used in the
+    // timeout resolution chain, falling between options.requestTimeoutMs
+    // (highest priority) and DEFAULT_REQUEST_TIMEOUT_MS (lowest priority).
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(
+      new URL('../../core/src/provider.ts', import.meta.url),
+      'utf-8',
+    );
+    // The env var must be read
+    assert.ok(
+      src.includes('process.env.SUPERINFERENCE_API_TIMEOUT_MS'),
+      'source must read SUPERINFERENCE_API_TIMEOUT_MS from process.env',
+    );
+    // The env var must be converted to a number and checked > 0
+    assert.ok(
+      src.includes('envTimeout > 0'),
+      'source must guard against non-positive env values',
+    );
+    // The precedence chain: options.requestTimeoutMs > envTimeout > DEFAULT
+    assert.ok(
+      src.includes('options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS)'),
+      'timeout resolution must follow options > env > default precedence',
+    );
+  });
+
+  it('env var is only used in streamChatCompletionWithRetry (not the inner stream)', async () => {
+    // The env var override must NOT appear in streamChatCompletion (which
+    // receives the already-resolved timeout via AbortController), only in
+    // the retry wrapper that resolves it.
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(
+      new URL('../../core/src/provider.ts', import.meta.url),
+      'utf-8',
+    );
+    const envVarOccurrences = src.split('SUPERINFERENCE_API_TIMEOUT_MS').length - 1;
+    // Expect exactly 1 occurrence: the single resolution line in streamChatCompletionWithRetry
+    assert.equal(envVarOccurrences, 1, 'env var should appear exactly once in provider.ts');
   });
 });
