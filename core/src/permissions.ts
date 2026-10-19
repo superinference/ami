@@ -460,6 +460,12 @@ const BUILD_CONFIG_BASENAMES = new Set([
   '.npmrc', '.yarnrc', '.yarnrc.yml',
   // Env files
   '.env', '.env.local', '.env.production',
+  // Shell startup / login files
+  '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
+  '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout',
+  '.profile', '.login',
+  // Git config
+  '.gitconfig',
 ]);
 
 /**
@@ -471,6 +477,8 @@ const BUILD_CONFIG_PATH_PATTERNS: RegExp[] = [
   /\/\.github\/workflows\/[^/]+\.ya?ml$/,
   // CircleCI
   /\/\.circleci\/config\.ya?ml$/,
+  // Husky git hooks
+  /\/\.husky\//,
 ];
 
 /**

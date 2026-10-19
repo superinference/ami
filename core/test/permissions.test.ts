@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations, stripEnvVarPrefix } from '../src/permissions';
+import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations, stripEnvVarPrefix, isBuildConfigFile } from '../src/permissions';
 import type { PermissionMode, PermissionRule } from '../src/permissions';
 
 function makeTempDir(): string {
@@ -1264,5 +1264,26 @@ describe('PermissionManager — shell wrapper stripping (Gap #66)', () => {
     ]);
     const result = pm.checkDenyRules('bash', 'sudo python evil.py');
     assert.equal(result.denied, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap #53: Shell startup files require approval + Gap #77: .husky
+// ---------------------------------------------------------------------------
+
+describe('isBuildConfigFile — shell startup + .husky (Gap #53, #77)', () => {
+  it('flags .bashrc', () => assert.ok(isBuildConfigFile('.bashrc')));
+  it('flags .zshrc', () => assert.ok(isBuildConfigFile('.zshrc')));
+  it('flags .zshenv', () => assert.ok(isBuildConfigFile('.zshenv')));
+  it('flags .profile', () => assert.ok(isBuildConfigFile('.profile')));
+  it('flags .bash_profile', () => assert.ok(isBuildConfigFile('.bash_profile')));
+  it('flags .bash_login', () => assert.ok(isBuildConfigFile('.bash_login')));
+  it('flags .zlogin', () => assert.ok(isBuildConfigFile('.zlogin')));
+  it('flags .gitconfig', () => assert.ok(isBuildConfigFile('.gitconfig')));
+  it('flags .husky/pre-commit', () => assert.ok(isBuildConfigFile('/project/.husky/pre-commit')));
+  it('flags .husky/_/husky.sh', () => assert.ok(isBuildConfigFile('/project/.husky/_/husky.sh')));
+  it('does NOT flag regular source files', () => {
+    assert.ok(!isBuildConfigFile('src/index.ts'));
+    assert.ok(!isBuildConfigFile('README.md'));
   });
 });
