@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
+import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES } from './web-utils';
 import { spillToolText } from './spill-output';
@@ -234,15 +235,17 @@ export const webFetchTool: ToolDefinition = {
       // Handle PDF responses — extract text from the PDF
       if (contentType.includes('application/pdf') || body.startsWith('%PDF')) {
         try {
-          const pdfParse = require('pdf-parse');
-          // Use the raw bytes — decoding via a UTF-8 string corrupts the PDF.
+          const cwdRequire = createRequire(path.join(process.cwd(), '_'));
+          const { PDFParse } = cwdRequire('pdf-parse');
           const pdfBuffer = bodyBuffer ?? Buffer.from(body, 'binary');
-          const pdf = await pdfParse(pdfBuffer);
+          const parser = new PDFParse({ data: pdfBuffer });
+          const pdf = await parser.getText();
+          await parser.destroy();
           const pdfText = (pdf.text || '').trim();
           if (pdfText.length > 100) {
             const truncated = spillToolText(context.cwd, 'pdf', pdfText, MAX_RESPONSE_LENGTH);
             return {
-              output: `URL: ${sanitizedUrl}\nType: PDF (${pdf.numpages} pages)\n\n${truncated}`,
+              output: `URL: ${sanitizedUrl}\nType: PDF (${pdf.total} pages)\n\n${truncated}`,
               isError: false,
             };
           }

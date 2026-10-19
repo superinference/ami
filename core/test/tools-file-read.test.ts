@@ -528,6 +528,65 @@ describe('Read tool — size/regular-file guards + allow_large + large PDF', () 
 });
 
 // ---------------------------------------------------------------------------
+// PDF text extraction (pdf-parse v2 API)
+// ---------------------------------------------------------------------------
+
+function makeMinimalPdf(text = 'Hello World'): Buffer {
+  const stream = `BT /F1 12 Tf 100 700 Td (${text}) Tj ET`;
+  const streamLen = Buffer.byteLength(stream);
+  const lines = [
+    '%PDF-1.0',
+    '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj',
+    '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj',
+    '3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Contents 4 0 R/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>>>endobj',
+    `4 0 obj<</Length ${streamLen}>>stream`,
+    stream,
+    'endstream',
+    'endobj',
+  ];
+  const body = lines.join('\n') + '\n';
+  const xrefOffset = body.length;
+  const xref = ['xref', '0 5', '0000000000 65535 f '];
+  for (let i = 1; i <= 4; i++) {
+    const pos = body.indexOf(`${i} 0 obj`);
+    xref.push(String(pos).padStart(10, '0') + ' 00000 n ');
+  }
+  const trailer = ['trailer<</Size 5/Root 1 0 R>>', 'startxref', String(xrefOffset), '%%EOF'];
+  return Buffer.from(body + xref.join('\n') + '\n' + trailer.join('\n'));
+}
+
+describe('Read tool — PDF text extraction (v2 API)', () => {
+  let hasPdfParse = false;
+  try { require('pdf-parse'); hasPdfParse = true; } catch {}
+
+  it('extracts text from a valid PDF (requires pdf-parse)', { skip: !hasPdfParse }, async () => {
+    const p = path.join(tmpDir, 'valid.pdf');
+    fs.writeFileSync(p, makeMinimalPdf('SuperInference Test'));
+    const res = await fileReadTool.execute({ file_path: p }, ctx());
+    assert.equal(res.isError, false);
+    assert.ok(res.output.includes('SuperInference Test'), `Should contain extracted text but got: ${res.output.slice(0, 200)}`);
+    assert.ok(res.output.includes('1 pages'), `Should report page count but got: ${res.output.slice(0, 200)}`);
+  });
+
+  it('returns error for corrupted PDF', async () => {
+    const p = path.join(tmpDir, 'corrupt.pdf');
+    fs.writeFileSync(p, '%PDF-1.4\ngarbage data that is not valid PDF structure');
+    const res = await fileReadTool.execute({ file_path: p }, ctx());
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('Error reading PDF'), `Should report PDF error but got: ${res.output.slice(0, 200)}`);
+  });
+
+  it('tracks the file in filesRead (requires pdf-parse)', { skip: !hasPdfParse }, async () => {
+    const p = path.join(tmpDir, 'tracked.pdf');
+    fs.writeFileSync(p, makeMinimalPdf('Tracked'));
+    const context = ctx();
+    context.filesRead = new Set();
+    await fileReadTool.execute({ file_path: p }, context);
+    assert.ok(context.filesRead.has(p), 'PDF file should be tracked in filesRead');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // isImageExtension
 // ---------------------------------------------------------------------------
 

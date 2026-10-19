@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
 import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath, validateFilePath } from './tool-utils';
@@ -318,10 +319,11 @@ export const fileReadTool: ToolDefinition = {
       // Treat empty/whitespace-only pages as omitted (models sometimes pass "")
       const pagesParam = rawPages && rawPages.trim().length > 0 ? rawPages : undefined;
       try {
-        const pdfParse = require('pdf-parse');
+        const cwdRequire = createRequire(path.join(process.cwd(), '_'));
+        const { PDFParse } = cwdRequire('pdf-parse');
         const pdfBuffer = await fs.promises.readFile(resolved);
-        const opts: Record<string, unknown> = {};
         let pageRange: { start: number; end: number } | null = null;
+        const parseOpts: Record<string, unknown> = {};
 
         if (pagesParam) {
           const parsed = parsePageRange(pagesParam);
@@ -329,23 +331,19 @@ export const fileReadTool: ToolDefinition = {
             return { output: `Error: ${parsed.error}`, isError: true };
           }
           pageRange = parsed;
-          opts.pagerender = function (pageData: any) {
-            const pageNum = pageData.pageIndex + 1;
-            if (pageNum >= pageRange!.start && pageNum <= pageRange!.end) {
-              return pageData.getTextContent().then((tc: any) =>
-                tc.items.map((i: any) => i.str).join('')
-              );
-            }
-            return Promise.resolve('');
-          };
+          const pages: number[] = [];
+          for (let p = parsed.start; p <= parsed.end; p++) pages.push(p);
+          parseOpts.partial = pages;
         }
 
-        const pdf = await pdfParse(pdfBuffer, opts);
+        const parser = new PDFParse({ data: pdfBuffer });
+        const pdf = await parser.getText(parseOpts);
+        await parser.destroy();
         const text = (pdf.text || '').trim();
         const rangeNote = pageRange ? ` (pages ${pageRange.start}-${pageRange.end})` : '';
         context.filesRead?.add(resolved);
         return {
-          output: `File: ${resolved} (PDF, ${pdf.numpages} pages)${rangeNote}\n\n${spillToolText(context.cwd, 'pdf', text, 100_000)}`,
+          output: `File: ${resolved} (PDF, ${pdf.total} pages)${rangeNote}\n\n${spillToolText(context.cwd, 'pdf', text, 100_000)}`,
           isError: false,
         };
       } catch (err) {
