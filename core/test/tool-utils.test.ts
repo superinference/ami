@@ -954,3 +954,62 @@ describe('redactSecrets — unquoted key=value (Gap #1)', () => {
     assert.ok(result.includes('PATH=/usr/bin'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// redactSecrets — Bearer/Basic percent-encoding and positional (Gap #13, #14)
+// ---------------------------------------------------------------------------
+
+describe('redactSecrets — Bearer/Basic edge cases (Gap #13, #14)', () => {
+  it('redacts percent-encoded Bearer%20token', () => {
+    const result = redactSecrets('Authorization: Bearer%20abc123456789012345678901234567890');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('abc123456789012345678901234567890'));
+  });
+
+  it('redacts "Bearer was <token>" in error messages', () => {
+    const result = redactSecrets('error: Bearer was abc123456789012345678901234567890');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('abc123456789012345678901234567890'));
+  });
+
+  it('redacts "Bearer token <value>" pattern', () => {
+    const result = redactSecrets('The Bearer token abc123456789012345678901234567890 expired');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('abc123456789012345678901234567890'));
+  });
+
+  it('still redacts standard Bearer header', () => {
+    const result = redactSecrets('Authorization: Bearer abc123456789012345678901234567890');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('abc123456789012345678901234567890'));
+  });
+
+  it('redacts Basic auth with percent encoding', () => {
+    const result = redactSecrets('Basic%20dXNlcjpwYXNzd29yZHNlY3JldA==');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// redactSecrets — invisible chars in key names (Gap #15)
+// ---------------------------------------------------------------------------
+
+describe('redactSecrets — invisible chars in keys (Gap #15)', () => {
+  it('redacts key with zero-width space in name', () => {
+    const result = redactSecrets('API​_KEY=secretvalue123');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('secretvalue123'));
+  });
+
+  it('redacts key with soft hyphen in name', () => {
+    const result = redactSecrets('PASS­WORD=secretvalue123');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('secretvalue123'));
+  });
+
+  it('redacts key with bidi override in name', () => {
+    const result = redactSecrets('TOKEN‪=secretvalue123');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('secretvalue123'));
+  });
+});

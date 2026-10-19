@@ -367,11 +367,15 @@ export function scanForSecrets(content: string): string[] {
  * boundary characters. Used before writing shared transcripts (/export) so API
  * keys and credentials never land in a file the user might paste or publish.
  */
+// eslint-disable-next-line security/detect-bidi-characters -- matches invisible chars to strip
+const INVISIBLE_CHARS_RE = /[­͏؜᠎​-‏‪-‮⁠-⁤⁦-⁯﻿￹-￻]/g;
+
 export function redactSecrets(content: string): string {
   const lines = content.split('\n');
-  let out = lines.map(line =>
-    line.length > MAX_SCAN_LINE_LENGTH * 2 ? line.slice(0, MAX_SCAN_LINE_LENGTH * 2) + '…' : line,
-  ).join('\n');
+  let out = lines.map(line => {
+    const trimmed = line.length > MAX_SCAN_LINE_LENGTH * 2 ? line.slice(0, MAX_SCAN_LINE_LENGTH * 2) + '…' : line;
+    return trimmed.replace(INVISIBLE_CHARS_RE, '');
+  }).join('\n');
 
   // 1. Private key blocks — must run before token patterns to avoid partial matches.
   out = out.replace(
@@ -393,8 +397,14 @@ export function redactSecrets(content: string): string {
   for (const re of tokenRes) out = out.replace(re, '[REDACTED-SECRET]');
 
   // 3. Bearer / Basic auth headers — redact long token values (>= 20 chars).
+  // Handles standard "Bearer <token>", percent-encoded "Bearer%20<token>",
+  // and positional variants like "Bearer was <token>" or "Bearer: <token>".
   out = out.replace(
-    /((?:Bearer|Basic)\s+)[A-Za-z0-9+/=_.~-]{20,}/g,
+    /((?:Bearer|Basic)(?:\s+|%20))[A-Za-z0-9+/=_.~%-]{20,}/gi,
+    '$1[REDACTED-SECRET]',
+  );
+  out = out.replace(
+    /((?:Bearer|Basic)\s+(?:was|is|token|value|=)\s*:?\s*)[A-Za-z0-9+/=_.~%-]{20,}/gi,
     '$1[REDACTED-SECRET]',
   );
 
