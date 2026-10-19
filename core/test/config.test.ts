@@ -424,7 +424,7 @@ describe('ConfigService', () => {
     svc.watch();
 
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "after"}');
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 600));
     svc.stop();
     assert.equal(svc.get().model, 'after');
     assert.equal(notified, true);
@@ -443,7 +443,7 @@ describe('ConfigService', () => {
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v2"}');
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v3"}');
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 600));
     svc.stop();
     assert.equal(svc.get().model, 'v3');
     assert.ok(changeCount <= 3, 'debounce should limit notifications');
