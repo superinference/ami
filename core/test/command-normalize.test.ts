@@ -60,6 +60,20 @@ describe('normalizeCommand', () => {
     assert.equal(normalizeCommand(''), '');
   });
 
+  it('preserves hash inside single quotes', () => {
+    const result = normalizeCommand("echo '# comment in single quotes'");
+    assert.ok(result.includes('# comment'));
+  });
+
+  it('strips comment at start of line', () => {
+    assert.equal(normalizeCommand('# this is a comment'), '');
+  });
+
+  it('preserves hash that is not preceded by whitespace', () => {
+    const result = normalizeCommand('echo foo#bar');
+    assert.ok(result.includes('foo#bar'));
+  });
+
   it('preserves meaningful command structure', () => {
     const cmd = 'git diff --stat HEAD~3..HEAD';
     assert.equal(normalizeCommand(cmd), cmd);
