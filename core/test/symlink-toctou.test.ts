@@ -82,6 +82,14 @@ describe('isSensitivePath', () => {
     const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
     assert.ok(!isSensitivePath(path.join(home, '.config')));
   });
+  it('blocks ~/.claude.json', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.claude.json')));
+  });
+  it('blocks ~/.claude/backups/session.json', () => {
+    const home = process.env.HOME || process.env.USERPROFILE || '/home/test';
+    assert.ok(isSensitivePath(path.join(home, '.claude', 'backups', 'session.json')));
+  });
 });
 
 describe('resolveFilePath — symlink TOCTOU', () => {
