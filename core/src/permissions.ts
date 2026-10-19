@@ -856,13 +856,15 @@ export class PermissionManager {
           ? matchBashPattern(rule.pattern, inputStr, rule.action)
           : matchPattern(rule.pattern, inputStr);
         if (matched) {
-          if (this._memo) this._memo.set(toolName, this._hashInput(input), rule.action);
-          return rule.action;
+          const effective = (rule.action === 'allow' && isDestructiveBash) ? 'ask' : rule.action;
+          if (this._memo) this._memo.set(toolName, this._hashInput(input), effective);
+          return effective;
         }
       } else {
         // No pattern -- rule applies to the whole tool (param match already gated above)
-        if (this._memo) this._memo.set(toolName, this._hashInput(input), rule.action);
-        return rule.action;
+        const effective = (rule.action === 'allow' && isDestructiveBash) ? 'ask' : rule.action;
+        if (this._memo) this._memo.set(toolName, this._hashInput(input), effective);
+        return effective;
       }
     }
 

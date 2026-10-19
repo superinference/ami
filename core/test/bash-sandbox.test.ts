@@ -6,6 +6,7 @@ import {
   wrapWithUnshare,
   getSandboxStatus,
   resetSandboxCache,
+  validateSandboxEnabled,
 } from '../src/tools/bash-sandbox';
 
 describe('shouldUseSandbox', () => {
@@ -261,5 +262,50 @@ describe('sandbox maxProcesses — fork exhaustion regression', () => {
     const match = wrapped.match(/ulimit -u (\d+)/);
     assert.ok(match);
     assert.equal(parseInt(match[1], 10), 16384);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateSandboxEnabled — fail-closed when deps missing
+// ---------------------------------------------------------------------------
+
+describe('validateSandboxEnabled', () => {
+  it('returns a SandboxValidation object', () => {
+    const result = validateSandboxEnabled();
+    assert.equal(typeof result.valid, 'boolean');
+    if (result.valid) {
+      assert.equal(result.method, 'unshare');
+      assert.equal(result.error, undefined);
+    } else {
+      assert.equal(typeof result.error, 'string');
+      assert.ok(result.error!.length > 0);
+    }
+  });
+
+  it('on Linux with unshare, reports valid', () => {
+    if (process.platform !== 'linux') return;
+    resetSandboxCache();
+    const result = validateSandboxEnabled();
+    // On Linux CI with unshare available, this should be valid
+    if (result.valid) {
+      assert.equal(result.method, 'unshare');
+    }
+  });
+
+  it('error message mentions Linux when not on Linux', () => {
+    if (process.platform === 'linux') return;
+    const result = validateSandboxEnabled();
+    assert.equal(result.valid, false);
+    assert.ok(result.error!.includes('Linux'));
+    assert.ok(result.error!.includes(process.platform));
+  });
+
+  it('error message mentions unshare when unavailable', () => {
+    if (process.platform !== 'linux') return;
+    resetSandboxCache();
+    const result = validateSandboxEnabled();
+    if (!result.valid) {
+      assert.ok(result.error!.includes('unshare'));
+    }
   });
 });
