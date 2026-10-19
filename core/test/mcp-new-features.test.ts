@@ -276,3 +276,24 @@ describe('MCP tool call timeout', () => {
     assert.ok(src.includes('SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS'), 'must reference env var');
   });
 });
+
+describe('MCP server receives SUPERINFERENCE_PROJECT_DIR', () => {
+  it('addServer enriches env with project directory from rootPaths', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'mcp', 'manager.ts'), 'utf-8',
+    );
+    assert.ok(
+      src.includes('SUPERINFERENCE_PROJECT_DIR') && src.includes('rootPaths[0]'),
+      'addServer must pass SUPERINFERENCE_PROJECT_DIR from rootPaths to MCP client env',
+    );
+  });
+
+  it('enrichedEnv spreads config.env and adds project dir', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'mcp', 'manager.ts'), 'utf-8',
+    );
+    const enrichSection = src.slice(src.indexOf('enrichedEnv'), src.indexOf('enrichedEnv') + 200);
+    assert.ok(enrichSection.includes('config.env'), 'must spread config.env into enrichedEnv');
+    assert.ok(enrichSection.includes('SUPERINFERENCE_PROJECT_DIR'), 'must set SUPERINFERENCE_PROJECT_DIR');
+  });
+});

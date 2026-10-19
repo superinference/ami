@@ -134,10 +134,14 @@ export class McpManager extends EventEmitter {
     }
 
     this.configs.set(name, config);
+    const enrichedEnv = {
+      ...config.env,
+      ...(this.rootPaths[0] ? { SUPERINFERENCE_PROJECT_DIR: this.rootPaths[0] } : {}),
+    };
     const client = new McpClient({
       command: resolvedCommand,
       args: resolvedArgs,
-      env: config.env,
+      env: enrichedEnv,
       headers: config.headers ? resolveEnvVars(config.headers) : undefined,
       requestTimeout: config.requestTimeout ?? (config.containerConfig ? 60000 : 30000),
       connectTimeout: config.connectTimeout ?? (config.containerConfig ? 120000 : 10000),
