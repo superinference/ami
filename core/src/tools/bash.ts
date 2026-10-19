@@ -753,9 +753,11 @@ const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
   { pattern: /error\[E\d+\]/i, hint: 'Rust compilation error. Check the file and line number in the error message.' },
   { pattern: /npm ERR!.*ERESOLVE/i, hint: 'NPM dependency resolution conflict. Try npm install --legacy-peer-deps or check package.json version constraints.' },
   { pattern: /fatal: not a git repository/i, hint: 'Not inside a git repository. Check the current directory.' },
+  { pattern: /API rate limit exceeded|gh: api rate limit|403.*rate limit/i, hint: 'GitHub API rate limit exceeded. Wait a few minutes before retrying, or authenticate with `gh auth login` for higher limits.' },
+  { pattern: /secondary rate limit|abuse detection/i, hint: 'GitHub secondary rate limit triggered. Slow down requests — wait at least 60 seconds before retrying.' },
 ];
 
-function diagnoseError(output: string): string | null {
+export function diagnoseError(output: string): string | null {
   for (const { pattern, hint } of ERROR_HINTS) {
     if (pattern.test(output)) return hint;
   }

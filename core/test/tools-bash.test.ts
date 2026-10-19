@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
-import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout, detectGitCommit, injectFindMaxdepth, extractBashReadPaths } from '../src/tools/bash';
+import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout, detectGitCommit, injectFindMaxdepth, extractBashReadPaths, diagnoseError } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 import { detectHardlineCommand } from '../src/permissions';
 
@@ -1347,5 +1347,48 @@ describe('bash cat/head/tail populates filesRead', () => {
       ctx({ cwd: tmpDir, filesRead }),
     );
     assert.ok(!filesRead.has(path.join(tmpDir, 'nonexistent.txt')));
+  });
+});
+
+describe('diagnoseError — gh rate limit hints', () => {
+  it('detects GitHub API rate limit exceeded', () => {
+    const hint = diagnoseError('gh: API rate limit exceeded for user');
+    assert.ok(hint);
+    assert.ok(hint!.includes('rate limit'));
+  });
+
+  it('detects 403 rate limit response', () => {
+    const hint = diagnoseError('HTTP 403: rate limit exceeded');
+    assert.ok(hint);
+    assert.ok(hint!.includes('rate limit'));
+  });
+
+  it('detects secondary rate limit', () => {
+    const hint = diagnoseError('You have exceeded a secondary rate limit');
+    assert.ok(hint);
+    assert.ok(hint!.includes('secondary rate limit'));
+  });
+
+  it('detects abuse detection mechanism', () => {
+    const hint = diagnoseError('abuse detection mechanism triggered');
+    assert.ok(hint);
+    assert.ok(hint!.includes('secondary rate limit'));
+  });
+
+  it('returns null for normal gh output', () => {
+    const hint = diagnoseError('Successfully created PR #42');
+    assert.equal(hint, null);
+  });
+
+  it('detects ENOENT errors', () => {
+    const hint = diagnoseError('Error: ENOENT: no such file or directory');
+    assert.ok(hint);
+    assert.ok(hint!.includes('does not exist'));
+  });
+
+  it('detects TypeScript errors', () => {
+    const hint = diagnoseError('src/index.ts(5,3): error TS2304: Cannot find name');
+    assert.ok(hint);
+    assert.ok(hint!.includes('TypeScript'));
   });
 });
