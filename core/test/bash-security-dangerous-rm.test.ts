@@ -88,4 +88,56 @@ describe('detectDangerousRm', () => {
     assert.equal(detectDangerousRm('rm -rf dist/').dangerous, false);
     assert.equal(detectDangerousRm('rm file.txt').dangerous, false);
   });
+
+  it('detects rm targeting a backslash-only path', () => {
+    const result = detectDangerousRm('rm -rf \\');
+    assert.equal(result.dangerous, true);
+    assert.ok(result.suggestion!.includes('backslash'));
+  });
+
+  it('detects rm -rf with backslash target and trailing space', () => {
+    const result = detectDangerousRm('rm -rf \\ ');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('detects rm with PWD variable (working directory derived)', () => {
+    const result = detectDangerousRm('rm -rf $PWD');
+    assert.equal(result.dangerous, true);
+    assert.equal(result.variable, 'PWD');
+    assert.ok(result.suggestion!.includes('working directory'));
+  });
+
+  it('detects rm with OLDPWD variable', () => {
+    const result = detectDangerousRm('rm -rf $OLDPWD');
+    assert.equal(result.dangerous, true);
+    assert.equal(result.variable, 'OLDPWD');
+  });
+
+  it('detects rm with variable followed by top-level directory /usr', () => {
+    const result = detectDangerousRm('rm -rf $PREFIX/usr');
+    assert.equal(result.dangerous, true);
+    assert.ok(result.suggestion!.includes('/usr'));
+  });
+
+  it('detects rm with variable followed by top-level directory /etc', () => {
+    const result = detectDangerousRm('rm -rf ${ROOT}/etc');
+    assert.equal(result.dangerous, true);
+    assert.ok(result.suggestion!.includes('/etc'));
+  });
+
+  it('detects rm with variable followed by /bin', () => {
+    const result = detectDangerousRm('rm -rf $BASE/bin');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('detects rm with variable followed by /home', () => {
+    const result = detectDangerousRm('rm -rf $BASE/home');
+    assert.equal(result.dangerous, true);
+  });
+
+  it('allows rm with variable followed by non-top-level directory', () => {
+    const result = detectDangerousRm('rm -rf $BASE/myapp');
+    assert.equal(result.dangerous, true);
+    assert.ok(!result.suggestion!.includes('top-level'));
+  });
 });

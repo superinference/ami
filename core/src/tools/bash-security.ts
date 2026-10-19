@@ -1437,7 +1437,7 @@ export function detectDangerousRm(command: string): { dangerous: boolean; sugges
   }
 
   // eslint-disable-next-line security/detect-unsafe-regex -- [rfdi] and \s are disjoint, no overlap
-  const rmWithVar = /\brm\s+(?:-[rfdi]+\s+)*\$\{?(\w+)\}?(?:\/(\w+))?/;
+  const rmWithVar = /\brm\s+(?:-[rfdi]+\s+)*["']?\$\{?(\w+)\}?(?:\/(\w+))?/;
   const match = command.match(rmWithVar);
   if (!match) return { dangerous: false };
   const varName = match[1];
@@ -1461,7 +1461,7 @@ export function detectDangerousRm(command: string): { dangerous: boolean; sugges
     return {
       dangerous: true,
       variable: varName,
-      suggestion: `rm with variable followed by top-level directory (/$trailingDir) — use \${${varName}:?}`,
+      suggestion: `rm with variable followed by top-level directory (/${trailingDir}) — use \${${varName}:?}`,
     };
   }
 
