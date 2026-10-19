@@ -1085,6 +1085,7 @@ const RM_RF_RE = /\brm\b[^;]*(?:-\w*[rf]\w*\s+[^;]*-\w*[rf]\w*|-\w*r\w*f\w*|-\w*
 const DISK_WIPE_RE = /\b(?:mkfs|mkfs\.\w+|wipefs|shred)\b[^|;]*(?:\/dev\/[a-z]|\/dev\/mapper\/)/;
 const DD_WIPE_RE = /\bdd\b[^|;]*(?:of\s*=\s*\/dev\/(?:sd|hd|vd|nvme|xvd|loop|mapper)|of\s*=\s*\/dev\/(?:zero|null|urandom))/;
 const FORK_BOMB_RE = /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/;
+const IAC_DESTROY_RE = /\b(?:terraform|tofu)\s+(?:apply\s+-destroy|destroy)\b|\b(?:pulumi|cdktf)\s+destroy\b|\bcdk\s+destroy\b/;
 // eslint-disable-next-line security/detect-unsafe-regex -- each inner group always advances (greedy \S+ then \s+), linear
 const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*(?:\S+=\S+\s+)*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+|command\s+|\\|\/(?:usr\/)?(?:s?bin)\/)/;
 
@@ -1199,6 +1200,10 @@ function checkSegment(segment: string): NuclearCheckResult {
 
   if (DISK_WIPE_RE.test(bare)) {
     return { blocked: true, reason: 'filesystem format/wipe command — would destroy the disk' };
+  }
+
+  if (IAC_DESTROY_RE.test(bare)) {
+    return { blocked: true, reason: 'IaC destroy command — would tear down cloud infrastructure' };
   }
 
   if (RM_RF_RE.test(bare)) {
@@ -1476,6 +1481,7 @@ export {
   CHECK_IDS,
   SENSITIVE_ENV_RE,
   redactEnvVarsInOutput,
+  sanitizeToolOutput,
 };
 
 const SENSITIVE_ENV_RE =
@@ -1517,4 +1523,24 @@ function redactEnvVarsInOutput(output: string): string {
     }
     return `${prefix}${name}=[REDACTED]`;
   }).join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// OSC 8 hyperlink stripping — removes terminal hyperlink sequences that could
+// disguise malicious URLs as innocent-looking text in tool output.
+// Format: \x1b]8;params;URI\x1b\\ visible text \x1b]8;;\x1b\\
+// ---------------------------------------------------------------------------
+
+const OSC8_RE = /\x1b\]8;[^\x1b]*(?:\x1b\\|\x07)/g;
+
+export function stripOsc8Hyperlinks(output: string): string {
+  if (!output) return output;
+  return output.replace(OSC8_RE, '');
+}
+
+export function sanitizeToolOutput(output: string): string {
+  if (!output) return output;
+  let result = stripOsc8Hyperlinks(output);
+  result = redactEnvVarsInOutput(result);
+  return result;
 }
