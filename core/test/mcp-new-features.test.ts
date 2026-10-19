@@ -9,7 +9,7 @@
 
 import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { McpManager, findMcpConfigPaths } from '../src/mcp/manager';
+import { McpManager, findMcpConfigPaths, isTransientConnectError } from '../src/mcp/manager';
 import { McpClient } from '../src/mcp/client';
 
 let manager: McpManager;
@@ -142,5 +142,63 @@ describe('findMcpConfigPaths', () => {
   it('returns an array', () => {
     const paths = findMcpConfigPaths('/tmp/nonexistent');
     assert.ok(Array.isArray(paths));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isTransientConnectError — MCP startup retry classification
+// ---------------------------------------------------------------------------
+
+describe('isTransientConnectError', () => {
+  it('returns true for ECONNREFUSED', () => {
+    const err = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    assert.ok(isTransientConnectError(err));
+  });
+
+  it('returns true for ECONNRESET', () => {
+    const err = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    assert.ok(isTransientConnectError(err));
+  });
+
+  it('returns true for ETIMEDOUT', () => {
+    const err = Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    assert.ok(isTransientConnectError(err));
+  });
+
+  it('returns true for EPIPE', () => {
+    const err = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    assert.ok(isTransientConnectError(err));
+  });
+
+  it('returns true for EAI_AGAIN (DNS)', () => {
+    const err = Object.assign(new Error('getaddrinfo EAI_AGAIN'), { code: 'EAI_AGAIN' });
+    assert.ok(isTransientConnectError(err));
+  });
+
+  it('returns true for message-only socket hang up', () => {
+    assert.ok(isTransientConnectError(new Error('socket hang up')));
+  });
+
+  it('returns true for connect ENOENT in message', () => {
+    assert.ok(isTransientConnectError(new Error('connect ENOENT /var/run/mcp.sock')));
+  });
+
+  it('returns false for auth errors', () => {
+    assert.equal(isTransientConnectError(new Error('401 Unauthorized')), false);
+  });
+
+  it('returns false for generic errors', () => {
+    assert.equal(isTransientConnectError(new Error('Invalid configuration')), false);
+  });
+
+  it('returns false for McpSessionExpiredError', () => {
+    const { McpSessionExpiredError } = require('../src/mcp/client');
+    assert.equal(isTransientConnectError(new McpSessionExpiredError('expired')), false);
+  });
+
+  it('returns false for non-error values', () => {
+    assert.equal(isTransientConnectError('string error'), false);
+    assert.equal(isTransientConnectError(42), false);
+    assert.equal(isTransientConnectError(null), false);
   });
 });

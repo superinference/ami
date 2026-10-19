@@ -75,6 +75,46 @@ async function execCommandWithForkRetry(
   return last;
 }
 
+const DEFAULT_FIND_MAXDEPTH = 20;
+
+export function injectFindMaxdepth(command: string): string {
+  if (!/\bfind\b/.test(command)) return command;
+  const segments = command.split(/(\s*(?:&&|\|\||;|\|)\s*)/);
+  return segments.map(seg => {
+    const trimmed = seg.trim();
+    if (!/^\s*(?:sudo\s+)?find\b/.test(trimmed)) return seg;
+    if (/-maxdepth\b/.test(trimmed)) return seg;
+    const maxDepth = parseInt(process.env.AMI_FIND_MAX_DEPTH ?? '', 10) || DEFAULT_FIND_MAXDEPTH;
+    const tokens = trimmed.split(/\s+/);
+    let insertIdx = 1;
+    for (let i = 1; i < tokens.length; i++) {
+      if (tokens[i] === 'sudo') { insertIdx = i + 1; continue; }
+      if (!tokens[i].startsWith('-') && tokens[i] !== '(') { insertIdx = i + 1; continue; }
+      break;
+    }
+    tokens.splice(insertIdx, 0, `-maxdepth`, `${maxDepth}`);
+    return tokens.join(' ');
+  }).join('');
+}
+
+const FILE_READ_COMMANDS = /^\s*(?:cat|head|tail|less|more|bat|batcat)\b/;
+
+export function extractBashReadPaths(command: string, cwd: string): string[] {
+  const paths: string[] = [];
+  const segments = command.split(/[;&|]+/).map(s => s.trim());
+  for (const seg of segments) {
+    if (!FILE_READ_COMMANDS.test(seg)) continue;
+    const tokens = seg.split(/\s+/).filter(Boolean);
+    for (let i = 1; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.startsWith('-')) continue;
+      const resolved = path.isAbsolute(t) ? t : path.resolve(cwd, t);
+      paths.push(resolved);
+    }
+  }
+  return paths;
+}
+
 function looksLikeHungPrompt(output: string): boolean {
   const lastLine = output.trim().split('\n').pop() ?? '';
   return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|password:|passphrase:|Press Enter|Continue\?|Overwrite\?|Are you sure/i.test(lastLine);
@@ -538,6 +578,8 @@ export const bashTool: ToolDefinition = {
     const sleepBlock = detectBlockedSleep(command, !!input.run_in_background, !!input.timeout);
     if (sleepBlock) return { output: `Error: ${sleepBlock}`, isError: true };
 
+    command = injectFindMaxdepth(command);
+
     const readOnly = isReadOnlyBashCommand(command);
 
     const effectiveCwd = context.cwd;
@@ -656,6 +698,12 @@ export const bashTool: ToolDefinition = {
       _bashCache.set(command, effectiveCwd, output);
     } else if (!readOnly && !isRealError) {
       _bashCache.invalidateForCwd(effectiveCwd);
+    }
+
+    if (!isRealError && context.filesRead) {
+      for (const fp of extractBashReadPaths(command, effectiveCwd)) {
+        context.filesRead.add(fp);
+      }
     }
 
     return {

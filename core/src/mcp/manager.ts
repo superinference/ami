@@ -15,6 +15,15 @@ function getMcpMaxDescriptionLength(): number {
   return DEFAULT_MCP_DESCRIPTION_LENGTH;
 }
 
+const TRANSIENT_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']);
+export function isTransientConnectError(err: unknown): boolean {
+  if (err instanceof McpSessionExpiredError) return false;
+  const code = (err as { code?: string })?.code;
+  if (code && TRANSIENT_CODES.has(code)) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|connect ENOENT/i.test(msg);
+}
+
 export interface McpServerConfig {
   command: string;
   args?: string[];
@@ -358,22 +367,40 @@ export class McpManager extends EventEmitter {
     if (!client) throw new Error(`MCP server '${name}' not found`);
 
     const config = this.configs.get(name);
-    if (config?.transport === 'http' && config.url) {
-      await client.connectHTTP(config.url);
-    } else if (config?.transport === 'sse' && config.url) {
-      await client.connectSSE(config.url);
-    } else {
-      await client.connect();
-    }
+    const maxRetries = 3;
+    let lastErr: unknown;
 
-    this._lastUsedAt.set(name, Date.now());
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        if (config?.transport === 'http' && config.url) {
+          await client.connectHTTP(config.url);
+        } else if (config?.transport === 'sse' && config.url) {
+          await client.connectSSE(config.url);
+        } else {
+          await client.connect();
+        }
 
-    const tools = await client.listTools();
-    for (const tool of tools) {
-      const key = `${name}:${tool.name}`;
-      const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
-      this._allTools.set(key, { serverName: name, schema });
+        this._lastUsedAt.set(name, Date.now());
+
+        const tools = await client.listTools();
+        for (const tool of tools) {
+          const key = `${name}:${tool.name}`;
+          const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
+          this._allTools.set(key, { serverName: name, schema });
+        }
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < maxRetries && isTransientConnectError(err)) {
+          const delay = 1000 * Math.pow(2, attempt);
+          coreLog('mcp', `transient connect error for ${name} (attempt ${attempt + 1}/${maxRetries + 1}): ${err instanceof Error ? err.message : err}, retrying in ${delay}ms`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw err;
+      }
     }
+    throw lastErr;
   }
 
   async connectAll(): Promise<Map<string, Error | null>> {

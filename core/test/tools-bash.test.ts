@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
-import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout, detectGitCommit } from '../src/tools/bash';
+import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout, detectGitCommit, injectFindMaxdepth, extractBashReadPaths } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 import { detectHardlineCommand } from '../src/permissions';
 
@@ -1170,5 +1170,156 @@ describe('bashTool – command_description alias', () => {
       ctx({ processManager: pm } as any),
     );
     assert.ok(!res.isError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// injectFindMaxdepth — resource exhaustion guard
+// ---------------------------------------------------------------------------
+
+describe('injectFindMaxdepth', () => {
+  it('injects -maxdepth when missing', () => {
+    assert.match(injectFindMaxdepth('find . -name "*.ts"'), /-maxdepth 20/);
+  });
+
+  it('preserves existing -maxdepth', () => {
+    const cmd = 'find . -maxdepth 3 -name "*.ts"';
+    assert.equal(injectFindMaxdepth(cmd), cmd);
+  });
+
+  it('handles find with path argument', () => {
+    const result = injectFindMaxdepth('find /tmp -type f');
+    assert.match(result, /find \/tmp -maxdepth 20 -type f/);
+  });
+
+  it('does not modify non-find commands', () => {
+    const cmd = 'ls -la /tmp';
+    assert.equal(injectFindMaxdepth(cmd), cmd);
+  });
+
+  it('handles compound commands with find', () => {
+    const result = injectFindMaxdepth('find . -name "*.ts" | wc -l');
+    assert.match(result, /-maxdepth 20/);
+  });
+
+  it('handles find in chained commands', () => {
+    const result = injectFindMaxdepth('echo start && find . -type f');
+    assert.match(result, /-maxdepth 20/);
+    assert.match(result, /echo start/);
+  });
+
+  it('respects AMI_FIND_MAX_DEPTH env var', () => {
+    const orig = process.env.AMI_FIND_MAX_DEPTH;
+    process.env.AMI_FIND_MAX_DEPTH = '5';
+    try {
+      assert.match(injectFindMaxdepth('find . -type f'), /-maxdepth 5/);
+    } finally {
+      if (orig !== undefined) process.env.AMI_FIND_MAX_DEPTH = orig;
+      else delete process.env.AMI_FIND_MAX_DEPTH;
+    }
+  });
+
+  it('handles find with no path (uses cwd)', () => {
+    const result = injectFindMaxdepth('find -name "*.log"');
+    assert.match(result, /-maxdepth 20/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractBashReadPaths — head/tail/cat file tracking
+// ---------------------------------------------------------------------------
+
+describe('extractBashReadPaths', () => {
+  it('extracts path from cat command', () => {
+    const paths = extractBashReadPaths('cat /tmp/foo.txt', '/cwd');
+    assert.deepEqual(paths, ['/tmp/foo.txt']);
+  });
+
+  it('extracts path from head command', () => {
+    const paths = extractBashReadPaths('head -20 myfile.ts', '/cwd');
+    assert.equal(paths.length, 1);
+    assert.ok(paths[0].endsWith('/myfile.ts'));
+  });
+
+  it('extracts path from tail command', () => {
+    const paths = extractBashReadPaths('tail -f /var/log/syslog', '/cwd');
+    assert.deepEqual(paths, ['/var/log/syslog']);
+  });
+
+  it('skips flags', () => {
+    const paths = extractBashReadPaths('cat -n /tmp/foo.txt', '/cwd');
+    assert.deepEqual(paths, ['/tmp/foo.txt']);
+  });
+
+  it('resolves relative paths against cwd', () => {
+    const paths = extractBashReadPaths('cat foo.txt', '/my/project');
+    assert.deepEqual(paths, ['/my/project/foo.txt']);
+  });
+
+  it('handles multiple files', () => {
+    const paths = extractBashReadPaths('cat /a.txt /b.txt', '/cwd');
+    assert.deepEqual(paths, ['/a.txt', '/b.txt']);
+  });
+
+  it('ignores non-read commands', () => {
+    const paths = extractBashReadPaths('ls -la /tmp', '/cwd');
+    assert.deepEqual(paths, []);
+  });
+
+  it('handles piped commands with cat', () => {
+    const paths = extractBashReadPaths('cat /tmp/data.json | jq .', '/cwd');
+    assert.deepEqual(paths, ['/tmp/data.json']);
+  });
+
+  it('handles chained reads', () => {
+    const paths = extractBashReadPaths('head /a.txt; tail /b.txt', '/cwd');
+    assert.deepEqual(paths, ['/a.txt', '/b.txt']);
+  });
+
+  it('tracks bat/batcat', () => {
+    const paths = extractBashReadPaths('bat src/main.ts', '/project');
+    assert.equal(paths.length, 1);
+    assert.ok(paths[0].endsWith('/src/main.ts'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash reads satisfy read-before-edit (integration)
+// ---------------------------------------------------------------------------
+
+describe('bash cat/head/tail populates filesRead', () => {
+  let tmpDir: string;
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-read-track-'));
+    fs.writeFileSync(path.join(tmpDir, 'test.txt'), 'hello');
+  });
+  after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('cat adds file to filesRead set', async () => {
+    const filesRead = new Set<string>();
+    const result = await bashTool.execute(
+      { command: `cat ${path.join(tmpDir, 'test.txt')}` },
+      ctx({ cwd: tmpDir, filesRead }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(filesRead.has(path.join(tmpDir, 'test.txt')));
+  });
+
+  it('head adds file to filesRead set', async () => {
+    const filesRead = new Set<string>();
+    await bashTool.execute(
+      { command: `head ${path.join(tmpDir, 'test.txt')}` },
+      ctx({ cwd: tmpDir, filesRead }),
+    );
+    assert.ok(filesRead.has(path.join(tmpDir, 'test.txt')));
+  });
+
+  it('failed command does not add to filesRead', async () => {
+    const filesRead = new Set<string>();
+    await bashTool.execute(
+      { command: `cat ${path.join(tmpDir, 'nonexistent.txt')}` },
+      ctx({ cwd: tmpDir, filesRead }),
+    );
+    assert.ok(!filesRead.has(path.join(tmpDir, 'nonexistent.txt')));
   });
 });
