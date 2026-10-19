@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { PermissionManager, detectHardlineCommand, detectCommandChaining } from '../src/permissions';
+import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations } from '../src/permissions';
 import type { PermissionMode, PermissionRule } from '../src/permissions';
 
 function makeTempDir(): string {
@@ -836,5 +836,63 @@ describe('Tool(param:value) permission rules', () => {
       { tool: 'task', pattern: '*', action: 'allow' },
     ]);
     assert.equal(pm.detectShadowedRules().length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NUL byte safety — permission rules containing \x00 must never match
+// ---------------------------------------------------------------------------
+
+describe('NUL byte rejection in permission patterns', () => {
+  it('a rule pattern containing NUL does not match anything', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'echo\x00 hello', action: 'allow' },
+    ]);
+    const result = await pm.check('bash', { command: 'echo hello' });
+    assert.equal(result, 'ask', 'NUL-containing pattern must not match');
+  });
+
+  it('a tool name containing NUL in a wildcard rule does not match', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'ba\x00sh', pattern: '*', action: 'allow' },
+    ]);
+    const result = await pm.check('bash', { command: 'ls' });
+    assert.equal(result, 'ask', 'NUL-containing tool name must not match');
+  });
+
+  it('a deny rule with NUL in its pattern does not block', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'rm\x00 *', action: 'deny' },
+    ]);
+    const result = await pm.check('bash', { command: 'rm foo.txt' });
+    assert.equal(result, 'allow', 'NUL-containing deny pattern must not match');
+  });
+
+  it('input value containing NUL does not match a wildcard rule', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: '*', action: 'allow' },
+    ]);
+    const result = await pm.check('bash', { command: 'ls\x00 /etc/shadow' });
+    // This tests that matchPattern returns false when value has NUL
+    // The wildcard '*' pattern should not match because the value has NUL
+    assert.equal(result, 'ask', 'NUL in input value must prevent wildcard match');
+  });
+
+  it('checkDenyRules with NUL in pattern does not deny', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm\x00 -rf *', action: 'deny' },
+    ]);
+    const result = pm.checkDenyRules('bash', 'rm -rf /tmp/foo');
+    assert.equal(result.denied, false, 'NUL pattern must not deny');
+  });
+
+  it('normal patterns still work correctly after NUL guard', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'ls *', action: 'allow' },
+      { tool: 'bash', pattern: 'rm -rf *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'ls /tmp' }), 'allow');
+    const deny = pm.checkDenyRules('bash', 'rm -rf /tmp/foo');
+    assert.equal(deny.denied, true);
   });
 });

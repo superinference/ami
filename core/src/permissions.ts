@@ -655,6 +655,7 @@ function allSegmentsKnown(command: string): boolean {
  */
 const _patternCache = new Map<string, RegExp>();
 function matchPattern(pattern: string, value: string): boolean {
+  if (pattern.includes('\x00') || value.includes('\x00')) return false;
   if (pattern === value) return true;
   if (pattern === '*') return true;
 
@@ -667,6 +668,48 @@ function matchPattern(pattern: string, value: string): boolean {
     _patternCache.set(pattern, regex);
   }
   return regex.test(value);
+}
+
+/**
+ * Normalize line continuations (backslash + newline) in a bash command.
+ * Bash treats `\<newline>` as a line join — stripping it reveals the
+ * actual command that will execute, preventing pattern-bypass via
+ * multi-line splitting.
+ */
+export function normalizeLineContinuations(cmd: string): string {
+  return cmd.replace(/\\\n/g, '');
+}
+
+const COMPOUND_SPLIT_RE = /\s*(?:\|\||&&|[;|])\s*/;
+
+/**
+ * Split a compound bash command into individual sub-commands.
+ * Splits on &&, ||, ;, and | operators.
+ */
+function splitCompoundCommand(cmd: string): string[] {
+  return cmd.split(COMPOUND_SPLIT_RE).map(s => s.trim()).filter(s => s.length > 0);
+}
+
+/**
+ * Match a bash command against a permission rule pattern, handling:
+ * 1. Line continuation normalization (\<newline> → join)
+ * 2. Compound command decomposition:
+ *    - allow rules: ALL sub-commands must match (prevents "git status && rm -rf /")
+ *    - deny rules: ANY sub-command matching triggers deny
+ */
+function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
+  const normalized = normalizeLineContinuations(command);
+  const subCommands = splitCompoundCommand(normalized);
+
+  if (subCommands.length <= 1) {
+    return matchPattern(pattern, normalized);
+  }
+
+  if (ruleAction === 'allow') {
+    return subCommands.every(sub => matchPattern(pattern, sub));
+  }
+  // deny / ask: any sub-command match triggers
+  return subCommands.some(sub => matchPattern(pattern, sub));
 }
 
 /**
@@ -809,9 +852,11 @@ export class PermissionManager {
       if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
 
       if (rule.pattern) {
-        // Build a representative string from the input to match against
         const inputStr = this.inputToString(toolName, input);
-        if (matchPattern(rule.pattern, inputStr)) {
+        const matched = toolName === 'bash' && typeof input.command === 'string'
+          ? matchBashPattern(rule.pattern, inputStr, rule.action)
+          : matchPattern(rule.pattern, inputStr);
+        if (matched) {
           if (this._memo) this._memo.set(toolName, this._hashInput(input), rule.action);
           return rule.action;
         }
@@ -841,7 +886,13 @@ export class PermissionManager {
       // check cannot evaluate — skip them (they are enforced by check()).
       if (rule.paramPattern) continue;
       if (rule.action === 'deny' && this.toolNameMatches(rule.tool, toolName)) {
-        if (!rule.pattern || matchPattern(rule.pattern, input)) {
+        if (!rule.pattern) {
+          return { denied: true, reason: rule.reason || `Denied by rule for ${rule.tool}` };
+        }
+        const matched = toolName === 'bash'
+          ? matchBashPattern(rule.pattern, input, 'deny')
+          : matchPattern(rule.pattern, input);
+        if (matched) {
           return { denied: true, reason: rule.reason || `Denied by rule for ${rule.tool}` };
         }
       }
