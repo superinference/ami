@@ -332,7 +332,7 @@ export const fileEditTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const filePath = input.file_path as string;
+    const filePath = (input.file_path ?? input.path) as string;
     const replaceAll = (input.replace_all as boolean) ?? false;
     const editsInput = input.edits;
 
@@ -399,7 +399,7 @@ export const fileEditTool: ToolDefinition = {
       return applySequentialEdits(resolved, edits, context);
     }
 
-    const newString = (input.new_string ?? input.content) as string | undefined;
+    const newString = (input.new_string ?? input.content ?? input.file_text ?? input.file_content) as string | undefined;
     const oldString = input.old_string as string | undefined;
     const writeMode = oldString === undefined || oldString === null || oldString === '';
 
