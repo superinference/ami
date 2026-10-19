@@ -35,6 +35,8 @@ const CHECK_IDS = {
   MALFORMED_TOKEN: 35,
   SAFE_HEREDOC: 36,
   INVISIBLE_UNICODE: 37,
+  COMMAND_TOO_LONG: 38,
+  DEV_TCP_UDP_REDIRECT: 39,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -701,6 +703,13 @@ function validateRedirections(command: string, extracted: { fullyUnquoted: strin
   return PASS;
 }
 
+function validateDevTcpUdpRedirects(command: string): SecurityCheckResult {
+  if (/\/dev\/(?:tcp|udp)\//i.test(command)) {
+    return fail(CHECK_IDS.DEV_TCP_UDP_REDIRECT, 'Blocked: /dev/tcp or /dev/udp network redirect detected');
+  }
+  return PASS;
+}
+
 function validateBackslashEscapedWhitespace(command: string, extracted: { fullyUnquoted: string }): SecurityCheckResult {
   const content = extracted.fullyUnquoted;
   if (/\\[ \t]/.test(content)) {
@@ -759,7 +768,13 @@ function validateASTCommands(command: string): SecurityCheckResult {
   return PASS;
 }
 
+const MAX_AUTO_APPROVE_LENGTH = 10_000;
+
 export function validateBashSecurity(command: string, options?: { detachedMode?: boolean }): SecurityCheckResult {
+  if (command.length > MAX_AUTO_APPROVE_LENGTH) {
+    return fail(CHECK_IDS.COMMAND_TOO_LONG, `Command is ${command.length} characters (limit ${MAX_AUTO_APPROVE_LENGTH}) — too long to auto-approve`);
+  }
+
   const detached = options?.detachedMode === true;
   let result: SecurityCheckResult;
 
@@ -805,6 +820,11 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
 
   // New critical validators on extracted content
   result = validateCommandSubstitution(command, extracted);
+  if (!result.safe) return result;
+
+  // /dev/tcp and /dev/udp are bash network redirects — always block, even in
+  // detached mode, since they open arbitrary network connections.
+  result = validateDevTcpUdpRedirects(command);
   if (!result.safe) return result;
 
   // Detached mode: skip redirect validation — file output redirections
@@ -1220,6 +1240,21 @@ function extractRmTargets(command: string): string[] {
 
 export function detectDangerousRm(command: string): { dangerous: boolean; suggestion?: string; variable?: string } {
   if (!/\brm\b/.test(command)) return { dangerous: false };
+
+  // Detect rm -rf with command substitution target — the output is unknowable
+  // at static analysis time, so it must always require permission.
+  // eslint-disable-next-line security/detect-unsafe-regex -- [rfdi] and \s are disjoint, no overlap
+  const rmRecursive = /\brm\s+(?:-[rfdi]+\s+)*/;
+  if (rmRecursive.test(command)) {
+    const afterRm = command.replace(rmRecursive, '');
+    if (/\$\(/.test(afterRm) || /`[^`]+`/.test(afterRm)) {
+      return {
+        dangerous: true,
+        suggestion: 'rm with command substitution target — cannot verify safety at analysis time',
+      };
+    }
+  }
+
   // eslint-disable-next-line security/detect-unsafe-regex -- [rfdi] and \s are disjoint, no overlap
   const rmWithVar = /\brm\s+(?:-[rfdi]+\s+)*\$\{?(\w+)\}?/;
   const match = command.match(rmWithVar);
@@ -1433,6 +1468,7 @@ export {
   validateShellQuoteBug,
   validateCommandSubstitution,
   validateRedirections,
+  validateDevTcpUdpRedirects,
   validateBackslashEscapedWhitespace,
   validateMalformedTokenInjection,
   validateInvisibleUnicode,
@@ -1444,6 +1480,26 @@ export {
 
 const SENSITIVE_ENV_RE =
   /(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|AWS[_-]SECRET|GITHUB[_-]TOKEN|OPENAI[_-]?KEY|ANTHROPIC[_-]?KEY|DATABASE[_-]URL|DB[_-]PASS)/i;
+
+// ---------------------------------------------------------------------------
+// Zsh [[ =~ ]] regex conditional — command substitution bypass
+// ---------------------------------------------------------------------------
+// In zsh, the RHS of [[ $var =~ pattern ]] can contain command substitution
+// that executes during evaluation, allowing hidden command execution.
+
+export function detectZshRegexConditional(command: string): { blocked: boolean; reason?: string } {
+  if (!/\[\[.*=~/.test(command)) return { blocked: false };
+  const regexMatch = command.match(/\[\[.*=~\s*(.*?)\s*\]\]/s);
+  if (!regexMatch) return { blocked: false };
+  const rhs = regexMatch[1];
+  if (/\$\(/.test(rhs) || /`[^`]+`/.test(rhs)) {
+    return {
+      blocked: true,
+      reason: 'Command substitution inside [[ =~ ]] regex conditional can execute arbitrary commands',
+    };
+  }
+  return { blocked: false };
+}
 
 function redactEnvVarsInOutput(output: string): string {
   if (!output) return output;

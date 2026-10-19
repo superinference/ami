@@ -425,6 +425,30 @@ describe('validateBashSecurity', () => {
   it('catches zsh dangerous commands', () => {
     assert.equal(validateBashSecurity('zmodload zsh/system').safe, false);
   });
+
+  it('blocks commands over 10,000 characters', () => {
+    const longCmd = 'echo ' + 'x'.repeat(10_001);
+    const result = validateBashSecurity(longCmd);
+    assert.equal(result.safe, false);
+    assert.ok(result.message.includes('too long'));
+  });
+
+  it('allows commands at exactly 10,000 characters', () => {
+    const cmd = 'echo ' + 'x'.repeat(9_995);
+    assert.equal(cmd.length, 10_000);
+    assert.equal(validateBashSecurity(cmd).safe, true);
+  });
+
+  it('blocks commands at 10,001 characters', () => {
+    const cmd = 'echo ' + 'x'.repeat(9_996);
+    assert.equal(cmd.length, 10_001);
+    assert.equal(validateBashSecurity(cmd).safe, false);
+  });
+
+  it('still processes normal-length commands through full validation', () => {
+    assert.equal(validateBashSecurity('echo hello world').safe, true);
+    assert.equal(validateBashSecurity('cat /proc/self/environ').safe, false);
+  });
 });
 
 // ---------------------------------------------------------------------------
