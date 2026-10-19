@@ -322,3 +322,59 @@ describe('sanitizeMemoryContent', () => {
     assert.equal(sanitizeMemoryContent(input), input);
   });
 });
+
+// ---------------------------------------------------------------------------
+// buildFrontmatter — modified timestamp
+// ---------------------------------------------------------------------------
+
+describe('memory modified timestamp', () => {
+  it('saveMemory includes a modified ISO timestamp in frontmatter', () => {
+    const mm = new MemoryManager(tmpDir);
+    mm.saveMemory('test-modified', 'some content', 'test description', 'project');
+    const filePath = path.join(tmpDir, '.superinference', 'memory', 'test-modified.md');
+    const content = fs.readFileSync(filePath, 'utf-8');
+    assert.ok(content.includes('modified:'), 'frontmatter must include modified field');
+    const match = content.match(/modified:\s*(.+)/);
+    assert.ok(match, 'modified field must have a value');
+    const date = new Date(match![1]);
+    assert.ok(!isNaN(date.getTime()), 'modified value must be a valid ISO date');
+    const now = Date.now();
+    assert.ok(Math.abs(now - date.getTime()) < 5000, 'modified timestamp must be recent (within 5s)');
+  });
+
+  it('updating a memory changes the modified timestamp', async () => {
+    const mm = new MemoryManager(tmpDir);
+    const filePath = path.join(tmpDir, '.superinference', 'memory', 'test-update.md');
+
+    mm.saveMemory('test-update', 'version 1', 'desc', 'project');
+    const first = fs.readFileSync(filePath, 'utf-8');
+    const firstMatch = first.match(/modified:\s*(.+)/);
+    assert.ok(firstMatch);
+    const firstDate = new Date(firstMatch![1]);
+
+    await new Promise(r => setTimeout(r, 50));
+
+    mm.saveMemory('test-update', 'version 2', 'desc', 'project');
+    const second = fs.readFileSync(filePath, 'utf-8');
+    const secondMatch = second.match(/modified:\s*(.+)/);
+    assert.ok(secondMatch);
+    const secondDate = new Date(secondMatch![1]);
+
+    assert.ok(secondDate.getTime() >= firstDate.getTime(),
+      'second save must have equal or later modified timestamp');
+    assert.ok(second.includes('version 2'), 'content must be updated');
+  });
+
+  it('frontmatter contains all expected fields', () => {
+    const mm = new MemoryManager(tmpDir);
+    mm.saveMemory('fields-check', 'body text', 'a description', 'user');
+    const filePath = path.join(tmpDir, '.superinference', 'memory', 'fields-check.md');
+    const content = fs.readFileSync(filePath, 'utf-8');
+    assert.ok(content.includes('name: fields-check'));
+    assert.ok(content.includes('description: a description'));
+    assert.ok(content.includes('type: user'));
+    assert.ok(content.includes('modified:'));
+    assert.ok(content.startsWith('---\n'));
+    assert.ok(content.includes('\n---\n'));
+  });
+});

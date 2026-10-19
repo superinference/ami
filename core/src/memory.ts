@@ -224,7 +224,8 @@ function buildFrontmatter(
   description: string,
   memoryType: MemoryType,
 ): string {
-  return `---\nname: ${name}\ndescription: ${description}\ntype: ${memoryType}\n---\n`;
+  const modified = new Date().toISOString();
+  return `---\nname: ${name}\ndescription: ${description}\ntype: ${memoryType}\nmodified: ${modified}\n---\n`;
 }
 
 function tokenize(text: string): string[] {
