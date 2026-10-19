@@ -112,3 +112,50 @@ describe('estimateBraceExpansions', () => {
     assert.equal(estimateBraceExpansions('{a,b}{c,d}{e,f}'), 8);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Edge cases — escape handling inside braces, unmatched braces
+// ---------------------------------------------------------------------------
+
+describe('expandBraces — escape and edge cases', () => {
+  it('handles escaped comma inside braces', () => {
+    const result = expandBraces('{a\\,b,c}');
+    assert.equal(result.length, 2);
+    assert.ok(result.includes('a\\,b'));
+    assert.ok(result.includes('c'));
+  });
+
+  it('handles escaped braces inside braces', () => {
+    const result = expandBraces('{a,\\{b}');
+    assert.equal(result.length, 2);
+    assert.ok(result.includes('a'));
+    assert.ok(result.includes('\\{b'));
+  });
+
+  it('returns pattern unchanged for single alternative in braces', () => {
+    const result = expandBraces('{single}');
+    assert.deepEqual(result, ['{single}']);
+  });
+
+  it('returns pattern unchanged for unmatched opening brace', () => {
+    const result = expandBraces('{unclosed');
+    assert.deepEqual(result, ['{unclosed']);
+  });
+
+  it('handles nested braces', () => {
+    const result = expandBraces('{a,{b,c}}');
+    assert.ok(result.includes('a'));
+    assert.ok(result.includes('b'));
+    assert.ok(result.includes('c'));
+  });
+
+  it('handles escape at end of pattern', () => {
+    const result = expandBraces('test\\');
+    assert.deepEqual(result, ['test\\']);
+  });
+
+  it('handles escape before closing brace', () => {
+    const result = expandBraces('{a,b\\}}');
+    assert.ok(result.length > 0);
+  });
+});
