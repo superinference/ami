@@ -47,6 +47,8 @@ const CHECK_IDS = {
   PACKAGE_MANAGER_HIJACK: 47,
   NETWORK_MANIPULATION: 48,
   DATA_EXFILTRATION: 49,
+  ESCAPE_OBFUSCATION: 50,
+  UNSAFE_HELP_COMMAND: 51,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -908,6 +910,16 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // Escape obfuscation — blocks echo -e / printf with hex (\xHH) or
+  // octal (\NNN) escape sequences that reconstruct blocked command names,
+  // and escape-encoded output piped to shell interpreters.
+  {
+    const escapeCheck = detectEscapeObfuscation(command);
+    if (escapeCheck.blocked) {
+      return fail(CHECK_IDS.ESCAPE_OBFUSCATION, escapeCheck.reason!);
+    }
+  }
+
   result = validateObfuscatedFlags(command);
   if (!result.safe) return result;
 
@@ -1518,6 +1530,7 @@ export const CODE_LOADING_VARIABLES = [
   'ENV',
   'ZDOTDIR',
   'NODE_OPTIONS',
+  'PROMPT_COMMAND',
 ] as const;
 
 export const POLICY_SOURCE_VARIABLES = [
@@ -2117,6 +2130,176 @@ export function detectNetworkManipulation(command: string): { blocked: boolean; 
   return { blocked: false };
 }
 
+// ---------------------------------------------------------------------------
+// Escape obfuscation detector — blocks echo -e / printf with hex (\xHH) or
+// octal (\NNN) escapes that reconstruct blocked command names, bypassing
+// text-based pattern matching.
+// ---------------------------------------------------------------------------
+// Blocked patterns:
+//   echo -e '\x72\x6d' -> "rm"
+//   echo -e "\x63\x75\x72\x6c" -> "curl"
+//   printf '\162\155' -> "rm" (octal)
+//   echo -e '\x72\x6d' | sh (piped to shell)
+//   $'\x72\x6d' (ANSI-C hex — backup for existing check)
+// Allowed:
+//   echo -e '\n\t' (normal formatting escapes)
+//   printf '%s\n' "hello" (normal printf)
+//   echo -e '\x48\x65\x6c\x6c\x6f' -> "Hello" (not a blocked command)
+
+const ESCAPE_BLOCKED_COMMANDS = new Set([
+  'rm', 'curl', 'wget', 'nc', 'ncat', 'dd', 'mkfs', 'fdisk', 'mount', 'sudo', 'chmod', 'chown',
+]);
+
+/**
+ * Decode all \xHH hex escape sequences in a string to their character equivalents.
+ */
+function decodeHexEscapes(s: string): string {
+  return s.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16)),
+  );
+}
+
+/**
+ * Decode all \NNN octal escape sequences (1-3 octal digits) in a string to
+ * their character equivalents. Requires the leading backslash and 1-3 digits
+ * in [0-7].
+ */
+function decodeOctalEscapes(s: string): string {
+  return s.replace(/\\([0-7]{1,3})/g, (_, oct) =>
+    String.fromCharCode(parseInt(oct, 8)),
+  );
+}
+
+/**
+ * Check whether a decoded string contains any of the blocked command names
+ * as whole words (\b boundary matching).
+ */
+function containsBlockedCommand(decoded: string): string | null {
+  for (const cmd of ESCAPE_BLOCKED_COMMANDS) {
+    // Use word boundary matching so "Hello" doesn't match "rm"
+    const re = new RegExp(`\\b${cmd}\\b`);
+    if (re.test(decoded)) return cmd;
+  }
+  return null;
+}
+
+/**
+ * Extract string arguments from echo -e or printf invocations, including
+ * both single-quoted and double-quoted strings.
+ */
+function extractStringArgs(afterCmd: string): string[] {
+  const args: string[] = [];
+  const re = /(?:'([^']*)'|"([^"]*)")/g;
+  let m;
+  while ((m = re.exec(afterCmd)) !== null) {
+    args.push(m[1] ?? m[2]);
+  }
+  return args;
+}
+
+export function detectEscapeObfuscation(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // 1. echo -e with hex (\xHH) or octal (\NNN) escapes
+  // Match: echo -e '...' or echo -e "..." (the -e flag enables escape interpretation)
+  // Also match: echo -en, echo -ne, echo -eE, etc. (combined flags containing 'e')
+  const echoEPattern = /\becho\s+-\S*e\S*\s+(.*)/;
+  const echoMatch = echoEPattern.exec(stripped);
+  if (echoMatch) {
+    const argsPart = echoMatch[1];
+    // Check for hex escapes
+    if (/\\x[0-9A-Fa-f]{2}/.test(argsPart)) {
+      const stringArgs = extractStringArgs(argsPart);
+      for (const arg of stringArgs) {
+        if (/\\x[0-9A-Fa-f]{2}/.test(arg)) {
+          const decoded = decodeHexEscapes(arg);
+          const cmd = containsBlockedCommand(decoded);
+          if (cmd) {
+            return { blocked: true, reason: `echo -e with hex escapes reconstructs blocked command '${cmd}'` };
+          }
+        }
+      }
+    }
+    // Check for octal escapes (echo -e also interprets \NNN)
+    if (/\\[0-7]{1,3}/.test(argsPart)) {
+      const stringArgs = extractStringArgs(argsPart);
+      for (const arg of stringArgs) {
+        // Avoid matching normal escapes like \n (\116 is octal for 'N', but \n is not octal)
+        if (/\\[0-7]{1,3}/.test(arg)) {
+          const decoded = decodeOctalEscapes(arg);
+          const cmd = containsBlockedCommand(decoded);
+          if (cmd) {
+            return { blocked: true, reason: `echo -e with octal escapes reconstructs blocked command '${cmd}'` };
+          }
+        }
+      }
+    }
+  }
+
+  // 2. printf with hex (\xHH) or octal (\NNN) escapes in the format string
+  const printfPattern = /\bprintf\s+(.*)/;
+  const printfMatch = printfPattern.exec(stripped);
+  if (printfMatch) {
+    const argsPart = printfMatch[1];
+    const stringArgs = extractStringArgs(argsPart);
+    for (const arg of stringArgs) {
+      // Check hex escapes
+      if (/\\x[0-9A-Fa-f]{2}/.test(arg)) {
+        const decoded = decodeHexEscapes(arg);
+        const cmd = containsBlockedCommand(decoded);
+        if (cmd) {
+          return { blocked: true, reason: `printf with hex escapes reconstructs blocked command '${cmd}'` };
+        }
+      }
+      // Check octal escapes
+      if (/\\[0-7]{1,3}/.test(arg)) {
+        const decoded = decodeOctalEscapes(arg);
+        const cmd = containsBlockedCommand(decoded);
+        if (cmd) {
+          return { blocked: true, reason: `printf with octal escapes reconstructs blocked command '${cmd}'` };
+        }
+      }
+    }
+  }
+
+  // 3. $'\xHH' ANSI-C quote hex sequences — backup for existing ANSI-C check.
+  // The existing validateObfuscatedFlags catches $'...' generically, but this
+  // specifically decodes the hex payload and checks for blocked commands.
+  const ansiCPattern = /\$'([^']*)'/g;
+  let ansiMatch;
+  while ((ansiMatch = ansiCPattern.exec(stripped)) !== null) {
+    const inner = ansiMatch[1];
+    if (/\\x[0-9A-Fa-f]{2}/.test(inner)) {
+      const decoded = decodeHexEscapes(inner);
+      const cmd = containsBlockedCommand(decoded);
+      if (cmd) {
+        return { blocked: true, reason: `ANSI-C quote with hex escapes reconstructs blocked command '${cmd}'` };
+      }
+    }
+    if (/\\[0-7]{1,3}/.test(inner)) {
+      const decoded = decodeOctalEscapes(inner);
+      const cmd = containsBlockedCommand(decoded);
+      if (cmd) {
+        return { blocked: true, reason: `ANSI-C quote with octal escapes reconstructs blocked command '${cmd}'` };
+      }
+    }
+  }
+
+  // 4. echo -e or printf piped to shell interpreter (any escape content is suspicious)
+  if (/\b(?:echo\s+-\S*e\S*|printf)\b[^|]*\|\s*(?:ba)?sh\b/.test(stripped)) {
+    // Check if there are any hex or octal escapes in the pre-pipe segment
+    const pipeIdx = stripped.indexOf('|');
+    if (pipeIdx >= 0) {
+      const prePipe = stripped.slice(0, pipeIdx);
+      if (/\\x[0-9A-Fa-f]{2}|\\[0-7]{3}/.test(prePipe)) {
+        return { blocked: true, reason: 'echo -e/printf with escape sequences piped to shell interpreter' };
+      }
+    }
+  }
+
+  return { blocked: false };
+}
+
 export {
   validateControlCharacters,
   validateCarriageReturn,
@@ -2216,6 +2399,48 @@ export function stripOsc8Hyperlinks(output: string): string {
   return output.replace(OSC8_RE, '');
 }
 
+// ---------------------------------------------------------------------------
+// Unsafe help/man command detector (Gap #49)
+// ---------------------------------------------------------------------------
+// Some help and man commands can execute arbitrary code, open browsers, or
+// process untrusted files. These should NOT be auto-approved even when
+// help/man commands are in an allow rule.
+
+export function detectUnsafeHelpCommand(command: string): boolean {
+  const stripped = stripInvisibleUnicode(command);
+
+  // --- man unsafe flags ---
+  if (/\bman\b/.test(stripped)) {
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bman\s+(?:-\S+\s+)*-\S*l/.test(stripped)) return true;
+    // man --local-file — long-form of -l
+    if (/\bman\s+.*--local-file/.test(stripped)) return true;
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bman\s+(?:-\S+\s+)*-\S*H/.test(stripped)) return true;
+    // man --html — long-form of -H
+    if (/\bman\s+.*--html/.test(stripped)) return true;
+    // man --pager=<cmd> — arbitrary command as pager
+    if (/\bman\s+.*--pager\s*=/.test(stripped)) return true;
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bman\s+(?:-\S+\s+)*-P\s/.test(stripped)) return true;
+  }
+
+  // --- git help unsafe flags ---
+  if (/\bgit\s+help\b/.test(stripped)) {
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bgit\s+help\s+(?:-\S+\s+)*-\S*w/.test(stripped)) return true;
+    // git help --web — long-form
+    if (/\bgit\s+help\s+.*--web/.test(stripped)) return true;
+  }
+
+  // --- info with --subnodes piped ---
+  if (/\binfo\b/.test(stripped) && /\binfo\s+.*--subnodes/.test(stripped) && /\|/.test(stripped)) {
+    return true;
+  }
+
+  return false;
+}
+
 export function sanitizeToolOutput(output: string): string {
   if (!output) return output;
   // 1. Strip ANSI CSI escape sequences (colors, cursor, etc.)
@@ -2224,5 +2449,93 @@ export function sanitizeToolOutput(output: string): string {
   result = result.replace(OSC_ALL_RE, '');
   // 3. Redact sensitive env vars
   result = redactEnvVarsInOutput(result);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// find -exec/-delete detection — prevents Bash(find:*) allow rules from
+// auto-approving destructive find actions.
+// ---------------------------------------------------------------------------
+
+const FIND_CMD_RE = /\bfind\b/;
+const FIND_DANGEROUS_ACTIONS = /\s-(?:exec|execdir|delete|ok)\b/;
+
+export function detectDangerousFindArgs(command: string): boolean {
+  if (!FIND_CMD_RE.test(command)) return false;
+  // Extract the find command segment (up to the first pipe, semicolon, or &&/||)
+  // so that `find . -type f | xargs -exec ...` doesn't false-positive.
+  const match = command.match(/\bfind\b[^|;&]*/);
+  if (!match) return false;
+  return FIND_DANGEROUS_ACTIONS.test(match[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Home-directory expansion — normalizes ~, $HOME, ${HOME} in commands so that
+// deny rules on home-directory paths (e.g. Read(~/secrets/**)) match even when
+// the command spells the path as $HOME/secrets or ~/secrets.
+// ---------------------------------------------------------------------------
+
+export function expandHomeDirReferences(command: string, homeDir?: string): string {
+  const home = homeDir ?? process.env.HOME;
+  if (!home) return command;
+
+  let result = command;
+
+  // 1. Expand ${HOME} (braced form) — only outside quotes
+  result = expandOutsideQuotes(result, /\$\{HOME\}/g, home);
+
+  // 2. Expand $HOME followed by / or end-of-word — only outside quotes
+  result = expandOutsideQuotes(result, /\$HOME(?=\/|[\s;|&)]|$)/g, home);
+
+  // 3. Expand ~ at the start of a path token (~/...) — only outside quotes
+  //    Must NOT expand ~user (tilde with username) — only bare ~/
+  result = expandOutsideQuotes(result, /(?<=^|[\s;|&(=])~(?=\/)/g, home);
+
+  return result;
+}
+
+function expandOutsideQuotes(input: string, pattern: RegExp, replacement: string): string {
+  const chars = [...input];
+  let inSingle = false;
+  let inDouble = false;
+  const quoteMap: boolean[] = new Array(input.length).fill(false);
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\\' && !inSingle) {
+      quoteMap[i] = true;
+      if (i + 1 < input.length) {
+        quoteMap[i + 1] = true;
+        i++;
+      }
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      quoteMap[i] = true;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      quoteMap[i] = true;
+      continue;
+    }
+    if (inSingle || inDouble) {
+      quoteMap[i] = true;
+    }
+  }
+
+  // Apply replacements only at positions that are outside quotes
+  let result = '';
+  let lastIndex = 0;
+  const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(input)) !== null) {
+    if (!quoteMap[match.index]) {
+      result += input.slice(lastIndex, match.index) + replacement;
+      lastIndex = match.index + match[0].length;
+    }
+  }
+  result += input.slice(lastIndex);
   return result;
 }
