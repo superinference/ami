@@ -38,6 +38,7 @@ import { syntheticOutputTool } from './synthetic-output';
 import { lspDiagnosticsTool, lspReferencesTool } from './lsp-diagnostics';
 import { agenticFetchTool } from './agentic-fetch';
 import { scoutTool } from './scout';
+import { endConversationTool } from './end-conversation';
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
