@@ -355,6 +355,95 @@ describe('image attachment helpers', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Symlink target validation
+// ---------------------------------------------------------------------------
+
+describe('fileReadTool – symlink target validation', () => {
+  it('allows reading a symlink to a regular file in the workspace', async () => {
+    const target = path.join(tmpDir, 'real.txt');
+    fs.writeFileSync(target, 'real content\n');
+    const link = path.join(tmpDir, 'link.txt');
+    fs.symlinkSync(target, link);
+
+    const result = await fileReadTool.execute({ file_path: link }, ctx());
+    assert.ok(!result.isError, `expected success, got: ${result.output}`);
+    assert.ok(result.output.includes('real content'));
+  });
+
+  it('blocks a symlink targeting /etc/passwd (credential path)', async () => {
+    const link = path.join(tmpDir, 'sneaky-passwd.txt');
+    try {
+      fs.symlinkSync('/etc/passwd', link);
+    } catch { return; /* cannot create symlink — skip */ }
+    const result = await fileReadTool.execute({ file_path: link }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('sensitive file') || result.output.includes('outside the workspace'),
+      `expected credential/workspace block, got: ${result.output}`,
+    );
+  });
+
+  it('blocks a symlink targeting /etc/shadow (credential path)', async () => {
+    const link = path.join(tmpDir, 'sneaky-shadow.txt');
+    try {
+      fs.symlinkSync('/etc/shadow', link);
+    } catch { return; /* cannot create symlink — skip */ }
+    const result = await fileReadTool.execute({ file_path: link }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('sensitive file') || result.output.includes('outside the workspace'),
+      `expected credential/workspace block, got: ${result.output}`,
+    );
+  });
+
+  it('blocks a symlink targeting ~/.ssh/id_rsa (credential path)', async () => {
+    const sshDir = path.join(tmpDir, '.ssh');
+    fs.mkdirSync(sshDir);
+    const fakeKey = path.join(sshDir, 'id_rsa');
+    fs.writeFileSync(fakeKey, 'fake-key-content');
+    // Create the symlink in a subdirectory so the target is technically inside
+    // the workspace — this tests the isCredentialPath check specifically
+    const subDir = path.join(tmpDir, 'sub');
+    fs.mkdirSync(subDir);
+    const link = path.join(subDir, 'key-link.txt');
+    fs.symlinkSync(fakeKey, link);
+
+    const result = await fileReadTool.execute({ file_path: link }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('sensitive file'),
+      `expected credential block, got: ${result.output}`,
+    );
+  });
+
+  it('blocks a dangling symlink (target does not exist)', async () => {
+    const link = path.join(tmpDir, 'dangling.txt');
+    try {
+      fs.symlinkSync(path.join(tmpDir, 'no-such-target.txt'), link);
+    } catch { return; /* cannot create symlink — skip */ }
+    const result = await fileReadTool.execute({ file_path: link }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('not found') || result.output.includes('not readable'),
+      `expected not-found error for dangling symlink, got: ${result.output}`,
+    );
+  });
+
+  it('blocks a symlink resolving outside the workspace', async () => {
+    const link = path.join(tmpDir, 'escape.txt');
+    try {
+      fs.symlinkSync('/usr/share/common-licenses/GPL-3', link);
+    } catch { return; /* cannot create symlink — skip */ }
+    const result = await fileReadTool.execute({ file_path: link }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.output.includes('outside the workspace') || result.output.includes('resolves outside'),
+      `expected workspace escape block, got: ${result.output}`,
+    );
+  });
+});
+
 describe('Read tool — size/regular-file guards + allow_large + large PDF', () => {
   it('refuses an over-128MB image instead of loading it into memory', async () => {
     const p = path.join(tmpDir, 'huge.png');
