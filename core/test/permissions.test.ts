@@ -1198,3 +1198,66 @@ describe('PermissionManager — env var prefix stripping (Gap #8)', () => {
     assert.equal(await pm.check('bash', { command: 'git status' }), 'allow');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gap #66: Shell wrapper stripping in permission matching
+// ---------------------------------------------------------------------------
+
+describe('PermissionManager — shell wrapper stripping (Gap #66)', () => {
+  it('deny rule matches command wrapped in sudo', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'sudo python script.py' }), 'deny');
+  });
+
+  it('deny rule matches command wrapped in env', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'env python script.py' }), 'deny');
+  });
+
+  it('deny rule matches command wrapped in watch', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'watch python script.py' }), 'deny');
+  });
+
+  it('deny rule matches command wrapped in ionice', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'ionice -c2 python script.py' }), 'deny');
+  });
+
+  it('deny rule matches command wrapped in nice + sudo', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'nice sudo python script.py' }), 'deny');
+  });
+
+  it('allow rule matches command behind env wrapper', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'env git status' }), 'allow');
+  });
+
+  it('allow rule rejects when inner command does not match', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'env python script.py' }), 'ask');
+  });
+
+  it('checkDenyRules matches through shell wrappers', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'python *', action: 'deny', reason: 'no python' },
+    ]);
+    const result = pm.checkDenyRules('bash', 'sudo python evil.py');
+    assert.equal(result.denied, true);
+  });
+});

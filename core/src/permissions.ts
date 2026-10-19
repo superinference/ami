@@ -508,6 +508,7 @@ const SHELL_WRAPPERS = new Set([
   'bash', 'sh', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh',
   'env', 'sudo', 'su', 'doas', 'nohup', 'nice', 'timeout',
   'xargs', 'exec', 'eval',
+  'watch', 'ionice', 'setarch', 'taskset', 'chrt', 'strace', 'ltrace',
 ]);
 
 /**
@@ -699,7 +700,16 @@ function splitCompoundCommand(cmd: string): string[] {
  */
 export function stripEnvVarPrefix(cmd: string): string {
   // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint alternation
-  return cmd.replace(/^(\s*[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
+  let stripped = cmd.replace(/^(\s*[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
+  const tokens = stripped.split(/\s+/);
+  let i = 0;
+  while (i < tokens.length && SHELL_WRAPPERS.has(tokens[i]!)) {
+    i++;
+    while (i < tokens.length && tokens[i]!.startsWith('-')) i++;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+  }
+  if (i > 0 && i < tokens.length) stripped = tokens.slice(i).join(' ');
+  return stripped;
 }
 
 function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
