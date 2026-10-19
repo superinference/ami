@@ -96,8 +96,8 @@ export interface ToolContext {
   outputBudget?: { bashMaxChars?: number; taskTailLines?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
   _parentThinking?: ThinkingConfig;
-  /** Session-wide web-search budget (shared mutable counter) to stop runaway loops. */
-  _webSearchBudget?: { count: number; max: number };
+  /** Session-wide web-search budget with token-bucket refill to stop runaway loops. */
+  _webSearchBudget?: { count: number; max: number; lastRefillTime?: number; refillRate?: number };
   detachedMode?: boolean;
   /** Current subagent nesting depth (0 = top-level). */
   _agentDepth?: number;

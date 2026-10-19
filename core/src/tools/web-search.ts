@@ -141,9 +141,18 @@ export const webSearchTool: ToolDefinition = {
     if (q.error) return q.error;
     const query = q.query;
 
-    // Session-wide runaway cap.
+    // Session-wide runaway cap with token-bucket refill.
     const budget = context._webSearchBudget;
     if (budget) {
+      if (budget.lastRefillTime && budget.refillRate) {
+        const now = Date.now();
+        const elapsedHours = (now - budget.lastRefillTime) / 3_600_000;
+        const refilled = Math.floor(elapsedHours * budget.refillRate);
+        if (refilled > 0) {
+          budget.count = Math.max(0, budget.count - refilled);
+          budget.lastRefillTime = now;
+        }
+      }
       budget.count++;
       if (budget.count > budget.max) {
         return { output: `Error: web search limit reached (${budget.max} per session) — too many searches.`, isError: true };

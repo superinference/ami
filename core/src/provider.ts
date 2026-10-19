@@ -565,7 +565,8 @@ export function resolveModel(config: ProviderConfig) {
   const model = config.model || inferred?.defaultModel || 'gpt-4o';
   const baseUrl = config.baseUrl || inferred?.defaultBaseUrl || '';
   const headerFetch = withExtraHeaders(config.extraHeaders);
-  const fetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? globalThis.fetch);
+  const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? globalThis.fetch);
+  const fetch = bodyFetch ?? headerFetch;
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
@@ -942,11 +943,11 @@ export async function* streamChatCompletion(
           return;
 
         case 'error': {
-          const errObj = part.error as { statusCode?: number; responseHeaders?: Record<string, string>; message?: string } | undefined;
+          const errObj = part.error as { statusCode?: number; responseHeaders?: Record<string, string>; message?: string; type?: string } | undefined;
           const errStatusCode = errObj?.statusCode;
           const errMsg = errStatusCode
             ? `HTTP ${errStatusCode}: ${errObj?.message ?? String(part.error)}`
-            : String(part.error);
+            : errObj?.message ?? (typeof part.error === 'string' ? part.error : String(part.error));
 
           // Extract Retry-After from response headers if available
           let errRetryAfter: number | undefined;
