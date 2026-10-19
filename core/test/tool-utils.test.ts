@@ -536,6 +536,41 @@ describe('scanForSecrets', () => {
     assert.ok(found.length > 0);
   });
 
+  it('detects Slack bot tokens (xoxb-)', () => {
+    const found = scanForSecrets('SLACK_TOKEN=xoxb-1234567890-abcdefghij');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects Slack user tokens (xoxp-)', () => {
+    const found = scanForSecrets('token=xoxp-1234567890-abcdefghij');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects JWT tokens (eyJ...)', () => {
+    const found = scanForSecrets('auth=eyJhbGciOiJIUzI1NiIsInR5.eyJzdWIiOiIxMjM0NTY3ODkw');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects npm tokens (npm_)', () => {
+    const found = scanForSecrets('NPM_TOKEN=npm_abcdefghijklmnopqrstuvwxyz1234567890ab');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects PyPI tokens (pypi-)', () => {
+    const found = scanForSecrets('PYPI_TOKEN=pypi-' + 'a'.repeat(50));
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitHub OAuth tokens (gho_)', () => {
+    const found = scanForSecrets('token=gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234');
+    assert.ok(found.length > 0);
+  });
+
+  it('detects GitHub server tokens (ghs_)', () => {
+    const found = scanForSecrets('token=ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234');
+    assert.ok(found.length > 0);
+  });
+
   it('detects password assignments', () => {
     const found = scanForSecrets('password = "my-secret-password-123"');
     assert.ok(found.length > 0);
@@ -1011,5 +1046,49 @@ describe('redactSecrets — invisible chars in keys (Gap #15)', () => {
     const result = redactSecrets('TOKEN‪=secretvalue123');
     assert.ok(result.includes('[REDACTED-SECRET]'));
     assert.ok(!result.includes('secretvalue123'));
+  });
+});
+
+describe('redactSecrets — new token patterns', () => {
+  it('redacts Slack bot tokens', () => {
+    const result = redactSecrets('SLACK_TOKEN=xoxb-1234567890-abcdefghij');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('xoxb-'));
+  });
+
+  it('redacts Slack user tokens', () => {
+    const result = redactSecrets('token=xoxp-1234567890-abcdefghij');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('xoxp-'));
+  });
+
+  it('redacts JWT tokens', () => {
+    const result = redactSecrets('auth: eyJhbGciOiJIUzI1NiIsInR5cCI6.eyJzdWIiOiIxMjM0NTY3ODkwIiw.SflKxwRJSMeKKF2QT4fwpM');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('eyJhbGci'));
+  });
+
+  it('redacts npm tokens', () => {
+    const result = redactSecrets('NPM_TOKEN=npm_abcdefghijklmnopqrstuvwxyz1234567890ab');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('npm_abcdef'));
+  });
+
+  it('redacts PyPI tokens', () => {
+    const result = redactSecrets('PYPI_TOKEN=pypi-' + 'a'.repeat(50));
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('pypi-'));
+  });
+
+  it('redacts GitHub OAuth tokens (gho_)', () => {
+    const result = redactSecrets('token=gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('gho_'));
+  });
+
+  it('redacts GitHub server tokens (ghs_)', () => {
+    const result = redactSecrets('token=ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('ghs_'));
   });
 });

@@ -337,11 +337,16 @@ export function renderToolDescription(
 const SECRET_PATTERNS = [
   /(?:^|[^a-zA-Z0-9])(?:sk-[a-zA-Z0-9]{20,})(?:[^a-zA-Z0-9]|$)/,   // OpenAI
   /(?:^|[^a-zA-Z0-9])(?:sk-ant-[a-zA-Z0-9]{20,})/,                   // Anthropic
-  /(?:^|[^a-zA-Z0-9])(?:ghp_[a-zA-Z0-9]{36})/,                       // GitHub
+  /(?:^|[^a-zA-Z0-9])(?:ghp_[a-zA-Z0-9]{36})/,                       // GitHub PAT
+  /(?:^|[^a-zA-Z0-9])(?:gh[osur]_[a-zA-Z0-9]{36,})/,                 // GitHub OAuth/Server/User/Refresh
   /(?:^|[^a-zA-Z0-9])(?:gsk_[a-zA-Z0-9]{20,})/,                      // Groq
-  /(?:^|[^a-zA-Z0-9])(?:AKIA[A-Z0-9]{16})/,                          // AWS
-  /(?:^|[^a-zA-Z0-9])(?:AIza[a-zA-Z0-9_-]{35})/,                     // Google
+  /(?:^|[^a-zA-Z0-9])(?:AKIA[A-Z0-9]{16})/,                          // AWS Access Key
+  /(?:^|[^a-zA-Z0-9])(?:AIza[a-zA-Z0-9_-]{35})/,                     // Google API Key
   /(?:^|[^a-zA-Z0-9])(?:gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/,  // GitLab
+  /(?:^|[^a-zA-Z0-9])(?:xox[bpsar]-[a-zA-Z0-9-]{10,})/,              // Slack
+  /(?:^|[^a-zA-Z0-9])(?:eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,})/,  // JWT
+  /(?:^|[^a-zA-Z0-9])(?:npm_[a-zA-Z0-9]{36,})/,                      // npm
+  /(?:^|[^a-zA-Z0-9])(?:pypi-[a-zA-Z0-9]{50,})/,                     // PyPI
   /(?:password|secret|token|api_key)\s*[:=]\s*['"][^'"]{8,}['"]/i,
 ];
 
@@ -389,10 +394,15 @@ export function redactSecrets(content: string): string {
     /(sk-ant-[a-zA-Z0-9-]{20,})/g,
     /(sk-[a-zA-Z0-9]{20,})/g,
     /(ghp_[a-zA-Z0-9]{36})/g,
+    /(gh[osur]_[a-zA-Z0-9]{36,})/g,
     /(gsk_[a-zA-Z0-9]{20,})/g,
     /(AKIA[A-Z0-9]{16})/g,
     /(AIza[a-zA-Z0-9_-]{35})/g,
     /(gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/g,
+    /(xox[bpsar]-[a-zA-Z0-9-]{10,})/g,
+    /(eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]+)/g,
+    /(npm_[a-zA-Z0-9]{36,})/g,
+    /(pypi-[a-zA-Z0-9]{50,})/g,
   ];
   for (const re of tokenRes) out = out.replace(re, '[REDACTED-SECRET]');
 

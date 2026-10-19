@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
-import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment } from './bash-security';
+import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
@@ -600,7 +600,7 @@ export const bashTool: ToolDefinition = {
         };
       }
       return {
-        output: formatOutput(presented.stdout, presented.stderr, null, `Command timed out after ${timeout}ms.`),
+        output: sanitizeToolOutput(formatOutput(presented.stdout, presented.stderr, null, `Command timed out after ${timeout}ms.`)),
         isError: true,
       };
     }
@@ -635,7 +635,7 @@ export const bashTool: ToolDefinition = {
 
     const isRealError = result.exitCode !== 0 && !exitCodeInfo?.isNonError;
     const exitInfo = result.exitCode !== 0 ? `\n[exit code: ${result.exitCode}${exitCodeInfo ? ' ' + exitCodeInfo.message : ''}]` : '';
-    output = `${output}${exitInfo}`.trim();
+    output = sanitizeToolOutput(`${output}${exitInfo}`.trim());
 
     if (!isRealError && isCacheableReadOnly(command)) {
       _bashCache.set(command, effectiveCwd, output);
