@@ -122,6 +122,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(lspReferencesTool);
   registry.register(agenticFetchTool);
   registry.register(scoutTool);
+  registry.register(endConversationTool);
 
   setSearchableTools(registry.getAll());
 
@@ -178,6 +179,7 @@ export { syntheticOutputTool } from './synthetic-output';
 export { lspDiagnosticsTool, lspReferencesTool } from './lsp-diagnostics';
 export { agenticFetchTool } from './agentic-fetch';
 export { scoutTool } from './scout';
+export { endConversationTool } from './end-conversation';
 export { isReadOnlyBashCommand, BashResultCache } from './bash-cache';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './command-normalize';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection } from './input-sanitizer';
