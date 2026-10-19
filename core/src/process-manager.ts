@@ -88,7 +88,7 @@ export class ProcessManager extends EventEmitter {
     fs.mkdirSync(this.tasksDir, { recursive: true });
   }
 
-  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv }): string {
+  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): string {
     const taskId = `bg-${crypto.randomBytes(4).toString('hex')}`;
     const outputPath = path.join(this.tasksDir, `${taskId}.output`);
 
@@ -158,8 +158,19 @@ export class ProcessManager extends EventEmitter {
       lastOutputSize = currentSize;
     }, 45_000);
 
+    let bgTimeout: ReturnType<typeof setTimeout> | undefined;
+    if (opts.timeoutMs && opts.timeoutMs > 0) {
+      bgTimeout = setTimeout(() => {
+        if (entry.status === 'running') {
+          try { fs.writeSync(fd, Buffer.from(`\n[background command stopped: exceeded ${Math.round(opts.timeoutMs! / 1000)}s time limit]\n`)); } catch { /* fd may be closed */ }
+          this.kill(taskId);
+        }
+      }, opts.timeoutMs);
+    }
+
     proc.on('close', (code) => {
       clearInterval(stallCheck);
+      if (bgTimeout) clearTimeout(bgTimeout);
       if (entry.status !== 'killed') {
         entry.status = code === 0 ? 'completed' : 'failed';
       }

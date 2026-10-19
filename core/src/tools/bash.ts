@@ -544,14 +544,23 @@ export const bashTool: ToolDefinition = {
 
     if (input.run_in_background && context.processManager) {
       const desc = (input.description as string) || command.slice(0, 80);
+      const MAX_BG_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+      const DEFAULT_BG_TIMEOUT_MS = 30 * 60 * 1000;
+      const envBgTimeout = process.env.SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS;
+      const requestedTimeout = typeof input.timeout === 'number' ? input.timeout : undefined;
+      const bgTimeoutMs = Math.min(
+        requestedTimeout ?? (envBgTimeout ? parseInt(envBgTimeout, 10) : DEFAULT_BG_TIMEOUT_MS),
+        MAX_BG_TIMEOUT_MS,
+      );
       const taskId = context.processManager.spawn(command, {
         cwd: context.cwd,
         description: desc,
         env: scrubEnv(),
+        timeoutMs: bgTimeoutMs,
       });
       const task = context.processManager.get(taskId);
       return {
-        output: `[background: true]\nBackground task started.\n  Task ID: ${taskId}\n  PID: ${task?.pid ?? 'unknown'}\n  Command: ${command}\n\nUse task_output({ task_id: "${taskId}" }) to check status and output.\nUse task_kill({ task_id: "${taskId}" }) to stop it.\nUse task_list() to see all background tasks.`,
+        output: `[background: true]\nBackground task started.\n  Task ID: ${taskId}\n  PID: ${task?.pid ?? 'unknown'}\n  Command: ${command}\n  Timeout: ${Math.round(bgTimeoutMs / 1000)}s\n\nUse task_output({ task_id: "${taskId}" }) to check status and output.\nUse task_kill({ task_id: "${taskId}" }) to stop it.\nUse task_list() to see all background tasks.`,
         isError: false,
       };
     }
