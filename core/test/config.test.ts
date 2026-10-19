@@ -413,6 +413,42 @@ describe('ConfigService', () => {
     svc.stop();
   });
 
+  it('watch() triggers reload on config file change', async () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "before"}');
+
+    const svc = new ConfigService(tmpDir);
+    let notified = false;
+    svc.onChange(() => { notified = true; });
+    svc.watch();
+
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "after"}');
+    await new Promise(r => setTimeout(r, 300));
+    svc.stop();
+    assert.equal(svc.get().model, 'after');
+    assert.equal(notified, true);
+  });
+
+  it('watch() debounces rapid config changes', async () => {
+    const dir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v0"}');
+
+    const svc = new ConfigService(tmpDir);
+    let changeCount = 0;
+    svc.onChange(() => { changeCount++; });
+    svc.watch();
+
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v2"}');
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v3"}');
+    await new Promise(r => setTimeout(r, 300));
+    svc.stop();
+    assert.equal(svc.get().model, 'v3');
+    assert.ok(changeCount <= 3, 'debounce should limit notifications');
+  });
+
   it('handles listener errors gracefully', () => {
     const dir = path.join(tmpDir, '.superinference');
     fs.mkdirSync(dir, { recursive: true });

@@ -126,6 +126,23 @@ describe('CronScheduler — locking', () => {
     sched.startTicker(() => {});
     sched.stopTicker();
   });
+
+  it('stopTicker is idempotent', () => {
+    sched.stopTicker();
+    sched.stopTicker();
+  });
+
+  it('startTicker is idempotent (second call is no-op)', () => {
+    let count = 0;
+    sched.startTicker(() => { count++; });
+    sched.startTicker(() => { count += 100; });
+    sched.stopTicker();
+    assert.ok(count < 100, 'second startTicker should be no-op');
+  });
+
+  it('delete returns false for nonexistent ID', () => {
+    assert.equal(sched.delete('nonexistent'), false);
+  });
 });
 
 // ---------------------------------------------------------------------------
