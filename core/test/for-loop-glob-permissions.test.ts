@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { PermissionManager, unwrapShellControlStructures } from '../src/permissions';
+import { PermissionManager, unwrapShellControlStructures, containsShellSubstitution } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
 // unwrapShellControlStructures — unit tests
@@ -124,6 +124,33 @@ describe('classifyBashCommand — for-loop glob patterns', () => {
 // ---------------------------------------------------------------------------
 // matchBashPattern — for-loop in allow/deny rules
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// cd <dir> && <command> — auto-allow safe compound
+// ---------------------------------------------------------------------------
+describe('classifyBashCommand — cd + safe command', () => {
+  const pm = new PermissionManager('ask');
+
+  it('classifies cd /path && ls as safe', () => {
+    assert.equal(pm.classifyBashCommand('cd /home/user/project && ls -la'), 'safe');
+  });
+
+  it('classifies cd /path && grep as safe', () => {
+    assert.equal(pm.classifyBashCommand('cd src && grep -r TODO'), 'safe');
+  });
+
+  it('classifies cd alone as safe', () => {
+    assert.equal(pm.classifyBashCommand('cd /home/user/project'), 'safe');
+  });
+
+  it('classifies cd && rm as destructive', () => {
+    assert.notEqual(pm.classifyBashCommand('cd /path && rm -rf /tmp'), 'safe');
+  });
+
+  it('classifies cd && cat && wc as safe', () => {
+    assert.equal(pm.classifyBashCommand('cd src && cat file.ts && wc -l file.ts'), 'safe');
+  });
+});
+
 describe('matchBashPattern — for-loop in permission rules', () => {
   it('allow rule for cat matches for-loop body with cat', async () => {
     const pm = new PermissionManager('ask', [
@@ -148,5 +175,93 @@ describe('matchBashPattern — for-loop in permission rules', () => {
     // for-loop with multiple body commands: cat + mv. Allow requires ALL to match.
     const result = await pm.check('bash', { command: 'for f in *.ts; do cat "$f"; mv "$f" /tmp/; done' });
     assert.notEqual(result, 'allow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// containsShellSubstitution — unit tests
+// ---------------------------------------------------------------------------
+describe('containsShellSubstitution', () => {
+  it('detects $VAR substitution', () => {
+    assert.equal(containsShellSubstitution('echo $HOME'), true);
+  });
+
+  it('detects ${VAR} substitution', () => {
+    assert.equal(containsShellSubstitution('echo ${HOME}'), true);
+  });
+
+  it('detects $(cmd) substitution', () => {
+    assert.equal(containsShellSubstitution('echo $(whoami)'), true);
+  });
+
+  it('tolerates * glob', () => {
+    assert.equal(containsShellSubstitution('ls *.ts'), false);
+  });
+
+  it('tolerates ? glob', () => {
+    assert.equal(containsShellSubstitution('ls file?.ts'), false);
+  });
+
+  it('tolerates [...] bracket expression', () => {
+    assert.equal(containsShellSubstitution('ls [abc].ts'), false);
+  });
+
+  it('tolerates quoted $VAR inside quotes', () => {
+    assert.equal(containsShellSubstitution("echo '$HOME'"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Glob patterns with safe read-only commands (changelog entry 6121)
+// ---------------------------------------------------------------------------
+describe('classifyBashCommand — glob patterns with safe commands', () => {
+  const pm = new PermissionManager('ask');
+
+  it('classifies ls *.ts as safe', () => {
+    assert.equal(pm.classifyBashCommand('ls *.ts'), 'safe');
+  });
+
+  it('classifies cat *.txt as safe', () => {
+    assert.equal(pm.classifyBashCommand('cat *.txt'), 'safe');
+  });
+
+  it('classifies grep TODO *.ts as safe', () => {
+    assert.equal(pm.classifyBashCommand('grep TODO *.ts'), 'safe');
+  });
+
+  it('classifies wc -l *.py as safe', () => {
+    assert.equal(pm.classifyBashCommand('wc -l *.py'), 'safe');
+  });
+
+  it('classifies head -5 *.md as safe', () => {
+    assert.equal(pm.classifyBashCommand('head -5 *.md'), 'safe');
+  });
+
+  it('classifies tail -10 *.log as safe', () => {
+    assert.equal(pm.classifyBashCommand('tail -10 *.log'), 'safe');
+  });
+
+  it('classifies ls file?.ts as safe (? glob)', () => {
+    assert.equal(pm.classifyBashCommand('ls file?.ts'), 'safe');
+  });
+
+  it('classifies ls [abc].ts as safe (bracket glob)', () => {
+    assert.equal(pm.classifyBashCommand('ls [abc].ts'), 'safe');
+  });
+
+  it('still blocks $VAR expansion with safe commands', () => {
+    assert.equal(pm.classifyBashCommand('ls $HOME'), 'unsafe');
+  });
+
+  it('still blocks $(cmd) substitution with safe commands', () => {
+    assert.equal(pm.classifyBashCommand('cat $(echo /etc/passwd)'), 'unsafe');
+  });
+
+  it('classifies cd /path && ls *.ts as safe', () => {
+    assert.equal(pm.classifyBashCommand('cd /home/user && ls *.ts'), 'safe');
+  });
+
+  it('classifies grep -r TODO src/**/*.ts as safe', () => {
+    assert.equal(pm.classifyBashCommand('grep -r TODO src/**/*.ts'), 'safe');
   });
 });

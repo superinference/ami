@@ -10,7 +10,7 @@ export type { PluginBundle } from './plugins';
 export type { SkillDefinition, AgentDefinition } from './skills';
 export { CostTracker, CacheMissDiagnostics, fingerprint } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest } from './cost-tracker';
-export { PermissionManager, containsUnquotedExpansion, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
+export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
 export { safeReadFile, safeLstat } from './tools/tool-utils';
 export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES } from './mcp/client';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';

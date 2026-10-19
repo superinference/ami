@@ -234,6 +234,16 @@ export function containsUnquotedExpansion(command: string): boolean {
   return false;
 }
 
+/**
+ * Check whether a command contains unquoted shell substitutions ($VAR,
+ * ${VAR}, $(cmd)) but tolerate glob patterns (* ? [...]).
+ * Used for safe read-only commands where globs are harmless filename expansion.
+ */
+export function containsShellSubstitution(command: string): boolean {
+  const unquoted = stripQuotedSections(command);
+  return /\$[A-Za-z_{(]/.test(unquoted);
+}
+
 /** Safe read-only docker subcommands. */
 const DOCKER_SAFE_SUBCOMMANDS = new Set([
   'ps', 'images', 'logs', 'inspect', 'stats', 'top', 'port', 'version', 'info',
@@ -1110,8 +1120,8 @@ export class PermissionManager {
         // xargs: must target a safe command
         if (cmd === 'xargs' && !isXargsSafe(unwrapped)) return 'unsafe';
 
-        // Read-only commands with unquoted expansions are suspicious
-        if (containsUnquotedExpansion(unwrapped)) return 'unsafe';
+        // Block shell substitutions ($VAR, $(cmd)) but allow glob patterns
+        if (containsShellSubstitution(unwrapped)) return 'unsafe';
 
         if (allSegmentsKnown(unwrapped)) return 'safe';
         break;
