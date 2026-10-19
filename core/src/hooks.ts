@@ -261,6 +261,8 @@ export function validateHookTimeout(timeoutMs: number): number {
 export interface CommandHookConfig {
   type: 'command';
   command: string;
+  /** Exec form: spawn command directly without a shell, avoiding quoting issues. */
+  args?: string[];
   timeout?: number;
   once?: boolean;
   if?: string;
@@ -386,13 +388,12 @@ async function runCommandHookAsync(
   env: Record<string, string>,
   timeout: number,
   stdinData?: string,
+  args?: string[],
 ): Promise<{ exitCode: number; output: string }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('bash', ['-c', command], {
-      cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const proc = args && args.length > 0
+      ? spawn(args[0], args.slice(1), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+      : spawn('bash', ['-c', command], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
     let output = '';
     proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
@@ -440,6 +441,7 @@ export class HookManager extends EventEmitter {
   private _hookTiers = new WeakMap<Function, string>();
   private _denyRulesHold = false;
   private _concurrency = new EventConcurrencyLimiter();
+  private _effortLevel: string = 'high';
 
   /**
    * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
@@ -456,6 +458,8 @@ export class HookManager extends EventEmitter {
   setSessionId(id: string): void { this._sessionId = id; }
 
   setWorkspaceTrusted(trusted: boolean): void { this._workspaceTrusted = trusted; }
+  setEffortLevel(level: string): void { this._effortLevel = level; }
+  getEffortLevel(): string { return this._effortLevel; }
   isWorkspaceTrusted(): boolean { return this._workspaceTrusted; }
 
   registerCallback(event: string, callback: HookCallback): () => void {
@@ -499,6 +503,7 @@ export class HookManager extends EventEmitter {
       SUPERINFERENCE_CWD: this._cwd,
       SUPERINFERENCE_MODEL: this._providerConfig?.model ?? '',
       SUPERINFERENCE_PROVIDER: this._providerConfig?.provider ?? '',
+      SUPERINFERENCE_EFFORT: this._effortLevel,
     };
   }
 
@@ -1444,7 +1449,7 @@ export class HookManager extends EventEmitter {
           eventData ? (() => { try { return JSON.parse(eventData).toolName; } catch { return undefined; } })() : undefined,
         );
         try {
-          const { exitCode, output } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData);
+          const { exitCode, output } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args);
           if (exitCode !== 0) {
             if (config.asyncRewake && exitCode === 2) {
               this.emit('hookRewake', { event: 'command', message: output || 'Background hook completed with exit code 2' });

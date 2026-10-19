@@ -249,3 +249,84 @@ describe('EventConcurrencyLimiter', () => {
     assert.deepEqual(log, ['hook1', 'hook2']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Hook args exec form + effort env
+// ---------------------------------------------------------------------------
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+describe('HookManager — args exec form', () => {
+  let tmpDir: string;
+  const cleanup = () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} };
+
+  it('preToolUse hook with args spawns without shell', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-args-'));
+    const hooksDir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({
+      hooks: [{
+        event: 'preToolUse',
+        hook: {
+          type: 'command',
+          command: 'echo',
+          args: ['echo', 'exec-form-worked'],
+          timeout: 5000,
+        },
+      }],
+    }));
+
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(tmpDir);
+
+    const result = await hm.executePreToolUse({
+      messages: [],
+      turnCount: 0,
+      toolName: 'bash',
+      toolInput: { command: 'ls' },
+    });
+    assert.equal(result.action, 'allow');
+    cleanup();
+  });
+});
+
+describe('HookManager — SUPERINFERENCE_EFFORT in hook env', () => {
+  let tmpDir: string;
+  const cleanup = () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} };
+
+  it('hook receives SUPERINFERENCE_EFFORT env var', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-effort-'));
+    const hooksDir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(hooksDir, { recursive: true });
+
+    const markerFile = path.join(tmpDir, 'effort.txt');
+    fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({
+      hooks: [{
+        event: 'preToolUse',
+        hook: {
+          type: 'command',
+          command: `echo "$SUPERINFERENCE_EFFORT" > ${markerFile}`,
+          timeout: 5000,
+        },
+      }],
+    }));
+
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.setEffortLevel('max');
+    hm.loadFromFile(tmpDir);
+
+    await hm.executePreToolUse({
+      messages: [],
+      turnCount: 0,
+      toolName: 'bash',
+      toolInput: { command: 'ls' },
+    });
+
+    const written = fs.readFileSync(markerFile, 'utf-8').trim();
+    assert.equal(written, 'max');
+    cleanup();
+  });
+});

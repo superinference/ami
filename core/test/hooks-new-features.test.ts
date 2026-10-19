@@ -120,3 +120,28 @@ describe('HookManager — getSummary', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Effort level tracking
+// ---------------------------------------------------------------------------
+
+describe('HookManager — effort level', () => {
+  it('defaults to high', () => {
+    assert.equal(hookManager.getEffortLevel(), 'high');
+  });
+
+  it('setEffortLevel changes the level', () => {
+    hookManager.setEffortLevel('max');
+    assert.equal(hookManager.getEffortLevel(), 'max');
+  });
+
+  it('setEffortLevel accepts off', () => {
+    hookManager.setEffortLevel('off');
+    assert.equal(hookManager.getEffortLevel(), 'off');
+  });
+
+  it('setEffortLevel accepts low', () => {
+    hookManager.setEffortLevel('low');
+    assert.equal(hookManager.getEffortLevel(), 'low');
+  });
+});
