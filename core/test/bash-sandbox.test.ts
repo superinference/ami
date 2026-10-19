@@ -7,6 +7,7 @@ import {
   getSandboxStatus,
   resetSandboxCache,
   validateSandboxEnabled,
+  buildNetworkAllowlist,
 } from '../src/tools/bash-sandbox';
 
 describe('shouldUseSandbox', () => {
@@ -307,5 +308,40 @@ describe('validateSandboxEnabled', () => {
     if (!result.valid) {
       assert.ok(result.error!.includes('unshare'));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildNetworkAllowlist — trailing dot FQDN normalization (Gap #38)
+// ---------------------------------------------------------------------------
+
+describe('buildNetworkAllowlist — trailing dot normalization (Gap #38)', () => {
+  it('returns empty string for empty domains', () => {
+    assert.equal(buildNetworkAllowlist([]), '');
+  });
+
+  it('strips trailing dot from domain', () => {
+    const rules = buildNetworkAllowlist(['example.com.']);
+    assert.ok(rules.includes("'example.com'"), `Expected 'example.com' in rules but got: ${rules}`);
+    assert.ok(!rules.includes("'example.com.'"));
+  });
+
+  it('handles domain without trailing dot', () => {
+    const rules = buildNetworkAllowlist(['example.com']);
+    assert.ok(rules.includes("'example.com'"));
+  });
+
+  it('handles multiple domains with mixed trailing dots', () => {
+    const rules = buildNetworkAllowlist(['a.com.', 'b.org', 'c.net.']);
+    assert.ok(rules.includes("'a.com'"));
+    assert.ok(rules.includes("'b.org'"));
+    assert.ok(rules.includes("'c.net'"));
+  });
+
+  it('includes loopback and DNS rules', () => {
+    const rules = buildNetworkAllowlist(['example.com']);
+    assert.ok(rules.includes('-o lo'));
+    assert.ok(rules.includes('--dport 53'));
+    assert.ok(rules.includes('DROP'));
   });
 });

@@ -170,8 +170,9 @@ export function buildNetworkAllowlist(domains: string[]): string {
   // Allow DNS
   rules += 'iptables -A OUTPUT -p udp --dport 53 -j ACCEPT 2>/dev/null; ';
   rules += 'iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT 2>/dev/null; ';
-  // Allow each domain
-  for (const d of domains) {
+  // Allow each domain — strip trailing dots (FQDN normalization)
+  for (const raw of domains) {
+    const d = raw.replace(/\.+$/, '');
     const esc = d.replace(/'/g, "'\\''");
     rules +=
       "for ip in $(getent ahosts '" +
