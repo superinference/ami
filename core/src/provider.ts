@@ -1057,12 +1057,15 @@ function extractStatusCode(errorText: string): number | null {
   return null;
 }
 
-const NETWORK_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+const NETWORK_ERROR_CODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT',
+  'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH',
+]);
 export function isNetworkError(err: unknown): boolean {
   const code = (err as { code?: string })?.code;
   if (code && NETWORK_ERROR_CODES.has(code)) return true;
   const msg = err instanceof Error ? err.message : '';
-  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up/i.test(msg);
+  return /ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|socket hang up/i.test(msg);
 }
 
 // ---------------------------------------------------------------------------

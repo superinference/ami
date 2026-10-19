@@ -168,6 +168,30 @@ describe('isNetworkError', () => {
     assert.ok(isNetworkError(Object.assign(new Error(''), { code: 'EHOSTUNREACH' })));
   });
 
+  it('returns true for ECONNABORTED', () => {
+    assert.ok(isNetworkError(Object.assign(new Error('request aborted'), { code: 'ECONNABORTED' })));
+  });
+
+  it('returns true for EPIPE', () => {
+    assert.ok(isNetworkError(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })));
+  });
+
+  it('returns true for ENOTFOUND', () => {
+    assert.ok(isNetworkError(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })));
+  });
+
+  it('returns true for ENETUNREACH', () => {
+    assert.ok(isNetworkError(Object.assign(new Error(''), { code: 'ENETUNREACH' })));
+  });
+
+  it('returns true for EAI_AGAIN', () => {
+    assert.ok(isNetworkError(Object.assign(new Error('getaddrinfo EAI_AGAIN'), { code: 'EAI_AGAIN' })));
+  });
+
+  it('returns true for ECONNABORTED in message (no code)', () => {
+    assert.ok(isNetworkError(new Error('ECONNABORTED: request aborted')));
+  });
+
   it('returns true for socket hang up in message', () => {
     assert.ok(isNetworkError(new Error('socket hang up')));
   });
