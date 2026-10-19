@@ -73,6 +73,10 @@ export const notebookEditTool: ToolDefinition = {
     const nullCheck = validateFilePath(notebookPath || '');
     if (nullCheck) return nullCheck;
 
+    if (notebookPath && (notebookPath.startsWith('\\\\') || notebookPath.startsWith('//'))) {
+      return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${notebookPath}`, isError: true };
+    }
+
     if (!notebookPath || notebookPath.trim().length === 0) {
       return {
         output: 'Error: notebook_path must not be empty.',

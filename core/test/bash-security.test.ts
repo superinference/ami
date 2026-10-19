@@ -19,6 +19,9 @@ import {
   stripSafeWrappers,
   validateSedDangerous,
   CHECK_IDS,
+  sanitizeToolOutput,
+  stripOsc8Hyperlinks,
+  detectGitCredentialTheft,
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
@@ -599,5 +602,271 @@ describe('validateSedDangerous', () => {
     const result = validateBashSecurity("sed 's/x/id/e' file.txt");
     assert.ok(!result.safe);
     assert.equal(result.checkId, CHECK_IDS.SED_DANGEROUS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeToolOutput — ANSI stripping, OSC stripping, env var redaction
+// ---------------------------------------------------------------------------
+
+describe('sanitizeToolOutput', () => {
+  it('returns empty/falsy input unchanged', () => {
+    assert.equal(sanitizeToolOutput(''), '');
+    assert.equal(sanitizeToolOutput(undefined as unknown as string), undefined);
+  });
+
+  it('passes plain text through unchanged', () => {
+    const plain = 'hello world\nline two\n';
+    assert.equal(sanitizeToolOutput(plain), plain);
+  });
+
+  it('strips ANSI color codes', () => {
+    const colored = '\x1b[31mERROR\x1b[0m: something failed';
+    assert.equal(sanitizeToolOutput(colored), 'ERROR: something failed');
+  });
+
+  it('strips ANSI bold/underline/cursor sequences', () => {
+    const styled = '\x1b[1mbold\x1b[22m \x1b[4munderline\x1b[24m \x1b[12Acursor';
+    assert.equal(sanitizeToolOutput(styled), 'bold underline cursor');
+  });
+
+  it('strips ANSI SGR with multiple parameters', () => {
+    const multi = '\x1b[38;5;196mred256\x1b[0m normal';
+    assert.equal(sanitizeToolOutput(multi), 'red256 normal');
+  });
+
+  it('strips OSC8 hyperlinks', () => {
+    const linked = '\x1b]8;;https://evil.com\x1b\\click here\x1b]8;;\x1b\\';
+    assert.equal(sanitizeToolOutput(linked), 'click here');
+  });
+
+  it('strips OSC8 hyperlinks terminated with BEL', () => {
+    const linked = '\x1b]8;;https://evil.com\x07click here\x1b]8;;\x07';
+    assert.equal(sanitizeToolOutput(linked), 'click here');
+  });
+
+  it('strips OSC title-set sequences', () => {
+    const titleSet = '\x1b]0;evil-title\x07normal output';
+    assert.equal(sanitizeToolOutput(titleSet), 'normal output');
+  });
+
+  it('strips OSC clipboard sequences', () => {
+    const clipboard = '\x1b]52;c;SGVsbG8=\x07visible text';
+    assert.equal(sanitizeToolOutput(clipboard), 'visible text');
+  });
+
+  it('strips OSC sequences terminated with ST (ESC backslash)', () => {
+    const osc = '\x1b]999;custom-data\x1b\\visible';
+    assert.equal(sanitizeToolOutput(osc), 'visible');
+  });
+
+  it('redacts sensitive env vars in output', () => {
+    const envOutput = 'API_KEY=sk-secret-123\nNORMAL_VAR=hello';
+    const result = sanitizeToolOutput(envOutput);
+    assert.ok(result.includes('[REDACTED]'));
+    assert.ok(result.includes('NORMAL_VAR=hello'));
+    assert.ok(!result.includes('sk-secret-123'));
+  });
+
+  it('redacts quoted env vars', () => {
+    const envOutput = 'export GITHUB_TOKEN="ghp_abc123"';
+    const result = sanitizeToolOutput(envOutput);
+    assert.ok(result.includes('[REDACTED]'));
+    assert.ok(!result.includes('ghp_abc123'));
+  });
+
+  it('handles combined ANSI + OSC + env vars', () => {
+    const mixed = '\x1b[32mAPI_KEY=secret123\x1b[0m\n\x1b]8;;http://x\x07link\x1b]8;;\x07';
+    const result = sanitizeToolOutput(mixed);
+    assert.ok(result.includes('[REDACTED]'));
+    assert.ok(result.includes('link'));
+    assert.ok(!result.includes('\x1b'));
+    assert.ok(!result.includes('secret123'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripOsc8Hyperlinks (standalone)
+// ---------------------------------------------------------------------------
+
+describe('stripOsc8Hyperlinks', () => {
+  it('returns empty/falsy input unchanged', () => {
+    assert.equal(stripOsc8Hyperlinks(''), '');
+  });
+
+  it('strips OSC8 link with ST terminator', () => {
+    const input = '\x1b]8;;https://example.com\x1b\\Example\x1b]8;;\x1b\\';
+    assert.equal(stripOsc8Hyperlinks(input), 'Example');
+  });
+
+  it('strips OSC8 link with BEL terminator', () => {
+    const input = '\x1b]8;;https://example.com\x07Example\x1b]8;;\x07';
+    assert.equal(stripOsc8Hyperlinks(input), 'Example');
+  });
+
+  it('strips multiple OSC8 links', () => {
+    const input = '\x1b]8;;http://a\x07A\x1b]8;;\x07 and \x1b]8;;http://b\x07B\x1b]8;;\x07';
+    assert.equal(stripOsc8Hyperlinks(input), 'A and B');
+  });
+
+  it('leaves non-OSC8 text untouched', () => {
+    const input = 'just normal text with [brackets]';
+    assert.equal(stripOsc8Hyperlinks(input), input);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGitCredentialTheft
+// ---------------------------------------------------------------------------
+
+describe('detectGitCredentialTheft', () => {
+  // --- Blocked commands ---
+
+  it('blocks git config --global credential.helper with value', () => {
+    const r = detectGitCredentialTheft("git config --global credential.helper 'evil'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('credential.helper'));
+  });
+
+  it('blocks git config credential.helper with value', () => {
+    const r = detectGitCredentialTheft("git config credential.helper '!cat'");
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('credential.helper'));
+  });
+
+  it('blocks git config credential.helper store', () => {
+    const r = detectGitCredentialTheft('git config credential.helper store');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks git credential fill', () => {
+    const r = detectGitCredentialTheft('git credential fill');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('fill'));
+  });
+
+  it('blocks git credential approve', () => {
+    const r = detectGitCredentialTheft('git credential approve');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('approve'));
+  });
+
+  it('blocks git credential reject', () => {
+    const r = detectGitCredentialTheft('git credential reject');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('reject'));
+  });
+
+  it('blocks git -c credential.helper=evil push', () => {
+    const r = detectGitCredentialTheft('git -c credential.helper=evil push');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('credential.helper'));
+  });
+
+  it('blocks git -c credential.helper= with space-separated value', () => {
+    const r = detectGitCredentialTheft('git -c credential.helper=store push');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks git config --unset credential.helper', () => {
+    const r = detectGitCredentialTheft('git config --unset credential.helper');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('unset'));
+  });
+
+  it('blocks git config --unset-all credential.helper', () => {
+    const r = detectGitCredentialTheft('git config --unset-all credential.helper');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks GIT_CONFIG env var targeting credential.helper', () => {
+    const r = detectGitCredentialTheft(
+      'GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=evil git push'
+    );
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('GIT_CONFIG'));
+  });
+
+  // --- Allowed commands ---
+
+  it('allows git config --list (reading all config)', () => {
+    const r = detectGitCredentialTheft('git config --list');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git config --get credential.helper (reading)', () => {
+    const r = detectGitCredentialTheft('git config --get credential.helper');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git config credential.helper with no value (reading)', () => {
+    const r = detectGitCredentialTheft('git config credential.helper');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git config user.name (non-credential config)', () => {
+    const r = detectGitCredentialTheft("git config user.name 'test'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git config user.email (non-credential config)', () => {
+    const r = detectGitCredentialTheft("git config user.email 'test@example.com'");
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git push (normal git operations)', () => {
+    const r = detectGitCredentialTheft('git push');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git status', () => {
+    const r = detectGitCredentialTheft('git status');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git commit', () => {
+    const r = detectGitCredentialTheft('git commit -m "test"');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows git clone', () => {
+    const r = detectGitCredentialTheft('git clone https://github.com/test/repo.git');
+    assert.equal(r.blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGitCredentialTheft integration with validateBashSecurity
+// ---------------------------------------------------------------------------
+
+describe('validateBashSecurity git credential theft integration', () => {
+  it('blocks git config --global credential.helper via validateBashSecurity', () => {
+    const r = validateBashSecurity("git config --global credential.helper store");
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.GIT_CREDENTIAL_THEFT);
+  });
+
+  it('blocks git credential fill via validateBashSecurity', () => {
+    const r = validateBashSecurity('git credential fill');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.GIT_CREDENTIAL_THEFT);
+  });
+
+  it('blocks git -c credential.helper=evil push via validateBashSecurity', () => {
+    const r = validateBashSecurity('git -c credential.helper=evil push');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.GIT_CREDENTIAL_THEFT);
+  });
+
+  it('allows git push through validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('git push').safe, true);
+  });
+
+  it('allows git config --list through validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('git config --list').safe, true);
+  });
+
+  it('allows git config user.name through validateBashSecurity', () => {
+    assert.equal(validateBashSecurity("git config user.name test").safe, true);
   });
 });

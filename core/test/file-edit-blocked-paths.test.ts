@@ -193,3 +193,38 @@ describe('fileEditTool – blocked device/special file paths', () => {
     assert.notEqual(result.output.includes('Cannot edit device or special file'), true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// UNC path blocking (NTLM credential leak prevention)
+// ---------------------------------------------------------------------------
+
+describe('file-edit UNC path blocking', () => {
+  it('blocks backslash UNC paths', async () => {
+    const result = await fileEditTool.execute!(
+      { file_path: '\\\\evil-server\\share\\file.txt', new_string: 'pwned' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('UNC'));
+    assert.ok(result.output.includes('NTLM'));
+  });
+
+  it('blocks forward-slash UNC paths', async () => {
+    const result = await fileEditTool.execute!(
+      { file_path: '//evil-server/share/file.txt', new_string: 'pwned' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('UNC'));
+  });
+
+  it('allows normal absolute paths', async () => {
+    const filePath = path.join(tmpDir, 'normal.txt');
+    fs.writeFileSync(filePath, 'hello\n');
+    const result = await fileEditTool.execute!(
+      { file_path: filePath, old_string: 'hello', new_string: 'world' },
+      ctx(),
+    );
+    assert.equal(result.isError, undefined);
+  });
+});

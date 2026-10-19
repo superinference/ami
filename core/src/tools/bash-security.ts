@@ -37,6 +37,7 @@ const CHECK_IDS = {
   INVISIBLE_UNICODE: 37,
   COMMAND_TOO_LONG: 38,
   DEV_TCP_UDP_REDIRECT: 39,
+  GIT_CREDENTIAL_THEFT: 40,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -802,6 +803,15 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   result = validateProcEnvironAccess(command);
   if (!result.safe) return result;
 
+  // Git credential theft — blocks git commands that exfiltrate or tamper with
+  // stored credentials without touching credential files directly.
+  {
+    const credTheft = detectGitCredentialTheft(command);
+    if (credTheft.blocked) {
+      return fail(CHECK_IDS.GIT_CREDENTIAL_THEFT, credTheft.reason!);
+    }
+  }
+
   result = validateObfuscatedFlags(command);
   if (!result.safe) return result;
 
@@ -1442,6 +1452,55 @@ export function detectBashpidAssignment(command: string): { blocked: boolean; re
   if (/\bBASHPID\s*=/.test(command)) {
     return { blocked: true, reason: 'BASHPID assignment with arithmetic expression can execute code — blocked' };
   }
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Git credential theft detector
+// ---------------------------------------------------------------------------
+// Blocks git commands that can exfiltrate or manipulate stored credentials
+// without touching credential files directly:
+//   - `git credential fill/approve/reject` — dumps or manipulates stored creds
+//   - `git config credential.helper <value>` — replaces the helper with a script
+//   - `git -c credential.helper=... <cmd>` — inline credential helper override
+
+export function detectGitCredentialTheft(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // 1. Block `git credential fill/approve/reject` — dumps or manipulates stored credentials
+  if (/\bgit\s+credential\s+(fill|approve|reject)\b/i.test(stripped)) {
+    const match = stripped.match(/\bgit\s+credential\s+(fill|approve|reject)\b/i);
+    return { blocked: true, reason: `git credential ${match![1]} can exfiltrate or manipulate stored credentials` };
+  }
+
+  // 2. Block `git -c credential.helper=...` — inline credential helper override
+  if (/\bgit\b[^;|&]*\s-c\s+credential\.helper\s*=/.test(stripped)) {
+    return { blocked: true, reason: 'git -c credential.helper= can override the credential helper with a malicious script' };
+  }
+
+  // 3. Block `git config` that writes to credential.helper
+  if (/\bgit\s+config\b/.test(stripped) && /credential\.helper/.test(stripped)) {
+    // Read-only invocations: --get, --get-all, --get-regexp, --get-urlmatch, --list, -l
+    if (/\s(?:--get|--get-all|--get-regexp|--get-urlmatch|--list|-l)\b/.test(stripped)) {
+      return { blocked: false };
+    }
+    // --unset / --unset-all: modifying credential config
+    if (/\s--unset(?:-all)?\b/.test(stripped)) {
+      return { blocked: true, reason: 'git config --unset credential.helper can remove credential protection' };
+    }
+    // Check for a value being set after credential.helper
+    // `git config credential.helper` alone is a read (prints current value) — allow
+    // `git config credential.helper <value>` is a write — block
+    if (/credential\.helper\s+\S/.test(stripped)) {
+      return { blocked: true, reason: 'git config credential.helper write can replace the credential helper with a malicious script' };
+    }
+  }
+
+  // 4. Block GIT_CONFIG env vars targeting credential.helper
+  if (/\bGIT_CONFIG_VALUE_\d+\s*=/.test(stripped) && /credential\.helper/.test(stripped)) {
+    return { blocked: true, reason: 'GIT_CONFIG env vars can override credential.helper' };
+  }
+
   return { blocked: false };
 }
 

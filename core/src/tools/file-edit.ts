@@ -336,6 +336,10 @@ export const fileEditTool: ToolDefinition = {
     const nullCheck = validateFilePath(filePath);
     if (nullCheck) return nullCheck;
 
+    if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+      return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${filePath}`, isError: true };
+    }
+
     // Block device/special files before path resolution so the guard fires
     // regardless of workspace boundaries.
     if (isBlockedPath(filePath)) {
