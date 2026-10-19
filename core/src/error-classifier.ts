@@ -12,6 +12,7 @@
 
 export type ErrorCategory =
   | 'rate_limited'
+  | 'plan_limit'
   | 'context_overflow'
   | 'model_unavailable'
   | 'auth_error'
@@ -63,6 +64,18 @@ export function classifyError(error: string): ClassifiedError {
   // Retry with delay and allow fallback to another provider.
   if (/\bHTTP\s+403\b/i.test(error) || lower.includes('forbidden')) {
     return { category: 'auth_error', message: error, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 5000 };
+  }
+
+  // Plan/usage limit — not retryable (billing or plan cap, not transient)
+  if (
+    lower.includes('billing') ||
+    lower.includes('credit') ||
+    lower.includes('usage limit') ||
+    lower.includes('plan limit') ||
+    lower.includes('spending limit') ||
+    lower.includes('budget') && lower.includes('exceeded')
+  ) {
+    return { category: 'plan_limit', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
   // Rate limit — retryable after a delay
@@ -165,13 +178,14 @@ export function classifyError(error: string): ClassifiedError {
 
 const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   rate_limited: 'Rate limited by the provider — retrying after a delay.',
+  plan_limit: 'Plan or billing limit reached — check your account usage and billing settings.',
   context_overflow: 'Response context too large — compacting conversation.',
   model_unavailable: 'Model temporarily unavailable — retrying.',
   auth_error: 'Authentication error — check your API key.',
   output_too_large: 'Model output exceeded size limit — retrying with smaller output.',
   content_filter: 'Response blocked by content policy.',
   ssl_error: 'SSL/TLS certificate error — check your provider URL or set NODE_TLS_REJECT_UNAUTHORIZED=0 for self-signed certs.',
-  server_error: 'Provider server error — retrying.',
+  server_error: 'Provider server error — retrying. Check provider status page if this persists.',
   network_error: 'Network error — retrying connection.',
   repetition: 'Repetitive output detected.',
 };

@@ -487,3 +487,47 @@ describe('classifyError — ssl_error', () => {
     assert.equal(result.shouldFallback, false);
   });
 });
+
+describe('plan_limit category', () => {
+  const expected = { category: 'plan_limit' as const, retryable: false, shouldCompact: false, shouldFallback: false };
+
+  it('detects billing limit', () => {
+    assertClassification(classifyError('Your billing limit has been reached'), expected);
+  });
+
+  it('detects credit balance errors', () => {
+    assertClassification(classifyError('Insufficient credit balance'), expected);
+  });
+
+  it('detects usage limit', () => {
+    assertClassification(classifyError('usage limit exceeded for this plan'), expected);
+  });
+
+  it('detects plan limit', () => {
+    assertClassification(classifyError('You have reached your plan limit'), expected);
+  });
+
+  it('detects spending limit', () => {
+    assertClassification(classifyError('Monthly spending limit exceeded'), expected);
+  });
+
+  it('is not retryable (requires account action)', () => {
+    const result = classifyError('Your billing limit has been reached');
+    assert.equal(result.retryable, false);
+    assert.equal(result.shouldFallback, false);
+  });
+
+  it('takes priority over rate_limit for billing-related 429s', () => {
+    const result = classifyError('HTTP 429: billing limit exceeded');
+    assert.equal(result.category, 'plan_limit');
+    assert.equal(result.retryable, false);
+  });
+});
+
+describe('server_error friendly message includes status page hint', () => {
+  it('friendly message mentions status page', () => {
+    const result = classifyError('HTTP 500 Internal Server Error');
+    const msg = friendlyErrorMessage(result);
+    assert.ok(msg.includes('status page'), 'Server error friendly message should mention status page');
+  });
+});
