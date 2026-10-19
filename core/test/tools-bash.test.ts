@@ -390,6 +390,41 @@ describe('bashTool – non-interactive env forcing', () => {
     const result = await bashTool.execute({ command: 'echo $EDITOR:$VISUAL' }, ctx());
     assert.ok(result.output.includes('false:false'));
   });
+
+  it('sets NO_COLOR=1 to suppress color escape codes in subprocess output', async () => {
+    const result = await bashTool.execute({ command: 'echo $NO_COLOR' }, ctx());
+    assert.ok(result.output.includes('1'));
+  });
+
+  it('strips FORCE_COLOR from subprocess environment', async () => {
+    const origForceColor = process.env.FORCE_COLOR;
+    process.env.FORCE_COLOR = '3';
+    try {
+      const result = await bashTool.execute(
+        { command: 'echo "FORCE_COLOR=${FORCE_COLOR:-unset}"' },
+        ctx(),
+      );
+      assert.ok(result.output.includes('FORCE_COLOR=unset'), `expected FORCE_COLOR stripped, got: ${result.output}`);
+    } finally {
+      if (origForceColor !== undefined) process.env.FORCE_COLOR = origForceColor;
+      else delete process.env.FORCE_COLOR;
+    }
+  });
+
+  it('sets MANPAGER to cat to prevent interactive man pagers', async () => {
+    const result = await bashTool.execute({ command: 'echo $MANPAGER' }, ctx());
+    assert.ok(result.output.includes('cat'));
+  });
+
+  it('sets PIP_PROGRESS_BAR=off and TQDM_DISABLE=1 for clean Python output', async () => {
+    const result = await bashTool.execute({ command: 'echo $PIP_PROGRESS_BAR:$TQDM_DISABLE' }, ctx());
+    assert.ok(result.output.includes('off:1'));
+  });
+
+  it('sets PYTHONDONTWRITEBYTECODE=1 to avoid .pyc pollution', async () => {
+    const result = await bashTool.execute({ command: 'echo $PYTHONDONTWRITEBYTECODE' }, ctx());
+    assert.ok(result.output.includes('1'));
+  });
 });
 
 // ---------------------------------------------------------------------------

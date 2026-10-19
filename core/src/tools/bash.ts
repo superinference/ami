@@ -379,6 +379,8 @@ function scrubEnv(): NodeJS.ProcessEnv {
   env.TQDM_DISABLE = '1';
   env.PYTHONDONTWRITEBYTECODE = '1';
   env.MANPAGER = 'cat';
+  delete env.FORCE_COLOR;
+  env.NO_COLOR = '1';
   return env;
 }
 
