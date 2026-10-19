@@ -82,7 +82,9 @@ export function injectFindMaxdepth(command: string): string {
   const segments = command.split(/(\s*(?:&&|\|\||;|\|)\s*)/);
   return segments.map(seg => {
     const trimmed = seg.trim();
-    if (!/^\s*(?:sudo\s+)?find\b/.test(trimmed)) return seg;
+    const isFindCmd = trimmed.startsWith('find ') || trimmed.startsWith('find\t') || trimmed === 'find' ||
+      trimmed.startsWith('sudo find ') || trimmed.startsWith('sudo find\t');
+    if (!isFindCmd) return seg;
     if (/-maxdepth\b/.test(trimmed)) return seg;
     const maxDepth = parseInt(process.env.AMI_FIND_MAX_DEPTH ?? '', 10) || DEFAULT_FIND_MAXDEPTH;
     const tokens = trimmed.split(/\s+/);
