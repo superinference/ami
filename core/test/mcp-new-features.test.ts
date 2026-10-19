@@ -14,7 +14,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { McpManager, findMcpConfigPaths, isTransientConnectError } from '../src/mcp/manager';
 import { McpClient } from '../src/mcp/client';
-import { DEFAULT_MCP_TOOL_TIMEOUT_MS, getMcpToolTimeout } from '../src/tools/mcp-tool';
+import { DEFAULT_MCP_TOOL_TIMEOUT_MS, getMcpToolTimeout, extractMaxResultSizeChars } from '../src/tools/mcp-tool';
 
 let manager: McpManager;
 
@@ -295,5 +295,78 @@ describe('MCP server receives SUPERINFERENCE_PROJECT_DIR', () => {
     const enrichSection = src.slice(src.indexOf('enrichedEnv'), src.indexOf('enrichedEnv') + 200);
     assert.ok(enrichSection.includes('config.env'), 'must spread config.env into enrichedEnv');
     assert.ok(enrichSection.includes('SUPERINFERENCE_PROJECT_DIR'), 'must set SUPERINFERENCE_PROJECT_DIR');
+  });
+});
+
+describe('MCP capability discovery retry', () => {
+  it('sendWithRetry method exists in McpClient source', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
+    );
+    assert.ok(src.includes('sendWithRetry'), 'McpClient must have sendWithRetry method');
+    assert.ok(src.includes('isTransientConnectError'), 'sendWithRetry must use isTransientConnectError');
+  });
+
+  it('listTools uses sendWithRetry', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
+    );
+    const listToolsBody = src.slice(src.indexOf('async listTools'), src.indexOf('async listTools') + 200);
+    assert.ok(listToolsBody.includes('sendWithRetry'), 'listTools must use sendWithRetry for transient error retry');
+  });
+
+  it('listResources uses sendWithRetry', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
+    );
+    const body = src.slice(src.indexOf('async listResources'), src.indexOf('async listResources') + 200);
+    assert.ok(body.includes('sendWithRetry'), 'listResources must use sendWithRetry');
+  });
+
+  it('listPrompts uses sendWithRetry', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
+    );
+    const body = src.slice(src.indexOf('async listPrompts'), src.indexOf('async listPrompts') + 200);
+    assert.ok(body.includes('sendWithRetry'), 'listPrompts must use sendWithRetry');
+  });
+
+  it('callTool does NOT use sendWithRetry (tool calls should not be auto-retried)', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
+    );
+    const body = src.slice(src.indexOf('async callTool'), src.indexOf('async callTool') + 300);
+    assert.ok(!body.includes('sendWithRetry'), 'callTool must NOT use sendWithRetry — tool calls are not idempotent');
+  });
+});
+
+describe('MCP maxResultSizeChars annotation', () => {
+  it('extracts maxResultSizeChars from _meta.anthropic/maxResultSizeChars', () => {
+    const result = { _meta: { 'anthropic/maxResultSizeChars': 250000 }, content: 'data' };
+    assert.equal(extractMaxResultSizeChars(result), 250000);
+  });
+
+  it('extracts maxResultSizeChars from _meta.maxResultSizeChars', () => {
+    const result = { _meta: { maxResultSizeChars: 100000 }, content: 'data' };
+    assert.equal(extractMaxResultSizeChars(result), 100000);
+  });
+
+  it('caps at 500000', () => {
+    const result = { _meta: { 'anthropic/maxResultSizeChars': 999999 } };
+    assert.equal(extractMaxResultSizeChars(result), 500000);
+  });
+
+  it('returns undefined for missing _meta', () => {
+    assert.equal(extractMaxResultSizeChars({ content: 'data' }), undefined);
+  });
+
+  it('returns undefined for non-object result', () => {
+    assert.equal(extractMaxResultSizeChars('string'), undefined);
+    assert.equal(extractMaxResultSizeChars(null), undefined);
+  });
+
+  it('returns undefined for non-positive values', () => {
+    assert.equal(extractMaxResultSizeChars({ _meta: { maxResultSizeChars: 0 } }), undefined);
+    assert.equal(extractMaxResultSizeChars({ _meta: { maxResultSizeChars: -100 } }), undefined);
   });
 });

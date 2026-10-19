@@ -74,12 +74,29 @@ export function createMcpTool(serverName: string, toolName: string, description:
         ]);
         clearTimeout(timer!);
         const raw = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-        const bounded = boundMcpResponse(raw);
-        return { output: spillToolText(context.cwd, 'mcp', bounded.content, 100_000), metadata: bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined };
+        const maxResultChars = extractMaxResultSizeChars(result);
+        const bounded = boundMcpResponse(raw, maxResultChars);
+        const spillCap = maxResultChars ? Math.min(maxResultChars, 500_000) : 100_000;
+        return { output: spillToolText(context.cwd, 'mcp', bounded.content, spillCap), metadata: bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined };
       } catch (err) {
         clearTimeout(timer!);
         return { output: `MCP tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
     },
   };
+}
+
+const MAX_RESULT_SIZE_CAP = 500_000;
+
+export function extractMaxResultSizeChars(result: unknown): number | undefined {
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const meta = (result as Record<string, unknown>)._meta as Record<string, unknown> | undefined;
+    if (meta) {
+      const val = meta['anthropic/maxResultSizeChars'] ?? meta['maxResultSizeChars'];
+      if (typeof val === 'number' && val > 0) {
+        return Math.min(val, MAX_RESULT_SIZE_CAP);
+      }
+    }
+  }
+  return undefined;
 }

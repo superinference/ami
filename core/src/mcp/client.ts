@@ -381,9 +381,26 @@ export class McpClient extends EventEmitter {
     this.emit('ready');
   }
 
+  private async sendWithRetry<T>(method: string, params: Record<string, unknown>, maxAttempts: number = 3): Promise<T> {
+    const { isTransientConnectError } = require('./manager');
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await this.sendRequestAuto(method, params) as T;
+      } catch (err) {
+        lastErr = err;
+        if (err instanceof McpSessionExpiredError || !isTransientConnectError(err)) throw err;
+        if (attempt < maxAttempts - 1) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   async listTools(): Promise<McpToolSchema[]> {
     this.assertReady();
-    const result = await this.sendRequestAuto('tools/list', {}) as { tools: McpToolSchema[] };
+    const result = await this.sendWithRetry<{ tools: McpToolSchema[] }>('tools/list', {});
     this._tools = result.tools ?? [];
     return this._tools;
   }
@@ -399,7 +416,7 @@ export class McpClient extends EventEmitter {
 
   async listResources(): Promise<McpResource[]> {
     this.assertReady();
-    const result = await this.sendRequestAuto('resources/list', {}) as { resources: McpResource[] };
+    const result = await this.sendWithRetry<{ resources: McpResource[] }>('resources/list', {});
     this._resources = result.resources ?? [];
     return this._resources;
   }
@@ -411,7 +428,7 @@ export class McpClient extends EventEmitter {
 
   async listPrompts(): Promise<McpPrompt[]> {
     this.assertReady();
-    const result = await this.sendRequestAuto('prompts/list', {}) as { prompts: McpPrompt[] };
+    const result = await this.sendWithRetry<{ prompts: McpPrompt[] }>('prompts/list', {});
     this._prompts = result.prompts ?? [];
     return this._prompts;
   }
