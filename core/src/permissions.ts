@@ -535,9 +535,43 @@ const SHELL_WRAPPERS = new Set([
 ]);
 
 /**
+ * Unwrap shell control structures (for/while/until/if/case) so that the
+ * body commands are what gets classified, not the keywords themselves.
+ *
+ * for f in *.ts; do cat "$f"; done  →  cat "$f"
+ * while read l; do echo "$l"; done  →  echo "$l"
+ * if test -f x; then cat x; else echo no; fi  →  cat x\necho no
+ *
+ * Operates recursively — nested loops are unwrapped.
+ */
+export function unwrapShellControlStructures(command: string): string {
+  let result = command;
+  // For/while/until loops: extract body between do...done
+  // Handles: for ...; do BODY; done | while ...; do BODY; done
+  const loopRe = /\b(?:for|while|until)\b[^;]*;\s*do\b([\s\S]*?)\bdone\b/g;
+  let prev = '';
+  while (prev !== result) {
+    prev = result;
+    result = result.replace(loopRe, (_match, body: string) => body.trim());
+  }
+  // If/then/else/elif/fi: extract bodies from then/else/elif branches
+  const ifRe = /\bif\b[^;]*;\s*then\b([\s\S]*?)\bfi\b/g;
+  prev = '';
+  while (prev !== result) {
+    prev = result;
+    result = result.replace(ifRe, (_match, body: string) => {
+      // Split on else/elif to get all branch bodies
+      return body.replace(/\b(?:elif\b[^;]*;\s*then|else)\b/g, ';').trim();
+    });
+  }
+  return result;
+}
+
+/**
  * Extract all command names from a shell string.
  * Handles: pipes, semicolons, &&/||, command substitution $(...),
- * subshells (...), shell wrappers (env, sudo, bash -c), and
+ * subshells (...), shell wrappers (env, sudo, bash -c),
+ * shell control structures (for/while/if), and
  * environment variable assignments as prefixes.
  */
 function findMatchingParen(s: string, start: number): number {
@@ -551,6 +585,9 @@ function findMatchingParen(s: string, start: number): number {
 
 function extractBaseCommands(command: string): string[] {
   const commands: string[] = [];
+
+  // 0. Unwrap shell control structures so for/while/if bodies are classified
+  command = unwrapShellControlStructures(command);
 
   function extractDelimited(
     cmd: string,
@@ -655,7 +692,8 @@ function extractBaseCommands(command: string): string[] {
 }
 
 function allSegmentsKnown(command: string): boolean {
-  const segments = command.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
+  const unwrapped = unwrapShellControlStructures(command);
+  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
   if (segments.length <= 1) return true;
   for (const seg of segments) {
     const tokens = seg.trim().split(/\s+/);
@@ -708,10 +746,12 @@ const COMPOUND_SPLIT_RE = /\s*(?:\|\||&&|[;|])\s*/;
 
 /**
  * Split a compound bash command into individual sub-commands.
- * Splits on &&, ||, ;, and | operators.
+ * First unwraps shell control structures (for/while/if), then splits
+ * on &&, ||, ;, and | operators.
  */
 function splitCompoundCommand(cmd: string): string[] {
-  return cmd.split(COMPOUND_SPLIT_RE).map(s => s.trim()).filter(s => s.length > 0);
+  const unwrapped = unwrapShellControlStructures(cmd);
+  return unwrapped.split(COMPOUND_SPLIT_RE).map(s => s.trim()).filter(s => s.length > 0);
 }
 
 /**
@@ -740,7 +780,11 @@ function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' 
   const subCommands = splitCompoundCommand(normalized);
 
   if (subCommands.length <= 1) {
-    const stripped = stripEnvVarPrefix(normalized);
+    // Use the single sub-command (which has been unwrapped from control
+    // structures) rather than the original normalized string, so that
+    // e.g. "for f in *.ts; do cat $f; done" matches a "cat *" rule.
+    const effective = subCommands.length === 1 ? subCommands[0] : normalized;
+    const stripped = stripEnvVarPrefix(effective);
     return matchPattern(pattern, stripped);
   }
 
@@ -982,6 +1026,10 @@ export class PermissionManager {
     const trimmed = command.trim();
     if (!trimmed) return 'safe';
 
+    // Unwrap shell control structures so classification sees the body
+    // commands, not the loop/if keywords. The original trimmed is kept
+    // for regex checks that need the full command syntax (like rm -rf).
+    const unwrapped = unwrapShellControlStructures(trimmed);
     const bases = extractBaseCommands(trimmed);
 
     // Check destructive first (highest severity wins)
@@ -1041,7 +1089,7 @@ export class PermissionManager {
     // Check safe prefixes (e.g., "git status", "npm test")
     for (const cmd of bases) {
       if (SAFE_PREFIXES.has(cmd)) {
-        if (allSegmentsKnown(trimmed)) return 'safe';
+        if (allSegmentsKnown(unwrapped)) return 'safe';
         break;
       }
     }
@@ -1049,7 +1097,7 @@ export class PermissionManager {
     // Check single-word safe commands with flag validation
     for (const cmd of bases) {
       if (SAFE_COMMANDS.has(cmd)) {
-        const tokens = trimmed.split(/\s+/);
+        const tokens = unwrapped.split(/\s+/);
         const cmdIdx = tokens.indexOf(cmd);
         const args = cmdIdx >= 0 ? tokens.slice(cmdIdx + 1) : [];
 
@@ -1059,12 +1107,12 @@ export class PermissionManager {
         if ((cmd === 'jq' || cmd === 'yq') && isJqDangerous(args)) return 'unsafe';
 
         // xargs: must target a safe command
-        if (cmd === 'xargs' && !isXargsSafe(trimmed)) return 'unsafe';
+        if (cmd === 'xargs' && !isXargsSafe(unwrapped)) return 'unsafe';
 
         // Read-only commands with unquoted expansions are suspicious
-        if (containsUnquotedExpansion(trimmed)) return 'unsafe';
+        if (containsUnquotedExpansion(unwrapped)) return 'unsafe';
 
-        if (allSegmentsKnown(trimmed)) return 'safe';
+        if (allSegmentsKnown(unwrapped)) return 'safe';
         break;
       }
     }
