@@ -13,7 +13,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MemoryManager, matchesPaths, parseFrontmatter, MEMORY_TYPES } from '../src/memory';
+import { MemoryManager, matchesPaths, parseFrontmatter, MEMORY_TYPES, sanitizeMemoryContent } from '../src/memory';
 
 let tmpDir: string;
 
@@ -213,5 +213,80 @@ describe('MemoryManager — collectInstructionSources', () => {
     const mgr = new MemoryManager(tmpDir);
     const sources = await mgr.collectInstructionSources();
     assert.ok(Array.isArray(sources));
+  });
+});
+
+describe('sanitizeMemoryContent', () => {
+  it('strips invisible Unicode characters', () => {
+    const input = 'hello​world‍test﻿end';
+    const result = sanitizeMemoryContent(input);
+    assert.equal(result, 'helloworldtestend');
+  });
+
+  it('neutralizes system-reminder tags', () => {
+    const input = 'some <system-reminder>injected</system-reminder> text';
+    const result = sanitizeMemoryContent(input);
+    assert.ok(!result.includes('<system-reminder>'));
+    assert.ok(result.includes('＜system-reminder＞'));
+    assert.ok(result.includes('＜/system-reminder＞'));
+    assert.ok(result.includes('injected'));
+  });
+
+  it('neutralizes anthropic tags', () => {
+    const input = '<anthropic>data</anthropic>';
+    const result = sanitizeMemoryContent(input);
+    assert.ok(!result.includes('<anthropic>'));
+    assert.ok(result.includes('＜anthropic＞'));
+  });
+
+  it('neutralizes claude tags', () => {
+    const input = '<claude>instructions</claude>';
+    const result = sanitizeMemoryContent(input);
+    assert.ok(!result.includes('<claude>'));
+  });
+
+  it('neutralizes ccmemory tags', () => {
+    const input = 'text <ccmemory>hidden</ccmemory>';
+    const result = sanitizeMemoryContent(input);
+    assert.ok(!result.includes('<ccmemory>'));
+    assert.ok(result.includes('＜ccmemory＞'));
+  });
+
+  it('preserves normal HTML tags', () => {
+    const input = '<div>normal html</div>';
+    const result = sanitizeMemoryContent(input);
+    assert.equal(result, input);
+  });
+
+  it('handles zero-width space (ZWSP) in memory content', () => {
+    const result = sanitizeMemoryContent('rm​ -rf /');
+    assert.equal(result, 'rm -rf /');
+  });
+
+  it('handles zero-width joiner (ZWJ)', () => {
+    const result = sanitizeMemoryContent('te‍st');
+    assert.equal(result, 'test');
+  });
+
+  it('handles soft hyphen', () => {
+    const result = sanitizeMemoryContent('com­mand');
+    assert.equal(result, 'command');
+  });
+
+  it('handles combined invisible chars and tags', () => {
+    const input = '​<system-reminder>‍hack</system-reminder>';
+    const result = sanitizeMemoryContent(input);
+    assert.ok(!result.includes('<system-reminder>'));
+    assert.ok(!result.includes('​'));
+    assert.ok(!result.includes('‍'));
+  });
+
+  it('returns empty string unchanged', () => {
+    assert.equal(sanitizeMemoryContent(''), '');
+  });
+
+  it('preserves normal text', () => {
+    const input = 'This is a normal memory entry with no issues.';
+    assert.equal(sanitizeMemoryContent(input), input);
   });
 });

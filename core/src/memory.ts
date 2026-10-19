@@ -5,6 +5,15 @@ import * as os from 'os';
 import type { SessionFact } from './session-memory';
 import { log as coreLog } from './logger';
 
+const INVISIBLE_CHARS_RE = /[­͏؜᠎​-‏⁠-⁤⁪-⁯﻿]/g;
+const SYSTEM_TAG_RE = /<\/?(?:system-reminder|system|anthropic|claude|cc[a-z]*)[^>]*>/gi;
+
+export function sanitizeMemoryContent(text: string): string {
+  let result = text.replace(INVISIBLE_CHARS_RE, '');
+  result = result.replace(SYSTEM_TAG_RE, (tag) => tag.replace(/</g, '＜').replace(/>/g, '＞'));
+  return result;
+}
+
 /**
  * Memory types for persistent knowledge across sessions.
  * - user: info about the user's role, goals, preferences
@@ -544,7 +553,7 @@ export class MemoryManager {
         const ageTag = m.freshness ? ` (${m.freshness})` : '';
         const header = `### ${typeTag}${m.name || 'Untitled'}${ageTag}`;
         const desc = m.description ? `> ${m.description}` : '';
-        let body = m.content;
+        let body = sanitizeMemoryContent(m.content);
         if ((m.ageDays ?? 0) > 1) {
           body = `[Note: This memory is ${m.freshness} old. Verify against current state before acting.]\n${body}`;
         }
@@ -557,7 +566,7 @@ export class MemoryManager {
       sections.push(`## Stored Memories\n\n${memoryLines.join('\n\n')}`);
     }
 
-    const teamMemories = this.loadTeamMemories();
+    const teamMemories = this.loadTeamMemories().map(sanitizeMemoryContent);
     if (teamMemories.length > 0) {
       sections.push(`## Team Memories\n\n${teamMemories.join('\n\n')}`);
     }
