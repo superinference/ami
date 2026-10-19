@@ -19,6 +19,7 @@ export class ProviderCoordinator {
   private state: CoordinatorState;
   private fallbackIndex = 0; // 0 = primary; 1..N = position in the fallback chain
   private fallbackSuccessCount = 0;
+  private stickyFallback = false;
   private rateLimits = new RateLimitTracker();
   private credentialPool: CredentialPool | null = null;
   private activeCredentialId: string | null = null;
@@ -94,7 +95,7 @@ export class ProviderCoordinator {
   }
 
   recordSuccess(): void {
-    if (this.fallbackIndex > 0) {
+    if (this.fallbackIndex > 0 && !this.stickyFallback) {
       this.fallbackSuccessCount++;
       if (this.fallbackSuccessCount >= FALLBACK_COOLDOWN) {
         this.fallbackIndex = 0;
@@ -102,6 +103,10 @@ export class ProviderCoordinator {
         this.state.currentModel = this.subsystem.primary.model || 'unknown';
       }
     }
+  }
+
+  setStickyFallback(sticky: boolean): void {
+    this.stickyFallback = sticky;
   }
 
   isAnthropicProvider(): boolean {

@@ -218,4 +218,55 @@ describe('ProviderCoordinator — fallback chain', () => {
     assert.equal(c.recordError(), false, 'chain exhausted after 2 fallbacks');
     assert.equal(c.getConfig().model, 'fb-2');
   });
+
+  it('sticky fallback prevents recovery to primary', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      fallbackModel: 'gpt-3.5-turbo',
+    }));
+    coord.setStickyFallback(true);
+
+    coord.recordError();
+    assert.equal(coord.getConfig().model, 'gpt-3.5-turbo');
+
+    coord.recordSuccess();
+    coord.recordSuccess();
+    coord.recordSuccess();
+    coord.recordSuccess();
+    assert.equal(coord.getConfig().model, 'gpt-3.5-turbo',
+      'should stay on fallback even after cooldown successes');
+  });
+
+  it('non-sticky fallback reverts normally', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      fallbackModel: 'gpt-3.5-turbo',
+    }));
+
+    coord.recordError();
+    assert.equal(coord.getConfig().model, 'gpt-3.5-turbo');
+
+    coord.recordSuccess();
+    coord.recordSuccess();
+    coord.recordSuccess();
+    assert.equal(coord.getConfig().model, 'gpt-4o',
+      'should revert to primary after cooldown when not sticky');
+  });
+
+  it('setStickyFallback can be toggled', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      fallbackModel: 'gpt-3.5-turbo',
+    }));
+
+    coord.setStickyFallback(true);
+    coord.recordError();
+    coord.recordSuccess();
+    coord.recordSuccess();
+    coord.recordSuccess();
+    assert.equal(coord.getConfig().model, 'gpt-3.5-turbo', 'sticky keeps fallback');
+
+    coord.setStickyFallback(false);
+    coord.recordSuccess();
+    coord.recordSuccess();
+    coord.recordSuccess();
+    assert.equal(coord.getConfig().model, 'gpt-4o', 'un-sticky allows recovery');
+  });
 });
