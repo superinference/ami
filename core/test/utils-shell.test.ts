@@ -223,6 +223,17 @@ describe('execCommand – process error', () => {
 // EBADF regression: killing a process with active pipes must not crash
 // ---------------------------------------------------------------------------
 
+describe('execCommand – stall detection', () => {
+  it('kills stalled process that looks like interactive prompt', async () => {
+    const result = await execCommand(
+      'echo "Continue? " && sleep 30',
+      { cwd: os.tmpdir(), timeout: 10000, stallTimeoutMs: 500 },
+    );
+    assert.equal(result.exitCode, null);
+    assert.ok(result.stderr.includes('Stall detected') || result.stderr.includes('waiting for interactive input'));
+  });
+});
+
 describe('execCommand – EBADF regression', () => {
   it('does not throw EBADF when a process is killed while pipes are active', async () => {
     // Spawn a process that writes continuously to stdout, then timeout-kill it.
