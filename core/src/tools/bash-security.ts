@@ -256,6 +256,14 @@ function validateProcEnvironAccess(command: string): SecurityCheckResult {
   return PASS;
 }
 
+function validateDanglingOperator(command: string): SecurityCheckResult {
+  const trimmed = command.trimEnd();
+  if (/(?:&&|\|\||[;|])\s*$/.test(trimmed)) {
+    return fail(CHECK_IDS.DANGLING_OPERATOR, 'Blocked: command ends with a dangling operator (&&, ||, ;, |) — the next command could be injected');
+  }
+  return PASS;
+}
+
 function validateObfuscatedFlags(command: string): SecurityCheckResult {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   const baseCommand = stripped.trim().split(/\s+/)[0] || '';
@@ -958,6 +966,9 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
       return fail(CHECK_IDS.SOURCE_EXECUTION, sourceCheck.reason!);
     }
   }
+
+  result = validateDanglingOperator(command);
+  if (!result.safe) return result;
 
   result = validateObfuscatedFlags(command);
   if (!result.safe) return result;
@@ -2664,6 +2675,7 @@ export {
   validateCommandSubstitution,
   validateRedirections,
   validateDevTcpUdpRedirects,
+  validateDanglingOperator,
   validateBackslashEscapedWhitespace,
   validateMalformedTokenInjection,
   validateInvisibleUnicode,
