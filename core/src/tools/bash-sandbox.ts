@@ -12,11 +12,20 @@ export interface SandboxConfig {
   allowedDomains?: string[];
 }
 
+export function getDefaultMemoryMB(): number {
+  const env = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (n >= 64 && n <= 65536) return n;
+  }
+  return 512;
+}
+
 const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
   allowNetwork: false,
   readOnlyPaths: ['/usr', '/bin', '/lib', '/lib64', '/etc'],
   writablePaths: ['/tmp'],
-  maxMemoryMB: 512,
+  maxMemoryMB: getDefaultMemoryMB(),
   maxProcesses: 8192,
   timeout: 30000,
 };

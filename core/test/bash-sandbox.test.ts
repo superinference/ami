@@ -8,6 +8,7 @@ import {
   resetSandboxCache,
   validateSandboxEnabled,
   buildNetworkAllowlist,
+  getDefaultMemoryMB,
 } from '../src/tools/bash-sandbox';
 
 describe('shouldUseSandbox', () => {
@@ -343,5 +344,89 @@ describe('buildNetworkAllowlist — trailing dot normalization (Gap #38)', () =>
     assert.ok(rules.includes('-o lo'));
     assert.ok(rules.includes('--dport 53'));
     assert.ok(rules.includes('DROP'));
+  });
+});
+
+describe('AMI_TOOL_MEMORY_LIMIT_MB env var', () => {
+  it('defaults to 512MB when env var not set', () => {
+    const orig = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    delete process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    try {
+      assert.equal(getDefaultMemoryMB(), 512);
+    } finally {
+      if (orig !== undefined) process.env.AMI_TOOL_MEMORY_LIMIT_MB = orig;
+    }
+  });
+
+  it('reads custom limit from env var', () => {
+    const orig = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    process.env.AMI_TOOL_MEMORY_LIMIT_MB = '1024';
+    try {
+      assert.equal(getDefaultMemoryMB(), 1024);
+    } finally {
+      if (orig !== undefined) process.env.AMI_TOOL_MEMORY_LIMIT_MB = orig;
+      else delete process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    }
+  });
+
+  it('accepts boundary value 64MB', () => {
+    const orig = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    process.env.AMI_TOOL_MEMORY_LIMIT_MB = '64';
+    try {
+      assert.equal(getDefaultMemoryMB(), 64);
+    } finally {
+      if (orig !== undefined) process.env.AMI_TOOL_MEMORY_LIMIT_MB = orig;
+      else delete process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    }
+  });
+
+  it('accepts boundary value 65536MB', () => {
+    const orig = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    process.env.AMI_TOOL_MEMORY_LIMIT_MB = '65536';
+    try {
+      assert.equal(getDefaultMemoryMB(), 65536);
+    } finally {
+      if (orig !== undefined) process.env.AMI_TOOL_MEMORY_LIMIT_MB = orig;
+      else delete process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    }
+  });
+
+  it('rejects too-low value (falls back to 512)', () => {
+    const orig = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    process.env.AMI_TOOL_MEMORY_LIMIT_MB = '32';
+    try {
+      assert.equal(getDefaultMemoryMB(), 512);
+    } finally {
+      if (orig !== undefined) process.env.AMI_TOOL_MEMORY_LIMIT_MB = orig;
+      else delete process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    }
+  });
+
+  it('rejects too-high value (falls back to 512)', () => {
+    const orig = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    process.env.AMI_TOOL_MEMORY_LIMIT_MB = '100000';
+    try {
+      assert.equal(getDefaultMemoryMB(), 512);
+    } finally {
+      if (orig !== undefined) process.env.AMI_TOOL_MEMORY_LIMIT_MB = orig;
+      else delete process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    }
+  });
+
+  it('rejects non-numeric value (falls back to 512)', () => {
+    const orig = process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    process.env.AMI_TOOL_MEMORY_LIMIT_MB = 'abc';
+    try {
+      assert.equal(getDefaultMemoryMB(), 512);
+    } finally {
+      if (orig !== undefined) process.env.AMI_TOOL_MEMORY_LIMIT_MB = orig;
+      else delete process.env.AMI_TOOL_MEMORY_LIMIT_MB;
+    }
+  });
+
+  it('custom limit applies in ulimit output', () => {
+    const wrapped = wrapWithSandbox('echo test', '/tmp', { maxMemoryMB: 2048 });
+    const memKB = 2048 * 1024;
+    assert.ok(wrapped.includes(`ulimit -v ${memKB}`), `expected ulimit -v ${memKB} in: ${wrapped}`);
   });
 });
