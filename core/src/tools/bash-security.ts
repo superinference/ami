@@ -1481,7 +1481,6 @@ export {
   CHECK_IDS,
   SENSITIVE_ENV_RE,
   redactEnvVarsInOutput,
-  sanitizeToolOutput,
 };
 
 const SENSITIVE_ENV_RE =
@@ -1533,6 +1532,13 @@ function redactEnvVarsInOutput(output: string): string {
 
 const OSC8_RE = /\x1b\]8;[^\x1b]*(?:\x1b\\|\x07)/g;
 
+// Matches all ANSI CSI escape sequences (colors, cursor movement, etc.)
+const ANSI_OUTPUT_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+
+// Matches all OSC sequences (not just OSC8) — title sets, clipboard, etc.
+// Format: ESC ] ... (BEL | ESC \)
+const OSC_ALL_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
 export function stripOsc8Hyperlinks(output: string): string {
   if (!output) return output;
   return output.replace(OSC8_RE, '');
@@ -1540,7 +1546,11 @@ export function stripOsc8Hyperlinks(output: string): string {
 
 export function sanitizeToolOutput(output: string): string {
   if (!output) return output;
-  let result = stripOsc8Hyperlinks(output);
+  // 1. Strip ANSI CSI escape sequences (colors, cursor, etc.)
+  let result = output.replace(ANSI_OUTPUT_RE, '');
+  // 2. Strip all OSC sequences (hyperlinks, title sets, clipboard, etc.)
+  result = result.replace(OSC_ALL_RE, '');
+  // 3. Redact sensitive env vars
   result = redactEnvVarsInOutput(result);
   return result;
 }
