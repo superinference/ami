@@ -978,6 +978,7 @@ const CREDENTIAL_PATH_PATTERNS: RegExp[] = [
   /(^|\/)\.git-credentials$/,
   /\.config\/git\/credentials$/,
   /\.config\/gh\//,
+  /\.config\/glab-cli\//,
   /(^|\/)\.npmrc$/,
   /\.claude\/\.credentials\.json$/,
   /\/etc\/(passwd|shadow|sudoers)\b/,
