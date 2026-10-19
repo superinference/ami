@@ -53,6 +53,7 @@ const CHECK_IDS = {
   SOURCE_EXECUTION: 53,
   FILE_COMMAND_ARBITRARY_READ: 54,
   SHELL_STARTUP_WRITE: 55,
+  DANGLING_OPERATOR: 56,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1258,7 +1259,7 @@ const DD_WIPE_RE = /\bdd\b[^|;]*(?:of\s*=\s*\/dev\/(?:sd|hd|vd|nvme|xvd|loop|map
 const FORK_BOMB_RE = /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/;
 const IAC_DESTROY_RE = /\b(?:terraform|tofu)\s+(?:apply\s+-destroy|destroy)\b|\b(?:pulumi|cdktf)\s+destroy\b|\bcdk\s+destroy\b/;
 // eslint-disable-next-line security/detect-unsafe-regex -- each inner group always advances (greedy \S+ then \s+), linear
-const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*(?:\S+=\S+\s+)*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+|command\s+|\\|\/(?:usr\/)?(?:s?bin)\/)/;
+const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*(?:\S+=\S+\s+)*|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+|command\s+|\\|\/(?:usr\/)?(?:s?bin)\/|(?:watch|ionice|setsid|timeout|stdbuf|nice|nohup|script)\s+(?:(?:-\S+|[\d.]+[smhd]?)\s+)*)/;
 
 export interface NuclearCheckResult {
   blocked: boolean;

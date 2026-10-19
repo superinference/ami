@@ -98,6 +98,46 @@ describe('detectNuclearCommand', () => {
       const result = detectNuclearCommand('\\rm -rf /');
       assert.equal(result.blocked, true);
     });
+    it('blocks: watch rm -rf /', () => {
+      const result = detectNuclearCommand('watch rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: watch -n 5 rm -rf /', () => {
+      const result = detectNuclearCommand('watch -n 5 rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: ionice -c2 rm -rf /', () => {
+      const result = detectNuclearCommand('ionice -c2 rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: setsid rm -rf /', () => {
+      const result = detectNuclearCommand('setsid rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: timeout 30 rm -rf /', () => {
+      const result = detectNuclearCommand('timeout 30 rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: stdbuf -oL rm -rf /', () => {
+      const result = detectNuclearCommand('stdbuf -oL rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: nice -n 19 rm -rf /', () => {
+      const result = detectNuclearCommand('nice -n 19 rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: nohup rm -rf /', () => {
+      const result = detectNuclearCommand('nohup rm -rf /');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: script -c "rm -rf /"', () => {
+      const result = detectNuclearCommand('script -c "rm -rf /"');
+      assert.equal(result.blocked, true);
+    });
+    it('blocks: sudo nice -n 19 rm -rf /', () => {
+      const result = detectNuclearCommand('sudo nice -n 19 rm -rf /');
+      assert.equal(result.blocked, true);
+    });
   });
 
   describe('rm in compound commands', () => {
@@ -502,6 +542,14 @@ describe('detectUnsafeFileCommand', () => {
 
     it('blocks: file -im /etc/magic test.bin (combined flags)', () => {
       assert.ok(detectUnsafeFileCommand('file -im /etc/magic test.bin'));
+    });
+
+    it('blocks: nice file -m /etc/magic test.bin', () => {
+      assert.ok(detectUnsafeFileCommand('nice file -m /etc/magic test.bin'));
+    });
+
+    it('blocks: timeout 10 file --magic-file /etc/magic test.bin', () => {
+      assert.ok(detectUnsafeFileCommand('timeout 10 file --magic-file /etc/magic test.bin'));
     });
   });
 
