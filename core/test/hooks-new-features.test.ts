@@ -145,3 +145,91 @@ describe('HookManager — effort level', () => {
     assert.equal(hookManager.getEffortLevel(), 'low');
   });
 });
+
+// ---------------------------------------------------------------------------
+// PostToolUse updatedToolOutput
+// ---------------------------------------------------------------------------
+
+describe('HookManager — PostToolUse updatedToolOutput', () => {
+  it('PostToolUseHookFn type accepts updatedToolOutput in return', async () => {
+    hookManager.onPostToolUse(async (_ctx) => {
+      return { updatedToolOutput: 'replaced output' };
+    });
+    const result = await hookManager.executePostToolUse({
+      toolName: 'Bash',
+      toolInput: { command: 'echo hi' },
+      isError: false,
+      output: 'hi',
+      durationMs: 100,
+    });
+    assert.equal(result?.updatedToolOutput, 'replaced output');
+  });
+
+  it('executePostToolUse returns updatedToolOutput from hook', async () => {
+    hookManager.onPostToolUse(async () => ({ updatedToolOutput: 'new output' }));
+    const result = await hookManager.executePostToolUse({
+      toolName: 'Read',
+      toolInput: {},
+      isError: false,
+      output: 'original',
+      durationMs: 50,
+    });
+    assert.equal(result?.updatedToolOutput, 'new output');
+    assert.equal(result?.additionalContext, undefined);
+  });
+
+  it('executePostToolUse returns both additionalContext and updatedToolOutput', async () => {
+    hookManager.onPostToolUse(async () => ({
+      additionalContext: 'extra context',
+      updatedToolOutput: 'replaced',
+    }));
+    const result = await hookManager.executePostToolUse({
+      toolName: 'Bash',
+      toolInput: {},
+      isError: false,
+      output: 'original',
+      durationMs: 10,
+    });
+    assert.equal(result?.additionalContext, 'extra context');
+    assert.equal(result?.updatedToolOutput, 'replaced');
+  });
+
+  it('last hook wins for updatedToolOutput', async () => {
+    hookManager.onPostToolUse(async () => ({ updatedToolOutput: 'first' }));
+    hookManager.onPostToolUse(async () => ({ updatedToolOutput: 'second' }));
+    const result = await hookManager.executePostToolUse({
+      toolName: 'Bash',
+      toolInput: {},
+      isError: false,
+      output: 'original',
+      durationMs: 10,
+    });
+    assert.equal(result?.updatedToolOutput, 'second');
+  });
+
+  it('returns void when no hook sets updatedToolOutput or additionalContext', async () => {
+    hookManager.onPostToolUse(async () => {});
+    const result = await hookManager.executePostToolUse({
+      toolName: 'Bash',
+      toolInput: {},
+      isError: false,
+      output: 'original',
+      durationMs: 10,
+    });
+    assert.equal(result, undefined);
+  });
+
+  it('command handler extracts updatedToolOutput from hook JSON output', () => {
+    const src = require('fs').readFileSync(
+      require('path').resolve(__dirname, '..', 'src', 'hooks.ts'), 'utf-8',
+    );
+    const postToolUseCase = src.slice(
+      src.indexOf("case 'postToolUse':"),
+      src.indexOf("case 'preSampling':"),
+    );
+    assert.ok(
+      postToolUseCase.includes('parsed.updatedToolOutput'),
+      'postToolUse command handler must extract updatedToolOutput from parsed JSON',
+    );
+  });
+});

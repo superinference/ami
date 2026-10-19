@@ -58,7 +58,7 @@ export type HookDecision =
 // ---------------------------------------------------------------------------
 
 export type PreToolUseHookFn = (context: PreToolUseContext) => Promise<HookDecision>;
-export type PostToolUseHookFn = (context: PostToolUseContext) => Promise<{ additionalContext?: string } | void>;
+export type PostToolUseHookFn = (context: PostToolUseContext) => Promise<{ additionalContext?: string; updatedToolOutput?: string } | void>;
 export type PreSamplingHookFn = (context: PreSamplingContext) => Promise<HookDecision>;
 
 export interface SessionContext {
@@ -658,7 +658,10 @@ export class HookManager extends EventEmitter {
             if (hookConfig.once) this.removeHookOnce(this.postToolUseHooks, fn);
             try {
               const parsed = JSON.parse(result);
-              if (parsed.additionalContext) return { additionalContext: parsed.additionalContext };
+              const out: { additionalContext?: string; updatedToolOutput?: string } = {};
+              if (parsed.additionalContext) out.additionalContext = parsed.additionalContext;
+              if (parsed.updatedToolOutput) out.updatedToolOutput = parsed.updatedToolOutput;
+              if (out.additionalContext || out.updatedToolOutput) return out;
             } catch {}
             return undefined;
           };
@@ -1109,20 +1112,22 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * Execute post-tool-use hooks. Returns the last additionalContext if any hook provides one.
+   * Execute post-tool-use hooks. Returns the last additionalContext/updatedToolOutput if any hook provides one.
    */
-  async executePostToolUse(ctx: PostToolUseContext): Promise<{ additionalContext?: string } | void> {
-    return this.withConcurrencyGate('postToolUse', async (): Promise<{ additionalContext?: string } | void> => {
+  async executePostToolUse(ctx: PostToolUseContext): Promise<{ additionalContext?: string; updatedToolOutput?: string } | void> {
+    return this.withConcurrencyGate('postToolUse', async (): Promise<{ additionalContext?: string; updatedToolOutput?: string } | void> => {
       let additionalContext: string | undefined;
+      let updatedToolOutput: string | undefined;
       for (const hook of this.postToolUseHooks) {
         try {
           const result = await hook(ctx);
-          if (result && result.additionalContext) additionalContext = result.additionalContext;
+          if (result?.additionalContext) additionalContext = result.additionalContext;
+          if (result?.updatedToolOutput) updatedToolOutput = result.updatedToolOutput;
         } catch (err) {
           coreLog('hooks', 'Hook error', { error: String(err) });
         }
       }
-      if (additionalContext) return { additionalContext };
+      if (additionalContext || updatedToolOutput) return { additionalContext, updatedToolOutput };
     });
   }
 
