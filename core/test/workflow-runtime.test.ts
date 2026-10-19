@@ -4,6 +4,7 @@ import {
   WorkflowRuntime,
   executeWorkflow,
   parseWorkflowMeta,
+  validateWorkflowScript,
 } from '../src/tools/workflow-runtime';
 import { workflowTool } from '../src/tools/workflow';
 import * as fs from 'fs';
@@ -403,5 +404,161 @@ describe('WorkflowRuntime — per-run maxConcurrent cap', () => {
     const t = tracking();
     await executeWorkflow(fanScript, t.handler, { maxConcurrent: 6 });
     assert.ok(t.peak() >= 2, `peak ${t.peak()} must be >= 2`);
+  });
+});
+
+describe('validateWorkflowScript', () => {
+  it('allows normal workflow scripts', () => {
+    assert.doesNotThrow(() => validateWorkflowScript(`
+      phase('Work')
+      log('Starting')
+      const r = await agent('Do something')
+      return { result: r }
+    `));
+  });
+
+  it('blocks dynamic import()', () => {
+    assert.throws(
+      () => validateWorkflowScript(`const fs = await import('fs')`),
+      /cannot use dynamic import\(\)/,
+    );
+  });
+
+  it('blocks import() without await', () => {
+    assert.throws(
+      () => validateWorkflowScript(`import('child_process').then(cp => cp.exec('rm -rf /'))`),
+      /cannot use dynamic import\(\)/,
+    );
+  });
+
+  it('blocks require()', () => {
+    assert.throws(
+      () => validateWorkflowScript(`const fs = require('fs')`),
+      /cannot use require\(\)/,
+    );
+  });
+
+  it('blocks process.exit', () => {
+    assert.throws(
+      () => validateWorkflowScript(`process.exit(1)`),
+      /cannot access process\.exit\/kill\/env/,
+    );
+  });
+
+  it('blocks process.kill', () => {
+    assert.throws(
+      () => validateWorkflowScript(`process.kill(process.pid)`),
+      /cannot access process\.exit\/kill\/env/,
+    );
+  });
+
+  it('blocks process.env access', () => {
+    assert.throws(
+      () => validateWorkflowScript(`const key = process.env.SECRET_KEY`),
+      /cannot access process\.exit\/kill\/env/,
+    );
+  });
+
+  it('ignores import/require inside double-quoted strings', () => {
+    assert.doesNotThrow(() => validateWorkflowScript(`
+      const msg = "do not import('fs') or require('os') here"
+      return msg
+    `));
+  });
+
+  it('ignores import/require inside single-quoted strings', () => {
+    assert.doesNotThrow(() => validateWorkflowScript(`
+      const msg = 'do not import("fs") or require("os") here'
+      return msg
+    `));
+  });
+
+  it('ignores import/require inside template literals', () => {
+    assert.doesNotThrow(() => validateWorkflowScript(
+      'const msg = `do not import("fs") or require("os") here`\nreturn msg',
+    ));
+  });
+
+  it('ignores import/require inside line comments', () => {
+    assert.doesNotThrow(() => validateWorkflowScript(`
+      // import('fs') require('os') process.exit(1)
+      return 42
+    `));
+  });
+
+  it('ignores import/require inside block comments', () => {
+    assert.doesNotThrow(() => validateWorkflowScript(`
+      /* import('fs') require('os') process.exit(1) */
+      return 42
+    `));
+  });
+
+  it('blocks import() even with whitespace before paren', () => {
+    assert.throws(
+      () => validateWorkflowScript(`const x = import  ('fs')`),
+      /cannot use dynamic import\(\)/,
+    );
+  });
+
+  it('blocks require() even with whitespace before paren', () => {
+    assert.throws(
+      () => validateWorkflowScript(`const x = require  ('fs')`),
+      /cannot use require\(\)/,
+    );
+  });
+
+  it('blocks process.env with whitespace around dot', () => {
+    assert.throws(
+      () => validateWorkflowScript(`const x = process . env.SECRET`),
+      /cannot access process\.exit\/kill\/env/,
+    );
+  });
+});
+
+describe('executeWorkflow — sandbox validation integration', () => {
+  it('rejects scripts containing dynamic import()', async () => {
+    const script = `
+export const meta = { name: 'evil', description: 'escape attempt' }
+const fs = await import('fs')
+return fs.readFileSync('/etc/passwd')
+`;
+    await assert.rejects(
+      () => executeWorkflow(script, async () => 'ok'),
+      /cannot use dynamic import\(\)/,
+    );
+  });
+
+  it('rejects scripts containing require()', async () => {
+    const script = `
+export const meta = { name: 'evil', description: 'escape attempt' }
+const cp = require('child_process')
+return cp.execSync('whoami').toString()
+`;
+    await assert.rejects(
+      () => executeWorkflow(script, async () => 'ok'),
+      /cannot use require\(\)/,
+    );
+  });
+
+  it('rejects scripts accessing process.exit', async () => {
+    const script = `
+export const meta = { name: 'evil', description: 'escape attempt' }
+process.exit(0)
+`;
+    await assert.rejects(
+      () => executeWorkflow(script, async () => 'ok'),
+      /cannot access process\.exit\/kill\/env/,
+    );
+  });
+
+  it('allows safe scripts through validation', async () => {
+    const script = `
+export const meta = { name: 'safe', description: 'safe workflow' }
+log('safe workflow running')
+return 'safe'
+`;
+    const result = await executeWorkflow(script, async () => 'ok');
+    assert.equal(result.result, 'safe');
+    assert.deepEqual(result.logs, ['safe workflow running']);
   });
 });

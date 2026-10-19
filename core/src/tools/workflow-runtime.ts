@@ -174,9 +174,11 @@ export class WorkflowRuntime extends EventEmitter {
       this.on('abort', () => childRuntime.abort());
 
       const childCtx = childRuntime.createContext(args);
+      const childBody = stripMeta(script);
+      validateWorkflowScript(childBody);
       const wrappedScript = `
         return (async function(agent, parallel, pipeline, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
-          ${stripMeta(script)}
+          ${childBody}
         })
       `;
       const factory = new Function(wrappedScript)(); // eslint-disable-line no-new-func
@@ -354,6 +356,34 @@ export function parseWorkflowMeta(script: string): WorkflowMeta | null {
   }
 }
 
+/**
+ * Scan a workflow script body for sandbox-escaping constructs:
+ * dynamic import(), require(), and process/child_process access.
+ * Throws if any are found.
+ */
+export function validateWorkflowScript(scriptBody: string): void {
+  // Strip string literals and comments to avoid false positives
+  const stripped = scriptBody
+    .replace(/\/\/[^\n]*/g, '')              // line comments
+    .replace(/\/\*[\s\S]*?\*\//g, '')        // block comments
+    .replace(/`(?:[^`\\]|\\.)*`/g, '""')     // template literals
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')     // double-quoted strings
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''");    // single-quoted strings
+
+  // Dynamic import() — matches import( but not import.meta or static import from
+  if (/\bimport\s*\(/g.test(stripped)) {
+    throw new Error('Workflow scripts cannot use dynamic import() — this would escape the workflow sandbox');
+  }
+  // require() calls
+  if (/\brequire\s*\(/g.test(stripped)) {
+    throw new Error('Workflow scripts cannot use require() — this would escape the workflow sandbox');
+  }
+  // Direct process access for spawning
+  if (/\bprocess\s*\.\s*(?:exit|kill|env)\b/g.test(stripped)) {
+    throw new Error('Workflow scripts cannot access process.exit/kill/env — this would escape the workflow sandbox');
+  }
+}
+
 export async function executeWorkflow(
   script: string,
   agentHandler: AgentHandler,
@@ -365,6 +395,9 @@ export async function executeWorkflow(
     maxConcurrent?: number;
   } = {},
 ): Promise<{ result: unknown; logs: string[]; agentCount: number }> {
+  const scriptBody = stripMeta(script);
+  validateWorkflowScript(scriptBody);
+
   const runtime = new WorkflowRuntime({
     agentHandler,
     budgetTotal: options.budgetTotal,
@@ -380,7 +413,7 @@ export async function executeWorkflow(
 
   const wrappedScript = `
     return (async function(agent, parallel, pipeline, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
-      ${stripMeta(script)}
+      ${scriptBody}
     })
   `;
 
