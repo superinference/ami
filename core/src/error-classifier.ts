@@ -149,3 +149,23 @@ export function classifyError(error: string): ClassifiedError {
   // Unknown — not retryable by default; the engine can decide
   return { category: 'unknown', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
 }
+
+const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
+  rate_limited: 'Rate limited by the provider — retrying after a delay.',
+  context_overflow: 'Response context too large — compacting conversation.',
+  model_unavailable: 'Model temporarily unavailable — retrying.',
+  auth_error: 'Authentication error — check your API key.',
+  output_too_large: 'Model output exceeded size limit — retrying with smaller output.',
+  content_filter: 'Response filtered by content policy — retrying.',
+  server_error: 'Provider server error — retrying.',
+  network_error: 'Network error — retrying connection.',
+  repetition: 'Repetitive output detected.',
+};
+
+export function friendlyErrorMessage(classified: ClassifiedError): string {
+  if (classified.category === 'unknown' || classified.category === 'abort') {
+    return classified.message;
+  }
+  const friendly = FRIENDLY_MESSAGES[classified.category];
+  return friendly ?? classified.message;
+}

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { classifyError, type ClassifiedError } from '../src/error-classifier';
+import { classifyError, friendlyErrorMessage, type ClassifiedError } from '../src/error-classifier';
 
 // ---------------------------------------------------------------------------
 // Helper to assert the full shape of a classified error
@@ -374,5 +374,62 @@ describe('classifyError — cross-cutting', () => {
     const result = classifyError('max_tokens: 100000 > 8192, which is the maximum number of output tokens');
     assert.notEqual(result.category, 'context_overflow');
     assert.equal(result.shouldCompact, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// friendlyErrorMessage — user-facing error messages (Gap #17)
+// ---------------------------------------------------------------------------
+
+describe('friendlyErrorMessage', () => {
+  it('returns friendly message for rate_limited', () => {
+    const classified = classifyError('HTTP 429 rate limit exceeded');
+    const msg = friendlyErrorMessage(classified);
+    assert.ok(msg.includes('Rate limited'));
+    assert.ok(!msg.includes('HTTP 429'));
+  });
+
+  it('returns friendly message for context_overflow', () => {
+    const classified = classifyError('context too long');
+    const msg = friendlyErrorMessage(classified);
+    assert.ok(msg.includes('compacting'));
+    assert.ok(!msg.includes('context too long'));
+  });
+
+  it('returns friendly message for server_error', () => {
+    const classified = classifyError('HTTP 500 internal server error');
+    const msg = friendlyErrorMessage(classified);
+    assert.ok(msg.includes('server error'));
+  });
+
+  it('returns friendly message for network_error', () => {
+    const classified = classifyError('ECONNREFUSED 127.0.0.1:443');
+    const msg = friendlyErrorMessage(classified);
+    assert.ok(msg.includes('Network error'));
+    assert.ok(!msg.includes('ECONNREFUSED'));
+  });
+
+  it('returns raw message for unknown errors', () => {
+    const classified = classifyError('some weird unexpected error');
+    const msg = friendlyErrorMessage(classified);
+    assert.equal(msg, 'some weird unexpected error');
+  });
+
+  it('returns raw message for abort errors', () => {
+    const classified = classifyError('AbortError: signal aborted');
+    const msg = friendlyErrorMessage(classified);
+    assert.equal(msg, 'AbortError: signal aborted');
+  });
+
+  it('returns friendly message for model_unavailable', () => {
+    const classified = classifyError('HTTP 503 service overloaded');
+    const msg = friendlyErrorMessage(classified);
+    assert.ok(msg.includes('unavailable'));
+  });
+
+  it('returns friendly message for auth_error', () => {
+    const classified = classifyError('HTTP 401 unauthorized');
+    const msg = friendlyErrorMessage(classified);
+    assert.ok(msg.includes('API key'));
   });
 });

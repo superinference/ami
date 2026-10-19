@@ -985,6 +985,14 @@ export class PermissionManager {
       return 'destructive';
     }
 
+    // Destructive git operations — discard local changes irreversibly
+    if (/\bgit\s+(checkout|restore)\s+.*--\s*\./.test(trimmed)) return 'destructive';
+    if (/\bgit\s+restore\s+\./.test(trimmed)) return 'destructive';
+    if (/\bgit\s+stash\s+drop\b/.test(trimmed)) return 'destructive';
+    if (/\bgit\s+stash\s+clear\b/.test(trimmed)) return 'destructive';
+    if (/\bgit\s+reset\s+--merge\b/.test(trimmed)) return 'destructive';
+    if (/\bgit\s+reset\s+--keep\b/.test(trimmed)) return 'destructive';
+
     // Flag-aware checks for commands that are safe/destructive depending on flags
     if (/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'unsafe'; // sed -i modifies files in place
     if (/\bfind\s+.*-delete\b/.test(trimmed)) return 'destructive';
