@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
 import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath, validateFilePath } from './tool-utils';
+import { isCredentialPath } from './bash-security';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 import { suggestSimilarPaths } from './path-suggest';
@@ -239,6 +240,25 @@ export const fileReadTool: ToolDefinition = {
         output: `Error: File not found or not readable: ${resolved}${suggestions}`,
         isError: true,
       };
+    }
+
+    // Validate symlink targets — block symlinks pointing to sensitive files
+    // or outside the workspace (defense-in-depth against TOCTOU in resolveFilePath)
+    try {
+      const lstat = fs.lstatSync(resolved);
+      if (lstat.isSymbolicLink()) {
+        const realTarget = fs.realpathSync(resolved);
+        if (isCredentialPath(realTarget)) {
+          return { output: `Error: Symlink targets a sensitive file: ${realTarget}`, isError: true };
+        }
+        const cwdAbs = path.resolve(context.cwd);
+        if (!realTarget.startsWith(cwdAbs + path.sep) && realTarget !== cwdAbs) {
+          return { output: `Error: Symlink resolves outside the workspace: ${realTarget}`, isError: true };
+        }
+      }
+    } catch {
+      // Dangling symlink or file disappeared between access and lstat —
+      // the read will fail naturally below
     }
 
     // Check if file is a directory

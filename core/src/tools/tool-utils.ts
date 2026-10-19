@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ToolResult } from '../types';
+import { isCredentialPath } from './bash-security';
 
 // ---------------------------------------------------------------------------
 // Device / special-file blocklist — shared by file_read and file_edit
@@ -177,6 +178,9 @@ export function safeReadFile(
     const stat = fs.lstatSync(resolved);
     if (stat.isSymbolicLink()) {
       const target = fs.realpathSync(resolved);
+      if (isCredentialPath(target)) {
+        return { error: { output: `Error: "${filePath}" is a symlink targeting a sensitive file: ${target}`, isError: true } };
+      }
       const cwdAbs = path.resolve(cwd);
       if (!target.startsWith(cwdAbs + path.sep) && target !== cwdAbs) {
         return { error: { output: `Error: "${filePath}" is a symlink resolving outside the workspace.`, isError: true } };
