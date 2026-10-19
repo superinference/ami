@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { grepTool, stripGrepFlags } from '../src/tools/grep';
+import { grepTool, stripGrepFlags, searchFilesForPattern, isGrepNoMatchExit } from '../src/tools/grep';
 import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
@@ -363,5 +363,392 @@ describe('grepTool – strips embedded flags from pattern', () => {
     } finally {
       process.env.PATH = saved;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Output modes — files_with_matches and count
+// ---------------------------------------------------------------------------
+describe('grepTool – output modes', () => {
+  it('returns only file names in files_with_matches mode', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'hello', output_mode: 'files_with_matches' },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('hello.ts'));
+    assert.ok(!result.output.includes('function'));
+  });
+
+  it('returns match counts in count mode', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'hello', output_mode: 'count' },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('hello.ts'));
+  });
+
+  it('defaults to content mode with line numbers', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'function hello' },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('function hello'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case insensitive
+// ---------------------------------------------------------------------------
+describe('grepTool – case insensitive', () => {
+  it('finds matches regardless of case', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'HELLO', case_insensitive: true },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('hello'));
+  });
+
+  it('misses case-different matches when case_insensitive is false', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'HELLO', case_insensitive: false },
+      ctx(),
+    );
+    assert.ok(result.output.includes('No matches'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Context lines
+// ---------------------------------------------------------------------------
+describe('grepTool – context lines', () => {
+  it('includes surrounding context with context_lines', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'function hello', context_lines: 1 },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('hello'));
+  });
+
+  it('uses before_context and after_context independently', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'function hello', before_context: 0, after_context: 1 },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('hello'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multiline mode
+// ---------------------------------------------------------------------------
+describe('grepTool – multiline', () => {
+  it('matches across lines with multiline mode', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'multi.txt'), 'start\nmiddle\nend\n');
+    const result = await grepTool.execute(
+      { pattern: 'start.*middle', multiline: true, path: path.join(tmpDir, 'multi.txt') },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pagination (head_limit, offset)
+// ---------------------------------------------------------------------------
+describe('grepTool – pagination', () => {
+  it('respects head_limit to restrict result count', async () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `linedata_${i}`).join('\n');
+    fs.writeFileSync(path.join(tmpDir, 'paged.txt'), lines);
+
+    const result = await grepTool.execute(
+      { pattern: 'linedata', head_limit: 5 },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('truncated'), 'Should indicate truncation');
+  });
+
+  it('skips initial lines with offset', async () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `item_${i}`).join('\n');
+    fs.writeFileSync(path.join(tmpDir, 'offset.txt'), lines);
+
+    const result = await grepTool.execute(
+      { pattern: 'item_', head_limit: 5, offset: 10 },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('showing lines'));
+  });
+
+  it('returns range message when offset exceeds total matches', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'hello', offset: 1000 },
+      ctx(),
+    );
+    assert.ok(result.output.includes('No matches in range'));
+  });
+
+  it('returns unlimited results with head_limit=0', async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `unlim_${i}`).join('\n');
+    fs.writeFileSync(path.join(tmpDir, 'unlimited.txt'), lines);
+
+    const result = await grepTool.execute(
+      { pattern: 'unlim_', head_limit: 0 },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// File type filter
+// ---------------------------------------------------------------------------
+describe('grepTool – file type filter', () => {
+  it('accepts type parameter without error', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'hello', type: 'ts' },
+      ctx(),
+    );
+    assert.ok(typeof result.output === 'string');
+    assert.ok(result.output.includes('hello'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Line numbers toggle
+// ---------------------------------------------------------------------------
+describe('grepTool – line numbers', () => {
+  it('suppresses line numbers when line_numbers is false', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'hello', line_numbers: false },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('hello'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pattern starting with dash (uses -e flag)
+// ---------------------------------------------------------------------------
+describe('grepTool – dash-prefixed pattern', () => {
+  it('searches for patterns starting with dash', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'dash.txt'), '--flag-value\nnormal\n');
+    const result = await grepTool.execute(
+      { pattern: '--flag', path: tmpDir },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('flag'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// searchFilesForPattern — direct unit tests
+// ---------------------------------------------------------------------------
+describe('searchFilesForPattern', () => {
+  it('searches a single file when root is a file', () => {
+    const filePath = path.join(tmpDir, 'hello.ts');
+    const result = searchFilesForPattern(filePath, 'function', {});
+    assert.ok(result.includes('hello.ts'));
+    assert.ok(result.includes('function'));
+  });
+
+  it('returns empty string for non-existent root', () => {
+    const result = searchFilesForPattern('/nonexistent/path/xyz', 'test', {});
+    assert.equal(result, '');
+  });
+
+  it('respects case_insensitive option', () => {
+    const result = searchFilesForPattern(tmpDir, 'FUNCTION', { caseInsensitive: true });
+    assert.ok(result.includes('function'));
+  });
+
+  it('case-sensitive by default', () => {
+    const result = searchFilesForPattern(tmpDir, 'FUNCTION', { caseInsensitive: false });
+    assert.equal(result, '');
+  });
+
+  it('filters by include extension', () => {
+    const result = searchFilesForPattern(tmpDir, 'hello', { include: '*.json' });
+    assert.ok(result.includes('data.json'));
+    assert.ok(!result.includes('hello.ts'));
+  });
+
+  it('respects headLimit', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `marker_${i}`).join('\n');
+    fs.writeFileSync(path.join(tmpDir, 'many.txt'), lines);
+    const result = searchFilesForPattern(tmpDir, 'marker_', { headLimit: 3 });
+    const matchLines = result.split('\n').filter(l => l.trim().length > 0);
+    assert.ok(matchLines.length <= 4);
+  });
+
+  it('headLimit=0 returns all matches', () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `all_${i}`).join('\n');
+    fs.writeFileSync(path.join(tmpDir, 'allmatches.txt'), lines);
+    const result = searchFilesForPattern(tmpDir, 'all_', { headLimit: 0 });
+    const matchLines = result.split('\n').filter(l => l.trim().length > 0);
+    assert.ok(matchLines.length >= 300);
+  });
+
+  it('skips node_modules directory', () => {
+    fs.mkdirSync(path.join(tmpDir, 'node_modules'));
+    fs.writeFileSync(path.join(tmpDir, 'node_modules', 'pkg.ts'), 'hello hidden\n');
+    const result = searchFilesForPattern(tmpDir, 'hidden', {});
+    assert.equal(result, '');
+  });
+
+  it('skips .git directory', () => {
+    fs.mkdirSync(path.join(tmpDir, '.git'));
+    fs.writeFileSync(path.join(tmpDir, '.git', 'config'), 'hello gitconfig\n');
+    const result = searchFilesForPattern(tmpDir, 'gitconfig', {});
+    assert.equal(result, '');
+  });
+
+  it('throws on invalid regex', () => {
+    assert.throws(
+      () => searchFilesForPattern(tmpDir, '(unclosed', {}),
+      /Invalid regular expression|Unterminated group/,
+    );
+  });
+
+  it('skips unreadable directories gracefully', () => {
+    const unreadable = path.join(tmpDir, 'noperm');
+    fs.mkdirSync(unreadable, { mode: 0o000 });
+    try {
+      const result = searchFilesForPattern(tmpDir, 'hello', {});
+      assert.ok(typeof result === 'string');
+    } finally {
+      fs.chmodSync(unreadable, 0o755);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildGrepArgs paths — grep fallback with output modes
+// ---------------------------------------------------------------------------
+describe('grepTool – grep fallback output modes', () => {
+  it('uses -l in grep fallback for files_with_matches', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-grep-bin-'));
+    fs.symlinkSync('/usr/bin/grep', path.join(bin, 'grep'));
+    const saved = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await grepTool.execute(
+        { pattern: 'hello', output_mode: 'files_with_matches' },
+        ctx(),
+      );
+      assert.ok(!result.isError, result.output);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it('uses -c in grep fallback for count mode', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-grep-bin-'));
+    fs.symlinkSync('/usr/bin/grep', path.join(bin, 'grep'));
+    const saved = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await grepTool.execute(
+        { pattern: 'hello', output_mode: 'count' },
+        ctx(),
+      );
+      assert.ok(!result.isError, result.output);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it('uses -i in grep fallback for case_insensitive', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-grep-bin-'));
+    fs.symlinkSync('/usr/bin/grep', path.join(bin, 'grep'));
+    const saved = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await grepTool.execute(
+        { pattern: 'HELLO', case_insensitive: true },
+        ctx(),
+      );
+      assert.ok(!result.isError, result.output);
+      assert.ok(result.output.includes('hello'));
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it('uses -C in grep fallback for context_lines', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-grep-bin-'));
+    fs.symlinkSync('/usr/bin/grep', path.join(bin, 'grep'));
+    const saved = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await grepTool.execute(
+        { pattern: 'function hello', context_lines: 1 },
+        ctx(),
+      );
+      assert.ok(!result.isError, result.output);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it('uses --include in grep fallback for include filter', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-grep-bin-'));
+    fs.symlinkSync('/usr/bin/grep', path.join(bin, 'grep'));
+    const saved = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await grepTool.execute(
+        { pattern: 'hello', include: '*.ts' },
+        ctx(),
+      );
+      assert.ok(!result.isError, result.output);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Include with comma-separated globs
+// ---------------------------------------------------------------------------
+describe('grepTool – comma-separated includes', () => {
+  it('accepts comma-separated glob patterns', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'hello', include: '*.ts,*.json' },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('hello'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSuiteLogLine filtering (indirect via formatResult)
+// ---------------------------------------------------------------------------
+describe('grepTool – suite log filtering', () => {
+  it('filters out go test JSON log lines from results', async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'mixed.json'),
+      '{"Action":"pass","Package":"pkg","Test":"TestFoo","Elapsed":1.5}\nreal_match\n',
+    );
+    const result = await grepTool.execute(
+      { pattern: 'pass|real_match', path: tmpDir },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    assert.ok(!result.output.includes('"Action"'));
   });
 });

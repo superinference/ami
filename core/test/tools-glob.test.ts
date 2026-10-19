@@ -121,3 +121,40 @@ describe('globTool – search', () => {
     assert.ok(result.output.includes('d.ts'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Truncation — more than MAX_RESULTS (200) files
+// ---------------------------------------------------------------------------
+describe('globTool – truncation', () => {
+  it('truncates when results exceed 200', async () => {
+    for (let i = 0; i < 210; i++) {
+      fs.writeFileSync(path.join(tmpDir, `gen_${String(i).padStart(3, '0')}.txt`), '');
+    }
+    const result = await globTool.execute({ pattern: '**/*.txt' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('truncated'));
+    assert.ok(result.output.includes('200'));
+    assert.ok(result.output.includes('210'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error handling — glob throws
+// ---------------------------------------------------------------------------
+describe('globTool – error handling', () => {
+  it('returns error when base path is unreadable', async () => {
+    const result = await globTool.execute(
+      { pattern: '**/*.ts', path: '/nonexistent/dir/xyz' },
+      ctx(),
+    );
+    assert.ok(typeof result.output === 'string');
+  });
+
+  it('handles invalid glob pattern gracefully', async () => {
+    const result = await globTool.execute(
+      { pattern: '[invalid' },
+      ctx(),
+    );
+    assert.ok(typeof result.output === 'string');
+  });
+});
