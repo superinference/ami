@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { decodeBuffer } from './tools/tool-utils';
 
 export interface FileState {
   path: string;
@@ -61,7 +62,8 @@ export class FileCache {
       const stat = fs.statSync(path);
       if (stat.mtimeMs !== cached.mtime) return true;
       if (!cached.content) return false;
-      const currentContent = fs.readFileSync(path, 'utf-8');
+      const rawBuf = fs.readFileSync(path);
+      const currentContent = decodeBuffer(rawBuf).text;
       return hashContent(currentContent) !== cached.contentHash;
     } catch {
       return true;
