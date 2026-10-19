@@ -435,4 +435,55 @@ describe('friendlyErrorMessage', () => {
     const msg = friendlyErrorMessage(classified);
     assert.ok(msg.includes('API key'));
   });
+
+  it('returns friendly message for ssl_error', () => {
+    const classified = classifyError('UNABLE_TO_VERIFY_LEAF_SIGNATURE');
+    const msg = friendlyErrorMessage(classified);
+    assert.ok(msg.includes('SSL') || msg.includes('certificate'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSL/TLS certificate errors
+// ---------------------------------------------------------------------------
+describe('classifyError — ssl_error', () => {
+  const expected = { category: 'ssl_error' as const, retryable: false, shouldCompact: false, shouldFallback: false };
+
+  it('detects UNABLE_TO_VERIFY_LEAF_SIGNATURE', () => {
+    assertClassification(classifyError('Error: UNABLE_TO_VERIFY_LEAF_SIGNATURE'), expected);
+  });
+
+  it('detects DEPTH_ZERO_SELF_SIGNED_CERT', () => {
+    assertClassification(classifyError('Error: DEPTH_ZERO_SELF_SIGNED_CERT'), expected);
+  });
+
+  it('detects SELF_SIGNED_CERT_IN_CHAIN', () => {
+    assertClassification(classifyError('Error: SELF_SIGNED_CERT_IN_CHAIN'), expected);
+  });
+
+  it('detects CERT_HAS_EXPIRED', () => {
+    assertClassification(classifyError('Error: CERT_HAS_EXPIRED'), expected);
+  });
+
+  it('detects ERR_TLS_CERT_ALTNAME_INVALID', () => {
+    assertClassification(classifyError('Error: ERR_TLS_CERT_ALTNAME_INVALID'), expected);
+  });
+
+  it('detects "certificate expired"', () => {
+    assertClassification(classifyError('certificate has expired'), expected);
+  });
+
+  it('detects "self-signed certificate"', () => {
+    assertClassification(classifyError('self-signed certificate in certificate chain'), expected);
+  });
+
+  it('detects "certificate verify failed"', () => {
+    assertClassification(classifyError('unable to verify the first certificate'), expected);
+  });
+
+  it('is not retryable (config issue, not transient)', () => {
+    const result = classifyError('UNABLE_TO_VERIFY_LEAF_SIGNATURE');
+    assert.equal(result.retryable, false);
+    assert.equal(result.shouldFallback, false);
+  });
 });

@@ -19,6 +19,7 @@ export type ErrorCategory =
   | 'content_filter'
   | 'server_error'
   | 'network_error'
+  | 'ssl_error'
   | 'abort'
   | 'repetition'
   | 'unknown';
@@ -128,6 +129,18 @@ export function classifyError(error: string): ClassifiedError {
     return { category: 'server_error', message: error, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 3000 };
   }
 
+  // SSL/TLS certificate error — not retryable (configuration issue, not transient)
+  if (
+    lower.includes('unable_to_verify_leaf_signature') ||
+    lower.includes('depth_zero_self_signed_cert') ||
+    lower.includes('self_signed_cert_in_chain') ||
+    lower.includes('cert_has_expired') ||
+    lower.includes('err_tls_cert_altname_invalid') ||
+    lower.includes('certificate') && (lower.includes('expired') || lower.includes('invalid') || lower.includes('self-signed') || lower.includes('verify'))
+  ) {
+    return { category: 'ssl_error', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
+  }
+
   // Network error — retryable after a delay
   if (
     lower.includes('econnrefused') ||
@@ -157,6 +170,7 @@ const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   auth_error: 'Authentication error — check your API key.',
   output_too_large: 'Model output exceeded size limit — retrying with smaller output.',
   content_filter: 'Response blocked by content policy.',
+  ssl_error: 'SSL/TLS certificate error — check your provider URL or set NODE_TLS_REJECT_UNAUTHORIZED=0 for self-signed certs.',
   server_error: 'Provider server error — retrying.',
   network_error: 'Network error — retrying connection.',
   repetition: 'Repetitive output detected.',
