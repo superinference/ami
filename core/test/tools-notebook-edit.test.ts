@@ -376,3 +376,26 @@ describe('notebookEditTool – relative paths', () => {
     assert.equal(nb.cells[0].source, 'updated');
   });
 });
+
+describe('notebook-edit symlink guard', () => {
+  let tmpDir2: string;
+  beforeEach(() => { tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-symlink-')); });
+  afterEach(() => { fs.rmSync(tmpDir2, { recursive: true, force: true }); });
+
+  it('blocks editing a symlinked notebook', async () => {
+    const realFile = path.join(tmpDir2, 'real.ipynb');
+    const symFile = path.join(tmpDir2, 'link.ipynb');
+    const nb = { nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [{ cell_type: 'code', source: 'x', metadata: {}, outputs: [] }] };
+    fs.writeFileSync(realFile, JSON.stringify(nb));
+    fs.symlinkSync(realFile, symFile);
+
+    const result = await notebookEditTool.execute(
+      { notebook_path: symFile, cell_number: 0, new_source: 'hacked' },
+      { cwd: tmpDir2, abortSignal: new AbortController().signal },
+    );
+    assert.ok(result.isError);
+    assert.ok(result.output.includes('symlink'));
+    const content = JSON.parse(fs.readFileSync(realFile, 'utf-8'));
+    assert.equal(content.cells[0].source, 'x');
+  });
+});

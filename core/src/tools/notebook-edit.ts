@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
-import { validateFilePath } from './tool-utils';
+import { validateFilePath, validateFileWritePath } from './tool-utils';
 
 interface NotebookCell {
   cell_type: string;
@@ -75,6 +75,11 @@ export const notebookEditTool: ToolDefinition = {
 
     if (notebookPath && (notebookPath.startsWith('\\\\') || notebookPath.startsWith('//'))) {
       return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${notebookPath}`, isError: true };
+    }
+
+    const symlinkCheck = validateFileWritePath(notebookPath);
+    if (!symlinkCheck.valid) {
+      return { output: `Error: ${symlinkCheck.error}`, isError: true };
     }
 
     if (!notebookPath || notebookPath.trim().length === 0) {
