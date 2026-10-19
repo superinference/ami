@@ -227,6 +227,42 @@ describe('classifyError — network_error', () => {
   it('does not false-positive on "Internal timeout" (no space in timeout)', () => {
     assert.equal(classifyError('Internal timeout after 3000ms').category, 'unknown');
   });
+
+  it('detects "ECONNABORTED"', () => {
+    assertClassification(classifyError('connect ECONNABORTED'), expected);
+  });
+
+  it('detects "ENOTFOUND" (DNS resolution failure)', () => {
+    assertClassification(classifyError('getaddrinfo ENOTFOUND api.example.com'), expected);
+  });
+
+  it('detects "EHOSTUNREACH"', () => {
+    assertClassification(classifyError('connect EHOSTUNREACH 10.0.0.1:443'), expected);
+  });
+
+  it('detects "ENETUNREACH"', () => {
+    assertClassification(classifyError('connect ENETUNREACH 192.168.1.1:443 - Local (0.0.0.0:0)'), expected);
+  });
+
+  it('detects "EPIPE" (broken pipe)', () => {
+    assertClassification(classifyError('write EPIPE'), expected);
+  });
+
+  it('detects "socket hang up"', () => {
+    assertClassification(classifyError('socket hang up'), expected);
+  });
+
+  it('detects "ECONNRESET"', () => {
+    assertClassification(classifyError('read ECONNRESET'), expected);
+  });
+
+  it('detects "fetch failed"', () => {
+    assertClassification(classifyError('fetch failed'), expected);
+  });
+
+  it('detects DNS errors', () => {
+    assertClassification(classifyError('DNS lookup failed for api.provider.com'), expected);
+  });
 });
 
 // ---------------------------------------------------------------------------

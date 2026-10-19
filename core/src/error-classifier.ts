@@ -43,8 +43,13 @@ export interface ClassifiedError {
 export function classifyError(error: string): ClassifiedError {
   const lower = error.toLowerCase();
 
-  // Abort — not retryable, checked first so it short-circuits
-  if (lower.includes('abort') || lower.includes('aborterror') || lower.includes('cancel')) {
+  // Abort — not retryable, checked first so it short-circuits.
+  // Exclude ECONNABORTED which is a network error, not a user-initiated abort.
+  if (
+    (lower.includes('abort') && !lower.includes('econnaborted')) ||
+    lower.includes('aborterror') ||
+    lower.includes('cancel')
+  ) {
     return { category: 'abort', message: error, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
@@ -159,9 +164,15 @@ export function classifyError(error: string): ClassifiedError {
     lower.includes('econnrefused') ||
     lower.includes('etimedout') ||
     lower.includes('econnreset') ||
+    lower.includes('econnaborted') ||
+    lower.includes('enotfound') ||
+    lower.includes('ehostunreach') ||
+    lower.includes('enetunreach') ||
+    lower.includes('epipe') ||
     lower.includes('timed out') ||
     lower.includes('network') ||
     lower.includes('fetch failed') ||
+    lower.includes('socket hang up') ||
     lower.includes('dns')
   ) {
     return { category: 'network_error', message: error, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
