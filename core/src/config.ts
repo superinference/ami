@@ -17,6 +17,7 @@ export interface ProjectConfig {
   baseUrl?: string;
   permissionMode?: 'ask' | 'auto-allow' | 'deny-all';
   thinkingLevel?: string;
+  maxEffortLevel?: string;
   fallbackModel?: string;
   compactionModel?: string;
   maxTurns?: number;
@@ -287,6 +288,7 @@ export function mergeConfigs(
     if (layer.baseUrl !== undefined) merged.baseUrl = layer.baseUrl;
     if (layer.permissionMode !== undefined) merged.permissionMode = layer.permissionMode;
     if (layer.thinkingLevel !== undefined) merged.thinkingLevel = layer.thinkingLevel;
+    if (layer.maxEffortLevel !== undefined) merged.maxEffortLevel = layer.maxEffortLevel;
     if (layer.fallbackModel !== undefined) merged.fallbackModel = layer.fallbackModel;
     if (layer.compactionModel !== undefined) merged.compactionModel = layer.compactionModel;
     if (layer.maxTurns !== undefined) merged.maxTurns = layer.maxTurns;

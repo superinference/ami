@@ -13,6 +13,7 @@ import {
   maxToolOutputChars,
   registerModelCapabilities,
   clearDynamicCapabilities,
+  clampEffortLevel,
   discoverFromModelList,
   modelSupportsVision,
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -731,5 +732,51 @@ describe('dynamic registry + resolveThinkingBudget', () => {
     registerModelCapabilities('unknown-dynamic', null);
     const budget = resolveThinkingBudget('max', 'unknown-dynamic');
     assert.equal(budget, 128000 - 8192);
+  });
+});
+
+describe('clampEffortLevel', () => {
+  const LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
+
+  it('clamps max down to high', () => {
+    assert.equal(clampEffortLevel('max', 'high'), 'high');
+  });
+
+  it('leaves low unchanged when limit is high', () => {
+    assert.equal(clampEffortLevel('low', 'high'), 'low');
+  });
+
+  it('leaves high unchanged when limit equals high', () => {
+    assert.equal(clampEffortLevel('high', 'high'), 'high');
+  });
+
+  it('returns requested when maxLevel is undefined', () => {
+    assert.equal(clampEffortLevel('max', undefined), 'max');
+  });
+
+  it('clamps high down to off', () => {
+    assert.equal(clampEffortLevel('high', 'off'), 'off');
+  });
+
+  it('leaves off unchanged when limit is max', () => {
+    assert.equal(clampEffortLevel('off', 'max'), 'off');
+  });
+
+  it('returns requested for invalid maxLevel', () => {
+    assert.equal(clampEffortLevel('high', 'bogus' as any), 'high');
+  });
+
+  it('handles every ThinkingLevel × ThinkingLevel combination', () => {
+    const RANK: Record<string, number> = { off: 0, low: 1, medium: 2, high: 3, max: 4 };
+    for (const requested of LEVELS) {
+      for (const maxLevel of LEVELS) {
+        const result = clampEffortLevel(requested, maxLevel);
+        if (RANK[requested] <= RANK[maxLevel]) {
+          assert.equal(result, requested, `clamp(${requested}, ${maxLevel}) should be ${requested}`);
+        } else {
+          assert.equal(result, maxLevel, `clamp(${requested}, ${maxLevel}) should be ${maxLevel}`);
+        }
+      }
+    }
   });
 });

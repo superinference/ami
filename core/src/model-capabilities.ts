@@ -507,6 +507,16 @@ export function resolveThinkingBudget(level: ThinkingLevel, modelId?: string): n
   return 0;
 }
 
+const EFFORT_RANK: Record<ThinkingLevel, number> = {
+  off: 0, low: 1, medium: 2, high: 3, max: 4,
+};
+
+export function clampEffortLevel(requested: ThinkingLevel, maxLevel: ThinkingLevel | undefined): ThinkingLevel {
+  if (!maxLevel || !(maxLevel in EFFORT_RANK)) return requested;
+  if (EFFORT_RANK[requested] <= EFFORT_RANK[maxLevel]) return requested;
+  return maxLevel;
+}
+
 const PROVIDER_SAMPLING_DEFAULTS: Record<string, { temperature?: number; topP?: number; topK?: number }> = {
   'gemini': { temperature: 1.0, topK: 64 },
   'qwen': { temperature: 0.55, topP: 1 },

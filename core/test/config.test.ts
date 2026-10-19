@@ -485,4 +485,12 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
     const merged = mergeConfigs({}, {}, { cacheTtl: '1h' }, null);
     assert.equal(merged.cacheTtl, '1h');
   });
+  it('merges maxEffortLevel from project config', () => {
+    const merged = mergeConfigs({}, {}, { maxEffortLevel: 'high' }, null);
+    assert.equal(merged.maxEffortLevel, 'high');
+  });
+  it('CLI maxEffortLevel overrides project config', () => {
+    const merged = mergeConfigs({ maxEffortLevel: 'low' }, {}, { maxEffortLevel: 'high' }, null);
+    assert.equal(merged.maxEffortLevel, 'low');
+  });
 });
