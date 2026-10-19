@@ -3,6 +3,8 @@ import { inferProviderFromApiKey, inferProviderFromBaseUrl, inferProviderFromEnv
 import { RateLimitTracker } from './rate-limiter';
 import type { RateLimitStatus } from './rate-limiter';
 import { CredentialPool } from './credential-pool';
+import { ProviderHealthTracker } from './provider-health';
+import type { ProviderHealthStats } from './provider-health';
 
 export interface CoordinatorState {
   currentModel: string;
@@ -21,6 +23,7 @@ export class ProviderCoordinator {
   private fallbackSuccessCount = 0;
   private stickyFallback = false;
   private rateLimits = new RateLimitTracker();
+  private health = new ProviderHealthTracker();
   private credentialPool: CredentialPool | null = null;
   private activeCredentialId: string | null = null;
 
@@ -82,8 +85,17 @@ export class ProviderCoordinator {
     this.state.requestCount++;
   }
 
+  recordRequestLatency(latencyMs: number): void {
+    this.health.recordRequest(latencyMs);
+  }
+
+  getHealthStats(): ProviderHealthStats {
+    return this.health.getStats();
+  }
+
   recordError(): boolean {
     this.state.errorCount++;
+    this.health.recordError();
     // Step one position down the fallback chain, if any remain.
     if (this.fallbackIndex < this.chain.length) {
       this.fallbackIndex++;

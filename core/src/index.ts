@@ -28,6 +28,8 @@ export { Profiler } from './profiler';
 export { WorkspaceIndexer } from './workspace-indexer';
 export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
+export { ProviderHealthTracker } from './provider-health';
+export type { ProviderHealthStats } from './provider-health';
 export { BUILTIN_PERSONAS, matchMcpAutoAllow } from './personas';
 export type { PersonaDefinition } from './personas';
 export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError } from './logger';
