@@ -793,8 +793,30 @@ export class PermissionManager {
       return 'ask';
     }
 
-    // Fast path: mode-level overrides
-    if (this.mode === 'auto-allow') return 'allow';
+    // Fast path: mode-level overrides — but in auto-allow mode, explicit
+    // deny rules still fire (Gap #32). We use first-match ordering: if the
+    // first matching rule is allow, auto-allow wins; if deny, deny wins.
+    if (this.mode === 'auto-allow') {
+      for (const rule of this.rules) {
+        if (rule.paramPattern) continue;
+        const toolMatches = this.toolNameMatches(rule.tool, toolName);
+        if (!toolMatches) continue;
+        if (rule.pattern) {
+          const inputStr = this.inputToString(toolName, input);
+          const matched = toolName === 'bash' && typeof input.command === 'string'
+            ? matchBashPattern(rule.pattern, inputStr, rule.action)
+            : matchPattern(rule.pattern, inputStr);
+          if (matched) {
+            if (rule.action === 'deny') return 'deny';
+            break; // allow/ask rule matched first — fall through to auto-allow
+          }
+        } else {
+          if (rule.action === 'deny') return 'deny';
+          break; // non-deny blanket rule — fall through to auto-allow
+        }
+      }
+      return 'allow';
+    }
     if (this.mode === 'deny-all') return 'deny';
     if (this.mode === 'dontAsk') return 'deny';
 

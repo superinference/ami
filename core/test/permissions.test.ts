@@ -1287,3 +1287,51 @@ describe('isBuildConfigFile — shell startup + .husky (Gap #53, #77)', () => {
     assert.ok(!isBuildConfigFile('README.md'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gap #32: Deny rules fire in auto-allow mode
+// ---------------------------------------------------------------------------
+
+describe('PermissionManager — deny rules in auto-allow mode (Gap #32)', () => {
+  it('deny rule fires in auto-allow mode', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'curl *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'curl evil.com' }), 'deny');
+  });
+
+  it('deny rule fires for compound command in auto-allow mode', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'curl *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo ok && curl evil.com' }), 'deny');
+  });
+
+  it('deny rule without pattern blocks whole tool in auto-allow mode', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'ls' }), 'deny');
+  });
+
+  it('auto-allow still allows when no deny rule matches', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'curl *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'ls /tmp' }), 'allow');
+  });
+
+  it('non-bash deny rule fires in auto-allow mode', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'file_edit', pattern: '*.env', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('file_edit', { file_path: 'production.env' }), 'deny');
+  });
+
+  it('allow rules are ignored in auto-allow mode (already allowed)', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'rm -rf /tmp/test' }), 'allow');
+  });
+});
