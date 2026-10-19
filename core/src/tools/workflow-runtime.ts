@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as os from 'os';
+import { parseEnvInt } from '../utils/env';
 
 export interface WorkflowMeta {
   name: string;
@@ -69,11 +70,8 @@ export function detectCpuCount(): number {
   return osCpus;
 }
 export function getMaxConcurrent(): number {
-  const env = process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS;
-  if (env) {
-    const n = parseInt(env, 10);
-    if (n >= 1 && n <= 256) return n;
-  }
+  const n = parseEnvInt(process.env.AMI_WORKFLOW_MAX_CONCURRENT_AGENTS, 0);
+  if (n >= 1 && n <= 256) return n;
   return Math.max(4, Math.min(16, detectCpuCount() - 2));
 }
 const DEFAULT_MAX_CONCURRENT = getMaxConcurrent();
@@ -270,8 +268,7 @@ export class WorkflowRuntime extends EventEmitter {
   }
 
   private createParallel(): <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>> {
-    const staggerMs = parseInt(process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS ?? '', 10);
-    const STAGGER_DELAY = Number.isFinite(staggerMs) ? staggerMs : 50;
+    const STAGGER_DELAY = parseEnvInt(process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS, 50);
 
     return async <T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>> => {
       if (thunks.length > MAX_PIPELINE_ITEMS) {

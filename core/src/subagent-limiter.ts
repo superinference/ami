@@ -1,3 +1,5 @@
+import { parseEnvInt } from './utils/env';
+
 const DEFAULT_MAX_CONCURRENT = 20;
 const DEFAULT_MAX_DEPTH = 0;
 const DEFAULT_MAX_LIFETIME = 200;
@@ -12,14 +14,11 @@ export class SubagentLimiter {
 
   constructor(maxConcurrent?: number, maxDepth?: number, maxLifetime?: number) {
     this.maxConcurrent = maxConcurrent ??
-      (parseInt(process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS ?? '', 10) ||
-      DEFAULT_MAX_CONCURRENT);
+      parseEnvInt(process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS, DEFAULT_MAX_CONCURRENT);
     this.maxDepth = maxDepth ??
-      (parseInt(process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH ?? '', 10) ||
-      DEFAULT_MAX_DEPTH);
+      parseEnvInt(process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, DEFAULT_MAX_DEPTH);
     this.maxLifetime = maxLifetime ??
-      (parseInt(process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION ?? '', 10) ||
-      DEFAULT_MAX_LIFETIME);
+      parseEnvInt(process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION, DEFAULT_MAX_LIFETIME);
   }
 
   get activeCount(): number { return this.running; }
