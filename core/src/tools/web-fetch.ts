@@ -6,6 +6,7 @@ import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES } from './we
 import { spillToolText } from './spill-output';
 
 const MAX_RESPONSE_LENGTH = 50000;
+export const MAX_FETCH_DEADLINE_MS = 300_000;
 
 /** Head and tail for a summary prompt. A head slice hides the end of the page. */
 export function summaryWindow(text: string, limit = 30_000): string {
@@ -203,10 +204,16 @@ export const webFetchTool: ToolDefinition = {
       return { output: cached };
     }
 
+    const deadlineMs = (context as any)._fetchDeadlineMs ?? MAX_FETCH_DEADLINE_MS;
+    const deadlineSignal = AbortSignal.timeout(deadlineMs);
+    const fetchSignal = context.abortSignal
+      ? AbortSignal.any([context.abortSignal, deadlineSignal])
+      : deadlineSignal;
+
     try {
       const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated } = await httpGet(
         url,
-        context.abortSignal,
+        fetchSignal,
         { resolvedIP: pinnedIP, raw: true },
       );
 
@@ -250,7 +257,7 @@ export const webFetchTool: ToolDefinition = {
               if ('error' in fallbackSsrf) throw new Error(fallbackSsrf.error);
               fallbackIP = fallbackSsrf.resolvedIP;
             }
-            const htmlResult = await httpGet(htmlUrl, context.abortSignal, { resolvedIP: fallbackIP });
+            const htmlResult = await httpGet(htmlUrl, fetchSignal, { resolvedIP: fallbackIP });
             if (htmlResult.statusCode < 400 && htmlResult.contentType.includes('text/html')) {
               const htmlContent = stripHtml(htmlResult.body);
               if (htmlContent.length > 200) {
@@ -345,6 +352,13 @@ export const webFetchTool: ToolDefinition = {
       return { output };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+
+      if (deadlineSignal.aborted) {
+        return {
+          output: `Error: request exceeded ${Math.round(deadlineMs / 1000)}s overall deadline`,
+          isError: true,
+        };
+      }
 
       if (message === 'Aborted') {
         return { output: 'Fetch aborted.', isError: true };

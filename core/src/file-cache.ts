@@ -19,11 +19,19 @@ function hashContent(content: string): string {
  * When a file has not changed since the last read (same mtime), callers can
  * return a short summary instead of the full content, saving tokens.
  */
+export const MAX_CACHE_BYTES = 16 * 1024 * 1024; // 16 MB
+
 export class FileCache {
   private cache: Map<string, FileState> = new Map();
+  private totalBytes: number = 0;
 
   /** Record a file read. Token estimate uses the ~4 chars/token heuristic. */
   set(path: string, content: string, mtime: number): void {
+    const byteSize = Buffer.byteLength(content, 'utf-8');
+    const existing = this.cache.get(path);
+    if (existing) {
+      this.totalBytes -= Buffer.byteLength(existing.content, 'utf-8');
+    }
     this.cache.set(path, {
       path,
       content,
@@ -31,6 +39,17 @@ export class FileCache {
       contentHash: hashContent(content),
       tokenEstimate: Math.ceil(content.length / 4),
     });
+    this.totalBytes += byteSize;
+
+    // Evict oldest entries (Map preserves insertion order) until under limit
+    const iter = this.cache.keys();
+    while (this.totalBytes > MAX_CACHE_BYTES && this.cache.size > 1) {
+      const oldest = iter.next().value;
+      if (oldest === undefined || oldest === path) break;
+      const entry = this.cache.get(oldest);
+      if (entry) this.totalBytes -= Buffer.byteLength(entry.content, 'utf-8');
+      this.cache.delete(oldest);
+    }
   }
 
   /**
@@ -95,12 +114,15 @@ export class FileCache {
 
   /** Remove a single file from the cache (e.g. after a failed edit so the next read returns full content). */
   delete(path: string): void {
+    const entry = this.cache.get(path);
+    if (entry) this.totalBytes -= Buffer.byteLength(entry.content, 'utf-8');
     this.cache.delete(path);
   }
 
   /** Clear all cached entries. */
   clear(): void {
     this.cache.clear();
+    this.totalBytes = 0;
   }
 
   /** Get total estimated tokens across all cached files. */
@@ -112,11 +134,17 @@ export class FileCache {
     return total;
   }
 
+  /** Total bytes currently cached. */
+  getTotalBytes(): number {
+    return this.totalBytes;
+  }
+
   /** Get cache statistics. */
-  getStats(): { files: number; tokens: number } {
+  getStats(): { files: number; tokens: number; bytes: number } {
     return {
       files: this.cache.size,
       tokens: this.getTotalTokens(),
+      bytes: this.totalBytes,
     };
   }
 }
