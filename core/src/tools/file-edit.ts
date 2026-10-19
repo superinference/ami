@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath } from './tool-utils';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -351,6 +351,12 @@ export const fileEditTool: ToolDefinition = {
 
     if (isBlockedPath(resolved)) {
       return { output: `Error: Cannot edit device or special file: ${resolved}`, isError: true };
+    }
+
+    // Symlink guard: block writes to symlinks to prevent redirect attacks
+    const writePathCheck = validateFileWritePath(resolved);
+    if (!writePathCheck.valid) {
+      return { output: writePathCheck.error!, isError: true };
     }
 
     if (resolved.endsWith('.ipynb')) {

@@ -79,7 +79,7 @@ export { estimateTokens as estimateTokensLegacy, estimateMessageTokens, estimate
 export type { ToolStats } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
-export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation } from './tools/bash-security';
+export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
 export { withExtraHeaders } from './provider';
 export { levenshteinDistance, suggestSimilarPaths } from './tools/path-suggest';

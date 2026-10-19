@@ -228,3 +228,74 @@ describe('file-edit UNC path blocking', () => {
     assert.equal(result.isError, undefined);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Symlink guard — blocks writes to symlinks (redirect attack prevention)
+// ---------------------------------------------------------------------------
+
+describe('file-edit symlink guard', () => {
+  it('blocks editing a symlink target (write mode)', async () => {
+    const target = path.join(tmpDir, 'target.txt');
+    const link = path.join(tmpDir, 'link.txt');
+    fs.writeFileSync(target, 'original content');
+    fs.symlinkSync(target, link);
+    const result = await fileEditTool.execute!(
+      { file_path: link, new_string: 'overwritten' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('symlink'), `Expected symlink error but got: ${result.output}`);
+    // Verify original file was NOT overwritten
+    assert.equal(fs.readFileSync(target, 'utf-8'), 'original content');
+  });
+
+  it('blocks editing a symlink target (edit mode with old_string)', async () => {
+    const target = path.join(tmpDir, 'target2.txt');
+    const link = path.join(tmpDir, 'link2.txt');
+    fs.writeFileSync(target, 'hello world');
+    fs.symlinkSync(target, link);
+    const result = await fileEditTool.execute!(
+      { file_path: link, old_string: 'hello', new_string: 'goodbye' },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('symlink'), `Expected symlink error but got: ${result.output}`);
+    // Verify original file was NOT modified
+    assert.equal(fs.readFileSync(target, 'utf-8'), 'hello world');
+  });
+
+  it('blocks editing a symlink target (sequential edits mode)', async () => {
+    const target = path.join(tmpDir, 'target3.txt');
+    const link = path.join(tmpDir, 'link3.txt');
+    fs.writeFileSync(target, 'line one\nline two\n');
+    fs.symlinkSync(target, link);
+    const result = await fileEditTool.execute!(
+      { file_path: link, edits: [{ old_string: 'one', new_string: 'ONE' }] },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('symlink'), `Expected symlink error but got: ${result.output}`);
+    // Verify original file was NOT modified
+    assert.equal(fs.readFileSync(target, 'utf-8'), 'line one\nline two\n');
+  });
+
+  it('allows writing to a regular (non-symlink) file', async () => {
+    const filePath = path.join(tmpDir, 'regular.txt');
+    fs.writeFileSync(filePath, 'regular content');
+    const result = await fileEditTool.execute!(
+      { file_path: filePath, old_string: 'regular', new_string: 'modified' },
+      ctx(),
+    );
+    assert.notEqual(result.isError, true);
+  });
+
+  it('allows creating a new file (no symlink to check)', async () => {
+    const filePath = path.join(tmpDir, 'brand-new.txt');
+    const result = await fileEditTool.execute!(
+      { file_path: filePath, new_string: 'new file content' },
+      ctx(),
+    );
+    assert.notEqual(result.isError, true);
+    assert.ok(fs.existsSync(filePath));
+  });
+});

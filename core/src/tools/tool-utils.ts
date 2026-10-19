@@ -515,6 +515,27 @@ export function deduplicateToolCalls(
   return { deduplicated, removedCount: removedIds.length, removedIds };
 }
 
+/**
+ * Validate a file path before writing: rejects NUL bytes and symlinks.
+ * Symlinks at the target path could redirect writes to arbitrary files.
+ * If the file doesn't exist yet, that's fine — allow writes to new files.
+ */
+export function validateFileWritePath(filePath: string): { valid: boolean; error?: string } {
+  const nullCheck = validateFilePath(filePath);
+  if (nullCheck) return { valid: false, error: nullCheck.output };
+
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) {
+      return { valid: false, error: `Error: "${filePath}" is a symlink — write blocked to prevent symlink redirect attack.` };
+    }
+  } catch {
+    // File doesn't exist yet — that's fine for new file creation
+  }
+
+  return { valid: true };
+}
+
 export function normalizeToLf(text: string): string {
   return text.replace(/\r\n/g, '\n');
 }

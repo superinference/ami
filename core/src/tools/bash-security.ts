@@ -44,6 +44,8 @@ const CHECK_IDS = {
   BASE64_SHELL_PIPE: 44,
   PRIVILEGE_ESCALATION: 45,
   CONTAINER_ESCAPE: 46,
+  PACKAGE_MANAGER_HIJACK: 47,
+  NETWORK_MANIPULATION: 48,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -871,6 +873,26 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     const privEsc = detectPrivilegeEscalation(command);
     if (privEsc.blocked) {
       return fail(CHECK_IDS.PRIVILEGE_ESCALATION, privEsc.reason!);
+    }
+  }
+
+  // Package manager hijacking — blocks pip/npm/gem commands that shadow
+  // imports, hijack dependency resolution, or run arbitrary code via
+  // lifecycle scripts or remote editable installs.
+  {
+    const pkgHijack = detectPackageManagerHijack(command);
+    if (pkgHijack.blocked) {
+      return fail(CHECK_IDS.PACKAGE_MANAGER_HIJACK, pkgHijack.reason!);
+    }
+  }
+
+  // Network manipulation — blocks ip/ifconfig commands that reconfigure
+  // interfaces, IP addresses, routing, or ARP tables. Read-only queries
+  // (ip addr show, ifconfig with no set args) are allowed.
+  {
+    const netManip = detectNetworkManipulation(command);
+    if (netManip.blocked) {
+      return fail(CHECK_IDS.NETWORK_MANIPULATION, netManip.reason!);
     }
   }
 
@@ -1741,6 +1763,7 @@ export function detectDangerousDd(command: string): { blocked: boolean; reason?:
 // ---------------------------------------------------------------------------
 
 const CONTAINER_RUNTIME_RE = /\b(docker|podman)\b/;
+// eslint-disable-next-line security/detect-unsafe-regex -- \s+ then \b are disjoint lookahead anchors
 const CONTAINER_RUN_RE = /\b(docker|podman)\s+(?:container\s+)?run\b/;
 
 export function detectContainerEscape(command: string): { blocked: boolean; reason?: string } {
@@ -1880,11 +1903,13 @@ export function detectPrivilegeEscalation(command: string): { blocked: boolean; 
   if (/(?:^|[\s;|&])chmod\b/.test(stripped)) {
     // Block symbolic setuid/setgid: u+s, g+s, +s, o+s, a+s, ug+s, etc.
     // Match chmod followed by optional flags (-R, --recursive, etc.) then the mode
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
     if (/\bchmod\s+(?:-\S+\s+)*\S*\+\S*s/.test(stripped)) {
       return { blocked: true, reason: 'chmod with setuid/setgid bit (+s) blocked — privilege escalation vector' };
     }
     // Block octal modes with setuid/setgid bits (leading 4, 2, or 6)
     // Octal setuid: 4xxx, setgid: 2xxx, both: 6xxx (4-digit mode with leading 2/4/6)
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
     if (/\bchmod\s+(?:-\S+\s+)*[246]\d{3}\b/.test(stripped)) {
       return { blocked: true, reason: 'chmod with setuid/setgid octal mode blocked — privilege escalation vector' };
     }
@@ -1903,6 +1928,7 @@ export function detectPrivilegeEscalation(command: string): { blocked: boolean; 
   // Allow chattr -i and chattr -a (removing flags — restoring normal state).
   if (/(?:^|[\s;|&])chattr\b/.test(stripped)) {
     // Match chattr with +i or +a (possibly with other flags combined, e.g. +ia, +ai)
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
     if (/\bchattr\s+(?:-\S+\s+)*\+\S*[ia]/.test(stripped)) {
       return { blocked: true, reason: 'chattr +i/+a blocked — setting immutable or append-only flag prevents file modification' };
     }
@@ -1913,8 +1939,148 @@ export function detectPrivilegeEscalation(command: string): { blocked: boolean; 
   if (/(?:^|[\s;|&])chown\b/.test(stripped)) {
     // Match chown [flags] root[:group] or chown [flags] root.group
     // Also match 0:group or 0.group (UID 0 = root)
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
     if (/\bchown\s+(?:-\S+\s+)*(?:root\b|0[:.]|0\s)/.test(stripped)) {
       return { blocked: true, reason: 'chown to root blocked — changing ownership to root is a privilege escalation vector' };
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Package manager path hijacking & npm script injection detector
+// ---------------------------------------------------------------------------
+// Blocks package manager commands that can hijack dependency resolution,
+// shadow stdlib imports, or execute arbitrary code via lifecycle scripts:
+//   - pip install --target / -t . (shadows imports in the project)
+//   - pip install --user --prefix with unusual paths
+//   - pip install -e <url> (editable install from remote — runs setup.py)
+//   - npm link (creates global symlink hijacking dep resolution)
+//   - npm install --global-style with unusual directories
+//   - gem install --install-dir / -i targeting project paths
+// Allowed:
+//   - pip install package, pip install -r requirements.txt
+//   - npm install, npm install package
+//   - gem install package
+
+export function detectPackageManagerHijack(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // --- pip install --target / -t ---
+  // Shadows stdlib or project imports by dumping packages into the current dir
+  if (/\bpip[3]?\s+install\b/.test(stripped)) {
+    // Block --target or -t with any value
+    if (/\s(?:--target(?:\s+|=)\S+|-t\s+\S+)(?:\s|$)/.test(stripped)) {
+      return { blocked: true, reason: 'pip install --target can shadow stdlib imports by placing packages in the project directory' };
+    }
+    // Block --user combined with --prefix (unusual install location)
+    if (/\s--user(?:\s|$)/.test(stripped) && /\s--prefix(?:\s+|=)\S+/.test(stripped)) {
+      return { blocked: true, reason: 'pip install --user --prefix with custom path can hijack package resolution' };
+    }
+    // Block -e / --editable with URLs (remote editable install runs arbitrary setup.py)
+    if (/\s(?:-e|--editable)\s+(?:https?:|git\+|git:|svn\+|hg\+|bzr\+)\S+/.test(stripped)) {
+      return { blocked: true, reason: 'pip install -e with remote URL runs arbitrary setup.py from untrusted source' };
+    }
+  }
+
+  // --- npm link ---
+  // Creates a global symlink that hijacks dependency resolution for the package.
+  // `npm link <pkg>` and bare `npm link` are both dangerous.
+  // Allow: `npm install --link` (different flag), `npm ls` (list), etc.
+  if (/\bnpm\s+link\b/.test(stripped)) {
+    return { blocked: true, reason: 'npm link creates global symlinks that can hijack dependency resolution' };
+  }
+
+  // --- npm install --global-style ---
+  // Installs packages with a flat node_modules layout that can shadow other packages
+  if (/\bnpm\s+install\b/.test(stripped) && /\s--global-style\b/.test(stripped)) {
+    return { blocked: true, reason: 'npm install --global-style can hijack dependency resolution with unusual directory layout' };
+  }
+
+  // --- gem install --install-dir / -i ---
+  // Targets a custom directory, potentially shadowing existing gems in the project
+  if (/\bgem\s+install\b/.test(stripped)) {
+    if (/\s(?:--install-dir(?:\s+|=)\S+|-i\s+\S+)(?:\s|$)/.test(stripped)) {
+      return { blocked: true, reason: 'gem install --install-dir can shadow gems by placing them in a project directory' };
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Network interface manipulation detector — blocks commands that reconfigure
+// network interfaces, IP addresses, routing tables, routing policy, or ARP
+// entries via `ip` subcommands or `ifconfig` set operations.
+// ---------------------------------------------------------------------------
+// Blocked:
+//   ip link set (bring interfaces up/down, change settings)
+//   ip addr add/del (add/remove IP addresses)
+//   ip route add/del (modify routing table)
+//   ip rule add/del (modify routing policy)
+//   ip neigh add/del (modify ARP/neighbor table)
+//   ifconfig <iface> <ip-addr> (assign IP address)
+//   ifconfig <iface> up/down (bring interface up/down)
+// Allowed:
+//   ip addr show, ip addr list (read-only)
+//   ip link show (read-only)
+//   ip route show, ip route list (read-only)
+//   ip -s link, ip -brief addr (read-only with flags)
+//   ifconfig (no args — show all interfaces)
+//   ifconfig eth0 (show single interface)
+
+export function detectNetworkManipulation(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // --- ip subcommands ---
+  // Match `ip` as a standalone command (not e.g. `grip`, `unzip`)
+  if (/(?:^|[\s;|&])ip\s/.test(stripped)) {
+    // ip link set — reconfigure interfaces (up/down, name, mtu, etc.)
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bip\s+(?:-\S+\s+)*link\s+set\b/.test(stripped)) {
+      return { blocked: true, reason: 'ip link set can reconfigure network interfaces — blocked' };
+    }
+
+    // ip addr add/del — add or remove IP addresses from interfaces
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bip\s+(?:-\S+\s+)*addr\s+(?:add|del|delete)\b/.test(stripped)) {
+      return { blocked: true, reason: 'ip addr add/del can modify interface IP addresses — blocked' };
+    }
+
+    // ip route add/del — modify the routing table
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bip\s+(?:-\S+\s+)*route\s+(?:add|del|delete|replace|change|append|prepend)\b/.test(stripped)) {
+      return { blocked: true, reason: 'ip route add/del can modify the routing table — blocked' };
+    }
+
+    // ip rule add/del — modify routing policy rules
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bip\s+(?:-\S+\s+)*rule\s+(?:add|del|delete)\b/.test(stripped)) {
+      return { blocked: true, reason: 'ip rule add/del can modify routing policy — blocked' };
+    }
+
+    // ip neigh add/del — modify ARP/neighbor table entries
+    // eslint-disable-next-line security/detect-unsafe-regex -- \S and \s are disjoint, linear scan
+    if (/\bip\s+(?:-\S+\s+)*neigh\s+(?:add|del|delete|replace|change)\b/.test(stripped)) {
+      return { blocked: true, reason: 'ip neigh add/del can modify ARP/neighbor table entries — blocked' };
+    }
+  }
+
+  // --- ifconfig set operations ---
+  // ifconfig alone or ifconfig <iface> alone are read-only (show info).
+  // ifconfig <iface> <ip-addr>, ifconfig <iface> up/down, ifconfig <iface> netmask/broadcast
+  // are all set operations that modify network state.
+  if (/(?:^|[\s;|&])ifconfig\s/.test(stripped)) {
+    // Match ifconfig <iface> followed by set keywords or an IP address
+    // Set keywords: up, down, netmask, broadcast, metric, mtu, promisc, -promisc, pointopoint
+    if (/\bifconfig\s+\S+\s+(?:up|down|netmask|broadcast|metric|mtu|promisc|-promisc|pointopoint)\b/.test(stripped)) {
+      return { blocked: true, reason: 'ifconfig with set operation can reconfigure network interfaces — blocked' };
+    }
+    // ifconfig <iface> <ip-address-like> — setting an IP address
+    // Match an IP-like pattern: digits.digits.digits.digits
+    if (/\bifconfig\s+\S+\s+\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(stripped)) {
+      return { blocked: true, reason: 'ifconfig with IP address assignment can reconfigure network interfaces — blocked' };
     }
   }
 
