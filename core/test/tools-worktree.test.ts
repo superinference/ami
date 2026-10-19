@@ -190,4 +190,127 @@ describe('worktree tools – lifecycle', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('enters an existing worktree via path (lines 77-89)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));
+    try {
+      initGitRepo(tmpDir);
+      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
+      child_process.execSync('git add . && git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      const create = await enterWorktreeTool.execute({ name: 'enter-existing' }, ctx({ cwd: tmpDir }));
+      assert.ok(!create.isError, `Create failed: ${create.output}`);
+
+      const wtPath = path.join(tmpDir, '.superinference', 'worktrees', 'enter-existing');
+      const enter = await enterWorktreeTool.execute({ path: wtPath }, ctx({ cwd: tmpDir }));
+      assert.ok(!enter.isError, `Enter failed: ${enter.output}`);
+      assert.ok(enter.output.includes('Entered existing worktree'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects path that exists but is not a registered worktree (line 81)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));
+    try {
+      initGitRepo(tmpDir);
+      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
+      child_process.execSync('git add . && git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      const notAWorktree = fs.mkdtempSync(path.join(os.tmpdir(), 'si-not-wt-'));
+      try {
+        const result = await enterWorktreeTool.execute({ path: notAWorktree }, ctx({ cwd: tmpDir }));
+        assert.ok(result.isError);
+        assert.ok(result.output.includes('not a registered worktree'));
+      } finally {
+        fs.rmSync(notAWorktree, { recursive: true, force: true });
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid base_ref (lines 122-126)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));
+    try {
+      initGitRepo(tmpDir);
+      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
+      child_process.execSync('git add . && git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      const result = await enterWorktreeTool.execute(
+        { name: 'bad-ref', base_ref: 'nonexistent-ref-xyz-123' },
+        ctx({ cwd: tmpDir }),
+      );
+      assert.ok(result.isError);
+      assert.ok(result.output.includes('not a valid git ref'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fires hookManager callbacks when present (lines 157-161)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));
+    try {
+      initGitRepo(tmpDir);
+      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
+      child_process.execSync('git add . && git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      let worktreeCreateCalled = false;
+      let cwdChangedCalled = false;
+      const hookManager = {
+        executeWorktreeCreate: async (_data: any) => { worktreeCreateCalled = true; },
+        executeCwdChanged: async (_data: any) => { cwdChangedCalled = true; },
+      };
+
+      const result = await enterWorktreeTool.execute(
+        { name: 'hook-test' },
+        ctx({ cwd: tmpDir, _hookManager: hookManager as any }),
+      );
+      assert.ok(!result.isError, `Failed: ${result.output}`);
+
+      await new Promise(r => setTimeout(r, 50));
+      assert.ok(worktreeCreateCalled, 'executeWorktreeCreate should have been called');
+      assert.ok(cwdChangedCalled, 'executeCwdChanged should have been called');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs cleanupStaleWorktrees on second create (lines 99-105)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));
+    try {
+      initGitRepo(tmpDir);
+      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
+      child_process.execSync('git add . && git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      const first = await enterWorktreeTool.execute({ name: 'first-wt' }, ctx({ cwd: tmpDir }));
+      assert.ok(!first.isError, `First create failed: ${first.output}`);
+
+      const worktreesDir = path.join(tmpDir, '.superinference', 'worktrees');
+      assert.ok(fs.existsSync(worktreesDir), 'worktrees dir should exist after first create');
+
+      const second = await enterWorktreeTool.execute({ name: 'second-wt' }, ctx({ cwd: tmpDir }));
+      assert.ok(!second.isError, `Second create failed: ${second.output}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates worktree with valid base_ref', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));
+    try {
+      initGitRepo(tmpDir);
+      fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
+      child_process.execSync('git add . && git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      const result = await enterWorktreeTool.execute(
+        { name: 'from-head', base_ref: 'HEAD' },
+        ctx({ cwd: tmpDir }),
+      );
+      assert.ok(!result.isError, `Failed: ${result.output}`);
+      assert.ok(result.output.includes('Worktree created'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
