@@ -51,6 +51,8 @@ const CHECK_IDS = {
   UNSAFE_HELP_COMMAND: 51,
   ALIAS_REDEFINITION: 52,
   SOURCE_EXECUTION: 53,
+  FILE_COMMAND_ARBITRARY_READ: 54,
+  SHELL_STARTUP_WRITE: 55,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -931,6 +933,21 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // `file` command with -m/--magic-file or -f/--files-from — can read
+  // arbitrary files outside the normal read-only classification.
+  if (detectUnsafeFileCommand(command)) {
+    return fail(CHECK_IDS.FILE_COMMAND_ARBITRARY_READ, '`file` with -m/--magic-file or -f/--files-from can read arbitrary files');
+  }
+
+  // Shell startup file write — blocks writes to .bashrc, .zshrc, .profile,
+  // etc. and ~/.config/git/ which grant code execution on new shells.
+  {
+    const startupCheck = detectShellStartupWrite(command);
+    if (startupCheck.blocked) {
+      return fail(CHECK_IDS.SHELL_STARTUP_WRITE, startupCheck.reason!);
+    }
+  }
+
   // Source / dot-script / eval injection — blocks source/dot-script with
   // process substitution, eval with command substitution, remote URLs,
   // and all source/eval in detached mode (except venv activation).
@@ -1414,13 +1431,40 @@ export function detectDangerousRm(command: string): { dangerous: boolean; sugges
     }
   }
 
+  // Detect rm targeting a backslash-only path (e.g. `rm -rf \`)
+  if (/\brm\s+(?:-[rfdi]+\s+)*\\(?:\s|$)/.test(command)) {
+    return { dangerous: true, suggestion: 'rm targeting a backslash-only path' };
+  }
+
   // eslint-disable-next-line security/detect-unsafe-regex -- [rfdi] and \s are disjoint, no overlap
-  const rmWithVar = /\brm\s+(?:-[rfdi]+\s+)*\$\{?(\w+)\}?/;
+  const rmWithVar = /\brm\s+(?:-[rfdi]+\s+)*\$\{?(\w+)\}?(?:\/(\w+))?/;
   const match = command.match(rmWithVar);
   if (!match) return { dangerous: false };
   const varName = match[1];
+  const trailingDir = match[2];
   const guardedPattern = new RegExp(`\\$\\{${varName}:[-?]`);
   if (guardedPattern.test(command)) return { dangerous: false };
+
+  // Variable derived from working directory (PWD, pwd output)
+  const cwdDerived = new Set(['PWD', 'OLDPWD', 'cwd']);
+  if (cwdDerived.has(varName)) {
+    return {
+      dangerous: true,
+      variable: varName,
+      suggestion: `rm targeting a variable derived from the working directory ($${varName})`,
+    };
+  }
+
+  // Variable followed by a top-level directory name (e.g. $PREFIX/usr)
+  const topLevelDirs = new Set(['usr', 'etc', 'var', 'bin', 'sbin', 'lib', 'lib64', 'opt', 'boot', 'home', 'root', 'tmp', 'dev', 'proc', 'sys', 'run', 'srv', 'mnt', 'media']);
+  if (trailingDir && topLevelDirs.has(trailingDir)) {
+    return {
+      dangerous: true,
+      variable: varName,
+      suggestion: `rm with variable followed by top-level directory (/$trailingDir) — use \${${varName}:?}`,
+    };
+  }
+
   return {
     dangerous: true,
     variable: varName,
@@ -2782,6 +2826,89 @@ export function expandHomeDirReferences(command: string, homeDir?: string): stri
   result = expandOutsideQuotes(result, /(?<=^|[\s;|&(=])~(?=\/)/g, home);
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// `file` command arbitrary read — blocks `-m`/`--magic-file` and
+// `-f`/`--files-from` flags that let the `file` command read arbitrary paths,
+// including sensitive credential files.  Safe `file path` usage is allowed.
+// (Claude Code changelog 2.1.214: "Changed `file` commands using
+// `-m`/`--magic-file` or `-f`/`--files-from` to require permission instead
+// of being auto-allowed as read-only")
+// ---------------------------------------------------------------------------
+
+export function detectUnsafeFileCommand(command: string): boolean {
+  const stripped = stripInvisibleUnicode(command);
+  if (!/\bfile\b/.test(stripped)) return false;
+
+  const segments = stripped.split(/\s*(?:;|&&|\|\||\|)\s*/);
+  for (const seg of segments) {
+    const trimmed = seg.trim();
+    const base = trimmed.replace(COMMAND_PREFIX_RE, '').trim();
+    if (!/^file\b/.test(base)) continue;
+
+    if (/\s-\S*m\b/.test(base) || /\s--magic-file\b/.test(base)) return true;
+    if (/\s-\S*f\b/.test(base) || /\s--files-from\b/.test(base)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Shell startup file write detection — blocks commands that write/append to
+// shell startup files (.bashrc, .zshrc, .bash_profile, .zlogin, .zshenv,
+// .profile, .bash_login) or git config files (~/.config/git/).
+// These files grant code execution on every new shell, making them high-value
+// persistence targets.
+// (Claude Code changelog 2.1.160: "Added a prompt before writing to shell
+// startup files and `~/.config/git/`")
+// ---------------------------------------------------------------------------
+
+const SHELL_STARTUP_FILES = [
+  '.bashrc', '.bash_profile', '.bash_login', '.bash_logout',
+  '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout',
+  '.profile', '.login',
+];
+
+const SHELL_STARTUP_RE = new RegExp(
+  SHELL_STARTUP_FILES.map(f => f.replace('.', '\\.')).join('|'),
+);
+
+const GIT_CONFIG_HOME_RE = /(?:~|\$HOME|\$\{HOME\})\/\.config\/git\//;
+
+export function detectShellStartupWrite(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  const segments = stripped.split(/\s*(?:;|&&|\|\|)\s*/);
+  for (const seg of segments) {
+    const trimmed = seg.trim();
+
+    if (!SHELL_STARTUP_RE.test(trimmed) && !GIT_CONFIG_HOME_RE.test(trimmed)) continue;
+
+    const hasWrite = />>?\s/.test(trimmed) ||
+      /\b(?:tee|sed\s+-i|perl\s+-[ip]|echo|printf|cat\s*>)\b/.test(trimmed) ||
+      /\bcp\b/.test(trimmed) || /\bmv\b/.test(trimmed) ||
+      /\bln\b/.test(trimmed) || /\binstall\b/.test(trimmed);
+
+    if (!hasWrite) continue;
+
+    for (const f of SHELL_STARTUP_FILES) {
+      const patterns = [
+        new RegExp(`(?:~|\\$HOME|\\$\\{HOME\\})/\\.?${f.replace('.', '\\.')}`),
+        new RegExp(`(?:~|\\$HOME|\\$\\{HOME\\})/${f.replace('.', '\\.')}`),
+      ];
+      for (const p of patterns) {
+        if (p.test(trimmed)) {
+          return { blocked: true, reason: `write to shell startup file ${f} — grants code execution on new shells` };
+        }
+      }
+    }
+
+    if (GIT_CONFIG_HOME_RE.test(trimmed)) {
+      return { blocked: true, reason: 'write to ~/.config/git/ — can execute arbitrary code via git hooks' };
+    }
+  }
+
+  return { blocked: false };
 }
 
 function expandOutsideQuotes(input: string, pattern: RegExp, replacement: string): string {

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { detectNuclearCommand } from '../src/tools/bash-security';
+import { detectNuclearCommand, detectUnsafeFileCommand, detectShellStartupWrite, extractInputRedirectionPaths } from '../src/tools/bash-security';
 
 describe('detectNuclearCommand', () => {
   // -----------------------------------------------------------------------
@@ -471,5 +471,196 @@ describe('detectNuclearCommand', () => {
       const result = detectNuclearCommand('terraform destroy');
       assert.ok(result.reason?.includes('IaC'));
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectUnsafeFileCommand — blocks `file` with -m/--magic-file/-f/--files-from
+// ---------------------------------------------------------------------------
+
+describe('detectUnsafeFileCommand', () => {
+  describe('blocks unsafe flags', () => {
+    it('blocks: file -m /etc/magic.custom test.bin', () => {
+      assert.ok(detectUnsafeFileCommand('file -m /etc/magic.custom test.bin'));
+    });
+
+    it('blocks: file --magic-file /etc/magic test.bin', () => {
+      assert.ok(detectUnsafeFileCommand('file --magic-file /etc/magic test.bin'));
+    });
+
+    it('blocks: file -f /tmp/file-list', () => {
+      assert.ok(detectUnsafeFileCommand('file -f /tmp/file-list'));
+    });
+
+    it('blocks: file --files-from /tmp/list.txt', () => {
+      assert.ok(detectUnsafeFileCommand('file --files-from /tmp/list.txt'));
+    });
+
+    it('blocks: sudo file -m /etc/magic test.bin', () => {
+      assert.ok(detectUnsafeFileCommand('sudo file -m /etc/magic test.bin'));
+    });
+
+    it('blocks: file -im /etc/magic test.bin (combined flags)', () => {
+      assert.ok(detectUnsafeFileCommand('file -im /etc/magic test.bin'));
+    });
+  });
+
+  describe('allows safe usage', () => {
+    it('allows: file test.bin', () => {
+      assert.ok(!detectUnsafeFileCommand('file test.bin'));
+    });
+
+    it('allows: file -i test.bin', () => {
+      assert.ok(!detectUnsafeFileCommand('file -i test.bin'));
+    });
+
+    it('allows: file -b test.bin', () => {
+      assert.ok(!detectUnsafeFileCommand('file -b test.bin'));
+    });
+
+    it('allows: ls -la /tmp/file', () => {
+      assert.ok(!detectUnsafeFileCommand('ls -la /tmp/file'));
+    });
+
+    it('allows: echo file content', () => {
+      assert.ok(!detectUnsafeFileCommand('echo file content'));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectShellStartupWrite — blocks writes to shell startup files
+// ---------------------------------------------------------------------------
+
+describe('detectShellStartupWrite', () => {
+  describe('blocks writes to shell startup files', () => {
+    it('blocks: echo "export PATH" >> ~/.bashrc', () => {
+      assert.ok(detectShellStartupWrite('echo "export PATH" >> ~/.bashrc').blocked);
+    });
+
+    it('blocks: echo "alias x=y" >> ~/.zshrc', () => {
+      assert.ok(detectShellStartupWrite('echo "alias x=y" >> ~/.zshrc').blocked);
+    });
+
+    it('blocks: tee -a ~/.bash_profile < script.sh', () => {
+      assert.ok(detectShellStartupWrite('tee -a ~/.bash_profile < script.sh').blocked);
+    });
+
+    it('blocks: echo malicious >> ~/.zshenv', () => {
+      assert.ok(detectShellStartupWrite('echo malicious >> ~/.zshenv').blocked);
+    });
+
+    it('blocks: sed -i "s/old/new/" ~/.profile', () => {
+      assert.ok(detectShellStartupWrite('sed -i "s/old/new/" ~/.profile').blocked);
+    });
+
+    it('blocks: cp evil.sh ~/.bash_login', () => {
+      assert.ok(detectShellStartupWrite('cp evil.sh ~/.bash_login').blocked);
+    });
+
+    it('blocks: echo payload >> $HOME/.bashrc', () => {
+      assert.ok(detectShellStartupWrite('echo payload >> $HOME/.bashrc').blocked);
+    });
+
+    it('blocks: echo payload >> ${HOME}/.zshrc', () => {
+      assert.ok(detectShellStartupWrite('echo payload >> ${HOME}/.zshrc').blocked);
+    });
+
+    it('blocks: mv evil.sh ~/.zlogin', () => {
+      assert.ok(detectShellStartupWrite('mv evil.sh ~/.zlogin').blocked);
+    });
+  });
+
+  describe('blocks writes to git config', () => {
+    it('blocks: echo hook >> ~/.config/git/config', () => {
+      assert.ok(detectShellStartupWrite('echo hook >> ~/.config/git/config').blocked);
+    });
+
+    it('blocks: cp hooks.sh $HOME/.config/git/hooks', () => {
+      assert.ok(detectShellStartupWrite('cp hooks.sh $HOME/.config/git/hooks').blocked);
+    });
+  });
+
+  describe('allows safe operations', () => {
+    it('allows: cat ~/.bashrc', () => {
+      assert.ok(!detectShellStartupWrite('cat ~/.bashrc').blocked);
+    });
+
+    it('allows: grep PATH ~/.zshrc', () => {
+      assert.ok(!detectShellStartupWrite('grep PATH ~/.zshrc').blocked);
+    });
+
+    it('allows: source ~/.bashrc', () => {
+      assert.ok(!detectShellStartupWrite('source ~/.bashrc').blocked);
+    });
+
+    it('allows: echo "hello world"', () => {
+      assert.ok(!detectShellStartupWrite('echo "hello world"').blocked);
+    });
+
+    it('allows: echo data >> ~/project/notes.txt', () => {
+      assert.ok(!detectShellStartupWrite('echo data >> ~/project/notes.txt').blocked);
+    });
+
+    it('provides reason mentioning the file', () => {
+      const result = detectShellStartupWrite('echo payload >> ~/.bashrc');
+      assert.ok(result.reason?.includes('.bashrc'));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractInputRedirectionPaths — extracts paths from < redirections
+// ---------------------------------------------------------------------------
+
+describe('extractInputRedirectionPaths', () => {
+  it('extracts simple input redirect', () => {
+    const paths = extractInputRedirectionPaths('sort < input.txt');
+    assert.deepEqual(paths, ['input.txt']);
+  });
+
+  it('extracts multiple input redirects', () => {
+    const paths = extractInputRedirectionPaths('cat < a.txt; sort < b.txt');
+    assert.deepEqual(paths, ['a.txt', 'b.txt']);
+  });
+
+  it('extracts quoted paths', () => {
+    const paths = extractInputRedirectionPaths('sort < "my file.txt"');
+    assert.deepEqual(paths, ['my file.txt']);
+  });
+
+  it('extracts single-quoted paths', () => {
+    const paths = extractInputRedirectionPaths("sort < 'my file.txt'");
+    assert.deepEqual(paths, ['my file.txt']);
+  });
+
+  it('skips /dev/null', () => {
+    const paths = extractInputRedirectionPaths('cmd < /dev/null');
+    assert.deepEqual(paths, []);
+  });
+
+  it('skips /dev/fd/ paths', () => {
+    const paths = extractInputRedirectionPaths('cmd < /dev/fd/3');
+    assert.deepEqual(paths, []);
+  });
+
+  it('skips heredocs (<<)', () => {
+    const paths = extractInputRedirectionPaths('cat << EOF\nhello\nEOF');
+    assert.deepEqual(paths, []);
+  });
+
+  it('skips herestrings (<<<)', () => {
+    const paths = extractInputRedirectionPaths('cat <<< "hello"');
+    assert.deepEqual(paths, []);
+  });
+
+  it('handles fd prefix (0< file)', () => {
+    const paths = extractInputRedirectionPaths('cmd 0< input.txt');
+    assert.deepEqual(paths, ['input.txt']);
+  });
+
+  it('returns empty for no redirections', () => {
+    const paths = extractInputRedirectionPaths('echo hello');
+    assert.deepEqual(paths, []);
   });
 });
