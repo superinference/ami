@@ -213,6 +213,32 @@ export function getSandboxStatus(): { available: boolean; method: string } {
   return { available: true, method: 'ulimits' };
 }
 
+export interface SandboxValidation {
+  valid: boolean;
+  error?: string;
+  method?: string;
+}
+
+export function validateSandboxEnabled(): SandboxValidation {
+  if (process.platform !== 'linux') {
+    return {
+      valid: false,
+      error: 'Sandbox mode requires Linux with namespace support (unshare). ' +
+        `Current platform is ${process.platform}. ` +
+        'Set sandbox.enabled to false or run on Linux.',
+    };
+  }
+  if (!isUnshareAvailable()) {
+    return {
+      valid: false,
+      error: 'Sandbox mode is enabled but the unshare command is not available or lacks permissions. ' +
+        'Install util-linux and ensure user namespaces are enabled (sysctl kernel.unprivileged_userns_clone=1), ' +
+        'or set sandbox.enabled to false.',
+    };
+  }
+  return { valid: true, method: 'unshare' };
+}
+
 export function resetSandboxCache(): void {
   _unshareAvailable = null;
 }
