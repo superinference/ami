@@ -813,13 +813,12 @@ export class PermissionManager {
     const key = denialKey(toolName, input);
     if (this.deniedCommands.has(key)) return 'deny';
 
+    // Determine if this is a destructive bash command (used to guard allow
+    // rules from auto-approving dangerous commands via wildcards).
+    const isDestructiveBash = this.mode === 'ask' && toolName === 'bash' &&
+      typeof input.command === 'string' &&
+      this.classifyBashCommand(input.command) === 'destructive';
 
-    // Destructive bash commands always require confirmation in 'ask' mode,
-    // even when matched by a wildcard rule — prevents rm -rf of user output
-    if (this.mode === 'ask' && toolName === 'bash' && typeof input.command === 'string') {
-      const classification = this.classifyBashCommand(input.command);
-      if (classification === 'destructive') return 'ask';
-    }
     // Credential/secret access always confirms in rule-evaluated modes (ask and
     // acceptEdits), even under a wildcard allow — unless there is an explicit
     // deny rule (which must still win below).

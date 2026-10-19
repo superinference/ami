@@ -22,6 +22,7 @@ import {
   detectEncoding,
   decodeBuffer,
   encodeText,
+  validateFilePath,
 } from '../src/tools/tool-utils';
 
 // ---------------------------------------------------------------------------
@@ -846,5 +847,50 @@ describe('redactSecrets – URL password special chars', () => {
     const url = 'https://user:abc@host.com/path';
     const result = redactSecrets(url);
     assert.equal(result, url);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateFilePath — NUL byte rejection
+// ---------------------------------------------------------------------------
+
+describe('validateFilePath', () => {
+  it('returns null for a normal file path', () => {
+    assert.equal(validateFilePath('/home/user/file.txt'), null);
+  });
+
+  it('returns null for an empty string', () => {
+    assert.equal(validateFilePath(''), null);
+  });
+
+  it('returns error for path containing NUL byte', () => {
+    const result = validateFilePath('/etc/passwd\x00.txt');
+    assert.ok(result, 'should return a ToolResult');
+    assert.equal(result!.isError, true);
+    assert.ok(result!.output.includes('null byte'));
+  });
+
+  it('returns error for path with NUL at the start', () => {
+    const result = validateFilePath('\x00/etc/passwd');
+    assert.ok(result);
+    assert.equal(result!.isError, true);
+  });
+
+  it('returns error for path with NUL in the middle', () => {
+    const result = validateFilePath('/home/user\x00/../../etc/shadow');
+    assert.ok(result);
+    assert.equal(result!.isError, true);
+  });
+
+  it('returns error for path that is only a NUL byte', () => {
+    const result = validateFilePath('\x00');
+    assert.ok(result);
+    assert.equal(result!.isError, true);
+  });
+
+  it('returns null for paths with other special characters', () => {
+    assert.equal(validateFilePath('/home/user/file with spaces.txt'), null);
+    assert.equal(validateFilePath('/home/user/file-name_v2.tar.gz'), null);
+    assert.equal(validateFilePath('/home/user/日本語ファイル.txt'), null);
   });
 });
