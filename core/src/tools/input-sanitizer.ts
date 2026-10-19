@@ -80,3 +80,19 @@ export function detectPromptInjection(text: string): { suspicious: boolean; patt
 
   return { suspicious: false };
 }
+
+export function sanitizeSubagentOutput(output: string): { output: string; warnings: string[] } {
+  if (!output) return { output, warnings: [] };
+  const warnings: string[] = [];
+  const result = detectPromptInjection(output);
+  if (result.suspicious) {
+    warnings.push(`Possible prompt injection detected (pattern: ${result.pattern})`);
+  }
+  if (/&lt;\\?system[-_]?reminder|<\\?system[-_]?reminder/i.test(output)) {
+    warnings.push('Content contains system-reminder–shaped tags');
+  }
+  const prefix = warnings.length > 0
+    ? `[WARNING: This content may contain prompt injection attempts — ${warnings.join('; ')}]\n\n`
+    : '';
+  return { output: prefix + output, warnings };
+}
