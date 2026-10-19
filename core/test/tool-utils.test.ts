@@ -23,6 +23,7 @@ import {
   decodeBuffer,
   encodeText,
   validateFilePath,
+  sanitizePathForDisplay,
 } from '../src/tools/tool-utils';
 
 // ---------------------------------------------------------------------------
@@ -1090,5 +1091,60 @@ describe('redactSecrets — new token patterns', () => {
     const result = redactSecrets('token=ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234');
     assert.ok(result.includes('[REDACTED-SECRET]'));
     assert.ok(!result.includes('ghs_'));
+  });
+
+  it('redacts GitLab personal access tokens (glpat-)', () => {
+    const result = redactSecrets('token=glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZabcd');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glpat-'));
+  });
+
+  it('redacts GitLab deploy tokens (gldt-)', () => {
+    const result = redactSecrets('GL_TOKEN=gldt-ABCDEFGHIJKLMNOPQRSTUVWXYZabcd');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('gldt-'));
+  });
+
+  it('redacts GitLab runner registration tokens (glrt-)', () => {
+    const result = redactSecrets('REG_TOKEN=glrt-ABCDEFGHIJKLMNOPQRSTUVWXYZabcd');
+    assert.ok(result.includes('[REDACTED-SECRET]'));
+    assert.ok(!result.includes('glrt-'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizePathForDisplay — file path display escaping
+// ---------------------------------------------------------------------------
+
+describe('sanitizePathForDisplay', () => {
+  it('escapes newlines in file paths', () => {
+    assert.equal(sanitizePathForDisplay('/home/user/file\nname.txt'), '/home/user/file\\nname.txt');
+  });
+
+  it('escapes carriage returns', () => {
+    assert.equal(sanitizePathForDisplay('/home/user/file\rname.txt'), '/home/user/file\\rname.txt');
+  });
+
+  it('escapes tabs', () => {
+    assert.equal(sanitizePathForDisplay('/home/user/file\tname.txt'), '/home/user/file\\tname.txt');
+  });
+
+  it('handles multiple control characters', () => {
+    assert.equal(
+      sanitizePathForDisplay('/home\n/user\r/file\t.txt'),
+      '/home\\n/user\\r/file\\t.txt',
+    );
+  });
+
+  it('preserves normal paths unchanged', () => {
+    assert.equal(sanitizePathForDisplay('/home/user/file.txt'), '/home/user/file.txt');
+  });
+
+  it('preserves paths with spaces', () => {
+    assert.equal(sanitizePathForDisplay('/home/user/my file.txt'), '/home/user/my file.txt');
+  });
+
+  it('handles empty string', () => {
+    assert.equal(sanitizePathForDisplay(''), '');
   });
 });

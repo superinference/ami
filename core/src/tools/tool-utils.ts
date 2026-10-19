@@ -30,6 +30,17 @@ export function validateFilePath(filePath: string): ToolResult | null {
 }
 
 /**
+ * Escape control characters in a file path for safe display in error messages.
+ * Prevents newlines/tabs from breaking message formatting.
+ */
+export function sanitizePathForDisplay(filePath: string): string {
+  return filePath
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+/**
  * Validate that a required string input field is present and non-empty.
  * Returns a ToolResult error if invalid, or null if valid.
  */
