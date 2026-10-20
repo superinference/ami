@@ -1,6 +1,6 @@
 export { SessionManager } from './session';
 export type { Session, SessionListEntry } from './session';
-export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey } from './provider';
+export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall } from './provider';
 export { createDefaultTools } from './tools';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
