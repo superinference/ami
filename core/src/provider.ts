@@ -1,4 +1,4 @@
-import { streamText, jsonSchema, stepCountIs } from 'ai';
+import { streamText, jsonSchema } from 'ai';
 import type { ModelMessage, ToolSet } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -623,7 +623,7 @@ export function convertToolsForSDK(tools: ToolDefinition[]): ToolSet {
   for (const tool of tools) {
     sdkTools[tool.name] = {
       description: tool.description,
-      inputSchema: jsonSchema(tool.inputSchema),
+      inputSchema: jsonSchema(tool.inputSchema as any),
       // NO execute function — we handle execution in our engine loop
     };
   }
@@ -884,10 +884,9 @@ export async function* streamChatCompletion(
 
     const result = streamText({
       model,
-      system: systemPrompt,
+      instructions: systemPrompt,
       messages: coreMessages,
       tools: sdkTools,
-      stopWhen: stepCountIs(1),
       maxOutputTokens: fitOutputTokens(
         config.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
         config.contextWindow ?? getContextWindow(modelId),
@@ -906,7 +905,7 @@ export async function* streamChatCompletion(
     // Track tool call indices so engine.ts can accumulate them by index
     let toolCallIndex = 0;
 
-    const stream = result.fullStream;
+    const stream = result.stream;
     for await (const part of stream) {
       switch (part.type) {
         case 'text-delta':
