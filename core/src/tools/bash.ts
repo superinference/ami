@@ -109,7 +109,7 @@ export function extractBashReadPaths(command: string, cwd: string): string[] {
     if (!FILE_READ_COMMANDS.test(seg)) continue;
     const isGrep = GREP_COMMANDS.test(seg);
     const isSed = /^\s*sed\b/.test(seg);
-    const rawTokens = seg.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    const rawTokens = seg.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
     const tokens = rawTokens.map(t => t.replace(/^["']|["']$/g, ''));
     let patternSkipped = false;
     for (let i = 1; i < tokens.length; i++) {
