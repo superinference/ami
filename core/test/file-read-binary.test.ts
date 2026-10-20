@@ -141,4 +141,22 @@ describe('file_read tool rejects known binary extensions', () => {
     assert.ok(!result.isError);
     assert.ok(result.output.includes('Hello world'));
   });
+
+  // Red-green reproducer: single null byte in text should NOT trigger binary detection.
+  // checkBinary() returns true on ANY null byte, but the 1% threshold in
+  // checkBinaryContent() correctly allows files with sparse null bytes.
+  // The tool uses checkBinary() instead of checkBinaryContent(), causing
+  // text files with a single embedded NUL to be falsely classified as binary.
+  it('does NOT classify text file with single null byte as binary', async () => {
+    const fp = path.join(tmpDir, 'sparse-null.txt');
+    const buf = Buffer.alloc(1000, 0x41); // 1000 bytes of 'A'
+    buf[500] = 0; // single null byte — 0.1%, well below 1% threshold
+    fs.writeFileSync(fp, buf);
+    const result = await fileReadTool.execute({ file_path: fp }, ctx(tmpDir));
+    assert.ok(!result.isError, 'should not be an error');
+    assert.ok(
+      !result.output.includes('[Binary file]'),
+      `Expected text content but got "[Binary file]" — single null byte (0.1%) should not trigger binary detection`,
+    );
+  });
 });

@@ -435,7 +435,7 @@ export const fileReadTool: ToolDefinition = {
     const isBomText = bomEncoding !== 'utf-8';
 
     // Check for binary content
-    const isBinary = isBomText ? false : await checkBinary(resolved);
+    const isBinary = isBomText ? false : await checkBinaryContent(resolved);
     if (isBinary) {
       return { output: '[Binary file]' };
     }
@@ -618,18 +618,3 @@ export async function checkBinaryContent(filePath: string): Promise<boolean> {
   }
 }
 
-async function checkBinary(filePath: string): Promise<boolean> {
-  const fd = await fs.promises.open(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(BINARY_CHECK_BYTES);
-    const { bytesRead } = await fd.read(buffer, 0, BINARY_CHECK_BYTES, 0);
-    for (let i = 0; i < bytesRead; i++) {
-      if (buffer[i] === 0) {
-        return true;
-      }
-    }
-    return false;
-  } finally {
-    await fd.close();
-  }
-}

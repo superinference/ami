@@ -108,16 +108,14 @@ export function extractBashReadPaths(command: string, cwd: string): string[] {
   for (const seg of segments) {
     if (!FILE_READ_COMMANDS.test(seg)) continue;
     const isGrep = GREP_COMMANDS.test(seg);
-    const tokens = seg.split(/\s+/).filter(Boolean);
+    const isSed = /^\s*sed\b/.test(seg);
+    const rawTokens = seg.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    const tokens = rawTokens.map(t => t.replace(/^["']|["']$/g, ''));
     let patternSkipped = false;
     for (let i = 1; i < tokens.length; i++) {
       const t = tokens[i];
       if (t.startsWith('-')) continue;
-      if (t.startsWith('"') || t.startsWith("'")) {
-        if (isGrep && !patternSkipped) { patternSkipped = true; continue; }
-        continue;
-      }
-      if (isGrep && !patternSkipped) { patternSkipped = true; continue; }
+      if ((isGrep || isSed) && !patternSkipped) { patternSkipped = true; continue; }
       const resolved = path.isAbsolute(t) ? t : path.resolve(cwd, t);
       paths.push(resolved);
     }

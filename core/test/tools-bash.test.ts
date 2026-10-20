@@ -1307,6 +1307,21 @@ describe('extractBashReadPaths', () => {
     const paths = extractBashReadPaths('sed "s/old/new/g" /src/config.ts', '/cwd');
     assert.deepEqual(paths, []);
   });
+
+  // Red-green reproducer: quoted paths should be extracted, not skipped.
+  // extractBashReadPaths() skips any token starting with " or ' entirely,
+  // so `cat "file.txt"` extracts nothing instead of file.txt.
+  it('extracts quoted path from cat command', () => {
+    const paths = extractBashReadPaths('cat "/tmp/my file.txt"', '/cwd');
+    assert.equal(paths.length, 1, 'should extract the quoted path');
+    assert.ok(paths[0].includes('my file.txt'), `path should contain filename, got: ${paths[0]}`);
+  });
+
+  it('extracts single-quoted path from head command', () => {
+    const paths = extractBashReadPaths("head -20 '/tmp/data.log'", '/cwd');
+    assert.equal(paths.length, 1, 'should extract single-quoted path');
+    assert.ok(paths[0].includes('data.log'), `path should contain filename, got: ${paths[0]}`);
+  });
 });
 
 // ---------------------------------------------------------------------------
