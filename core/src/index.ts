@@ -77,7 +77,7 @@ export { generateTitle } from './title-generator';
 export { ProcessManager } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
 
-export { estimateTokens as estimateTokensLegacy, estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens } from './token-estimator';
+export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens } from './token-estimator';
 export type { ToolStats } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';

@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
+import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 
 import { classifyError, friendlyErrorMessage, type ClassifiedError } from '../src/error-classifier';
 
@@ -565,5 +566,227 @@ describe('server_error friendly message includes status page hint', () => {
     const result = classifyError('HTTP 500 Internal Server Error');
     const msg = friendlyErrorMessage(result);
     assert.ok(msg.includes('status page'), 'Server error friendly message should mention status page');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SDK typed error classification — fast path via Error objects
+// ---------------------------------------------------------------------------
+
+function makeAPICallError(statusCode: number, message: string): APICallError {
+  return new APICallError({
+    message,
+    url: 'https://api.example.com/v1/chat',
+    requestBodyValues: {},
+    statusCode,
+    responseHeaders: {},
+    responseBody: '',
+  });
+}
+
+describe('classifyError — SDK APICallError fast path', () => {
+  it('classifies 429 as rate_limited', () => {
+    const err = makeAPICallError(429, 'Too Many Requests');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'rate_limited', retryable: true, shouldCompact: false, shouldFallback: false });
+    assert.equal(result.suggestedDelay, 5000);
+  });
+
+  it('classifies 401 as auth_error (non-retryable)', () => {
+    const err = makeAPICallError(401, 'Invalid API key');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'auth_error', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies 403 as retryable auth_error', () => {
+    const err = makeAPICallError(403, 'Forbidden');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'auth_error', retryable: true, shouldCompact: false, shouldFallback: true });
+    assert.equal(result.suggestedDelay, 5000);
+  });
+
+  it('classifies 403 with api key message as non-retryable auth_error', () => {
+    const err = makeAPICallError(403, 'Invalid API key');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'auth_error', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies 413 as context_overflow', () => {
+    const err = makeAPICallError(413, 'Payload Too Large');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('classifies 400 with context message as context_overflow', () => {
+    const err = makeAPICallError(400, 'This model maximum context length is 128000 tokens');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('classifies 400 with token message as context_overflow', () => {
+    const err = makeAPICallError(400, 'prompt has too many tokens');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('classifies 400 without context/token keywords as unknown (falls through)', () => {
+    const err = makeAPICallError(400, 'Bad Request: invalid JSON');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'unknown', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies 500 as server_error', () => {
+    const err = makeAPICallError(500, 'Internal Server Error');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'server_error', retryable: true, shouldCompact: false, shouldFallback: true });
+    assert.equal(result.suggestedDelay, 3000);
+  });
+
+  it('classifies 502 as server_error', () => {
+    const err = makeAPICallError(502, 'Bad Gateway');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'server_error', retryable: true, shouldCompact: false, shouldFallback: true });
+    assert.equal(result.suggestedDelay, 3000);
+  });
+
+  it('classifies 503 as model_unavailable', () => {
+    const err = makeAPICallError(503, 'Service Unavailable');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'model_unavailable', retryable: true, shouldCompact: false, shouldFallback: true });
+    assert.equal(result.suggestedDelay, 10000);
+  });
+
+  it('classifies 529 as model_unavailable', () => {
+    const err = makeAPICallError(529, 'Overloaded');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'model_unavailable', retryable: true, shouldCompact: false, shouldFallback: true });
+    assert.equal(result.suggestedDelay, 10000);
+  });
+
+  it('classifies billing limit with 429 status as plan_limit (not rate_limited)', () => {
+    const err = makeAPICallError(429, 'Your billing limit has been exceeded');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'plan_limit', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies unknown status code via regex fallback', () => {
+    const err = makeAPICallError(418, "I'm a teapot");
+    const result = classifyError(err);
+    assertClassification(result, { category: 'unknown', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('preserves the error message from APICallError', () => {
+    const err = makeAPICallError(429, 'Rate limited by provider');
+    const result = classifyError(err);
+    assert.equal(result.message, 'Rate limited by provider');
+  });
+});
+
+describe('classifyError — SDK LoadAPIKeyError', () => {
+  it('classifies as auth_error', () => {
+    const err = new LoadAPIKeyError({ message: 'API key not found in environment' });
+    const result = classifyError(err);
+    assertClassification(result, { category: 'auth_error', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('preserves the message', () => {
+    const err = new LoadAPIKeyError({ message: 'ANTHROPIC_API_KEY not set' });
+    const result = classifyError(err);
+    assert.equal(result.message, 'ANTHROPIC_API_KEY not set');
+  });
+});
+
+describe('classifyError — SDK NoSuchModelError', () => {
+  it('classifies as model_unavailable with shouldFallback', () => {
+    const err = new NoSuchModelError({ modelId: 'gpt-99', modelType: 'chat' });
+    const result = classifyError(err);
+    assertClassification(result, { category: 'model_unavailable', retryable: false, shouldCompact: false, shouldFallback: true });
+  });
+});
+
+describe('classifyError — SDK InvalidPromptError', () => {
+  it('classifies as context_overflow with shouldCompact', () => {
+    const err = new InvalidPromptError({ prompt: [], reason: 'Prompt too long' });
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+});
+
+describe('classifyError — SDK NoContentGeneratedError', () => {
+  it('classifies as server_error (retryable)', () => {
+    const err = new NoContentGeneratedError({ message: 'Model returned empty response' });
+    const result = classifyError(err);
+    assertClassification(result, { category: 'server_error', retryable: true, shouldCompact: false, shouldFallback: true });
+    assert.equal(result.suggestedDelay, 3000);
+  });
+});
+
+describe('classifyError — SDK EmptyResponseBodyError', () => {
+  it('classifies as server_error (retryable)', () => {
+    const err = new EmptyResponseBodyError({ url: 'https://api.example.com', message: 'Empty response' });
+    const result = classifyError(err);
+    assertClassification(result, { category: 'server_error', retryable: true, shouldCompact: false, shouldFallback: true });
+    assert.equal(result.suggestedDelay, 3000);
+  });
+});
+
+describe('classifyError — plain Error objects (non-SDK)', () => {
+  it('classifies an Error with abort message via regex fallback', () => {
+    const err = new Error('The operation was aborted');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'abort', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies an Error with rate limit message via regex fallback', () => {
+    const err = new Error('rate limit exceeded');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'rate_limited', retryable: true, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies an Error with network error message via regex fallback', () => {
+    const err = new Error('connect ECONNREFUSED 127.0.0.1:443');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'network_error', retryable: true, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies an Error with unknown message as unknown', () => {
+    const err = new Error('something unexpected');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'unknown', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('preserves Error.message as the classified message', () => {
+    const err = new Error('specific error text');
+    const result = classifyError(err);
+    assert.equal(result.message, 'specific error text');
+  });
+
+  it('AbortError name is caught by SDK fast path', () => {
+    const err = new DOMException('signal aborted', 'AbortError');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'abort', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+});
+
+describe('classifyError — Error vs string consistency', () => {
+  it('produces same category for Error and string with same message', () => {
+    const messages = [
+      'HTTP 429 Too Many Requests',
+      'HTTP 401 Unauthorized',
+      'connect ECONNREFUSED',
+      'context too long',
+      'Repetitive output detected',
+      'content_filter triggered',
+      'HTTP 503 Service Unavailable',
+      'HTTP 500 Internal Server Error',
+    ];
+    for (const msg of messages) {
+      const fromString = classifyError(msg);
+      const fromError = classifyError(new Error(msg));
+      assert.equal(fromString.category, fromError.category,
+        `Category mismatch for "${msg}": string=${fromString.category}, Error=${fromError.category}`);
+      assert.equal(fromString.retryable, fromError.retryable,
+        `Retryable mismatch for "${msg}"`);
+    }
   });
 });

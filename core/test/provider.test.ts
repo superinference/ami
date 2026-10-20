@@ -14,6 +14,7 @@ import {
   resolveContextWindow,
   fetchAdvertisedContextWindow,
   fetchHuggingFaceContextWindow,
+  buildRepairToolCall,
 } from '../src/provider';
 import { fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../src/model-capabilities';
 import { estimateTokens } from '../src/utils/tokens';
@@ -1687,5 +1688,288 @@ describe('buildAnthropicCacheControl', () => {
     assert.deepEqual(buildAnthropicCacheControl('1h'), { type: 'ephemeral', ttl: '1h' });
     assert.deepEqual(buildAnthropicCacheControl('5m'), { type: 'ephemeral' });
     assert.deepEqual(buildAnthropicCacheControl(undefined), { type: 'ephemeral' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRepairToolCall
+// ---------------------------------------------------------------------------
+describe('buildRepairToolCall', () => {
+  const tools: ToolDefinition[] = [
+    makeMockTool('file_read', 'Read a file'),
+    makeMockTool('file_edit', 'Edit a file'),
+    makeMockTool('bash', 'Run a command'),
+    makeMockTool('grep', 'Search files'),
+    makeMockTool('glob', 'Find files'),
+    makeMockTool('list_dir', 'List directory'),
+    makeMockTool('web_fetch', 'Fetch a URL'),
+  ];
+
+  it('returns a function', () => {
+    const repair = buildRepairToolCall(tools);
+    assert.equal(typeof repair, 'function');
+  });
+
+  it('corrects read_file to file_read', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'read_file', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'file_read');
+    assert.equal(result!.toolCallId, 'tc-1');
+    assert.equal(result!.input, '{}');
+  });
+
+  it('corrects edit_file to file_edit', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-2', toolName: 'edit_file', input: '{"path":"a.txt"}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'file_edit');
+  });
+
+  it('corrects write_file to file_edit', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-3', toolName: 'write_file', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'file_edit');
+  });
+
+  it('corrects run_command to bash', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-4', toolName: 'run_command', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'bash');
+  });
+
+  it('corrects execute to bash', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-5', toolName: 'execute', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'bash');
+  });
+
+  it('corrects search_files to grep', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-6', toolName: 'search_files', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'grep');
+  });
+
+  it('corrects find_files to glob', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-7', toolName: 'find_files', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'glob');
+  });
+
+  it('corrects cat to file_read', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-8', toolName: 'cat', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'file_read');
+  });
+
+  it('corrects ls to list_dir', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-9', toolName: 'ls', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'list_dir');
+  });
+
+  it('corrects curl to web_fetch', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-10', toolName: 'curl', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'web_fetch');
+  });
+
+  it('corrects case-insensitive hallucinated names', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-11', toolName: 'Read_File', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'file_read');
+  });
+
+  it('returns null for unknown tool names with no correction', async () => {
+    const repair = buildRepairToolCall(tools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-12', toolName: 'completely_fake_tool', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.equal(result, null);
+  });
+
+  it('returns null when target tool is not registered', async () => {
+    // Only bash is registered; read_file maps to file_read which is not available
+    const limitedTools: ToolDefinition[] = [makeMockTool('bash', 'Run command')];
+    const repair = buildRepairToolCall(limitedTools);
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-13', toolName: 'read_file', input: '{}' };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.equal(result, null);
+  });
+
+  it('preserves input when correcting tool name', async () => {
+    const repair = buildRepairToolCall(tools);
+    const inputJson = '{"command":"echo hello","timeout":5000}';
+    const toolCall = { type: 'tool-call' as const, toolCallId: 'tc-14', toolName: 'run_command', input: inputJson };
+    const result = await repair({
+      toolCall,
+      tools: {} as any,
+      inputSchema: async () => ({} as any),
+      error: new Error() as any,
+      instructions: undefined,
+      system: undefined,
+      messages: [],
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.toolName, 'bash');
+    assert.equal(result!.input, inputJson);
+    assert.equal(result!.toolCallId, 'tc-14');
+  });
+
+  it('corrects all hallucinated name mappings', async () => {
+    const EXPECTED_CORRECTIONS: Record<string, string> = {
+      read_file: 'file_read',
+      edit_file: 'file_edit',
+      write_file: 'file_edit',
+      list_directory: 'list_dir',
+      agentic_fetch: 'web_fetch',
+      run_command: 'bash',
+      execute: 'bash',
+      search_files: 'grep',
+      find_files: 'glob',
+      search: 'grep',
+      cat: 'file_read',
+      ls: 'list_dir',
+      find: 'glob',
+      curl: 'web_fetch',
+    };
+    const repair = buildRepairToolCall(tools);
+    for (const [hallucinated, expected] of Object.entries(EXPECTED_CORRECTIONS)) {
+      const toolCall = { type: 'tool-call' as const, toolCallId: `tc-all-${hallucinated}`, toolName: hallucinated, input: '{}' };
+      const result = await repair({
+        toolCall,
+        tools: {} as any,
+        inputSchema: async () => ({} as any),
+        error: new Error() as any,
+        instructions: undefined,
+        system: undefined,
+        messages: [],
+      });
+      assert.ok(result !== null, `${hallucinated} should be corrected`);
+      assert.equal(result!.toolName, expected, `${hallucinated} should map to ${expected}`);
+    }
   });
 });

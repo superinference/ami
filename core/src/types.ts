@@ -177,6 +177,8 @@ export interface StreamChunk {
     cacheCreationTokens?: number;
   };
   error?: string;
+  /** The original Error object from the SDK or provider, preserved for structured classification. */
+  errorObject?: Error;
   /** Present on error chunks — the Retry-After value in seconds from the response header, if any. */
   retryAfter?: number;
   /** Response headers from the API call (available on 'done' and 'error' chunks). */

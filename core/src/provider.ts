@@ -1,5 +1,5 @@
 import { streamText, jsonSchema } from 'ai';
-import type { ModelMessage, ToolSet } from 'ai';
+import type { ModelMessage, ToolSet, ToolCallRepairFunction } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -813,12 +813,56 @@ export function buildAnthropicCacheControl(cacheTtl?: '5m' | '1h'): { type: 'eph
   return cacheTtl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
 }
 
+// ---------------------------------------------------------------------------
+// repairToolCall — fix hallucinated tool names at the stream level
+// ---------------------------------------------------------------------------
+
+/**
+ * Map of commonly-hallucinated tool names to the correct tool name.
+ * Used by buildRepairToolCall to correct tool names before they reach
+ * the engine's tool executor.
+ */
+const TOOL_NAME_CORRECTIONS: Record<string, string> = {
+  read_file: 'file_read',
+  edit_file: 'file_edit',
+  write_file: 'file_edit',
+  list_directory: 'list_dir',
+  agentic_fetch: 'web_fetch',
+  run_command: 'bash',
+  execute: 'bash',
+  search_files: 'grep',
+  find_files: 'glob',
+  search: 'grep',
+  cat: 'file_read',
+  ls: 'list_dir',
+  find: 'glob',
+  curl: 'web_fetch',
+};
+
+/**
+ * Build a repairToolCall callback for the AI SDK's streamText().
+ * When the model hallucinates a tool name (e.g. "read_file" instead of
+ * "file_read"), this function maps it to the correct registered name.
+ * Returns null if no correction is possible.
+ */
+export function buildRepairToolCall(tools: ToolDefinition[]): ToolCallRepairFunction<ToolSet> {
+  const registeredNames = new Set(tools.map(t => t.name));
+  return async ({ toolCall }) => {
+    const hallucinated = toolCall.toolName;
+    const corrected = TOOL_NAME_CORRECTIONS[hallucinated] ?? TOOL_NAME_CORRECTIONS[hallucinated.toLowerCase()];
+    if (corrected && registeredNames.has(corrected)) {
+      return { ...toolCall, toolName: corrected };
+    }
+    return null;
+  };
+}
+
 export async function* streamChatCompletion(
   config: ProviderConfig,
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet> },
 ): AsyncGenerator<StreamChunk> {
   const model = resolveModel(config);
   const inferred = inferProviderFromApiKey(config.apiKey)
@@ -893,6 +937,7 @@ export async function* streamChatCompletion(
         promptTokensForFit(systemPrompt, sanitized, tools),
       ),
       ...(effectiveTemperature !== undefined ? { temperature: effectiveTemperature } : {}),
+      ...(options?.repairToolCall ? { repairToolCall: options.repairToolCall } : {}),
       abortSignal,
       maxRetries: 0,
       onError: ({ error }) => {
@@ -964,6 +1009,7 @@ export async function* streamChatCompletion(
           yield {
             type: 'error',
             error: errMsg,
+            errorObject: part.error instanceof Error ? part.error : undefined,
             ...(errRetryAfter !== undefined && { retryAfter: errRetryAfter }),
             responseHeaders: errObj?.responseHeaders,
           };
@@ -1013,6 +1059,7 @@ export async function* streamChatCompletion(
       yield {
         type: 'error',
         error: errorMsg,
+        errorObject: err instanceof Error ? err : undefined,
         ...(retryAfter !== undefined && { retryAfter }),
         responseHeaders,
       };
@@ -1093,7 +1140,7 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
 ): AsyncGenerator<StreamChunk> {
   const envTimeout = Number(process.env.SUPERINFERENCE_API_TIMEOUT_MS);
   const timeoutMs = options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS);
