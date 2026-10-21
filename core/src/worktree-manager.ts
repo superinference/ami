@@ -56,25 +56,6 @@ export function worktreeBranchName(slug: string): string {
   return `worktree-${flattenSlug(slug)}`;
 }
 
-/**
- * Resolve the best base ref for a new worktree: origin/main > origin/master > HEAD.
- * Each candidate is verified independently so a missing remote doesn't short-circuit.
- */
-function resolveWorktreeBase(cwd: string, env: Record<string, string | undefined>): string {
-  const candidates = ['origin/main', 'origin/master', 'HEAD'];
-  for (const ref of candidates) {
-    try {
-      return execSync(`git rev-parse --verify ${ref}`, {
-        cwd,
-        encoding: 'utf-8',
-        env,
-        stdio: ['pipe', 'pipe', 'ignore'],
-      }).trim();
-    } catch { /* try next */ }
-  }
-  return 'HEAD';
-}
-
 export function createWorktreeSession(cwd: string, name: string): WorktreeSession {
   const startMs = Date.now();
   const worktreeDir = path.join(cwd, '.superinference', 'worktrees', name);
@@ -88,23 +69,13 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
     originalHead = execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8', env: gitEnv }).trim();
   } catch {}
 
-  // Actually create the worktree on disk if it doesn't already exist.
-  // enter-worktree.ts creates the worktree before calling this function,
-  // but task.ts calls this directly and relies on it to create the worktree.
+  // Create the worktree on disk if it doesn't already exist.
+  // enter-worktree.ts creates the worktree itself (with base_ref support) then
+  // calls createWorktreeSession for metadata; task.ts relies on this function
+  // to create the worktree as well.
   if (!fs.existsSync(worktreeDir)) {
-    try {
-      fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
-      const baseRef = resolveWorktreeBase(cwd, gitEnv);
-      execSync(
-        `git worktree add -b "${branch}" "${worktreeDir}" ${baseRef}`,
-        { cwd, env: gitEnv, stdio: 'ignore' },
-      );
-    } catch (e) {
-      // Log warning but don't throw — callers like task.ts have a bare catch{}
-      // fallback, so throwing would silently swallow the error anyway.
-      const msg = e instanceof Error ? e.message : String(e);
-      process.stderr.write(`[worktree-manager] warning: git worktree add failed: ${msg}\n`);
-    }
+    fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
+    execSync(`git worktree add -B "${branch}" "${worktreeDir}" HEAD`, { cwd, stdio: 'ignore', env: gitEnv });
   }
 
   const session: WorktreeSession = {

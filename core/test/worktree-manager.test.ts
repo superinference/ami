@@ -152,7 +152,9 @@ describe('createWorktreeSession', () => {
   });
 
   it('returns a session with correct paths', () => {
-    // Non-git dir: still returns session metadata, git worktree add will fail gracefully
+    execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' } });
+
     const session = createWorktreeSession(tmpDir, 'test-agent');
     assert.equal(session.originalCwd, tmpDir);
     assert.ok(session.worktreePath.includes('test-agent'));

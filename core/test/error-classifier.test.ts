@@ -768,6 +768,102 @@ describe('classifyError — plain Error objects (non-SDK)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// P5 ERR-001: classifier tight pattern — false positive regression guard
+// ---------------------------------------------------------------------------
+describe('classifier tight pattern — false positive regression guard', () => {
+  it('does not misclassify 400 "authentication token expired" as context_overflow (false positive)', () => {
+    const err = makeAPICallError(400, 'authentication token expired');
+    const result = classifyError(err);
+    assert.notEqual(result.category, 'context_overflow',
+      '"authentication token expired" must not trigger context_overflow — "token" alone is too broad');
+    assert.equal(result.shouldCompact, false);
+  });
+
+  it('does not misclassify 400 "context_management: Extra inputs are not permitted" as context_overflow (false positive)', () => {
+    const err = makeAPICallError(400, 'context_management: Extra inputs are not permitted');
+    const result = classifyError(err);
+    assert.notEqual(result.category, 'context_overflow',
+      '"context_management: Extra inputs" must not trigger context_overflow — "context" alone is too broad');
+    assert.equal(result.shouldCompact, false);
+  });
+
+  it('does not misclassify 400 "field value is too long" as context_overflow (false positive)', () => {
+    const err = makeAPICallError(400, 'field value is too long');
+    const result = classifyError(err);
+    assert.notEqual(result.category, 'context_overflow',
+      '"field value is too long" must not trigger context_overflow — bare "too long" is too broad');
+    assert.equal(result.shouldCompact, false);
+  });
+
+  it('does not misclassify 400 "invalid context parameter" as context_overflow (false positive)', () => {
+    const err = makeAPICallError(400, 'invalid context parameter');
+    const result = classifyError(err);
+    assert.notEqual(result.category, 'context_overflow',
+      '"invalid context parameter" must not trigger context_overflow');
+    assert.equal(result.shouldCompact, false);
+  });
+
+  it('does not misclassify 400 "token not found" as context_overflow (false positive)', () => {
+    const err = makeAPICallError(400, 'token not found');
+    const result = classifyError(err);
+    assert.notEqual(result.category, 'context_overflow',
+      '"token not found" must not trigger context_overflow');
+    assert.equal(result.shouldCompact, false);
+  });
+
+  it('does not misclassify 400 "The session token is too long" as context_overflow (false positive)', () => {
+    const err = makeAPICallError(400, 'The session token is too long');
+    const result = classifyError(err);
+    assert.notEqual(result.category, 'context_overflow',
+      '"The session token is too long" must not trigger context_overflow');
+    assert.equal(result.shouldCompact, false);
+  });
+
+  // TRUE POSITIVES — these must STILL be classified as context_overflow
+  it('still classifies 400 "maximum context length exceeded" as context_overflow', () => {
+    const err = makeAPICallError(400, 'maximum context length exceeded');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('still classifies 400 "token limit exceeded" as context_overflow', () => {
+    const err = makeAPICallError(400, 'token limit exceeded');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('still classifies 400 "prompt is too long" as context_overflow', () => {
+    const err = makeAPICallError(400, 'prompt is too long');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('still classifies 400 "input is too long" as context_overflow', () => {
+    const err = makeAPICallError(400, 'input is too long');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('still classifies 400 "context_length_exceeded" as context_overflow', () => {
+    const err = makeAPICallError(400, 'context_length_exceeded');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('still classifies 400 "reduce the length of the messages" as context_overflow', () => {
+    const err = makeAPICallError(400, 'reduce the length of the messages');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+
+  it('still classifies 400 "too many tokens in prompt" as context_overflow', () => {
+    const err = makeAPICallError(400, 'too many tokens in prompt');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'context_overflow', retryable: true, shouldCompact: true, shouldFallback: false });
+  });
+});
+
 describe('classifyError — Error vs string consistency', () => {
   it('produces same category for Error and string with same message', () => {
     const messages = [

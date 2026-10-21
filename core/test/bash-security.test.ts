@@ -36,6 +36,7 @@ import {
   detectAliasRedefinition,
   detectSourceExecution,
   detectGitWorktreeEscape,
+  detectNuclearCommand,
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
@@ -3534,5 +3535,64 @@ describe('detectGitWorktreeEscape', () => {
   it('allows normal git in worktree mode via validateBashSecurity', () => {
     const r = validateBashSecurity('git status', { worktreeIsolation: true });
     assert.equal(r.safe, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectNuclearCommand — mount-point paths
+// ---------------------------------------------------------------------------
+
+describe('detectNuclearCommand — mount-point paths', () => {
+  it('blocks rm -rf /Volumes', () => {
+    const r = detectNuclearCommand('rm -rf /Volumes');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
+  });
+
+  it('blocks rm -rf /mnt', () => {
+    const r = detectNuclearCommand('rm -rf /mnt');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
+  });
+
+  it('blocks rm -rf /media', () => {
+    const r = detectNuclearCommand('rm -rf /media');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
+  });
+
+  it('blocks rm -rf /Volumes/ExternalDisk (mounted volume)', () => {
+    const r = detectNuclearCommand('rm -rf /Volumes/ExternalDisk');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
+  });
+
+  it('blocks rm -rf /mnt/c (WSL path)', () => {
+    const r = detectNuclearCommand('rm -rf /mnt/c');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
+  });
+
+  it('allows rm /media/usb/file.txt (specific file, not mount root)', () => {
+    const r = detectNuclearCommand('rm /media/usb/file.txt');
+    assert.equal(r.blocked, false);
+  });
+
+  it('blocks rm -rf /run/media', () => {
+    const r = detectNuclearCommand('rm -rf /run/media');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
+  });
+
+  it('blocks sudo rm -rf /Volumes/TimeMachine', () => {
+    const r = detectNuclearCommand('sudo rm -rf /Volumes/TimeMachine');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
+  });
+
+  it('blocks rm -rf /mnt/c/ (trailing slash)', () => {
+    const r = detectNuclearCommand('rm -rf /mnt/c/');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason);
   });
 });

@@ -17,6 +17,47 @@ export function sanitizeHookOutput(output: string): string {
   return output.replace(SYSTEM_TAG_RE, '[tag-escaped]');
 }
 
+// ---------------------------------------------------------------------------
+// Hook environment sanitization — strip sensitive keys (API keys, tokens,
+// secrets) so project-scoped hooks cannot exfiltrate credentials.
+// ---------------------------------------------------------------------------
+
+export const SENSITIVE_ENV_PATTERNS: ReadonlyArray<RegExp> = [
+  /^ANTHROPIC_API_KEY$/i,
+  /^OPENAI_API_KEY$/i,
+  /^GOOGLE_API_KEY$/i,
+  /^AZURE_API_KEY$/i,
+  /^AWS_SECRET_ACCESS_KEY$/i,
+  /^AWS_SESSION_TOKEN$/i,
+  /^GITHUB_TOKEN$/i,
+  /^GH_TOKEN$/i,
+  /^NPM_TOKEN$/i,
+  /^HF_TOKEN$/i,
+  /^HUGGING_FACE_HUB_TOKEN$/i,
+  /^REPLICATE_API_TOKEN$/i,
+  /^DATABASE_URL$/i,
+  /^REDIS_URL$/i,
+  /^SSH_AUTH_SOCK$/i,
+  /_API_KEY$/i,
+  /_SECRET$/i,
+  /_TOKEN$/i,
+  /_PASSWORD$/i,
+  /_CREDENTIALS?$/i,
+  /_PRIVATE_KEY$/i,
+  /_SECRET_/i,
+  /_AUTH_TOKEN$/i,
+];
+
+export function sanitizeHookEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const clean: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && !SENSITIVE_ENV_PATTERNS.some(p => p.test(key))) {
+      clean[key] = value;
+    }
+  }
+  return clean;
+}
+
 export type HookFn = (context: HookContext) => Promise<void>;
 
 export interface HookContext {
@@ -497,7 +538,7 @@ export class HookManager extends EventEmitter {
 
   private buildHookEnv(event: string, toolName?: string): Record<string, string> {
     return {
-      ...process.env as Record<string, string>,
+      ...sanitizeHookEnv(process.env as Record<string, string | undefined>),
       SUPERINFERENCE_PROJECT_DIR: this._cwd,
       SUPERINFERENCE_SESSION_ID: this._sessionId,
       SUPERINFERENCE_TOOL_NAME: toolName || '',

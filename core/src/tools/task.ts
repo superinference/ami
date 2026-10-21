@@ -274,7 +274,10 @@ export const taskTool: ToolDefinition = {
         symlinkLargeDirectories(effectiveCwd, session.worktreePath);
         copyWorktreeIncludes(effectiveCwd, session.worktreePath);
         effectiveCwd = session.worktreePath;
-      } catch {}
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { output: `Error: Failed to create worktree for isolated subagent: ${msg}`, isError: true };
+      }
     }
 
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };

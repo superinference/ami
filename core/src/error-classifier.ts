@@ -79,8 +79,13 @@ function classifySDKError(error: Error): ClassifiedError | null {
         return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false };
       case 400:
         // 400 with context/token-related message → context_overflow
-        if (lowerMsg.includes('context') || lowerMsg.includes('token') ||
-            lowerMsg.includes('prompt_too_long') || lowerMsg.includes('too long') ||
+        // Use specific phrases to avoid false positives on unrelated messages
+        // like 'authentication token expired' or 'field value is too long'.
+        if (lowerMsg.includes('context_length') || lowerMsg.includes('context window') || lowerMsg.includes('context limit') ||
+            lowerMsg.includes('context length') || lowerMsg.includes('maximum context') ||
+            lowerMsg.includes('token limit') || lowerMsg.includes('too many tokens') || lowerMsg.includes('max_tokens') ||
+            lowerMsg.includes('token count') ||
+            lowerMsg.includes('prompt_too_long') || lowerMsg.includes('prompt is too long') || lowerMsg.includes('input is too long') ||
             lowerMsg.includes('reduce the length')) {
           return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false };
         }

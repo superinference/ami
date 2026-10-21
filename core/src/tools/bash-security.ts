@@ -1283,7 +1283,10 @@ export function detectSessionTranscriptWrite(command: string): { blocked: boolea
 // These commands can brick a machine or cause unrecoverable mass data loss.
 // Blocked unconditionally, even in --yolo mode.
 
-const NUCLEAR_RM_TARGETS = new Set(['/', '/*', '/home', '/root', '/etc', '/usr', '/var', '/bin', '/sbin', '/lib', '/lib64', '/boot', '/opt', '/sys', '/proc', '/dev']);
+const NUCLEAR_RM_TARGETS = new Set(['/', '/*', '/home', '/root', '/etc', '/usr', '/var', '/bin', '/sbin', '/lib', '/lib64', '/boot', '/opt', '/sys', '/proc', '/dev', '/Volumes', '/mnt', '/media', '/run/media']);
+// Mount-point roots: any child path represents an entire mounted volume, so
+// rm -rf /Volumes/ExternalDisk or /mnt/c must also be blocked (prefix match).
+const NUCLEAR_RM_MOUNT_PREFIXES = ['/Volumes/', '/mnt/', '/media/', '/run/media/'];
 const HOME_EXPANSIONS = /^(?:~\/?|\$HOME\/?|\$\{HOME\}\/?|\$\(echo\s+~\)\/?|\$\(eval\s+echo\s+~\)\/?|\/home\/\w+\/?)$/;
 const RM_RF_RE = /\brm\b[^;]*(?:-\w*[rf]\w*\s+[^;]*-\w*[rf]\w*|-\w*r\w*f\w*|-\w*f\w*r\w*|--recursive\b[^;]*--force\b|--force\b[^;]*--recursive\b)/;
 const DISK_WIPE_RE = /\b(?:mkfs|mkfs\.\w+|wipefs|shred)\b[^|;]*(?:\/dev\/[a-z]|\/dev\/mapper\/)/;
@@ -1417,6 +1420,11 @@ function checkSegment(segment: string): NuclearCheckResult {
       const clean = unquoted.replace(/\/+$/, '') || '/';
       if (NUCLEAR_RM_TARGETS.has(clean)) {
         return { blocked: true, reason: `rm -rf targeting ${clean} — would destroy the filesystem` };
+      }
+      for (const prefix of NUCLEAR_RM_MOUNT_PREFIXES) {
+        if (clean.startsWith(prefix)) {
+          return { blocked: true, reason: `rm -rf targeting ${clean} — would destroy a mounted volume` };
+        }
       }
       if (HOME_EXPANSIONS.test(unquoted)) {
         return { blocked: true, reason: 'rm -rf targeting home directory — would destroy all user data' };

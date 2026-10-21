@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { HookManager, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, type HookContext } from '../src/hooks';
+import { HookManager, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, sanitizeHookEnv, SENSITIVE_ENV_PATTERNS, type HookContext } from '../src/hooks';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -328,5 +328,188 @@ describe('HookManager — SUPERINFERENCE_EFFORT in hook env', () => {
     const written = fs.readFileSync(markerFile, 'utf-8').trim();
     assert.equal(written, 'max');
     cleanup();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hook env sanitization — buildHookEnv strips sensitive vars via sanitizeHookEnv
+// ---------------------------------------------------------------------------
+describe('hook env sanitization', () => {
+  let tmpDir: string;
+  const cleanup = () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} };
+
+  it('hook api key stripping — ANTHROPIC_API_KEY and OPENAI_API_KEY not passed to subprocess', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-sanitize-'));
+    const hooksDir = path.join(tmpDir, '.superinference');
+    fs.mkdirSync(hooksDir, { recursive: true });
+
+    const markerFile = path.join(tmpDir, 'env-dump.txt');
+    fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({
+      hooks: [{
+        event: 'preToolUse',
+        hook: {
+          type: 'command',
+          command: `env > ${markerFile}`,
+          timeout: 5000,
+        },
+      }],
+    }));
+
+    // Inject sensitive keys into process.env temporarily
+    const origAnthropic = process.env.ANTHROPIC_API_KEY;
+    const origOpenai = process.env.OPENAI_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-should-not-leak';
+    process.env.OPENAI_API_KEY = 'sk-test-should-not-leak';
+
+    try {
+      const hm = new HookManager();
+      hm.setWorkspaceTrusted(true);
+      hm.loadFromFile(tmpDir);
+
+      await hm.executePreToolUse({
+        messages: [],
+        turnCount: 0,
+        toolName: 'bash',
+        toolInput: { command: 'ls' },
+      });
+
+      const envContent = fs.readFileSync(markerFile, 'utf-8');
+      assert.ok(!envContent.includes('sk-ant-test-should-not-leak'),
+        'ANTHROPIC_API_KEY value must not appear in hook subprocess env');
+      assert.ok(!envContent.includes('sk-test-should-not-leak'),
+        'OPENAI_API_KEY value must not appear in hook subprocess env');
+      // SUPERINFERENCE_* vars must still be present (set after sanitization)
+      assert.ok(envContent.includes('SUPERINFERENCE_HOOK_EVENT='),
+        'SUPERINFERENCE_HOOK_EVENT must be present in hook env');
+      assert.ok(envContent.includes('SUPERINFERENCE_CWD='),
+        'SUPERINFERENCE_CWD must be present in hook env');
+    } finally {
+      if (origAnthropic !== undefined) process.env.ANTHROPIC_API_KEY = origAnthropic;
+      else delete process.env.ANTHROPIC_API_KEY;
+      if (origOpenai !== undefined) process.env.OPENAI_API_KEY = origOpenai;
+      else delete process.env.OPENAI_API_KEY;
+      cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeHookEnv — unit tests for the env sanitization function
+// ---------------------------------------------------------------------------
+describe('sanitizeHookEnv', () => {
+  it('strips ANTHROPIC_API_KEY from hook environment', () => {
+    const env: Record<string, string> = {
+      ANTHROPIC_API_KEY: 'sk-ant-test-key',
+      SAFE_VAR: 'safe-value',
+      PATH: '/usr/bin',
+    };
+    const result = sanitizeHookEnv(env);
+    assert.equal(result.ANTHROPIC_API_KEY, undefined, 'ANTHROPIC_API_KEY must be stripped');
+    assert.equal(result.SAFE_VAR, 'safe-value');
+    assert.equal(result.PATH, '/usr/bin');
+  });
+
+  it('strips OPENAI_API_KEY', () => {
+    const env: Record<string, string> = { OPENAI_API_KEY: 'sk-test', KEEP: '1' };
+    const result = sanitizeHookEnv(env);
+    assert.equal(result.OPENAI_API_KEY, undefined);
+    assert.equal(result.KEEP, '1');
+  });
+
+  it('strips all provider-specific API keys and tokens', () => {
+    const env: Record<string, string> = {
+      GOOGLE_API_KEY: 'gkey',
+      AZURE_API_KEY: 'akey',
+      AWS_SECRET_ACCESS_KEY: 'awskey',
+      GITHUB_TOKEN: 'ghtoken',
+      GH_TOKEN: 'ghtoken2',
+      NPM_TOKEN: 'npmtoken',
+      REPLICATE_API_TOKEN: 'rtoken',
+      HF_TOKEN: 'hftoken',
+      HUGGING_FACE_HUB_TOKEN: 'hfhtoken',
+      SAFE_VARIABLE: 'safe',
+    };
+    const result = sanitizeHookEnv(env);
+    for (const key of Object.keys(env)) {
+      if (key === 'SAFE_VARIABLE') {
+        assert.equal(result[key], 'safe');
+      } else {
+        assert.equal(result[key], undefined, `${key} must be stripped`);
+      }
+    }
+  });
+
+  it('strips keys matching suffix patterns (_SECRET, _PASSWORD, _TOKEN, _CREDENTIALS)', () => {
+    const env: Record<string, string> = {
+      MY_SECRET: 'sec',
+      DB_PASSWORD: 'pass',
+      CUSTOM_TOKEN: 'tok',
+      APP_CREDENTIALS: 'creds',
+      CUSTOM_API_KEY: 'apikey',
+      MY_PRIVATE_KEY: 'privkey',
+      CUSTOM_SECRET_VALUE: 'secval',
+      NORMAL: 'val',
+    };
+    const result = sanitizeHookEnv(env);
+    assert.equal(result.MY_SECRET, undefined, 'MY_SECRET must be stripped');
+    assert.equal(result.DB_PASSWORD, undefined, 'DB_PASSWORD must be stripped');
+    assert.equal(result.CUSTOM_TOKEN, undefined, 'CUSTOM_TOKEN must be stripped');
+    assert.equal(result.APP_CREDENTIALS, undefined, 'APP_CREDENTIALS must be stripped');
+    assert.equal(result.CUSTOM_API_KEY, undefined, 'CUSTOM_API_KEY must be stripped');
+    assert.equal(result.MY_PRIVATE_KEY, undefined, 'MY_PRIVATE_KEY must be stripped');
+    assert.equal(result.CUSTOM_SECRET_VALUE, undefined, 'CUSTOM_SECRET_VALUE must be stripped');
+    assert.equal(result.NORMAL, 'val');
+  });
+
+  it('preserves SUPERINFERENCE_ prefixed variables', () => {
+    const env: Record<string, string> = {
+      SUPERINFERENCE_PROJECT_DIR: '/tmp/project',
+      SUPERINFERENCE_SESSION_ID: 'sess-123',
+      SUPERINFERENCE_EFFORT: 'high',
+    };
+    const result = sanitizeHookEnv(env);
+    assert.equal(result.SUPERINFERENCE_PROJECT_DIR, '/tmp/project');
+    assert.equal(result.SUPERINFERENCE_SESSION_ID, 'sess-123');
+    assert.equal(result.SUPERINFERENCE_EFFORT, 'high');
+  });
+
+  it('preserves PATH, HOME, SHELL, TERM, and other safe environment vars', () => {
+    const env: Record<string, string> = {
+      PATH: '/usr/bin:/usr/local/bin',
+      HOME: '/home/testuser',
+      SHELL: '/bin/bash',
+      TERM: 'xterm-256color',
+      EDITOR: 'vim',
+      LANG: 'en_US.UTF-8',
+    };
+    const result = sanitizeHookEnv(env);
+    assert.equal(result.PATH, '/usr/bin:/usr/local/bin');
+    assert.equal(result.HOME, '/home/testuser');
+    assert.equal(result.SHELL, '/bin/bash');
+    assert.equal(result.TERM, 'xterm-256color');
+    assert.equal(result.EDITOR, 'vim');
+    assert.equal(result.LANG, 'en_US.UTF-8');
+  });
+
+  it('handles undefined values in env', () => {
+    const env = { KEEP: 'yes', UNDEF: undefined } as Record<string, string | undefined>;
+    const result = sanitizeHookEnv(env);
+    assert.equal(result.KEEP, 'yes');
+    assert.equal(result.UNDEF, undefined);
+  });
+
+  it('is case-insensitive for known keys', () => {
+    const env: Record<string, string> = { anthropic_api_key: 'low', Openai_Api_Key: 'mixed' };
+    const result = sanitizeHookEnv(env);
+    assert.equal(result.anthropic_api_key, undefined);
+    assert.equal(result.Openai_Api_Key, undefined);
+  });
+
+  it('SENSITIVE_ENV_PATTERNS is a read-only array of RegExp', () => {
+    assert.ok(Array.isArray(SENSITIVE_ENV_PATTERNS));
+    assert.ok(SENSITIVE_ENV_PATTERNS.length > 0);
+    for (const p of SENSITIVE_ENV_PATTERNS) {
+      assert.ok(p instanceof RegExp);
+    }
   });
 });

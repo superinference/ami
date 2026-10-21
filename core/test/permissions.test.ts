@@ -1416,3 +1416,72 @@ describe('PermissionManager — deny rules in auto-allow mode (Gap #32)', () => 
     assert.equal(await pm.check('bash', { command: 'rm -rf /tmp/test' }), 'allow');
   });
 });
+
+// ---------------------------------------------------------------------------
+// detectHardlineCommand — mount-point paths
+// ---------------------------------------------------------------------------
+
+describe('detectHardlineCommand — mount-point paths', () => {
+  it('blocks rm -rf /mnt/c (WSL mount)', () => {
+    const result = detectHardlineCommand('rm -rf /mnt/c');
+    assert.ok(result.blocked, 'Expected rm -rf /mnt/c to be blocked by hardline');
+    assert.ok(result.description);
+  });
+
+  it('blocks rm -rf /Volumes/Backup (macOS mount)', () => {
+    const result = detectHardlineCommand('rm -rf /Volumes/Backup');
+    assert.ok(result.blocked, 'Expected rm -rf /Volumes/Backup to be blocked by hardline');
+    assert.ok(result.description);
+  });
+
+  it('blocks rm -rf /media/usb (removable media mount)', () => {
+    const result = detectHardlineCommand('rm -rf /media/usb');
+    assert.ok(result.blocked, 'Expected rm -rf /media/usb to be blocked by hardline');
+    assert.ok(result.description);
+  });
+
+  it('blocks rm -r /Volumes (bare mount root)', () => {
+    const result = detectHardlineCommand('rm -r /Volumes');
+    assert.ok(result.blocked, 'Expected rm -r /Volumes to be blocked by hardline');
+  });
+
+  it('blocks rm -r /mnt (bare mount root)', () => {
+    const result = detectHardlineCommand('rm -r /mnt');
+    assert.ok(result.blocked, 'Expected rm -r /mnt to be blocked by hardline');
+  });
+
+  it('blocks rm -r /media (bare mount root)', () => {
+    const result = detectHardlineCommand('rm -r /media');
+    assert.ok(result.blocked, 'Expected rm -r /media to be blocked by hardline');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SYSTEM_DIRECTORIES — mount-point path checks
+// ---------------------------------------------------------------------------
+
+describe('PermissionManager — mount-point system directory checks', () => {
+  let tmpDir: string;
+  let pm: PermissionManager;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    pm = new PermissionManager('ask');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('denies /Volumes path as system directory', () => {
+    assert.equal(pm.isPathAllowed('/Volumes/TimeMachine/file.txt', tmpDir), false);
+  });
+
+  it('denies /mnt path as system directory', () => {
+    assert.equal(pm.isPathAllowed('/mnt/c/Users/test.txt', tmpDir), false);
+  });
+
+  it('denies /media path as system directory', () => {
+    assert.equal(pm.isPathAllowed('/media/usb/data.txt', tmpDir), false);
+  });
+});

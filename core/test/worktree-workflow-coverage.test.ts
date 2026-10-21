@@ -369,6 +369,17 @@ describe('createWorktreeSession (lines 57-82)', () => {
 
   afterEach(() => {
     setWorktreeSession(null);
+    try {
+      child_process.execSync('git worktree prune', { cwd: tmpDir, stdio: 'ignore' });
+      const wtDir = path.join(tmpDir, '.superinference', 'worktrees');
+      if (fs.existsSync(wtDir)) {
+        for (const entry of fs.readdirSync(wtDir)) {
+          try {
+            child_process.execSync(`git worktree remove --force "${path.join(wtDir, entry)}"`, { cwd: tmpDir, stdio: 'ignore' });
+          } catch {}
+        }
+      }
+    } catch {}
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -386,15 +397,12 @@ describe('createWorktreeSession (lines 57-82)', () => {
     assert.ok(session.createdAt);
   });
 
-  it('handles non-git directory gracefully (originalBranch/Head are undefined)', () => {
+  it('throws in non-git directory (git worktree add requires a repo)', () => {
     const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-nogit-'));
     try {
-      const session = createWorktreeSession(nonGitDir, 'test');
-
-      assert.equal(session.originalCwd, nonGitDir);
-      assert.equal(session.originalBranch, undefined);
-      assert.equal(session.originalHeadCommit, undefined);
-      assert.ok(typeof session.creationDurationMs === 'number');
+      assert.throws(() => createWorktreeSession(nonGitDir, 'test'), {
+        message: /Command failed/,
+      });
     } finally {
       fs.rmSync(nonGitDir, { recursive: true, force: true });
     }
