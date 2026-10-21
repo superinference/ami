@@ -1,5 +1,6 @@
 /* eslint-disable security/detect-unsafe-regex -- Symbol extraction regexes are applied to controlled file content, not user input */
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { glob } from 'tinyglobby';
 
@@ -179,7 +180,7 @@ export class WorkspaceIndexer {
 
     let stat: fs.Stats;
     try {
-      stat = fs.statSync(filePath);
+      stat = await fsp.stat(filePath);
     } catch {
       return null;
     }
@@ -188,7 +189,7 @@ export class WorkspaceIndexer {
 
     let content: string;
     try {
-      content = fs.readFileSync(filePath, 'utf-8');
+      content = await fsp.readFile(filePath, 'utf-8');
     } catch {
       return null;
     }
@@ -199,7 +200,7 @@ export class WorkspaceIndexer {
 
     const relativePath = path.relative(this.cwd, filePath);
     const symbols = this.extractSymbols(content, filePath, language);
-    const imports = this.extractImports(content, filePath, language);
+    const imports = await this.extractImports(content, filePath, language);
 
     const entry: FileEntry = {
       path: filePath,
@@ -445,7 +446,7 @@ export class WorkspaceIndexer {
     return symbols;
   }
 
-  private extractImports(content: string, filePath: string, language: string): string[] {
+  private async extractImports(content: string, filePath: string, language: string): Promise<string[]> {
     const patterns = langPatterns()[language];
     if (!patterns) return [];
 
@@ -462,7 +463,7 @@ export class WorkspaceIndexer {
         const raw = match[1] || match[2];
         if (!raw) continue;
 
-        const resolved = this.resolveImport(raw, filePath, language);
+        const resolved = await this.resolveImport(raw, filePath, language);
         if (resolved) {
           importPaths.push(resolved);
         }
@@ -472,7 +473,7 @@ export class WorkspaceIndexer {
     return importPaths;
   }
 
-  private resolveImport(raw: string, fromFile: string, language: string): string | null {
+  private async resolveImport(raw: string, fromFile: string, language: string): Promise<string | null> {
     const dir = path.dirname(fromFile);
 
     if (language === 'typescript') {
@@ -489,7 +490,8 @@ export class WorkspaceIndexer {
       ];
       for (const c of candidates) {
         try {
-          if (fs.statSync(c).isFile()) return c;
+          const s = await fsp.stat(c);
+          if (s.isFile()) return c;
         } catch { /* not found */ }
       }
       return null;
@@ -499,8 +501,8 @@ export class WorkspaceIndexer {
       // Relative-ish: try to resolve as a file in the workspace
       const asFile = path.resolve(this.cwd, raw.replace(/\./g, path.sep) + '.py');
       const asPackage = path.resolve(this.cwd, raw.replace(/\./g, path.sep), '__init__.py');
-      try { if (fs.statSync(asFile).isFile()) return asFile; } catch { /* */ }
-      try { if (fs.statSync(asPackage).isFile()) return asPackage; } catch { /* */ }
+      try { const s = await fsp.stat(asFile); if (s.isFile()) return asFile; } catch { /* */ }
+      try { const s = await fsp.stat(asPackage); if (s.isFile()) return asPackage; } catch { /* */ }
       return null;
     }
 

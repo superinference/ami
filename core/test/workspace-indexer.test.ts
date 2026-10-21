@@ -573,3 +573,85 @@ describe('WorkspaceIndexer — getSummary truncation', () => {
     }
   });
 });
+
+describe('WorkspaceIndexer — non-blocking indexing', () => {
+  it('buildIndex yields to the event loop between files', async () => {
+    const tmpDir = makeTempDir();
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      for (let i = 0; i < 200; i++) {
+        fs.writeFileSync(
+          path.join(tmpDir, 'src', `file${i}.ts`),
+          `export function fn${i}() {}\nexport class Class${i} {}\n`,
+        );
+      }
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+
+      let yieldCount = 0;
+      let counting = true;
+      function countYields() {
+        if (counting) {
+          yieldCount++;
+          setImmediate(countYields);
+        }
+      }
+      setImmediate(countYields);
+
+      const result = await indexer.buildIndex();
+      counting = false;
+
+      assert.ok(result.fileCount >= 200, `expected >= 200 files, got ${result.fileCount}`);
+      assert.ok(
+        yieldCount >= 100,
+        `buildIndex should yield to the event loop many times during indexing ` +
+        `(got ${yieldCount} yields for ${result.fileCount} files — sync I/O starves the loop)`,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event loop yielding — buildIndex must not block the UI
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceIndexer — non-blocking indexing', () => {
+  it('buildIndex yields to the event loop between files', async () => {
+    const tmpDir = makeTempDir();
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      for (let i = 0; i < 200; i++) {
+        fs.writeFileSync(
+          path.join(tmpDir, 'src', `file${i}.ts`),
+          `export function fn${i}() {}\nexport class Class${i} {}\n`,
+        );
+      }
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+
+      let yieldCount = 0;
+      let counting = true;
+      function countYields() {
+        if (counting) {
+          yieldCount++;
+          setImmediate(countYields);
+        }
+      }
+      setImmediate(countYields);
+
+      const result = await indexer.buildIndex();
+      counting = false;
+
+      assert.ok(result.fileCount >= 200, `expected >= 200 files, got ${result.fileCount}`);
+      assert.ok(
+        yieldCount >= 100,
+        `buildIndex should yield to the event loop many times during indexing ` +
+        `(got ${yieldCount} yields for ${result.fileCount} files — sync I/O starves the loop)`,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
