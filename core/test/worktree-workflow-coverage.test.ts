@@ -416,12 +416,14 @@ describe('countWorktreeChanges — full coverage (lines 87-102)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns { uncommitted: 0, unpushed: 0 } for clean repo', () => {
+  it('returns uncommitted=0 for clean repo (unpushed>0 when no remotes)', () => {
     const result = countWorktreeChanges(tmpDir, tmpDir);
 
     assert.ok(result !== null);
     assert.equal(result!.uncommitted, 0);
-    assert.equal(result!.unpushed, 0);
+    // With no remotes configured, all commits are "unpushed" — this is
+    // the safe/conservative behavior that prevents accidental worktree removal.
+    assert.ok(result!.unpushed >= 1, `unpushed should be >= 1 with no remotes, got ${result!.unpushed}`);
   });
 
   it('counts uncommitted staged changes', () => {
@@ -458,11 +460,15 @@ describe('countWorktreeChanges — full coverage (lines 87-102)', () => {
     assert.ok(result!.unpushed >= 1, `Expected at least 1 unpushed commit, got ${result!.unpushed}`);
   });
 
-  it('returns unpushed=0 when no upstream tracking configured', () => {
+  it('reports unpushed>0 when no upstream tracking configured (safe guard)', () => {
+    // Before the fix (P4-GIT-004), @{upstream}..HEAD would silently fail
+    // and leave unpushed=0, allowing worktree removal to lose commits.
+    // The fix uses --not --remotes, so with no remotes, all commits are
+    // conservatively treated as unpushed — preventing data loss.
     const result = countWorktreeChanges(tmpDir, tmpDir);
 
     assert.ok(result !== null);
-    assert.equal(result!.unpushed, 0);
+    assert.ok(result!.unpushed >= 1, `unpushed should be >= 1 with no upstream/remotes, got ${result!.unpushed}`);
   });
 });
 

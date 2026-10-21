@@ -56,6 +56,25 @@ export function worktreeBranchName(slug: string): string {
   return `worktree-${flattenSlug(slug)}`;
 }
 
+/**
+ * Resolve the best base ref for a new worktree: origin/main > origin/master > HEAD.
+ * Each candidate is verified independently so a missing remote doesn't short-circuit.
+ */
+function resolveWorktreeBase(cwd: string, env: Record<string, string | undefined>): string {
+  const candidates = ['origin/main', 'origin/master', 'HEAD'];
+  for (const ref of candidates) {
+    try {
+      return execSync(`git rev-parse --verify ${ref}`, {
+        cwd,
+        encoding: 'utf-8',
+        env,
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }).trim();
+    } catch { /* try next */ }
+  }
+  return 'HEAD';
+}
+
 export function createWorktreeSession(cwd: string, name: string): WorktreeSession {
   const startMs = Date.now();
   const worktreeDir = path.join(cwd, '.superinference', 'worktrees', name);
@@ -68,6 +87,25 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
     originalBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', env: gitEnv }).trim();
     originalHead = execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8', env: gitEnv }).trim();
   } catch {}
+
+  // Actually create the worktree on disk if it doesn't already exist.
+  // enter-worktree.ts creates the worktree before calling this function,
+  // but task.ts calls this directly and relies on it to create the worktree.
+  if (!fs.existsSync(worktreeDir)) {
+    try {
+      fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
+      const baseRef = resolveWorktreeBase(cwd, gitEnv);
+      execSync(
+        `git worktree add -b "${branch}" "${worktreeDir}" ${baseRef}`,
+        { cwd, env: gitEnv, stdio: 'ignore' },
+      );
+    } catch (e) {
+      // Log warning but don't throw — callers like task.ts have a bare catch{}
+      // fallback, so throwing would silently swallow the error anyway.
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`[worktree-manager] warning: git worktree add failed: ${msg}\n`);
+    }
+  }
 
   const session: WorktreeSession = {
     originalCwd: cwd,
@@ -94,7 +132,21 @@ export function countWorktreeChanges(worktreePath: string, cwd: string): { uncom
     const uncommitted = status ? status.split('\n').length : 0;
     let unpushed = 0;
     try {
-      const revList = execSync('git rev-list @{upstream}..HEAD 2>/dev/null', { cwd: worktreePath, encoding: 'utf-8', env: gitEnv }).trim();
+      // Check if HEAD is detached
+      let isDetached = false;
+      try {
+        execSync('git symbolic-ref -q HEAD', { cwd: worktreePath, encoding: 'utf-8', env: gitEnv });
+      } catch {
+        isDetached = true;
+      }
+
+      // Use --not --remotes to count commits not on any remote branch.
+      // This works regardless of whether the branch has an upstream configured
+      // (worktree branches created by enter_worktree never have upstream set).
+      // For detached HEAD, also exclude local branches so we only count
+      // truly orphaned commits.
+      const notFlags = isDetached ? '--not --remotes --branches' : '--not --remotes';
+      const revList = execSync(`git rev-list HEAD ${notFlags}`, { cwd: worktreePath, encoding: 'utf-8', env: gitEnv }).trim();
       unpushed = revList ? revList.split('\n').length : 0;
     } catch {}
     return { uncommitted, unpushed };

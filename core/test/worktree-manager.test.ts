@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execSync } from 'child_process';
 
 import {
   MAX_WORKTREES,
@@ -16,6 +17,7 @@ import {
   createWorktreeSession,
   symlinkLargeDirectories,
   copyWorktreeIncludes,
+  countWorktreeChanges,
 } from '../src/worktree-manager';
 
 // ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ describe('worktree session state', () => {
 });
 
 // ---------------------------------------------------------------------------
-// createWorktreeSession (pure construction — does not call git add worktree)
+// createWorktreeSession — creates the worktree on disk via git worktree add
 // ---------------------------------------------------------------------------
 
 describe('createWorktreeSession', () => {
@@ -142,10 +144,15 @@ describe('createWorktreeSession', () => {
   });
 
   afterEach(() => {
+    // Clean up worktrees before removing the temp dir
+    try {
+      execSync('git worktree prune', { cwd: tmpDir, stdio: 'ignore' });
+    } catch {}
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('returns a session with correct paths', () => {
+    // Non-git dir: still returns session metadata, git worktree add will fail gracefully
     const session = createWorktreeSession(tmpDir, 'test-agent');
     assert.equal(session.originalCwd, tmpDir);
     assert.ok(session.worktreePath.includes('test-agent'));
@@ -153,6 +160,44 @@ describe('createWorktreeSession', () => {
     assert.equal(session.worktreeBranch, 'worktree-test-agent');
     assert.ok(session.createdAt);
     assert.ok(typeof session.creationDurationMs === 'number');
+  });
+
+  it('actually creates the worktree directory on disk (P1-GIT-003 fix)', () => {
+    // Set up a real git repo with an initial commit
+    execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' } });
+
+    const session = createWorktreeSession(tmpDir, 'test-agent');
+
+    // The worktree directory must actually exist on disk
+    assert.ok(fs.existsSync(session.worktreePath), 'worktree directory should exist on disk');
+
+    // It must be a valid git worktree (git rev-parse --git-dir should work)
+    const gitDir = execSync('git rev-parse --git-dir', {
+      cwd: session.worktreePath,
+      encoding: 'utf-8',
+    }).trim();
+    assert.ok(gitDir, 'worktree should have a valid .git reference');
+
+    // Clean up the worktree
+    try {
+      execSync(`git worktree remove --force "${session.worktreePath}"`, { cwd: tmpDir, stdio: 'ignore' });
+    } catch {}
+  });
+
+  it('skips creation when worktree directory already exists', () => {
+    // Set up a real git repo with an initial commit
+    execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' } });
+
+    // Create the worktree directory manually (simulating enter-worktree.ts scenario)
+    const worktreeDir = path.join(tmpDir, '.superinference', 'worktrees', 'pre-existing');
+    fs.mkdirSync(worktreeDir, { recursive: true });
+
+    // Should not throw even though the dir exists
+    const session = createWorktreeSession(tmpDir, 'pre-existing');
+    assert.equal(session.worktreePath, worktreeDir);
+    assert.ok(fs.existsSync(worktreeDir));
   });
 });
 
@@ -365,5 +410,82 @@ describe('copyWorktreeIncludes', () => {
     const copied = copyWorktreeIncludes(src, wt);
     assert.deepEqual(copied, ['config']);
     assert.ok(fs.existsSync(path.join(wt, 'config', 'app.json')));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// countWorktreeChanges — P4-GIT-004 regression test
+// ---------------------------------------------------------------------------
+
+describe('countWorktreeChanges', () => {
+  let tmpDir: string;
+  const gitEnv = {
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    GIT_AUTHOR_NAME: 'Test',
+    GIT_AUTHOR_EMAIL: 'test@test.com',
+    GIT_COMMITTER_NAME: 'Test',
+    GIT_COMMITTER_EMAIL: 'test@test.com',
+  };
+  const execOpts = (cwd: string) => ({
+    cwd,
+    encoding: 'utf-8' as const,
+    env: { ...process.env, ...gitEnv },
+  });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-changes-'));
+  });
+
+  afterEach(() => {
+    try {
+      execSync('git worktree prune', execOpts(tmpDir));
+    } catch {}
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('detects unpushed commits on a worktree branch with no upstream (P4-GIT-004)', () => {
+    execSync('git init', execOpts(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, 'README.md'), 'init');
+    execSync('git add README.md', execOpts(tmpDir));
+    execSync('git commit -m "initial"', execOpts(tmpDir));
+
+    const wtPath = path.join(tmpDir, 'wt');
+    execSync(`git worktree add -b test-branch "${wtPath}" HEAD`, execOpts(tmpDir));
+
+    fs.writeFileSync(path.join(wtPath, 'work.txt'), 'agent work');
+    execSync('git add work.txt', execOpts(wtPath));
+    execSync('git commit -m "agent work"', execOpts(wtPath));
+
+    const result = countWorktreeChanges(wtPath, tmpDir);
+    assert.ok(result !== null, 'countWorktreeChanges should not return null');
+    assert.equal(result!.uncommitted, 0, 'no uncommitted changes');
+    assert.ok(result!.unpushed > 0, `unpushed must be > 0, got ${result!.unpushed}`);
+
+    execSync(`git worktree remove --force "${wtPath}"`, execOpts(tmpDir));
+  });
+
+  it('reports uncommitted files correctly', () => {
+    execSync('git init', execOpts(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, 'README.md'), 'init');
+    execSync('git add README.md', execOpts(tmpDir));
+    execSync('git commit -m "initial"', execOpts(tmpDir));
+
+    const wtPath = path.join(tmpDir, 'wt');
+    execSync(`git worktree add -b test-uncommitted "${wtPath}" HEAD`, execOpts(tmpDir));
+    fs.writeFileSync(path.join(wtPath, 'dirty.txt'), 'not committed');
+
+    const result = countWorktreeChanges(wtPath, tmpDir);
+    assert.ok(result !== null);
+    assert.equal(result!.uncommitted, 1, 'should detect 1 uncommitted file');
+
+    execSync(`git worktree remove --force "${wtPath}"`, execOpts(tmpDir));
+  });
+
+  it('returns null on invalid git directory', () => {
+    const fakePath = path.join(tmpDir, 'not-a-repo');
+    fs.mkdirSync(fakePath, { recursive: true });
+    const result = countWorktreeChanges(fakePath, tmpDir);
+    assert.equal(result, null, 'should return null for non-git directory');
   });
 });
