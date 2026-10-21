@@ -262,11 +262,17 @@ export const fileReadTool: ToolDefinition = {
       // the read will fail naturally below
     }
 
-    // Check if file is a directory
+    // Check if file is a directory or non-regular file (pipe, socket, device)
     const stat = await fs.promises.stat(resolved);
     if (stat.isDirectory()) {
       return {
         output: `Error: ${resolved} is a directory, not a file.`,
+        isError: true,
+      };
+    }
+    if (!stat.isFile()) {
+      return {
+        output: `Error: not a regular file (pipe/device?): ${resolved}`,
         isError: true,
       };
     }

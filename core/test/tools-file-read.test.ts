@@ -486,6 +486,33 @@ describe('Read tool — size/regular-file guards + allow_large + large PDF', () 
     assert.match(res.output, /not a regular file|pipe|device/i);
   });
 
+  it('refuses a non-regular file (unix socket) on the TEXT path — not just images', async () => {
+    const net = require('net');
+    const p = path.join(tmpDir, 'sock.txt');
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(p, () => resolve());
+    });
+    try {
+      const res = await fileReadTool.execute({ file_path: p }, ctx());
+      assert.equal(res.isError, true);
+      assert.match(res.output, /not a regular file|pipe|device/i);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('refuses a FIFO on the TEXT path — not just images', async () => {
+    const p = path.join(tmpDir, 'pipe.log');
+    try {
+      require('child_process').execSync(`mkfifo ${JSON.stringify(p)}`);
+    } catch { return; }
+    const res = await fileReadTool.execute({ file_path: p }, ctx());
+    assert.equal(res.isError, true);
+    assert.match(res.output, /not a regular file|pipe|device/i);
+  });
+
   it('advertises allow_large in the input schema so the model can pass it', () => {
     const prop = (fileReadTool.inputSchema.properties as Record<string, unknown>).allow_large as { type?: string } | undefined;
     assert.ok(prop, 'allow_large must be declared in inputSchema.properties');
