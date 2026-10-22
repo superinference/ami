@@ -93,7 +93,7 @@ export interface ToolContext {
   /** Signal the engine to load a deferred tool into the active set (tool_search select). */
   _loadDeferredTool?: (name: string) => void;
   /** Per-tool output budgets (e.g. inline bash stdout cap before spill). */
-  outputBudget?: { bashMaxChars?: number; taskTailLines?: number };
+  outputBudget?: { bashMaxChars?: number; taskTailLines?: number; taskMaxChars?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
   _parentThinking?: ThinkingConfig;
   /** Session-wide web-search budget with token-bucket refill to stop runaway loops. */

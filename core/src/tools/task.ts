@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
+import { spillToolText } from './spill-output';
 import { SessionManager } from '../session';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
@@ -547,6 +548,12 @@ export const taskTool: ToolDefinition = {
       } catch {}
     }
 
-    return { output: `${resultText}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens]` };
+    // Cap the subagent transcript to the configured budget (spills overflow to
+    // disk), so a chatty subagent cannot blow up the parent's context.
+    const taskMaxChars = context.outputBudget?.taskMaxChars;
+    const cappedResult = taskMaxChars && taskMaxChars > 0
+      ? spillToolText(context.cwd, 'task', resultText, taskMaxChars)
+      : resultText;
+    return { output: `${cappedResult}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens]` };
   },
 };
