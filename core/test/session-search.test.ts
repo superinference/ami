@@ -122,4 +122,38 @@ describe('searchSessions', () => {
     assert.ok(results.length > 0);
     assert.ok(results[0].content.length <= 300);
   });
+
+  it('hoists literal (contiguous) phrase matches above scattered-term matches', () => {
+    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'phrase.json'), JSON.stringify({
+      id: 'phrase',
+      messages: [
+        { role: 'user', content: 'typescript foo error bar' },
+        { role: 'assistant', content: 'typescript error now' },
+      ],
+    }));
+    const results = searchSessions(tmpDir, 'typescript error');
+    const own = results.filter(r => r.sessionId === 'phrase');
+    assert.equal(own[0].content, 'typescript error now');
+    assert.ok(own[0].score > own[1].score);
+  });
+
+  it('breaks score ties by recency (newer sessions first)', () => {
+    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'aaa-older.json'), JSON.stringify({
+      id: 'older',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      messages: [{ role: 'user', content: 'ranktoken deploy' }],
+    }));
+    fs.writeFileSync(path.join(sessDir, 'zzz-newer.json'), JSON.stringify({
+      id: 'newer',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      messages: [{ role: 'user', content: 'ranktoken deploy' }],
+    }));
+    const results = searchSessions(tmpDir, 'ranktoken');
+    const ids = results
+      .filter(r => r.sessionId === 'older' || r.sessionId === 'newer')
+      .map(r => r.sessionId);
+    assert.deepEqual(ids, ['newer', 'older']);
+  });
 });
