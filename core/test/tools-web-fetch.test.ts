@@ -216,6 +216,12 @@ describe('webFetchTool – HTTP server integration', () => {
         res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
         // High bytes that UTF-8 decoding would mangle into U+FFFD.
         res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01, 0xc3, 0x28]));
+      } else if (req.url === '/forbidden') {
+        res.writeHead(403, { 'Content-Type': 'text/html' });
+        res.end('<html><body><p>Access denied by robots.txt</p></body></html>');
+      } else if (req.url === '/not-found-page') {
+        res.writeHead(404, { 'Content-Type': 'text/html' });
+        res.end('<html><body><p>Page moved to /new-location</p></body></html>');
       } else {
         res.writeHead(404);
         res.end('Not Found');
@@ -276,6 +282,26 @@ describe('webFetchTool – HTTP server integration', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it('returns 4xx as normal result with response body', async () => {
+    const result = await webFetchTool.execute(
+      { url: `http://127.0.0.1:${port}/forbidden` },
+      ctx({ _allowLocalhostForTesting: true }),
+    );
+    assert.ok(!result.isError, `4xx should not be isError, got: ${result.output}`);
+    assert.ok(result.output.includes('Status: 403'));
+    assert.ok(result.output.includes('robots.txt'));
+  });
+
+  it('returns 404 with useful body content', async () => {
+    const result = await webFetchTool.execute(
+      { url: `http://127.0.0.1:${port}/not-found-page` },
+      ctx({ _allowLocalhostForTesting: true }),
+    );
+    assert.ok(!result.isError, `404 should not be isError, got: ${result.output}`);
+    assert.ok(result.output.includes('Status: 404'));
+    assert.ok(result.output.includes('new-location'));
   });
 
   it('returns error for HTTP 500', async () => {

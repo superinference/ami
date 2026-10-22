@@ -58,6 +58,44 @@ export function recoverJsonStringFields(
   return result;
 }
 
+export function repairJsonArguments(raw: string): Record<string, unknown> | null {
+  if (!raw || !raw.trim()) return null;
+  let s = raw.trim();
+  if (!s.startsWith('{') && !s.startsWith('[')) return null;
+
+  const repairs = [
+    (t: string) => t.replace(/,\s*([}\]])/g, '$1'),
+    (t: string) => t.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, ''),
+    (t: string) => t.replace(/,\s*$/, ''),
+    (t: string) => {
+      let depth = 0;
+      let inStr = false;
+      let escape = false;
+      for (const ch of t) {
+        if (escape) { escape = false; continue; }
+        if (ch === '\\') { escape = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === '{' || ch === '[') depth++;
+        if (ch === '}' || ch === ']') depth--;
+      }
+      if (inStr) t += '"';
+      while (depth > 0) { t += t.trimStart().startsWith('[') && depth === 1 ? ']' : '}'; depth--; }
+      return t;
+    },
+  ];
+
+  for (let i = 0; i <= repairs.length; i++) {
+    let attempt = s;
+    for (let j = 0; j < i; j++) attempt = repairs[j](attempt);
+    try {
+      const parsed = JSON.parse(attempt);
+      if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, unknown>;
+    } catch { /* try next repair stage */ }
+  }
+  return null;
+}
+
 export function validateRequiredFields(
   input: Record<string, unknown>,
   required: string[],

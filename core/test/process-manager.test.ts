@@ -132,6 +132,8 @@ describe('ProcessManager – completion', () => {
     assert.equal(event.exitCode, 0);
     assert.ok(event.command.includes('echo event-test'));
     assert.equal(event.description, 'Event test');
+    assert.ok(event.outputPath, 'complete event must include outputPath');
+    assert.ok(event.outputPath.includes(id), 'outputPath must contain the taskId');
   });
 });
 

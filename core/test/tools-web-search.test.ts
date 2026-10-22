@@ -271,7 +271,8 @@ describe('web_search — session-wide runaway cap', () => {
     const ctx: any = { cwd: process.cwd(), abortSignal: new AbortController().signal, _webSearchBudget: budget };
     const res = await webSearchTool.execute({ query: 'anything' }, ctx);
     assert.equal(res.isError, true);
-    assert.match(res.output, /web search limit|too many searches/i);
+    assert.match(res.output, /web search limit/i);
+    assert.ok(res.output.includes('Do not attempt alternative search methods'), 'budget message must warn against workarounds');
     assert.equal(budget.count, 1, 'budget counter must increment');
   });
 

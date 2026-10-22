@@ -155,7 +155,7 @@ export const webSearchTool: ToolDefinition = {
       }
       budget.count++;
       if (budget.count > budget.max) {
-        return { output: `Error: web search limit reached (${budget.max} per session) — too many searches.`, isError: true };
+        return { output: `Error: web search limit reached (${budget.max} per session). Do not attempt alternative search methods (web_fetch to search engines, bash curl to search URLs, or similar workarounds) — they will also fail or be blocked. Work with the information you already have.`, isError: true };
       }
     }
 

@@ -197,13 +197,14 @@ describe('web_fetch tool', () => {
     assert.ok(result.output.includes('"value"'));
   });
 
-  it('returns error for HTTP 404', async () => {
+  it('returns 404 as normal result (4xx is information, not error)', async () => {
     const result = await webFetchTool.execute(
       { url: `${baseUrl}/not-found` },
       makeContext('/tmp', true),
     );
-    assert.equal(result.isError, true);
+    assert.ok(!result.isError, `4xx should not be isError, got: ${result.output}`);
     assert.ok(result.output.includes('404'));
+    assert.ok(result.output.includes('Not Found'));
   });
 
   it('returns error for HTTP 500', async () => {

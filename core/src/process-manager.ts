@@ -177,7 +177,7 @@ export class ProcessManager extends EventEmitter {
       entry.exitCode = code;
       try { fs.closeSync(fd); } catch { /* already closed */ }
       entry.outputFd = null;
-      this.emit('complete', { taskId, exitCode: code, command: entry.command, description: entry.description });
+      this.emit('complete', { taskId, exitCode: code, command: entry.command, description: entry.description, outputPath: entry.outputPath });
     });
 
     proc.on('error', (err) => {
@@ -188,7 +188,7 @@ export class ProcessManager extends EventEmitter {
         fs.closeSync(fd);
       } catch { /* ignore */ }
       entry.outputFd = null;
-      this.emit('complete', { taskId, exitCode: null, command: entry.command, description: entry.description });
+      this.emit('complete', { taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath });
     });
 
     return taskId;
@@ -296,11 +296,11 @@ export class ProcessManager extends EventEmitter {
         const healthy = await checkFn();
         if (!healthy) {
           clearInterval(interval);
-          this.emit('complete', { taskId, exitCode: 1, command: `monitor:${serverId}`, description: `MCP monitor: ${serverId}` });
+          this.emit('complete', { taskId, exitCode: 1, command: `monitor:${serverId}`, description: `MCP monitor: ${serverId}`, outputPath: '' });
         }
       } catch {
         clearInterval(interval);
-        this.emit('complete', { taskId, exitCode: 1, command: `monitor:${serverId}`, description: `MCP monitor: ${serverId}` });
+        this.emit('complete', { taskId, exitCode: 1, command: `monitor:${serverId}`, description: `MCP monitor: ${serverId}`, outputPath: '' });
       }
     }, intervalMs);
     this.processes.set(taskId, {

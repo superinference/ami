@@ -9,6 +9,7 @@ import {
   normalizeCommandForDisplay,
   sanitizeSubagentOutput,
   recoverJsonStringFields,
+  repairJsonArguments,
 } from '../src/tools/input-sanitizer';
 
 describe('sanitizeToolInput', () => {
@@ -373,5 +374,84 @@ describe('recoverJsonStringFields', () => {
     const schema = { properties: { config: { type: 'object' } } };
     const result = recoverJsonStringFields(input, schema);
     assert.equal(result.config, '["a","b"]');
+  });
+});
+
+describe('repairJsonArguments', () => {
+  it('returns parsed object for valid JSON', () => {
+    const result = repairJsonArguments('{"command": "ls -la"}');
+    assert.deepEqual(result, { command: 'ls -la' });
+  });
+
+  it('repairs trailing comma before closing brace', () => {
+    const result = repairJsonArguments('{"command": "ls", "path": "/tmp",}');
+    assert.deepEqual(result, { command: 'ls', path: '/tmp' });
+  });
+
+  it('repairs trailing comma before closing bracket', () => {
+    const result = repairJsonArguments('{"items": ["a", "b",]}');
+    assert.deepEqual(result, { items: ['a', 'b'] });
+  });
+
+  it('repairs truncated string', () => {
+    const result = repairJsonArguments('{"command": "ls -la');
+    assert.ok(result !== null);
+    assert.equal(result!.command, 'ls -la');
+  });
+
+  it('repairs missing closing brace', () => {
+    const result = repairJsonArguments('{"a": 1, "b": 2');
+    assert.ok(result !== null);
+    assert.equal(result!.a, 1);
+    assert.equal(result!.b, 2);
+  });
+
+  it('repairs missing multiple closing braces', () => {
+    const result = repairJsonArguments('{"outer": {"inner": 1}');
+    assert.ok(result !== null);
+    assert.deepEqual((result!.outer as any).inner, 1);
+  });
+
+  it('strips single-line comments', () => {
+    const result = repairJsonArguments('{"a": 1 // this is a comment\n}');
+    assert.deepEqual(result, { a: 1 });
+  });
+
+  it('strips multi-line comments', () => {
+    const result = repairJsonArguments('{"a": /* comment */ 1}');
+    assert.deepEqual(result, { a: 1 });
+  });
+
+  it('returns null for empty string', () => {
+    assert.equal(repairJsonArguments(''), null);
+  });
+
+  it('returns null for whitespace-only', () => {
+    assert.equal(repairJsonArguments('   '), null);
+  });
+
+  it('returns null for non-JSON text', () => {
+    assert.equal(repairJsonArguments('not json at all'), null);
+  });
+
+  it('returns null for plain number', () => {
+    assert.equal(repairJsonArguments('42'), null);
+  });
+
+  it('handles arrays', () => {
+    const result = repairJsonArguments('["a", "b"]');
+    assert.deepEqual(result, ['a', 'b']);
+  });
+
+  it('repairs combined trailing comma + missing brace', () => {
+    const result = repairJsonArguments('{"cmd": "test",');
+    assert.ok(result !== null);
+    assert.equal(result!.cmd, 'test');
+  });
+
+  it('handles nested objects with trailing commas', () => {
+    const result = repairJsonArguments('{"config": {"key": "val",},}');
+    assert.ok(result !== null);
+    assert.deepEqual((result!.config as any).key, 'val');
   });
 });

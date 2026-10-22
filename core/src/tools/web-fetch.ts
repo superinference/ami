@@ -218,9 +218,9 @@ export const webFetchTool: ToolDefinition = {
         { resolvedIP: pinnedIP, raw: true },
       );
 
-      if (statusCode >= 400) {
+      if (statusCode >= 500) {
         return {
-          output: `Error: HTTP ${statusCode} when fetching ${sanitizedUrl}`,
+          output: `Error: HTTP ${statusCode} (server error) when fetching ${sanitizedUrl}`,
           isError: true,
         };
       }
