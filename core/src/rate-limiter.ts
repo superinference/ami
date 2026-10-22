@@ -1,3 +1,5 @@
+import { parseRateLimitHeaders } from './rate-limit-parser';
+
 export interface RateLimitBucket {
   limit: number;
   remaining: number;
@@ -19,26 +21,27 @@ export class RateLimitTracker {
   private tokens: RateLimitBucket | null = null;
 
   update(headers: Record<string, string>): void {
-    const reqLimit = parseInt(headers['x-ratelimit-limit-requests'] || '', 10);
-    const reqRemaining = parseInt(headers['x-ratelimit-remaining-requests'] || '', 10);
+    const info = parseRateLimitHeaders(headers);
     const reqReset = headers['x-ratelimit-reset-requests'];
 
-    if (!isNaN(reqLimit) && !isNaN(reqRemaining)) {
+    if (info.limitRequests !== null && info.remainingRequests !== null) {
       this.requests = {
-        limit: reqLimit,
-        remaining: reqRemaining,
-        resetAt: reqReset ? Date.now() + this.parseDuration(reqReset) : 0,
+        limit: info.limitRequests,
+        remaining: info.remainingRequests,
+        // Prefer the shared parser's resetAt; fall back to parseDuration for
+        // ms/m/h/compound formats the parser does not decode.
+        resetAt: info.resetAt
+          ? info.resetAt.getTime()
+          : (reqReset ? Date.now() + this.parseDuration(reqReset) : 0),
       };
     }
 
-    const tokLimit = parseInt(headers['x-ratelimit-limit-tokens'] || '', 10);
-    const tokRemaining = parseInt(headers['x-ratelimit-remaining-tokens'] || '', 10);
     const tokReset = headers['x-ratelimit-reset-tokens'];
 
-    if (!isNaN(tokLimit) && !isNaN(tokRemaining)) {
+    if (info.limitTokens !== null && info.remainingTokens !== null) {
       this.tokens = {
-        limit: tokLimit,
-        remaining: tokRemaining,
+        limit: info.limitTokens,
+        remaining: info.remainingTokens,
         resetAt: tokReset ? Date.now() + this.parseDuration(tokReset) : 0,
       };
     }
