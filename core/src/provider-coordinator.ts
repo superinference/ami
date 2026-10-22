@@ -71,10 +71,17 @@ export class ProviderCoordinator {
   }
 
   getCompactionConfig(): ProviderConfig {
-    if (this.subsystem.compactionModel) {
-      return { ...this.subsystem.primary, model: this.subsystem.compactionModel };
-    }
-    return this.subsystem.primary;
+    const base: ProviderConfig = this.subsystem.compactionModel
+      ? { ...this.subsystem.primary, model: this.subsystem.compactionModel }
+      : { ...this.subsystem.primary };
+    // Populate fallbackModel from the fallback chain so the compaction-refusal
+    // retry path in the context manager actually has a model to fall back to.
+    const chain = this.subsystem.fallbackModels?.length
+      ? this.subsystem.fallbackModels
+      : (this.subsystem.fallbackModel ? [this.subsystem.fallbackModel] : []);
+    const fb = chain.find(m => m && m !== base.model);
+    if (fb) base.fallbackModel = fb;
+    return base;
   }
 
   getState(): CoordinatorState {

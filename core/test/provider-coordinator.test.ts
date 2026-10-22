@@ -78,6 +78,38 @@ describe('ProviderCoordinator', () => {
     assert.equal(config.model, 'gpt-4o');
   });
 
+  it('populates compaction fallbackModel from the fallback chain (was dead before)', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({ fallbackModels: ['gpt-4o-mini', 'o4-mini'] }));
+    assert.equal(coord.getCompactionConfig().fallbackModel, 'gpt-4o-mini');
+  });
+
+  it('populates compaction fallbackModel from a singular fallbackModel', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({ fallbackModel: 'gpt-4o-mini' }));
+    assert.equal(coord.getCompactionConfig().fallbackModel, 'gpt-4o-mini');
+  });
+
+  it('leaves fallbackModel unset when there is no fallback chain', () => {
+    const coord = new ProviderCoordinator(makeSubsystem());
+    assert.equal(coord.getCompactionConfig().fallbackModel, undefined);
+  });
+
+  it('skips a fallback equal to the (compaction) model', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      compactionModel: 'gpt-4o-mini',
+      fallbackModels: ['gpt-4o-mini', 'o4-mini'],
+    }));
+    const config = coord.getCompactionConfig();
+    assert.equal(config.model, 'gpt-4o-mini');
+    assert.equal(config.fallbackModel, 'o4-mini', 'must skip the fallback equal to the compaction model');
+  });
+
+  it('does not mutate the primary subsystem config', () => {
+    const sub = makeSubsystem({ fallbackModel: 'gpt-4o-mini' });
+    const coord = new ProviderCoordinator(sub);
+    coord.getCompactionConfig();
+    assert.equal(sub.primary.fallbackModel, undefined, 'primary must stay untouched');
+  });
+
   it('detects Anthropic provider from model name', () => {
     const coord = new ProviderCoordinator(makeSubsystem({
       primary: {
