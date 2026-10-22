@@ -259,6 +259,46 @@ export class ProcessManager extends EventEmitter {
     };
   }
 
+  /**
+   * Incremental tail: read only the bytes appended since `fromOffset` instead of
+   * re-reading the whole output file every tick. Returns the new chunk plus the
+   * byte offset to pass on the next call. If the file shrank below `fromOffset`
+   * (truncated or rotated), `reset` is true and the chunk is the full file read
+   * from the start so the caller can rebuild its buffer.
+   */
+  getOutputTail(taskId: string, fromOffset = 0): { output: string; offset: number; reset: boolean } | null {
+    const entry = this.processes.get(taskId);
+    if (!entry) return null;
+
+    try {
+      const size = fs.statSync(entry.outputPath).size;
+      let start = fromOffset;
+      let reset = false;
+      if (fromOffset < 0 || fromOffset > size) {
+        // file shrank or rotated since the last read — rebuild from the start
+        start = 0;
+        reset = true;
+      }
+      if (start >= size) {
+        return { output: '', offset: size, reset };
+      }
+      const fd = fs.openSync(entry.outputPath, 'r');
+      let output = '';
+      try {
+        const length = size - start;
+        const buf = Buffer.allocUnsafe(length);
+        const bytesRead = fs.readSync(fd, buf, 0, length, start);
+        output = buf.subarray(0, bytesRead).toString('utf-8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      return { output, offset: size, reset };
+    } catch {
+      // file may not exist yet
+      return { output: '', offset: 0, reset: false };
+    }
+  }
+
   list(): BackgroundProcess[] {
     return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, ...rest }) => rest);
   }
