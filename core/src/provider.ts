@@ -8,6 +8,21 @@ import { gzipSync } from 'node:zlib';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
+import { parseRateLimitHeaders } from './rate-limit-parser';
+
+/**
+ * Retry-After from response headers, in SECONDS. Delegates to the shared
+ * rate-limit parser, which handles BOTH a numeric delta-seconds value AND an
+ * HTTP-date value (e.g. "Wed, 21 Oct 2026 07:28:00 GMT") — the HTTP-date form
+ * was silently dropped by the previous inline `parseInt` sites.
+ */
+export function extractRetryAfterSeconds(
+  headers: Record<string, string | string[] | undefined> | undefined,
+): number | undefined {
+  if (!headers) return undefined;
+  const ms = parseRateLimitHeaders(headers).retryAfterMs;
+  return ms != null ? Math.max(0, Math.round(ms / 1000)) : undefined;
+}
 import type {
   ProviderConfig,
   Message,
@@ -998,13 +1013,8 @@ export async function* streamChatCompletion(
             ? `HTTP ${errStatusCode}: ${errObj?.message ?? String(part.error)}`
             : errObj?.message ?? (typeof part.error === 'string' ? part.error : String(part.error));
 
-          // Extract Retry-After from response headers if available
-          let errRetryAfter: number | undefined;
-          const rah = errObj?.responseHeaders?.['retry-after'];
-          if (rah) {
-            const parsed = parseInt(rah, 10);
-            if (!isNaN(parsed)) errRetryAfter = parsed;
-          }
+          // Extract Retry-After (seconds) — handles numeric and HTTP-date forms.
+          const errRetryAfter = extractRetryAfterSeconds(errObj?.responseHeaders);
 
           yield {
             type: 'error',
@@ -1044,17 +1054,8 @@ export async function* streamChatCompletion(
       // Format error with HTTP status prefix so extractStatusCode() can find it
       const errorMsg = statusCode ? `HTTP ${statusCode}: ${baseMsg}` : baseMsg;
 
-      // Extract Retry-After from response headers if available
-      let retryAfter: number | undefined;
-      if (responseHeaders) {
-        const retryAfterHeader = responseHeaders['retry-after'];
-        if (retryAfterHeader) {
-          const parsed = parseInt(retryAfterHeader, 10);
-          if (!isNaN(parsed)) {
-            retryAfter = parsed;
-          }
-        }
-      }
+      // Extract Retry-After (seconds) — handles numeric and HTTP-date forms.
+      const retryAfter = extractRetryAfterSeconds(responseHeaders);
 
       yield {
         type: 'error',
