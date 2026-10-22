@@ -18,6 +18,13 @@ export function getAgentByName(name: string): string | undefined {
   return agentNameRegistry.get(name);
 }
 
+export function getAgentNameById(taskId: string): string | undefined {
+  for (const [name, id] of agentNameRegistry) {
+    if (id === taskId) return name;
+  }
+  return undefined;
+}
+
 export function resetAgentRegistry(): void {
   agentNameRegistry.clear();
 }
