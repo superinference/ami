@@ -33,6 +33,15 @@ export class SubagentLimiter {
     return this.totalSpawned >= this.maxLifetime;
   }
 
+  /**
+   * Record a spawn against the lifetime budget without touching concurrency.
+   * Used when depth/concurrency are enforced elsewhere (e.g. task.ts) and only
+   * the per-session lifetime cap should be tracked by this limiter.
+   */
+  recordSpawn(): void {
+    this.totalSpawned++;
+  }
+
   async acquire(): Promise<void> {
     if (this.totalSpawned >= this.maxLifetime) {
       throw new Error(

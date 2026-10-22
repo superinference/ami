@@ -197,6 +197,18 @@ export const taskTool: ToolDefinition = {
       return { output: `Error: ${capError}`, isError: true };
     }
 
+    // Enforce the per-session lifetime budget (env-configurable via
+    // CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION). Depth and concurrency remain
+    // governed by checkAgentCaps/shouldAllowNestedTask above — the limiter only
+    // owns the lifetime cap here.
+    if (context.subagentLimiter?.isLifetimeBudgetExhausted()) {
+      return {
+        output: `Error: Session subagent limit reached (${context.subagentLimiter.maxLifetime}). ` +
+          'Use /clear to reset or set CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION to increase.',
+        isError: true,
+      };
+    }
+
     const MODEL_ALIASES: Record<string, string> = {
       'sonnet': 'claude-sonnet-4',
       'opus': 'claude-opus-4',
@@ -343,6 +355,7 @@ export const taskTool: ToolDefinition = {
 
     if (runInBackground) {
       incrementSpawnCount(context);
+      context.subagentLimiter?.recordSpawn();
       const taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
       if (agentName) {
         agentNameRegistry.set(agentName, taskId);
@@ -459,6 +472,7 @@ export const taskTool: ToolDefinition = {
     }
 
     incrementSpawnCount(context);
+    context.subagentLimiter?.recordSpawn();
     const subEngine = context._engineFactory(subConfig);
     const taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
     if (agentName) {

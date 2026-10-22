@@ -109,6 +109,11 @@ export interface ToolContext {
   _maxAgentsPerSession?: number;
   /** Max concurrently running agents (default 10). */
   _maxConcurrentAgents?: number;
+  /** Session-lifetime subagent budget (honors CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION
+   *  and related env vars). task.ts consults isLifetimeBudgetExhausted() to block
+   *  spawns past the per-session cap; depth/concurrency stay governed by the
+   *  _agentDepth/_maxConcurrentAgents logic above. */
+  subagentLimiter?: import('./subagent-limiter').SubagentLimiter;
 }
 
 export interface ToolDefinition {
