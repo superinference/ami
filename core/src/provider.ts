@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
-import { parseRateLimitHeaders } from './rate-limit-parser';
+import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 
 /**
  * Retry-After from response headers, in SECONDS. Delegates to the shared
@@ -1197,10 +1197,20 @@ export async function* streamChatCompletionWithRetry(
 
           let delayMs: number;
           const retryAfterSeconds = chunk.retryAfter;
+          const expBackoff = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
           if (statusCode === 429 && retryAfterSeconds != null) {
             delayMs = Math.max(retryAfterSeconds * 1000, baseDelay);
+          } else if (statusCode === 429 && chunk.responseHeaders) {
+            // No Retry-After header: when the server's rate-limit headers say we
+            // are out of budget, honor the reset window (x-ratelimit-reset-*)
+            // instead of a blind exponential backoff. Floored at baseDelay,
+            // capped at maxDelay.
+            const info = parseRateLimitHeaders(chunk.responseHeaders);
+            delayMs = shouldBackoff(info)
+              ? Math.min(Math.max(suggestedWaitMs(info, expBackoff), baseDelay), maxDelay)
+              : expBackoff;
           } else {
-            delayMs = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+            delayMs = expBackoff;
           }
 
           if (options?.onRetry) {
