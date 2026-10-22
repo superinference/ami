@@ -4,6 +4,7 @@ import { URL } from 'url';
 import type { ProviderConfig } from './types';
 import { MODEL_PREFERENCE } from './provider';
 import { discoverFromModelList } from './model-capabilities';
+import { redactSecrets } from './tools/tool-utils';
 
 const TIMEOUT_MS = 10000;
 
@@ -35,6 +36,13 @@ function httpGetJSON(
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', () => {
+        const status = res.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          const httpErr = new Error(`HTTP ${status}`) as Error & { statusCode: number };
+          httpErr.statusCode = status;
+          reject(httpErr);
+          return;
+        }
         try {
           resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
         } catch {
@@ -108,6 +116,96 @@ export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
     const models = MODEL_PREFERENCE[provider] || [];
     if (models.length > 0) return models.map(id => ({ id, name: id }));
     return [];
+  }
+}
+
+/**
+ * Human-readable env-var hint for a provider's credential, used in empty-state
+ * diagnostics. Falls back to a generic phrase for providers without a single
+ * well-known key var.
+ */
+function providerKeyHint(provider: string): string {
+  switch (provider) {
+    case 'openai': return 'OPENAI_API_KEY';
+    case 'google': return 'GOOGLE_API_KEY';
+    case 'openrouter': return 'AI_API_KEY (OpenRouter)';
+    case 'ollama': return 'AI_BASE_URL (Ollama needs no API key)';
+    default: return `the ${provider} API key environment variable`;
+  }
+}
+
+/**
+ * Classify a model-discovery failure into a specific, actionable diagnostic.
+ *
+ * Distinguishes rejected credentials (401/403), a wrong base URL (404), an
+ * unreachable endpoint (timeout / connection refused / DNS), and missing
+ * configuration. Any secret that leaked into the underlying error message is
+ * scrubbed via redactSecrets so keys never surface in the UI.
+ */
+export function diagnoseModelDiscovery(err: unknown, provider: string): string {
+  const status = typeof (err as { statusCode?: unknown })?.statusCode === 'number'
+    ? (err as { statusCode: number }).statusCode
+    : undefined;
+  const code = typeof (err as { code?: unknown })?.code === 'string'
+    ? (err as { code: string }).code
+    : undefined;
+  const message = err instanceof Error ? err.message : String(err ?? '');
+
+  if (status === 401 || status === 403) {
+    return `Authentication failed (HTTP ${status}): ${provider} rejected the API key. Check ${providerKeyHint(provider)}.`;
+  }
+  if (status === 404) {
+    return `Model list endpoint not found (HTTP 404) for ${provider}. Check the base URL includes the API path (e.g. ".../v1").`;
+  }
+  if (typeof status === 'number') {
+    return `${provider} returned HTTP ${status} when listing models.`;
+  }
+  if (message.includes('baseUrl is required')) {
+    return `No base URL configured for ${provider}. Set AI_BASE_URL (or pass --base-url).`;
+  }
+  if (message.includes('Timeout')) {
+    return `Timed out reaching ${provider}. The endpoint may be unreachable — check the base URL and your network.`;
+  }
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return `Could not reach ${provider} (${code}). Check the base URL and your network.`;
+  }
+  if (message.includes('Invalid JSON')) {
+    return `${provider} returned a non-JSON response from the model list endpoint — the base URL may be wrong.`;
+  }
+  return `Could not list models for ${provider}: ${redactSecrets(message) || 'unknown error'}.`;
+}
+
+/**
+ * Like listModels, but surfaces a specific empty-state diagnostic instead of
+ * silently swallowing failures. The success path is unchanged (diagnostic is
+ * null whenever at least one model is returned), so callers that only need the
+ * list can keep using listModels.
+ */
+export async function listModelsDiagnostic(
+  config: ProviderConfig,
+): Promise<{ models: ModelInfo[]; diagnostic: string | null }> {
+  const provider = detectProvider(config);
+
+  if (STATIC_MODEL_PROVIDERS.has(provider)) {
+    const models = (MODEL_PREFERENCE[provider] || []).map(id => ({ id, name: id }));
+    return {
+      models,
+      diagnostic: models.length > 0 ? null : `No built-in model list for ${provider}.`,
+    };
+  }
+
+  try {
+    const models = provider === 'google'
+      ? await listGeminiModels(config)
+      : await listOpenAIModels(config);
+    return {
+      models,
+      diagnostic: models.length > 0
+        ? null
+        : `${provider} returned an empty model list. Verify ${providerKeyHint(provider)} has model-list access.`,
+    };
+  } catch (err) {
+    return { models: [], diagnostic: diagnoseModelDiscovery(err, provider) };
   }
 }
 
