@@ -68,6 +68,8 @@ export interface BackgroundProcess {
   exitCode: number | null;
   outputPath: string;
   startTime: number;
+  /** Cumulative token usage for background agents (undefined for bash tasks). */
+  tokenCount?: number;
 }
 
 interface InternalProcess extends BackgroundProcess {

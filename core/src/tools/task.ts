@@ -379,6 +379,7 @@ export const taskTool: ToolDefinition = {
           proc: { pid: process.pid, kill: () => { subAbort.abort(); } },
           outputFd: null,
           bytesWritten: 0,
+          tokenCount: 0,
         });
         const fm = (context.processManager as any).flowManager;
         if (fm) {
@@ -430,6 +431,12 @@ export const taskTool: ToolDefinition = {
               const preview = lines.slice(0, 20).join('\n');
               const suffix = lines.length > 20 ? `\n  ... (${lines.length - 20} more lines)` : '';
               w(`${preview}${suffix}\n`);
+            }
+            if (event.type === 'usage_update') {
+              if (context.processManager) {
+                const bgEntry = (context.processManager as any).processes.get(taskId);
+                if (bgEntry) bgEntry.tokenCount = (event as any).stats?.totalTokens ?? bgEntry.tokenCount;
+              }
             }
             if (event.type === 'error') {
               sawError = true;
