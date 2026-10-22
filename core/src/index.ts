@@ -100,8 +100,8 @@ export { isProtectedEvent, canHookEvent, PROTECTED_EVENTS, sortHooksByTier, isSt
 export type { HookTier, HookRegistration } from './hook-protection';
 export { isModAllowed, parseModId, normalizeModName, modNamesMatch, validateModId, ManagedModsEnforcer } from './managed-mods';
 export type { ModInfo, ManagedModsPolicy } from './managed-mods';
-export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker } from './provenance';
-export type { ProvenanceTier, ProvenanceRecord } from './provenance';
+export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance } from './provenance';
+export type { ProvenanceTier, ProvenanceRecord, ProvenanceSummary } from './provenance';
 export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 export type { RateLimitInfo } from './rate-limit-parser';
 export { canOverride, getEffectiveTier, filterManagedKeys, SettingsGuard } from './settings-guard';

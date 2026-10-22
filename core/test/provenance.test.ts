@@ -4,6 +4,7 @@ import {
   resolveProvenance,
   isProvenanceTrusted,
   ProvenanceTracker,
+  summarizeProvenance,
 } from '../src/provenance';
 
 describe('resolveProvenance', () => {
@@ -191,5 +192,30 @@ describe('ProvenanceTracker', () => {
     assert.equal(tracker.getTier('tool'), 'user');
     tracker.register('tool', 'org');
     assert.equal(tracker.getTier('tool'), 'managed');
+  });
+});
+
+describe('summarizeProvenance', () => {
+  it('returns zeroed tiers for an empty tracker', () => {
+    const summary = summarizeProvenance(new ProvenanceTracker());
+    assert.deepEqual(summary.tiers, { builtin: 0, managed: 0, user: 0, unknown: 0 });
+    assert.equal(summary.total, 0);
+    assert.equal(summary.untrustedCount, 0);
+    assert.deepEqual(summary.records, []);
+  });
+
+  it('counts records per tier and reports untrusted count', () => {
+    const tracker = new ProvenanceTracker(new Set(['org']), new Set(['core']));
+    tracker.register('bash', 'core');     // builtin
+    tracker.register('grep', 'core');     // builtin
+    tracker.register('policy', 'org');    // managed
+    tracker.register('plugin', 'npm');    // user
+    tracker.register('mystery', '');      // unknown
+    const summary = summarizeProvenance(tracker);
+    assert.deepEqual(summary.tiers, { builtin: 2, managed: 1, user: 1, unknown: 1 });
+    assert.equal(summary.total, 5);
+    // user + unknown are not trusted
+    assert.equal(summary.untrustedCount, 2);
+    assert.ok(summary.records.some(r => r.name === 'plugin' && r.tier === 'user'));
   });
 });

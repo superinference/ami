@@ -85,3 +85,27 @@ export class ProvenanceTracker {
     this._untrustedAccess = [];
   }
 }
+
+export interface ProvenanceSummary {
+  tiers: Record<ProvenanceTier, number>;
+  total: number;
+  untrustedCount: number;
+  records: ProvenanceRecord[];
+}
+
+/**
+ * Reduce a {@link ProvenanceTracker} to a render-ready summary for surfaces
+ * like /status: per-tier counts, total records, untrusted count, and the
+ * underlying records. Pure — no I/O, safe to call on every status read.
+ */
+export function summarizeProvenance(tracker: ProvenanceTracker): ProvenanceSummary {
+  const records = [...tracker.getAllRecords().values()];
+  const tiers: Record<ProvenanceTier, number> = { builtin: 0, managed: 0, user: 0, unknown: 0 };
+  for (const r of records) tiers[r.tier]++;
+  return {
+    tiers,
+    total: records.length,
+    untrustedCount: records.filter(r => !isProvenanceTrusted(r.tier)).length,
+    records,
+  };
+}
