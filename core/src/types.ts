@@ -222,6 +222,7 @@ export interface ThinkingConfig {
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
+  | { type: 'tool_call_generating'; toolName: string; toolIndex: number; argsDelta: string }
   | { type: 'tool_use_start'; toolName: string; toolCallId: string; input: Record<string, unknown> }
   | { type: 'tool_use_progress'; toolCallId: string; data: string }
   | { type: 'tool_use_result'; toolCallId: string; toolName: string; output: string; isError: boolean }
