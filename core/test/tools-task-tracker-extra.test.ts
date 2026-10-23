@@ -553,6 +553,7 @@ describe('searchSymbolsTool — extra coverage', () => {
   beforeEach(() => {
     _resetIndexer();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-search-extra-'));
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
 
     fs.writeFileSync(
       path.join(tmpDir, 'models.ts'),
@@ -670,6 +671,7 @@ export function formatCurrency(amount: number): string {
     const indexer1 = getWorkspaceIndexer(tmpDir);
 
     const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'si-search-extra-2-'));
+    fs.writeFileSync(path.join(tmpDir2, 'package.json'), '{}');
     fs.writeFileSync(path.join(tmpDir2, 'foo.ts'), 'export function foo() {}\n');
 
     const indexer2 = getWorkspaceIndexer(tmpDir2);

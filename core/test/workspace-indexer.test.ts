@@ -4,10 +4,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { WorkspaceIndexer } from '../src/workspace-indexer';
+import { WorkspaceIndexer, findProjectRoot } from '../src/workspace-indexer';
 
 function makeTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'si-wsi-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wsi-test-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+  return dir;
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +652,304 @@ describe('WorkspaceIndexer — non-blocking indexing', () => {
         `buildIndex should yield to the event loop many times during indexing ` +
         `(got ${yieldCount} yields for ${result.fileCount} files — sync I/O starves the loop)`,
       );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Project detection — findProjectRoot
+// ---------------------------------------------------------------------------
+
+function makeBareDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'si-wsi-bare-'));
+}
+
+describe('findProjectRoot', () => {
+  it('returns the directory when package.json is present', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+      assert.equal(findProjectRoot(tmpDir), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the directory when .git is present', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.mkdirSync(path.join(tmpDir, '.git'));
+      assert.equal(findProjectRoot(tmpDir), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('walks up to find project root in a parent directory', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+      const sub = path.join(tmpDir, 'src', 'deep');
+      fs.mkdirSync(sub, { recursive: true });
+      assert.equal(findProjectRoot(sub), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a directory with no project markers', () => {
+    const tmpDir = makeBareDir();
+    try {
+      assert.equal(findProjectRoot(tmpDir), null);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects Cargo.toml as project marker', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'Cargo.toml'), '[package]');
+      assert.equal(findProjectRoot(tmpDir), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects go.mod as project marker', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'go.mod'), 'module example.com/app');
+      assert.equal(findProjectRoot(tmpDir), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects pyproject.toml as project marker', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'pyproject.toml'), '[project]');
+      assert.equal(findProjectRoot(tmpDir), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects Makefile as project marker', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'Makefile'), 'all:');
+      assert.equal(findProjectRoot(tmpDir), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects tsconfig.json as project marker', () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'tsconfig.json'), '{}');
+      assert.equal(findProjectRoot(tmpDir), path.resolve(tmpDir));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildIndex — project detection integration
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceIndexer — project detection', () => {
+  it('skips indexing when no project markers exist', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'app.ts'), 'export function main() {}');
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const result = await indexer.buildIndex();
+
+      assert.equal(result.fileCount, 0);
+      assert.equal(result.symbolCount, 0);
+      assert.equal(result.skippedReason, 'no project root found');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('indexes when package.json exists', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+      fs.writeFileSync(path.join(tmpDir, 'app.ts'), 'export function main() {}');
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const result = await indexer.buildIndex();
+
+      assert.ok(result.fileCount >= 1, `expected >= 1 files, got ${result.fileCount}`);
+      assert.equal(result.skippedReason, undefined);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('indexes when project marker is in parent directory', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+      const sub = path.join(tmpDir, 'src');
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, 'app.ts'), 'export function main() {}');
+
+      const indexer = new WorkspaceIndexer(sub);
+      const result = await indexer.buildIndex();
+
+      assert.ok(result.fileCount >= 1);
+      assert.equal(result.skippedReason, undefined);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skippedReason is absent on successful indexing', async () => {
+    const tmpDir = makeTempDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'app.ts'), 'export function hello() {}');
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const result = await indexer.buildIndex();
+
+      assert.equal(result.skippedReason, undefined);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildIndex — git-aware file listing
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceIndexer — git-aware indexing', () => {
+  it('uses git ls-files in a git repo and respects .gitignore', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      const { execSync } = require('child_process');
+      execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+      execSync('git config user.email "test@test.com"', { cwd: tmpDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'ignore' });
+
+      fs.writeFileSync(path.join(tmpDir, 'tracked.ts'), 'export function tracked() {}');
+      fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'generated/\n');
+      fs.mkdirSync(path.join(tmpDir, 'generated'));
+      fs.writeFileSync(path.join(tmpDir, 'generated', 'output.ts'), 'export function generated() {}');
+
+      execSync('git add tracked.ts .gitignore', { cwd: tmpDir, stdio: 'ignore' });
+      execSync('git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const result = await indexer.buildIndex();
+
+      assert.ok(result.fileCount >= 1, `expected >= 1 file, got ${result.fileCount}`);
+      const files = indexer.getFiles();
+      const relativePaths = files.map(f => path.relative(tmpDir, f.path));
+      assert.ok(relativePaths.includes('tracked.ts'), 'tracked file should be indexed');
+      assert.ok(!relativePaths.some(p => p.includes('generated')), 'gitignored files should not be indexed');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to glob when git is not available (non-git project dir)', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+      fs.writeFileSync(path.join(tmpDir, 'app.ts'), 'export function app() {}');
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const result = await indexer.buildIndex();
+
+      assert.ok(result.fileCount >= 1, `expected >= 1 file, got ${result.fileCount}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('filters git-tracked files by supported extensions', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      const { execSync } = require('child_process');
+      execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+      execSync('git config user.email "test@test.com"', { cwd: tmpDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'ignore' });
+
+      fs.writeFileSync(path.join(tmpDir, 'code.ts'), 'export function code() {}');
+      fs.writeFileSync(path.join(tmpDir, 'readme.md'), '# Readme');
+      fs.writeFileSync(path.join(tmpDir, 'data.json'), '{}');
+
+      execSync('git add -A', { cwd: tmpDir, stdio: 'ignore' });
+      execSync('git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const result = await indexer.buildIndex();
+
+      assert.equal(result.fileCount, 1, 'only .ts file should be indexed');
+      const files = indexer.getFiles();
+      assert.ok(files[0].path.endsWith('code.ts'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Simulated home directory scenario
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceIndexer — home directory protection', () => {
+  it('returns empty index for a directory simulating home (no markers)', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'dev', 'project', 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, 'dev', 'project', 'src', 'app.ts'),
+        'export function app() {}',
+      );
+      fs.mkdirSync(path.join(tmpDir, 'Documents'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, 'Documents', 'notes.js'),
+        'console.log("hello")',
+      );
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const result = await indexer.buildIndex();
+
+      assert.equal(result.fileCount, 0);
+      assert.equal(result.skippedReason, 'no project root found');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('performance: buildIndex returns instantly for non-project dir', async () => {
+    const tmpDir = makeBareDir();
+    try {
+      for (let i = 0; i < 50; i++) {
+        const sub = path.join(tmpDir, `dir${i}`);
+        fs.mkdirSync(sub, { recursive: true });
+        fs.writeFileSync(path.join(sub, `file${i}.ts`), `export const x${i} = ${i};`);
+      }
+
+      const indexer = new WorkspaceIndexer(tmpDir);
+      const start = Date.now();
+      const result = await indexer.buildIndex();
+      const elapsed = Date.now() - start;
+
+      assert.equal(result.fileCount, 0);
+      assert.ok(elapsed < 100, `should return in < 100ms for non-project dir, took ${elapsed}ms`);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

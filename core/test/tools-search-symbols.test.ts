@@ -19,6 +19,7 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 beforeEach(() => {
   _resetIndexer();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-search-symbols-'));
+  fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
 
   // Create TypeScript files with symbols
   fs.writeFileSync(
@@ -166,6 +167,7 @@ describe('_resetIndexer', () => {
 
     // Create a new tmpDir with different content
     const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'si-search-symbols-2-'));
+    fs.writeFileSync(path.join(tmpDir2, 'package.json'), '{}');
     fs.writeFileSync(path.join(tmpDir2, 'other.ts'), 'export function otherFunc() {}\n');
 
     const result = await searchSymbolsTool.execute(

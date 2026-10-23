@@ -25,7 +25,7 @@ export { AnalyticsTracker, generateToolSummary } from './analytics';
 export type { AnalyticsEvent } from './analytics';
 export type { FileState } from './file-cache';
 export { Profiler } from './profiler';
-export { WorkspaceIndexer } from './workspace-indexer';
+export { WorkspaceIndexer, findProjectRoot } from './workspace-indexer';
 export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';

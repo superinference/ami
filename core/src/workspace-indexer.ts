@@ -2,7 +2,12 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { glob } from 'tinyglobby';
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,6 +105,49 @@ const MAX_FILE_SIZE = 500 * 1024; // 500 KB
 const MAX_FILES = 5000; // Cap file count to prevent slow indexing
 
 // ---------------------------------------------------------------------------
+// Project detection — prevent indexing non-project directories (e.g. ~)
+// ---------------------------------------------------------------------------
+
+const PROJECT_MARKERS = [
+  '.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml',
+  'setup.py', 'Makefile', 'CMakeLists.txt', 'pom.xml', 'build.gradle',
+  'Gemfile', 'composer.json', 'tsconfig.json', 'deno.json', '.project',
+  'mix.exs', 'Pipfile', 'cabal.project', 'stack.yaml',
+];
+
+export function findProjectRoot(startDir: string): string | null {
+  let dir = path.resolve(startDir);
+  const root = path.parse(dir).root;
+  const home = path.resolve(os.homedir());
+  let depth = 0;
+  while (dir !== root && depth < 20) {
+    for (const marker of PROJECT_MARKERS) {
+      try {
+        fs.accessSync(path.join(dir, marker));
+        return dir;
+      } catch { /* not found */ }
+    }
+    // Stop at home directory — don't walk above it into /home or /
+    if (dir === home) break;
+    dir = path.dirname(dir);
+    depth++;
+  }
+  return null;
+}
+
+async function getGitTrackedFiles(cwd: string): Promise<string[] | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['ls-files', '-z'], {
+      cwd,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout.split('\0').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // WorkspaceIndexer
 // ---------------------------------------------------------------------------
 
@@ -119,33 +167,50 @@ export class WorkspaceIndexer {
   // Build the full index
   // -------------------------------------------------------------------------
 
-  async buildIndex(): Promise<{ fileCount: number; symbolCount: number; duration: number }> {
+  async buildIndex(): Promise<{ fileCount: number; symbolCount: number; duration: number; skippedReason?: string }> {
     const start = Date.now();
 
-    const extensions = Object.keys(EXT_TO_LANG).map(e => e.slice(1)); // remove leading dot
-    const pattern = `**/*.{${extensions.join(',')}}`;
+    const projectRoot = findProjectRoot(this.cwd);
+    if (!projectRoot) {
+      return {
+        fileCount: 0,
+        symbolCount: 0,
+        duration: Date.now() - start,
+        skippedReason: 'no project root found',
+      };
+    }
 
-    const ignorePatterns = Array.from(SKIP_DIRS).map(d => `**/${d}/**`);
-
+    const extSet = new Set(Object.keys(EXT_TO_LANG));
     let filePaths: string[];
-    try {
-      filePaths = await glob(pattern, {
-        cwd: this.cwd,
-        absolute: true,
-        ignore: ignorePatterns,
-        dot: false,
-        onlyFiles: true,
-        followSymbolicLinks: false,
-        deep: 10,
-        expandDirectories: false,
-      });
 
-      // Cap file count to prevent slow indexing on large repos
-      if (filePaths.length > MAX_FILES) {
-        filePaths = filePaths.slice(0, MAX_FILES);
+    const gitFiles = await getGitTrackedFiles(this.cwd);
+    if (gitFiles) {
+      filePaths = gitFiles
+        .filter(f => extSet.has(path.extname(f).toLowerCase()))
+        .map(f => path.resolve(this.cwd, f));
+    } else {
+      const extensions = Object.keys(EXT_TO_LANG).map(e => e.slice(1));
+      const pattern = `**/*.{${extensions.join(',')}}`;
+      const ignorePatterns = Array.from(SKIP_DIRS).map(d => `**/${d}/**`);
+
+      try {
+        filePaths = await glob(pattern, {
+          cwd: this.cwd,
+          absolute: true,
+          ignore: ignorePatterns,
+          dot: false,
+          onlyFiles: true,
+          followSymbolicLinks: false,
+          deep: 10,
+          expandDirectories: false,
+        });
+      } catch {
+        filePaths = [];
       }
-    } catch {
-      filePaths = [];
+    }
+
+    if (filePaths.length > MAX_FILES) {
+      filePaths = filePaths.slice(0, MAX_FILES);
     }
 
     let symbolCount = 0;
