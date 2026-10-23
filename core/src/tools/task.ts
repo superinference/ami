@@ -41,7 +41,7 @@ export function checkAgentCaps(context: {
   _agentSpawnCount?: { value: number };
   _maxAgentsPerSession?: number;
   _maxConcurrentAgents?: number;
-  processManager?: any;
+  processManager?: import('../process-manager').ProcessManager;
 }): string | null {
   const sessionCap = context._maxAgentsPerSession ?? DEFAULT_MAX_AGENTS_PER_SESSION;
   const spawnCount = context._agentSpawnCount?.value ?? 0;
@@ -51,15 +51,7 @@ export function checkAgentCaps(context: {
 
   const concurrentCap = context._maxConcurrentAgents ?? DEFAULT_MAX_CONCURRENT_AGENTS;
   if (context.processManager) {
-    let running = 0;
-    const processes = (context.processManager as any).processes;
-    if (processes && typeof processes.values === 'function') {
-      for (const entry of processes.values()) {
-        if (entry.command?.startsWith('[agent]') && entry.status === 'running') {
-          running++;
-        }
-      }
-    }
+    const running = context.processManager.runningAgentCount();
     if (running >= concurrentCap) {
       return `Concurrent agent cap reached (${concurrentCap}). ${running} agents currently running. Wait for agents to complete or increase _maxConcurrentAgents.`;
     }
@@ -332,7 +324,7 @@ export const taskTool: ToolDefinition = {
       agentDepth: childDepth._agentDepth,
       maxAgentDepth: childDepth._maxAgentDepth,
       thinking: effortOverride
-        ? { enabled: true, level: effortOverride as any }
+        ? { enabled: true, level: effortOverride as import('../model-capabilities').ThinkingLevel }
         : context._parentThinking || undefined,
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip persona resolution (which would inject e.g. the code
@@ -367,21 +359,13 @@ export const taskTool: ToolDefinition = {
 
       if (context.processManager) {
         const label = taskDescription || `${prompt.slice(0, 80)}`;
-        (context.processManager as any).processes.set(taskId, {
-          taskId,
-          pid: process.pid,
+        context.processManager.registerAgent(taskId, {
           command: `[agent] ${label}`,
           description: `Background agent: ${label}`,
-          status: 'running',
-          exitCode: null,
           outputPath,
-          startTime: Date.now(),
-          proc: { pid: process.pid, kill: () => { subAbort.abort(); } },
-          outputFd: null,
-          bytesWritten: 0,
-          tokenCount: 0,
+          abortFn: () => { subAbort.abort(); },
         });
-        const fm = (context.processManager as any).flowManager;
+        const fm = context.processManager.flowManager;
         if (fm) {
           const flowId = fm.getOrCreateActiveFlow(label);
           fm.addAgent(flowId, taskId);
@@ -399,7 +383,7 @@ export const taskTool: ToolDefinition = {
         let bgStalled = false;
         const resetBgStall = () => {
           if (bgStallTimer) clearTimeout(bgStallTimer);
-          bgStallTimer = setTimeout(() => { bgStalled = true; (subEngine as any).shutdown?.(); }, bgStallMs);
+          bgStallTimer = setTimeout(() => { bgStalled = true; subEngine.shutdown?.(); }, bgStallMs);
         };
         const clearBgStall = () => { if (bgStallTimer) { clearTimeout(bgStallTimer); bgStallTimer = null; } };
         resetBgStall();
@@ -415,27 +399,27 @@ export const taskTool: ToolDefinition = {
               w(event.text);
             }
             if (event.type === 'tool_use_start') {
-              const summary = typeof (event as any).input?.command === 'string'
-                ? (event as any).input.command
-                : typeof (event as any).input?.file_path === 'string'
-                  ? (event as any).input.file_path
-                  : JSON.stringify((event as any).input || {}).slice(0, 120);
-              w(`\n▸ ${(event as any).toolName} ${summary}\n`);
+              const summary = typeof event.input?.command === 'string'
+                ? event.input.command
+                : typeof event.input?.file_path === 'string'
+                  ? (event.input.file_path as string)
+                  : JSON.stringify(event.input || {}).slice(0, 120);
+              w(`\n▸ ${event.toolName} ${summary}\n`);
             }
             if (event.type === 'tool_use_progress') {
-              w((event as any).data || '');
+              w(event.data || '');
             }
             if (event.type === 'tool_use_result') {
-              const output = (event as any).output || '';
-              const lines = output.split('\n');
+              const lines = event.output.split('\n');
               const preview = lines.slice(0, 20).join('\n');
               const suffix = lines.length > 20 ? `\n  ... (${lines.length - 20} more lines)` : '';
               w(`${preview}${suffix}\n`);
             }
             if (event.type === 'usage_update') {
               if (context.processManager) {
-                const bgEntry = (context.processManager as any).processes.get(taskId);
-                if (bgEntry) bgEntry.tokenCount = (event as any).stats?.totalTokens ?? bgEntry.tokenCount;
+                context.processManager.updateEntry(taskId, {
+                  tokenCount: event.stats?.totalTokens,
+                });
               }
             }
             if (event.type === 'error') {
@@ -458,7 +442,7 @@ export const taskTool: ToolDefinition = {
           w(errText);
         } finally {
           clearBgStall();
-          (subEngine as any).shutdown?.();
+          subEngine.shutdown?.();
         }
         try { fs.closeSync(fd); } catch { /* already closed */ }
         if (!result) {
@@ -466,11 +450,10 @@ export const taskTool: ToolDefinition = {
         }
         if (context.processManager) {
           const label = taskDescription || `${prompt.slice(0, 80)}`;
-          const entry = (context.processManager as any).processes.get(taskId);
-          if (entry) {
-            entry.status = sawError ? 'failed' : 'completed';
-            entry.exitCode = sawError ? 1 : 0;
-          }
+          context.processManager.updateEntry(taskId, {
+            status: sawError ? 'failed' : 'completed',
+            exitCode: sawError ? 1 : 0,
+          });
           context.processManager.emit('complete', { taskId, exitCode: sawError ? 1 : 0, command: `[agent] ${label}`, description: `Background agent: ${label}` });
         }
       })().catch(() => {});
@@ -532,11 +515,11 @@ export const taskTool: ToolDefinition = {
         }
         if (event.type === 'tool_use_start') {
           toolUseCount++;
-          recentActivities.push(`tool:${(event as any).toolName}`);
+          recentActivities.push(`tool:${event.toolName}`);
           if (recentActivities.length > 5) recentActivities.shift();
         }
         if (event.type === 'usage_update') {
-          totalTokens = (event as any).stats?.totalTokens ?? totalTokens;
+          totalTokens = event.stats?.totalTokens ?? totalTokens;
         }
       }
       if (stalled) {
@@ -557,7 +540,7 @@ export const taskTool: ToolDefinition = {
       };
     } finally {
       clearStallTimer();
-      (subEngine as any).shutdown?.();
+      subEngine.shutdown?.();
     }
     context.abortSignal.removeEventListener('abort', forwardAbort);
 

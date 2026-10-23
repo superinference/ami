@@ -331,6 +331,44 @@ export class ProcessManager extends EventEmitter {
     return count;
   }
 
+  runningAgentCount(): number {
+    let count = 0;
+    for (const entry of this.processes.values()) {
+      if (entry.command?.startsWith('[agent]') && entry.status === 'running') count++;
+    }
+    return count;
+  }
+
+  registerAgent(taskId: string, opts: {
+    command: string;
+    description: string;
+    outputPath: string;
+    abortFn: () => void;
+  }): void {
+    this.processes.set(taskId, {
+      taskId,
+      pid: process.pid,
+      command: opts.command,
+      description: opts.description,
+      status: 'running',
+      exitCode: null,
+      outputPath: opts.outputPath,
+      startTime: Date.now(),
+      proc: { pid: process.pid, kill: opts.abortFn } as any,
+      outputFd: null,
+      bytesWritten: 0,
+      tokenCount: 0,
+    });
+  }
+
+  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount'>>): void {
+    const entry = this.processes.get(taskId);
+    if (!entry) return;
+    if (updates.status !== undefined) entry.status = updates.status;
+    if (updates.exitCode !== undefined) entry.exitCode = updates.exitCode;
+    if (updates.tokenCount !== undefined) entry.tokenCount = updates.tokenCount;
+  }
+
   monitorMcp(serverId: string, checkFn: () => Promise<boolean>, intervalMs: number = 30000): string {
     const taskId = `monitor-${serverId}-${Date.now()}`;
     const interval = setInterval(async () => {

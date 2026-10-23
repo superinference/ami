@@ -42,7 +42,9 @@ export class RateLimitTracker {
       this.tokens = {
         limit: info.limitTokens,
         remaining: info.remainingTokens,
-        resetAt: tokReset ? Date.now() + this.parseDuration(tokReset) : 0,
+        resetAt: info.resetAtTokens
+          ? info.resetAtTokens.getTime()
+          : (tokReset ? Date.now() + this.parseDuration(tokReset) : 0),
       };
     }
   }

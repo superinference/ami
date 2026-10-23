@@ -71,7 +71,16 @@ describe('checkAgentCaps — concurrent cap', () => {
     agents.forEach((a, i) => {
       processes.set(`agent-${i}`, { command: `[agent] task ${i}`, status: a.status });
     });
-    return { processes };
+    return {
+      processes,
+      runningAgentCount() {
+        let count = 0;
+        for (const entry of processes.values()) {
+          if (entry.command?.startsWith('[agent]') && entry.status === 'running') count++;
+        }
+        return count;
+      },
+    };
   }
 
   it('allows spawn when no process manager is present', () => {
@@ -124,7 +133,16 @@ describe('checkAgentCaps — concurrent cap', () => {
     const processes = new Map<string, any>();
     processes.set('bg-1', { command: 'npm test', status: 'running' });
     processes.set('bg-2', { command: 'node server.js', status: 'running' });
-    const pm = { processes };
+    const pm = {
+      processes,
+      runningAgentCount() {
+        let count = 0;
+        for (const entry of processes.values()) {
+          if (entry.command?.startsWith('[agent]') && entry.status === 'running') count++;
+        }
+        return count;
+      },
+    };
     const ctx = { _agentSpawnCount: { value: 0 }, processManager: pm };
     assert.equal(checkAgentCaps(ctx), null);
   });
@@ -133,7 +151,17 @@ describe('checkAgentCaps — concurrent cap', () => {
 describe('checkAgentCaps — session cap checked before concurrent cap', () => {
   it('session cap error takes precedence', () => {
     const running = Array.from({ length: 10 }, () => ({ status: 'running' }));
-    const pm = { processes: new Map(running.map((a, i) => [`agent-${i}`, { command: `[agent] task`, status: a.status }])) };
+    const processes = new Map(running.map((a, i) => [`agent-${i}`, { command: `[agent] task`, status: a.status }]));
+    const pm = {
+      processes,
+      runningAgentCount() {
+        let count = 0;
+        for (const entry of processes.values()) {
+          if ((entry as any).command?.startsWith('[agent]') && (entry as any).status === 'running') count++;
+        }
+        return count;
+      },
+    };
     const ctx = { _agentSpawnCount: { value: 50 }, processManager: pm };
     const err = checkAgentCaps(ctx);
     assert.ok(err !== null);

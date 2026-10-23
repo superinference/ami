@@ -3,6 +3,7 @@ export interface RateLimitInfo {
   remainingRequests: number | null;
   remainingTokens: number | null;
   resetAt: Date | null;
+  resetAtTokens: Date | null;
   limitRequests: number | null;
   limitTokens: number | null;
 }
@@ -18,6 +19,7 @@ export function parseRateLimitHeaders(headers: Record<string, string | string[] 
     remainingRequests: parseIntHeader(get('x-ratelimit-remaining-requests') ?? get('ratelimit-remaining')),
     remainingTokens: parseIntHeader(get('x-ratelimit-remaining-tokens')),
     resetAt: parseResetHeader(get('x-ratelimit-reset-requests') ?? get('x-ratelimit-reset')),
+    resetAtTokens: parseResetHeader(get('x-ratelimit-reset-tokens')),
     limitRequests: parseIntHeader(get('x-ratelimit-limit-requests') ?? get('ratelimit-limit')),
     limitTokens: parseIntHeader(get('x-ratelimit-limit-tokens')),
   };
