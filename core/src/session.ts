@@ -27,6 +27,16 @@ export interface SessionListEntry {
  *  Truncating them loses history on --resume, so they are exempt from the cap. */
 const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
 
+function safeCharSlice(s: string, start: number, end?: number): string {
+  let result = s.slice(start, end);
+  if (result.length === 0) return result;
+  const lastCode = result.charCodeAt(result.length - 1);
+  if (lastCode >= 0xD800 && lastCode <= 0xDBFF) result = result.slice(0, -1);
+  const firstCode = result.charCodeAt(0);
+  if (firstCode >= 0xDC00 && firstCode <= 0xDFFF) result = result.slice(1);
+  return result;
+}
+
 function truncateMessage(msg: Message): Message {
   if (msg.role === 'system' && typeof msg.content === 'string' &&
       msg.content.startsWith(COMPACTION_SUMMARY_PREFIX)) {
@@ -34,12 +44,12 @@ function truncateMessage(msg: Message): Message {
   }
   if (msg.role === 'user' || msg.role === 'system') {
     if (typeof msg.content === 'string' && msg.content.length > MAX_CONTENT_LENGTH) {
-      return { ...msg, content: msg.content.slice(0, MAX_CONTENT_LENGTH) + '\n... (truncated)' };
+      return { ...msg, content: safeCharSlice(msg.content, 0, MAX_CONTENT_LENGTH) + '\n... (truncated)' };
     }
   }
   if (msg.role === 'tool') {
     if (typeof msg.content === 'string' && msg.content.length > MAX_CONTENT_LENGTH) {
-      return { ...msg, content: msg.content.slice(0, MAX_CONTENT_LENGTH) + '\n... (truncated)' };
+      return { ...msg, content: safeCharSlice(msg.content, 0, MAX_CONTENT_LENGTH) + '\n... (truncated)' };
     }
   }
   return msg;
