@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 
 import {
   MAX_WORKTREES,
+  GIT_NO_PROMPT_ENV,
   validateWorktreeSlug,
   flattenSlug,
   worktreeBranchName,
@@ -489,5 +490,23 @@ describe('countWorktreeChanges', () => {
     fs.mkdirSync(fakePath, { recursive: true });
     const result = countWorktreeChanges(fakePath, tmpDir);
     assert.equal(result, null, 'should return null for non-git directory');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CC19: GIT_NO_REPLACE_OBJECTS in worktree git env
+// ---------------------------------------------------------------------------
+
+describe('GIT_NO_PROMPT_ENV – CC19 no-replace-objects', () => {
+  it('includes GIT_TERMINAL_PROMPT=0', () => {
+    assert.equal(GIT_NO_PROMPT_ENV.GIT_TERMINAL_PROMPT, '0');
+  });
+
+  it('includes GIT_NO_REPLACE_OBJECTS=1 to prevent replace refs from altering worktree operations', () => {
+    assert.equal(
+      (GIT_NO_PROMPT_ENV as Record<string, string>).GIT_NO_REPLACE_OBJECTS,
+      '1',
+      'GIT_NO_PROMPT_ENV should include GIT_NO_REPLACE_OBJECTS=1',
+    );
   });
 });
