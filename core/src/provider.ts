@@ -9,6 +9,7 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
+import { isGatewayRejection } from './error-classifier';
 
 /**
  * Retry-After from response headers, in SECONDS. Delegates to the shared
@@ -1187,6 +1188,13 @@ export async function* streamChatCompletionWithRetry(
         if (statusCode === 401) {
           yield chunk;
           return;
+        }
+
+        // Gateway rejection: a proxy rejected the anthropic-beta header.
+        // Strip cacheTtl (which controls the beta header) and retry immediately.
+        if (statusCode === 400 && attempt < maxRetries && isGatewayRejection((chunk.error ?? '').toLowerCase())) {
+          config = { ...config, cacheTtl: undefined };
+          break; // retry without beta headers
         }
 
         if (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode) && attempt < maxRetries) {

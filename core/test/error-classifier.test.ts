@@ -864,6 +864,88 @@ describe('classifier tight pattern — false positive regression guard', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// CC1: Gateway rejects effort beta header
+// ---------------------------------------------------------------------------
+describe('classifyError — gateway_rejection', () => {
+  const expected = {
+    category: 'gateway_rejection' as const,
+    retryable: true,
+    shouldCompact: false,
+    shouldFallback: false,
+  };
+
+  it('detects "unsupported header anthropic-beta" (HTTP 400)', () => {
+    const err = makeAPICallError(400, 'unsupported header anthropic-beta');
+    assertClassification(classifyError(err), expected);
+  });
+
+  it('detects "unknown beta version effort-2025-11-24" (HTTP 400)', () => {
+    const err = makeAPICallError(400, 'unknown beta version effort-2025-11-24');
+    assertClassification(classifyError(err), expected);
+  });
+
+  it('detects "invalid header: anthropic-beta is not supported" (HTTP 400)', () => {
+    const err = makeAPICallError(400, 'invalid header: anthropic-beta is not supported');
+    assertClassification(classifyError(err), expected);
+  });
+
+  it('detects "unrecognized request header: anthropic-beta" (HTTP 400)', () => {
+    const err = makeAPICallError(400, 'unrecognized request header: anthropic-beta');
+    assertClassification(classifyError(err), expected);
+  });
+
+  it('detects gateway rejection via regex fallback (string)', () => {
+    assertClassification(
+      classifyError('HTTP 400: unsupported header anthropic-beta'),
+      expected,
+    );
+  });
+
+  it('detects gateway rejection from "unknown beta" in string form', () => {
+    assertClassification(
+      classifyError('HTTP 400: unknown beta version effort-2025-11-24'),
+      expected,
+    );
+  });
+
+  it('does not false-positive on regular 400 without gateway keywords', () => {
+    const err = makeAPICallError(400, 'Bad Request: invalid JSON');
+    const result = classifyError(err);
+    assert.notEqual(result.category, 'gateway_rejection');
+  });
+
+  it('existing 400 context_overflow still classifies correctly (regression)', () => {
+    const err = makeAPICallError(400, 'maximum context length exceeded');
+    assertClassification(classifyError(err), {
+      category: 'context_overflow',
+      retryable: true,
+      shouldCompact: true,
+      shouldFallback: false,
+    });
+  });
+
+  it('is retryable so the retry wrapper can rebuild without beta headers', () => {
+    const err = makeAPICallError(400, 'unsupported header anthropic-beta');
+    const result = classifyError(err);
+    assert.equal(result.retryable, true);
+    assert.equal(result.shouldFallback, false);
+    assert.equal(result.shouldCompact, false);
+  });
+
+  it('has a friendly message distinct from the raw error', () => {
+    const err = makeAPICallError(400, 'unsupported header anthropic-beta');
+    const result = classifyError(err);
+    const msg = friendlyErrorMessage(result);
+    // The friendly message should NOT be the raw error text — it should be a
+    // user-oriented explanation from the FRIENDLY_MESSAGES map
+    assert.notEqual(msg, 'unsupported header anthropic-beta',
+      'Friendly message should not be the raw error text');
+    assert.ok(msg.includes('retry') || msg.includes('gateway') || msg.includes('beta header'),
+      `Friendly message should mention retry/gateway/beta header: ${msg}`);
+  });
+});
+
 describe('classifyError — Error vs string consistency', () => {
   it('produces same category for Error and string with same message', () => {
     const messages = [
