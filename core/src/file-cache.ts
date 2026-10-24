@@ -15,6 +15,14 @@ function hashContent(content: string): string {
 }
 
 /**
+ * Indirection seam for the post-write metadata stat. Routing `setWritten`'s
+ * stat through a plain mutable object lets tests simulate NFS/CSI metadata lag
+ * (a stat that fails right after a successful write) without reassigning the
+ * frozen ESM `fs` namespace. Production uses the real `fs.statSync`.
+ */
+export const fsHooks: { statSync: typeof fs.statSync } = { statSync: fs.statSync };
+
+/**
  * Tracks files the engine has read to avoid re-sending unchanged content.
  * When a file has not changed since the last read (same mtime), callers can
  * return a short summary instead of the full content, saving tokens.
@@ -61,7 +69,7 @@ export class FileCache {
    */
   setWritten(path: string, content: string): void {
     try {
-      this.set(path, content, fs.statSync(path).mtimeMs);
+      this.set(path, content, fsHooks.statSync(path).mtimeMs);
     } catch {
       // Write already succeeded; metadata can lag on network filesystems.
     }

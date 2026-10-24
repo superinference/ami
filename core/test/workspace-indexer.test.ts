@@ -12,6 +12,17 @@ function makeTempDir(): string {
   return dir;
 }
 
+// Build a TypeScript import statement whose module specifier is assembled at
+// runtime. The native-ESM coverage harness rewrites every literal `from './x'`
+// it finds in compiled .mjs text to `from './x.mjs'` — including the relative
+// specifiers baked into these fixture source strings, which would corrupt the
+// fixtures and break import-graph resolution. Interpolating the specifier means
+// no static `from './x'` token exists for the rewriter to match, so the fixture
+// written to disk stays a valid relative import.
+function tsImport(names: string, spec: string): string {
+  return `import ${names} from ` + JSON.stringify(spec) + ';';
+}
+
 // ---------------------------------------------------------------------------
 // Helper: write files into a temp workspace
 // ---------------------------------------------------------------------------
@@ -22,8 +33,8 @@ function setupWorkspace(tmpDir: string): void {
 
   fs.writeFileSync(
     path.join(tmpDir, 'src', 'engine.ts'),
-    `import { Config } from './config';
-import { Utils } from './utils';
+    `${tsImport('{ Config }', './config')}
+${tsImport('{ Utils }', './utils')}
 
 export class Engine {
   private running = false;
@@ -470,7 +481,7 @@ describe('WorkspaceIndexer — re-index and removeFile', () => {
       const aPath = path.join(tmpDir, 'a.ts');
       const bPath = path.join(tmpDir, 'b.ts');
       fs.writeFileSync(aPath, 'export function aFunc() {}\n');
-      fs.writeFileSync(bPath, "import { aFunc } from './a';\naFunc();\n");
+      fs.writeFileSync(bPath, tsImport('{ aFunc }', './a') + '\naFunc();\n');
 
       await indexer.indexFile(aPath);
       await indexer.indexFile(bPath);

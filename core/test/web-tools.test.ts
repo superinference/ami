@@ -8,7 +8,7 @@ import * as os from 'os';
 import { webFetchTool } from '../src/tools/web-fetch';
 import { webSearchTool } from '../src/tools/web-search';
 import { notebookEditTool } from '../src/tools/notebook-edit';
-import { getFileCache } from '../src/file-cache';
+import { getFileCache, fsHooks } from '../src/file-cache';
 import { isValidIP, pinnedDnsLookup } from '../src/tools/web-utils';
 import type { ToolContext } from '../src/types';
 
@@ -29,9 +29,12 @@ function makeTempDir(): string {
 }
 
 async function withStatFailureFor(filePath: string, fn: () => Promise<void>): Promise<void> {
-  const orig = fs.statSync;
+  // Route the post-write freshness stat through the source's fsHooks seam so a
+  // metadata-lag failure can be simulated without reassigning the frozen ESM
+  // `fs` namespace (which throws under the native-ESM coverage harness).
+  const orig = fsHooks.statSync;
   const target = path.resolve(filePath);
-  (fs as typeof fs).statSync = ((p: fs.PathLike, opts?: unknown) => {
+  fsHooks.statSync = ((p: fs.PathLike, opts?: unknown) => {
     if (path.resolve(String(p)) === target) {
       throw Object.assign(new Error('EIO: stat failed'), { code: 'EIO' });
     }
@@ -40,7 +43,7 @@ async function withStatFailureFor(filePath: string, fn: () => Promise<void>): Pr
   try {
     await fn();
   } finally {
-    (fs as typeof fs).statSync = orig;
+    fsHooks.statSync = orig;
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { MAX_RESPONSE_BYTES, BLOCKED_CONTENT_TYPES, isMetadataEndpoint } from '../../core/src/tools/web-utils';
+import { MAX_RESPONSE_BYTES, BLOCKED_CONTENT_TYPES, isMetadataEndpoint } from '../src/tools/web-utils';
 
 describe('MAX_RESPONSE_BYTES', () => {
   it('equals 50 MiB', () => {

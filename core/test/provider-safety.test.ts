@@ -1,5 +1,6 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as http from 'node:http';
 import {
   sanitizeErrorMessage,
   CREDENTIAL_PATTERNS,
@@ -8,7 +9,9 @@ import {
   isNetworkError,
   isSslError,
   DEFAULT_REQUEST_TIMEOUT_MS,
-} from '../../core/src/provider';
+  streamChatCompletionWithRetry,
+} from '../src/provider';
+import type { ProviderConfig } from '../src/types';
 
 describe('sanitizeErrorMessage', () => {
   it('strips sk- API keys', () => {
@@ -237,44 +240,63 @@ describe('SUPERINFERENCE_API_TIMEOUT_MS env var', () => {
     assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 300_000);
   });
 
-  it('env var override is wired into streamChatCompletionWithRetry source', async () => {
-    // Verify the source code contains the env var check pattern.
-    // This is a structural test: the env var must be read and used in the
-    // timeout resolution chain, falling between options.requestTimeoutMs
-    // (highest priority) and DEFAULT_REQUEST_TIMEOUT_MS (lowest priority).
-    const fs = await import('node:fs');
-    const src = fs.readFileSync(
-      new URL('../../core/src/provider.ts', import.meta.url),
-      'utf-8',
-    );
-    // The env var must be read
-    assert.ok(
-      src.includes('process.env.SUPERINFERENCE_API_TIMEOUT_MS'),
-      'source must read SUPERINFERENCE_API_TIMEOUT_MS from process.env',
-    );
-    // The env var must be converted to a number and checked > 0
-    assert.ok(
-      src.includes('envTimeout > 0'),
-      'source must guard against non-positive env values',
-    );
-    // The precedence chain: options.requestTimeoutMs > envTimeout > DEFAULT
-    assert.ok(
-      src.includes('options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS)'),
-      'timeout resolution must follow options > env > default precedence',
-    );
+  // Behavioral proof the env var is actually read and drives the per-request
+  // hard timeout (replaces the old source-text assertions). A server that
+  // accepts the connection but never responds forces the timeout to fire; the
+  // resolved timeout value is surfaced verbatim in the error message
+  // ("Request timed out after <ms>ms"), so the message discriminates exactly
+  // which value won the options > env > default precedence chain.
+  let server: http.Server;
+  let port: number;
+  before(async () => {
+    server = http.createServer(() => { /* never responds — hang the stream */ });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    port = (server.address() as { port: number }).port;
+  });
+  after(() => server.close());
+
+  async function timeoutError(opts?: { requestTimeoutMs?: number }): Promise<string> {
+    const config = {
+      provider: 'openai',
+      apiKey: 'sk-key',
+      model: 'test-model',
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+    } as ProviderConfig;
+    const ac = new AbortController();
+    for await (const chunk of streamChatCompletionWithRetry(
+      config,
+      [{ role: 'user', content: 'hi' }],
+      [],
+      ac.signal,
+      { maxRetries: 0, ...opts },
+    )) {
+      if (chunk.type === 'error') return chunk.error ?? '';
+    }
+    return '';
+  }
+
+  it('a positive env value overrides the default request timeout', async () => {
+    const prev = process.env.SUPERINFERENCE_API_TIMEOUT_MS;
+    process.env.SUPERINFERENCE_API_TIMEOUT_MS = '90';
+    try {
+      // If the env var were ignored, the default 300000ms would apply and this
+      // would never surface "after 90ms".
+      assert.match(await timeoutError(), /Request timed out after 90ms/);
+    } finally {
+      if (prev === undefined) delete process.env.SUPERINFERENCE_API_TIMEOUT_MS;
+      else process.env.SUPERINFERENCE_API_TIMEOUT_MS = prev;
+    }
   });
 
-  it('env var is only used in streamChatCompletionWithRetry (not the inner stream)', async () => {
-    // The env var override must NOT appear in streamChatCompletion (which
-    // receives the already-resolved timeout via AbortController), only in
-    // the retry wrapper that resolves it.
-    const fs = await import('node:fs');
-    const src = fs.readFileSync(
-      new URL('../../core/src/provider.ts', import.meta.url),
-      'utf-8',
-    );
-    const envVarOccurrences = src.split('SUPERINFERENCE_API_TIMEOUT_MS').length - 1;
-    // Expect exactly 1 occurrence: the single resolution line in streamChatCompletionWithRetry
-    assert.equal(envVarOccurrences, 1, 'env var should appear exactly once in provider.ts');
+  it('options.requestTimeoutMs takes precedence over the env value', async () => {
+    const prev = process.env.SUPERINFERENCE_API_TIMEOUT_MS;
+    process.env.SUPERINFERENCE_API_TIMEOUT_MS = '9000';
+    try {
+      // Env says 9000ms, but the explicit option (70ms) must win.
+      assert.match(await timeoutError({ requestTimeoutMs: 70 }), /Request timed out after 70ms/);
+    } finally {
+      if (prev === undefined) delete process.env.SUPERINFERENCE_API_TIMEOUT_MS;
+      else process.env.SUPERINFERENCE_API_TIMEOUT_MS = prev;
+    }
   });
 });

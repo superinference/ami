@@ -2,7 +2,9 @@
  * Dead code detection test — CORE ONLY.
  *
  * Verifies that core source files are internally consistent:
- * - All source files are referenced by at least one other core file
+ * - Every source file is reachable in the core import graph (imported/re-exported
+ *   by at least one other core file), resolved by actually following relative
+ *   module specifiers to on-disk files — not by loose substring matching.
  *
  * Engine/tool-executor wiring checks live in common/test/ since those
  * modules were moved to the common layer.
@@ -42,46 +44,89 @@ function readAllSourceFiles(dir: string): string[] {
   return files;
 }
 
+// Extract every module specifier a source file references via `from '...'`,
+// dynamic `import('...')`, or `require('...')`. Regex literals are used (rather
+// than embedding `from './...'` string literals) so the specifiers resolve from
+// real import syntax.
+function extractSpecifiers(content: string): string[] {
+  const specs: string[] = [];
+  const patterns = [
+    /\bfrom\s+['"]([^'"]+)['"]/g,
+    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+  ];
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) specs.push(m[1]);
+  }
+  return specs;
+}
+
+// Resolve a relative specifier to the on-disk source file it names, following
+// the same extension/index resolution the TS/bundler toolchain uses.
+function resolveSpecifier(fromFile: string, spec: string): string | null {
+  if (!spec.startsWith('.')) return null;
+  const base = path.resolve(path.dirname(fromFile), spec);
+  const candidates = [
+    base,
+    base + '.ts',
+    base + '.tsx',
+    path.join(base, 'index.ts'),
+    path.join(base, 'index.tsx'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(candidate).isFile()) return path.resolve(candidate);
+    } catch {}
+  }
+  return null;
+}
+
 describe('Core dead code detection', () => {
   const srcFiles = readAllSourceFiles(CORE_SRC);
 
-  it('index.ts exists and has exports', () => {
+  it('index.ts exists and declares the public export surface', () => {
     assert.ok(fs.existsSync(CORE_INDEX), `index.ts should exist at ${CORE_INDEX}`);
-    const content = fs.readFileSync(CORE_INDEX, 'utf-8');
-    assert.ok(content.includes('export'), 'index.ts should have exports');
+    const specifiers = extractSpecifiers(fs.readFileSync(CORE_INDEX, 'utf-8'));
+    const reExported = specifiers
+      .map((spec) => resolveSpecifier(CORE_INDEX, spec))
+      .filter((resolved): resolved is string => resolved !== null);
+    assert.ok(
+      reExported.length > 0,
+      'index.ts barrel should re-export at least one resolvable core module',
+    );
   });
 
-  it('all core source files are internally referenced', () => {
-    const allSrcFiles = srcFiles.filter(f => {
-      if (f.endsWith('index.ts')) return false;
-      const rel = path.relative(CORE_SRC, f).replace(/\\/g, '/');
-      return !EXCLUDED_MODULES.has(rel);
-    });
-    const unreferenced: string[] = [];
-
-    for (const file of allSrcFiles) {
-      const basename = path.basename(file, path.extname(file));
-      let referenced = false;
-      for (const other of srcFiles) {
-        if (other === file) continue;
-        try {
-          const content = fs.readFileSync(other, 'utf-8');
-          if (content.includes(`'${basename}'`) || content.includes(`/${basename}'`) ||
-              content.includes(`/${basename}"`) || content.includes(`from './${basename}`)) {
-            referenced = true;
-            break;
-          }
-        } catch {}
+  it('all core source files are reachable in the import graph', () => {
+    // Build the set of files that are actually imported/re-exported by some
+    // other core file, by resolving each relative specifier to a real path.
+    const referenced = new Set<string>();
+    for (const file of srcFiles) {
+      let content: string;
+      try {
+        content = fs.readFileSync(file, 'utf-8');
+      } catch {
+        continue;
       }
-      if (!referenced) {
-        unreferenced.push(path.relative(CORE_SRC, file));
+      for (const spec of extractSpecifiers(content)) {
+        const resolved = resolveSpecifier(file, spec);
+        if (resolved && resolved !== path.resolve(file)) referenced.add(resolved);
       }
     }
+
+    const unreferenced = srcFiles
+      .filter((f) => {
+        if (f.endsWith('index.ts')) return false;
+        const rel = path.relative(CORE_SRC, f).replace(/\\/g, '/');
+        if (EXCLUDED_MODULES.has(rel)) return false;
+        return !referenced.has(path.resolve(f));
+      })
+      .map((f) => path.relative(CORE_SRC, f));
 
     if (unreferenced.length > 0) {
       assert.fail(
         `Found ${unreferenced.length} core source files not imported by any other core file:\n` +
-        unreferenced.map(f => `  - ${f}`).join('\n')
+        unreferenced.map((f) => `  - ${f}`).join('\n'),
       );
     }
   });

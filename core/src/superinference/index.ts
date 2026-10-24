@@ -48,7 +48,7 @@ export class SuperInferenceEngine {
 // Re-export everything
 export { BeliefTracker } from './belief';
 export { Critic } from './critic';
-export { MemoryGate, GatedMemoryEntry } from './memory-gate';
+export { MemoryGate, type GatedMemoryEntry } from './memory-gate';
 export { Retriever } from './retriever';
 export type { SuperInferenceConfig, BeliefState, CriticDecision, StopReason } from './types';
 export { DEFAULT_CONFIG } from './types';

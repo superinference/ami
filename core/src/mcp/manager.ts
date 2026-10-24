@@ -67,6 +67,14 @@ function resolveEnvVars(headers: Record<string, string>): Record<string, string>
   return resolved;
 }
 
+/**
+ * Factory for creating the underlying MCP client. Overridable on an
+ * {@link McpManager} instance purely as a dependency-injection seam for tests
+ * (so the resolved command/args/timeouts passed to the client can be observed);
+ * production always uses the default `new McpClient(...)`.
+ */
+export type McpClientFactory = (options: ConstructorParameters<typeof McpClient>[0]) => McpClient;
+
 export class McpManager extends EventEmitter {
   private clients = new Map<string, McpClient>();
   private configs = new Map<string, McpServerConfig>();
@@ -85,6 +93,15 @@ export class McpManager extends EventEmitter {
 
   private _allowedServers: Set<string> | null = null;
   private _deniedServers: string[] = [];
+
+  // Container-runtime hooks. Default to the real implementations; overridable in
+  // tests so the auto-pull decision path can be driven deterministically without a
+  // real docker/podman. Production behavior is identical to calling the imports.
+  _resolveRuntime: typeof resolveRuntime = resolveRuntime;
+  _isImageAvailable: typeof isImageAvailable = isImageAvailable;
+  _pullImage: typeof pullImage = pullImage;
+  /** MCP client factory seam (see {@link McpClientFactory}). */
+  _createClient: McpClientFactory = (options) => new McpClient(options);
 
   setRootPaths(paths: string[]): void {
     this.rootPaths = paths;
@@ -123,7 +140,7 @@ export class McpManager extends EventEmitter {
     let resolvedArgs = config.args;
 
     if (config.containerConfig) {
-      const runtime = resolveRuntime(config.containerConfig.runtime);
+      const runtime = this._resolveRuntime(config.containerConfig.runtime);
       if (runtime) {
         resolvedCommand = runtime;
         resolvedArgs = buildContainerArgs(config.containerConfig);
@@ -138,7 +155,7 @@ export class McpManager extends EventEmitter {
       ...config.env,
       ...(this.rootPaths[0] ? { SUPERINFERENCE_PROJECT_DIR: this.rootPaths[0] } : {}),
     };
-    const client = new McpClient({
+    const client = this._createClient({
       command: resolvedCommand,
       args: resolvedArgs,
       env: enrichedEnv,
@@ -191,9 +208,9 @@ export class McpManager extends EventEmitter {
     }
     let imageAvailable: boolean | undefined;
     if (config.containerConfig) {
-      const runtime = resolveRuntime(config.containerConfig.runtime);
+      const runtime = this._resolveRuntime(config.containerConfig.runtime);
       if (runtime) {
-        imageAvailable = isImageAvailable(runtime, config.containerConfig.image);
+        imageAvailable = this._isImageAvailable(runtime, config.containerConfig.image);
       }
     }
     const info: PendingServerInfo = { name, config, state: 'pending', imageAvailable };
@@ -226,10 +243,10 @@ export class McpManager extends EventEmitter {
 
     try {
       if (pending.config.containerConfig) {
-        const runtime = resolveRuntime(pending.config.containerConfig.runtime);
-        if (runtime && !isImageAvailable(runtime, pending.config.containerConfig.image)) {
+        const runtime = this._resolveRuntime(pending.config.containerConfig.runtime);
+        if (runtime && !this._isImageAvailable(runtime, pending.config.containerConfig.image)) {
           coreLog('mcp', `pulling image for ${name}: ${pending.config.containerConfig.image}`);
-          await pullImage(runtime, pending.config.containerConfig.image);
+          await this._pullImage(runtime, pending.config.containerConfig.image);
           coreLog('mcp', `image pulled for ${name}`);
         }
       }

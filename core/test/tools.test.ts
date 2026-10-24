@@ -1,4 +1,4 @@
-import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -13,7 +13,7 @@ import { globTool } from '../src/tools/glob';
 import { listDirTool } from '../src/tools/list-dir';
 import { scoutTool } from '../src/tools/scout';
 import { createDefaultTools, ToolRegistry } from '../src/tools/index';
-import { getFileCache } from '../src/file-cache';
+import { getFileCache, fsHooks } from '../src/file-cache';
 import type { ToolContext } from '../src/types';
 
 function makeContext(cwd: string): ToolContext {
@@ -27,19 +27,23 @@ function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'si-test-'));
 }
 
+// Simulate NFS/CSI metadata lag: the post-write stat in FileCache.setWritten
+// fails for one target path while every other stat behaves normally. We mock
+// the `fsHooks.statSync` seam (a plain mutable object) rather than reassigning
+// the frozen ESM `fs` namespace, which is read-only under native ESM.
 async function withStatFailureFor(filePath: string, fn: () => Promise<void>): Promise<void> {
-  const orig = fs.statSync;
+  const orig = fsHooks.statSync;
   const target = path.resolve(filePath);
-  (fs as typeof fs).statSync = ((p: fs.PathLike, opts?: unknown) => {
+  const m = mock.method(fsHooks, 'statSync', ((p: fs.PathLike, opts?: unknown) => {
     if (path.resolve(String(p)) === target) {
       throw Object.assign(new Error('EIO: stat failed'), { code: 'EIO' });
     }
     return (orig as Function).call(fs, p, opts);
-  }) as typeof fs.statSync;
+  }) as typeof fs.statSync);
   try {
     await fn();
   } finally {
-    (fs as typeof fs).statSync = orig;
+    m.mock.restore();
   }
 }
 
