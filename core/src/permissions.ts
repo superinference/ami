@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { expandPath } from './utils/path';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath } from './tools/bash-security';
+import { deobfuscateEnvExpansion } from './tools/command-normalize';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -421,11 +422,15 @@ function normalizeForHardline(command: string): string {
 }
 
 export function detectHardlineCommand(command: string): { blocked: boolean; description: string | null } {
-  const normalized = normalizeForHardline(command);
-  // Test the original, the whole normalized string, AND each normalized line, so
-  // an end-anchored pattern (e.g. `rm -rf /$`) still matches a catastrophic
-  // statement that is not the last token of a multi-statement command.
-  const candidates = [command, normalized, ...normalized.split('\n')];
+  // Collapse quote/expansion/backslash obfuscation (r""m, r$()m, r\m → rm) so a
+  // split command word cannot evade the hardline patterns.
+  const deobfuscated = deobfuscateEnvExpansion(command);
+  const normalized = normalizeForHardline(deobfuscated);
+  // Test the original, the deobfuscated form, the whole normalized string, AND
+  // each normalized line, so an end-anchored pattern (e.g. `rm -rf /$`) still
+  // matches a catastrophic statement that is not the last token of a
+  // multi-statement command.
+  const candidates = [command, deobfuscated, normalized, ...normalized.split('\n')];
   for (const { pattern, description } of HARDLINE_PATTERNS) {
     for (const candidate of candidates) {
       if (pattern.test(candidate)) return { blocked: true, description };

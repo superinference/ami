@@ -3,8 +3,25 @@ export function collapseWhitespace(input: string): string {
 }
 
 export function deobfuscateEnvExpansion(input: string): string {
-  // Remove empty-string concatenation tricks: r""m → rm, r''m → rm
-  return input.replace(/([a-zA-Z])(?:""|\'\')([a-zA-Z])/g, '$1$2');
+  // Collapse shell obfuscation tricks that split a command word so it evades
+  // literal blocklist patterns while still executing as the real command:
+  //   r""m / r''m          empty-string concatenation
+  //   r$()m / r${}m / r``m  empty command-substitution / parameter-expansion
+  //   r\m                   backslash-escaped ordinary letter (shell: \x === x)
+  // Iterated to a fixpoint so stacked tricks (e.g. r""""m, r""$()m) fully
+  // collapse. The result is used ONLY for security pattern matching, never for
+  // execution or display, so aggressive collapsing is safe: at worst it blocks a
+  // contrived-looking command, and `echo "hello world"` is left untouched
+  // because its quotes enclose content (no empty "" / '' pair).
+  let out = input;
+  let prev: string;
+  do {
+    prev = out;
+    out = out.replace(/""|''/g, '');
+    out = out.replace(/\$\(\s*\)|\$\{\s*\}|``/g, '');
+    out = out.replace(/\\([A-Za-z])/g, '$1');
+  } while (out !== prev);
+  return out;
 }
 
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;

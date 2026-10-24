@@ -1,5 +1,5 @@
 import { parseBashAST, extractCommands, CommandNode } from './bash-parser';
-import { normalizeCommand } from './command-normalize';
+import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { redactCredentials } from '../credential-guard';
 
 export interface SecurityCheckResult {
@@ -1308,7 +1308,10 @@ export function detectNuclearCommand(command: string): NuclearCheckResult {
   if (!command || !command.trim()) return { blocked: false };
 
   const stripped = stripInvisibleUnicode(command);
-  const normalized = normalizeCommand(stripped);
+  // Collapse quote/expansion/backslash obfuscation (r""m, r$()m, r\m → rm)
+  // BEFORE pattern matching, so the un-bypassable blocklist cannot be evaded by
+  // splitting a destructive command word.
+  const normalized = deobfuscateEnvExpansion(normalizeCommand(stripped));
 
   if (FORK_BOMB_RE.test(normalized)) {
     return { blocked: true, reason: 'fork bomb detected — would crash the system by spawning infinite processes' };

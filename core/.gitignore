@@ -2,3 +2,5 @@ node_modules/
 dist/
 coverage/
 *.js.map
+.coverage-build/
+.coverage-build*/

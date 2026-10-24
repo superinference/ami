@@ -411,9 +411,21 @@ export function validateWorkflowScript(scriptBody: string): void {
   if (/\brequire\s*\(/g.test(stripped)) {
     throw new Error('Workflow scripts cannot use require() — this would escape the workflow sandbox');
   }
-  // Direct process access for spawning
-  if (/\bprocess\s*\.\s*(?:exit|kill|env)\b/g.test(stripped)) {
+  // Direct process access for spawning — dot OR bracket notation
+  // (process.exit, process['kill'], process["env"]).
+  if (/\bprocess\s*(?:\.\s*(?:exit|kill|env)\b|\[)/g.test(stripped)) {
     throw new Error('Workflow scripts cannot access process.exit/kill/env — this would escape the workflow sandbox');
+  }
+  // globalThis / global are escape hatches back to Node built-ins
+  // (globalThis.process, globalThis['require'], global.process, …).
+  if (/\b(?:globalThis|global)\s*[.[]/g.test(stripped)) {
+    throw new Error('Workflow scripts cannot access globalThis/global — this would escape the workflow sandbox');
+  }
+  // The Function constructor (Function('…'), or the classic
+  // ([]).constructor.constructor('return process')() escape) rebuilds code in
+  // the global scope, defeating every check above.
+  if (/\bFunction\s*\(/g.test(stripped) || /\.\s*constructor\b/g.test(stripped)) {
+    throw new Error('Workflow scripts cannot use the Function constructor — this would escape the workflow sandbox');
   }
 }
 
