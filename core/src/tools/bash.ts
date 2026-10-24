@@ -508,19 +508,21 @@ export const bashTool: ToolDefinition = {
     // No flag, mode, or env var can disable this. Even --yolo cannot override it.
     const nuclear = detectNuclearCommand(command);
     if (nuclear.blocked) {
-      return {
-        output: [
-          `Error: BLOCKED — ${nuclear.reason}.`,
-          `Command: ${command.length > 200 ? command.slice(0, 200) + '...' : command}`,
-          '',
-          'This command is on the nuclear blocklist and is NEVER allowed, regardless of',
-          'permission mode (including --yolo). These are commands that can cause',
-          'unrecoverable system-wide damage (filesystem destruction, disk wipe, fork bomb).',
-          '',
-          'If you need to delete files, target a specific directory instead of root paths.',
-        ].join('\n'),
-        isError: true,
-      };
+      const lines = [
+        `Error: BLOCKED — ${nuclear.reason}.`,
+        `Command: ${command.length > 200 ? command.slice(0, 200) + '...' : command}`,
+        '',
+        'This command is on the nuclear blocklist and is NEVER allowed, regardless of',
+        'permission mode (including --yolo). These are commands that can cause',
+        'unrecoverable system-wide damage (filesystem destruction, disk wipe, fork bomb).',
+        '',
+      ];
+      if (nuclear.suggestion) {
+        lines.push(`Suggestion: ${nuclear.suggestion}`);
+      } else {
+        lines.push('If you need to delete files, target a specific directory instead of root paths.');
+      }
+      return { output: lines.join('\n'), isError: true };
     }
 
     if (!fs.existsSync(context.cwd)) {

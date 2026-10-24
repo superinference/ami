@@ -1300,6 +1300,8 @@ const COMMAND_PREFIX_RE = /^(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*(?:\S+=\S+\
 export interface NuclearCheckResult {
   blocked: boolean;
   reason?: string;
+  /** For rm commands, a concrete rewrite suggestion for a safer alternative. */
+  suggestion?: string;
 }
 
 export function detectNuclearCommand(command: string): NuclearCheckResult {
@@ -1420,15 +1422,27 @@ function checkSegment(segment: string): NuclearCheckResult {
       const unquoted = stripQuotes(target);
       const clean = unquoted.replace(/\/+$/, '') || '/';
       if (NUCLEAR_RM_TARGETS.has(clean)) {
-        return { blocked: true, reason: `rm -rf targeting ${clean} — would destroy the filesystem` };
+        return {
+          blocked: true,
+          reason: `rm -rf targeting ${clean} — would destroy the filesystem`,
+          suggestion: 'Use a specific path instead: rm -rf ./specific-directory',
+        };
       }
       for (const prefix of NUCLEAR_RM_MOUNT_PREFIXES) {
         if (clean.startsWith(prefix)) {
-          return { blocked: true, reason: `rm -rf targeting ${clean} — would destroy a mounted volume` };
+          return {
+            blocked: true,
+            reason: `rm -rf targeting ${clean} — would destroy a mounted volume`,
+            suggestion: `Target specific files within the volume instead of the mount root: rm specific-files-within ${clean}/...`,
+          };
         }
       }
       if (HOME_EXPANSIONS.test(unquoted)) {
-        return { blocked: true, reason: 'rm -rf targeting home directory — would destroy all user data' };
+        return {
+          blocked: true,
+          reason: 'rm -rf targeting home directory — would destroy all user data',
+          suggestion: 'Use a specific subdirectory instead: rm -rf ~/specific-directory',
+        };
       }
     }
   }
