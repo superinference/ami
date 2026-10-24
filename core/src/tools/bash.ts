@@ -171,7 +171,7 @@ const STASH_SUBCOMMANDS = new Set([
 ]);
 
 function isShellMeta(t: string): boolean {
-  return t === '&&' || t === '||' || t === ';' || t === '|' || t === '|&' || t === '&' || t === '\n';
+  return t === '&&' || t === '||' || t === ';' || t === '|' || t === '|&' || t === '&' || t === '\n' || t === '(' || t === ')';
 }
 
 /**
@@ -204,6 +204,21 @@ function tokenizeShell(command: string): string[] {
     if (c === '"' || c === "'") { quote = c; continue; }
     if (c === '\n' || c === '\r') { flush(); tokens.push('\n'); continue; }
     if (c === ' ' || c === '\t') { flush(); continue; }
+    // Shell metacharacters: flush current token, emit as separators.
+    // Compound operators (&&, ||, |&) peek ahead and emit as two-char tokens.
+    if (c === '(' || c === ')' || c === ';') { flush(); tokens.push(c); continue; }
+    if (c === '&') {
+      flush();
+      if (command[i + 1] === '&') { tokens.push('&&'); i++; } else { tokens.push('&'); }
+      continue;
+    }
+    if (c === '|') {
+      flush();
+      if (command[i + 1] === '|') { tokens.push('||'); i++; }
+      else if (command[i + 1] === '&') { tokens.push('|&'); i++; }
+      else { tokens.push('|'); }
+      continue;
+    }
     cur += c;
   }
   flush();

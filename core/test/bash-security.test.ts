@@ -38,6 +38,7 @@ import {
   detectGitWorktreeEscape,
   detectNuclearCommand,
 } from '../src/tools/bash-security';
+import { detectDetachedGitDiscard } from '../src/tools/bash';
 
 // ---------------------------------------------------------------------------
 // extractQuotedContent
@@ -3696,5 +3697,47 @@ describe('detectNuclearCommand — mount-point paths', () => {
     const r = detectNuclearCommand('rm -rf /mnt/c/');
     assert.equal(r.blocked, true);
     assert.ok(r.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CC4 — Compound cd+git when cd is wrapped in parens or glued to semicolons
+// ---------------------------------------------------------------------------
+
+describe('detectDetachedGitDiscard — paren/semicolon compound commands', () => {
+  it('blocks (git reset --hard)', () => {
+    assert.notEqual(detectDetachedGitDiscard('(git reset --hard)'), null);
+  });
+
+  it('blocks (cd /tmp && git stash) without later pop', () => {
+    assert.notEqual(detectDetachedGitDiscard('(cd /tmp && git stash)'), null);
+  });
+
+  it('blocks (git clean -f)', () => {
+    assert.notEqual(detectDetachedGitDiscard('(git clean -f)'), null);
+  });
+
+  it('blocks (git checkout -- .)', () => {
+    assert.notEqual(detectDetachedGitDiscard('(git checkout -- .)'), null);
+  });
+
+  it('blocks pushd /tmp; git reset --hard; popd (no space before ;)', () => {
+    assert.notEqual(detectDetachedGitDiscard('pushd /tmp; git reset --hard; popd'), null);
+  });
+
+  it('blocks echo foo;git reset --hard (no space around ;)', () => {
+    assert.notEqual(detectDetachedGitDiscard('echo foo;git reset --hard'), null);
+  });
+
+  it('blocks git reset --hard;echo done', () => {
+    assert.notEqual(detectDetachedGitDiscard('git reset --hard;echo done'), null);
+  });
+
+  it('allows (git status) — not a destructive command', () => {
+    assert.equal(detectDetachedGitDiscard('(git status)'), null);
+  });
+
+  it('still allows git stash && npm test && git stash pop', () => {
+    assert.equal(detectDetachedGitDiscard('git stash && npm test && git stash pop'), null);
   });
 });
