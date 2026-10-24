@@ -87,11 +87,16 @@ export function createMcpTool(serverName: string, toolName: string, description:
         ]);
         clearTimeout(timer!);
         mcpManager.removeListener?.('notification', elicitListener);
-        const raw = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+
+        // Try structured content processing before falling back to JSON
+        const processed = processMcpContent(result);
+        const raw = processed ? processed.text : (typeof result === 'string' ? result : JSON.stringify(result, null, 2));
         const maxResultChars = extractMaxResultSizeChars(result);
         const bounded = boundMcpResponse(raw, maxResultChars);
         const spillCap = maxResultChars ? Math.min(maxResultChars, 500_000) : 100_000;
-        return { output: spillToolText(context.cwd, 'mcp', bounded.content, spillCap), metadata: bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined };
+        const baseMeta = bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined;
+        const mergedMeta = processed?.metadata ? { ...baseMeta, ...processed.metadata } : baseMeta;
+        return { output: spillToolText(context.cwd, 'mcp', bounded.content, spillCap), metadata: mergedMeta };
       } catch (err) {
         clearTimeout(timer!);
         mcpManager.removeListener?.('notification', elicitListener);
@@ -117,4 +122,62 @@ export function extractMaxResultSizeChars(result: unknown): number | undefined {
     }
   }
   return undefined;
+}
+
+/** Supported image MIME types for inline representation. */
+const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+/** Text-like MIME types that can be decoded and shown inline. */
+const TEXT_RESOURCE_PATTERN = /^(text\/|application\/json|application\/xml)/;
+
+/** Process MCP result content array, handling text, image, and resource types.
+ *  Returns null if the result does not have a content array (fallback to JSON.stringify). */
+export function processMcpContent(result: unknown): { text: string; metadata?: Record<string, unknown> } | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  const obj = result as Record<string, unknown>;
+  if (!Array.isArray(obj.content)) return null;
+
+  const parts: string[] = [];
+  const images: Array<{ mimeType: string; data: string }> = [];
+
+  for (const item of obj.content as Array<Record<string, unknown>>) {
+    if (item.type === 'text' && typeof item.text === 'string') {
+      parts.push(item.text);
+    } else if (item.type === 'image' && typeof item.data === 'string') {
+      const mime = (item.mimeType as string) || 'image/png';
+      if (SUPPORTED_IMAGE_TYPES.has(mime)) {
+        const sizeBytes = Math.ceil(((item.data as string).length * 3) / 4);
+        parts.push(`[Image: ${mime}, ${sizeBytes} bytes base64]`);
+        images.push({ mimeType: mime, data: item.data as string });
+      } else {
+        parts.push(`[Unsupported image type: ${mime}]`);
+      }
+    } else if (item.type === 'resource') {
+      const resource = item.resource as Record<string, unknown> | undefined;
+      if (resource) {
+        const mime = (resource.mimeType as string) || '';
+        if (typeof resource.text === 'string') {
+          // Text resource — include inline
+          parts.push(resource.text);
+        } else if (TEXT_RESOURCE_PATTERN.test(mime) && typeof resource.blob === 'string') {
+          // Text-ish MIME with base64 blob — decode
+          try {
+            const decoded = Buffer.from(resource.blob as string, 'base64').toString('utf-8');
+            parts.push(decoded);
+          } catch {
+            parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime})]`);
+          }
+        } else if (typeof resource.blob === 'string') {
+          // Binary resource — report size
+          const sizeBytes = Math.ceil(((resource.blob as string).length * 3) / 4);
+          parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime || 'unknown type'}, ${sizeBytes} bytes)]`);
+        } else {
+          parts.push(`[Resource: ${resource.uri ?? 'unknown'}]`);
+        }
+      }
+    }
+  }
+
+  if (parts.length === 0) return null;
+  const metadata = images.length > 0 ? { mcpImages: images } : undefined;
+  return { text: parts.join('\n'), metadata };
 }
