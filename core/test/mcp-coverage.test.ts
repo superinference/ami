@@ -2084,7 +2084,7 @@ describe('McpManager — getToolConflicts', () => {
 // CC9 — MCP timeout in detached mode identifies elicitation as cause
 // ---------------------------------------------------------------------------
 
-import { createMcpTool } from '../src/tools/mcp-tool';
+import { createMcpTool, processMcpContent } from '../src/tools/mcp-tool';
 
 describe('CC9 — MCP timeout in detached mode identifies elicitation as cause', () => {
   it('returns elicitation-specific error when server sends elicitation notification and detachedMode=true', async () => {
@@ -2302,5 +2302,78 @@ describe('CC13 — Stopped MCP server uses disabled state to prevent reconnectio
     );
 
     manager.disconnectAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OC7 — MCP binary result handling: processMcpContent
+// ---------------------------------------------------------------------------
+
+describe('OC7 — processMcpContent handles different MCP content types', () => {
+  it('extracts text from content items with type text', () => {
+    const result = { content: [{ type: 'text', text: 'hello world' }] };
+    const processed = processMcpContent(result);
+    assert.equal(processed.text, 'hello world');
+    assert.equal(processed.metadata, undefined);
+  });
+
+  it('concatenates multiple text items', () => {
+    const result = { content: [
+      { type: 'text', text: 'line 1' },
+      { type: 'text', text: 'line 2' },
+    ] };
+    const processed = processMcpContent(result);
+    assert.equal(processed.text, 'line 1\nline 2');
+  });
+
+  it('handles image content with base64 data', () => {
+    const result = { content: [
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+    ] };
+    const processed = processMcpContent(result);
+    assert.ok(processed.text.includes('image/png'), `Expected image reference, got: ${processed.text}`);
+    assert.ok(processed.metadata?.mcpImages, 'Expected mcpImages in metadata');
+    const images = processed.metadata!.mcpImages as Array<{ mimeType: string; data: string }>;
+    assert.equal(images[0].mimeType, 'image/png');
+    assert.equal(images[0].data, 'aGVsbG8=');
+  });
+
+  it('handles resource content with text mimeType', () => {
+    const result = { content: [
+      { type: 'resource', resource: { uri: 'file:///a.json', mimeType: 'application/json', text: '{"key":"value"}' } },
+    ] };
+    const processed = processMcpContent(result);
+    assert.ok(processed.text.includes('{"key":"value"}'), `Expected resource text, got: ${processed.text}`);
+  });
+
+  it('handles binary resource content by noting the blob size', () => {
+    const result = { content: [
+      { type: 'resource', resource: { uri: 'file:///a.pdf', mimeType: 'application/pdf', blob: 'YmluYXJ5ZGF0YQ==' } },
+    ] };
+    const processed = processMcpContent(result);
+    assert.ok(processed.text.includes('Binary') || processed.text.includes('binary') || processed.text.includes('blob'), `Expected binary reference, got: ${processed.text}`);
+  });
+
+  it('handles mixed content (text + image)', () => {
+    const result = { content: [
+      { type: 'text', text: 'Here is the chart' },
+      { type: 'image', data: 'cG5n', mimeType: 'image/jpeg' },
+    ] };
+    const processed = processMcpContent(result);
+    assert.ok(processed.text.includes('Here is the chart'), 'Should contain text content');
+    assert.ok(processed.text.includes('image/jpeg'), 'Should reference image');
+    assert.ok(processed.metadata?.mcpImages, 'Should have image metadata');
+  });
+
+  it('returns null for non-content results (plain string fallback)', () => {
+    const result = 'just a string';
+    const processed = processMcpContent(result);
+    assert.equal(processed, null, 'Should return null for non-content results');
+  });
+
+  it('returns null for objects without content array', () => {
+    const result = { data: 'something' };
+    const processed = processMcpContent(result);
+    assert.equal(processed, null, 'Should return null for objects without content array');
   });
 });
