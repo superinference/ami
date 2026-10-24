@@ -227,6 +227,33 @@ export interface ThinkingConfig {
   type?: 'enabled' | 'disabled';
 }
 
+/**
+ * Every reason the engine loop can terminate a submit() and emit its final
+ * `done` event. This runtime array is the single source of truth: the
+ * `ExitReason` union below is derived from it, so adding a variant here adds it
+ * to the type (and vice versa is impossible). Tests introspect this value to
+ * guarantee every variant is covered.
+ */
+export const EXIT_REASONS = [
+  'completed',
+  'max_turns',
+  'error',
+  'abort',
+  'session_timeout',
+  'max_steps',
+  'budget_exceeded',
+  'hook_denied',
+  'superinference_stop',
+  'consecutive_errors',
+  'escalation_terminate',
+  'no_edit_stall',
+  'keepalive_exhausted',
+  'context_too_small',
+  'usage_limit_watchdog',
+] as const;
+
+export type ExitReason = (typeof EXIT_REASONS)[number];
+
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -249,7 +276,7 @@ export type EngineEvent =
   | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
-  | { type: 'done'; totalTurns: number; exitReason: 'completed' | 'max_turns' | 'error' | 'abort' | 'session_timeout' | 'max_steps' | 'budget_exceeded' | 'hook_denied' | 'superinference_stop' | 'consecutive_errors' | 'escalation_terminate' | 'no_edit_stall' | 'keepalive_exhausted' | 'context_too_small' | 'usage_limit_watchdog' };
+  | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 export interface EngineConfig {
   provider: ProviderConfig;
