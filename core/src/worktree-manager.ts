@@ -2,9 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 
-const GIT_NO_PROMPT_ENV = {
+export const GIT_NO_PROMPT_ENV = {
   GIT_TERMINAL_PROMPT: '0',
   GIT_ASKPASS: '',
+  GIT_NO_REPLACE_OBJECTS: '1',
 };
 
 export const MAX_WORKTREES = 10;
