@@ -25,6 +25,7 @@ export type ErrorCategory =
   | 'ssl_error'
   | 'abort'
   | 'repetition'
+  | 'gateway_rejection'
   | 'unknown';
 
 export interface ClassifiedError {
@@ -34,6 +35,36 @@ export interface ClassifiedError {
   shouldCompact: boolean;
   shouldFallback: boolean;
   suggestedDelay?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Gateway rejection detection — API gateways that reject beta headers
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect gateway/proxy errors that reject Anthropic beta headers.
+ * These are 400 errors caused by gateways that don't forward
+ * `anthropic-beta` or reject unknown beta versions. The fix is to
+ * retry without the beta header.
+ */
+export function isGatewayRejection(lowerMsg: string): boolean {
+  // Reject patterns: unsupported/unknown/invalid/unrecognized header or beta version
+  if (lowerMsg.includes('anthropic-beta') &&
+      (lowerMsg.includes('unsupported') || lowerMsg.includes('unknown') ||
+       lowerMsg.includes('invalid') || lowerMsg.includes('unrecognized') ||
+       lowerMsg.includes('not supported') || lowerMsg.includes('not recognized'))) {
+    return true;
+  }
+  if (lowerMsg.includes('unknown beta') || lowerMsg.includes('unsupported beta') ||
+      lowerMsg.includes('unrecognized beta') || lowerMsg.includes('invalid beta')) {
+    return true;
+  }
+  if ((lowerMsg.includes('unsupported header') || lowerMsg.includes('unrecognized header') ||
+       lowerMsg.includes('invalid header') || lowerMsg.includes('unknown header')) &&
+      lowerMsg.includes('beta')) {
+    return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +109,10 @@ function classifySDKError(error: Error): ClassifiedError | null {
       case 413:
         return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false };
       case 400:
+        // 400 from gateway rejecting beta headers (e.g. anthropic-beta)
+        if (isGatewayRejection(lowerMsg)) {
+          return { category: 'gateway_rejection', message: msg, retryable: true, shouldCompact: false, shouldFallback: false };
+        }
         // 400 with context/token-related message → context_overflow
         // Use specific phrases to avoid false positives on unrelated messages
         // like 'authentication token expired' or 'field value is too long'.
@@ -188,6 +223,11 @@ export function classifyError(error: string | Error): ClassifiedError {
     lower.includes('budget') && lower.includes('exceeded')
   ) {
     return { category: 'plan_limit', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
+  }
+
+  // Gateway rejection — a proxy/gateway rejected beta headers; retryable without them
+  if (isGatewayRejection(lower)) {
+    return { category: 'gateway_rejection', message: errorString, retryable: true, shouldCompact: false, shouldFallback: false };
   }
 
   // Rate limit — retryable after a delay
@@ -306,6 +346,7 @@ const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   server_error: 'Provider server error — retrying. Check provider status page if this persists.',
   network_error: 'Network error — retrying connection.',
   repetition: 'Repetitive output detected.',
+  gateway_rejection: 'Gateway rejected beta header — retrying without it.',
 };
 
 export function friendlyErrorMessage(classified: ClassifiedError): string {
