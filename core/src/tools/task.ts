@@ -317,6 +317,7 @@ export const taskTool: ToolDefinition = {
       tools,
       sessionId: SessionManager.newId(),
       permissionMode: resolvedPermissionMode,
+      permissionRules: context._parentPermissionRules,
       permissionPromptHandler: context._permissionPromptHandler,
       abortController: subAbort,
       maxTurns: agentMaxTurns,

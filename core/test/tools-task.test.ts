@@ -678,3 +678,59 @@ describe('taskTool — subagent stall timeout', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// CC14: Sub-agents inherit parent permission rules (deny rules)
+// ---------------------------------------------------------------------------
+
+describe('taskTool – permission rule inheritance', () => {
+  it('forwards parent permissionRules into the subagent EngineConfig (general mode)', async () => {
+    let captured: any = null;
+    async function* fakeSubmit() { yield { type: 'text_delta' as const, text: 'ok' }; }
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-perms-'));
+    try {
+      const parentRules = [
+        { tool: 'bash', action: 'deny' as const },
+        { tool: 'file_edit', pattern: '/etc/*', action: 'deny' as const },
+      ];
+      await taskTool.execute(
+        { prompt: 'do something', mode: 'general' },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _parentPermissionRules: parentRules,
+          _engineFactory: (cfg: any) => { captured = cfg; return { submit: fakeSubmit }; },
+        }),
+      );
+      assert.ok(captured, 'engine factory should have been called');
+      assert.ok(Array.isArray(captured.permissionRules), 'subConfig should have permissionRules');
+      assert.ok(captured.permissionRules.length >= 2, 'should contain at least the parent rules');
+      const bashDeny = captured.permissionRules.find((r: any) => r.tool === 'bash' && r.action === 'deny');
+      assert.ok(bashDeny, 'bash deny rule should be forwarded');
+      const fileEditDeny = captured.permissionRules.find((r: any) => r.tool === 'file_edit' && r.pattern === '/etc/*' && r.action === 'deny');
+      assert.ok(fileEditDeny, 'file_edit deny rule with pattern should be forwarded');
+    } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+
+  it('forwards parent permissionRules into the subagent EngineConfig (explore mode)', async () => {
+    let captured: any = null;
+    async function* fakeSubmit() { yield { type: 'text_delta' as const, text: 'ok' }; }
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-perms-explore-'));
+    try {
+      const parentRules = [{ tool: 'web_fetch', action: 'deny' as const }];
+      await taskTool.execute(
+        { prompt: 'explore something', mode: 'explore' },
+        ctx({
+          cwd: tmpDir,
+          _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+          _parentPermissionRules: parentRules,
+          _engineFactory: (cfg: any) => { captured = cfg; return { submit: fakeSubmit }; },
+        }),
+      );
+      assert.ok(captured, 'engine factory should have been called');
+      assert.ok(Array.isArray(captured.permissionRules), 'subConfig should have permissionRules');
+      const webDeny = captured.permissionRules.find((r: any) => r.tool === 'web_fetch' && r.action === 'deny');
+      assert.ok(webDeny, 'web_fetch deny rule should be forwarded to explore subagent');
+    } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+});

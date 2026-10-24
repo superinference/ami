@@ -96,6 +96,8 @@ export interface ToolContext {
   outputBudget?: { bashMaxChars?: number; taskTailLines?: number; taskMaxChars?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
   _parentThinking?: ThinkingConfig;
+  /** Parent engine's permission rules, forwarded to subagents so deny rules are inherited. */
+  _parentPermissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Session-wide web-search budget with token-bucket refill to stop runaway loops. */
   _webSearchBudget?: { count: number; max: number; lastRefillTime?: number; refillRate?: number };
   detachedMode?: boolean;
