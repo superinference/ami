@@ -1,5 +1,6 @@
 import { parseBashAST, extractCommands, CommandNode } from './bash-parser';
 import { normalizeCommand } from './command-normalize';
+import { redactCredentials } from '../credential-guard';
 
 export interface SecurityCheckResult {
   safe: boolean;
@@ -2826,6 +2827,8 @@ export function sanitizeToolOutput(output: string): string {
   result = result.replace(OSC_ALL_RE, '');
   // 3. Redact sensitive env vars
   result = redactEnvVarsInOutput(result);
+  // 4. Redact credential patterns (API keys, tokens, JWTs, etc.)
+  result = redactCredentials(result);
   return result;
 }
 

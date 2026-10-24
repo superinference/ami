@@ -27,4 +27,19 @@ describe('buildSubsystems', () => {
     const { session } = buildSubsystems(cfg({ maxTurns: 42 }));
     assert.equal(session.maxTurns, 42);
   });
+
+  it('passes architectModel through to provider subsystem', () => {
+    const { provider } = buildSubsystems(cfg({ architectModel: 'claude-opus-4' }));
+    assert.equal(provider.architectModel, 'claude-opus-4');
+  });
+
+  it('leaves architectModel undefined when not provided', () => {
+    const { provider } = buildSubsystems(cfg({}));
+    assert.equal(provider.architectModel, undefined);
+  });
+
+  it('passes compactionModel through to provider subsystem', () => {
+    const { provider } = buildSubsystems(cfg({ compactionModel: 'gpt-4o-mini' }));
+    assert.equal(provider.compactionModel, 'gpt-4o-mini');
+  });
 });

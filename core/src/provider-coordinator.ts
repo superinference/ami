@@ -84,6 +84,12 @@ export class ProviderCoordinator {
     return base;
   }
 
+  getArchitectConfig(): ProviderConfig {
+    return this.subsystem.architectModel
+      ? { ...this.subsystem.primary, model: this.subsystem.architectModel }
+      : { ...this.subsystem.primary };
+  }
+
   getState(): CoordinatorState {
     return { ...this.state };
   }

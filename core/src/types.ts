@@ -288,6 +288,9 @@ export interface EngineConfig {
   fallbackModels?: string[];
   /** Cheap/fast model for auxiliary tasks (compaction, follow-up suggestions). Falls back to primary model if not set. */
   compactionModel?: string;
+  /** Architect model for dual-model (plan + execute) mode. When set, the engine runs a
+   *  reasoning phase with this model before each tool-execution phase with the primary model. */
+  architectModel?: string;
   /** Extended thinking/reasoning configuration. */
   thinking?: ThinkingConfig;
   /** Cap the reasoning effort level (e.g. 'medium' prevents 'high'/'max'). */
@@ -390,6 +393,8 @@ export interface ProviderSubsystem {
   /** Ordered fallback chain (normalized from fallbackModels + fallbackModel, deduped, capped). */
   fallbackModels?: string[];
   compactionModel?: string;
+  /** Architect model for dual-model (plan + execute) mode. */
+  architectModel?: string;
   thinking?: ThinkingConfig;
 }
 
@@ -422,6 +427,7 @@ export function buildSubsystems(config: EngineConfig): {
         return [...new Set(chain)].slice(0, 3);
       })(),
       compactionModel: config.compactionModel,
+      architectModel: config.architectModel,
       thinking: config.thinking,
     },
     permissions: {

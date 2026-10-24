@@ -11,6 +11,12 @@ export interface Session {
   createdAt: string;
   updatedAt: string;
   provider: { model: string; baseUrl: string };
+  /** Per-session settings saved on disk so /resume can restore them. */
+  settings?: {
+    persona?: string;
+    thinkingLevel?: string;
+    outputStyle?: string;
+  };
 }
 
 export interface SessionListEntry {

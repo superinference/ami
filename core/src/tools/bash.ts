@@ -787,15 +787,29 @@ function interpretExitCode(command: string, exitCode: number): ExitCodeInfo | nu
   return null;
 }
 
-function truncate(text: string, maxLength: number): string {
+export function truncateBashText(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
     return text;
   }
-  const half = Math.floor((maxLength - 100) / 2);
+  let half = Math.floor((maxLength - 100) / 2);
+
+  // Avoid splitting a UTF-16 surrogate pair at the head boundary.
+  if (half > 0 && half < text.length) {
+    const code = text.charCodeAt(half - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) half--; // back off lone high surrogate
+  }
+
+  // Avoid splitting a UTF-16 surrogate pair at the tail boundary.
+  let tailStart = text.length - half;
+  if (tailStart > 0 && tailStart < text.length) {
+    const code = text.charCodeAt(tailStart);
+    if (code >= 0xDC00 && code <= 0xDFFF) tailStart++; // skip lone low surrogate
+  }
+
   return (
     text.slice(0, half) +
     `\n\n... [truncated ${text.length - maxLength + 100} characters] ...\n\n` +
-    text.slice(text.length - half)
+    text.slice(tailStart)
   );
 }
 
@@ -808,7 +822,7 @@ function formatOutput(
   const parts: string[] = [];
 
   if (stdout.length > 0) {
-    parts.push(truncate(stdout, MAX_OUTPUT_LENGTH));
+    parts.push(truncateBashText(stdout, MAX_OUTPUT_LENGTH));
   }
 
   if (stderr.length > 0) {
@@ -817,7 +831,7 @@ function formatOutput(
       1000,
       MAX_OUTPUT_LENGTH - (parts.join('').length),
     );
-    parts.push(label + truncate(stderr, remaining));
+    parts.push(label + truncateBashText(stderr, remaining));
   }
 
   if (extra) {

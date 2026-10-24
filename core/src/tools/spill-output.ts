@@ -18,11 +18,25 @@ export function spillToolText(cwd: string, prefix: string, text: string, limit: 
     spillFile = null;
   }
 
-  const headLen = Math.floor(limit * 0.67);
+  let headLen = Math.floor(limit * 0.67);
   const tailLen = Math.max(0, limit - headLen - 200);
-  const omitted = Math.max(0, text.length - headLen - tailLen);
+
+  // Avoid splitting a UTF-16 surrogate pair at the head boundary.
+  if (headLen > 0 && headLen < text.length) {
+    const code = text.charCodeAt(headLen - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) headLen--; // back off lone high surrogate
+  }
+
+  // Avoid splitting a UTF-16 surrogate pair at the tail boundary.
+  let tailStart = tailLen > 0 ? text.length - tailLen : text.length;
+  if (tailStart > 0 && tailStart < text.length) {
+    const code = text.charCodeAt(tailStart);
+    if (code >= 0xDC00 && code <= 0xDFFF) tailStart++; // skip lone low surrogate
+  }
+
+  const omitted = Math.max(0, text.length - headLen - (text.length - tailStart));
   const middle = spillFile
     ? `\n\n[... ${omitted} chars persisted to ${spillFile} — truncated, use file_read to view the rest ...]\n\n`
     : `\n\n[... ${omitted} chars omitted (could not persist to disk) — output truncated ...]\n\n`;
-  return text.slice(0, headLen) + middle + text.slice(-tailLen);
+  return text.slice(0, headLen) + middle + text.slice(tailStart);
 }

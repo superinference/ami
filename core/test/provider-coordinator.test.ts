@@ -93,6 +93,31 @@ describe('ProviderCoordinator', () => {
     assert.equal(coord.getCompactionConfig().fallbackModel, undefined);
   });
 
+  it('returns architect config with architect model when set', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      architectModel: 'claude-opus-4',
+    }));
+    const config = coord.getArchitectConfig();
+    assert.equal(config.model, 'claude-opus-4');
+    assert.equal(config.apiKey, 'sk-test-key');
+    assert.equal(config.baseUrl, 'https://api.openai.com/v1');
+  });
+
+  it('returns primary as architect config when no architect model set', () => {
+    const coord = new ProviderCoordinator(makeSubsystem());
+    const config = coord.getArchitectConfig();
+    assert.equal(config.model, 'gpt-4o');
+    assert.equal(config.apiKey, 'sk-test-key');
+  });
+
+  it('architect config does not mutate primary config', () => {
+    const sub = makeSubsystem({ architectModel: 'claude-opus-4' });
+    const coord = new ProviderCoordinator(sub);
+    const archConfig = coord.getArchitectConfig();
+    archConfig.model = 'mutated';
+    assert.equal(coord.getConfig().model, 'gpt-4o', 'primary must stay untouched after architect mutation');
+  });
+
   it('skips a fallback equal to the (compaction) model', () => {
     const coord = new ProviderCoordinator(makeSubsystem({
       compactionModel: 'gpt-4o-mini',

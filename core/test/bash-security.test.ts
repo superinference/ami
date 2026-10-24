@@ -698,6 +698,108 @@ describe('sanitizeToolOutput', () => {
     assert.ok(!result.includes('\x1b'));
     assert.ok(!result.includes('secret123'));
   });
+
+  // -------------------------------------------------------------------------
+  // Credential redaction in sanitizeToolOutput (wired from credential-guard)
+  // -------------------------------------------------------------------------
+
+  it('redacts bare Anthropic API key (sk-ant-*)', () => {
+    const key = 'sk-ant-' + 'a'.repeat(40);
+    const result = sanitizeToolOutput(`token: ${key}`);
+    assert.ok(!result.includes(key), 'raw Anthropic key should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts bare OpenAI API key (sk-*)', () => {
+    const key = 'sk-' + 'b'.repeat(48);
+    const result = sanitizeToolOutput(key);
+    assert.ok(!result.includes(key), 'raw OpenAI key should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts GitHub PAT (ghp_*)', () => {
+    const key = 'ghp_' + 'c'.repeat(36);
+    const result = sanitizeToolOutput(`grep result: ${key}`);
+    assert.ok(!result.includes(key), 'GitHub PAT should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts AWS access key (AKIA*)', () => {
+    const key = 'AKIA' + 'D'.repeat(16);
+    const result = sanitizeToolOutput(`found: ${key} in config`);
+    assert.ok(!result.includes(key), 'AWS access key should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts JWT token (eyJ*)', () => {
+    const jwt = 'eyJ' + 'a'.repeat(30) + '.eyJ' + 'b'.repeat(30) + '.sig' + 'c'.repeat(20);
+    const result = sanitizeToolOutput(`Authorization: Bearer ${jwt}`);
+    assert.ok(!result.includes(jwt), 'JWT should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts API key embedded in JSON output', () => {
+    const key = 'sk-ant-' + 'x'.repeat(40);
+    const json = JSON.stringify({ api_key: key, name: 'test' });
+    const result = sanitizeToolOutput(json);
+    assert.ok(!result.includes(key), 'key inside JSON should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+    assert.ok(result.includes('test'), 'non-credential content should be preserved');
+  });
+
+  it('redacts multiple credential types in multi-line output', () => {
+    const openaiKey = 'sk-' + 'a'.repeat(48);
+    const ghPat = 'ghp_' + 'b'.repeat(36);
+    const awsKey = 'AKIA' + 'C'.repeat(16);
+    const output = `line 1: ${openaiKey}\nline 2: normal text\nline 3: ${ghPat}\nline 4: ${awsKey}`;
+    const result = sanitizeToolOutput(output);
+    assert.ok(!result.includes(openaiKey), 'OpenAI key should be redacted');
+    assert.ok(!result.includes(ghPat), 'GitHub PAT should be redacted');
+    assert.ok(!result.includes(awsKey), 'AWS key should be redacted');
+    assert.ok(result.includes('normal text'), 'non-credential text preserved');
+  });
+
+  it('does not alter output without credentials', () => {
+    const safe = 'function hello() {\n  return "world";\n}\nconsole.log(hello());';
+    assert.equal(sanitizeToolOutput(safe), safe);
+  });
+
+  it('redacts credential from `echo $OPENAI_API_KEY` output (bare key on line)', () => {
+    // Simulates shell variable expansion: the key appears as a bare token
+    const key = 'sk-' + 'z'.repeat(48);
+    const result = sanitizeToolOutput(key);
+    assert.ok(!result.includes(key), 'bare expanded key should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts credential in grep -r output', () => {
+    const key = 'sk-ant-' + 'r'.repeat(40);
+    const grepOutput = `./config.json:5: "openai_key": "${key}"\n./README.md:10: See documentation`;
+    const result = sanitizeToolOutput(grepOutput);
+    assert.ok(!result.includes(key), 'key in grep match should be redacted');
+    assert.ok(result.includes('README.md'), 'non-credential matches preserved');
+  });
+
+  it('redacts GitLab PAT (glpat-*)', () => {
+    const key = 'glpat-' + 'e'.repeat(20);
+    const result = sanitizeToolOutput(`token=${key}`);
+    assert.ok(!result.includes(key), 'GitLab PAT should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts Slack token (xoxb-*)', () => {
+    const key = 'xoxb-123456789-abcdefghijk';
+    const result = sanitizeToolOutput(`SLACK_TOKEN=${key}`);
+    assert.ok(!result.includes(key), 'Slack bot token should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
+
+  it('redacts Google API key (AIza*)', () => {
+    const key = 'AIza' + 'f'.repeat(35);
+    const result = sanitizeToolOutput(`apiKey: "${key}"`);
+    assert.ok(!result.includes(key), 'Google API key should be redacted');
+    assert.ok(result.includes('[REDACTED]'));
+  });
 });
 
 // ---------------------------------------------------------------------------
