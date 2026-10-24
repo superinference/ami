@@ -234,6 +234,28 @@ export function isMetadataEndpoint(url: string): boolean {
 }
 
 /**
+ * Dependency seam for the redirect-follow path. The real implementation calls
+ * validateUrlSafety (live DNS) on the redirect target; tests override this to
+ * drive the successful-follow recursion against a loopback server without a
+ * public DNS lookup. Production uses the real validateUrlSafety.
+ */
+export const _webHooks: {
+  validateRedirectSafety: (url: string) => Promise<{ error: string } | { resolvedIP: string }>;
+  /** Seam over `requester.get` so tests can inject a synthetic response to
+   *  drive defensive arms (absent statusCode, late data after settle) that a
+   *  real HTTP response never produces. Production delegates to the real get. */
+  rawGet: (
+    requester: typeof http | typeof https,
+    url: string,
+    options: http.RequestOptions,
+    callback: (res: http.IncomingMessage) => void,
+  ) => http.ClientRequest;
+} = {
+  validateRedirectSafety: (url) => validateUrlSafety(url),
+  rawGet: (requester, url, options, callback) => requester.get(url, options, callback),
+};
+
+/**
  * Perform an HTTP(S) GET following redirects up to `maxRedirects` hops.
  * Returns the final response body as a string along with status metadata.
  */
@@ -285,7 +307,8 @@ function httpGetInternal(
     const pinIP = resolvedIP && isValidIP(resolvedIP) ? resolvedIP : undefined;
     const lookupOverride: http.RequestOptions['lookup'] = pinIP ? pinnedDnsLookup(pinIP) : undefined;
 
-    const req = requester.get(
+    const req = _webHooks.rawGet(
+      requester,
       url,
       {
         headers: {
@@ -319,7 +342,7 @@ function httpGetInternal(
             return;
           }
           res.resume(); // Drain the response body
-          validateUrlSafety(redirectUrl).then((ssrfResult) => {
+          _webHooks.validateRedirectSafety(redirectUrl).then((ssrfResult) => {
             if ('error' in ssrfResult) {
               reject(new Error(ssrfResult.error));
               return;

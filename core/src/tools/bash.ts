@@ -35,14 +35,35 @@ export function resolveBashTimeout(inputTimeout?: number): number {
 
 let _cachedPermissionManager: InstanceType<typeof import('../permissions').PermissionManager> | null = null;
 
-function isReadOnlyBashCommand(command: string): boolean {
-  try {
+/**
+ * Dependency seams for tests (mirrors the _enterWorktreeHooks pattern). Each
+ * default is the real implementation, so production behaviour is unchanged.
+ * Tests use node:test `mock.method` on this object to drive otherwise
+ * unreachable arms: a fork-storm that never recovers (execCommand + sleep),
+ * a command classifier that throws, and a statSync race during a git-checkout
+ * discard check.
+ */
+export const _bashHooks = {
+  execCommand: execCommand as typeof execCommand,
+  sleep: (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms)),
+  classify: (command: string): string => {
     if (!_cachedPermissionManager) {
       const { PermissionManager } = require('../permissions');
       _cachedPermissionManager = new PermissionManager();
     }
-    const pm = _cachedPermissionManager!;
-    return pm.classifyBashCommand(command) === 'safe';
+    return _cachedPermissionManager!.classifyBashCommand(command);
+  },
+  existsSync: fs.existsSync as typeof fs.existsSync,
+  statSync: fs.statSync as typeof fs.statSync,
+  // Defense-in-depth exfiltration re-check. validateBashSecurity already runs
+  // detectDataExfiltration, so this standalone guard only fires if that upstream
+  // check is ever narrowed; the seam lets tests exercise this safety net.
+  detectDataExfiltration: detectDataExfiltration as typeof detectDataExfiltration,
+};
+
+function isReadOnlyBashCommand(command: string): boolean {
+  try {
+    return _bashHooks.classify(command) === 'safe';
   } catch {
     return false;
   }
@@ -62,12 +83,12 @@ async function execCommandWithForkRetry(
   command: string,
   options: Parameters<typeof execCommand>[1],
 ): Promise<Awaited<ReturnType<typeof execCommand>>> {
-  let last = await execCommand(command, options);
+  let last = await _bashHooks.execCommand(command, options);
   for (let attempt = 0; attempt < FORK_RETRY_MAX && isBashForkExhaustion(last.stdout, last.stderr); attempt++) {
     const base = FORK_RETRY_BASE_MS * Math.pow(2, attempt);
     const jitter = Math.floor(Math.random() * base);
-    await new Promise(r => setTimeout(r, base + jitter));
-    last = await execCommand(command, options);
+    await _bashHooks.sleep(base + jitter);
+    last = await _bashHooks.execCommand(command, options);
   }
   if (isBashForkExhaustion(last.stdout, last.stderr)) {
     last.stderr += '\n[fork exhaustion: all retries failed — too many concurrent processes. Try closing other sessions.]';
@@ -296,7 +317,7 @@ function checkoutPathExists(token: string, cwd?: string): boolean {
   if (!cwd) return false;
   try {
     const abs = path.resolve(cwd, token);
-    return fs.existsSync(abs) && fs.statSync(abs).isFile();
+    return _bashHooks.existsSync(abs) && _bashHooks.statSync(abs).isFile();
   } catch {
     return false;
   }
@@ -595,7 +616,7 @@ export const bashTool: ToolDefinition = {
       return { output: `Error: blocked — ${sessionWrite.description} (session transcript is protected)`, isError: true };
     }
 
-    const exfil = detectDataExfiltration(command);
+    const exfil = _bashHooks.detectDataExfiltration(command);
     if (exfil.blocked) {
       return { output: `Error: blocked — ${exfil.reason} (data exfiltration risk)`, isError: true };
     }

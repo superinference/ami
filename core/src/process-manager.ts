@@ -14,6 +14,12 @@ export const GRACEFUL_SHUTDOWN_MS = 1500;
 /** Maximum concurrent background processes per session. */
 export const MAX_BACKGROUND_PROCESSES = 20;
 
+/**
+ * DI seam for platform detection. Defaults to the real `os.platform()`; tests
+ * override it to drive the Windows-only spawn/kill branches on non-Windows CI.
+ */
+export const osHooks: { platform: () => NodeJS.Platform } = { platform: () => os.platform() };
+
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -23,16 +29,29 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * DI seam for liveness/signal syscalls so the grace-period escalation branches
+ * (SIGTERM-throws, post-loop death, SIGKILL-throws) can be driven deterministically
+ * in tests without racing real processes. Defaults to the real implementations.
+ */
+export const procHooks: {
+  isAlive: (pid: number) => boolean;
+  kill: (pid: number, signal: NodeJS.Signals | number) => void;
+} = {
+  isAlive: (pid) => isProcessAlive(pid),
+  kill: (pid, signal) => { process.kill(pid, signal); },
+};
+
 export async function forceKillAfterTimeout(pid: number, timeoutMs: number = GRACEFUL_SHUTDOWN_MS): Promise<boolean> {
-  if (!isProcessAlive(pid)) return false;
-  try { process.kill(pid, 'SIGTERM'); } catch { return false; }
+  if (!procHooks.isAlive(pid)) return false;
+  try { procHooks.kill(pid, 'SIGTERM'); } catch { return false; }
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (!isProcessAlive(pid)) return true;
+    if (!procHooks.isAlive(pid)) return true;
     await new Promise(r => setTimeout(r, 50));
   }
-  if (!isProcessAlive(pid)) return true;
-  try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+  if (!procHooks.isAlive(pid)) return true;
+  try { procHooks.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
   return true;
 }
 
@@ -94,7 +113,7 @@ export class ProcessManager extends EventEmitter {
     const taskId = `bg-${crypto.randomBytes(4).toString('hex')}`;
     const outputPath = path.join(this.tasksDir, `${taskId}.output`);
 
-    const isWindows = os.platform() === 'win32';
+    const isWindows = osHooks.platform() === 'win32';
     const shell = isWindows ? 'cmd' : 'bash';
     const shellArgs = isWindows ? ['/c', command] : ['-c', command];
 
@@ -212,7 +231,7 @@ export class ProcessManager extends EventEmitter {
       this.destroyStreams(entry.proc);
 
       try {
-        if (os.platform() === 'win32') {
+        if (osHooks.platform() === 'win32') {
           child_process.execSync(`taskkill /pid ${entry.proc.pid} /T /F`, { stdio: 'ignore' });
         } else {
           process.kill(-entry.proc.pid!, 'SIGKILL');
@@ -319,7 +338,10 @@ export class ProcessManager extends EventEmitter {
   }
 
   private looksLikePrompt(text: string): boolean {
-    const lastLine = text.trim().split('\n').pop() ?? '';
+    // `String.split` always yields at least one element, so the last index is
+    // always defined — no nullish fallback branch needed.
+    const lines = text.trim().split('\n');
+    const lastLine = lines[lines.length - 1];
     return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|Press Enter|Continue\?|Overwrite\?|password:/i.test(lastLine);
   }
 

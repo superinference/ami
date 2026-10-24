@@ -3,6 +3,20 @@ import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
+/**
+ * Indirection seam for process spawning and filesystem access. Tests swap these
+ * for fakes to drive the clone/find/grep error paths deterministically — in
+ * particular the non-Error throw arm of the catch. Production uses the real
+ * child_process/fs functions, so behavior is unchanged.
+ */
+export const scoutHooks = {
+  execFileSync: child_process.execFileSync,
+  execSync: child_process.execSync,
+  existsSync: fs.existsSync,
+  mkdirSync: fs.mkdirSync,
+  readFileSync: fs.readFileSync,
+};
+
 export const scoutTool: ToolDefinition = {
   name: 'scout',
   description: 'Research an upstream dependency or external repository. Clones the repo to a managed cache dir and returns an overview without polluting your workspace.',
@@ -27,25 +41,25 @@ export const scoutTool: ToolDefinition = {
     const localPath = path.join(cacheDir, repoName);
 
     try {
-      if (!fs.existsSync(localPath)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-        child_process.execFileSync('git', ['clone', '--depth', '1', repoUrl, localPath], { timeout: 60000, stdio: 'pipe' });
+      if (!scoutHooks.existsSync(localPath)) {
+        scoutHooks.mkdirSync(cacheDir, { recursive: true });
+        scoutHooks.execFileSync('git', ['clone', '--depth', '1', repoUrl, localPath], { timeout: 60000, stdio: 'pipe' });
       }
 
-      const files = child_process.execSync('find . -type f -not -path "./.git/*" | head -50', {
+      const files = scoutHooks.execSync('find . -type f -not -path "./.git/*" | head -50', {
         cwd: localPath, encoding: 'utf-8', timeout: 5000,
       }).trim();
 
       let readme = '';
       for (const f of ['README.md', 'readme.md', 'README.rst', 'README']) {
         const rp = path.join(localPath, f);
-        if (fs.existsSync(rp)) { readme = fs.readFileSync(rp, 'utf-8').slice(0, 3000); break; }
+        if (scoutHooks.existsSync(rp)) { readme = (scoutHooks.readFileSync(rp, 'utf-8') as string).slice(0, 3000); break; }
       }
 
       let searchResults = '';
       if (query) {
         try {
-          const grepOut = child_process.execFileSync(
+          const grepOut = scoutHooks.execFileSync(
             'grep', ['-rn', '--include=*.ts', '--include=*.js', '--include=*.py', '--include=*.go', '--include=*.rs', '--', query, '.'],
             { cwd: localPath, encoding: 'utf-8', timeout: 10000, maxBuffer: 1024 * 1024 },
           );

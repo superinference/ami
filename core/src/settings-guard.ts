@@ -46,22 +46,24 @@ export function getEffectiveTier(key: string, sources: SettingsSource[]): Settin
     const managed = sources.find(s => s.tier === 'managed');
     return managed ? managed.tier : null;
   }
+  // `sources` is guaranteed non-empty here (the length-0 case returned above),
+  // so `sources[0]` is a safe seed and `best` is never null — no `?? null` arm.
   if (TIER_LOCKED_KEYS.has(key)) {
-    let best: SettingsSource | null = null;
+    let best = sources[0];
     for (const s of sources) {
-      if (!best || TIER_PRIORITY[s.tier] < TIER_PRIORITY[best.tier]) {
+      if (TIER_PRIORITY[s.tier] < TIER_PRIORITY[best.tier]) {
         best = s;
       }
     }
-    return best?.tier ?? null;
+    return best.tier;
   }
-  let best: SettingsSource | null = null;
+  let best = sources[0];
   for (const s of sources) {
-    if (!best || TIER_PRIORITY[s.tier] > TIER_PRIORITY[best.tier]) {
+    if (TIER_PRIORITY[s.tier] > TIER_PRIORITY[best.tier]) {
       best = s;
     }
   }
-  return best?.tier ?? null;
+  return best.tier;
 }
 
 export function filterManagedKeys(config: Record<string, unknown>, sourceTier: SettingsTier): { filtered: Record<string, unknown>; rejected: string[] } {

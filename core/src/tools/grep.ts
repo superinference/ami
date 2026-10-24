@@ -13,9 +13,15 @@ const RG_TIMEOUT = 20_000;
  * abort, EAGAIN and signal branches deterministically. Production code uses the
  * real `child_process.spawn` and the 20s default, so behavior is unchanged.
  */
-export const grepHooks: { spawn: typeof spawn; timeoutMs: number } = {
+export const grepHooks: {
+  spawn: typeof spawn;
+  timeoutMs: number;
+  searchFilesForPattern: typeof searchFilesForPattern;
+} = {
   spawn,
   timeoutMs: RG_TIMEOUT,
+  // Hoisted function declaration (defined later in this module).
+  searchFilesForPattern,
 };
 
 // eslint-disable-next-line security/detect-unsafe-regex -- [lcrniw] and \s are disjoint sets, no overlap
@@ -196,7 +202,7 @@ export const grepTool: ToolDefinition = {
     // agent can still locate the failing symbol (and get a better error for
     // invalid regex patterns than the raw process stderr).
     try {
-      const fallback = searchFilesForPattern(resolved, cleanedPattern, {
+      const fallback = grepHooks.searchFilesForPattern(resolved, cleanedPattern, {
         include,
         caseInsensitive,
         headLimit,

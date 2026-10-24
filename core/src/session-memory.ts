@@ -124,6 +124,7 @@ export class SessionMemoryExtractor {
     // Set a timeout to avoid hanging
     const timeout = setTimeout(() => abortController.abort(), this._timeoutMs);
 
+    let facts: SessionFact[] = [];
     try {
       let responseText = '';
 
@@ -142,13 +143,17 @@ export class SessionMemoryExtractor {
         }
       }
 
-      return this.parseFactsFromResponse(responseText);
+      // Assign and fall through to the finally cleanup (rather than returning
+      // from inside the try) so timeout cleanup and the success return share one
+      // normal-completion path.
+      facts = this.parseFactsFromResponse(responseText);
     } catch (err) {
       coreLog('session-memory', 'Failed to extract facts', { error: String(err) });
       return [];
     } finally {
       clearTimeout(timeout);
     }
+    return facts;
   }
 
   /**

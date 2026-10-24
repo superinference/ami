@@ -3,6 +3,23 @@ import * as fs from 'fs';
 import type { ToolResult } from '../types';
 import { isCredentialPath } from './bash-security';
 
+/**
+ * Dependency seam so tests can drive branches that are otherwise shadowed by
+ * earlier guards or never thrown by the real fs:
+ *  - `existsSync` lets buildToolDescriptionContext's defensive catch arms run.
+ *  - `realpathSync` lets safeReadFile's post-resolveFilePath symlink re-check
+ *    (the TOCTOU swap guard) run even though resolveFilePath already resolved
+ *    the same path inside the workspace.
+ * Production uses the real fs functions.
+ */
+export const _toolUtilsHooks: {
+  existsSync: (p: string) => boolean;
+  realpathSync: (p: string) => string;
+} = {
+  existsSync: (p) => fs.existsSync(p),
+  realpathSync: (p) => fs.realpathSync(p),
+};
+
 // ---------------------------------------------------------------------------
 // Device / special-file blocklist — shared by file_read and file_edit
 // ---------------------------------------------------------------------------
@@ -179,7 +196,7 @@ export function safeReadFile(
   try {
     const stat = fs.lstatSync(resolved);
     if (stat.isSymbolicLink()) {
-      const target = fs.realpathSync(resolved);
+      const target = _toolUtilsHooks.realpathSync(resolved);
       if (isCredentialPath(target)) {
         return { error: { output: `Error: "${filePath}" is a symlink targeting a sensitive file: ${target}`, isError: true } };
       }
@@ -331,8 +348,8 @@ export function extractQuery(input: Record<string, unknown>): { query: string; e
 
 export function buildToolDescriptionContext(cwd: string): ToolDescriptionContext {
   const ctx: ToolDescriptionContext = { cwd, projectName: path.basename(cwd) };
-  try { ctx.hasGit = fs.existsSync(path.join(cwd, '.git')); } catch { ctx.hasGit = false; }
-  try { ctx.hasPackageJson = fs.existsSync(path.join(cwd, 'package.json')); } catch { ctx.hasPackageJson = false; }
+  try { ctx.hasGit = _toolUtilsHooks.existsSync(path.join(cwd, '.git')); } catch { ctx.hasGit = false; }
+  try { ctx.hasPackageJson = _toolUtilsHooks.existsSync(path.join(cwd, 'package.json')); } catch { ctx.hasPackageJson = false; }
   return ctx;
 }
 

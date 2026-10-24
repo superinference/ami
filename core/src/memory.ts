@@ -151,7 +151,7 @@ export function matchesPaths(pathGlobs: string[], currentFile: string): boolean 
  * Parse a multi-value frontmatter field (comma-separated or YAML list).
  * Handles both `paths: src/*.ts, lib/*.ts` and multi-line YAML arrays.
  */
-function parseFrontmatterList(value: string): string[] {
+export function parseFrontmatterList(value: string): string[] {
   if (!value) return [];
   return value.split(',').map(s => s.trim()).filter(s => s.length > 0);
 }
@@ -263,6 +263,13 @@ function computeRelevanceScore(memoryText: string, queryTokens: string[], idfMap
 export class MemoryManager {
   private cwd: string;
   private _hookCallback: ((event: string, data: any) => void) | null = null;
+  /** Test seam: filesystem stat used when loading memory files. Defaults to the
+   *  real `fs.statSync`; tests may replace it to exercise defensive fallbacks. */
+  _statSync: typeof fs.statSync = fs.statSync;
+  /** Test seam: recursive directory read used when scanning the rules dir.
+   *  Defaults to the real `fsp.readdir`; tests may replace it to drive Dirent
+   *  shape fallbacks (e.g. missing `parentPath`). */
+  _readdir: typeof fsp.readdir = fsp.readdir;
 
   constructor(cwd: string) {
     this.cwd = cwd;
@@ -449,7 +456,7 @@ export class MemoryManager {
       const filePath = path.join(memoryDir, file);
       try {
         const raw = fs.readFileSync(filePath, 'utf-8');
-        const stat = fs.statSync(filePath);
+        const stat = this._statSync(filePath);
         const { frontmatter, body } = parseFrontmatter(raw);
         const sanitizedBody = sanitizeContent(body.trim(), filePath);
         const ageDays = memoryAgeDays(stat.mtimeMs);
@@ -795,7 +802,7 @@ export class MemoryManager {
     const rules: string[] = [];
 
     try {
-      const entries = await fsp.readdir(rulesDir, { withFileTypes: true, recursive: true });
+      const entries = await this._readdir(rulesDir, { withFileTypes: true, recursive: true });
       for (const entry of entries) {
         if (!entry.isFile()) continue;
         if (!entry.name.endsWith('.md') && !entry.name.endsWith('.txt')) continue;
@@ -825,7 +832,7 @@ export class MemoryManager {
     const sources: InstructionSource[] = [];
 
     try {
-      const entries = await fsp.readdir(rulesDir, { withFileTypes: true, recursive: true });
+      const entries = await this._readdir(rulesDir, { withFileTypes: true, recursive: true });
       for (const entry of entries) {
         if (!entry.isFile()) continue;
         if (!entry.name.endsWith('.md') && !entry.name.endsWith('.txt')) continue;

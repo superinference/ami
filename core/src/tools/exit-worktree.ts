@@ -2,6 +2,19 @@ import * as fs from 'fs';
 import * as child_process from 'child_process';
 import { ToolDefinition, ToolResult } from '../types';
 
+/**
+ * Dependency seam for tests (mirrors `_enterWorktreeHooks`). All git subprocess
+ * calls route through this object so tests can inject a `git worktree remove`
+ * failure to exercise the fs.rmSync + prune fallback deterministically, without
+ * depending on the host git version's removal behaviour. The defaults are the
+ * real child_process.execSync / fs ops, so production behaviour is unchanged.
+ */
+export const _exitWorktreeHooks = {
+  execSync: child_process.execSync as typeof child_process.execSync,
+  existsSync: fs.existsSync as typeof fs.existsSync,
+  rmSync: fs.rmSync as typeof fs.rmSync,
+};
+
 export const exitWorktreeTool: ToolDefinition = {
   name: 'exit_worktree',
   description:
@@ -89,14 +102,14 @@ export const exitWorktreeTool: ToolDefinition = {
     }
 
     try {
-      child_process.execSync(`git worktree remove --force "${worktreePath}"`, { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' });
+      _exitWorktreeHooks.execSync(`git worktree remove --force "${worktreePath}"`, { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' });
     } catch (e) {
       try {
-        if (fs.existsSync(worktreePath)) {
-          fs.rmSync(worktreePath, { recursive: true, force: true });
+        if (_exitWorktreeHooks.existsSync(worktreePath)) {
+          _exitWorktreeHooks.rmSync(worktreePath, { recursive: true, force: true });
         }
         const repoRoot = worktreePath.split('.superinference/worktrees/')[0];
-        child_process.execSync('git worktree prune', { cwd: repoRoot, stdio: 'ignore' });
+        _exitWorktreeHooks.execSync('git worktree prune', { cwd: repoRoot, stdio: 'ignore' });
       } catch {
         return { output: `Error removing worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }

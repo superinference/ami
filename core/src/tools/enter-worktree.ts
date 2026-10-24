@@ -160,6 +160,10 @@ export const enterWorktreeTool: ToolDefinition = {
     setWorktreeSession(session);
     symlinkLargeDirectories(context.cwd, session.worktreePath);
 
+    // Capture the pre-reassignment cwd so the cwd-changed hook reports the
+    // correct oldCwd whether or not context.cwd was set (equivalent to the old
+    // `_originalCwd ?? context.cwd`, but without an unreachable fallback arm).
+    const originalCwd = context.cwd;
     if (context.cwd) {
       (context as any)._originalCwd = context.cwd;
       (context as any).cwd = worktreeDir;
@@ -167,7 +171,7 @@ export const enterWorktreeTool: ToolDefinition = {
 
     if (context._hookManager) {
       context._hookManager.executeWorktreeCreate?.({ name: slug }).catch(() => {});
-      context._hookManager.executeCwdChanged?.({ oldCwd: (context as any)._originalCwd ?? context.cwd, newCwd: worktreeDir }).catch(() => {});
+      context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
     }
 
     return {
