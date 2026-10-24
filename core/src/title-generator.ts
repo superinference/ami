@@ -5,6 +5,9 @@ export async function generateTitle(
   userMessage: string,
   provider: ProviderConfig,
   compactionModel?: string,
+  // Test seam (behaviour-preserving): defaults to the real streamer so callers
+  // are unaffected; tests inject a deterministic async generator.
+  _streamChatCompletion: typeof streamChatCompletion = streamChatCompletion,
 ): Promise<string> {
   const titleProvider: ProviderConfig = {
     ...provider,
@@ -22,7 +25,7 @@ export async function generateTitle(
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 30000);
     try {
-      for await (const chunk of streamChatCompletion(titleProvider, messages, [], ac.signal)) {
+      for await (const chunk of _streamChatCompletion(titleProvider, messages, [], ac.signal)) {
         if (chunk.type === 'content_delta' && chunk.text) title += chunk.text;
         if (chunk.type === 'done' || chunk.type === 'error') break;
       }

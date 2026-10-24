@@ -1,5 +1,36 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 
+/**
+ * Indirection seam for the lazily-required LSP + workspace-indexer dependencies.
+ *
+ * Exported as a plain, mutable object (not a namespace re-export) so tests can
+ * stub individual methods with node:test's `mock.method` under BOTH the CJS
+ * (tsx) runner and the native-ESM coverage harness. ESM freezes namespace
+ * bindings but not the properties of an ordinary exported object, so stubbing
+ * these methods is safe in either mode. The default implementations preserve
+ * the original lazy-require behaviour exactly.
+ */
+export const _lspDiagHooks = {
+  getLSPClient(): unknown {
+    const { getLSPClient } = require('../lsp') as { getLSPClient: () => unknown };
+    return getLSPClient();
+  },
+  searchSymbols(
+    cwd: string,
+    symbol: string,
+  ): Array<{ name: string; type: string; filePath: string; line: number }> {
+    const { getWorkspaceIndexer } = require('./search-symbols') as {
+      getWorkspaceIndexer: (c: string) => {
+        searchSymbols: (
+          s: string,
+          n: number,
+        ) => Array<{ name: string; type: string; filePath: string; line: number }>;
+      };
+    };
+    return getWorkspaceIndexer(cwd).searchSymbols(symbol, 30);
+  },
+};
+
 export const lspDiagnosticsTool: ToolDefinition = {
   name: 'diagnostics',
   description: 'Get LSP diagnostics (errors, warnings) for a file or the workspace. Useful for finding issues after edits.',
@@ -13,8 +44,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
   isConcurrencySafe: true,
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     try {
-      const { getLSPClient } = require('../lsp');
-      const lsp = getLSPClient();
+      _lspDiagHooks.getLSPClient();
       const filePath = input.file_path as string | undefined;
       if (filePath) {
         return { output: `[Diagnostics for ${filePath}]: Check editor for live LSP diagnostics. Run the relevant linter/compiler to see issues.` };
@@ -42,9 +72,7 @@ export const lspReferencesTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const symbol = input.symbol as string;
     try {
-      const { getWorkspaceIndexer } = require('./search-symbols');
-      const indexer = getWorkspaceIndexer(context.cwd);
-      const results = indexer.searchSymbols(symbol, 30);
+      const results = _lspDiagHooks.searchSymbols(context.cwd, symbol);
       if (results.length === 0) return { output: `No references found for "${symbol}".` };
       const formatted = results.map((r: any) => `${r.name} (${r.type}) in ${r.filePath}:${r.line}`).join('\n');
       return { output: `References for "${symbol}":\n${formatted}` };

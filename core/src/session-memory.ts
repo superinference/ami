@@ -72,6 +72,12 @@ Only include facts that would be genuinely useful in future turns. Be concise. R
 export class SessionMemoryExtractor {
   private provider: ProviderConfig;
   private compactionModel?: string;
+  /** Test seam: the streaming function used to call the model. Defaults to the
+   *  real provider stream; tests may replace it to exercise failure paths. */
+  _streamFn: typeof streamChatCompletion = streamChatCompletion;
+  /** Test seam: extraction watchdog timeout (ms). Overridable so tests can
+   *  exercise the abort path without waiting the full 30s. */
+  _timeoutMs = 30_000;
 
   constructor(provider: ProviderConfig, compactionModel?: string) {
     this.provider = provider;
@@ -116,12 +122,12 @@ export class SessionMemoryExtractor {
 
     const abortController = new AbortController();
     // Set a timeout to avoid hanging
-    const timeout = setTimeout(() => abortController.abort(), 30_000);
+    const timeout = setTimeout(() => abortController.abort(), this._timeoutMs);
 
     try {
       let responseText = '';
 
-      for await (const chunk of streamChatCompletion(
+      for await (const chunk of this._streamFn(
         { ...effectiveConfig, maxTokens: 500 },
         messages,
         [], // no tools

@@ -34,12 +34,24 @@ const BUILT_IN_FORMATTERS: FormatterConfig[] = [
 
 const formatterCache = new Map<string, boolean>();
 
-function isFormatterAvailable(config: FormatterConfig): boolean {
+/**
+ * Mockable exec seam (ESM-safe). Tests replace `execHooks.execSync` via
+ * `mock.method` to simulate formatter availability/success/failure
+ * deterministically. Defaults to the real child_process.execSync.
+ */
+export const execHooks = { execSync };
+
+/** Clear the formatter-availability memo (test seam; harmless in production). */
+export function __clearFormatterCache(): void {
+  formatterCache.clear();
+}
+
+export function isFormatterAvailable(config: FormatterConfig): boolean {
   if (!config.check) return false;
   const key = config.check;
   if (formatterCache.has(key)) return formatterCache.get(key)!;
   try {
-    execSync(config.check, { timeout: 5000, stdio: 'pipe' });
+    execHooks.execSync(config.check, { timeout: 5000, stdio: 'pipe' });
     formatterCache.set(key, true);
     return true;
   } catch {
@@ -54,7 +66,7 @@ export function formatFile(filePath: string, cwd: string): { formatted: boolean;
   if (!config) return { formatted: false };
   if (!isFormatterAvailable(config)) return { formatted: false };
   try {
-    execSync(`${config.command} ${config.args.join(' ')} '${filePath.replace(/'/g, "'\\''")}'`, {
+    execHooks.execSync(`${config.command} ${config.args.join(' ')} '${filePath.replace(/'/g, "'\\''")}'`, {
       cwd, timeout: 15000, stdio: 'pipe',
     });
     return { formatted: true };

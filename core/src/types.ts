@@ -100,6 +100,12 @@ export interface ToolContext {
   _parentPermissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Session-wide web-search budget with token-bucket refill to stop runaway loops. */
   _webSearchBudget?: { count: number; max: number; lastRefillTime?: number; refillRate?: number };
+  /** Test-only dependency seam for web_search (mock HTTP getter / SSRF validator /
+   *  search-URL builder). Never set in production; defaults to the real functions. */
+  _webSearchHooks?: import('./tools/web-search').WebSearchHooks;
+  /** Test-only dependency seam for web_fetch's HTTP getter. Never set in
+   *  production; defaults to the real httpGet. */
+  _webFetchHttpGet?: typeof import('./tools/web-utils').httpGet;
   detachedMode?: boolean;
   /** Current subagent nesting depth (0 = top-level). */
   _agentDepth?: number;

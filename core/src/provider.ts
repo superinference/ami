@@ -112,7 +112,7 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
 };
 
 // API key prefix → provider detection
-const KEY_PREFIXES: Array<{ prefix: string; provider: ProviderName; exclude?: string[] }> = [
+const KEY_PREFIXES: Array<{ prefix: string; provider: ProviderName }> = [
   { prefix: 'AIzaSy', provider: 'google' },
   { prefix: 'sk-ant-', provider: 'anthropic' },
   { prefix: 'sk-or-', provider: 'openrouter' },
@@ -191,9 +191,8 @@ const PROVIDER_BASE_URLS: Partial<Record<ProviderName, string>> = {
 };
 
 function inferProviderFromApiKey(apiKey: string): InferredProvider | null {
-  for (const { prefix, provider, exclude } of KEY_PREFIXES) {
+  for (const { prefix, provider } of KEY_PREFIXES) {
     if (apiKey.startsWith(prefix)) {
-      if (exclude?.some(ex => apiKey.startsWith(ex))) continue;
       const models = MODEL_PREFERENCE[provider] || MODEL_PREFERENCE.openai;
       return {
         provider,
@@ -878,8 +877,13 @@ export async function* streamChatCompletion(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet> },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; streamTextImpl?: typeof streamText },
 ): AsyncGenerator<StreamChunk> {
+  // Test seam: the AI SDK streamText entry point. Defaults to the real import so
+  // production behavior is unchanged; tests inject a fake that drives the
+  // stream-part switch (tool-call / finish-step / error / reasoning) and the
+  // generator's catch (abort / MissingToolResults / API errors) deterministically.
+  const streamTextFn = options?.streamTextImpl ?? streamText;
   const model = resolveModel(config);
   const inferred = inferProviderFromApiKey(config.apiKey)
     || (config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null)
@@ -942,7 +946,7 @@ export async function* streamChatCompletion(
   try {
     const effectiveTemperature = resolveTemperature(modelId, config.temperature, options?.thinking);
 
-    const result = streamText({
+    const result = streamTextFn({
       model,
       instructions: systemPrompt,
       messages: coreMessages,
@@ -1142,8 +1146,14 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void; streamImpl?: typeof streamChatCompletion },
 ): AsyncGenerator<StreamChunk> {
+  // Test seam: the underlying single-attempt stream. Defaults to the real
+  // streamChatCompletion so production behavior is unchanged; tests inject a
+  // generator that throws (abort / SSL / network / generic) to drive the catch
+  // and network-retry branches, which real transports surface as error chunks
+  // rather than thrown errors.
+  const streamImpl = options?.streamImpl ?? streamChatCompletion;
   const envTimeout = Number(process.env.SUPERINFERENCE_API_TIMEOUT_MS);
   const timeoutMs = options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS);
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
@@ -1180,7 +1190,7 @@ export async function* streamChatCompletionWithRetry(
 
     try {
     resetIdle();
-    for await (const chunk of streamChatCompletion(config, messages, tools, requestAbort.signal, options)) {
+    for await (const chunk of streamImpl(config, messages, tools, requestAbort.signal, options)) {
       resetIdle();
       if (chunk.type === 'error' && !contentStarted) {
         const statusCode = extractStatusCode(chunk.error ?? '');

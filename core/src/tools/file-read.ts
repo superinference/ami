@@ -13,6 +13,21 @@ const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
 const MAX_FILE_READ_TOKENS = 25_000;
 
+/**
+ * Dependency seam for fs calls whose failures are defensive TOCTOU/race guards
+ * (a file that passed the access check disappearing or becoming unreadable
+ * before the follow-up lstat/open). Tests use `mock.method(fsHooks, ...)` to
+ * exercise those catch paths deterministically; production uses the real fs.
+ * Mirrors the fsHooks pattern in logger.ts / file-cache.ts.
+ */
+export const fsHooks: {
+  lstatSync: (p: string) => fs.Stats;
+  openForBom: (p: string) => Promise<fs.promises.FileHandle>;
+} = {
+  lstatSync: (p: string) => fs.lstatSync(p),
+  openForBom: (p: string) => fs.promises.open(p, 'r'),
+};
+
 /** Maximum image file size allowed (128 MiB). */
 export const MAX_IMAGE_FILE_BYTES = 128 * 1024 * 1024;
 
@@ -99,6 +114,16 @@ export function isImagePath(p: string): boolean {
 }
 
 /**
+ * Indirection seam for the optional native `sharp` dependency. Production loads
+ * the real module via require; tests swap it to exercise the compression branch
+ * deterministically (sharp is an optional dep that may be absent). Behavior is
+ * unchanged in production.
+ */
+export const imageHooks: { loadSharp: () => any } = {
+  loadSharp: () => require('sharp'),
+};
+
+/**
  * Read an image file and return a base64 payload, downscaling/compressing large
  * images with sharp when available (same policy file_read uses). Shared so the
  * TUI/detached attach path encodes images identically to the file_read tool.
@@ -110,7 +135,7 @@ export async function encodeImageFile(absPath: string): Promise<{ media_type: st
   let finalMediaType = MEDIA_TYPES[ext] || 'application/octet-stream';
   if (imageBuffer.length > 512 * 1024) {
     try {
-      const sharp = require('sharp');
+      const sharp = imageHooks.loadSharp();
       finalBuffer = await sharp(imageBuffer)
         .resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 80 })
@@ -246,7 +271,7 @@ export const fileReadTool: ToolDefinition = {
     // Validate symlink targets — block symlinks pointing to sensitive files
     // or outside the workspace (defense-in-depth against TOCTOU in resolveFilePath)
     try {
-      const lstat = fs.lstatSync(resolved);
+      const lstat = fsHooks.lstatSync(resolved);
       if (lstat.isSymbolicLink()) {
         const realTarget = fs.realpathSync(resolved);
         if (isCredentialPath(realTarget)) {
@@ -434,7 +459,7 @@ export const fileReadTool: ToolDefinition = {
     let bomEncoding: ReturnType<typeof detectEncoding> = 'utf-8';
     try {
       const head = Buffer.alloc(4);
-      const fdHead = await fs.promises.open(resolved, 'r');
+      const fdHead = await fsHooks.openForBom(resolved);
       try { await fdHead.read(head, 0, 4, 0); } finally { await fdHead.close(); }
       bomEncoding = detectEncoding(head);
     } catch { /* fall through to normal handling */ }

@@ -5,10 +5,19 @@ import type { CriticDecision } from './types';
 export class Critic {
   private α: number;  // False approval rate (Eq. 3)
   private β: number;  // False rejection rate (Eq. 3)
+  // DI seam (test-only): the streaming function used to query the critic LLM.
+  // Defaults to the real provider; overridable so tests can exercise the
+  // fail-closed path when the stream throws without hitting the network.
+  private streamFn: typeof streamChatCompletion;
 
-  constructor(alpha: number = 0.05, beta: number = 0.10) {
+  constructor(
+    alpha: number = 0.05,
+    beta: number = 0.10,
+    streamFn: typeof streamChatCompletion = streamChatCompletion,
+  ) {
     this.α = alpha;
     this.β = beta;
+    this.streamFn = streamFn;
   }
 
   async evaluate(
@@ -32,7 +41,7 @@ Respond with ONLY a JSON object:
 
     try {
       let response = '';
-      for await (const chunk of streamChatCompletion(
+      for await (const chunk of this.streamFn(
         { ...provider, maxTokens: 200, temperature: 0 },
         messages,
         [],

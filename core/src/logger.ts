@@ -6,19 +6,38 @@ const LOG_DIR = path.join(os.tmpdir(), 'superinference', 'core');
 const LOG_FILE = path.join(LOG_DIR, 'engine.log');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 
+/**
+ * Mockable filesystem seam (ESM-safe). Tests replace these with
+ * `mock.method(fsHooks, 'name', ...)` to exercise rotation and failure paths
+ * without touching the shared on-disk log. Behavior-preserving: production code
+ * routes every fs call through this object, which defaults to the real `fs`.
+ */
+export const fsHooks = {
+  mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
+  statSync: fs.statSync as typeof fs.statSync,
+  unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
+  renameSync: fs.renameSync as typeof fs.renameSync,
+  appendFileSync: fs.appendFileSync as typeof fs.appendFileSync,
+};
+
 let initialized = false;
+
+/** Test-only seam: force the next log() call to re-run directory setup/rotation. */
+export function __resetLoggerForTest(): void {
+  initialized = false;
+}
 
 function ensureDir(): void {
   if (initialized) return;
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fsHooks.mkdirSync(LOG_DIR, { recursive: true });
     // Rotate if too large
     try {
-      const stat = fs.statSync(LOG_FILE);
+      const stat = fsHooks.statSync(LOG_FILE);
       if (stat.size > MAX_LOG_SIZE) {
         const backup = LOG_FILE + '.prev';
-        try { fs.unlinkSync(backup); } catch {}
-        fs.renameSync(LOG_FILE, backup);
+        try { fsHooks.unlinkSync(backup); } catch {}
+        fsHooks.renameSync(LOG_FILE, backup);
       }
     } catch {}
     initialized = true;
@@ -31,7 +50,7 @@ export function log(component: string, msg: string, data?: Record<string, unknow
   const dataStr = data ? ' ' + JSON.stringify(data) : '';
   const line = `[${ts}] [${component}] ${msg}${dataStr}\n`;
   try {
-    fs.appendFileSync(LOG_FILE, line);
+    fsHooks.appendFileSync(LOG_FILE, line);
   } catch {}
 }
 

@@ -13,6 +13,24 @@ interface SearchResult {
   content?: string;
 }
 
+/**
+ * Dependency seam for tests (mirrors the _createClient / fsHooks pattern used
+ * elsewhere). Production code never sets `context._webSearchHooks`, so the
+ * default object below — the real `httpGet`, `validateUrlSafety`, and the
+ * hard-coded DuckDuckGo URL builder — is used unchanged. A test may supply a
+ * mock HTTP getter / SSRF validator / search-URL builder to drive the
+ * HTTP-success path against a local mock server without touching the network.
+ */
+export interface WebSearchHooks {
+  httpGet: typeof httpGet;
+  validateUrlSafety: typeof validateUrlSafety;
+  searchUrl: (query: string) => string;
+}
+
+function defaultSearchUrl(query: string): string {
+  return `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+}
+
 export function parseDuckDuckGoResults(html: string): SearchResult[] {
   const results: SearchResult[] = [];
 
@@ -71,11 +89,12 @@ export function parseDuckDuckGoResults(html: string): SearchResult[] {
 async function fetchResultContent(
   result: SearchResult,
   signal: AbortSignal,
+  hooks: WebSearchHooks,
 ): Promise<string> {
   try {
-    const ssrfResult = await validateUrlSafety(result.url);
+    const ssrfResult = await hooks.validateUrlSafety(result.url);
     if ('error' in ssrfResult) return '';
-    const { body, statusCode } = await httpGet(result.url, signal, { timeoutMs: FETCH_TIMEOUT_MS, resolvedIP: ssrfResult.resolvedIP });
+    const { body, statusCode } = await hooks.httpGet(result.url, signal, { timeoutMs: FETCH_TIMEOUT_MS, resolvedIP: ssrfResult.resolvedIP });
     if (statusCode >= 400) return '';
     const text = stripHtml(body);
     return text.substring(0, MAX_CONTENT_PER_RESULT);
@@ -159,10 +178,11 @@ export const webSearchTool: ToolDefinition = {
       }
     }
 
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const hooks: WebSearchHooks = context._webSearchHooks ?? { httpGet, validateUrlSafety, searchUrl: defaultSearchUrl };
+    const searchUrl = hooks.searchUrl(query);
 
     try {
-      const { body, statusCode } = await httpGet(
+      const { body, statusCode } = await hooks.httpGet(
         searchUrl,
         context.abortSignal,
       );
@@ -205,7 +225,7 @@ export const webSearchTool: ToolDefinition = {
 
       // Fetch content from top results in parallel for richer context
       const topResults = results.slice(0, TOP_RESULTS_TO_FETCH);
-      const contentPromises = topResults.map(r => fetchResultContent(r, context.abortSignal));
+      const contentPromises = topResults.map(r => fetchResultContent(r, context.abortSignal, hooks));
       const contents = await Promise.all(contentPromises);
 
       for (let i = 0; i < topResults.length; i++) {

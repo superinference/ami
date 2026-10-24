@@ -131,9 +131,9 @@ export class ManagedConfigError extends Error {}
 
 export function loadManagedConfig(): ProjectConfig | null {
   const configPath = process.env.SUPERINFERENCE_MANAGED_CONFIG || '/etc/superinference/config.json';
-  if (!fs.existsSync(configPath)) return null;
+  if (!fsHooks.existsSync(configPath)) return null;
   try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
+    const raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
     return JSON.parse(stripJsoncComments(raw)) as ProjectConfig;
   } catch (err) {
     // A broken enterprise policy must fail closed, not be silently ignored.
@@ -198,9 +198,9 @@ export class ConfigService {
 
     const dir = path.dirname(this.configPath);
     try {
-      if (!fs.existsSync(dir)) return;
+      if (!fsHooks.existsSync(dir)) return;
 
-      this.watcher = fs.watch(dir, (eventType, filename) => {
+      this.watcher = fsHooks.watch(dir, (eventType, filename) => {
         if (filename !== 'config.json') return;
 
         if (this.debounceTimer) clearTimeout(this.debounceTimer);
@@ -328,10 +328,32 @@ export function mergeConfigs(
 
 export const CONFIG_WRITE_TIMEOUT_MS = 5000;
 
+/**
+ * Mockable filesystem seam (ESM-safe) for the atomic-write helpers below.
+ * Tests swap individual methods via `mock.method(fsHooks, 'name', ...)` to
+ * exercise the rename-fallback and error branches deterministically. Defaults
+ * to the real `fs`; production behavior is unchanged.
+ */
+export const fsHooks = {
+  existsSync: fs.existsSync as typeof fs.existsSync,
+  readFileSync: fs.readFileSync as typeof fs.readFileSync,
+  writeFileSync: fs.writeFileSync as typeof fs.writeFileSync,
+  renameSync: fs.renameSync as typeof fs.renameSync,
+  unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
+  mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
+  watch: fs.watch as typeof fs.watch,
+};
+
+/**
+ * Mockable JSON seam (ESM-safe). Tests swap `jsonHooks.parse` via `mock.method`
+ * to exercise the non-Error failure arm below. Defaults to the global JSON.parse.
+ */
+export const jsonHooks = { parse: JSON.parse as (text: string) => unknown };
+
 export function validateConfigJson(content: string): { valid: boolean; error?: string } {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    parsed = jsonHooks.parse(content);
   } catch (err) {
     return { valid: false, error: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -346,18 +368,18 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
   const json = JSON.stringify(data, null, 2) + '\n';
   try {
     const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    if (!fsHooks.existsSync(dir)) {
+      fsHooks.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(tmpPath, json, 'utf-8');
+    fsHooks.writeFileSync(tmpPath, json, 'utf-8');
     try {
-      fs.renameSync(tmpPath, filePath);
+      fsHooks.renameSync(tmpPath, filePath);
     } catch {
-      fs.writeFileSync(filePath, json, 'utf-8');
-      try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+      fsHooks.writeFileSync(filePath, json, 'utf-8');
+      try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     }
   } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     throw err;
   }
 }
@@ -365,26 +387,26 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
 export function cleanupStaleConfigTmp(filePath: string): boolean {
   const tmpPath = filePath + '.tmp';
   try {
-    if (!fs.existsSync(tmpPath)) return false;
+    if (!fsHooks.existsSync(tmpPath)) return false;
   } catch {
     return false;
   }
   try {
-    const content = fs.readFileSync(tmpPath, 'utf-8');
+    const content = fsHooks.readFileSync(tmpPath, 'utf-8') as string;
     const validation = validateConfigJson(content);
     if (validation.valid) {
       try {
-        fs.renameSync(tmpPath, filePath);
+        fsHooks.renameSync(tmpPath, filePath);
       } catch {
-        fs.writeFileSync(filePath, content, 'utf-8');
-        fs.unlinkSync(tmpPath);
+        fsHooks.writeFileSync(filePath, content, 'utf-8');
+        fsHooks.unlinkSync(tmpPath);
       }
     } else {
-      fs.unlinkSync(tmpPath);
+      fsHooks.unlinkSync(tmpPath);
     }
     return true;
   } catch {
-    try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     return true;
   }
 }

@@ -6,6 +6,17 @@ import { ToolDefinition, ToolResult } from '../types';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
+/**
+ * Dependency seam for tests (mirrors the _createClient / _lspDiagHooks pattern).
+ * All git subprocess calls route through this object so tests can inject
+ * failures (e.g. a corrupted `git worktree list`, an unresolvable HEAD) via
+ * `mock.method(_enterWorktreeHooks, 'execSync', ...)`. The default implementation
+ * is the real child_process.execSync, so production behaviour is unchanged.
+ */
+export const _enterWorktreeHooks = {
+  execSync: child_process.execSync as typeof child_process.execSync,
+};
+
 function validateSlug(name: string): boolean {
   if (name.length > 64) return false;
   if (path.isAbsolute(name)) return false;
@@ -19,12 +30,12 @@ function validateSlug(name: string): boolean {
 
 function getDefaultBranch(cwd: string): string {
   try {
-    const remote = child_process.execSync('git remote show origin 2>/dev/null | grep "HEAD branch"', { cwd, encoding: 'utf-8' });
+    const remote = _enterWorktreeHooks.execSync('git remote show origin 2>/dev/null | grep "HEAD branch"', { cwd, encoding: 'utf-8' });
     const match = remote.match(/HEAD branch:\s*(\S+)/);
     if (match) return match[1];
   } catch { /* fallback */ }
   try {
-    child_process.execSync('git rev-parse --verify refs/heads/main', { cwd, stdio: 'ignore' });
+    _enterWorktreeHooks.execSync('git rev-parse --verify refs/heads/main', { cwd, stdio: 'ignore' });
     return 'main';
   } catch { /* fallback */ }
   return 'master';
@@ -64,7 +75,7 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     try {
-      child_process.execSync('git rev-parse --is-inside-work-tree', { cwd: context.cwd, stdio: 'ignore' });
+      _enterWorktreeHooks.execSync('git rev-parse --is-inside-work-tree', { cwd: context.cwd, stdio: 'ignore' });
     } catch {
       return { output: 'Error: not inside a git repository.', isError: true };
     }
@@ -74,7 +85,7 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
       }
       try {
-        const list = child_process.execSync('git worktree list --porcelain', { cwd: context.cwd, encoding: 'utf-8' });
+        const list = _enterWorktreeHooks.execSync('git worktree list --porcelain', { cwd: context.cwd, encoding: 'utf-8' });
         const worktrees = list.split('\n').filter(l => l.startsWith('worktree ')).map(l => l.slice(9));
         const resolved = path.resolve(existingPath);
         if (!worktrees.includes(resolved)) {
@@ -119,7 +130,7 @@ export const enterWorktreeTool: ToolDefinition = {
       // Explicit base ref: verify it resolves to a commit, else fail loud
       // (do not silently fall back to HEAD and branch from the wrong place).
       try {
-        child_process.execSync(`git rev-parse --verify ${JSON.stringify(requestedBaseRef)}^{commit}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.execSync(`git rev-parse --verify ${JSON.stringify(requestedBaseRef)}^{commit}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       } catch {
         return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).`, isError: true };
       }
@@ -127,11 +138,11 @@ export const enterWorktreeTool: ToolDefinition = {
     try {
       const baseRef = requestedBaseRef || `origin/${defaultBranch}`;
       try {
-        child_process.execSync(`git rev-parse --verify ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
-        child_process.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.execSync(`git rev-parse --verify ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       } catch {
         if (requestedBaseRef) throw new Error(`could not create worktree from base_ref "${requestedBaseRef}"`);
-        child_process.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" HEAD`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" HEAD`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       }
     } catch (e) {
       return { output: `Error creating worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
@@ -139,7 +150,7 @@ export const enterWorktreeTool: ToolDefinition = {
 
     let commitHash: string;
     try {
-      commitHash = child_process.execSync('git rev-parse --short HEAD', { cwd: worktreeDir, encoding: 'utf-8' }).trim();
+      commitHash = _enterWorktreeHooks.execSync('git rev-parse --short HEAD', { cwd: worktreeDir, encoding: 'utf-8' }).trim();
     } catch {
       commitHash = 'unknown';
     }

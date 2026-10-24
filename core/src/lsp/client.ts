@@ -25,14 +25,21 @@ export class LSPClient {
   private openedDocuments: Set<string> = new Set();
   private messageId = 0;
 
+  // Process-spawn hooks. Default to the real child_process implementations;
+  // overridable per-instance in tests so the server-spawn success path can be
+  // driven without a real language-server binary. Production behavior is
+  // identical to calling child_process directly.
+  _spawnSync: typeof child_process.spawnSync = child_process.spawnSync;
+  _spawn: typeof child_process.spawn = child_process.spawn;
+
   async ensureServer(language: string, cwd: string): Promise<boolean> {
     if (this.processes.has(language)) return true;
     const config = LANGUAGE_SERVERS[language];
     if (!config) return false;
     try {
-      const which = child_process.spawnSync('which', [config.command], { timeout: 2000, stdio: 'pipe' });
+      const which = this._spawnSync('which', [config.command], { timeout: 2000, stdio: 'pipe' });
       if (which.status !== 0) return false;
-      const proc = child_process.spawn(config.command, config.args, {
+      const proc = this._spawn(config.command, config.args, {
         cwd, stdio: ['pipe', 'pipe', 'pipe'],
       });
       const clearLang = () => { this.processes.delete(language); this.initialized.delete(language); this.clearOpenedForLanguage(language); };

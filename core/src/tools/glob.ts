@@ -6,6 +6,13 @@ import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
 
 const MAX_RESULTS = 200;
 
+/**
+ * Indirection seam for the underlying glob implementation. Production uses
+ * tinyglobby's `glob`; tests swap it to exercise the error branch (tinyglobby
+ * itself rarely throws). Behavior is unchanged in production.
+ */
+export const globHooks: { glob: typeof glob } = { glob };
+
 export const globTool: ToolDefinition = {
   name: 'glob',
   description:
@@ -39,7 +46,7 @@ export const globTool: ToolDefinition = {
     if (unreadable) return unreadable;
 
     try {
-      const entries = await glob(pattern, {
+      const entries = await globHooks.glob(pattern, {
         cwd: resolved,
         ignore: ['**/node_modules/**', '**/.git/**'],
         dot: true,

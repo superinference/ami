@@ -1,6 +1,21 @@
 import * as child_process from 'child_process';
 import * as os from 'os';
 
+/**
+ * Mockable seam (ESM-safe). Tests replace these via
+ * `mock.method(shellHooks, 'name', ...)` to drive platform-specific branches
+ * (Windows taskkill), inject a fake child process (deterministic
+ * stdout/stderr/error/close events), and simulate process-tree kills without a
+ * real subprocess. Behavior-preserving: production routes every platform/spawn/
+ * kill call through this object, which defaults to the real implementations.
+ */
+export const shellHooks = {
+  platform: ((): NodeJS.Platform => os.platform()) as () => NodeJS.Platform,
+  spawn: child_process.spawn as typeof child_process.spawn,
+  execSync: child_process.execSync as typeof child_process.execSync,
+  kill: ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); }),
+};
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 /** Bound captured output. Head plus tail so a long pytest log keeps its summary. */
 const HEAD_CHARS = 670_000;
@@ -53,7 +68,9 @@ const PROMPT_PATTERNS = [
 ];
 
 function looksLikePrompt(output: string): boolean {
-  const lastLine = output.trimEnd().split('\n').pop()?.trim() || '';
+  // split() always returns at least one element, so the last index is defined.
+  const lines = output.trimEnd().split('\n');
+  const lastLine = lines[lines.length - 1]!.trim();
   if (lastLine.length === 0 || lastLine.length > 200) return false;
   return PROMPT_PATTERNS.some(p => p.test(lastLine));
 }
@@ -94,11 +111,11 @@ export function execCommand(
       return;
     }
 
-    const isWindows = os.platform() === 'win32';
+    const isWindows = shellHooks.platform() === 'win32';
     const shell = isWindows ? 'cmd' : 'bash';
     const shellArgs = isWindows ? ['/c', command] : ['-c', command];
 
-    const proc = child_process.spawn(shell, shellArgs, {
+    const proc = shellHooks.spawn(shell, shellArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: !isWindows,
@@ -214,12 +231,12 @@ function killTree(proc: child_process.ChildProcess): void {
   if (proc.pid == null) return;
 
   try {
-    if (os.platform() === 'win32') {
+    if (shellHooks.platform() === 'win32') {
       // On Windows, use taskkill to kill the tree
-      child_process.execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+      shellHooks.execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
     } else {
       // On Unix, kill the process group (negative pid)
-      process.kill(-proc.pid, 'SIGKILL');
+      shellHooks.kill(-proc.pid, 'SIGKILL');
     }
   } catch {
     // Process may already be dead; swallow the error

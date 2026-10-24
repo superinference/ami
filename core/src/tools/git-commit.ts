@@ -9,6 +9,19 @@ import { scanForSecrets } from './tool-utils';
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
 const TRAILER_REGEX = /Co-Authored-By:\s*AMI\s*<ami@superinference\.org>/i;
 
+/**
+ * Dependency seam for tests (mirrors the fsHooks pattern in config.ts). The
+ * temp-file write/cleanup routes through this object so tests can simulate an
+ * unlink failure (e.g. the temp file already removed) via
+ * `mock.method(_gitCommitFs, 'unlinkSync', ...)`. Defaults are the real fs calls,
+ * so production behaviour is unchanged.
+ */
+export const _gitCommitFs = {
+  writeFileSync: fs.writeFileSync as typeof fs.writeFileSync,
+  unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
+  execFileSync: child_process.execFileSync as typeof child_process.execFileSync,
+};
+
 function buildCommitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   env.GIT_EDITOR = 'false';
@@ -84,9 +97,9 @@ export const gitCommitTool: ToolDefinition = {
       const safeFiles = files.filter(f => typeof f === 'string');
       try {
         if (safeFiles.length === 1 && safeFiles[0] === '.') {
-          child_process.execFileSync('git', ['add', '-u'], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
+          _gitCommitFs.execFileSync('git', ['add', '-u'], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
         } else {
-          child_process.execFileSync('git', ['add', '--', ...safeFiles], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
+          _gitCommitFs.execFileSync('git', ['add', '--', ...safeFiles], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
         }
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
@@ -116,7 +129,7 @@ export const gitCommitTool: ToolDefinition = {
     const tmpFile = path.join(tmpDir, `ami-commit-${Date.now()}-${process.pid}.txt`);
 
     try {
-      fs.writeFileSync(tmpFile, finalMessage, 'utf-8');
+      _gitCommitFs.writeFileSync(tmpFile, finalMessage, 'utf-8');
 
       const commitResult = await execCommand(`git commit -F "${tmpFile}"`, execOpts);
       if (commitResult.exitCode !== 0) {
@@ -138,7 +151,7 @@ export const gitCommitTool: ToolDefinition = {
 
       return { output: parts.join('\n'), isError: false };
     } finally {
-      try { fs.unlinkSync(tmpFile); } catch { /* already cleaned or never written */ }
+      try { _gitCommitFs.unlinkSync(tmpFile); } catch { /* already cleaned or never written */ }
     }
   },
 };

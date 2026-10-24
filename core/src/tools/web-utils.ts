@@ -49,7 +49,19 @@ export function isBlockedRedirectTarget(url: string): boolean {
   } catch { return true; }
 }
 
-export async function validateUrlSafety(url: string): Promise<{ error: string } | { resolvedIP: string }> {
+/** DNS lookup signature used by validateUrlSafety — a dependency seam so tests
+ *  can simulate a resolution that yields no usable (valid) addresses. Defaults
+ *  to the real dns.lookup; production never overrides it. */
+export type HostLookupAll = (
+  hostname: string,
+  options: { all: true },
+  callback: (err: NodeJS.ErrnoException | null, addresses: dns.LookupAddress[]) => void,
+) => void;
+
+export async function validateUrlSafety(
+  url: string,
+  lookup: HostLookupAll = dns.lookup as HostLookupAll,
+): Promise<{ error: string } | { resolvedIP: string }> {
   const parsed = new URL(url);
   const hostname = parsed.hostname.toLowerCase();
 
@@ -61,7 +73,7 @@ export async function validateUrlSafety(url: string): Promise<{ error: string } 
   // so callers can pin it to prevent DNS rebinding (TOCTOU)
   try {
     const addresses = await new Promise<dns.LookupAddress[]>((resolve, reject) => {
-      dns.lookup(hostname, { all: true }, (err, addrs) => {
+      lookup(hostname, { all: true }, (err, addrs) => {
         if (err) reject(err);
         else resolve(addrs);
       });

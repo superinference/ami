@@ -3,6 +3,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { parseEnvInt } from '../utils/env';
 
+/**
+ * Mockable filesystem seam (ESM-safe). Tests replace this via
+ * `mock.method(_wfHooks, 'readFileSync', ...)` to drive the cgroup v1/v2 CPU
+ * detection branches without a real container. Behavior-preserving: defaults to
+ * the real `fs.readFileSync`.
+ */
+export const _wfHooks = {
+  readFileSync: fs.readFileSync as typeof fs.readFileSync,
+  cpus: os.cpus as typeof os.cpus,
+};
+
 export interface WorkflowMeta {
   name: string;
   description: string;
@@ -52,9 +63,9 @@ export interface WorkflowContext {
 }
 
 export function detectCpuCount(): number {
-  const osCpus = os.cpus()?.length ?? 8;
+  const osCpus = _wfHooks.cpus()?.length ?? 8;
   try {
-    const raw = fs.readFileSync('/sys/fs/cgroup/cpu.max', 'utf-8').trim();
+    const raw = _wfHooks.readFileSync('/sys/fs/cgroup/cpu.max', 'utf-8').trim();
     const [quotaStr, periodStr] = raw.split(/\s+/);
     if (quotaStr !== 'max') {
       const quota = parseInt(quotaStr!, 10);
@@ -63,8 +74,8 @@ export function detectCpuCount(): number {
     }
   } catch { /* not in a cgroup-v2 container */ }
   try {
-    const quota = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf-8').trim(), 10);
-    const period = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf-8').trim(), 10);
+    const quota = parseInt(_wfHooks.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf-8').trim(), 10);
+    const period = parseInt(_wfHooks.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf-8').trim(), 10);
     if (quota > 0 && period > 0) return Math.max(1, Math.floor(quota / period));
   } catch { /* not in a cgroup-v1 container */ }
   return osCpus;
@@ -85,8 +96,9 @@ const MAX_PIPELINE_ITEMS = 4096;
  */
 export function stripMeta(script: string): string {
   const match = script.match(/export\s+const\s+meta\s*=\s*\{/);
-  if (!match || match.index === undefined) return script;
-  const start = match.index;
+  if (!match) return script;
+  // A non-global .match() always populates .index when it matches.
+  const start = match.index!;
   let depth = 0;
   let inString = false;
   let stringChar = '';
@@ -352,13 +364,14 @@ export class WorkflowRuntime extends EventEmitter {
 
 export function parseWorkflowMeta(script: string): WorkflowMeta | null {
   const headerMatch = script.match(/export\s+const\s+meta\s*=\s*\{/);
-  if (!headerMatch || headerMatch.index === undefined) return null;
+  if (!headerMatch) return null;
 
   // Extract the meta object literal using brace counting
   let depth = 0;
   let inString = false;
   let stringChar = '';
-  const braceStart = headerMatch.index + headerMatch[0].length - 1;
+  // A non-global .match() always populates .index when it matches.
+  const braceStart = headerMatch.index! + headerMatch[0].length - 1;
   let braceEnd = braceStart;
   for (let i = braceStart; i < script.length; i++) {
     const ch = script[i];
@@ -376,8 +389,9 @@ export function parseWorkflowMeta(script: string): WorkflowMeta | null {
 
   try {
     const factory = new Function(`return (${metaLiteral})`); // eslint-disable-line no-new-func
+    // metaLiteral is a brace-balanced `{...}` slice, so `(…)` always evaluates
+    // to an object; a malformed literal throws and is handled by the catch.
     const obj = factory();
-    if (!obj || typeof obj !== 'object') return null;
     return {
       name: String(obj.name ?? ''),
       description: String(obj.description ?? ''),

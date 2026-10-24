@@ -36,11 +36,20 @@ async function trackFileHistory(filePath: string, originalContent: string, cwd: 
   } catch { /* non-critical, don't fail the edit */ }
 }
 
+/**
+ * Indirection seam for the LSP client lookup. Production loads the real client
+ * lazily via require; tests swap it to exercise the notification error handling
+ * (client lookup failure, rejected notify promises) deterministically. Behavior
+ * is unchanged in production.
+ */
+export const lspHooks: { getClient: () => any } = {
+  getClient: () => require('../lsp').getLSPClient(),
+};
+
 function notifyLsp(resolved: string, content: string, context: ToolContext): void {
   if (context.detachedMode) return;
   try {
-    const { getLSPClient } = require('../lsp');
-    const lsp = getLSPClient();
+    const lsp = lspHooks.getClient();
     lsp.notifyDidChange(resolved, content, context.cwd).catch(() => {});
     lsp.notifyDidSave(resolved, context.cwd).catch(() => {});
   } catch {}
@@ -82,7 +91,7 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
   return undefined;
 }
 
-function commitWrite(
+export function commitWrite(
   resolved: string,
   rawToWrite: string,
   cacheContent: string,
@@ -105,7 +114,7 @@ function commitWrite(
   return undefined;
 }
 
-async function writeEntireFile(
+export async function writeEntireFile(
   resolved: string,
   content: string,
   context: ToolContext,

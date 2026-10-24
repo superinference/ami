@@ -142,16 +142,19 @@ export class CronScheduler {
 
   startTicker(onDue: (job: CronJob) => void): void {
     if (this.tickInterval) return;
-    this.tickInterval = setInterval(() => {
-      this.expireOld();
-      const due = this.getDueJobs();
-      for (const job of due) {
-        if (job.durable && !this.acquireLock()) continue;
-        this.markRun(job.id);
-        onDue(job);
-      }
-    }, 5_000);
+    this.tickInterval = setInterval(() => this.tick(onDue), 5_000);
     this.tickInterval.unref();
+  }
+
+  /** One scheduler tick: expire stale jobs, then run every due job once. */
+  private tick(onDue: (job: CronJob) => void): void {
+    this.expireOld();
+    const due = this.getDueJobs();
+    for (const job of due) {
+      if (job.durable && !this.acquireLock()) continue;
+      this.markRun(job.id);
+      onDue(job);
+    }
   }
 
   stopTicker(): void {

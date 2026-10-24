@@ -7,6 +7,17 @@ import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
 
+/**
+ * Indirection seam for process spawning and the search timeout. Tests swap
+ * `spawn` for a fake child and shrink `timeoutMs` to exercise the timeout,
+ * abort, EAGAIN and signal branches deterministically. Production code uses the
+ * real `child_process.spawn` and the 20s default, so behavior is unchanged.
+ */
+export const grepHooks: { spawn: typeof spawn; timeoutMs: number } = {
+  spawn,
+  timeoutMs: RG_TIMEOUT,
+};
+
 // eslint-disable-next-line security/detect-unsafe-regex -- [lcrniw] and \s are disjoint sets, no overlap
 const GREP_FLAG_RE = /^(-[lcrniw]+\s+)+/;
 
@@ -135,11 +146,11 @@ export const grepTool: ToolDefinition = {
     // --max-count equal to head_limit hid later matches and dropped offset.
     const fetchLimit = headLimit === 0 ? 0 : offset + Math.max(headLimit, 1) + 1;
     const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers);
-    let rgOutcome = await runSearch(rgArgs, 'rg', context, RG_TIMEOUT);
+    let rgOutcome = await runSearch(rgArgs, 'rg', context, grepHooks.timeoutMs);
 
     if (rgOutcome.eagain) {
       rgArgs.push('-j', '1');
-      rgOutcome = await runSearch(rgArgs, 'rg', context, RG_TIMEOUT);
+      rgOutcome = await runSearch(rgArgs, 'rg', context, grepHooks.timeoutMs);
     }
 
     if (rgOutcome.timedOut) {
@@ -164,7 +175,7 @@ export const grepTool: ToolDefinition = {
       buildGrepArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines),
       'grep',
       context,
-      RG_TIMEOUT,
+      grepHooks.timeoutMs,
     );
 
     if (grepOutcome.timedOut) {
@@ -387,7 +398,7 @@ function buildGrepArgs(
   return args;
 }
 
-function runSearch(
+export function runSearch(
   args: string[],
   command: string,
   context: ToolContext,
@@ -400,7 +411,7 @@ function runSearch(
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, {
+      child = grepHooks.spawn(command, args, {
         cwd: context.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
       });

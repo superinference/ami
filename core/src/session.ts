@@ -33,7 +33,7 @@ export interface SessionListEntry {
  *  Truncating them loses history on --resume, so they are exempt from the cap. */
 const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
 
-function safeCharSlice(s: string, start: number, end?: number): string {
+export function safeCharSlice(s: string, start: number, end?: number): string {
   let result = s.slice(start, end);
   if (result.length === 0) return result;
   const lastCode = result.charCodeAt(result.length - 1);
@@ -65,7 +65,7 @@ function sanitizeSessionId(id: string): string {
   return id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
 }
 
-function assertPathWithin(filePath: string, baseDir: string): void {
+export function assertPathWithin(filePath: string, baseDir: string): void {
   const resolved = path.resolve(filePath);
   const resolvedBase = path.resolve(baseDir);
   if (!resolved.startsWith(resolvedBase + path.sep) && resolved !== resolvedBase) {

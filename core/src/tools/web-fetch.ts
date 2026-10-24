@@ -32,7 +32,10 @@ interface CacheEntry {
 const fetchCache = new Map<string, CacheEntry>();
 let cacheTotalBytes = 0;
 
-function getCached(url: string): string | null {
+// Exported for direct unit testing of the byte-limited LRU cache (TTL expiry,
+// re-set, eviction) — paths the public execute() flow cannot reach because it
+// always consults getCached (which deletes expired/absent keys) before setCache.
+export function getCached(url: string): string | null {
   const entry = fetchCache.get(url);
   if (!entry) return null;
   if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
@@ -43,7 +46,7 @@ function getCached(url: string): string | null {
   return entry.content;
 }
 
-function setCache(url: string, content: string): void {
+export function setCache(url: string, content: string): void {
   // If already cached, remove old entry's size first
   const existing = fetchCache.get(url);
   if (existing) {
@@ -120,6 +123,9 @@ export const webFetchTool: ToolDefinition = {
     let url = input.url as string;
     const prompt = (input.prompt as string) ?? '';
     const textOffset = (input.offset as number) ?? 0;
+    // Test-only dependency seam (defaults to the real httpGet). Lets a test drive
+    // the cross-host-redirect branch and other response shapes deterministically.
+    const doHttpGet = context._webFetchHttpGet ?? httpGet;
 
     // Operator kill-switch (Claude Code parity): disable outbound web_fetch.
     if (process.env.CLAUDE_CODE_DISABLE_WEB_FETCH === '1' || process.env.SUPERINFERENCE_DISABLE_WEB_FETCH === '1') {
@@ -212,7 +218,7 @@ export const webFetchTool: ToolDefinition = {
       : deadlineSignal;
 
     try {
-      const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated } = await httpGet(
+      const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated } = await doHttpGet(
         url,
         fetchSignal,
         { resolvedIP: pinnedIP, raw: true },
@@ -260,7 +266,7 @@ export const webFetchTool: ToolDefinition = {
               if ('error' in fallbackSsrf) throw new Error(fallbackSsrf.error);
               fallbackIP = fallbackSsrf.resolvedIP;
             }
-            const htmlResult = await httpGet(htmlUrl, fetchSignal, { resolvedIP: fallbackIP });
+            const htmlResult = await doHttpGet(htmlUrl, fetchSignal, { resolvedIP: fallbackIP });
             if (htmlResult.statusCode < 400 && htmlResult.contentType.includes('text/html')) {
               const htmlContent = stripHtml(htmlResult.body);
               if (htmlContent.length > 200) {

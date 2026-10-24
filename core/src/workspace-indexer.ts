@@ -9,6 +9,14 @@ import { glob } from 'tinyglobby';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * File-system hooks for the indexer. Defaults to the real implementations;
+ * the `glob` entry is overridable in tests purely as a dependency-injection
+ * seam so the glob-failure fallback can be exercised without a pathological
+ * filesystem. Production behavior is identical to calling `tinyglobby.glob`.
+ */
+export const indexerHooks: { glob: typeof glob } = { glob };
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -194,7 +202,7 @@ export class WorkspaceIndexer {
       const ignorePatterns = Array.from(SKIP_DIRS).map(d => `**/${d}/**`);
 
       try {
-        filePaths = await glob(pattern, {
+        filePaths = await indexerHooks.glob(pattern, {
           cwd: this.cwd,
           absolute: true,
           ignore: ignorePatterns,

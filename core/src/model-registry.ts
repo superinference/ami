@@ -6,7 +6,12 @@ import { MODEL_PREFERENCE } from './provider';
 import { discoverFromModelList } from './model-capabilities';
 import { redactSecrets } from './tools/tool-utils';
 
-const TIMEOUT_MS = 10000;
+// Default 10s; overridable per-call via env for tests and constrained
+// environments (mirrors SUPERINFERENCE_API_TIMEOUT_MS / HF_ENDPOINT seams).
+// Read at call time (not module load) so an override takes effect post-import.
+function modelListTimeoutMs(): number {
+  return Number(process.env.SI_MODEL_LIST_TIMEOUT_MS) || 10000;
+}
 
 interface ModelInfo {
   id: string;
@@ -31,7 +36,7 @@ function httpGetJSON(
 
     const req = requester.get(url, {
       headers: { ...headers, Accept: 'application/json' },
-      timeout: TIMEOUT_MS,
+      timeout: modelListTimeoutMs(),
     }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -227,7 +232,9 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
 }
 
 async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models';
+  // Default to the public Gemini endpoint; overridable via env (e.g. an offline
+  // mirror, or a test server) without changing the default behavior.
+  const url = process.env.SI_GEMINI_MODELS_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
   const data = await httpGetJSON(url, { 'x-goog-api-key': config.apiKey }) as { models?: Array<{ name: string; displayName: string }> };
   return (data.models || []).map(m => ({
     id: m.name.replace('models/', ''),
