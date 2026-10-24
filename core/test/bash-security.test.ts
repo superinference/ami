@@ -3741,3 +3741,54 @@ describe('detectDetachedGitDiscard — paren/semicolon compound commands', () =>
     assert.equal(detectDetachedGitDiscard('git stash && npm test && git stash pop'), null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CC18 — Dangerous rm in yolo mode denied with rewrite suggestion
+// ---------------------------------------------------------------------------
+
+describe('detectNuclearCommand — suggestion field for rm commands', () => {
+  it('rm -rf / suggestion mentions ./specific-directory', () => {
+    const r = detectNuclearCommand('rm -rf /');
+    assert.equal(r.blocked, true);
+    assert.ok(r.suggestion, 'suggestion must be present');
+    assert.ok(r.suggestion!.includes('./specific-directory'), `suggestion should mention ./specific-directory, got: ${r.suggestion}`);
+  });
+
+  it('rm -rf ~ suggestion mentions specific subdirectory', () => {
+    const r = detectNuclearCommand('rm -rf ~');
+    assert.equal(r.blocked, true);
+    assert.ok(r.suggestion, 'suggestion must be present');
+    assert.ok(r.suggestion!.includes('~/specific-directory'), `suggestion should mention ~/specific-directory, got: ${r.suggestion}`);
+  });
+
+  it('rm -rf /Volumes/Disk suggestion mentions specific files', () => {
+    const r = detectNuclearCommand('rm -rf /Volumes/Disk');
+    assert.equal(r.blocked, true);
+    assert.ok(r.suggestion, 'suggestion must be present');
+    assert.ok(r.suggestion!.toLowerCase().includes('specific'), `suggestion should mention specific files, got: ${r.suggestion}`);
+  });
+
+  it('fork bomb does NOT have a suggestion', () => {
+    const r = detectNuclearCommand(':() { :|:& }; :');
+    assert.equal(r.blocked, true);
+    assert.equal(r.suggestion, undefined, 'fork bomb should not have a suggestion');
+  });
+
+  it('dd wipe does NOT have a suggestion', () => {
+    const r = detectNuclearCommand('dd if=/dev/zero of=/dev/sda');
+    assert.equal(r.blocked, true);
+    assert.equal(r.suggestion, undefined, 'dd wipe should not have a suggestion');
+  });
+
+  it('mkfs does NOT have a suggestion', () => {
+    const r = detectNuclearCommand('mkfs.ext4 /dev/sda1');
+    assert.equal(r.blocked, true);
+    assert.equal(r.suggestion, undefined, 'mkfs should not have a suggestion');
+  });
+
+  it('sudo rm -rf / also gets a suggestion', () => {
+    const r = detectNuclearCommand('sudo rm -rf /');
+    assert.equal(r.blocked, true);
+    assert.ok(r.suggestion, 'sudo rm -rf / should have a suggestion');
+  });
+});
