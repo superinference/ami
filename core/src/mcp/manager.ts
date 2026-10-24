@@ -37,7 +37,7 @@ export interface McpServerConfig {
   containerConfig?: ContainerConfig;
 }
 
-export type McpServerState = 'pending' | 'connecting' | 'ready' | 'error' | 'stopped';
+export type McpServerState = 'pending' | 'connecting' | 'ready' | 'error' | 'stopped' | 'disabled';
 
 export interface McpServerStatus {
   name: string;
@@ -210,6 +210,9 @@ export class McpManager extends EventEmitter {
     }
 
     const pending = this.pendingServers.get(name);
+    if (pending?.state === 'disabled') {
+      throw new Error(`MCP server '${name}' is disabled. Use /mcp start ${name} to re-enable it.`);
+    }
     if (!pending) {
       if (!this.clients.has(name)) throw new Error(`MCP server '${name}' not found`);
       await this.connectServer(name);
@@ -253,7 +256,7 @@ export class McpManager extends EventEmitter {
     }
   }
 
-  async stopServer(name: string): Promise<void> {
+  async stopServer(name: string, disable?: boolean): Promise<void> {
     const client = this.clients.get(name);
     if (client) {
       client.disconnect();
@@ -264,13 +267,14 @@ export class McpManager extends EventEmitter {
     const timer = this.reconnectTimers.get(name);
     if (timer) { clearTimeout(timer); this.reconnectTimers.delete(name); }
 
+    const newState: McpServerState = disable ? 'disabled' : 'stopped';
     const config = this.configs.get(name);
     if (config) {
-      this.pendingServers.set(name, { name, config, state: 'stopped' });
+      this.pendingServers.set(name, { name, config, state: newState });
     }
     this.serverErrors.delete(name);
-    this.emit('server-state-changed', name, 'stopped');
-    coreLog('mcp', `MCP server stopped: ${name}`);
+    this.emit('server-state-changed', name, newState);
+    coreLog('mcp', `MCP server ${newState}: ${name}`);
   }
 
   async restartServer(name: string): Promise<void> {
@@ -279,7 +283,23 @@ export class McpManager extends EventEmitter {
   }
 
   isPending(name: string): boolean {
-    return this.pendingServers.has(name) && !this.clients.has(name);
+    const pending = this.pendingServers.get(name);
+    if (!pending || this.clients.has(name)) return false;
+    return pending.state !== 'disabled';
+  }
+
+  isDisabled(name: string): boolean {
+    const pending = this.pendingServers.get(name);
+    return !!pending && pending.state === 'disabled';
+  }
+
+  enableServer(name: string): void {
+    const pending = this.pendingServers.get(name);
+    if (pending && pending.state === 'disabled') {
+      pending.state = 'stopped';
+      this.emit('server-state-changed', name, 'stopped');
+      coreLog('mcp', `MCP server re-enabled: ${name}`);
+    }
   }
 
   getServerState(name: string): McpServerState {

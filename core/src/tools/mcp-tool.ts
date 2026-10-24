@@ -51,6 +51,10 @@ export function createMcpTool(serverName: string, toolName: string, description:
       const mcpManager = context._mcpManager;
       if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
 
+      if (mcpManager.isDisabled?.(serverName)) {
+        return { output: `MCP server '${serverName}' is disabled. Use /mcp start ${serverName} to re-enable it.`, isError: true };
+      }
+
       if (mcpManager.isPending?.(serverName)) {
         try {
           await mcpManager.ensureConnected(serverName);

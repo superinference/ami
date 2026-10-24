@@ -2207,3 +2207,100 @@ describe('CC9 — MCP timeout in detached mode identifies elicitation as cause',
     manager.disconnectAll();
   });
 });
+
+// ---------------------------------------------------------------------------
+// CC13 — Stopped MCP server can be reconnected by tool call attempt
+// ---------------------------------------------------------------------------
+
+describe('CC13 — Stopped MCP server uses disabled state to prevent reconnection', () => {
+  it('stopServer with disable=true sets server to disabled state', async () => {
+    const manager = new McpManager();
+    const serverScript = makeServerScript();
+    manager.addServer('dsrv', { command: 'node', args: ['-e', serverScript] });
+    await manager.connectServer('dsrv');
+
+    await manager.stopServer('dsrv', true);
+
+    assert.equal(manager.isPending('dsrv'), false, 'Disabled server should not be pending');
+    assert.equal(manager.isDisabled?.('dsrv'), true, 'Server should be disabled');
+
+    manager.disconnectAll();
+  });
+
+  it('MCP tool returns error for disabled server instead of reconnecting', async () => {
+    const manager = new McpManager();
+    const serverScript = makeServerScript();
+    manager.addServer('dsrv2', { command: 'node', args: ['-e', serverScript] });
+    await manager.connectServer('dsrv2');
+
+    await manager.stopServer('dsrv2', true);
+
+    const tool = createMcpTool('dsrv2', 'readFile', 'Read a file', { type: 'object' });
+
+    const result = await tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: new AbortController().signal,
+      _mcpManager: manager,
+    });
+
+    assert.ok(result.isError, 'Should be an error result');
+    assert.ok(result.output.includes('is disabled'), `Expected disabled message, got: ${result.output}`);
+
+    manager.disconnectAll();
+  });
+
+  it('enableServer changes state from disabled to stopped (allowing reconnection)', async () => {
+    const manager = new McpManager();
+    const serverScript = makeServerScript();
+    manager.addServer('dsrv3', { command: 'node', args: ['-e', serverScript] });
+    await manager.connectServer('dsrv3');
+
+    await manager.stopServer('dsrv3', true);
+    assert.equal(manager.isDisabled?.('dsrv3'), true);
+
+    manager.enableServer('dsrv3');
+    assert.equal(manager.isDisabled?.('dsrv3'), false, 'Server should no longer be disabled');
+    assert.equal(manager.isPending('dsrv3'), true, 'Server should be pending after re-enable');
+
+    manager.disconnectAll();
+  });
+
+  it('after enableServer, tool call triggers ensureConnected', async () => {
+    const manager = new McpManager();
+    const serverScript = makeServerScript();
+    manager.addServer('dsrv4', { command: 'node', args: ['-e', serverScript] });
+    await manager.connectServer('dsrv4');
+
+    await manager.stopServer('dsrv4', true);
+    manager.enableServer('dsrv4');
+
+    const tool = createMcpTool('dsrv4', 'readFile', 'Read a file', { type: 'object' });
+
+    const result = await tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: new AbortController().signal,
+      _mcpManager: manager,
+    });
+
+    // After enabling, the tool should reconnect and succeed
+    assert.ok(!result.isError, `Expected success, got error: ${result.output}`);
+
+    manager.disconnectAll();
+  });
+
+  it('ensureConnected throws for disabled server', async () => {
+    const manager = new McpManager();
+    const serverScript = makeServerScript();
+    manager.addServer('dsrv5', { command: 'node', args: ['-e', serverScript] });
+    await manager.connectServer('dsrv5');
+
+    await manager.stopServer('dsrv5', true);
+
+    await assert.rejects(
+      () => manager.ensureConnected('dsrv5'),
+      /disabled/
+    );
+
+    manager.disconnectAll();
+  });
+});
