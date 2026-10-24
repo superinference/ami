@@ -20,7 +20,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 import { spillToolText } from '../src/tools/spill-output';
-import { truncateBashText } from '../src/tools/bash';
+import { truncateBashText, diagnoseError } from '../src/tools/bash';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -182,5 +182,101 @@ describe('truncateBashText surrogate-pair safety', () => {
     const text = 'Hello \u{1F600} World';
     const result = truncateBashText(text, 1000);
     assert.equal(result, text);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CC17: ENOSPC detection in diagnoseError -- bash.ts ERROR_HINTS
+// ---------------------------------------------------------------------------
+
+describe('diagnoseError ENOSPC detection', () => {
+  it('detects ENOSPC error code', () => {
+    const hint = diagnoseError('write failed: ENOSPC');
+    assert.ok(hint !== null, 'should return a hint for ENOSPC');
+    assert.ok(hint!.includes('Disk is full'), 'hint should mention disk is full');
+    assert.ok(hint!.includes('df -h'), 'hint should suggest df -h');
+  });
+
+  it('detects "No space left on device" message', () => {
+    const hint = diagnoseError('Error: No space left on device');
+    assert.ok(hint !== null, 'should return a hint for No space left on device');
+    assert.ok(hint!.includes('Disk is full'), 'hint should mention disk is full');
+    assert.ok(hint!.includes('df -h'), 'hint should suggest df -h');
+  });
+
+  it('does not false-positive on unrelated errors', () => {
+    const hint = diagnoseError('something else went wrong');
+    // Should not match the ENOSPC pattern (may match other patterns or be null)
+    if (hint !== null) {
+      assert.ok(!hint.includes('Disk is full'), 'should not mention disk full for unrelated errors');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CC17: spillToolText ENOSPC-specific banner -- spill-output.ts
+// Tests the exported buildSpillBanner helper (added as part of CC17 fix)
+// ---------------------------------------------------------------------------
+
+describe('buildSpillBanner ENOSPC discrimination', () => {
+  it('exports buildSpillBanner as a function', () => {
+    // buildSpillBanner is added as part of the CC17 fix.
+    // In RED phase this will be undefined => test fails.
+    const mod = require('../src/tools/spill-output') as Record<string, unknown>;
+    assert.ok(typeof mod.buildSpillBanner === 'function',
+      'spill-output.ts must export buildSpillBanner');
+  });
+
+  it('returns ENOSPC-specific banner when errCode is ENOSPC', () => {
+    const mod = require('../src/tools/spill-output') as Record<string, unknown>;
+    assert.ok(typeof mod.buildSpillBanner === 'function',
+      'buildSpillBanner must exist');
+    const banner = (mod.buildSpillBanner as (omitted: number, spillFile: string | null, errCode?: string) => string)(
+      5000, null, 'ENOSPC',
+    );
+    assert.ok(/disk full/i.test(banner),
+      `banner should mention "disk full", got: ${banner}`);
+    assert.ok(/ENOSPC/.test(banner),
+      `banner should mention ENOSPC, got: ${banner}`);
+    // Must NOT contain the generic message
+    assert.ok(!/could not persist to disk/.test(banner),
+      'ENOSPC banner must not use generic "could not persist to disk" text');
+  });
+
+  it('returns generic banner for non-ENOSPC errors', () => {
+    const mod = require('../src/tools/spill-output') as Record<string, unknown>;
+    assert.ok(typeof mod.buildSpillBanner === 'function',
+      'buildSpillBanner must exist');
+    const banner = (mod.buildSpillBanner as (omitted: number, spillFile: string | null, errCode?: string) => string)(
+      5000, null, 'EPERM',
+    );
+    assert.ok(/could not persist to disk/.test(banner),
+      `non-ENOSPC errors should use generic message, got: ${banner}`);
+    assert.ok(!/disk full/i.test(banner),
+      'generic banner must not mention "disk full"');
+  });
+
+  it('returns persisted-to-file banner when spillFile is set', () => {
+    const mod = require('../src/tools/spill-output') as Record<string, unknown>;
+    assert.ok(typeof mod.buildSpillBanner === 'function',
+      'buildSpillBanner must exist');
+    const banner = (mod.buildSpillBanner as (omitted: number, spillFile: string | null, errCode?: string) => string)(
+      5000, '/tmp/spill-12345.txt',
+    );
+    assert.ok(/persisted to/.test(banner),
+      `banner should mention persisted, got: ${banner}`);
+    assert.ok(banner.includes('/tmp/spill-12345.txt'),
+      'banner should include the file path');
+  });
+
+  it('returns generic banner when no errCode provided (undefined)', () => {
+    const mod = require('../src/tools/spill-output') as Record<string, unknown>;
+    assert.ok(typeof mod.buildSpillBanner === 'function',
+      'buildSpillBanner must exist');
+    const banner = (mod.buildSpillBanner as (omitted: number, spillFile: string | null, errCode?: string) => string)(
+      5000, null,
+    );
+    assert.ok(/could not persist to disk/.test(banner),
+      `no-errCode should use generic message, got: ${banner}`);
   });
 });
