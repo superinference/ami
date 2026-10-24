@@ -416,6 +416,12 @@ export interface EngineConfig {
    *  x-superinference-agent-type, x-superinference-compaction).
    *  Env: SUPERINFERENCE_GATEWAY_HINT_HEADERS=1. */
   gatewayHintHeaders?: boolean;
+  /** @internal Override the chat-completion stream implementation (for testing).
+   *  Defaults to the real streamChatCompletionWithRetry. Injecting a generator
+   *  that emits thinking-only chunks or throws mid-iteration drives the engine's
+   *  thinking/abort/error stream branches that mock SSE transports cannot reach
+   *  (real transports surface network failures as error chunks, not throws). */
+  _streamChatImpl?: typeof import('./provider').streamChatCompletionWithRetry;
 }
 
 // ---------------------------------------------------------------------------
