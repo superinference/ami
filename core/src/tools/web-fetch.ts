@@ -125,7 +125,7 @@ export const webFetchTool: ToolDefinition = {
     const textOffset = (input.offset as number) ?? 0;
     // Test-only dependency seam (defaults to the real httpGet). Lets a test drive
     // the cross-host-redirect branch and other response shapes deterministically.
-    const doHttpGet = context._webFetchHttpGet ?? httpGet;
+    const doHttpGet = (context._webFetchHttpGet as typeof httpGet | undefined) ?? httpGet;
 
     // Operator kill-switch (Claude Code parity): disable outbound web_fetch.
     if (process.env.CLAUDE_CODE_DISABLE_WEB_FETCH === '1' || process.env.SUPERINFERENCE_DISABLE_WEB_FETCH === '1') {

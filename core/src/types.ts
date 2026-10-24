@@ -101,11 +101,13 @@ export interface ToolContext {
   /** Session-wide web-search budget with token-bucket refill to stop runaway loops. */
   _webSearchBudget?: { count: number; max: number; lastRefillTime?: number; refillRate?: number };
   /** Test-only dependency seam for web_search (mock HTTP getter / SSRF validator /
-   *  search-URL builder). Never set in production; defaults to the real functions. */
-  _webSearchHooks?: import('./tools/web-search').WebSearchHooks;
+   *  search-URL builder). Never set in production; typed `unknown` here and cast at
+   *  the web-search call site to avoid a types.ts -> tools/web-search import cycle. */
+  _webSearchHooks?: unknown;
   /** Test-only dependency seam for web_fetch's HTTP getter. Never set in
-   *  production; defaults to the real httpGet. */
-  _webFetchHttpGet?: typeof import('./tools/web-utils').httpGet;
+   *  production; typed `unknown` (cast at the web-fetch call site) to avoid a
+   *  types.ts -> tools/web-utils import cycle. */
+  _webFetchHttpGet?: unknown;
   detachedMode?: boolean;
   /** Current subagent nesting depth (0 = top-level). */
   _agentDepth?: number;
@@ -419,9 +421,10 @@ export interface EngineConfig {
   /** @internal Override the chat-completion stream implementation (for testing).
    *  Defaults to the real streamChatCompletionWithRetry. Injecting a generator
    *  that emits thinking-only chunks or throws mid-iteration drives the engine's
-   *  thinking/abort/error stream branches that mock SSE transports cannot reach
-   *  (real transports surface network failures as error chunks, not throws). */
-  _streamChatImpl?: typeof import('./provider').streamChatCompletionWithRetry;
+   *  thinking/abort/error stream branches that mock SSE transports cannot reach.
+   *  Typed as `unknown` (cast at the common/engine.ts call site) to avoid a
+   *  types.ts -> provider.ts import cycle. */
+  _streamChatImpl?: unknown;
 }
 
 // ---------------------------------------------------------------------------

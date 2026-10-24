@@ -178,7 +178,7 @@ export const webSearchTool: ToolDefinition = {
       }
     }
 
-    const hooks: WebSearchHooks = context._webSearchHooks ?? { httpGet, validateUrlSafety, searchUrl: defaultSearchUrl };
+    const hooks: WebSearchHooks = (context._webSearchHooks as WebSearchHooks | undefined) ?? { httpGet, validateUrlSafety, searchUrl: defaultSearchUrl };
     const searchUrl = hooks.searchUrl(query);
 
     try {
