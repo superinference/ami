@@ -2079,3 +2079,131 @@ describe('McpManager — getToolConflicts', () => {
     assert.equal(conflicts.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CC9 — MCP timeout in detached mode identifies elicitation as cause
+// ---------------------------------------------------------------------------
+
+import { createMcpTool } from '../src/tools/mcp-tool';
+
+describe('CC9 — MCP timeout in detached mode identifies elicitation as cause', () => {
+  it('returns elicitation-specific error when server sends elicitation notification and detachedMode=true', async () => {
+    // Create a server that sends an elicitation notification and never responds to tools/call
+    const serverScript = `
+      const readline = require('readline');
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on('line', (line) => {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'initialize') {
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0', id: msg.id,
+              result: {
+                protocolVersion: '2024-11-05',
+                serverInfo: { name: 'elicit-server', version: '1.0' },
+                capabilities: { tools: {} },
+              },
+            }) + '\\n');
+          } else if (msg.method === 'tools/list') {
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0', id: msg.id,
+              result: { tools: [
+                { name: 'ask_user', description: 'Ask user', inputSchema: { type: 'object' } },
+              ] },
+            }) + '\\n');
+          } else if (msg.method === 'tools/call') {
+            // Send elicitation notification, then never respond
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'elicitation/create',
+              params: { type: 'confirm', message: 'Do you approve?' },
+            }) + '\\n');
+            // Never send a result — the tool call will time out
+          }
+        } catch {}
+      });
+      setInterval(() => {}, 60000);
+    `;
+
+    const manager = new McpManager();
+    manager.addServer('elicit-srv', { command: 'node', args: ['-e', serverScript], requestTimeout: 500 });
+    await manager.connectServer('elicit-srv');
+
+    // Set a very short timeout for this test
+    process.env.SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS = '600';
+
+    const tool = createMcpTool('elicit-srv', 'ask_user', 'Ask user', { type: 'object' });
+
+    const result = await tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: new AbortController().signal,
+      _mcpManager: manager,
+      detachedMode: true,
+    });
+
+    assert.ok(result.isError, 'Should be an error result');
+    assert.ok(result.output.includes('no user was available'), `Expected elicitation-specific message, got: ${result.output}`);
+    assert.ok(result.output.includes('Do not retry'), `Expected do-not-retry message, got: ${result.output}`);
+
+    delete process.env.SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS;
+    manager.disconnectAll();
+  });
+
+  it('returns generic timeout error when detachedMode is false even with elicitation', async () => {
+    const serverScript = `
+      const readline = require('readline');
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on('line', (line) => {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'initialize') {
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0', id: msg.id,
+              result: {
+                protocolVersion: '2024-11-05',
+                serverInfo: { name: 'elicit-server', version: '1.0' },
+                capabilities: { tools: {} },
+              },
+            }) + '\\n');
+          } else if (msg.method === 'tools/list') {
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0', id: msg.id,
+              result: { tools: [
+                { name: 'ask_user', description: 'Ask user', inputSchema: { type: 'object' } },
+              ] },
+            }) + '\\n');
+          } else if (msg.method === 'tools/call') {
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'elicitation/create',
+              params: { type: 'confirm', message: 'Do you approve?' },
+            }) + '\\n');
+          }
+        } catch {}
+      });
+      setInterval(() => {}, 60000);
+    `;
+
+    const manager = new McpManager();
+    manager.addServer('elicit-srv2', { command: 'node', args: ['-e', serverScript], requestTimeout: 500 });
+    await manager.connectServer('elicit-srv2');
+
+    process.env.SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS = '600';
+
+    const tool = createMcpTool('elicit-srv2', 'ask_user', 'Ask user', { type: 'object' });
+
+    const result = await tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: new AbortController().signal,
+      _mcpManager: manager,
+      detachedMode: false,
+    });
+
+    assert.ok(result.isError, 'Should be an error result');
+    assert.ok(result.output.includes('timed out'), `Expected generic timeout message, got: ${result.output}`);
+    assert.ok(!result.output.includes('no user was available'), `Should NOT have elicitation-specific message in interactive mode: ${result.output}`);
+
+    delete process.env.SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS;
+    manager.disconnectAll();
+  });
+});

@@ -59,6 +59,15 @@ export function createMcpTool(serverName: string, toolName: string, description:
         }
       }
 
+      // Track whether an elicitation notification was received during this call
+      let gotElicitation = false;
+      const elicitListener = (_sn: string, method: string) => {
+        if ((method === 'elicitation/create' || method === 'notifications/elicitation') && _sn === serverName) {
+          gotElicitation = true;
+        }
+      };
+      mcpManager.on?.('notification', elicitListener);
+
       const timeoutMs = getMcpToolTimeout();
       let timer: ReturnType<typeof setTimeout>;
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -73,6 +82,7 @@ export function createMcpTool(serverName: string, toolName: string, description:
           timeoutPromise,
         ]);
         clearTimeout(timer!);
+        mcpManager.removeListener?.('notification', elicitListener);
         const raw = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
         const maxResultChars = extractMaxResultSizeChars(result);
         const bounded = boundMcpResponse(raw, maxResultChars);
@@ -80,6 +90,10 @@ export function createMcpTool(serverName: string, toolName: string, description:
         return { output: spillToolText(context.cwd, 'mcp', bounded.content, spillCap), metadata: bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined };
       } catch (err) {
         clearTimeout(timer!);
+        mcpManager.removeListener?.('notification', elicitListener);
+        if (gotElicitation && context.detachedMode) {
+          return { output: 'MCP tool call timed out because the server requested user input (elicitation), but no user was available to answer in non-interactive mode. Do not retry this tool call.', isError: true };
+        }
         return { output: `MCP tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
     },
