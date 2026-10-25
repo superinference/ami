@@ -162,7 +162,11 @@ const MEMORY_DIR = '.superinference/memory';
 const STALE_MEMORY_DAYS = 30;
 
 function memoryAgeDays(mtimeMs: number): number {
-  return Math.floor((Date.now() - mtimeMs) / (1000 * 60 * 60 * 24));
+  // Clamp to 0: a memory is never "from the future". A file mtime slightly ahead
+  // of Date.now() (clock skew, NTP correction, or coarse filesystem mtime
+  // granularity) would otherwise yield a negative age and render as the
+  // nonsensical "-1 days ago" instead of "today".
+  return Math.max(0, Math.floor((Date.now() - mtimeMs) / (1000 * 60 * 60 * 24)));
 }
 
 function memoryFreshness(ageDays: number): string {

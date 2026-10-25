@@ -642,6 +642,22 @@ describe('MemoryManager — memory loading + context', () => {
     assert.equal(byName['m-weeks'], '2 weeks ago');
     assert.equal(byName['m-months'], '2 months ago');
   });
+
+  it('clamps a future mtime to "today" (clock skew / fs granularity)', () => {
+    // Repro for the "-1 days ago" bug: a file mtime ahead of Date.now() (NTP
+    // correction, clock skew, or coarse fs mtime) must not render as a negative
+    // age. RED (no clamp): memoryAgeDays -> -1 -> freshness "-1 days ago".
+    // GREEN (Math.max(0, …)): -> 0 -> "today".
+    const cwd = mkTmp();
+    const memDir = path.join(cwd, '.superinference', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    const fp = path.join(memDir, 'm-future.md');
+    fs.writeFileSync(fp, '---\nname: m-future\ndescription: d\ntype: project\n---\n\nb\n');
+    const future = new Date(Date.now() + 2 * 60 * 60 * 1000); // +2h, still within one day
+    fs.utimesSync(fp, future, future);
+    const mem = new MemoryManager(cwd).loadMemories().find(m => m.name === 'm-future');
+    assert.equal(mem!.freshness, 'today');
+  });
 });
 
 // ===========================================================================
