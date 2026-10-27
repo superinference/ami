@@ -92,4 +92,15 @@ describe('formatTimeoutBackgroundOutput (pure helper)', () => {
     assert.match(out, /Auto-moved to background as task t2/);
     assert.ok(!out.includes('[output so far]'));
   });
+
+  it('surfaces real output that is literally the "(no output)" sentinel string', () => {
+    const out = formatTimeoutBackgroundOutput('(no output)', '', 3000, 't3');
+    assert.ok(out.includes('[output so far]'), 'sentinel-looking real output must still be surfaced');
+    assert.ok(out.includes('(no output)'));
+  });
+
+  it('omits the header for whitespace-only output', () => {
+    const out = formatTimeoutBackgroundOutput('   \n\t', '', 3000, 't4');
+    assert.ok(!out.includes('[output so far]'));
+  });
 });

@@ -902,7 +902,9 @@ export function formatTimeoutBackgroundOutput(
   const notice =
     `Command timed out after ${timeout}ms. Auto-moved to background as task ${taskId}. ` +
     'The command is still running in the background — use task_output to check progress.';
-  const partial = formatOutput(stdout, stderr, null);
-  if (partial === '(no output)') return notice;
-  return `${notice}\n\n[output so far]\n${partial}`;
+  // Decide "nothing captured" from the raw streams, not by string-comparing
+  // formatOutput's result to its '(no output)' sentinel — a command whose real
+  // partial output is literally '(no output)' must still be surfaced.
+  if (stdout.trim().length === 0 && stderr.trim().length === 0) return notice;
+  return `${notice}\n\n[output so far]\n${formatOutput(stdout, stderr, null)}`;
 }
