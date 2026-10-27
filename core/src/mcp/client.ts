@@ -421,9 +421,12 @@ export class McpClient extends EventEmitter {
     return this._resources;
   }
 
-  async readResource(uri: string): Promise<unknown> {
+  async readResource(uri: string, signal?: AbortSignal): Promise<unknown> {
     this.assertReady();
-    return await this.sendRequestAuto('resources/read', { uri });
+    if (signal?.aborted) {
+      throw new Error('MCP request aborted');
+    }
+    return await this.sendRequestAuto('resources/read', { uri }, signal);
   }
 
   async listPrompts(): Promise<McpPrompt[]> {

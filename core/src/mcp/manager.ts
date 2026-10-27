@@ -500,11 +500,11 @@ export class McpManager extends EventEmitter {
     return results;
   }
 
-  async readResource(serverName: string, uri: string): Promise<unknown> {
+  async readResource(serverName: string, uri: string, options?: { signal?: AbortSignal }): Promise<unknown> {
     const client = this.clients.get(serverName);
     if (!client) throw new Error(`MCP server "${serverName}" not connected`);
     try {
-      return await client.readResource(uri);
+      return await client.readResource(uri, options?.signal);
     } catch (err) {
       if (err instanceof McpSessionExpiredError) {
         coreLog('mcp', `Session expired for ${serverName} during readResource`);

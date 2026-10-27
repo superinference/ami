@@ -173,7 +173,8 @@ describe('readMcpResourceTool', () => {
       readResource: async (...a: unknown[]) => { args = a; return 'plain text body'; },
     });
     const res = await readMcpResourceTool.execute!({ server: 'srvX', uri: 'res://1' }, context);
-    assert.deepEqual(args, ['srvX', 'res://1']);
+    assert.deepEqual(args.slice(0, 2), ['srvX', 'res://1']);
+    assert.ok((args[2] as { signal?: unknown }).signal instanceof AbortSignal);
     assert.equal(res.output, 'plain text body');
   });
 

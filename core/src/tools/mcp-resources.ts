@@ -40,7 +40,7 @@ export const readMcpResourceTool: ToolDefinition = {
     const mcpManager = context._mcpManager;
     if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
     try {
-      const result = await mcpManager.readResource(input.server as string, input.uri as string);
+      const result = await mcpManager.readResource(input.server as string, input.uri as string, { signal: context.abortSignal });
       const text = typeof result === 'string' ? result : JSON.stringify(result);
       return { output: spillToolText(context.cwd, 'mcp-resource', text, 100_000) };
     } catch (err) {
