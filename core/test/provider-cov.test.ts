@@ -1155,7 +1155,7 @@ describe('model-registry — listProviders / formatModelList / validateModel', (
 
 describe('model-registry — diagnoseModelDiscovery (credential-safe diagnostics)', () => {
   it('401/403 name the provider credential hint for openrouter/ollama/default providers', () => {
-    assert.match(diagnoseModelDiscovery(Object.assign(new Error('x'), { statusCode: 401 }), 'openrouter'), /AI_API_KEY \(OpenRouter\)/);
+    assert.match(diagnoseModelDiscovery(Object.assign(new Error('x'), { statusCode: 401 }), 'openrouter'), /OPENROUTER_API_KEY/);
     assert.match(diagnoseModelDiscovery(Object.assign(new Error('x'), { statusCode: 403 }), 'ollama'), /Ollama needs no API key/);
     assert.match(diagnoseModelDiscovery(Object.assign(new Error('x'), { statusCode: 401 }), 'groq'), /the groq API key/);
     assert.match(diagnoseModelDiscovery(Object.assign(new Error('x'), { statusCode: 401 }), 'openai'), /OPENAI_API_KEY/);

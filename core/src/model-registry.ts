@@ -133,7 +133,7 @@ function providerKeyHint(provider: string): string {
   switch (provider) {
     case 'openai': return 'OPENAI_API_KEY';
     case 'google': return 'GOOGLE_API_KEY';
-    case 'openrouter': return 'AI_API_KEY (OpenRouter)';
+    case 'openrouter': return 'OPENROUTER_API_KEY';
     case 'ollama': return 'AI_BASE_URL (Ollama needs no API key)';
     default: return `the ${provider} API key environment variable`;
   }

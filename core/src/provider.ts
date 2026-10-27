@@ -106,7 +106,14 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
     'claude-haiku-4-5-20251001',
   ],
   'amazon-bedrock': ['anthropic.claude-sonnet-4-6-20250514', 'anthropic.claude-haiku-4-5-20251001'],
-  openrouter: ['anthropic/claude-sonnet-4', 'openai/gpt-4o'],
+  // Fast + cheap first: a tool-capable default that stays affordable per request
+  // (claude-sonnet-4.6 kept only as a last-resort quality fallback).
+  openrouter: [
+    'openrouter/google/gemini-2.5-flash',
+    'openrouter/google/gemini-2.5-flash-lite',
+    'openrouter/openai/gpt-4o-mini',
+    'openrouter/anthropic/claude-sonnet-4.6',
+  ],
   huggingface: ['deepseek-ai/DeepSeek-V3-0324', 'Qwen/Qwen3-235B-A22B', 'Qwen/Qwen3-32B'],
   luma: ['luma-photon-latest'],
 };
@@ -164,6 +171,7 @@ const ENV_KEYS: Array<{ env: string; provider: ProviderName }> = [
   { env: 'ALIBABA_API_KEY', provider: 'alibaba' },
   { env: 'DASHSCOPE_API_KEY', provider: 'alibaba' },
   { env: 'LUMA_API_KEY', provider: 'luma' },
+  { env: 'OPENROUTER_API_KEY', provider: 'openrouter' },
   { env: 'HF_TOKEN', provider: 'huggingface' },
   { env: 'AZURE_OPENAI_API_KEY', provider: 'azure-openai' },
   { env: 'AWS_ACCESS_KEY_ID', provider: 'amazon-bedrock' },
@@ -189,6 +197,28 @@ const PROVIDER_BASE_URLS: Partial<Record<ProviderName, string>> = {
   openai: 'https://api.openai.com/v1',
   luma: 'https://api.luma.ai',
 };
+
+/**
+ * OpenRouter is addressed with an `openrouter/<vendor>/<model>` namespace so a
+ * model id self-identifies its provider (and never collides with a native
+ * vendor route). OpenRouter's own OpenAI-compatible API expects the bare
+ * `<vendor>/<model>` slug, so the `openrouter/` segment is stripped before the
+ * id reaches the wire.
+ *
+ * Exception: OpenRouter's OWN meta-routers live natively under the same prefix
+ * as single tokens — `openrouter/auto` (best-model router) and `openrouter/free`
+ * (random free-model router) — and MUST be sent verbatim (`openrouter/free`
+ * stripped to `free` is rejected with "No endpoints available"). So we strip
+ * only when the remainder is itself a `vendor/model` slug (contains a `/`); a
+ * single-token remainder is a native OpenRouter id and is left untouched. The
+ * `:free` suffix needs no handling — it rides along inside the model segment
+ * (`openrouter/nvidia/nemotron:free` → `nvidia/nemotron:free`).
+ */
+export function stripOpenRouterPrefix(model: string): string {
+  if (!model.startsWith('openrouter/')) return model;
+  const rest = model.slice('openrouter/'.length);
+  return rest.includes('/') ? rest : model;
+}
 
 function inferProviderFromApiKey(apiKey: string): InferredProvider | null {
   for (const { prefix, provider } of KEY_PREFIXES) {
@@ -273,11 +303,17 @@ async function resolveAvailableModel(
 
     if (availableModels.length === 0) return null;
 
+    // OpenRouter's catalog is advertised with bare slugs, but we select and
+    // display models in the `openrouter/` namespace. Match preferences by their
+    // stripped slug, yet return the namespaced id so the API-boundary stripping
+    // in resolveModel stays the single place the prefix is removed.
+    const isOpenRouter = provider === 'openrouter';
     const available = new Set(availableModels);
     for (const pref of preferences) {
-      if (available.has(pref)) return pref;
+      if (available.has(isOpenRouter ? stripOpenRouterPrefix(pref) : pref)) return pref;
     }
-    return availableModels[0] || null;
+    const first = availableModels[0] || null;
+    return isOpenRouter && first ? `openrouter/${first}` : first;
   } catch {
     return null;
   }
@@ -576,9 +612,18 @@ export function resolveModel(config: ProviderConfig) {
   // is sent to the wrong SDK.
   const inferred = fromKey || fromUrl || (config.baseUrl ? null : inferProviderFromEnv());
 
-  const provider = (config.provider as ProviderName) || inferred?.provider;
-  const model = config.model || inferred?.defaultModel || 'gpt-4o';
-  const baseUrl = config.baseUrl || inferred?.defaultBaseUrl || '';
+  const rawModel = config.model || inferred?.defaultModel || 'gpt-4o';
+  // An `openrouter/...` model id self-selects the OpenRouter provider and base
+  // URL (even with no sk-or- key or openrouter.ai URL present), then the prefix
+  // is stripped so the bare slug is what reaches OpenRouter's API.
+  // An `openrouter/...` id is an explicit request, so it outranks ambient
+  // inference (env keys, stray URLs) — but not an explicit config.provider /
+  // config.baseUrl, which the caller set on purpose. Precedence:
+  // explicit config > openrouter/ model prefix > inferred.
+  const isOpenRouterModel = rawModel.startsWith('openrouter/');
+  const provider = (config.provider as ProviderName) || (isOpenRouterModel ? 'openrouter' : inferred?.provider);
+  const model = stripOpenRouterPrefix(rawModel);
+  const baseUrl = config.baseUrl || (isOpenRouterModel ? PROVIDER_BASE_URLS.openrouter! : inferred?.defaultBaseUrl || '');
   const headerFetch = withExtraHeaders(config.extraHeaders);
   const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? globalThis.fetch);
   const fetch = bodyFetch ?? headerFetch;

@@ -41,6 +41,8 @@ import {
   parseRetryAfterHeader,
   MAX_RETRY_AFTER_MS,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  stripOpenRouterPrefix,
+  MODEL_PREFERENCE,
 } from '../src/provider';
 import type { ProviderConfig, Message, ToolDefinition, ThinkingConfig } from '../src/types';
 
@@ -173,6 +175,117 @@ describe('resolveAvailableModel', () => {
     mockFetch(async () => { throw new Error('network down'); });
     try {
       assert.equal(await resolveAvailableModel('openai', 'sk-key'), null);
+    } finally { mock.restoreAll(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OpenRouter `openrouter/<vendor>/<model>` namespace: the prefix selects the
+// provider + base URL and is stripped before the slug reaches the API.
+// ---------------------------------------------------------------------------
+describe('OpenRouter model namespace', () => {
+  function mockFetch(impl: typeof globalThis.fetch): void {
+    mock.method(globalThis, 'fetch', impl);
+  }
+  const jsonRes = (body: unknown, ok = true): Response =>
+    ({ ok, json: async () => body } as unknown as Response);
+
+  it('stripOpenRouterPrefix strips a vendor/model namespace but not native meta-routers', () => {
+    // vendor/model namespace → stripped to the bare slug.
+    assert.equal(stripOpenRouterPrefix('openrouter/anthropic/claude-sonnet-4.6'), 'anthropic/claude-sonnet-4.6');
+    assert.equal(stripOpenRouterPrefix('openrouter/openai/gpt-4o'), 'openai/gpt-4o');
+    // The :free suffix rides along inside the model segment.
+    assert.equal(stripOpenRouterPrefix('openrouter/nvidia/nemotron-3.5-lightning:free'), 'nvidia/nemotron-3.5-lightning:free');
+    // OpenRouter's OWN single-token meta-routers MUST be sent verbatim — stripping
+    // openrouter/free to "free" is rejected by the API ("No endpoints available").
+    assert.equal(stripOpenRouterPrefix('openrouter/free'), 'openrouter/free');
+    assert.equal(stripOpenRouterPrefix('openrouter/auto'), 'openrouter/auto');
+    assert.equal(stripOpenRouterPrefix('openrouter/free:nitro'), 'openrouter/free:nitro');
+    // No prefix: returned unchanged (bare slugs still work).
+    assert.equal(stripOpenRouterPrefix('anthropic/claude-sonnet-4.6'), 'anthropic/claude-sonnet-4.6');
+    assert.equal(stripOpenRouterPrefix('gpt-4o'), 'gpt-4o');
+  });
+
+  it('resolveModel: the openrouter/free router routes verbatim (prefix NOT stripped) to OpenRouter', () => {
+    const m: any = resolveModel({ apiKey: 'sk-or-testkey', baseUrl: '', model: 'openrouter/free', maxTokens: 10, temperature: 0 } as ProviderConfig);
+    assert.ok(String(m.provider).startsWith('openai'), `expected openai-compat provider, got ${m.provider}`);
+    assert.equal(m.config.url({ path: '/chat/completions', modelId: m.modelId }), 'https://openrouter.ai/api/v1/chat/completions');
+    // Sent exactly as "openrouter/free" — NOT "free".
+    assert.equal(m.modelId, 'openrouter/free');
+  });
+
+  it('resolveModel: a namespaced :free model strips to the bare :free slug on the wire', () => {
+    const m: any = resolveModel({ apiKey: 'sk-or-testkey', baseUrl: '', model: 'openrouter/nvidia/nemotron-3.5-lightning:free', maxTokens: 10, temperature: 0 } as ProviderConfig);
+    assert.equal(m.modelId, 'nvidia/nemotron-3.5-lightning:free');
+    assert.equal(m.config.url({ path: '/chat/completions', modelId: m.modelId }), 'https://openrouter.ai/api/v1/chat/completions');
+  });
+
+  it('default preference slugs are namespaced under openrouter/', () => {
+    for (const slug of MODEL_PREFERENCE.openrouter!) {
+      assert.ok(slug.startsWith('openrouter/'), `expected namespaced slug, got ${slug}`);
+    }
+  });
+
+  it('resolveModel: openrouter/ model self-selects OpenRouter and strips the prefix for the API, with no key or URL', () => {
+    const m: any = resolveModel({ apiKey: '', baseUrl: '', model: 'openrouter/anthropic/claude-sonnet-4.6', maxTokens: 10, temperature: 0 } as ProviderConfig);
+    assert.ok(m);
+    // OpenAI-compatible transport…
+    assert.ok(String(m.provider).startsWith('openai'), `expected openai-compat provider, got ${m.provider}`);
+    // …routed to OpenRouter's base URL (the .chat() model exposes it via url())…
+    assert.equal(m.config.url({ path: '/chat/completions', modelId: m.modelId }), 'https://openrouter.ai/api/v1/chat/completions');
+    // …with the bare slug on the wire.
+    assert.equal(m.modelId, 'anthropic/claude-sonnet-4.6');
+  });
+
+  it('resolveModel: strips the prefix even when provider is already openrouter from an sk-or- key', () => {
+    const m: any = resolveModel({ apiKey: 'sk-or-testkey', baseUrl: '', model: 'openrouter/openai/gpt-4o', maxTokens: 10, temperature: 0 } as ProviderConfig);
+    assert.equal(m.modelId, 'openai/gpt-4o');
+    assert.equal(m.config.url({ path: '/chat/completions', modelId: m.modelId }), 'https://openrouter.ai/api/v1/chat/completions');
+  });
+
+  it('inferProviderFromEnv detects openrouter from OPENROUTER_API_KEY', () => {
+    const saved = process.env.OPENROUTER_API_KEY;
+    const savedOthers = stripVertexEnv();
+    process.env.OPENROUTER_API_KEY = 'sk-or-env';
+    try {
+      const inferred = inferProviderFromEnv();
+      assert.ok(inferred);
+      assert.equal(inferred!.provider, 'openrouter');
+      assert.equal(inferred!.defaultBaseUrl, 'https://openrouter.ai/api/v1');
+    } finally {
+      if (saved === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = saved;
+      restoreEnv(savedOthers);
+    }
+  });
+
+  it('resolveAvailableModel: picks the fast+cheap default (first namespaced preference present in the bare catalog)', async () => {
+    mockFetch(async (url: any) => {
+      assert.ok(String(url).includes('openrouter.ai'));
+      return jsonRes({ data: [{ id: 'google/gemini-2.5-flash' }, { id: 'anthropic/claude-sonnet-4.6' }] });
+    });
+    try {
+      assert.equal(
+        await resolveAvailableModel('openrouter', 'sk-or-key'),
+        'openrouter/google/gemini-2.5-flash',
+      );
+    } finally { mock.restoreAll(); }
+  });
+
+  it('resolveAvailableModel: falls through to a later namespaced preference when earlier ones are absent', async () => {
+    mockFetch(async () => jsonRes({ data: [{ id: 'anthropic/claude-sonnet-4.6' }] }));
+    try {
+      assert.equal(
+        await resolveAvailableModel('openrouter', 'sk-or-key'),
+        'openrouter/anthropic/claude-sonnet-4.6',
+      );
+    } finally { mock.restoreAll(); }
+  });
+
+  it('resolveAvailableModel: with no preference hit, namespaces the first advertised slug', async () => {
+    mockFetch(async () => jsonRes({ data: [{ id: 'some/exotic-model' }] }));
+    try {
+      assert.equal(await resolveAvailableModel('openrouter', 'sk-or-key'), 'openrouter/some/exotic-model');
     } finally { mock.restoreAll(); }
   });
 });
