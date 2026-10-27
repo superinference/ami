@@ -1207,7 +1207,12 @@ export async function* streamChatCompletionWithRetry(
           break; // retry without beta headers
         }
 
-        if (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode) && attempt < maxRetries) {
+        // Honor the API's x-should-retry hint: when the server explicitly says
+        // not to retry (x-should-retry: false), do not retry even for a status
+        // code that is normally retryable (otherwise we hold the turn for minutes
+        // re-sending a request the API already told us is pointless to retry).
+        const shouldRetryHdr = chunk.responseHeaders?.['x-should-retry'];
+        if (shouldRetryHdr !== 'false' && statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode) && attempt < maxRetries) {
           if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
             yield chunk;
             return;
