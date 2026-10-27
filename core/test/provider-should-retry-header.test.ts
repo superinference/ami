@@ -92,4 +92,32 @@ describe('streamChatCompletionWithRetry - honors x-should-retry header', () => {
     assert.ok(attempts >= 2, `expected a retry, got ${attempts} attempt(s)`);
     assert.ok(chunks.some((c) => c.type === 'content_delta'));
   });
+
+  it('retries a normally non-retryable status when x-should-retry is true', async () => {
+    let attempts = 0;
+
+    const fakeStream = (async function* () {
+      attempts++;
+      if (attempts === 1) {
+        // 408 is NOT in RETRYABLE_STATUS_CODES, but the API says to retry.
+        yield { type: 'error', error: 'HTTP 408: request timeout', responseHeaders: { 'x-should-retry': 'true' } } as StreamChunk;
+        return;
+      }
+      yield { type: 'content_delta', text: 'ok' } as StreamChunk;
+      yield { type: 'done', finishReason: 'stop' } as StreamChunk;
+    }) as typeof streamChatCompletion;
+
+    const ac = new AbortController();
+    const chunks = await collect(
+      streamChatCompletionWithRetry(config, messages, [], ac.signal, {
+        maxRetries: 3, baseDelayMs: 1, maxDelayMs: 10, streamImpl: fakeStream,
+      }),
+    );
+
+    // GREEN: x-should-retry:true forces a retry on a status the set would reject,
+    // matching the SDK semantics the disabled SDK layer would otherwise provide.
+    // RED (header-only gate removed): 408 is non-retryable -> no retry -> attempts===1.
+    assert.ok(attempts >= 2, `x-should-retry:true must force a retry, got ${attempts}`);
+    assert.ok(chunks.some((c) => c.type === 'content_delta'));
+  });
 });

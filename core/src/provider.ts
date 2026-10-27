@@ -1207,12 +1207,17 @@ export async function* streamChatCompletionWithRetry(
           break; // retry without beta headers
         }
 
-        // Honor the API's x-should-retry hint: when the server explicitly says
-        // not to retry (x-should-retry: false), do not retry even for a status
-        // code that is normally retryable (otherwise we hold the turn for minutes
-        // re-sending a request the API already told us is pointless to retry).
+        // Honor the API's x-should-retry hint (the SDK retry layer is disabled
+        // via maxRetries:0, so we honor it here): 'false' => never retry, even a
+        // normally-retryable status (otherwise we hold the turn for minutes
+        // re-sending a request the API already said is pointless); 'true' =>
+        // retry even a normally-terminal status the API says is worth retrying;
+        // absent => fall back to the retryable-status set.
         const shouldRetryHdr = chunk.responseHeaders?.['x-should-retry'];
-        if (shouldRetryHdr !== 'false' && statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode) && attempt < maxRetries) {
+        const retryAllowed = shouldRetryHdr === 'false'
+          ? false
+          : (shouldRetryHdr === 'true' || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
+        if (retryAllowed && attempt < maxRetries) {
           if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
             yield chunk;
             return;
@@ -1237,7 +1242,10 @@ export async function* streamChatCompletionWithRetry(
           }
 
           if (options?.onRetry) {
-            options.onRetry(attempt + 1, maxRetries, delayMs, statusCode);
+            // statusCode may be null when the retry was forced by x-should-retry:true
+            // on an error with no parsed HTTP status; 0 is the established "unknown
+            // status" sentinel other onRetry call sites use.
+            options.onRetry(attempt + 1, maxRetries, delayMs, statusCode ?? 0);
           }
 
           try {
