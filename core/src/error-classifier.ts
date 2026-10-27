@@ -349,9 +349,29 @@ const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   gateway_rejection: 'Gateway rejected beta header — retrying without it.',
 };
 
+/**
+ * Build a richer, actionable network-error message.
+ *
+ * A dropped connection is far more often a local proxy/gateway in the way
+ * than a VPN/firewall, so the hint names the proxy/gateway first and
+ * VPN/firewall second. DNS and timeout signatures get a more specific lead.
+ */
+export function networkErrorHint(lowerMsg: string): string {
+  if (lowerMsg.includes('enotfound') || lowerMsg.includes('getaddrinfo') || lowerMsg.includes('dns')) {
+    return 'Network error (DNS lookup failed) — check your proxy/gateway and DNS first, then VPN/firewall.';
+  }
+  if (lowerMsg.includes('etimedout') || lowerMsg.includes('timed out')) {
+    return 'Network error (connection timed out) — check your proxy/gateway first, then VPN/firewall.';
+  }
+  return 'Network error — retrying connection. Check your proxy/gateway first, then VPN/firewall.';
+}
+
 export function friendlyErrorMessage(classified: ClassifiedError): string {
   if (classified.category === 'unknown' || classified.category === 'abort') {
     return classified.message;
+  }
+  if (classified.category === 'network_error') {
+    return networkErrorHint(classified.message.toLowerCase());
   }
   const friendly = FRIENDLY_MESSAGES[classified.category];
   return friendly ?? classified.message;
