@@ -699,7 +699,9 @@ export const bashTool: ToolDefinition = {
           env: scrubEnv(),
         });
         return {
-          output: `Command timed out after ${timeout}ms. Auto-moved to background as task ${taskId}. Use task_output to check progress.`,
+          output: sanitizeToolOutput(
+            formatTimeoutBackgroundOutput(presented.stdout, presented.stderr, timeout, taskId),
+          ),
         };
       }
       return {
@@ -882,4 +884,25 @@ function formatOutput(
   }
 
   return parts.join('\n').trim() || '(no output)';
+}
+
+/**
+ * Build the result shown when a command hits its timeout and is auto-moved to
+ * the background. The partial stdout/stderr captured before the timeout is
+ * surfaced under an "[output so far]" header so the agent loop can act on the
+ * in-progress results instead of losing them; when nothing was captured, only
+ * the still-running notice is returned.
+ */
+export function formatTimeoutBackgroundOutput(
+  stdout: string,
+  stderr: string,
+  timeout: number,
+  taskId: string,
+): string {
+  const notice =
+    `Command timed out after ${timeout}ms. Auto-moved to background as task ${taskId}. ` +
+    'The command is still running in the background — use task_output to check progress.';
+  const partial = formatOutput(stdout, stderr, null);
+  if (partial === '(no output)') return notice;
+  return `${notice}\n\n[output so far]\n${partial}`;
 }
