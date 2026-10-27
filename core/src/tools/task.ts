@@ -34,6 +34,28 @@ export const DEFAULT_MAX_AGENTS_PER_SESSION = 50;
 export const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
 
 /**
+ * Decide whether an isolated agent worktree is safe to remove after the
+ * foreground agent returns.
+ *
+ * Remove ONLY when all three hold:
+ *  - `status` (git status --porcelain, including untracked) is empty — no
+ *    uncommitted changes, so no new files a background agent may have written.
+ *  - `unpushed` (git rev-list HEAD --not --remotes) is empty — no commits that
+ *    would be lost.
+ *  - `runningAgentCount === 0` — no background subagent is still live inside the
+ *    worktree. A background subagent inherits the worktree cwd and runs detached
+ *    from the parent abort, so removing the worktree while it is working would
+ *    pull the rug out from under it (lost/partial writes, git errors).
+ */
+export function shouldRemoveWorktree(
+  status: string,
+  unpushed: string,
+  runningAgentCount: number,
+): boolean {
+  return !status && !unpushed && runningAgentCount === 0;
+}
+
+/**
  * Check whether spawning a new agent is allowed under session and concurrency caps.
  * Returns null if allowed, or an error string if blocked.
  */
@@ -551,9 +573,10 @@ export const taskTool: ToolDefinition = {
 
     if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
       try {
-        const status = child_process.execSync('git status --porcelain -uno', { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
+        const status = child_process.execSync('git status --porcelain', { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
         const unpushed = child_process.execSync('git rev-list HEAD --not --remotes', { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
-        if (!status && !unpushed) {
+        const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
+        if (shouldRemoveWorktree(status, unpushed, runningAgents)) {
           child_process.execSync(`git worktree remove --force "${effectiveCwd}"`, { cwd: context.cwd, timeout: 10000 });
           resultText += '\n[Agent worktree cleaned up — no changes detected]';
         }
