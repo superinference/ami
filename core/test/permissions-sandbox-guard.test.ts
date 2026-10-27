@@ -71,8 +71,11 @@ describe('dangerouslyDisableSandbox permission guard', () => {
   });
 
   it('returns ask even with an allow-all rule present', async () => {
+    // `action` (not `effect`) is the PermissionRule field — with the wrong key the
+    // rule was a no-op and this test proved nothing. With a real allow-all rule it
+    // genuinely verifies the sandbox guard takes precedence over an allow rule.
     const pm = new PermissionManager('ask', [
-      { tool: 'bash', effect: 'allow' as const },
+      { tool: 'bash', action: 'allow' as const },
     ]);
     assert.equal(await pm.check('bash', sandboxInput), 'ask');
   });
