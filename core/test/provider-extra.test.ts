@@ -629,7 +629,7 @@ describe('resolveModel — SDK creation coverage', () => {
     assert.ok(result);
   });
 
-  it('creates OpenAI-compatible SDK for groq provider', () => {
+  it('creates native SDK for groq provider', () => {
     const config = makeConfig({
       baseUrl: 'https://api.groq.com/openai/v1',
       apiKey: 'gsk_test',
@@ -637,17 +637,116 @@ describe('resolveModel — SDK creation coverage', () => {
     });
     const result = resolveModel(config);
     assert.ok(result);
-    assert.ok(result.provider.startsWith('openai'));
+    assert.ok(result.provider.startsWith('groq'), `Expected groq native SDK, got '${result.provider}'`);
   });
 
-  it('creates OpenAI-compatible SDK for deepseek provider', () => {
+  it('creates native SDK for deepseek provider', () => {
     const config = makeConfig({
       baseUrl: 'https://api.deepseek.com',
       model: 'deepseek-chat',
     });
     const result = resolveModel(config);
     assert.ok(result);
-    assert.ok(result.provider.startsWith('openai'));
+    assert.ok(result.provider.startsWith('deepseek'), `Expected deepseek native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for xai provider', () => {
+    const config = makeConfig({
+      provider: 'xai',
+      baseUrl: 'https://api.x.ai/v1',
+      apiKey: 'xai-test',
+      model: 'grok-3',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('xai'), `Expected xai native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for mistral provider', () => {
+    const config = makeConfig({
+      provider: 'mistral',
+      baseUrl: 'https://api.mistral.ai/v1',
+      model: 'mistral-large-latest',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('mistral'), `Expected mistral native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for cohere provider', () => {
+    const config = makeConfig({
+      provider: 'cohere',
+      apiKey: 'cohere_test',
+      model: 'command-a-03-2025',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('cohere'), `Expected cohere native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for togetherai provider', () => {
+    const config = makeConfig({
+      provider: 'togetherai',
+      baseUrl: 'https://api.together.xyz/v1',
+      model: 'meta-llama/Llama-3-70b-chat-hf',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('togetherai'), `Expected togetherai native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for fireworks provider', () => {
+    const config = makeConfig({
+      provider: 'fireworks',
+      baseUrl: 'https://api.fireworks.ai/inference/v1',
+      model: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('fireworks'), `Expected fireworks native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for alibaba provider', () => {
+    const config = makeConfig({
+      provider: 'alibaba',
+      model: 'qwen-plus',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('alibaba'), `Expected alibaba native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for deepinfra provider', () => {
+    const config = makeConfig({
+      provider: 'deepinfra',
+      apiKey: 'sk-di-test',
+      model: 'meta-llama/Llama-3-70b-chat',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('deepinfra'), `Expected deepinfra native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for cerebras provider', () => {
+    const config = makeConfig({
+      provider: 'cerebras',
+      baseUrl: 'https://api.cerebras.ai/v1',
+      model: 'llama3.1-70b',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('cerebras'), `Expected cerebras native SDK, got '${result.provider}'`);
+  });
+
+  it('creates native SDK for huggingface provider', () => {
+    const config = makeConfig({
+      provider: 'huggingface',
+      apiKey: 'hf_test',
+      model: 'deepseek-ai/DeepSeek-V3-0324',
+    });
+    const result = resolveModel(config);
+    assert.ok(result);
+    assert.ok(result.provider.startsWith('huggingface'), `Expected huggingface native SDK, got '${result.provider}'`);
   });
 
   it('creates OpenAI-compatible SDK for unknown provider with fallback', () => {
