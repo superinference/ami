@@ -66,7 +66,7 @@ type ProviderName =
   | 'groq' | 'mistral' | 'xai' | 'azure-openai'
   | 'amazon-bedrock' | 'togetherai' | 'cohere' | 'fireworks'
   | 'perplexity' | 'deepinfra' | 'deepseek' | 'cerebras'
-  | 'openrouter' | 'ollama' | 'luma' | 'alibaba'
+  | 'openrouter' | 'ollama' | 'luma' | 'alibaba' | 'nvidia'
   | 'google-vertex' | 'anthropic-vertex' | 'ai-gateway' | 'huggingface';
 
 interface InferredProvider {
@@ -98,6 +98,7 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
   perplexity: ['sonar-pro', 'sonar', 'sonar-reasoning-pro'],
   deepinfra: ['meta-llama/Meta-Llama-3.1-70B-Instruct'],
   cerebras: ['zai-glm-4.7', 'gpt-oss-120b'],
+  nvidia: ['nvidia/nemotron-3.5-bolt-e4b', 'nvidia/llama-3.1-nemotron-70b-instruct'],
   alibaba: ['qwen-max', 'qwen-plus', 'qwen-turbo'],
   'azure-openai': ['gpt-4o', 'gpt-4o-mini'],
   'google-vertex': ['gemini-2.5-pro', 'gemini-2.5-flash'],
@@ -125,6 +126,7 @@ const KEY_PREFIXES: Array<{ prefix: string; provider: ProviderName }> = [
   { prefix: 'sk-or-', provider: 'openrouter' },
   { prefix: 'gsk_', provider: 'groq' },
   { prefix: 'xai-', provider: 'xai' },
+  { prefix: 'nvapi-', provider: 'nvidia' },
   { prefix: 'pplx-', provider: 'perplexity' },
   { prefix: 'hf_', provider: 'huggingface' },
   { prefix: 'sk-', provider: 'openai' },
@@ -151,6 +153,7 @@ const URL_PATTERNS: Array<{ pattern: string; provider: ProviderName }> = [
   { pattern: 'openai.azure.com', provider: 'azure-openai' },
   { pattern: 'api.luma.ai', provider: 'luma' },
   { pattern: 'huggingface.co', provider: 'huggingface' },
+  { pattern: 'integrate.api.nvidia.com', provider: 'nvidia' },
   { pattern: 'gateway.ai.cloudflare.com', provider: 'ai-gateway' },
   { pattern: 'localhost', provider: 'ollama' },
   { pattern: '127.0.0.1', provider: 'ollama' },
@@ -173,6 +176,7 @@ const ENV_KEYS: Array<{ env: string; provider: ProviderName }> = [
   { env: 'LUMA_API_KEY', provider: 'luma' },
   { env: 'OPENROUTER_API_KEY', provider: 'openrouter' },
   { env: 'HF_TOKEN', provider: 'huggingface' },
+  { env: 'NVIDIA_API_KEY', provider: 'nvidia' },
   { env: 'AZURE_OPENAI_API_KEY', provider: 'azure-openai' },
   { env: 'AWS_ACCESS_KEY_ID', provider: 'amazon-bedrock' },
   { env: 'ANTHROPIC_VERTEX_PROJECT_ID', provider: 'anthropic-vertex' },
@@ -196,6 +200,7 @@ const PROVIDER_BASE_URLS: Partial<Record<ProviderName, string>> = {
   openrouter: 'https://openrouter.ai/api/v1',
   openai: 'https://api.openai.com/v1',
   luma: 'https://api.luma.ai',
+  nvidia: 'https://integrate.api.nvidia.com/v1',
 };
 
 /**
@@ -480,7 +485,7 @@ function isVertexAIConfigured(): boolean {
 const OPENAI_COMPAT_PROVIDERS = new Set<ProviderName>([
   'openai', 'groq', 'mistral', 'xai', 'deepseek', 'togetherai',
   'cohere', 'fireworks', 'perplexity', 'deepinfra', 'cerebras',
-  'alibaba', 'openrouter', 'ollama', 'luma', 'ai-gateway',
+  'alibaba', 'openrouter', 'ollama', 'luma', 'nvidia', 'ai-gateway',
 ]);
 
 // ---------------------------------------------------------------------------

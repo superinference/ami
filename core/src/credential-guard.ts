@@ -10,6 +10,7 @@ const CREDENTIAL_PATTERNS = [
   /xoxp-[0-9]+-[a-zA-Z0-9]+/g,
   /AKIA[A-Z0-9]{16}/g,
   /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g,
+  /nvapi-[a-zA-Z0-9_-]{20,}/g,
 ];
 
 export const REDACT_PLACEHOLDER = '[REDACTED]';
