@@ -4,6 +4,17 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createVertexAnthropic } from '@ai-sdk/google-vertex/anthropic';
+import { createXai } from '@ai-sdk/xai';
+import { createMistral } from '@ai-sdk/mistral';
+import { createCohere } from '@ai-sdk/cohere';
+import { createDeepSeek } from '@ai-sdk/deepseek';
+import { createGroq } from '@ai-sdk/groq';
+import { createTogetherAI } from '@ai-sdk/togetherai';
+import { createFireworks } from '@ai-sdk/fireworks';
+import { createAlibaba } from '@ai-sdk/alibaba';
+import { createDeepInfra } from '@ai-sdk/deepinfra';
+import { createCerebras } from '@ai-sdk/cerebras';
+import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
@@ -124,11 +135,13 @@ const KEY_PREFIXES: Array<{ prefix: string; provider: ProviderName }> = [
   { prefix: 'AIzaSy', provider: 'google' },
   { prefix: 'sk-ant-', provider: 'anthropic' },
   { prefix: 'sk-or-', provider: 'openrouter' },
+  { prefix: 'sk-di-', provider: 'deepinfra' },
   { prefix: 'gsk_', provider: 'groq' },
   { prefix: 'xai-', provider: 'xai' },
   { prefix: 'nvapi-', provider: 'nvidia' },
   { prefix: 'pplx-', provider: 'perplexity' },
   { prefix: 'hf_', provider: 'huggingface' },
+  { prefix: 'cohere_', provider: 'cohere' },
   { prefix: 'sk-', provider: 'openai' },
 ];
 
@@ -474,8 +487,13 @@ export async function resolveContextWindow(config: ProviderConfig): Promise<numb
 // Model resolution — pick the right AI SDK provider
 // ---------------------------------------------------------------------------
 
-// Providers that use native AI SDK packages (not OpenAI-compatible)
-const NATIVE_PROVIDERS = new Set<ProviderName>(['anthropic', 'anthropic-vertex', 'google', 'google-vertex']);
+// Providers that use native AI SDK packages (not OpenAI-compatible shim)
+const NATIVE_PROVIDERS = new Set<ProviderName>([
+  'anthropic', 'anthropic-vertex', 'google', 'google-vertex',
+  'xai', 'mistral', 'cohere', 'deepseek', 'groq',
+  'togetherai', 'fireworks', 'alibaba', 'deepinfra', 'cerebras',
+  'huggingface',
+]);
 
 function isVertexAIConfigured(): boolean {
   return !!(process.env.CLAUDE_CODE_USE_VERTEX === '1' || process.env.ANTHROPIC_VERTEX_PROJECT_ID);
@@ -483,9 +501,7 @@ function isVertexAIConfigured(): boolean {
 
 // Providers that always route through OpenAI-compatible endpoint
 const OPENAI_COMPAT_PROVIDERS = new Set<ProviderName>([
-  'openai', 'groq', 'mistral', 'xai', 'deepseek', 'togetherai',
-  'cohere', 'fireworks', 'perplexity', 'deepinfra', 'cerebras',
-  'alibaba', 'openrouter', 'ollama', 'luma', 'nvidia', 'ai-gateway',
+  'openai', 'perplexity', 'openrouter', 'ollama', 'luma', 'nvidia', 'ai-gateway',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -666,7 +682,47 @@ export function resolveModel(config: ProviderConfig) {
     return createOpenAI({ apiKey, baseURL: baseUrl, fetch })(model);
   }
 
-  // All OpenAI-compatible providers (groq, mistral, xai, deepseek, etc.)
+  // Native Vercel AI SDK providers — each has its own adapter with correct
+  // API format, avoiding OpenAI-specific fields like parallel_tool_calls.
+  // Only pass baseURL when the user explicitly provided a custom one;
+  // skip the default from PROVIDER_BASE_URLS (the native SDK knows its own URL).
+  const defaultUrl = PROVIDER_BASE_URLS[provider as ProviderName];
+  const userBaseUrl = (baseUrl && baseUrl !== defaultUrl) ? baseUrl : undefined;
+  if (provider === 'xai') {
+    return createXai({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'mistral') {
+    return createMistral({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'cohere') {
+    return createCohere({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'deepseek') {
+    return createDeepSeek({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'groq') {
+    return createGroq({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'togetherai') {
+    return createTogetherAI({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'fireworks') {
+    return createFireworks({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'alibaba') {
+    return createAlibaba({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'deepinfra') {
+    return createDeepInfra({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'cerebras') {
+    return createCerebras({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+  if (provider === 'huggingface') {
+    return createHuggingFace({ apiKey, baseURL: userBaseUrl, fetch })(model);
+  }
+
+  // Remaining OpenAI-compatible providers (openai, openrouter, nvidia, perplexity, ollama, luma, ai-gateway)
   const effectiveBaseUrl = baseUrl || PROVIDER_BASE_URLS[provider as ProviderName] || 'https://api.openai.com/v1';
   const openai = createOpenAI({ baseURL: effectiveBaseUrl, apiKey, fetch });
   // gpt-6+ on OpenAI require /v1/responses for tool use with reasoning

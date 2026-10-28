@@ -233,6 +233,110 @@ describe('resolveModel - native provider custom baseUrl (regression)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// resolveModel - all native Vercel AI SDK providers
+// ---------------------------------------------------------------------------
+describe('resolveModel - native Vercel AI SDK provider routing', () => {
+  const NATIVE_PROVIDERS: Array<{ provider: string; model: string; sdkPrefix: string; defaultUrl: string }> = [
+    { provider: 'xai', model: 'grok-3', sdkPrefix: 'xai', defaultUrl: 'https://api.x.ai/v1' },
+    { provider: 'mistral', model: 'mistral-large-latest', sdkPrefix: 'mistral', defaultUrl: 'https://api.mistral.ai/v1' },
+    { provider: 'cohere', model: 'command-a-03-2025', sdkPrefix: 'cohere', defaultUrl: 'https://api.cohere.com/compatibility/v1' },
+    { provider: 'deepseek', model: 'deepseek-chat', sdkPrefix: 'deepseek', defaultUrl: 'https://api.deepseek.com/v1' },
+    { provider: 'groq', model: 'llama-3.3-70b-versatile', sdkPrefix: 'groq', defaultUrl: 'https://api.groq.com/openai/v1' },
+    { provider: 'togetherai', model: 'meta-llama/Llama-3-70b-chat-hf', sdkPrefix: 'togetherai', defaultUrl: 'https://api.together.xyz/v1' },
+    { provider: 'fireworks', model: 'accounts/fireworks/models/llama-v3p1-70b-instruct', sdkPrefix: 'fireworks', defaultUrl: 'https://api.fireworks.ai/inference/v1' },
+    { provider: 'alibaba', model: 'qwen-plus', sdkPrefix: 'alibaba', defaultUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+    { provider: 'deepinfra', model: 'meta-llama/Llama-3-70b-chat', sdkPrefix: 'deepinfra', defaultUrl: 'https://api.deepinfra.com/v1/openai' },
+    { provider: 'cerebras', model: 'llama3.1-70b', sdkPrefix: 'cerebras', defaultUrl: 'https://api.cerebras.ai/v1' },
+    { provider: 'huggingface', model: 'deepseek-ai/DeepSeek-V3-0324', sdkPrefix: 'huggingface', defaultUrl: 'https://router.huggingface.co/v1' },
+  ];
+
+  for (const { provider, model, sdkPrefix, defaultUrl } of NATIVE_PROVIDERS) {
+    it(`routes ${provider} through its native SDK adapter (not OpenAI)`, () => {
+      const m = resolveModel({ provider, apiKey: 'test-key', baseUrl: defaultUrl, model } as any);
+      assert.ok(m, `resolveModel should return a result for ${provider}`);
+      assert.ok(
+        m.provider.startsWith(sdkPrefix),
+        `Expected provider starting with '${sdkPrefix}', got '${m.provider}'`,
+      );
+      assert.ok(
+        !m.provider.startsWith('openai'),
+        `${provider} should NOT route through OpenAI compat, got '${m.provider}'`,
+      );
+    });
+
+    it(`routes ${provider} without baseUrl (SDK uses built-in default)`, () => {
+      const m = resolveModel({ provider, apiKey: 'test-key', baseUrl: '', model } as any);
+      assert.ok(m.provider.startsWith(sdkPrefix),
+        `${provider} without baseUrl should still route natively, got '${m.provider}'`);
+    });
+
+    it(`${provider} with custom baseUrl forwards it to the native SDK`, () => {
+      const customUrl = `https://${provider}-proxy.internal/v1`;
+      const m = resolveModel({ provider, apiKey: 'test-key', baseUrl: customUrl, model } as any);
+      assert.ok(m.provider.startsWith(sdkPrefix));
+      const cfg = (m as any).config;
+      if (cfg.baseURL !== undefined) {
+        assert.ok(
+          cfg.baseURL === customUrl || cfg.baseURL.includes(provider),
+          `${provider}: baseURL should reflect custom or provider default, got '${cfg.baseURL}'`,
+        );
+      } else if (typeof cfg.url === 'function') {
+        const resolved = cfg.url({ path: '/chat/completions' });
+        assert.ok(
+          resolved.startsWith(customUrl),
+          `${provider}: url() should use custom base, got '${resolved}'`,
+        );
+      }
+    });
+  }
+
+  it('OpenAI-compat providers still route through createOpenAI', () => {
+    for (const p of ['openrouter', 'perplexity', 'nvidia', 'luma', 'ollama']) {
+      const m = resolveModel({
+        provider: p,
+        apiKey: 'test-key',
+        baseUrl: 'https://proxy.example.com/v1',
+        model: 'test-model',
+      } as any);
+      assert.ok(
+        m.provider.startsWith('openai'),
+        `${p} should route through OpenAI compat, got '${m.provider}'`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveModel - key prefix detection for new providers
+// ---------------------------------------------------------------------------
+describe('resolveModel - key prefix auto-detection', () => {
+  it('detects cohere_ prefix as cohere provider', () => {
+    const m = resolveModel({ apiKey: 'cohere_test123', model: 'command-a-03-2025' } as any);
+    assert.ok(m.provider.startsWith('cohere'), `Expected cohere, got '${m.provider}'`);
+  });
+
+  it('detects sk-di- prefix as deepinfra provider', () => {
+    const m = resolveModel({ apiKey: 'sk-di-test123', model: 'meta-llama/Llama-3-70b-chat' } as any);
+    assert.ok(m.provider.startsWith('deepinfra'), `Expected deepinfra, got '${m.provider}'`);
+  });
+
+  it('detects gsk_ prefix as groq provider', () => {
+    const m = resolveModel({ apiKey: 'gsk_test123', model: 'llama-3.3-70b-versatile' } as any);
+    assert.ok(m.provider.startsWith('groq'), `Expected groq, got '${m.provider}'`);
+  });
+
+  it('detects xai- prefix as xai provider', () => {
+    const m = resolveModel({ apiKey: 'xai-test123', model: 'grok-3' } as any);
+    assert.ok(m.provider.startsWith('xai'), `Expected xai, got '${m.provider}'`);
+  });
+
+  it('detects hf_ prefix as huggingface provider', () => {
+    const m = resolveModel({ apiKey: 'hf_test123', model: 'deepseek-ai/DeepSeek-V3-0324' } as any);
+    assert.ok(m.provider.startsWith('huggingface'), `Expected huggingface, got '${m.provider}'`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // convertMessages - message format conversion
 // ---------------------------------------------------------------------------
 describe('convertMessages', () => {
