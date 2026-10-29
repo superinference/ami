@@ -12,21 +12,14 @@
 
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 
-export type ErrorCategory =
-  | 'rate_limited'
-  | 'plan_limit'
-  | 'context_overflow'
-  | 'model_unavailable'
-  | 'auth_error'
-  | 'output_too_large'
-  | 'content_filter'
-  | 'server_error'
-  | 'network_error'
-  | 'ssl_error'
-  | 'abort'
-  | 'repetition'
-  | 'gateway_rejection'
-  | 'unknown';
+export const ERROR_CATEGORIES = [
+  'rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
+  'auth_error', 'output_too_large', 'content_filter', 'server_error',
+  'network_error', 'ssl_error', 'abort', 'repetition', 'gateway_rejection',
+  'unknown',
+] as const;
+
+export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
 
 export interface ClassifiedError {
   category: ErrorCategory;

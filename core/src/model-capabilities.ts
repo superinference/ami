@@ -1,4 +1,5 @@
-export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max';
+export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export interface ModelCapabilities {
   reasoning: boolean;

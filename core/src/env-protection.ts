@@ -39,7 +39,8 @@ export const TELEMETRY_VARIABLES = new Set([
   'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC',
 ]);
 
-export type PinCategory = 'policy' | 'code_loading' | 'telemetry' | 'dynamic_policy';
+export const PIN_CATEGORIES = ['policy', 'code_loading', 'telemetry', 'dynamic_policy'] as const;
+export type PinCategory = (typeof PIN_CATEGORIES)[number];
 
 export function isPinnedVariable(name: string): boolean {
   const upper = name.toUpperCase();

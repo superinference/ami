@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { HookManager, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, sanitizeHookEnv, SENSITIVE_ENV_PATTERNS, type HookContext } from '../src/hooks';
+import { HookManager, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, sanitizeHookEnv, SENSITIVE_ENV_PATTERNS, HOOK_EVENTS, HOOK_CONFIG_TYPES, type HookContext } from '../src/hooks';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -511,5 +511,29 @@ describe('sanitizeHookEnv', () => {
     for (const p of SENSITIVE_ENV_PATTERNS) {
       assert.ok(p instanceof RegExp);
     }
+  });
+});
+
+describe('HOOK_EVENTS', () => {
+  it('contains all expected hook events', () => {
+    assert.ok(HOOK_EVENTS.length >= 29);
+    for (const event of ['preToolUse', 'postToolUse', 'preSampling', 'stop', 'error',
+      'sessionStart', 'sessionEnd', 'subagentStart', 'subagentStop',
+      'preCompact', 'postCompact', 'permissionRequest', 'permissionDenied',
+      'userPromptSubmit', 'notification', 'setup', 'configChange',
+      'instructionsLoaded', 'worktreeCreate', 'fileChanged', 'cwdChanged',
+      'elicitation', 'elicitationResult', 'stopFailure'] as const) {
+      assert.ok(HOOK_EVENTS.includes(event), `missing hook event: ${event}`);
+    }
+  });
+});
+
+describe('HOOK_CONFIG_TYPES', () => {
+  it('contains all 4 hook config types', () => {
+    assert.equal(HOOK_CONFIG_TYPES.length, 4);
+    assert.ok(HOOK_CONFIG_TYPES.includes('command'));
+    assert.ok(HOOK_CONFIG_TYPES.includes('prompt'));
+    assert.ok(HOOK_CONFIG_TYPES.includes('http'));
+    assert.ok(HOOK_CONFIG_TYPES.includes('agent'));
   });
 });

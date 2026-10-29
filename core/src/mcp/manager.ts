@@ -37,7 +37,8 @@ export interface McpServerConfig {
   containerConfig?: ContainerConfig;
 }
 
-export type McpServerState = 'pending' | 'connecting' | 'ready' | 'error' | 'stopped' | 'disabled';
+export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled'] as const;
+export type McpServerState = (typeof MCP_SERVER_STATES)[number];
 
 export interface McpServerStatus {
   name: string;

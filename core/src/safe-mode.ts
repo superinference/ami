@@ -3,14 +3,8 @@ export interface SafeModeConfig {
   reason?: string;
 }
 
-export type BlockedResource =
-  | 'prompt_override'
-  | 'project_memory'
-  | 'project_skills'
-  | 'project_config'
-  | 'mcp_servers'
-  | 'hooks'
-  | 'plugins';
+export const BLOCKED_RESOURCES = ['prompt_override', 'project_memory', 'project_skills', 'project_config', 'mcp_servers', 'hooks', 'plugins'] as const;
+export type BlockedResource = (typeof BLOCKED_RESOURCES)[number];
 
 const BLOCKED_IN_SAFE_MODE = new Set<BlockedResource>([
   'prompt_override',

@@ -1,6 +1,9 @@
-export type AdmissionAction = 'register' | 'connect' | 'load' | 'activate';
-export type AdmissionOutcome = 'allowed' | 'denied' | 'error';
-export type AdmissionSubject = 'tool' | 'mcp_server' | 'plugin' | 'skill' | 'hook';
+export const ADMISSION_ACTIONS = ['register', 'connect', 'load', 'activate'] as const;
+export type AdmissionAction = (typeof ADMISSION_ACTIONS)[number];
+export const ADMISSION_OUTCOMES = ['allowed', 'denied', 'error'] as const;
+export type AdmissionOutcome = (typeof ADMISSION_OUTCOMES)[number];
+export const ADMISSION_SUBJECTS = ['tool', 'mcp_server', 'plugin', 'skill', 'hook'] as const;
+export type AdmissionSubject = (typeof ADMISSION_SUBJECTS)[number];
 
 export interface AdmissionEntry {
   timestamp: number;

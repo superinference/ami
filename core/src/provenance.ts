@@ -1,4 +1,5 @@
-export type ProvenanceTier = 'builtin' | 'managed' | 'user' | 'unknown';
+export const PROVENANCE_TIERS = ['builtin', 'managed', 'user', 'unknown'] as const;
+export type ProvenanceTier = (typeof PROVENANCE_TIERS)[number];
 
 export interface ProvenanceRecord {
   name: string;

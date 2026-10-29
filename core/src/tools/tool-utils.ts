@@ -239,7 +239,8 @@ export function safeLstat(
   }
 }
 
-export type FileEncoding = 'utf-8' | 'utf-8-bom' | 'utf-16le' | 'utf-16be';
+export const FILE_ENCODINGS = ['utf-8', 'utf-8-bom', 'utf-16le', 'utf-16be'] as const;
+export type FileEncoding = (typeof FILE_ENCODINGS)[number];
 
 /** Detect a text file's encoding from its leading BOM bytes (UTF-8 otherwise). */
 export function detectEncoding(buf: Buffer): FileEncoding {

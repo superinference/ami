@@ -1,4 +1,5 @@
-export type SettingsTier = 'managed' | 'global' | 'project' | 'local' | 'env' | 'cli';
+export const SETTINGS_TIERS = ['managed', 'global', 'project', 'local', 'env', 'cli'] as const;
+export type SettingsTier = (typeof SETTINGS_TIERS)[number];
 
 export interface SettingsSource {
   tier: SettingsTier;

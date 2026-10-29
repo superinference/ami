@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import {
   PROTECTED_EVENTS,
   PASSTHROUGH_EVENTS,
+  HOOK_TIERS,
   isProtectedEvent,
   canHookEvent,
   sortHooksByTier,
@@ -189,5 +190,21 @@ describe('HookChainGuard', () => {
     guard.checkRegistration('tool.call', 'user');
     guard.checkRegistration('session.compact', 'builtin');
     assert.equal(guard.getBlockedCount(), 0);
+  });
+});
+
+describe('HOOK_TIERS', () => {
+  it('contains all 5 tiers', () => {
+    assert.equal(HOOK_TIERS.length, 5);
+    assert.ok(HOOK_TIERS.includes('builtin'));
+    assert.ok(HOOK_TIERS.includes('prepend'));
+    assert.ok(HOOK_TIERS.includes('user'));
+    assert.ok(HOOK_TIERS.includes('append'));
+    assert.ok(HOOK_TIERS.includes('core'));
+  });
+
+  it('is ordered by priority (builtin first, core last)', () => {
+    assert.equal(HOOK_TIERS[0], 'builtin');
+    assert.equal(HOOK_TIERS[HOOK_TIERS.length - 1], 'core');
   });
 });

@@ -9,7 +9,8 @@ import { deobfuscateEnvExpansion } from './tools/command-normalize';
 // Types
 // ---------------------------------------------------------------------------
 
-export type PermissionMode = 'ask' | 'auto-allow' | 'deny-all' | 'acceptEdits' | 'dontAsk' | 'bypassPermissions' | 'plan';
+export const PERMISSION_MODES = ['ask', 'auto-allow', 'deny-all', 'acceptEdits', 'dontAsk', 'bypassPermissions', 'plan'] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export interface PermissionRule {
   tool: string;       // tool name or '*'
@@ -20,7 +21,8 @@ export interface PermissionRule {
   reason?: string;    // optional reason for deny rules
 }
 
-export type BashClassification = 'safe' | 'unsafe' | 'destructive';
+export const BASH_CLASSIFICATIONS = ['safe', 'unsafe', 'destructive'] as const;
+export type BashClassification = (typeof BASH_CLASSIFICATIONS)[number];
 
 export interface PermissionPromptResult {
   action: 'allow_once' | 'allow_pattern' | 'deny';
@@ -1460,8 +1462,7 @@ export class PermissionManager {
       const data = JSON.parse(raw);
 
       if (data.mode && typeof data.mode === 'string') {
-        const validModes: PermissionMode[] = ['ask', 'auto-allow', 'deny-all', 'acceptEdits', 'dontAsk', 'bypassPermissions', 'plan'];
-        if (validModes.includes(data.mode as PermissionMode)) {
+        if ((PERMISSION_MODES as readonly string[]).includes(data.mode)) {
           this.mode = data.mode as PermissionMode;
         }
       }

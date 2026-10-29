@@ -1,5 +1,8 @@
-export type Intent = 'explain' | 'troubleshoot' | 'generate' | 'refactor' | 'review' | 'git_ops' | 'research' | 'other';
-export type Scope = 'selection' | 'current_file' | 'few_files' | 'codebase';
+export const PROMPT_INTENTS = ['explain', 'troubleshoot', 'generate', 'refactor', 'review', 'git_ops', 'research', 'other'] as const;
+export type Intent = (typeof PROMPT_INTENTS)[number];
+
+export const PROMPT_SCOPES = ['selection', 'current_file', 'few_files', 'codebase'] as const;
+export type Scope = (typeof PROMPT_SCOPES)[number];
 
 export interface PromptCategory {
   intent: Intent;

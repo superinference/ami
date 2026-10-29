@@ -1,4 +1,5 @@
-export type LogTier = 'builtin' | 'prepend' | 'user' | 'append' | 'core' | 'engine';
+export const LOG_TIERS = ['builtin', 'prepend', 'user', 'append', 'core', 'engine'] as const;
+export type LogTier = (typeof LOG_TIERS)[number];
 
 export interface LogEntry {
   message: string;

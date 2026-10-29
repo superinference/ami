@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { categorizePrompt, type Intent, type Scope } from '../src/prompt-categorizer';
+import { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, type Intent, type Scope } from '../src/prompt-categorizer';
 
 // ---------------------------------------------------------------------------
 // Intent detection
@@ -313,5 +313,30 @@ describe('categorizePrompt — combined', () => {
     const result = categorizePrompt('do something');
     assert.equal(result.intent, 'other');
     assert.equal(result.scope, 'codebase');
+  });
+});
+
+describe('PROMPT_INTENTS', () => {
+  it('contains all 8 intents', () => {
+    assert.equal(PROMPT_INTENTS.length, 8);
+    for (const intent of ['explain', 'troubleshoot', 'generate', 'refactor', 'review', 'git_ops', 'research', 'other'] as const) {
+      assert.ok(PROMPT_INTENTS.includes(intent), `missing intent: ${intent}`);
+    }
+  });
+
+  it('every categorizePrompt result uses a value from PROMPT_INTENTS', () => {
+    for (const input of ['explain this', 'fix the bug', 'create a file', 'do something']) {
+      const result = categorizePrompt(input);
+      assert.ok((PROMPT_INTENTS as readonly string[]).includes(result.intent));
+    }
+  });
+});
+
+describe('PROMPT_SCOPES', () => {
+  it('contains all 4 scopes', () => {
+    assert.equal(PROMPT_SCOPES.length, 4);
+    for (const scope of ['selection', 'current_file', 'few_files', 'codebase'] as const) {
+      assert.ok(PROMPT_SCOPES.includes(scope), `missing scope: ${scope}`);
+    }
   });
 });

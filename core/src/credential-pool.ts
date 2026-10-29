@@ -1,4 +1,5 @@
-export type SelectionStrategy = 'fill_first' | 'round_robin' | 'least_used';
+export const SELECTION_STRATEGIES = ['fill_first', 'round_robin', 'least_used'] as const;
+export type SelectionStrategy = (typeof SELECTION_STRATEGIES)[number];
 
 export interface CredentialEntry {
   id: string;

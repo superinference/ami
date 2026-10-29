@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { McpClient } from '../src/mcp/client';
+import { McpClient, MCP_TRANSPORTS } from '../src/mcp/client';
 import { McpManager, findMcpConfigPaths } from '../src/mcp/manager';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -376,5 +376,14 @@ describe('findMcpConfigPaths', () => {
   it('returns empty array when no configs exist', () => {
     const paths = findMcpConfigPaths('/tmp/nonexistent-dir-' + Date.now());
     assert.ok(Array.isArray(paths));
+  });
+});
+
+describe('MCP_TRANSPORTS', () => {
+  it('contains all 3 transport types', () => {
+    assert.equal(MCP_TRANSPORTS.length, 3);
+    assert.ok(MCP_TRANSPORTS.includes('stdio'));
+    assert.ok(MCP_TRANSPORTS.includes('sse'));
+    assert.ok(MCP_TRANSPORTS.includes('http'));
   });
 });

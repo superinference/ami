@@ -279,14 +279,8 @@ export class CostTracker {
 // Cache miss diagnostics
 // ---------------------------------------------------------------------------
 
-export type CacheMissCause =
-  | 'tool_definitions_changed'
-  | 'system_prompt_changed'
-  | 'idle_past_ttl'
-  | 'thinking_mode_changed'
-  | 'model_switched'
-  | 'first_request'
-  | 'unknown';
+export const CACHE_MISS_CAUSES = ['tool_definitions_changed', 'system_prompt_changed', 'idle_past_ttl', 'thinking_mode_changed', 'model_switched', 'first_request', 'unknown'] as const;
+export type CacheMissCause = (typeof CACHE_MISS_CAUSES)[number];
 
 export interface CacheDiagRequest {
   toolDefHash: string;

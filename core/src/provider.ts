@@ -174,6 +174,9 @@ const URL_PATTERNS: Array<{ pattern: string; provider: ProviderName }> = [
 
 // Env var → provider detection
 const ENV_KEYS: Array<{ env: string; provider: ProviderName }> = [
+  { env: 'OPENAI_API_KEY', provider: 'openai' },
+  { env: 'ANTHROPIC_API_KEY', provider: 'anthropic' },
+  { env: 'GOOGLE_API_KEY', provider: 'google' },
   { env: 'GROQ_API_KEY', provider: 'groq' },
   { env: 'MISTRAL_API_KEY', provider: 'mistral' },
   { env: 'XAI_API_KEY', provider: 'xai' },
@@ -337,7 +340,33 @@ async function resolveAvailableModel(
   }
 }
 
-export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, inferProviderFromBaseUrl, inferProviderFromEnv };
+const NATIVE_SDK_PROVIDERS = new Set<ProviderName>([
+  'xai', 'mistral', 'cohere', 'deepseek', 'groq', 'togetherai',
+  'fireworks', 'alibaba', 'deepinfra', 'cerebras', 'huggingface',
+  'google', 'anthropic',
+]);
+
+export interface ProviderDescriptor {
+  id: string;
+  envVars: string[];
+  baseUrl: string;
+  models: string[];
+  nativeSdk: boolean;
+  keyPrefixes: string[];
+}
+
+export function describeProviders(): ProviderDescriptor[] {
+  return Object.entries(MODEL_PREFERENCE).map(([id, models]) => ({
+    id,
+    envVars: ENV_KEYS.filter(e => e.provider === id).map(e => e.env),
+    baseUrl: PROVIDER_BASE_URLS[id as ProviderName] || '',
+    models,
+    nativeSdk: NATIVE_SDK_PROVIDERS.has(id as ProviderName),
+    keyPrefixes: KEY_PREFIXES.filter(k => k.provider === id).map(k => k.prefix),
+  }));
+}
+
+export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, NATIVE_SDK_PROVIDERS, inferProviderFromBaseUrl, inferProviderFromEnv };
 
 const modelListCache = new Map<string, Promise<Record<string, unknown>[]>>();
 

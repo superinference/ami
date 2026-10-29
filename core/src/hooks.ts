@@ -58,6 +58,21 @@ export function sanitizeHookEnv(env: Record<string, string | undefined>): Record
   return clean;
 }
 
+export const HOOK_EVENTS = [
+  'preToolUse', 'postToolUse', 'preSampling', 'postSampling',
+  'stop', 'error', 'sessionStart', 'sessionEnd',
+  'subagentStart', 'subagentStop', 'preCompact', 'postCompact',
+  'permissionRequest', 'permissionDenied', 'userPromptSubmit',
+  'taskCreated', 'taskCompleted', 'postToolUseFailure', 'notification',
+  'setup', 'configChange', 'instructionsLoaded',
+  'worktreeCreate', 'worktreeRemove', 'fileChanged', 'cwdChanged',
+  'elicitation', 'elicitationResult', 'stopFailure',
+] as const;
+export type HookEvent = (typeof HOOK_EVENTS)[number];
+
+export const HOOK_CONFIG_TYPES = ['command', 'prompt', 'http', 'agent'] as const;
+export type HookConfigType = (typeof HOOK_CONFIG_TYPES)[number];
+
 export type HookFn = (context: HookContext) => Promise<void>;
 
 export interface HookContext {

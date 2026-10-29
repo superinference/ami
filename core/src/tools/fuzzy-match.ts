@@ -15,12 +15,8 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export type StrategyName =
-  | 'exact'
-  | 'line_trimmed'
-  | 'whitespace_normalized'
-  | 'indentation_flexible'
-  | 'escape_normalized';
+export const STRATEGY_NAMES = ['exact', 'line_trimmed', 'whitespace_normalized', 'indentation_flexible', 'escape_normalized'] as const;
+export type StrategyName = (typeof STRATEGY_NAMES)[number];
 
 export interface MatchPosition {
   /** Byte offset (character index) in the **original** content. */

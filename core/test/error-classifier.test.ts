@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 
-import { classifyError, friendlyErrorMessage, type ClassifiedError } from '../src/error-classifier';
+import { classifyError, friendlyErrorMessage, ERROR_CATEGORIES, type ClassifiedError } from '../src/error-classifier';
 
 // ---------------------------------------------------------------------------
 // Helper to assert the full shape of a classified error
@@ -965,6 +965,26 @@ describe('classifyError — Error vs string consistency', () => {
         `Category mismatch for "${msg}": string=${fromString.category}, Error=${fromError.category}`);
       assert.equal(fromString.retryable, fromError.retryable,
         `Retryable mismatch for "${msg}"`);
+    }
+  });
+});
+
+describe('ERROR_CATEGORIES', () => {
+  it('contains all 14 error categories', () => {
+    assert.equal(ERROR_CATEGORIES.length, 14);
+    for (const cat of ['rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
+      'auth_error', 'output_too_large', 'content_filter', 'server_error',
+      'network_error', 'ssl_error', 'abort', 'repetition', 'gateway_rejection', 'unknown'] as const) {
+      assert.ok(ERROR_CATEGORIES.includes(cat), `missing category: ${cat}`);
+    }
+  });
+
+  it('every classifyError result uses a value from ERROR_CATEGORIES', () => {
+    const testInputs = ['HTTP 429', 'HTTP 401', 'ECONNREFUSED', 'context too long', 'abort', 'random'];
+    for (const input of testInputs) {
+      const result = classifyError(input);
+      assert.ok((ERROR_CATEGORIES as readonly string[]).includes(result.category),
+        `classifyError("${input}") returned unknown category: ${result.category}`);
     }
   });
 });

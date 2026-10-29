@@ -1,4 +1,5 @@
-export type HookTier = 'builtin' | 'prepend' | 'user' | 'append' | 'core';
+export const HOOK_TIERS = ['builtin', 'prepend', 'user', 'append', 'core'] as const;
+export type HookTier = (typeof HOOK_TIERS)[number];
 
 export interface HookRegistration {
   name: string;

@@ -1,5 +1,8 @@
-export type EnvAccessTier = 'builtin' | 'prepend' | 'user' | 'append' | 'engine';
-export type EnvOperation = 'get' | 'set' | 'delete';
+export const ENV_ACCESS_TIERS = ['builtin', 'prepend', 'user', 'append', 'engine'] as const;
+export type EnvAccessTier = (typeof ENV_ACCESS_TIERS)[number];
+
+export const ENV_OPERATIONS = ['get', 'set', 'delete'] as const;
+export type EnvOperation = (typeof ENV_OPERATIONS)[number];
 
 // Variables that describe sensitive paths — never expose values, only whether set
 export const SENSITIVE_ENV_VARS = new Set([

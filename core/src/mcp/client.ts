@@ -1,6 +1,9 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 
+export const MCP_TRANSPORTS = ['stdio', 'sse', 'http'] as const;
+export type McpTransport = (typeof MCP_TRANSPORTS)[number];
+
 export const DEFAULT_MCP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
 
 const MIN_MCP_BUFFER = 1024;            // 1 KB
@@ -87,18 +90,11 @@ interface JsonRpcNotification {
   params?: Record<string, unknown>;
 }
 
-export type McpClientState = 'disconnected' | 'connecting' | 'ready' | 'error';
+export const MCP_CLIENT_STATES = ['disconnected', 'connecting', 'ready', 'error'] as const;
+export type McpClientState = (typeof MCP_CLIENT_STATES)[number];
 
-export type McpTerminalErrorCode =
-  | 'ECONNRESET'
-  | 'ETIMEDOUT'
-  | 'EPIPE'
-  | 'EHOSTUNREACH'
-  | 'ECONNREFUSED'
-  | 'ESRCH'
-  | 'SPAWN_ERROR'
-  | 'SESSION_EXPIRED'
-  | 'UNKNOWN';
+export const MCP_TERMINAL_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ECONNREFUSED', 'ESRCH', 'SPAWN_ERROR', 'SESSION_EXPIRED', 'UNKNOWN'] as const;
+export type McpTerminalErrorCode = (typeof MCP_TERMINAL_ERROR_CODES)[number];
 
 export interface McpTerminalError {
   code: McpTerminalErrorCode;
@@ -139,7 +135,7 @@ export class McpClient extends EventEmitter {
   private _tools: McpToolSchema[] = [];
   private _resources: McpResource[] = [];
   private _prompts: McpPrompt[] = [];
-  private transport: 'stdio' | 'sse' | 'http' = 'stdio';
+  private transport: McpTransport = 'stdio';
   private sseUrl: string | null = null;
   private readonly command: string;
   private readonly args: string[];

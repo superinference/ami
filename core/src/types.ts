@@ -1,5 +1,20 @@
 import type { SuperInferenceConfig } from './superinference/types';
 
+export const OUTPUT_FORMATS = ['json', 'jsonl', 'text'] as const;
+export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
+
+export const INPUT_FORMATS = ['text', 'stream-json'] as const;
+export type InputFormat = (typeof INPUT_FORMATS)[number];
+
+export const CHAT_MODES = ['ask', 'edit', 'agent'] as const;
+export type ChatMode = (typeof CHAT_MODES)[number];
+
+export const THEMES = ['default', 'dark', 'light'] as const;
+export type Theme = (typeof THEMES)[number];
+
+export const OUTPUT_STYLES = ['default', 'concise', 'explanatory'] as const;
+export type OutputStyle = (typeof OUTPUT_STYLES)[number];
+
 export interface TextContent {
   type: 'text';
   text: string;
@@ -171,8 +186,11 @@ export interface ProviderConfig {
   fallbackModel?: string;
 }
 
+export const STREAM_CHUNK_TYPES = ['content_delta', 'tool_call_delta', 'thinking_delta', 'done', 'error'] as const;
+export type StreamChunkType = (typeof STREAM_CHUNK_TYPES)[number];
+
 export interface StreamChunk {
-  type: 'content_delta' | 'tool_call_delta' | 'thinking_delta' | 'done' | 'error';
+  type: StreamChunkType;
   text?: string;
   toolCall?: {
     index: number;
@@ -255,6 +273,15 @@ export const EXIT_REASONS = [
 ] as const;
 
 export type ExitReason = (typeof EXIT_REASONS)[number];
+
+export const ENGINE_EVENT_TYPES = [
+  'text_delta', 'thinking_delta', 'tool_call_generating', 'tool_use_start',
+  'tool_use_progress', 'tool_use_result', 'turn_complete', 'usage_update',
+  'error', 'retry_attempt', 'error_classified', 'provider_changed',
+  'checkpoint_created', 'analytics_summary', 'superinference_state',
+  'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
+  'plan_mode_changed', 'task_updated', 'done',
+] as const;
 
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
