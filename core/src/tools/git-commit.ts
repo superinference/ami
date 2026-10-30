@@ -131,7 +131,13 @@ export const gitCommitTool: ToolDefinition = {
     try {
       _gitCommitFs.writeFileSync(tmpFile, finalMessage, 'utf-8');
 
-      const commitResult = await execCommand(`git commit -F "${tmpFile}"`, execOpts);
+      // In detached/unattended mode, bypass user hooks and GPG signing so a
+      // pre-commit hook or a passphrase prompt can't hang the run. In the
+      // interactive TUI we deliberately keep the user's hooks/signing active.
+      const unattendedFlags = context.detachedMode
+        ? ' -c core.hooksPath=/dev/null -c commit.gpgsign=false'
+        : '';
+      const commitResult = await execCommand(`git${unattendedFlags} commit -F "${tmpFile}"`, execOpts);
       if (commitResult.exitCode !== 0) {
         const err = (commitResult.stderr || commitResult.stdout).trim();
         return { output: `Error: git commit failed:\n${err}`, isError: true };

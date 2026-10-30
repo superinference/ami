@@ -8,6 +8,21 @@ export const GIT_NO_PROMPT_ENV = {
   GIT_NO_REPLACE_OBJECTS: '1',
 };
 
+// Config flags for unattended git: never fire user hooks (a post-checkout or
+// pre-commit hook can block forever on prompts), never start the fsmonitor
+// daemon (hangs on `status`), never attempt GPG signing (blocks on a passphrase
+// prompt). Placed before the subcommand (`git -c k=v <cmd>`).
+const GIT_HARDENING_FLAGS =
+  '-c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false';
+
+// Hard ceiling so a wedged git invocation can never hang an unattended run.
+const GIT_CMD_TIMEOUT_MS = 15_000;
+
+/** Prefix a git subcommand with the unattended hardening config flags. */
+function gitCmd(args: string): string {
+  return `git ${GIT_HARDENING_FLAGS} ${args}`;
+}
+
 export const MAX_WORKTREES = 10;
 
 const EPHEMERAL_WORKTREE_PATTERNS = [
@@ -66,8 +81,8 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
   let originalHead: string | undefined;
   const gitEnv = { ...process.env, ...GIT_NO_PROMPT_ENV };
   try {
-    originalBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', env: gitEnv }).trim();
-    originalHead = execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8', env: gitEnv }).trim();
+    originalBranch = execSync(gitCmd('rev-parse --abbrev-ref HEAD'), { cwd, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
+    originalHead = execSync(gitCmd('rev-parse HEAD'), { cwd, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
   } catch {}
 
   // Create the worktree on disk if it doesn't already exist.
@@ -76,7 +91,7 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
   // to create the worktree as well.
   if (!fs.existsSync(worktreeDir)) {
     fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
-    execSync(`git worktree add -B "${branch}" "${worktreeDir}" HEAD`, { cwd, stdio: 'ignore', env: gitEnv });
+    execSync(gitCmd(`worktree add -B "${branch}" "${worktreeDir}" HEAD`), { cwd, stdio: 'ignore', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS });
   }
 
   const session: WorktreeSession = {
@@ -100,14 +115,14 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
 export function countWorktreeChanges(worktreePath: string, cwd: string): { uncommitted: number; unpushed: number } | null {
   const gitEnv = { ...process.env, ...GIT_NO_PROMPT_ENV };
   try {
-    const status = execSync('git status --porcelain', { cwd: worktreePath, encoding: 'utf-8', env: gitEnv }).trim();
+    const status = execSync(gitCmd('status --porcelain'), { cwd: worktreePath, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
     const uncommitted = status ? status.split('\n').length : 0;
     let unpushed = 0;
     try {
       // Check if HEAD is detached
       let isDetached = false;
       try {
-        execSync('git symbolic-ref -q HEAD', { cwd: worktreePath, encoding: 'utf-8', env: gitEnv });
+        execSync(gitCmd('symbolic-ref -q HEAD'), { cwd: worktreePath, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS });
       } catch {
         isDetached = true;
       }
@@ -118,7 +133,7 @@ export function countWorktreeChanges(worktreePath: string, cwd: string): { uncom
       // For detached HEAD, also exclude local branches so we only count
       // truly orphaned commits.
       const notFlags = isDetached ? '--not --remotes --branches' : '--not --remotes';
-      const revList = execSync(`git rev-list HEAD ${notFlags}`, { cwd: worktreePath, encoding: 'utf-8', env: gitEnv }).trim();
+      const revList = execSync(gitCmd(`rev-list HEAD ${notFlags}`), { cwd: worktreePath, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
       unpushed = revList ? revList.split('\n').length : 0;
     } catch {}
     return { uncommitted, unpushed };
@@ -151,7 +166,7 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): str
         if (changes.uncommitted > 0 || changes.unpushed > 0) continue;
 
         try {
-          execSync(`git worktree remove --force "${fullPath}"`, { cwd, timeout: 10000, env: gitEnv });
+          execSync(gitCmd(`worktree remove --force "${fullPath}"`), { cwd, timeout: 10000, env: gitEnv });
           cleaned.push(entry);
         } catch {}
       }
@@ -160,7 +175,7 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): str
 
   // Prune any stale worktree metadata
   try {
-    execSync('git worktree prune', { cwd, timeout: 5000, env: gitEnv, stdio: 'ignore' });
+    execSync(gitCmd('worktree prune'), { cwd, timeout: 5000, env: gitEnv, stdio: 'ignore' });
   } catch {}
 
   return cleaned;

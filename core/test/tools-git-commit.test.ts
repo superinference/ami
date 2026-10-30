@@ -423,3 +423,39 @@ describe('git_commit — attribution opt-out', () => {
     assert.doesNotMatch(gitCommitTool.description, /always appended automatically/);
   });
 });
+
+describe('git_commit — detached mode bypasses user hooks/signing', () => {
+  function repoWithFailingHook(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-git-hook-'));
+    git('init', dir);
+    git('config user.name "T"', dir);
+    git('config user.email "t@t.t"', dir);
+    const hookPath = path.join(dir, '.git', 'hooks', 'pre-commit');
+    fs.writeFileSync(hookPath, '#!/bin/sh\necho "hook ran" >&2\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'f.txt'), 'x\n');
+    return dir;
+  }
+
+  it('interactive mode runs the user pre-commit hook (commit fails)', async () => {
+    const dir = repoWithFailingHook();
+    try {
+      const result = await gitCommitTool.execute(
+        { message: 'feat: interactive', files: ['f.txt'] },
+        ctx(dir), // detachedMode undefined → hook active
+      );
+      assert.equal(result.isError, true, 'the failing pre-commit hook must block the commit');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('detached mode bypasses the pre-commit hook (commit succeeds)', async () => {
+    const dir = repoWithFailingHook();
+    try {
+      const result = await gitCommitTool.execute(
+        { message: 'feat: detached', files: ['f.txt'] },
+        ctx(dir, { detachedMode: true }), // hooksPath=/dev/null → hook skipped
+      );
+      assert.equal(result.isError, false, 'detached mode must bypass the blocking hook');
+      assert.ok(git('log -1 --format=%B', dir).includes('feat: detached'));
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
