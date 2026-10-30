@@ -386,6 +386,11 @@ export interface EngineConfig {
   enableTitleGeneration?: boolean;
   /** When true, the engine is running in non-interactive (detached / --prompt) mode. */
   detachedMode?: boolean;
+  /** Task classification for detached mode. 'bugfix' injects the full bug-fix
+   *  overlay (mandatory tool calls, bug-fix loop, edit-before-complete). Omit or
+   *  set to 'generic' for a lightweight overlay that lets the model answer
+   *  directly when no tools are needed. */
+  taskType?: 'generic' | 'bugfix';
   /** Current subagent nesting depth — propagated to child ToolContext. */
   agentDepth?: number;
   /** Maximum subagent nesting depth (default 5). */
