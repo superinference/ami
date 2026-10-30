@@ -586,7 +586,8 @@ function buildSkillTree(): string {
     JSON.stringify({ name: 'barebones', version: '0.1.0' }),
   );
 
-  // 8. AGENTS.md at project root → loadAgentsFile + getSkillContext section.
+  // 8. AGENTS.md at project root → used by the loadAgentsFile raw accessor
+  //    (no longer injected by getSkillContext — MemoryManager owns that path).
   fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Project Rules\n\nFollow them.');
 
   return cwd;
@@ -749,12 +750,13 @@ describe('SkillManager — content substitution', () => {
 });
 
 describe('SkillManager — context assembly', () => {
-  it('assembles AGENTS.md + skills (whenToUse) + agents (model/maxTurns)', () => {
+  it('assembles skills (whenToUse) + agents (model/maxTurns), excluding AGENTS.md', () => {
     const cwd = buildSkillTree();
     const sm = new SkillManager(cwd);
     const ctx = sm.getSkillContext();
-    assert.match(ctx, /## AGENTS\.md/);
-    assert.match(ctx, /Project Rules/);
+    // AGENTS.md is owned by MemoryManager; the skills path must not re-inject it.
+    assert.ok(!/## AGENTS\.md/.test(ctx));
+    assert.ok(!/Project Rules/.test(ctx));
     assert.match(ctx, /## Available Skills/);
     assert.match(ctx, /\/greeter/);
     assert.match(ctx, /When: when greeting the user/); // user-invocable skill whenToUse

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, type Intent, type Scope } from '../src/prompt-categorizer';
+import { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, type Intent, type Scope, type PromptTier } from '../src/prompt-categorizer';
 
 // ---------------------------------------------------------------------------
 // Intent detection
@@ -338,5 +338,102 @@ describe('PROMPT_SCOPES', () => {
     for (const scope of ['selection', 'current_file', 'few_files', 'codebase'] as const) {
       assert.ok(PROMPT_SCOPES.includes(scope), `missing scope: ${scope}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier selection
+// ---------------------------------------------------------------------------
+describe('selectTier', () => {
+  const tier = (msg: string, sig = {}) => selectTier(msg, categorizePrompt(msg), sig);
+
+  it('classifies a trivial chat question as conversational', () => {
+    assert.equal(tier('what is 2+2'), 'conversational');
+    assert.equal(tier('hello there'), 'conversational');
+    assert.equal(tier('explain how promises work'), 'conversational');
+    assert.equal(tier('why is the sky blue?'), 'conversational');
+  });
+
+  it('never goes conversational when context files are attached', () => {
+    // non-work intent + files → standard (not conversational, not full)
+    assert.equal(selectTier('what is 2+2', categorizePrompt('what is 2+2'), { hasContextFiles: true }), 'standard');
+  });
+
+  it('never goes conversational when the message carries code tokens', () => {
+    assert.equal(tier('explain foo.ts'), 'standard');
+    assert.equal(tier('what does getUserById do'), 'standard');           // camelCase
+    assert.equal(tier('explain the user_id field'), 'standard');          // snake_case
+    assert.equal(tier('what is `const x = 1`'), 'standard');              // inline code
+    assert.equal(tier('explain src/app/main.py'), 'standard');           // path
+    assert.equal(tier('what does render() return'), 'standard');         // call syntax
+  });
+
+  it('never goes conversational for work intents', () => {
+    assert.equal(tier('fix the bug'), 'standard');
+    assert.equal(tier('create a helper'), 'standard');
+    assert.equal(tier('refactor this'), 'standard');
+    assert.equal(tier('review the change'), 'standard');
+    assert.equal(tier('commit the work'), 'standard');
+  });
+
+  it('does not go conversational for long messages even if chatty', () => {
+    const long = 'explain ' + 'word '.repeat(40);
+    assert.equal(tier(long), 'standard');
+  });
+
+  it('caps at standard (never full) on a tiny context window', () => {
+    const msg = 'refactor the entire codebase everywhere';
+    assert.equal(selectTier(msg, categorizePrompt(msg), { contextWindow: 8000 }), 'standard');
+    // a chat turn on a tiny window stays conversational (even leaner, desirable)
+    assert.equal(selectTier('what is 2+2', categorizePrompt('what is 2+2'), { contextWindow: 8000 }), 'conversational');
+  });
+
+  it('promotes to full on explicit breadth markers', () => {
+    assert.equal(tier('refactor this across the codebase'), 'full');
+    assert.equal(tier('migrate everything to the new API'), 'full');
+    assert.equal(tier('update every file in the project'), 'full');
+  });
+
+  it('promotes to full for non-explain work on attached files', () => {
+    assert.equal(selectTier('refactor this', categorizePrompt('refactor this'), { hasContextFiles: true }), 'full');
+    // explain + files stays standard (reading, not broad editing)
+    assert.equal(selectTier('explain this', categorizePrompt('explain this'), { hasContextFiles: true }), 'standard');
+  });
+
+  it('defaults ambiguous work to standard', () => {
+    assert.equal(tier('add a test'), 'standard');
+  });
+
+  it('treats contextWindow <= 0 as unknown (not a tiny window)', () => {
+    // contextWindow 0 fails the `> 0` guard → tinyWindow false → normal routing.
+    assert.equal(selectTier('what is 2+2', categorizePrompt('what is 2+2'), { contextWindow: 0 }), 'conversational');
+    assert.equal(selectTier('refactor across the codebase', categorizePrompt('refactor across the codebase'), { contextWindow: 0 }), 'full');
+  });
+
+  it('a large contextWindow is not a tiny window', () => {
+    assert.equal(selectTier('refactor across the codebase', categorizePrompt('refactor across the codebase'), { contextWindow: 200000 }), 'full');
+  });
+
+  it('a very long (>280 char) chatty message is not conversational', () => {
+    const longChat = 'why ' + 'really '.repeat(60) + 'though';
+    assert.ok(longChat.length > 280);
+    assert.equal(selectTier(longChat, categorizePrompt(longChat)), 'standard');
+  });
+});
+
+describe('tier helpers', () => {
+  it('PROMPT_TIERS and TIER_RANK are consistent and ordered', () => {
+    assert.deepEqual([...PROMPT_TIERS], ['conversational', 'standard', 'full']);
+    assert.ok(TIER_RANK.conversational < TIER_RANK.standard);
+    assert.ok(TIER_RANK.standard < TIER_RANK.full);
+  });
+
+  it('maxTier returns the higher-capability tier (ratchet primitive)', () => {
+    assert.equal(maxTier('conversational', 'standard'), 'standard');
+    assert.equal(maxTier('full', 'conversational'), 'full');
+    assert.equal(maxTier('standard', 'standard'), 'standard');
+    assert.equal(maxTier('conversational', 'conversational'), 'conversational');
+    const t: PromptTier = 'full';
+    assert.equal(maxTier(t, 'full'), 'full');
   });
 });

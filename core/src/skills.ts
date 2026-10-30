@@ -455,16 +455,15 @@ export class SkillManager {
 
   /**
    * Get all skill/agent context formatted for system prompt injection.
-   * Returns empty string if no skills, agents, or AGENTS.md exist.
+   * Returns empty string if no skills or agents exist.
+   *
+   * NOTE: Project instructions (AGENTS.md/CLAUDE.md) are intentionally NOT
+   * injected here — the MemoryManager owns instruction-file injection (sanitized
+   * and size-capped). Emitting AGENTS.md here too would double-inject it and
+   * bypass that safety cap. See loadAgentsFile() for the raw accessor.
    */
   getSkillContext(): string {
     const sections: string[] = [];
-
-    // AGENTS.md content (Hermes-style)
-    const agentsContent = this.loadAgentsFile();
-    if (agentsContent) {
-      sections.push(`## AGENTS.md\n\n${agentsContent}`);
-    }
 
     // Available skills
     const invocableSkills = this.listSkills();

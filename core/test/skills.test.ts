@@ -393,7 +393,7 @@ Lint Python files.
       assert.equal(mgr.loadAgentsFile(), '');
     });
 
-    it('includes AGENTS.md in skill context', () => {
+    it('does NOT inject AGENTS.md into skill context (MemoryManager owns that)', () => {
       fs.writeFileSync(
         path.join(tmpDir, 'AGENTS.md'),
         '# Agent Rules\n\nBe concise.',
@@ -402,8 +402,12 @@ Lint Python files.
       const mgr = new SkillManager(tmpDir);
       const context = mgr.getSkillContext();
 
-      assert.ok(context.includes('## AGENTS.md'));
-      assert.ok(context.includes('Be concise.'));
+      // The skills path must not duplicate project instructions — that would
+      // bypass the MemoryManager's sanitize/size-cap and double-inject the file.
+      assert.ok(!context.includes('## AGENTS.md'));
+      assert.ok(!context.includes('Be concise.'));
+      // loadAgentsFile() still works as a raw accessor.
+      assert.ok(mgr.loadAgentsFile().includes('Be concise.'));
     });
   });
 
@@ -576,8 +580,8 @@ Build things.
       assert.ok(context.includes('claude-3.5-sonnet'));
     });
 
-    it('includes AGENTS.md, skills, and agents in combined context', () => {
-      // Set up AGENTS.md
+    it('combines skills and agents, but excludes AGENTS.md (owned by MemoryManager)', () => {
+      // AGENTS.md must NOT appear in skill context — avoids double-injection.
       fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), 'Follow these rules.');
 
       // Set up a project skill
@@ -611,8 +615,8 @@ Test everything.
       const mgr = new SkillManager(tmpDir);
       const context = mgr.getSkillContext();
 
-      assert.ok(context.includes('## AGENTS.md'));
-      assert.ok(context.includes('Follow these rules.'));
+      assert.ok(!context.includes('## AGENTS.md'));
+      assert.ok(!context.includes('Follow these rules.'));
       assert.ok(context.includes('## Available Skills'));
       assert.ok(context.includes('/deploy'));
       assert.ok(context.includes('## Available Agents'));
