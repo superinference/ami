@@ -669,3 +669,50 @@ describe('MemoryManager — loadMemories sorting', () => {
     assert.equal(memories[0].name, newestName); // newest-first ordering preserved
   });
 });
+
+describe('MemoryManager — readMemory + Stored Memories index mode', () => {
+  beforeEach(() => { tmpDir = createTmpDir(); });
+  afterEach(() => { cleanupTmpDir(tmpDir); });
+
+  it('readMemory returns a stored body by name (case-insensitive), null when absent', () => {
+    const mgr = new MemoryManager(tmpDir);
+    mgr.saveMemory('deploy-notes', 'Always deploy with the container runtime.', 'deployment', 'project');
+    assert.ok(mgr.readMemory('deploy-notes')?.includes('container runtime'));
+    assert.ok(mgr.readMemory('DEPLOY-NOTES')?.includes('container runtime')); // case-insensitive
+    assert.equal(mgr.readMemory('nonexistent'), null);
+  });
+
+  it('getMemoryContext inlines small memory sets in full (default and under budget)', () => {
+    const mgr = new MemoryManager(tmpDir);
+    mgr.saveMemory('m1', 'short body one', 'd1', 'project');
+    // No opts → full dump.
+    assert.ok(mgr.getMemoryContext().includes('## Stored Memories\n'));
+    assert.ok(mgr.getMemoryContext().includes('short body one'));
+    // Under budget → still full.
+    const ctx = mgr.getMemoryContext({ storedInlineBudget: 10_000 });
+    assert.ok(ctx.includes('## Stored Memories\n'));
+    assert.ok(ctx.includes('short body one'));
+    assert.ok(!ctx.includes('(index —'));
+  });
+
+  it('getMemoryContext switches to an index when bodies exceed the inline budget', () => {
+    const mgr = new MemoryManager(tmpDir);
+    mgr.saveMemory('big-one', 'X'.repeat(400), 'first big memory', 'project');
+    mgr.saveMemory('big-two', 'Y'.repeat(400), 'second big memory', 'project');
+    const ctx = mgr.getMemoryContext({ storedInlineBudget: 200 });
+    assert.ok(ctx.includes('## Stored Memories (index — call read_memory'));
+    // Index carries names + descriptions + sizes, NOT the full bodies.
+    assert.ok(ctx.includes('big-one'));
+    assert.ok(ctx.includes('first big memory'));
+    assert.ok(ctx.includes('(400 chars'));
+    assert.ok(!ctx.includes('X'.repeat(400)));
+    assert.ok(!ctx.includes('Y'.repeat(400)));
+  });
+
+  it('a zero budget forces index mode even for tiny memories', () => {
+    const mgr = new MemoryManager(tmpDir);
+    mgr.saveMemory('tiny', 'hi', 'tiny note', 'project');
+    const ctx = mgr.getMemoryContext({ storedInlineBudget: 0 });
+    assert.ok(ctx.includes('## Stored Memories (index'));
+  });
+});

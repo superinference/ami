@@ -904,12 +904,12 @@ describe('scout tool', () => {
 // ToolRegistry
 // ---------------------------------------------------------------------------
 describe('ToolRegistry', () => {
-  it('createDefaultTools returns all 41 tools', () => {
+  it('createDefaultTools returns all 42 tools', () => {
     const registry = createDefaultTools('/tmp');
     const tools = registry.getAll();
-    assert.equal(tools.length, 41);
+    assert.equal(tools.length, 42);
     const names = tools.map(t => t.name).sort();
-    assert.deepEqual(names, ['AskUserQuestion', 'EndConversation', 'agentic_fetch', 'bash', 'brief', 'config', 'cron_create', 'cron_delete', 'cron_list', 'diagnostics', 'enter_worktree', 'exit_worktree', 'file_edit', 'file_read', 'find_references', 'git_commit', 'glob', 'grep', 'list_dir', 'notebook_edit', 'plan_mode', 'schedule_wakeup', 'scout', 'search_symbols', 'send_message', 'skill', 'sleep', 'structured_output', 'task', 'task_complete', 'task_kill', 'task_list', 'task_output', 'task_tracker', 'team_create', 'team_delete', 'todo_write', 'tool_search', 'web_fetch', 'web_search', 'workflow']);
+    assert.deepEqual(names, ['AskUserQuestion', 'EndConversation', 'agentic_fetch', 'bash', 'brief', 'config', 'cron_create', 'cron_delete', 'cron_list', 'diagnostics', 'enter_worktree', 'exit_worktree', 'file_edit', 'file_read', 'find_references', 'git_commit', 'glob', 'grep', 'list_dir', 'notebook_edit', 'plan_mode', 'read_memory', 'schedule_wakeup', 'scout', 'search_symbols', 'send_message', 'skill', 'sleep', 'structured_output', 'task', 'task_complete', 'task_kill', 'task_list', 'task_output', 'task_tracker', 'team_create', 'team_delete', 'todo_write', 'tool_search', 'web_fetch', 'web_search', 'workflow']);
   });
 
   it('get returns a specific tool', () => {

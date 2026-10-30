@@ -557,7 +557,22 @@ export class MemoryManager {
     return sections.join('\n\n');
   }
 
-  getMemoryContext(): string {
+  /**
+   * Return the sanitized body of a single stored memory by name (case-
+   * insensitive), or null if none matches. Backs the read_memory tool so a
+   * memory shown only as an index entry can be expanded on demand.
+   */
+  readMemory(name: string): string | null {
+    const target = name.trim().toLowerCase();
+    for (const m of this.loadMemories()) {
+      if ((m.name || '').trim().toLowerCase() === target) {
+        return sanitizeMemoryContent(m.content);
+      }
+    }
+    return null;
+  }
+
+  getMemoryContext(opts?: { storedInlineBudget?: number }): string {
     const sections: string[] = [];
 
     const userGlobal = this.loadUserGlobalInstructions();
@@ -572,22 +587,41 @@ export class MemoryManager {
 
     const memories = this.loadMemories();
     if (memories.length > 0) {
-      const memoryLines = memories.map(m => {
-        const typeTag = m.memoryType ? `[${m.memoryType}] ` : '';
-        const ageTag = m.freshness ? ` (${m.freshness})` : '';
-        const header = `### ${typeTag}${m.name || 'Untitled'}${ageTag}`;
-        const desc = m.description ? `> ${m.description}` : '';
-        let body = sanitizeMemoryContent(m.content);
-        if ((m.ageDays ?? 0) > 1) {
-          body = `[Note: This memory is ${m.freshness} old. Verify against current state before acting.]\n${body}`;
-        }
-        const parts = [header];
-        if (desc) parts.push(desc);
-        parts.push('', body);
-        return parts.join('\n');
-      });
+      // When the combined stored-memory bodies exceed the caller's inline budget,
+      // emit a compact INDEX (name + description + size) instead of every body;
+      // the read_memory tool expands any entry on demand. Small memory sets stay
+      // fully inline (no tool round-trip needed). No budget → always full.
+      const totalBody = memories.reduce((n, m) => n + m.content.length, 0);
+      const useIndex = typeof opts?.storedInlineBudget === 'number'
+        && opts.storedInlineBudget >= 0
+        && totalBody > opts.storedInlineBudget;
 
-      sections.push(`## Stored Memories\n\n${memoryLines.join('\n\n')}`);
+      if (useIndex) {
+        const indexLines = memories.map(m => {
+          const typeTag = m.memoryType ? `[${m.memoryType}] ` : '';
+          const ageTag = m.freshness ? `, ${m.freshness}` : '';
+          const desc = m.description ? ` — ${m.description}` : '';
+          return `- ${typeTag}${m.name || 'Untitled'}${desc} (${m.content.length} chars${ageTag})`;
+        });
+        sections.push(`## Stored Memories (index — call read_memory with a name for the full body)\n\n${indexLines.join('\n')}`);
+      } else {
+        const memoryLines = memories.map(m => {
+          const typeTag = m.memoryType ? `[${m.memoryType}] ` : '';
+          const ageTag = m.freshness ? ` (${m.freshness})` : '';
+          const header = `### ${typeTag}${m.name || 'Untitled'}${ageTag}`;
+          const desc = m.description ? `> ${m.description}` : '';
+          let body = sanitizeMemoryContent(m.content);
+          if ((m.ageDays ?? 0) > 1) {
+            body = `[Note: This memory is ${m.freshness} old. Verify against current state before acting.]\n${body}`;
+          }
+          const parts = [header];
+          if (desc) parts.push(desc);
+          parts.push('', body);
+          return parts.join('\n');
+        });
+
+        sections.push(`## Stored Memories\n\n${memoryLines.join('\n\n')}`);
+      }
     }
 
     const teamMemories = this.loadTeamMemories().map(sanitizeMemoryContent);

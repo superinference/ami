@@ -6,6 +6,7 @@ import { fileEditTool } from './file-edit';
 import { grepTool } from './grep';
 import { globTool } from './glob';
 import { listDirTool } from './list-dir';
+import { readMemoryTool } from './read-memory';
 import { webFetchTool } from './web-fetch';
 import { webSearchTool } from './web-search';
 import { notebookEditTool } from './notebook-edit';
@@ -124,6 +125,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(agenticFetchTool);
   registry.register(scoutTool);
   registry.register(endConversationTool);
+  registry.register(readMemoryTool);
 
   setSearchableTools(registry.getAll());
 
@@ -137,6 +139,7 @@ export { fileEditTool } from './file-edit';
 export { grepTool } from './grep';
 export { globTool } from './glob';
 export { listDirTool } from './list-dir';
+export { readMemoryTool } from './read-memory';
 export { webFetchTool } from './web-fetch';
 export { webSearchTool } from './web-search';
 export { notebookEditTool } from './notebook-edit';
