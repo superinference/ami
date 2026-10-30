@@ -5,6 +5,7 @@ import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { spillToolText } from './spill-output';
+import { mapChildToSubagentEvent } from './subagent-relay';
 import { SessionManager } from '../session';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
@@ -509,6 +510,13 @@ export const taskTool: ToolDefinition = {
       context._hookManager.executeSubagentStart({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});
     }
 
+    // Surface this foreground subagent live to the parent engine's UI.
+    const relayDepth = childDepth._agentDepth;
+    context._emitChild?.({
+      type: 'subagent_start', nodeId: taskId, depth: relayDepth,
+      agentName: agentName || undefined, model: subConfig.provider?.model, prompt,
+    });
+
     let toolUseCount = 0;
     let totalTokens = 0;
     const recentActivities: string[] = [];
@@ -530,6 +538,8 @@ export const taskTool: ToolDefinition = {
       for await (const event of subEngine.submit(effectivePromptForSubmit)) {
         resetStallTimer();
         if (stalled) break;
+        const relayed = mapChildToSubagentEvent(event, taskId, relayDepth);
+        if (relayed) context._emitChild?.(relayed);
         if (event.type === 'text_delta') {
           resultText += event.text;
         }
@@ -557,6 +567,10 @@ export const taskTool: ToolDefinition = {
       const output = resultText.trim()
         ? `[Partial output before error]\n\n${resultText.trim()}\n\n[Error]\n${errMsg}`
         : `Subagent error: ${errMsg}`;
+      context._emitChild?.({
+        type: 'subagent_result', nodeId: taskId, depth: relayDepth,
+        success: false, summary: errMsg.split('\n')[0].slice(0, 120), tokens: totalTokens,
+      });
       return {
         output,
         isError: true,
@@ -589,6 +603,10 @@ export const taskTool: ToolDefinition = {
     const cappedResult = taskMaxChars && taskMaxChars > 0
       ? spillToolText(context.cwd, 'task', resultText, taskMaxChars)
       : resultText;
+    context._emitChild?.({
+      type: 'subagent_result', nodeId: taskId, depth: relayDepth,
+      success: true, summary: (resultText.trim().split('\n')[0] || 'done').slice(0, 120), tokens: totalTokens,
+    });
     return { output: `${cappedResult}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens]` };
   },
 };

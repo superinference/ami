@@ -107,6 +107,10 @@ export interface ToolContext {
   _engineAddSystemReminder?: (msg: string) => void;
   /** Signal the engine to load a deferred tool into the active set (tool_search select). */
   _loadDeferredTool?: (name: string) => void;
+  /** Relay a child (sub-engine) event up to the parent engine's event stream so
+   *  foreground subagents are visible live. Injected by the tool executor (which
+   *  drains it onto the parent generator); absent → no relay (back-compat). */
+  _emitChild?: (event: EngineEvent) => void;
   /** Per-tool output budgets (e.g. inline bash stdout cap before spill). */
   outputBudget?: { bashMaxChars?: number; taskTailLines?: number; taskMaxChars?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
@@ -280,7 +284,8 @@ export const ENGINE_EVENT_TYPES = [
   'error', 'retry_attempt', 'error_classified', 'provider_changed',
   'checkpoint_created', 'analytics_summary', 'superinference_state',
   'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
-  'plan_mode_changed', 'task_updated', 'done',
+  'plan_mode_changed', 'task_updated',
+  'subagent_start', 'subagent_progress', 'subagent_result', 'done',
 ] as const;
 
 export type EngineEvent =
@@ -305,6 +310,9 @@ export type EngineEvent =
   | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
+  | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string }
+  | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string }
+  | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 export interface EngineConfig {

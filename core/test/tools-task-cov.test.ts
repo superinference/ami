@@ -1011,3 +1011,66 @@ describe('taskListTool', () => {
     assert.ok(/\d\.\dm\b/.test(r.output), 'minutes elapsed shown in m');
   });
 });
+
+// ===========================================================================
+// task.ts — foreground subagent event relay via _emitChild
+// ===========================================================================
+
+describe('taskTool — subagent event relay', () => {
+  beforeEach(() => resetAgentRegistry());
+
+  it('emits subagent_start, progress, and a success result on the child events', async () => {
+    const emitted: any[] = [];
+    await taskTool.execute(
+      { prompt: 'do it', mode: 'explore' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'sub-model' },
+        _emitChild: (e: any) => emitted.push(e),
+        _engineFactory: () => ({ submit: gen([
+          { type: 'text_delta', text: 'working on it' },
+          { type: 'tool_use_start', toolName: 'grep', toolCallId: 'c1', input: {} },
+          { type: 'usage_update', stats: { totalTokens: 55 } },
+        ]) }),
+      }),
+    );
+    const types = emitted.map(e => e.type);
+    assert.ok(types.includes('subagent_start'), `got: ${types.join(',')}`);
+    assert.ok(types.includes('subagent_progress'));
+    const start = emitted.find(e => e.type === 'subagent_start');
+    assert.equal(start.model, 'sub-model');
+    assert.equal(start.depth, 1);
+    const res = emitted.find(e => e.type === 'subagent_result');
+    assert.ok(res);
+    assert.equal(res.success, true);
+    assert.equal(res.tokens, 55);
+    // start must precede result, same nodeId
+    assert.equal(res.nodeId, start.nodeId);
+  });
+
+  it('emits a failed subagent_result when the sub-engine throws', async () => {
+    const emitted: any[] = [];
+    await taskTool.execute(
+      { prompt: 'do it', mode: 'explore' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _emitChild: (e: any) => emitted.push(e),
+        _engineFactory: () => ({ submit: async function* () { throw new Error('boom failure'); } }),
+      }),
+    );
+    const res = emitted.find(e => e.type === 'subagent_result');
+    assert.ok(res, 'a result must be emitted even on error');
+    assert.equal(res.success, false);
+    assert.match(res.summary, /boom failure/);
+  });
+
+  it('is a no-op (no throw) when _emitChild is absent (back-compat)', async () => {
+    const r = await taskTool.execute(
+      { prompt: 'do it', mode: 'explore' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _engineFactory: () => ({ submit: gen([{ type: 'text_delta', text: 'ok' }]) }),
+      }),
+    );
+    assert.equal(r.isError, undefined);
+  });
+});
