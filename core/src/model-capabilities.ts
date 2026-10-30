@@ -31,6 +31,7 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'claude-fable-5': 1_000_000,
   'claude-opus-5': 1_000_000,
   'claude-sonnet-5': 1_000_000,
+  'gpt-5.6-luna': 1_000_000,
   'gpt-6-astra': 1_050_000,
   'gpt-6.1-sol': 1_050_000,
   'gpt-6-luna': 1_050_000,
@@ -360,11 +361,15 @@ function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
 
 /**
  * Returns true if the model requires the /v1/responses endpoint for tool use.
- * gpt-6+ models do not support function tools with reasoning on /v1/chat/completions.
+ * gpt-5.6+ models do not support function tools with reasoning on /v1/chat/completions.
  */
 export function requiresResponsesAPI(modelId: string): boolean {
-  const major = parseGptMajorVersion(modelId);
-  return major !== null && major >= 6;
+  if (!modelId.startsWith('gpt-')) return false;
+  const afterPrefix = modelId.slice(4);
+  const versionMatch = afterPrefix.match(/^(\d+(?:\.\d+)?)/);
+  if (!versionMatch) return false;
+  const version = parseFloat(versionMatch[1]);
+  return version >= 5.6;
 }
 
 export function discoverFromModelList(records: Record<string, unknown>[]): {
@@ -608,6 +613,7 @@ const TOKEN_PRICING: Record<string, { input: number; output: number }> = {
   'claude-sonnet': { input: 3e-6,   output: 15e-6 },
   'claude-haiku':  { input: 0.25e-6, output: 1.25e-6 },
   'claude-fable':  { input: 3e-6,   output: 15e-6 },
+  'gpt-5.6':       { input: 2e-6,   output: 8e-6 },
   'gpt-4o':        { input: 2.5e-6, output: 10e-6 },
   'gpt-4o-mini':   { input: 0.15e-6, output: 0.6e-6 },
   'gpt-4.1':       { input: 2e-6,   output: 8e-6 },

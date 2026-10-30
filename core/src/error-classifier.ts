@@ -91,12 +91,9 @@ function classifySDKError(error: Error): ClassifiedError | null {
       case 401:
         return { category: 'auth_error', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
       case 403:
-        // 403 with auth keywords is non-retryable; otherwise transient
-        if (lowerMsg.includes('api key') || lowerMsg.includes('unauthorized') ||
-            lowerMsg.includes('invalid_api_key') || lowerMsg.includes('authentication')) {
-          return { category: 'auth_error', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
-        }
-        return { category: 'auth_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 5000 };
+        // 403 is a permanent permission denial — never retryable.
+        // Covers: invalid API key, unauthorized, no model access, project restrictions.
+        return { category: 'auth_error', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
       case 429:
         return { category: 'rate_limited', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
       case 413:
@@ -200,10 +197,10 @@ export function classifyError(error: string | Error): ClassifiedError {
     return { category: 'auth_error', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
-  // 403 — often transient (quota enforcement, intermittent key restrictions).
-  // Retry with delay and allow fallback to another provider.
+  // 403 — permanent permission denial (no model access, project restrictions).
+  // Never retryable — retrying burns max-turns on a permanent error.
   if (/\bHTTP\s+403\b/i.test(errorString) || lower.includes('forbidden')) {
-    return { category: 'auth_error', message: errorString, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 5000 };
+    return { category: 'auth_error', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
   // Plan/usage limit — not retryable (billing or plan cap, not transient)

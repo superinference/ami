@@ -806,7 +806,8 @@ describe('clampEffortLevel', () => {
 // requiresResponsesAPI
 // ---------------------------------------------------------------------------
 describe('requiresResponsesAPI', () => {
-  it('returns true for gpt-6+ models', () => {
+  it('returns true for gpt-5.6+ models', () => {
+    assert.equal(requiresResponsesAPI('gpt-5.6-luna'), true);
     assert.equal(requiresResponsesAPI('gpt-6-luna'), true);
     assert.equal(requiresResponsesAPI('gpt-6-astra'), true);
     assert.equal(requiresResponsesAPI('gpt-6.1-sol'), true);
@@ -814,9 +815,8 @@ describe('requiresResponsesAPI', () => {
     assert.equal(requiresResponsesAPI('gpt-6-sol'), true);
   });
 
-  it('returns false for gpt-5 family (chat completions still work)', () => {
+  it('returns false for gpt-5.5 and below (chat completions still work)', () => {
     assert.equal(requiresResponsesAPI('gpt-5'), false);
-    assert.equal(requiresResponsesAPI('gpt-5.6-luna'), false);
     assert.equal(requiresResponsesAPI('gpt-5.5'), false);
     assert.equal(requiresResponsesAPI('gpt-5.4-pro'), false);
   });

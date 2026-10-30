@@ -120,15 +120,19 @@ describe('classifyError — auth_error (permanent)', () => {
   });
 });
 
-describe('classifyError — auth_error (transient 403)', () => {
-  const expected = { category: 'auth_error' as const, retryable: true, shouldCompact: false, shouldFallback: true };
+describe('classifyError — auth_error (403 non-retryable)', () => {
+  const expected = { category: 'auth_error' as const, retryable: false, shouldCompact: false, shouldFallback: false };
 
-  it('detects "403" as retryable', () => {
+  it('detects "403" as non-retryable', () => {
     assertClassification(classifyError('HTTP 403 Forbidden'), expected);
   });
 
-  it('detects "forbidden" as retryable', () => {
+  it('detects "forbidden" as non-retryable', () => {
     assertClassification(classifyError('Access forbidden'), expected);
+  });
+
+  it('detects model access denial as non-retryable', () => {
+    assertClassification(classifyError('HTTP 403 Project does not have access to model gpt-6-luna'), expected);
   });
 });
 
@@ -598,11 +602,16 @@ describe('classifyError — SDK APICallError fast path', () => {
     assertClassification(result, { category: 'auth_error', retryable: false, shouldCompact: false, shouldFallback: false });
   });
 
-  it('classifies 403 as retryable auth_error', () => {
+  it('classifies 403 as non-retryable auth_error', () => {
     const err = makeAPICallError(403, 'Forbidden');
     const result = classifyError(err);
-    assertClassification(result, { category: 'auth_error', retryable: true, shouldCompact: false, shouldFallback: true });
-    assert.equal(result.suggestedDelay, 5000);
+    assertClassification(result, { category: 'auth_error', retryable: false, shouldCompact: false, shouldFallback: false });
+  });
+
+  it('classifies 403 model access denial as non-retryable auth_error', () => {
+    const err = makeAPICallError(403, 'Project does not have access to model gpt-6-luna');
+    const result = classifyError(err);
+    assertClassification(result, { category: 'auth_error', retryable: false, shouldCompact: false, shouldFallback: false });
   });
 
   it('classifies 403 with api key message as non-retryable auth_error', () => {
