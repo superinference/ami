@@ -366,7 +366,7 @@ function classifyOpenAIModel(modelId: string): ModelCapabilities | null {
 export function requiresResponsesAPI(modelId: string): boolean {
   if (!modelId.startsWith('gpt-')) return false;
   const afterPrefix = modelId.slice(4);
-  const versionMatch = afterPrefix.match(/^(\d+(?:\.\d+)?)/);
+  const versionMatch = afterPrefix.match(/^(\d+\.\d+|\d+)/);
   if (!versionMatch) return false;
   const version = parseFloat(versionMatch[1]);
   return version >= 5.6;

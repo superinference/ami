@@ -942,11 +942,12 @@ describe('classifyError — additional abort patterns', () => {
 });
 
 describe('classifyError — additional auth_error patterns', () => {
-  it('detects "forbidden" as retryable 403', () => {
+  it('detects "forbidden" as non-retryable 403', () => {
+    // 403 is a non-retryable auth_error (see error-classifier.ts "403 fix").
     const r = classifyError('Access forbidden to this resource');
     assert.equal(r.category, 'auth_error');
-    assert.equal(r.retryable, true);
-    assert.equal(r.shouldFallback, true);
+    assert.equal(r.retryable, false);
+    assert.equal(r.shouldFallback, false);
   });
 
   it('detects "invalid_api_key"', () => {
@@ -961,11 +962,11 @@ describe('classifyError — additional auth_error patterns', () => {
     assert.equal(r.retryable, false);
   });
 
-  it('detects HTTP 403 as retryable', () => {
+  it('detects HTTP 403 as non-retryable', () => {
     const r = classifyError('HTTP 403 Forbidden');
     assert.equal(r.category, 'auth_error');
-    assert.equal(r.retryable, true);
-    assert.equal(r.shouldFallback, true);
+    assert.equal(r.retryable, false);
+    assert.equal(r.shouldFallback, false);
   });
 });
 
