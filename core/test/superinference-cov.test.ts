@@ -695,7 +695,9 @@ describe('SkillManager — glob matching', () => {
     const extra = sm.getSkill('extra')!;
     assert.ok(extra);
     assert.deepEqual(extra.allowedTools, []);
-    assert.equal(extra.description, ''); // description-less frontmatter
+    // description-less frontmatter now derives from the body's first prose line
+    // (deriveSkillDescription cascade) instead of being blank.
+    assert.equal(extra.description, 'Extra body.');
   });
 });
 

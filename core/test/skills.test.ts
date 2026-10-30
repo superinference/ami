@@ -4,7 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { SkillManager } from '../src/skills';
+import { SkillManager, deriveSkillDescription } from '../src/skills';
+import { parseFrontmatter } from '../src/memory';
 
 let tmpDir: string;
 
@@ -841,5 +842,72 @@ describe('skill inline bash injection', () => {
       const content = mgr.getSkillContent('bad');
       assert.match(content!, /\[error:/);
     } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+});
+
+describe('deriveSkillDescription — description cascade', () => {
+  it('uses a real frontmatter description verbatim', () => {
+    assert.equal(deriveSkillDescription('Review code for bugs', '# Body\n\ntext'), 'Review code for bugs');
+  });
+
+  it('falls back to a # Description heading when frontmatter is empty', () => {
+    const body = '# Overview\nstuff\n\n## Description\nDeploys the app to prod.\n\n## Steps\n1. go';
+    assert.equal(deriveSkillDescription('', body), 'Deploys the app to prod.');
+    assert.equal(deriveSkillDescription(undefined, body), 'Deploys the app to prod.');
+  });
+
+  it('treats a leftover block-scalar sentinel as empty and falls back', () => {
+    assert.equal(deriveSkillDescription('>', '## Description\nFolded fallback.'), 'Folded fallback.');
+    assert.equal(deriveSkillDescription('|', 'First prose line here.'), 'First prose line here.');
+  });
+
+  it('falls back to the first prose line (skipping headings/comments/---)', () => {
+    const body = '---\n# Title\n<!-- note -->\n\nThe actual first sentence.';
+    assert.equal(deriveSkillDescription('', body), 'The actual first sentence.');
+  });
+
+  it('returns empty when there is no usable text', () => {
+    assert.equal(deriveSkillDescription('', '# Only\n## Headings\n'), '');
+    assert.equal(deriveSkillDescription('', ''), '');
+  });
+});
+
+describe('parseFrontmatter — block scalars (folded/literal)', () => {
+  it('folds a > block scalar into a single spaced line', () => {
+    const raw = '---\nname: x\ndescription: >\n  first part\n  second part\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.equal(frontmatter.description, 'first part second part');
+  });
+
+  it('keeps newlines for a | literal block scalar', () => {
+    const raw = '---\ndescription: |\n  line one\n  line two\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.equal(frontmatter.description, 'line one\nline two');
+  });
+
+  it('honors a chomping indicator (>-) and stops at the next key', () => {
+    const raw = '---\ndescription: >-\n  folded text\nname: keep\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.equal(frontmatter.description, 'folded text');
+    assert.equal(frontmatter.name, 'keep');
+  });
+
+  it('handles a blank line inside a folded block (paragraph join)', () => {
+    const raw = '---\ndescription: >\n  para one\n\n  para two\nname: k\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.equal(frontmatter.description, 'para one para two');
+    assert.equal(frontmatter.name, 'k');
+  });
+
+  it('handles a block scalar as the final frontmatter key (EOF)', () => {
+    const raw = '---\nname: k\ndescription: |\n  only line\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.equal(frontmatter.description, 'only line');
+  });
+
+  it('leaves ordinary key: value lines unchanged', () => {
+    const { frontmatter } = parseFrontmatter('---\nname: deploy\ndescription: Ship it\n---\nbody');
+    assert.equal(frontmatter.name, 'deploy');
+    assert.equal(frontmatter.description, 'Ship it');
   });
 });

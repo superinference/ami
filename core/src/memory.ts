@@ -199,14 +199,33 @@ export function parseFrontmatter(raw: string): {
   const body = trimmed.slice(endIndex + 3).replace(/^\r?\n/, '');
 
   const frontmatter: Record<string, string> = {};
-  for (const line of fmBlock.split('\n')) {
+  const lines = fmBlock.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const colonIdx = line.indexOf(':');
     if (colonIdx === -1) continue;
     const key = line.slice(0, colonIdx).trim();
-    const value = line.slice(colonIdx + 1).trim();
-    if (key) {
-      frontmatter[key] = value;
+    if (!key) continue;
+    let value = line.slice(colonIdx + 1).trim();
+
+    // YAML block scalars: `key: >` (folded → join with spaces) or `key: |`
+    // (literal → keep newlines), with optional chomping indicator (-/+). The
+    // value is the subsequent more-indented (or blank) lines. Without this a
+    // folded description collapses to a bare ">" sentinel.
+    const block = value.match(/^([>|])[-+]?$/);
+    if (block) {
+      const folded = block[1] === '>';
+      const collected: string[] = [];
+      while (i + 1 < lines.length && (lines[i + 1].trim() === '' || /^\s/.test(lines[i + 1]))) {
+        i++;
+        collected.push(lines[i].trim());
+      }
+      value = folded
+        ? collected.join(' ').replace(/\s+/g, ' ').trim()
+        : collected.join('\n').trim();
     }
+
+    frontmatter[key] = value;
   }
 
   return { frontmatter, body };

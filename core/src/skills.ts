@@ -21,6 +21,37 @@ function substituteBashInjections(content: string, cwd: string): string {
   });
 }
 
+/**
+ * Derive a skill's one-line description with a robust cascade (so the
+ * system-prompt skill index is never blank): frontmatter `description` (a real
+ * value, not an empty/leftover block-scalar sentinel) → the text under a
+ * `# Description` heading in the body → the first prose line of the body.
+ */
+export function deriveSkillDescription(frontmatterDescription: string | undefined, body: string): string {
+  const fm = (frontmatterDescription ?? '').trim();
+  if (fm && fm !== '>' && fm !== '|') return fm;
+
+  const lines = body.split('\n');
+  // A "# Description" / "## Description" heading → first non-empty line under it.
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#{1,6}\s+description\s*$/i.test(lines[i].trim())) {
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j].trim();
+        if (next) return next.replace(/^#+\s*/, '');
+      }
+    }
+  }
+
+  // Otherwise the first meaningful prose line (skip blanks, headings, HTML
+  // comments, and block markers).
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('<!--') || line === '---') continue;
+    return line;
+  }
+  return '';
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -602,7 +633,7 @@ export class SkillManager {
 
     return {
       name,
-      description: frontmatter.description || '',
+      description: deriveSkillDescription(frontmatter.description, body),
       content: body.trim(),
       filePath,
       whenToUse: frontmatter['when-to-use'] || undefined,
