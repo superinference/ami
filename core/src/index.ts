@@ -34,7 +34,7 @@ export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
-export { BUILTIN_PERSONAS, matchMcpAutoAllow } from './personas';
+export { BUILTIN_PERSONAS, matchMcpAutoAllow, CODING_IDENTITY } from './personas';
 export type { PersonaDefinition } from './personas';
 export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError } from './logger';
 export type { FileEntry, SymbolEntry, ImportEdge } from './workspace-indexer';

@@ -16,12 +16,21 @@ export interface PersonaDefinition {
   mcpToolGuidance?: string;
 }
 
+/**
+ * Canonical coding-assistant identity. Single-sourced here (pure data, a public
+ * building block) so the generic no-persona prompt (common CORE_IDENTITY) and
+ * the 'code' persona overlay share ONE identity string instead of drifting
+ * copies. Non-code personas (pentest/sre/research) intentionally define their
+ * own distinct identities and do NOT use this.
+ */
+export const CODING_IDENTITY = 'You are an expert AI coding assistant with direct filesystem access through tools. You write, debug, refactor, explain, and test code across all languages. You run commands, search the web, and answer questions about the codebase. Be direct, be accurate, and get things done.';
+
 export const BUILTIN_PERSONAS: PersonaDefinition[] = [
   {
     name: 'code',
     description: 'Code assistant — generation, debugging, refactoring, testing',
     defaultThinkingLevel: 'medium',
-    systemPromptOverlay: `You are an expert AI coding assistant with direct filesystem access through tools. You write, debug, refactor, explain, and test code across all languages.
+    systemPromptOverlay: `${CODING_IDENTITY}
 
 ## Guidelines
 - Use \`file_read\` before editing a file you haven't read.
