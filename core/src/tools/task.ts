@@ -378,8 +378,8 @@ export const taskTool: ToolDefinition = {
         ? { enabled: true, level: effortOverride as import('../model-capabilities').ThinkingLevel }
         : context._parentThinking || undefined,
       // When a named agent type is used, its system prompt is the authoritative
-      // identity — skip persona resolution (which would inject e.g. the code
-      // persona bug-fixing workflow into a verification-only agent).
+      // identity — skip stance-skill resolution (which would inject e.g. the
+      // swebench stance workflow into a verification-only agent).
       systemPrompt: agentSystemPrompt || undefined,
       tokenBudget: agentTokenBudget || undefined,
     };
@@ -390,7 +390,7 @@ export const taskTool: ToolDefinition = {
 
     // agentSystemPrompt is now in subConfig.systemPrompt — the user message is
     // just the task prompt. For mode-only tasks (no subagent_type), there is no
-    // agentSystemPrompt and the engine uses its own persona-driven system prompt
+    // agentSystemPrompt and the engine uses its own stance-driven system prompt
     // (the full interactive coding agent: write files, verify, never stop). That
     // framing makes a delegated sub-agent OVER-WORK a bounded task — writing
     // files, running commands, and looping on verification instead of answering
