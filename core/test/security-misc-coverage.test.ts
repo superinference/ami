@@ -1362,14 +1362,14 @@ describe('mergeConfigs -- with localConfig and managedConfig', () => {
   });
 
   it('full priority chain: cli > env > local > project > global > managed', () => {
-    const managed: ProjectConfig = { persona: 'managed-persona' };
-    const global: ProjectConfig = { persona: 'global-persona', provider: 'openai' };
-    const project: ProjectConfig = { persona: 'project-persona' };
-    const local: ProjectConfig = { persona: 'local-persona' };
+    const managed: ProjectConfig = { skill: 'managed-persona' };
+    const global: ProjectConfig = { skill: 'global-persona', provider: 'openai' };
+    const project: ProjectConfig = { skill: 'project-persona' };
+    const local: ProjectConfig = { skill: 'local-persona' };
     const env: Partial<ProjectConfig> = {};
     const cli: Partial<ProjectConfig> = {};
     const result = mergeConfigs(cli, env, project, global, local, managed);
-    assert.equal(result.persona, 'local-persona');
+    assert.equal(result.skill, 'local-persona');
     assert.equal(result.provider, 'openai');
   });
 });

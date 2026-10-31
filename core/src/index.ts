@@ -17,7 +17,7 @@ export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution
 export { safeReadFile, safeLstat, FILE_ENCODINGS } from './tools/tool-utils';
 export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES, MCP_TRANSPORTS, MCP_CLIENT_STATES, MCP_TERMINAL_ERROR_CODES } from './mcp/client';
 export type { McpTransport } from './mcp/client';
-export { MCP_SERVER_STATES } from './mcp/manager';
+export { MCP_SERVER_STATES, matchMcpAutoAllow } from './mcp/manager';
 export type { McpServerState } from './mcp/manager';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
 export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES } from './error-classifier';
@@ -36,8 +36,6 @@ export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
-export { BUILTIN_PERSONAS, matchMcpAutoAllow, CODING_IDENTITY } from './personas';
-export type { PersonaDefinition } from './personas';
 export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError } from './logger';
 export type { FileEntry, SymbolEntry, ImportEdge } from './workspace-indexer';
 

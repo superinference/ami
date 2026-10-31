@@ -277,7 +277,7 @@ describe('mergeConfigs', () => {
     const global: ProjectConfig = { model: 'g', provider: 'openai' };
     const project: ProjectConfig = { baseUrl: 'http://localhost', permissionMode: 'ask' };
     const env: Partial<ProjectConfig> = { thinkingLevel: 'high' };
-    const cli: Partial<ProjectConfig> = { fallbackModel: 'fb', compactionModel: 'cm', maxTurns: 3, tokenBudget: 5000, persona: 'dev' };
+    const cli: Partial<ProjectConfig> = { fallbackModel: 'fb', compactionModel: 'cm', maxTurns: 3, tokenBudget: 5000, skill: 'dev' };
     const result = mergeConfigs(cli, env, project, global);
     assert.equal(result.model, 'g');
     assert.equal(result.provider, 'openai');
@@ -288,7 +288,7 @@ describe('mergeConfigs', () => {
     assert.equal(result.compactionModel, 'cm');
     assert.equal(result.maxTurns, 3);
     assert.equal(result.tokenBudget, 5000);
-    assert.equal(result.persona, 'dev');
+    assert.equal(result.skill, 'dev');
   });
 
   it('ignores undefined values in higher layers', () => {

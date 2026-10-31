@@ -11,6 +11,9 @@
 // Types
 // ---------------------------------------------------------------------------
 
+import type { McpServerConfig } from './mcp/manager';
+import type { ThinkingLevel } from './model-capabilities';
+
 export interface SkillDefinition {
   name: string;
   description: string;
@@ -26,6 +29,15 @@ export interface SkillDefinition {
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
   effort?: string;         // Thinking effort level for sub-engine (e.g., "low", "medium", "high")
+
+  // --- Stance capabilities (used when the skill is pinned as the session/run
+  // stance via --skill) — a skill then governs the run the way a persona used to:
+  // its body is the system-prompt overlay, plus the fields below. ---
+  autoAllowPatterns?: string[];       // bash command globs auto-allowed while pinned
+  mcpServers?: Record<string, McpServerConfig>; // MCP servers launched when pinned (e.g. kali)
+  mcpAutoAllowPatterns?: string[];    // MCP tool-name globs auto-allowed while pinned
+  mcpToolGuidance?: string;           // extra system-prompt guidance for the pinned MCP tools
+  defaultThinkingLevel?: ThinkingLevel; // thinking level applied when pinned (unless user overrides)
 }
 
 export interface AgentDefinition {

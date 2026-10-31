@@ -22,7 +22,7 @@ export interface ProjectConfig {
   compactionModel?: string;
   maxTurns?: number;
   tokenBudget?: number;
-  persona?: string;
+  skill?: string;
   /** Managed policy: when non-empty, only these models are selectable. */
   enforceAvailableModels?: string[];
   /** Cap (chars) on inline bash stdout before it is spilled to a file. */
@@ -293,7 +293,7 @@ export function mergeConfigs(
     if (layer.compactionModel !== undefined) merged.compactionModel = layer.compactionModel;
     if (layer.maxTurns !== undefined) merged.maxTurns = layer.maxTurns;
     if (layer.tokenBudget !== undefined) merged.tokenBudget = layer.tokenBudget;
-    if (layer.persona !== undefined) merged.persona = layer.persona;
+    if (layer.skill !== undefined) merged.skill = layer.skill;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
     if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;

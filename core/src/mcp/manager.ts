@@ -15,6 +15,24 @@ function getMcpMaxDescriptionLength(): number {
   return DEFAULT_MCP_DESCRIPTION_LENGTH;
 }
 
+/**
+ * Match an MCP tool name against a list of auto-allow glob patterns. A pattern
+ * ending in `*` matches by prefix; `*` alone matches everything; otherwise exact.
+ * Used to auto-approve a pinned stance skill's MCP tools (e.g. `mcp__kali__*`).
+ */
+export function matchMcpAutoAllow(toolName: string, patterns: string[]): boolean {
+  for (const pattern of patterns) {
+    if (pattern === '*') return true;
+    if (pattern.endsWith('*')) {
+      const prefix = pattern.slice(0, -1);
+      if (toolName.startsWith(prefix)) return true;
+    } else if (pattern === toolName) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const TRANSIENT_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']);
 export function isTransientConnectError(err: unknown): boolean {
   if (err instanceof McpSessionExpiredError) return false;

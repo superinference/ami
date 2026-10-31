@@ -371,8 +371,10 @@ export interface EngineConfig {
   superinference?: SuperInferenceConfig;
   /** Lifecycle hooks for post-sampling, stop, and error events. */
   hooks?: import('./hooks').HookManager;
-  /** Persona name — changes system prompt identity and defaults. */
-  persona?: string;
+  /** Stance skill name (--skill) — a skill pinned to govern the whole session/run:
+   *  its body becomes the system-prompt overlay, plus its tool-scoping, bash
+   *  auto-allow, MCP servers, and thinking level. Replaces the old persona. */
+  skill?: string;
   /** Named output style overlay appended to the system prompt (e.g. 'concise'). */
   outputStyle?: string;
   /** Managed allowlist of selectable models; non-listed models are blocked. */

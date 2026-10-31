@@ -13,7 +13,7 @@ export interface Session {
   provider: { model: string; baseUrl: string };
   /** Per-session settings saved on disk so /resume can restore them. */
   settings?: {
-    persona?: string;
+    skill?: string;
     thinkingLevel?: string;
     outputStyle?: string;
   };

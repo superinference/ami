@@ -114,8 +114,8 @@ describe('config: file loaders', () => {
 
   it('loadLocalConfig reads config.local.json', () => {
     fs.mkdirSync(path.join(dir, '.superinference'));
-    fs.writeFileSync(path.join(dir, '.superinference', 'config.local.json'), '{"persona": "p"}');
-    assert.deepEqual(loadLocalConfig(dir), { persona: 'p' });
+    fs.writeFileSync(path.join(dir, '.superinference', 'config.local.json'), '{"skill": "p"}');
+    assert.deepEqual(loadLocalConfig(dir), { skill: 'p' });
   });
 
   it('loadGlobalConfig reads from HOME', () => {
@@ -382,7 +382,7 @@ describe('config: mergeConfigs', () => {
     const all: ProjectConfig = {
       model: 'm', provider: 'p', baseUrl: 'u', permissionMode: 'ask',
       thinkingLevel: 't', maxEffortLevel: 'e', fallbackModel: 'fm',
-      compactionModel: 'cm', maxTurns: 3, tokenBudget: 4, persona: 'per',
+      compactionModel: 'cm', maxTurns: 3, tokenBudget: 4, skill: 'per',
       bashOutputMaxChars: 5, taskOutputMaxChars: 6, cacheTtl: '1h', safeMode: true,
       maxWebSearchesPerSession: 7, deferTools: true, alwaysLoadTools: ['x'],
       fallbackModels: ['a'], allowedMcpServers: ['s'], managedMcpServers: { k: 1 },
@@ -395,14 +395,14 @@ describe('config: mergeConfigs', () => {
       { model: 'cli' },
       { model: 'env', provider: 'envP' },
       { model: 'project', baseUrl: 'projU' },
-      { model: 'global', persona: 'globalPer' },
+      { model: 'global', skill: 'globalPer' },
       { model: 'local', maxTurns: 2 },
       { model: 'managed', tokenBudget: 1 },
     );
     assert.equal(merged.model, 'cli');
     assert.equal(merged.provider, 'envP');
     assert.equal(merged.baseUrl, 'projU');
-    assert.equal(merged.persona, 'globalPer');
+    assert.equal(merged.skill, 'globalPer');
     assert.equal(merged.maxTurns, 2);
     assert.equal(merged.tokenBudget, 1);
   });

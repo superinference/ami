@@ -50,11 +50,6 @@ describe('index exports', () => {
     assert.equal(typeof core.WorkspaceIndexer, 'function');
   });
 
-  it('exports BUILTIN_PERSONAS', () => {
-    assert.ok(Array.isArray(core.BUILTIN_PERSONAS));
-    assert.ok(core.BUILTIN_PERSONAS.length >= 4);
-  });
-
   it('exports matchMcpAutoAllow', () => {
     assert.equal(typeof core.matchMcpAutoAllow, 'function');
   });
