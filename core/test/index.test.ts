@@ -16,8 +16,10 @@ describe('index exports', () => {
     assert.equal(typeof core.MemoryManager, 'function');
   });
 
-  it('exports SkillManager', () => {
-    assert.equal(typeof core.SkillManager, 'function');
+  it('exports skill arg-safety helpers (SkillManager lives in common)', () => {
+    assert.equal(typeof core.sanitizeSkillArgs, 'function');
+    assert.equal(typeof core.validateSkillArgs, 'function');
+    assert.equal((core as Record<string, unknown>).SkillManager, undefined);
   });
 
   it('exports CostTracker', () => {

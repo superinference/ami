@@ -5,10 +5,12 @@ export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
-export { SkillManager } from './skills';
 export { discoverPlugins } from './plugins';
 export type { PluginBundle } from './plugins';
-export type { SkillDefinition, AgentDefinition } from './skills';
+// Skill/agent TYPES + arg-safety live in core (bare building blocks). The
+// SkillManager (management) lives in common/src/skill-manager.ts.
+export type { SkillDefinition, AgentDefinition, SkillManagerLike } from './skills';
+export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS } from './skills';
 export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest } from './cost-tracker';
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';

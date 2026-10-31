@@ -100,7 +100,7 @@ export interface ToolContext {
   _permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   _allowLocalhostForTesting?: boolean;
   _engineFactory?: (config: EngineConfig) => { submit(prompt: string): AsyncIterable<EngineEvent>; shutdown?(): void };
-  _skillManager?: import('./skills').SkillManager;
+  _skillManager?: import('./skills').SkillManagerLike;
   _hookManager?: import('./hooks').HookManager;
   _mcpManager?: any;
   _parentMessages?: Message[];
