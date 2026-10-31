@@ -502,33 +502,38 @@ describe('convertToolsForSDK', () => {
 
   describe('injectAnthropicCacheControl (raw vertex body)', () => {
     const cc = { type: 'ephemeral' };
-    it('marks last tool, system (string->array), and last message', () => {
-      const body = JSON.stringify({
-        tools: [{ name: 'a' }, { name: 'b' }],
-        system: 'you are helpful',
-        messages: [
-          { role: 'user', content: [{ type: 'text', text: 'hi' }] },
-          { role: 'assistant', content: [{ type: 'text', text: 'ok' }, { type: 'text', text: 'more' }] },
-        ],
-      });
+    const B = '\n\n---DYNAMIC_CONTEXT---\n\n';
+    it('marks the last tool only', () => {
+      const body = JSON.stringify({ tools: [{ name: 'a' }, { name: 'b' }], system: 'x' });
       const out = JSON.parse(injectAnthropicCacheControl(body, cc));
       assert.deepEqual(out.tools[1].cache_control, cc, 'last tool marked');
       assert.equal(out.tools[0].cache_control, undefined, 'non-last tool not marked');
-      assert.ok(Array.isArray(out.system), 'string system converted to array');
-      assert.deepEqual(out.system[0].cache_control, cc);
-      assert.deepEqual(out.messages[1].content[1].cache_control, cc, 'last block of last msg marked');
     });
-    it('converts a string message content to a marked text block', () => {
-      const body = JSON.stringify({ messages: [{ role: 'user', content: 'plain' }] });
+    it('splits system at the dynamic boundary and caches ONLY the static prefix', () => {
+      const body = JSON.stringify({ system: 'STATIC_PART' + B + 'DYNAMIC_PART' });
       const out = JSON.parse(injectAnthropicCacheControl(body, cc));
-      assert.ok(Array.isArray(out.messages[0].content));
-      assert.deepEqual(out.messages[0].content[0].cache_control, cc);
+      assert.ok(Array.isArray(out.system));
+      assert.equal(out.system[0].text, 'STATIC_PART');
+      assert.deepEqual(out.system[0].cache_control, cc, 'static block cached');
+      assert.equal(out.system[1].text, 'DYNAMIC_PART');
+      assert.equal(out.system[1].cache_control, undefined, 'dynamic block NOT cached');
     });
-    it('marks the last block of an array-form system', () => {
+    it('caches the whole system as one block when there is no boundary', () => {
+      const body = JSON.stringify({ system: 'just static' });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.equal(out.system.length, 1);
+      assert.deepEqual(out.system[0].cache_control, cc);
+    });
+    it('marks the FIRST block of an array-form system (the static prefix)', () => {
       const body = JSON.stringify({ system: [{ type: 'text', text: 'x' }, { type: 'text', text: 'y' }] });
       const out = JSON.parse(injectAnthropicCacheControl(body, cc));
-      assert.deepEqual(out.system[1].cache_control, cc);
-      assert.equal(out.system[0].cache_control, undefined);
+      assert.deepEqual(out.system[0].cache_control, cc);
+      assert.equal(out.system[1].cache_control, undefined);
+    });
+    it('does NOT mark any message (conversation tail grows, never read-hits)', () => {
+      const body = JSON.stringify({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.equal(out.messages[0].content[0].cache_control, undefined);
     });
     it('returns the original text unchanged on non-JSON input', () => {
       assert.equal(injectAnthropicCacheControl('not json', cc), 'not json');

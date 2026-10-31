@@ -663,32 +663,43 @@ export function openAIPromptCacheBody(
  * (tools + system + last-message = 3). Returns the original text on non-JSON
  * bodies. Exported for testing.
  */
+// Must match common/src/system-prompt.ts SYSTEM_PROMPT_DYNAMIC_BOUNDARY. Core
+// cannot import from common (IP split), so the sentinel is duplicated here.
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = '\n\n---DYNAMIC_CONTEXT---\n\n';
+
 export function injectAnthropicCacheControl(bodyText: string, cacheControl: Record<string, unknown>): string {
   let body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
   try { body = JSON.parse(bodyText); } catch { return bodyText; }
   if (!body || typeof body !== 'object') return bodyText;
   const cc = cacheControl;
+  // Tools block: mark the last tool (tools are first in the cache hierarchy).
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     const last = body.tools[body.tools.length - 1];
     if (last && typeof last === 'object') last.cache_control = cc;
   }
+  // System block: cache ONLY the STATIC prefix (before the dynamic boundary). The
+  // dynamic context (memory/workspace/skills) grows each turn and would bust the
+  // cache if included — so split it into an uncached trailing block. This is what
+  // makes cache READS work (byte-stable cached prefix across turns).
   if (typeof body.system === 'string' && body.system.trim() !== '') {
-    body.system = [{ type: 'text', text: body.system, cache_control: cc }];
-  } else if (Array.isArray(body.system) && body.system.length > 0) {
-    const last = body.system[body.system.length - 1];
-    if (last && typeof last === 'object') last.cache_control = cc;
-  }
-  if (Array.isArray(body.messages) && body.messages.length > 0) {
-    const lastMsg = body.messages[body.messages.length - 1];
-    if (lastMsg && typeof lastMsg === 'object') {
-      if (typeof lastMsg.content === 'string' && lastMsg.content.trim() !== '') {
-        lastMsg.content = [{ type: 'text', text: lastMsg.content, cache_control: cc }];
-      } else if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
-        const lastBlock = lastMsg.content[lastMsg.content.length - 1];
-        if (lastBlock && typeof lastBlock === 'object') lastBlock.cache_control = cc;
-      }
+    const idx = body.system.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    if (idx >= 0) {
+      const staticPart = body.system.slice(0, idx);
+      const dynamicPart = body.system.slice(idx + SYSTEM_PROMPT_DYNAMIC_BOUNDARY.length);
+      body.system = [
+        { type: 'text', text: staticPart, cache_control: cc },
+        ...(dynamicPart ? [{ type: 'text', text: dynamicPart }] : []),
+      ];
+    } else {
+      body.system = [{ type: 'text', text: body.system, cache_control: cc }];
     }
+  } else if (Array.isArray(body.system) && body.system.length > 0) {
+    const first = body.system[0];
+    if (first && typeof first === 'object') first.cache_control = cc;
   }
+  // Deliberately NOT marking a trailing message: the conversation tail grows every
+  // turn, so a marker there never read-hits. The stable tools+static-system prefix
+  // is the cache win; a rolling conversation breakpoint can be added later.
   return JSON.stringify(body);
 }
 
@@ -745,13 +756,21 @@ export function resolveModel(config: ProviderConfig) {
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
     const project = process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.GOOGLE_VERTEX_PROJECT || '';
     const location = process.env.CLOUD_ML_REGION || process.env.GOOGLE_VERTEX_LOCATION || 'us-east5';
-    // The vertex-anthropic SDK drops providerOptions.cacheControl, so inject
-    // cache_control into the raw request body via a wrapped fetch (the only way
-    // to get prompt caching on this path).
+    // Prompt caching on anthropic-vertex is OFF by default. withVertexAnthropicCache
+    // injects cache_control into the raw body and vertex DOES write caches
+    // (cache_creation_input_tokens > 0), but it NEVER reads them back
+    // (cache_read_input_tokens stayed 0 across every approach: SDK providerOptions,
+    // whole-system injection, and static-prefix injection). A write-without-read is
+    // cost-NEGATIVE (1.25x write premium, no read discount), so it is gated behind
+    // AMI_VERTEX_PROMPT_CACHE=1 for re-testing when the vertex/SDK read path works.
+    // See UI issue #10. Native Anthropic (below) caches normally.
+    const vertexCacheFetch = process.env.AMI_VERTEX_PROMPT_CACHE === '1'
+      ? withVertexAnthropicCache(headerFetch ?? globalThis.fetch, config.cacheTtl)
+      : (headerFetch ?? undefined);
     return createVertexAnthropic({
       project,
       location,
-      fetch: withVertexAnthropicCache(headerFetch ?? globalThis.fetch, config.cacheTtl),
+      ...(vertexCacheFetch ? { fetch: vertexCacheFetch } : {}),
     } as Parameters<typeof createVertexAnthropic>[0])(model);
   }
 
