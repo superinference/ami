@@ -203,6 +203,88 @@ describe('FlowManager', () => {
     });
   });
 
+  describe('concurrent flows (per-key)', () => {
+    it('keeps two flows active at once under distinct keys', () => {
+      const a = fm.getOrCreateActiveFlow('batch A', 5000, 'turn-1');
+      const b = fm.getOrCreateActiveFlow('batch B', 5000, 'turn-2');
+      assert.notEqual(a, b, 'distinct keys must not collapse into one flow');
+      // Both stay independently active (each key reuses its own flow within window).
+      assert.equal(fm.getOrCreateActiveFlow('batch A', 5000, 'turn-1'), a);
+      assert.equal(fm.getOrCreateActiveFlow('batch B', 5000, 'turn-2'), b);
+      assert.equal(fm.listFlows().length, 2);
+    });
+
+    it('same key within window groups; omitted key shares the default key', () => {
+      const a1 = fm.getOrCreateActiveFlow('x', 5000, 'k');
+      const a2 = fm.getOrCreateActiveFlow('x', 5000, 'k');
+      assert.equal(a1, a2);
+      const d1 = fm.getOrCreateActiveFlow('d');
+      const d2 = fm.getOrCreateActiveFlow('d');
+      assert.equal(d1, d2, 'default-key spawns group together (back-compat)');
+      assert.notEqual(a1, d1, 'default key is distinct from an explicit key');
+    });
+  });
+
+  describe('createFlow (explicit)', () => {
+    it('creates a keyless flow that no windowed spawn reuses', () => {
+      const explicit = fm.createFlow('workflow run');
+      const windowed = fm.getOrCreateActiveFlow('other');
+      assert.notEqual(explicit, windowed, 'keyless explicit flow is never the active target');
+      assert.equal(fm.getFlow(explicit)?.status, 'active');
+      assert.equal(fm.getFlow(explicit)?.description, 'workflow run');
+    });
+
+    it('a keyed createFlow becomes the active flow for that key', () => {
+      const created = fm.createFlow('named', 'wf-1');
+      const reused = fm.getOrCreateActiveFlow('named', 5000, 'wf-1');
+      assert.equal(created, reused);
+    });
+  });
+
+  describe('updateFlowStatus — failed is reachable', () => {
+    it('sets failed when ALL agents failed or were killed', () => {
+      const flowId = fm.getOrCreateActiveFlow('doomed');
+      fm.addAgent(flowId, 'agent-1');
+      fm.addAgent(flowId, 'agent-2');
+      const statuses: Record<string, string> = { 'agent-1': 'failed', 'agent-2': 'killed' };
+      fm.updateFlowStatus(flowId, id => statuses[id]);
+      assert.equal(fm.getFlow(flowId)?.status, 'failed');
+    });
+
+    it('a completed flow stops being reused for ITS key only', () => {
+      const a = fm.getOrCreateActiveFlow('a', 5000, 'k1');
+      const b = fm.getOrCreateActiveFlow('b', 5000, 'k2');
+      fm.addAgent(a, 'x');
+      fm.updateFlowStatus(a, () => 'completed');
+      // k1 reuse must create a new flow; k2 is untouched.
+      assert.notEqual(fm.getOrCreateActiveFlow('a2', 5000, 'k1'), a);
+      assert.equal(fm.getOrCreateActiveFlow('b2', 5000, 'k2'), b);
+    });
+  });
+
+  describe('listFlows ordering + retention', () => {
+    it('returns flows oldest-first', () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 3; i++) ids.push(fm.createFlow(`f${i}`));
+      const listed = fm.listFlows().map(f => f.flowId);
+      assert.deepEqual(listed, ids, 'stable createdAt ordering');
+    });
+
+    it('prunes oldest terminal flows beyond the retention cap but keeps active ones', () => {
+      const keptActive = fm.createFlow('still-active'); // never terminalized
+      for (let i = 0; i < 30; i++) {
+        const id = fm.createFlow(`term-${i}`);
+        fm.addAgent(id, `a${i}`);
+        fm.updateFlowStatus(id, () => 'completed');
+      }
+      const flows = fm.listFlows();
+      const terminal = flows.filter(f => f.status !== 'active');
+      assert.ok(terminal.length <= 21, `terminal flows bounded, got ${terminal.length}`);
+      assert.ok(flows.some(f => f.flowId === keptActive), 'active flow is never pruned');
+      assert.ok(flows.length < 31, 'pruning actually happened');
+    });
+  });
+
   describe('integration: time-window grouping', () => {
     it('groups rapid spawns into one flow', () => {
       const flowId = fm.getOrCreateActiveFlow('batch');

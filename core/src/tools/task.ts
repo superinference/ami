@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
+import { coerceBool } from '../utils/coerce';
 import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
 import { SessionManager } from '../session';
@@ -12,6 +13,16 @@ import { SessionManager } from '../session';
 const AUTO_BG_MS = 120_000; // eslint-disable-line @typescript-eslint/no-unused-vars
 
 const SUBAGENT_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Framing prepended to a mode-only sub-agent's task (no subagent_type identity) so
+ * it returns its result and STOPS instead of running the full interactive coding
+ * loop. Mirrors how a workflow agent is told "your final message IS the result".
+ */
+export const SUBAGENT_RETURN_DIRECTIVE =
+  'You are a sub-agent handling one delegated task. Do exactly what the task asks and nothing more. ' +
+  'When you have the answer, give it directly as your final message and STOP — do not create or edit ' +
+  'files, run commands, or add verification or extra work unless the task explicitly requires it.';
 
 const agentNameRegistry = new Map<string, string>();
 
@@ -121,7 +132,13 @@ export function filterToolsForAgent(
   const maxDepth = maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
   const allowNested = shouldAllowNestedTask(depth, maxDepth);
 
-  return allTools.filter(t => allowNested || t.name !== 'task');
+  // plan_mode is an INTERACTIVE-session-only feature: "exit" submits the plan for
+  // user approval, and a subagent has no user to approve it — so a subagent that
+  // enters plan mode hangs forever "awaiting approval". Its state is also module-
+  // global, so a subagent entering plan mode would corrupt the parent engine's
+  // plan state. Autonomous subagents must never get it.
+  return allTools.filter(t =>
+    t.name !== 'plan_mode' && (allowNested || t.name !== 'task'));
 }
 
 export const taskTool: ToolDefinition = {
@@ -292,8 +309,18 @@ export const taskTool: ToolDefinition = {
       tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
     }
 
+    // Universal guard: plan_mode is interactive-only (its "exit" awaits user
+    // approval that never comes in a subagent, and its state is module-global).
+    // Strip it unconditionally so an explicit agent-def `tools` list can't
+    // reintroduce it. See filterToolsForAgent for the rationale.
+    tools = tools.filter(t => t.name !== 'plan_mode');
+
     const subAbort = new AbortController();
-    const runInBackground = input.run_in_background === true;
+    // Providers often serialize booleans as the STRING "true"/"false" in tool-call
+    // args; coerceBool handles both (a strict `=== true` silently dropped
+    // `run_in_background: "true"` to foreground, serializing a batch the model
+    // meant to run concurrently). Shared with bash.ts for consistent coercion.
+    const runInBackground = coerceBool(input.run_in_background);
     const forwardAbort = () => subAbort.abort();
     if (!runInBackground) {
       context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
@@ -363,8 +390,17 @@ export const taskTool: ToolDefinition = {
 
     // agentSystemPrompt is now in subConfig.systemPrompt — the user message is
     // just the task prompt. For mode-only tasks (no subagent_type), there is no
-    // agentSystemPrompt and the engine uses its own persona-driven system prompt.
-    const effectivePrompt = prompt;
+    // agentSystemPrompt and the engine uses its own persona-driven system prompt
+    // (the full interactive coding agent: write files, verify, never stop). That
+    // framing makes a delegated sub-agent OVER-WORK a bounded task — writing
+    // files, running commands, and looping on verification instead of answering
+    // and returning — so trivial delegations ran for minutes and sometimes never
+    // terminated. Frame mode-only sub-agents to return their result and STOP,
+    // mirroring how a workflow agent is told its final message IS the result.
+    // A named subagent_type keeps its own authoritative identity (no directive).
+    const effectivePrompt = agentSystemPrompt
+      ? prompt
+      : `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
 
 
     const agentName = input.name as string | undefined;

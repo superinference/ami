@@ -28,6 +28,7 @@ import {
 } from '../src/tools/tool-utils';
 import { httpGet, _webHooks, MAX_HTTP_BODY_BYTES } from '../src/tools/web-utils';
 import { workflowTool } from '../src/tools/workflow';
+import { ProcessManager } from '../src/process-manager';
 import type { ToolContext } from '../src/types';
 
 function mkTmp(): string {
@@ -246,5 +247,64 @@ log('ran with cap');
     const r = await workflowTool.execute({ script, maxConcurrent: 2 }, ctx());
     assert.ok(!r.isError, r.output);
     assert.ok(r.output.includes('ran with cap'));
+  });
+});
+
+describe('workflowTool — flow + processManager wiring (1 flow, many agents)', () => {
+  let tmpDir: string;
+  before(() => { tmpDir = mkTmp(); });
+  after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  function ctx(pm: ProcessManager, factory: any): ToolContext {
+    return {
+      cwd: tmpDir,
+      abortSignal: new AbortController().signal,
+      processManager: pm,
+      _providerConfig: { baseUrl: 'http://test', apiKey: 'k', model: 'm' } as never,
+      _engineFactory: factory,
+    } as ToolContext;
+  }
+
+  it('creates one flow per invocation and registers each agent into it', async () => {
+    const pm = new ProcessManager(tmpDir);
+    const script = `export const meta = { name: 'fleet-wf', description: 'test' }
+const a = await agent('task one');
+const b = await agent('task two');
+log(a + '|' + b);
+`;
+    const factory = () => ({
+      submit: async function* () { yield { type: 'text_delta', text: 'done' }; },
+      shutdown() {},
+    });
+    const r = await workflowTool.execute({ script }, ctx(pm, factory));
+    assert.ok(!r.isError, r.output);
+    const flows = pm.flowManager.listFlows();
+    assert.equal(flows.length, 1, 'one flow per workflow invocation');
+    assert.equal(flows[0].description, 'fleet-wf');
+    assert.equal(flows[0].agentIds.length, 2, 'both agents joined the flow');
+    // Agents registered + marked completed, output captured for drill.
+    const list = pm.list();
+    assert.equal(list.length, 2);
+    assert.ok(list.every(a => a.status === 'completed'));
+    const out = pm.getOutput(flows[0].agentIds[0], 0);
+    assert.ok(out && out.output.includes('done'));
+  });
+
+  it('marks an agent failed (and rethrows) when its sub-engine throws', async () => {
+    const pm = new ProcessManager(tmpDir);
+    const script = `export const meta = { name: 'boom-wf', description: 'test' }
+const a = await agent('will throw');
+log(String(a));
+`;
+    const factory = () => ({
+      submit: async function* () { throw new Error('engine boom'); },
+      shutdown() {},
+    });
+    // The workflow runtime turns a thrown agent into a null result; the tool
+    // itself still completes, but the agent must be recorded as failed.
+    await workflowTool.execute({ script }, ctx(pm, factory));
+    const list = pm.list();
+    assert.equal(list.length, 1);
+    assert.equal(list[0].status, 'failed', 'thrown sub-engine marks the agent failed');
   });
 });

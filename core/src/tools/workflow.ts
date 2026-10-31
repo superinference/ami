@@ -1,7 +1,9 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { executeWorkflow, parseWorkflowMeta, WorkflowResolver } from './workflow-runtime';
+import { SUBAGENT_RETURN_DIRECTIVE } from './task';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 export const workflowTool: ToolDefinition = {
   name: 'workflow',
@@ -68,19 +70,56 @@ export const workflowTool: ToolDefinition = {
       return { output: 'Error: Script must begin with `export const meta = { name, description }`', isError: true };
     }
 
+    // One flow per workflow invocation so the inspector shows "1 flow, many
+    // agents" — each agent()/parallel()/pipeline() call joins it. Guarded on
+    // processManager so the workflow runs unchanged when there is none.
+    const pm = context.processManager;
+    const fm = pm?.flowManager;
+    const workflowFlowId = fm ? fm.createFlow(meta.name) : undefined;
+
     const agentHandler = async (prompt: string, opts?: any): Promise<string> => {
       if (!context._engineFactory) return `[Agent not available: no engine factory]`;
+      let taskId: string | undefined;
+      let outputPath: string | undefined;
+      if (pm) {
+        taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
+        const label = String(opts?.label || prompt).slice(0, 80);
+        outputPath = path.join(context.cwd, '.superinference', 'tasks', `${taskId}.out`);
+        try { fs.mkdirSync(path.dirname(outputPath), { recursive: true }); } catch { /* ok */ }
+        pm.registerAgent(taskId, {
+          command: `[agent] ${label}`,
+          description: `Workflow agent: ${label}`,
+          outputPath,
+          abortFn: () => {},
+        });
+        if (fm && workflowFlowId) fm.addAgent(workflowFlowId, taskId);
+      }
       const subEngine = context._engineFactory({
         provider: context._providerConfig!,
         cwd: context.cwd,
         permissionMode: 'auto-allow',
         tools: opts?.tools,
       });
+      // Same return-and-stop framing as task sub-agents: a workflow agent should
+      // complete its step and return, not run the full never-stop coding loop.
+      const framedPrompt = `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
+      const finish = (status: 'completed' | 'failed', text: string): void => {
+        if (!pm || !taskId) return;
+        try { if (outputPath) fs.writeFileSync(outputPath, text || '(no output)'); } catch { /* dir gone */ }
+        pm.updateEntry(taskId, { status, exitCode: status === 'failed' ? 1 : 0 });
+      };
       let result = '';
-      for await (const event of subEngine.submit(prompt)) {
-        if (event.type === 'text_delta') result += event.text;
+      try {
+        for await (const event of subEngine.submit(framedPrompt)) {
+          if (event.type === 'text_delta') result += event.text;
+        }
+      } catch (err) {
+        finish('failed', result);
+        (subEngine as any).shutdown?.();
+        throw err;
       }
       (subEngine as any).shutdown?.();
+      finish('completed', result);
       return result || '[Agent produced no output]';
     };
 

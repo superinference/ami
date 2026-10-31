@@ -653,6 +653,69 @@ export function openAIPromptCacheBody(
   return { ...(extraBody ?? {}), prompt_cache_key: cacheKey };
 }
 
+/**
+ * Inject Anthropic prompt-cache breakpoints into a RAW Anthropic Messages request
+ * body (the wire format the Vertex endpoint receives). The @ai-sdk/google-vertex
+ * provider does NOT forward providerOptions.cacheControl to the wire (measured:
+ * 0% cache), so we add cache_control at the HTTP layer. Markers are placed on the
+ * stable prefix in Anthropic's hierarchy — last tool, system, and the last
+ * message (rolling tail) — staying within Anthropic's 4-breakpoint cap
+ * (tools + system + last-message = 3). Returns the original text on non-JSON
+ * bodies. Exported for testing.
+ */
+export function injectAnthropicCacheControl(bodyText: string, cacheControl: Record<string, unknown>): string {
+  let body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  try { body = JSON.parse(bodyText); } catch { return bodyText; }
+  if (!body || typeof body !== 'object') return bodyText;
+  const cc = cacheControl;
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    const last = body.tools[body.tools.length - 1];
+    if (last && typeof last === 'object') last.cache_control = cc;
+  }
+  if (typeof body.system === 'string' && body.system.trim() !== '') {
+    body.system = [{ type: 'text', text: body.system, cache_control: cc }];
+  } else if (Array.isArray(body.system) && body.system.length > 0) {
+    const last = body.system[body.system.length - 1];
+    if (last && typeof last === 'object') last.cache_control = cc;
+  }
+  if (Array.isArray(body.messages) && body.messages.length > 0) {
+    const lastMsg = body.messages[body.messages.length - 1];
+    if (lastMsg && typeof lastMsg === 'object') {
+      if (typeof lastMsg.content === 'string' && lastMsg.content.trim() !== '') {
+        lastMsg.content = [{ type: 'text', text: lastMsg.content, cache_control: cc }];
+      } else if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
+        const lastBlock = lastMsg.content[lastMsg.content.length - 1];
+        if (lastBlock && typeof lastBlock === 'object') lastBlock.cache_control = cc;
+      }
+    }
+  }
+  return JSON.stringify(body);
+}
+
+/**
+ * Wrap a fetch so every outgoing Anthropic-on-Vertex request carries cache_control
+ * (injected into the body) and, for 1h TTL, the extended-cache beta header. This
+ * is the ONLY path that makes prompt caching work on anthropic-vertex given the
+ * SDK's dropped providerOptions.
+ */
+export function withVertexAnthropicCache(
+  baseFetch: typeof globalThis.fetch,
+  cacheTtl?: '5m' | '1h',
+): typeof globalThis.fetch {
+  const cc = buildAnthropicCacheControl(cacheTtl) as unknown as Record<string, unknown>;
+  return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (init && typeof init.body === 'string') {
+      const body = injectAnthropicCacheControl(init.body, cc);
+      const headers = new Headers(init.headers as Record<string, string> | undefined);
+      if (cacheTtl === '1h' && !headers.has('anthropic-beta')) {
+        headers.set('anthropic-beta', 'extended-cache-ttl-2025-04-11');
+      }
+      init = { ...init, body, headers };
+    }
+    return baseFetch(input, init);
+  }) as typeof globalThis.fetch;
+}
+
 export function resolveModel(config: ProviderConfig) {
   const { apiKey } = config;
   const fromKey = inferProviderFromApiKey(apiKey);
@@ -682,7 +745,14 @@ export function resolveModel(config: ProviderConfig) {
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
     const project = process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.GOOGLE_VERTEX_PROJECT || '';
     const location = process.env.CLOUD_ML_REGION || process.env.GOOGLE_VERTEX_LOCATION || 'us-east5';
-    return createVertexAnthropic({ project, location })(model);
+    // The vertex-anthropic SDK drops providerOptions.cacheControl, so inject
+    // cache_control into the raw request body via a wrapped fetch (the only way
+    // to get prompt caching on this path).
+    return createVertexAnthropic({
+      project,
+      location,
+      fetch: withVertexAnthropicCache(headerFetch ?? globalThis.fetch, config.cacheTtl),
+    } as Parameters<typeof createVertexAnthropic>[0])(model);
   }
 
   // Native Anthropic SDK
@@ -780,6 +850,26 @@ export function convertToolsForSDK(tools: ToolDefinition[]): ToolSet {
   return sdkTools;
 }
 
+/**
+ * Attach an Anthropic cache_control marker to the LAST tool so the whole tool
+ * block is cached. Tools precede system+messages in Anthropic's cache hierarchy,
+ * so a single marker on the final tool caches every tool schema before it — the
+ * biggest, most stable per-turn prefix block. Returns a new ToolSet (does not
+ * mutate the input). No-op for an empty set.
+ */
+export function markLastToolCacheControl(sdkTools: ToolSet, cacheControl: unknown): ToolSet {
+  const names = Object.keys(sdkTools);
+  if (names.length === 0) return sdkTools;
+  const last = names[names.length - 1];
+  return {
+    ...sdkTools,
+    [last]: {
+      ...(sdkTools[last] as Record<string, unknown>),
+      providerOptions: { anthropic: { cacheControl } },
+    },
+  } as ToolSet;
+}
+
 // ---------------------------------------------------------------------------
 // Convert our Message[] to AI SDK ModelMessage[]
 // ---------------------------------------------------------------------------
@@ -861,6 +951,28 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
  * `completion_tokens_details.reasoning_tokens`, which the SDK maps to
  * `usage.reasoningTokens` and/or `usage.outputTokenDetails.reasoningTokens`.
  */
+/**
+ * Cache-read (cached prompt) tokens from a finish part. The AI SDK normalizes
+ * usage inconsistently across providers: the Anthropic provider (incl. via
+ * google-vertex) reports cache reads under providerMetadata.anthropic, not the
+ * normalized usage.cachedInputTokens — so reading only usage.* reports 0 for a
+ * WORKING cache (observed on anthropic-vertex). Check every known location.
+ */
+export function extractCachedPromptTokens(part: unknown): number {
+  const p = (part ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const u = (p.usage ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const pm = ((p.providerMetadata as Record<string, any> | undefined)?.anthropic ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const n = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+  return (
+    n(u.cachedInputTokens) ??
+    n(u.inputTokenDetails?.cacheReadTokens) ??
+    n(pm.cacheReadInputTokens) ??
+    n(pm.cache_read_input_tokens) ??
+    0
+  );
+}
+
 export function extractReasoningTokens(usage: unknown): number {
   if (!usage || typeof usage !== 'object') return 0;
   const u = usage as Record<string, unknown>;
@@ -1039,6 +1151,12 @@ export async function* streamChatCompletion(
     config.baseUrl?.includes('anthropic.com') ||
     config.provider === 'anthropic' ||
     config.provider === 'anthropic-vertex';
+  // On vertex, cache_control is injected into the RAW request body by
+  // withVertexAnthropicCache (the SDK path double-counts otherwise — Anthropic
+  // caps cache_control at 4 blocks). So SDK-level markers apply to NATIVE
+  // anthropic only; vertex relies solely on the HTTP injection.
+  const isVertexAnthropic = config.provider === 'anthropic-vertex';
+  const useSdkCacheMarkers = isAnthropic && !isVertexAnthropic;
 
   const healed = healOrphanedToolCalls(nonSystemMessages);
   const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
@@ -1048,11 +1166,17 @@ export async function* streamChatCompletion(
     stripEmptyTextBlocks(coreMessages as Array<Record<string, unknown>>);
   }
 
-  // Apply per-message cache breakpoints for Anthropic prompt caching.
-  // The AI SDK v4 expects cache_control on individual message content parts
-  // via providerOptions, not as a top-level streamText option.
+  // Anthropic prompt caching. Mark the stable prefix so the provider does not
+  // re-prefill it every turn. Anthropic allows 4 cache_control markers; we spend
+  // them as tools(1) + first-message(1, which caches system+tools before it) +
+  // last-two-messages(2). The system prompt stays in the top-level instructions
+  // string (this SDK/vertex path rejects a role:'system' message in `messages`),
+  // and the breakpoint on the first message caches everything before it including
+  // the system+tools blocks. cache_control uses the AI-SDK
+  // providerOptions.anthropic.cacheControl shape.
   const cacheControl = buildAnthropicCacheControl(config.cacheTtl);
-  if (isAnthropic) {
+  let toolsForModel = sdkTools;
+  if (useSdkCacheMarkers) {
     const breakpointIndices = new Set<number>();
     if (systemPrompt && coreMessages.length > 0) breakpointIndices.add(0);
     const convPoints = buildConversationCachePoints(coreMessages);
@@ -1076,6 +1200,10 @@ export async function* streamChatCompletion(
         },
       };
     }
+    // Cache the TOOLS block via a marker on the last tool (tools precede the
+    // messages in Anthropic's cache hierarchy). Additive; does not change which
+    // tools are sent.
+    if (sdkTools) toolsForModel = markLastToolCacheControl(sdkTools, cacheControl);
   }
 
   try {
@@ -1085,7 +1213,7 @@ export async function* streamChatCompletion(
       model,
       instructions: systemPrompt,
       messages: coreMessages,
-      tools: sdkTools,
+      tools: toolsForModel,
       maxOutputTokens: fitOutputTokens(
         config.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
         config.contextWindow ?? getContextWindow(modelId),
@@ -1140,7 +1268,7 @@ export async function* streamChatCompletion(
                 (part.usage.inputTokens ?? 0) + (part.usage.outputTokens ?? 0)
               ),
               reasoningTokens: extractReasoningTokens(part.usage),
-              cachedPromptTokens: (part.usage as { cachedInputTokens?: number }).cachedInputTokens ?? (part.usage as { inputTokenDetails?: { cacheReadTokens?: number } }).inputTokenDetails?.cacheReadTokens ?? 0,
+              cachedPromptTokens: extractCachedPromptTokens(part),
             },
             responseHeaders: (part as { response?: { headers?: Record<string, string> } }).response?.headers,
           };

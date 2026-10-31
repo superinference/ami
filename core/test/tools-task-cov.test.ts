@@ -129,6 +129,93 @@ describe('task.ts pure helpers', () => {
 });
 
 // ===========================================================================
+// task.ts — run_in_background coercion + sub-agent return directive
+// ===========================================================================
+
+describe('taskTool — run_in_background string coercion', () => {
+  beforeEach(() => resetAgentRegistry());
+
+  it('treats the STRING "true" as background (providers serialize bools as strings)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-coerce-'));
+    const pm = new ProcessManager(tmp);
+    const r = await taskTool.execute(
+      { prompt: 'do work', run_in_background: 'true' as any },
+      ctx({
+        cwd: tmp,
+        processManager: pm,
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _engineFactory: () => ({ submit: gen([{ type: 'text_delta', text: 'ok' }]) }),
+      }),
+    );
+    fs.rmSync(tmp, { recursive: true, force: true });
+    assert.ok(r.output.includes('Background agent started'), `expected background path, got: ${r.output}`);
+  });
+
+  it('a real boolean true still backgrounds', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-bool-'));
+    const pm = new ProcessManager(tmp);
+    const r = await taskTool.execute(
+      { prompt: 'do work', run_in_background: true },
+      ctx({
+        cwd: tmp,
+        processManager: pm,
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _engineFactory: () => ({ submit: gen([{ type: 'text_delta', text: 'ok' }]) }),
+      }),
+    );
+    fs.rmSync(tmp, { recursive: true, force: true });
+    assert.ok(r.output.includes('Background agent started'));
+  });
+
+  it('a non-true value stays foreground', async () => {
+    let submitted = '';
+    await taskTool.execute(
+      { prompt: 'fg work', run_in_background: 'false' as any },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _engineFactory: () => ({ submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'ok' }])(p); } }),
+      }),
+    );
+    // foreground path ran (it submitted the prompt inline rather than returning a task id)
+    assert.ok(submitted.includes('fg work'));
+  });
+});
+
+describe('taskTool — sub-agent return-and-stop directive', () => {
+  beforeEach(() => resetAgentRegistry());
+
+  it('prepends the directive for a mode-only sub-agent', async () => {
+    let submitted = '';
+    await taskTool.execute(
+      { prompt: 'Reply with one word: red' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _engineFactory: () => ({ submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'red' }])(p); } }),
+      }),
+    );
+    assert.match(submitted, /sub-agent handling one delegated task/);
+    assert.match(submitted, /STOP/);
+    assert.ok(submitted.includes('Reply with one word: red'), 'original task is preserved after the directive');
+  });
+
+  it('does NOT prepend the directive for a named subagent_type (own identity)', async () => {
+    let submitted = '';
+    await taskTool.execute(
+      { prompt: 'verify the fix', subagent_type: 'verifier' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _skillManager: {
+          getAgent: () => ({ name: 'verifier', systemPrompt: 'You are a verifier.' }),
+          listAgents: () => [],
+        } as any,
+        _engineFactory: () => ({ submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'ok' }])(p); } }),
+      }),
+    );
+    assert.equal(submitted, 'verify the fix', 'subagent_type task prompt is passed verbatim');
+  });
+});
+
+// ===========================================================================
 // task.ts — resume path
 // ===========================================================================
 
@@ -477,6 +564,40 @@ describe('taskTool — subagent_type at max nesting depth', () => {
     const names = cfg.tools.map((t: any) => t.name);
     assert.ok(!names.includes('bash'), 'deny-listed bash excluded');
     assert.ok(!names.includes('task'), 'task stripped past max depth');
+    assert.ok(names.includes('file_read'));
+  });
+
+  it('never passes plan_mode to a subagent engine (default general mode)', async () => {
+    // plan_mode is interactive-only: a subagent entering it hangs forever
+    // "awaiting user approval" and corrupts the parent's module-global plan state.
+    let cfg: any = null;
+    await taskTool.execute(
+      { prompt: 'review something' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _engineFactory: (c: any) => { cfg = c; return { submit: gen([{ type: 'text_delta', text: 'ok' }]) }; },
+      }),
+    );
+    const names = cfg.tools.map((t: any) => t.name);
+    assert.ok(!names.includes('plan_mode'), 'plan_mode must never reach a subagent');
+    assert.ok(names.includes('file_read'), 'other tools still present');
+  });
+
+  it('strips plan_mode even when an agent-def explicitly allow-lists it', async () => {
+    let cfg: any = null;
+    await taskTool.execute(
+      { prompt: 'planful', subagent_type: 'planner' },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _skillManager: {
+          getAgent: () => ({ name: 'planner', tools: ['file_read', 'plan_mode', 'task'] }),
+          listAgents: () => [],
+        } as any,
+        _engineFactory: (c: any) => { cfg = c; return { submit: gen([{ type: 'text_delta', text: 'ok' }]) }; },
+      }),
+    );
+    const names = cfg.tools.map((t: any) => t.name);
+    assert.ok(!names.includes('plan_mode'), 'the universal guard removes an allow-listed plan_mode');
     assert.ok(names.includes('file_read'));
   });
 });

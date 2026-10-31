@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
+import { coerceBool } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { spillToolText } from './spill-output';
@@ -471,7 +472,7 @@ function scrubEnv(): NodeJS.ProcessEnv {
 export const bashTool: ToolDefinition = {
   name: 'bash',
   description:
-    'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. IMPORTANT: Do not use bash for reading files (use file_read), editing files (use file_edit), or searching (use grep/glob). Use absolute paths. Quote paths with spaces. Git: new commits only (never amend unless asked), never --no-verify, never force-push, never commit unless explicitly asked. Do not sleep between commands. Chain dependent commands with &&. In assistant/detached mode, commands exceeding 15s are auto-backgrounded — use run_in_background for intentionally long tasks.',
+    'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. IMPORTANT: Do not use bash for reading files (use file_read), editing files (use file_edit), or searching (use grep/glob). Use absolute paths. Quote paths with spaces. Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never commit unless explicitly asked. Do not sleep between commands. Chain dependent commands with &&. In assistant/detached mode, commands exceeding 15s are auto-backgrounded — use run_in_background for intentionally long tasks.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -621,7 +622,10 @@ export const bashTool: ToolDefinition = {
       return { output: `Error: blocked — ${exfil.reason} (data exfiltration risk)`, isError: true };
     }
 
-    const sleepBlock = detectBlockedSleep(command, !!input.run_in_background, !!input.timeout);
+    // coerceBool: providers serialize booleans as strings; a naive truthy check
+    // would background on the STRING "false". Shared with task.ts.
+    const runInBackground = coerceBool(input.run_in_background);
+    const sleepBlock = detectBlockedSleep(command, runInBackground, !!input.timeout);
     if (sleepBlock) return { output: `Error: ${sleepBlock}`, isError: true };
 
     command = injectFindMaxdepth(command);
@@ -634,7 +638,7 @@ export const bashTool: ToolDefinition = {
       if (cached !== null) return { output: cached, metadata: { readOnly: true, cached: true } };
     }
 
-    if (input.run_in_background && context.processManager) {
+    if (runInBackground && context.processManager) {
       const desc = (input.description as string) || command.slice(0, 80);
       const MAX_BG_TIMEOUT_MS = 2 * 60 * 60 * 1000;
       const DEFAULT_BG_TIMEOUT_MS = 30 * 60 * 1000;

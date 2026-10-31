@@ -132,6 +132,32 @@ describe('task tool filtering respects agent depth', () => {
     const result = filterToolsForAgent(fakeTools, 'general', 0, 0);
     assert.ok(!result.some(t => t.name === 'task'), 'task blocked when maxDepth=0');
   });
+
+  it('strips plan_mode for subagents in general mode (interactive-only tool)', async () => {
+    const { filterToolsForAgent } = await import('../src/tools/task');
+    const fakeTools = [
+      { name: 'bash' },
+      { name: 'file_read' },
+      { name: 'plan_mode' },
+      { name: 'task' },
+    ] as any[];
+    const result = filterToolsForAgent(fakeTools, 'general', 0, 5);
+    assert.ok(!result.some(t => t.name === 'plan_mode'),
+      'plan_mode must never be given to an autonomous subagent (it would hang awaiting user approval)');
+    // the other tools survive
+    assert.ok(result.some(t => t.name === 'bash'));
+    assert.ok(result.some(t => t.name === 'task'));
+  });
+
+  it('strips plan_mode in explore mode too', async () => {
+    const { filterToolsForAgent } = await import('../src/tools/task');
+    const fakeTools = [
+      { name: 'file_read' },
+      { name: 'plan_mode' },
+    ] as any[];
+    const result = filterToolsForAgent(fakeTools, 'explore', 0, 5);
+    assert.ok(!result.some(t => t.name === 'plan_mode'));
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,8 @@ import {
   convertMessages,
   buildAnthropicCacheControl,
   convertToolsForSDK,
+  markLastToolCacheControl,
+  injectAnthropicCacheControl,
   buildThinkingOptions,
   extractReasoningTokens,
   resolveContextWindow,
@@ -496,6 +498,66 @@ describe('convertToolsForSDK', () => {
     const result = convertToolsForSDK([]);
     assert.ok(typeof result === 'object');
     assert.equal(Object.keys(result).length, 0);
+  });
+
+  describe('injectAnthropicCacheControl (raw vertex body)', () => {
+    const cc = { type: 'ephemeral' };
+    it('marks last tool, system (string->array), and last message', () => {
+      const body = JSON.stringify({
+        tools: [{ name: 'a' }, { name: 'b' }],
+        system: 'you are helpful',
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'ok' }, { type: 'text', text: 'more' }] },
+        ],
+      });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.deepEqual(out.tools[1].cache_control, cc, 'last tool marked');
+      assert.equal(out.tools[0].cache_control, undefined, 'non-last tool not marked');
+      assert.ok(Array.isArray(out.system), 'string system converted to array');
+      assert.deepEqual(out.system[0].cache_control, cc);
+      assert.deepEqual(out.messages[1].content[1].cache_control, cc, 'last block of last msg marked');
+    });
+    it('converts a string message content to a marked text block', () => {
+      const body = JSON.stringify({ messages: [{ role: 'user', content: 'plain' }] });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.ok(Array.isArray(out.messages[0].content));
+      assert.deepEqual(out.messages[0].content[0].cache_control, cc);
+    });
+    it('marks the last block of an array-form system', () => {
+      const body = JSON.stringify({ system: [{ type: 'text', text: 'x' }, { type: 'text', text: 'y' }] });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.deepEqual(out.system[1].cache_control, cc);
+      assert.equal(out.system[0].cache_control, undefined);
+    });
+    it('returns the original text unchanged on non-JSON input', () => {
+      assert.equal(injectAnthropicCacheControl('not json', cc), 'not json');
+    });
+    it('is safe on an empty body object', () => {
+      assert.equal(injectAnthropicCacheControl('{}', cc), '{}');
+    });
+  });
+
+  describe('markLastToolCacheControl', () => {
+    const cc = { type: 'ephemeral' };
+    it('marks only the LAST tool with cache_control (caches the whole tool block)', () => {
+      const sdk = convertToolsForSDK([
+        makeMockTool('a', 'A'), makeMockTool('b', 'B'), makeMockTool('c', 'C'),
+      ]);
+      const marked = markLastToolCacheControl(sdk as any, cc);
+      assert.deepEqual((marked as any).c.providerOptions, { anthropic: { cacheControl: cc } });
+      assert.equal((marked as any).a.providerOptions, undefined);
+      assert.equal((marked as any).b.providerOptions, undefined);
+    });
+    it('is a no-op (returns same ref) for an empty tool set', () => {
+      const empty = convertToolsForSDK([]);
+      assert.equal(markLastToolCacheControl(empty as any, cc), empty);
+    });
+    it('does not mutate the input set', () => {
+      const sdk = convertToolsForSDK([makeMockTool('only', 'O')]);
+      markLastToolCacheControl(sdk as any, cc);
+      assert.equal((sdk as any).only.providerOptions, undefined, 'original untouched');
+    });
   });
 
   it('preserves tool descriptions', () => {
