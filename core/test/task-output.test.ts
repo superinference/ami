@@ -85,6 +85,50 @@ describe('taskOutputTool', () => {
     assert.ok(result.output.includes('no output yet'));
   });
 
+  it('wait:true blocks until the task reaches a terminal status (one call, no poll loop)', async () => {
+    let calls = 0;
+    const ctx = {
+      cwd: '/tmp', abortSignal: new AbortController().signal,
+      processManager: {
+        getOutput: () => { calls++; return { status: calls < 3 ? 'running' : 'completed', exitCode: calls < 3 ? null : 0, elapsedMs: 1000, output: 'final out' }; },
+      },
+    } as unknown as ToolContext;
+    const result = await taskOutputTool.execute!({ task_id: 'w1', wait: true }, ctx);
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('completed'), 'returns terminal status');
+    assert.ok(result.output.includes('Exit code: 0'));
+    assert.ok(calls >= 3, 'polled internally until terminal');
+  });
+
+  it('wait also accepts the string "true" (provider boolean coercion)', async () => {
+    let calls = 0;
+    const ctx = {
+      cwd: '/tmp', abortSignal: new AbortController().signal,
+      processManager: { getOutput: () => { calls++; return { status: calls < 2 ? 'running' : 'completed', exitCode: 0, elapsedMs: 1, output: '' }; } },
+    } as unknown as ToolContext;
+    const result = await taskOutputTool.execute!({ task_id: 'w1b', wait: 'true' as unknown as boolean }, ctx);
+    assert.ok(result.output.includes('completed'));
+  });
+
+  it('wait:true stops at timeout_ms if still running', async () => {
+    const ctx = {
+      cwd: '/tmp', abortSignal: new AbortController().signal,
+      processManager: { getOutput: () => ({ status: 'running', exitCode: null, elapsedMs: 1000, output: '' }) },
+    } as unknown as ToolContext;
+    const result = await taskOutputTool.execute!({ task_id: 'w2', wait: true, timeout_ms: 30 }, ctx);
+    assert.ok(result.output.includes('running'), 'returns running after the wait timeout');
+  });
+
+  it('wait:true bails out immediately on abort', async () => {
+    const ac = new AbortController();
+    const ctx = {
+      cwd: '/tmp', abortSignal: ac.signal,
+      processManager: { getOutput: () => { ac.abort(); return { status: 'running', exitCode: null, elapsedMs: 1, output: '' }; } },
+    } as unknown as ToolContext;
+    const result = await taskOutputTool.execute!({ task_id: 'w3', wait: true }, ctx);
+    assert.ok(result.output.includes('running'), 'aborts the wait loop');
+  });
+
   it('respects custom tail parameter', async () => {
     const ctx = {
       cwd: '/tmp',

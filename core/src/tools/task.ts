@@ -518,7 +518,7 @@ export const taskTool: ToolDefinition = {
         }
       })().catch(() => {});
 
-      return { output: `Background agent started: ${taskId}\nUse task_output to check results.` };
+      return { output: `Background agent started: ${taskId}\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.` };
     }
 
     incrementSpawnCount(context);
