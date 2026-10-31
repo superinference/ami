@@ -91,6 +91,22 @@ describe('skillTool — validation and error paths', () => {
     assert.ok(r.output.includes('must not be empty'));
   });
 
+  it('accepts skill-name aliases (name/skill_name/skillName) + arg aliases (prompt/arguments)', async () => {
+    // Models call this with various keys ({name|skill_name|skillName, prompt|arguments}) —
+    // skills are listed by name. With no _skillManager, reaching the "manager not
+    // available" error (NOT "must not be empty") proves each alias resolved the skill.
+    for (const input of [
+      { name: 'code-review', prompt: 'review x' },
+      { skill_name: 'code-review', arguments: 'review x' },
+      { skillName: 'code-review' },
+    ]) {
+      const r = await skillTool.execute(input, ctx());
+      assert.ok(r.isError);
+      assert.ok(!r.output.includes('must not be empty'), `alias ${JSON.stringify(input)} must resolve the skill`);
+      assert.ok(r.output.includes('skill manager not available'));
+    }
+  });
+
   it('errors when _skillManager is not available', async () => {
     const r = await skillTool.execute({ skill: 'test' }, ctx());
     assert.ok(r.isError);

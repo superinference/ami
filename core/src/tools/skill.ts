@@ -58,8 +58,12 @@ export const skillTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const skillName = input.skill as string;
-    const args = input.args as string | undefined;
+    // Accept common aliases for the skill name + args. Models frequently call
+    // this with {name|skill_name|skillName, prompt} (skills are listed by name)
+    // and would otherwise waste a turn on an "empty skill name" error before
+    // retrying with a different key. Normalize all the variants they try.
+    const skillName = (input.skill ?? input.name ?? input.skill_name ?? input.skillName) as string;
+    const args = (input.args ?? input.prompt ?? input.arguments) as string | undefined;
 
     if (!skillName || skillName.trim().length === 0) {
       return { output: 'Error: skill name must not be empty.', isError: true };
