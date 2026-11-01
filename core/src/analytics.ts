@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 
 export interface AnalyticsEvent {
   timestamp: string;
@@ -18,9 +19,14 @@ export class AnalyticsTracker {
   private _allowedSources: Set<string> | null = null;
   private _sourceStack: string[] = [];
   private _droppedEvents = 0;
+  private _otlpEndpoint: string | null;
+  private _otlpFetch: typeof fetch | undefined;
+  private _telemetry: TelemetryBatchSender | null = null;
 
-  constructor(logDir?: string) {
+  constructor(logDir?: string, opts?: { otlpEndpoint?: string; otlpFetch?: typeof fetch }) {
     this.logFile = logDir ? `${logDir}/analytics.jsonl` : null;
+    this._otlpEndpoint = opts?.otlpEndpoint ?? null;
+    this._otlpFetch = opts?.otlpFetch;
   }
 
   setSessionId(sessionId: string): void {
@@ -67,6 +73,15 @@ export class AnalyticsTracker {
       this.events = this.events.slice(-MAX_IN_MEMORY_EVENTS);
     }
 
+    // Mirror into the OTLP batch sender when an endpoint is configured. Lazily
+    // created so the batch carries the (by-then-known) session id.
+    if (this._otlpEndpoint) {
+      if (!this._telemetry) {
+        this._telemetry = new TelemetryBatchSender({ sessionId: this._sessionId ?? 'unknown', endpoint: this._otlpEndpoint });
+      }
+      this._telemetry.enqueue(type, data);
+    }
+
     if (this.logFile) {
       try {
         if (!this.dirInitialized) {
@@ -98,6 +113,15 @@ export class AnalyticsTracker {
 
   reset(): void {
     this.events = [];
+  }
+
+  /** Drain any queued telemetry and POST it to the configured OTLP endpoint.
+   *  No-op (and never throws) when no endpoint is set. Best-effort. */
+  async flushOtlp(): Promise<void> {
+    if (!this._otlpEndpoint || !this._telemetry) return;
+    for (const batch of this._telemetry.drain()) {
+      await sendOtlpBatch(this._otlpEndpoint, batch, { fetchImpl: this._otlpFetch });
+    }
   }
 }
 
@@ -190,6 +214,77 @@ export class TelemetryBatchSender {
     }
     this.stopAutoFlush();
     return batches;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OTLP (OpenTelemetry Protocol) log export over HTTP/JSON
+// ---------------------------------------------------------------------------
+
+function otlpAttrs(obj: Record<string, unknown>): Array<{ key: string; value: { stringValue: string } }> {
+  return Object.entries(obj).map(([key, v]) => ({
+    key,
+    value: { stringValue: typeof v === 'string' ? v : JSON.stringify(v) },
+  }));
+}
+
+/** Convert a telemetry batch into an OTLP/JSON LogsData payload. */
+export function toOtlpLogsPayload(
+  batch: TelemetryBatch,
+  resourceAttrs: Record<string, string> = {},
+): Record<string, unknown> {
+  return {
+    resourceLogs: [{
+      resource: {
+        attributes: otlpAttrs({
+          'service.name': AMI_CLIENT_NAME,
+          'service.version': AMI_VERSION,
+          'session.id': batch.sessionId,
+          ...resourceAttrs,
+        }),
+      },
+      scopeLogs: [{
+        scope: { name: AMI_CLIENT_NAME, version: AMI_VERSION },
+        logRecords: batch.events.map(e => ({
+          timeUnixNano: String(e.timestamp * 1_000_000),
+          severityText: 'INFO',
+          body: { stringValue: e.type },
+          attributes: otlpAttrs(e.data),
+        })),
+      }],
+    }],
+  };
+}
+
+/** Resolve the OTLP logs URL: use an explicit /v1/{signal} path as-is, else append /v1/logs. */
+export function otlpLogsUrl(endpoint: string): string {
+  const trimmed = endpoint.replace(/\/+$/, '');
+  return /\/v1\/(logs|traces|metrics)$/.test(trimmed) ? trimmed : `${trimmed}/v1/logs`;
+}
+
+/** POST one telemetry batch to an OTLP/HTTP logs endpoint. Best-effort: returns
+ *  false (never throws) on network error, timeout, non-2xx, or no fetch impl. */
+export async function sendOtlpBatch(
+  endpoint: string,
+  batch: TelemetryBatch,
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string> } = {},
+): Promise<boolean> {
+  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as typeof fetch | undefined);
+  if (!fetchImpl) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 5000);
+  try {
+    const res = await fetchImpl(otlpLogsUrl(endpoint), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(deps.headers ?? {}) },
+      body: JSON.stringify(toOtlpLogsPayload(batch)),
+      signal: controller.signal,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

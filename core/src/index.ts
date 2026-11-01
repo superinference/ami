@@ -124,7 +124,7 @@ export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recov
 export { isProtectedLogTier, canModifyLog, UILogGuard, LOG_TIERS } from './ui-log-guard';
 export type { LogTier, LogEntry } from './ui-log-guard';
 export { validateEngineConfig, sanitizeEngineConfig } from './types';
-export { TelemetryBatchSender } from './analytics';
+export { TelemetryBatchSender, sendOtlpBatch, toOtlpLogsPayload, otlpLogsUrl } from './analytics';
 export type { TelemetryBatch } from './analytics';
 export { SessionDiffTracker } from './session';
 export type { FileChange } from './session';
