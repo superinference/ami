@@ -6,6 +6,10 @@ import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
 
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
+// After SIGKILL on timeout/abort, a wedged process may never emit 'close' (seen on
+// Windows and for uninterruptible I/O). Resolve anyway after this grace period so
+// the tool can never hang forever.
+const KILL_GRACE_MS = 2_000;
 
 /**
  * Indirection seam for process spawning and the search timeout. Tests swap
@@ -16,10 +20,12 @@ const RG_TIMEOUT = 20_000;
 export const grepHooks: {
   spawn: typeof spawn;
   timeoutMs: number;
+  killGraceMs: number;
   searchFilesForPattern: typeof searchFilesForPattern;
 } = {
   spawn,
   timeoutMs: RG_TIMEOUT,
+  killGraceMs: KILL_GRACE_MS,
   // Hoisted function declaration (defined later in this module).
   searchFilesForPattern,
 };
@@ -427,23 +433,37 @@ export function runSearch(
     }
 
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    // Resolve exactly once; clear timers and the abort listener. 'close', 'error',
+    // timeout and abort all route through here so none can double-resolve or leak.
+    const onAbort = () => { if (timer) clearTimeout(timer); killThenSettle({ output: '' }); };
+    const settle = (outcome: SearchOutcome) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
+      if (context.abortSignal) context.abortSignal.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    // SIGKILL, then settle after a grace period even if 'close' never fires (a
+    // wedged process may not emit it — the "search never returns" hang).
+    const killThenSettle = (outcome: SearchOutcome) => {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      graceTimer = setTimeout(() => settle(outcome), grepHooks.killGraceMs);
+    };
     if (timeout && timeout > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGKILL');
+        killThenSettle({ output: stdout || null, timedOut: true });
       }, timeout);
     }
-
-    const onAbort = () => {
-      if (timer) clearTimeout(timer);
-      child.kill('SIGKILL');
-    };
 
     if (context.abortSignal) {
       if (context.abortSignal.aborted) {
         if (timer) clearTimeout(timer);
-        child.kill('SIGKILL');
-        resolve({ output: '' });
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        settle({ output: '' });
         return;
       }
       context.abortSignal.addEventListener('abort', onAbort, { once: true });
@@ -458,37 +478,28 @@ export function runSearch(
     });
 
     child.on('error', (err: any) => {
-      if (timer) clearTimeout(timer);
-      if (context.abortSignal) {
-        context.abortSignal.removeEventListener('abort', onAbort);
-      }
       if (err.code === 'EAGAIN') {
-        resolve({ output: null, eagain: true });
+        settle({ output: null, eagain: true });
         return;
       }
-      resolve({ output: null });
+      settle({ output: null });
     });
 
     child.on('close', (code: number | null, signal: string | null) => {
-      if (timer) clearTimeout(timer);
-      if (context.abortSignal) {
-        context.abortSignal.removeEventListener('abort', onAbort);
-      }
-
       if (timedOut) {
-        resolve({ output: stdout || null, timedOut: true });
+        settle({ output: stdout || null, timedOut: true });
         return;
       }
 
       // Killed by a signal (SIGTERM, SIGKILL, etc.) — not a normal exit.
       if (signal) {
-        resolve({ output: stdout || null, searchError: `Search was terminated by signal ${signal}` });
+        settle({ output: stdout || null, searchError: `Search was terminated by signal ${signal}` });
         return;
       }
 
       // Exit code 1 means no matches — a normal result, not an error.
       if (code === 0 || isGrepNoMatchExit(code ?? 0)) {
-        resolve({ output: stdout });
+        settle({ output: stdout });
         return;
       }
 
@@ -497,10 +508,10 @@ export function runSearch(
       // signal that this searcher failed so we try the next one.
       const errMsg = stderr.trim() || `Search process exited with code ${code}`;
       if (!stdout.trim()) {
-        resolve({ output: null, searchError: errMsg });
+        settle({ output: null, searchError: errMsg });
         return;
       }
-      resolve({ output: stdout, searchError: errMsg });
+      settle({ output: stdout, searchError: errMsg });
     });
   });
 }

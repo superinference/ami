@@ -1602,6 +1602,34 @@ describe('grep runSearch – branch coverage via seam', () => {
     assert.equal(outcome.timedOut, true);
   });
 
+  it('still resolves on timeout when the killed child never emits close (no hang)', async () => {
+    // Regression: a wedged process may not emit 'close' after SIGKILL; the search
+    // must still return via the kill-grace timer instead of hanging forever.
+    const origGrace = grepHooks.killGraceMs;
+    grepHooks.killGraceMs = 10;
+    try {
+      mockSpawn((_cmd, child) => {
+        child.kill = () => true; // SIGKILL has no effect; 'close' never fires.
+      });
+      const outcome = await runSearch(['x'], 'grep', ctx(), 5);
+      assert.equal(outcome.timedOut, true);
+    } finally {
+      grepHooks.killGraceMs = origGrace;
+    }
+  });
+
+  it('ignores a second terminal event after resolving (settle guard)', async () => {
+    // A child may emit both 'close' and a late 'error'; only the first settles.
+    mockSpawn((_cmd, child) => {
+      setImmediate(() => {
+        child.emit('close', 0, null);          // first → resolves {output: stdout}
+        child.emit('error', new Error('late')); // second → settle() guard no-ops
+      });
+    });
+    const outcome = await runSearch(['x'], 'grep', ctx(), 1000);
+    assert.notEqual(outcome.output, null); // came from 'close', not the late error
+  });
+
   it('returns empty immediately for an already-aborted signal', async () => {
     const controller = new AbortController();
     controller.abort();
