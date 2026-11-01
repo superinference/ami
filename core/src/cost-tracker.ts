@@ -15,6 +15,8 @@ import type { UsageStats } from './types';
 export interface ExtendedUsageStats extends UsageStats {
   cachedPromptTokens: number;
   uncachedPromptTokens: number;
+  /** Cache-write (cache_creation) tokens billed at a premium over input. */
+  cacheCreationTokens: number;
   /** Fraction of prompt tokens served from cache (0..1). */
   cacheHitRate: number;
   /** Estimated dollar savings from prompt caching. */
@@ -53,6 +55,14 @@ const DEFAULT_PRICING: PricingEntry = [1, 3, null];
 
 /** Default ratio when no explicit cached-input price is available. */
 const CACHED_PRICE_RATIO = 0.1;
+
+/**
+ * Cache-WRITE multiplier on the input rate. Anthropic bills cache_creation
+ * tokens at 1.25× the base input price for the default 5-minute TTL (2× for the
+ * 1-hour TTL). We use the 5m default; without it, cache writes are billed as
+ * free and the session undercounts real spend.
+ */
+const CACHE_WRITE_PRICE_RATIO = 1.25;
 
 // ---------------------------------------------------------------------------
 // Live pricing from Vercel AI Gateway
@@ -170,6 +180,7 @@ export class CostTracker {
 
   private _cachedPromptTokens = 0;
   private _uncachedPromptTokens = 0;
+  private _cacheCreationTokens = 0;
   private _cachedCostSavings = 0;
   private _byCategory: Record<string, number> = {};
   private model: string;
@@ -184,8 +195,10 @@ export class CostTracker {
     completionTokens: number;
     reasoningTokens?: number;
     cachedPromptTokens?: number;
+    cacheCreationTokens?: number;
   }): void {
     const cachedTokens = usage.cachedPromptTokens ?? 0;
+    const cacheCreationTokens = usage.cacheCreationTokens ?? 0;
     const uncachedTokens = usage.promptTokens - cachedTokens;
 
     this.stats.promptTokens += usage.promptTokens;
@@ -197,6 +210,7 @@ export class CostTracker {
       this.model,
       uncachedTokens,
       cachedTokens,
+      cacheCreationTokens,
       usage.completionTokens,
     );
     this.stats.totalCost += cost;
@@ -204,6 +218,7 @@ export class CostTracker {
 
     this._cachedPromptTokens += cachedTokens;
     this._uncachedPromptTokens += uncachedTokens;
+    this._cacheCreationTokens += cacheCreationTokens;
 
     if (cachedTokens > 0) {
       const [inputPPM, , cachedPPM] = matchPricing(this.model);
@@ -236,6 +251,7 @@ export class CostTracker {
       ...this.stats,
       cachedPromptTokens: this._cachedPromptTokens,
       uncachedPromptTokens: this._uncachedPromptTokens,
+      cacheCreationTokens: this._cacheCreationTokens,
       cacheHitRate,
       cachedCostSavings: this._cachedCostSavings,
       byCategory: { ...this._byCategory },
@@ -255,6 +271,7 @@ export class CostTracker {
     };
     this._cachedPromptTokens = 0;
     this._uncachedPromptTokens = 0;
+    this._cacheCreationTokens = 0;
     this._cachedCostSavings = 0;
     this._byCategory = {};
   }
@@ -263,6 +280,7 @@ export class CostTracker {
     model: string,
     uncachedPromptTokens: number,
     cachedPromptTokens: number,
+    cacheCreationTokens: number,
     completionTokens: number,
   ): number {
     const [inputPPM, outputPPM, cachedPPM] = matchPricing(model);
@@ -270,6 +288,7 @@ export class CostTracker {
     return (
       (uncachedPromptTokens / 1_000_000) * inputPPM +
       (cachedPromptTokens / 1_000_000) * actualCachedPPM +
+      (cacheCreationTokens / 1_000_000) * inputPPM * CACHE_WRITE_PRICE_RATIO +
       (completionTokens / 1_000_000) * outputPPM
     );
   }

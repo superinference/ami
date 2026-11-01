@@ -992,6 +992,28 @@ export function extractCachedPromptTokens(part: unknown): number {
   );
 }
 
+/**
+ * Cache-WRITE (cache_creation) tokens from a finish part. Anthropic bills these
+ * separately from both uncached input and cache reads (at 1.25×/2× the input
+ * rate). The AI SDK surfaces them under providerMetadata.anthropic for the
+ * Anthropic provider (incl. via google-vertex); check every known location so a
+ * working cache is never priced as free.
+ */
+export function extractCacheCreationTokens(part: unknown): number {
+  const p = (part ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const u = (p.usage ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const pm = ((p.providerMetadata as Record<string, any> | undefined)?.anthropic ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const n = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+  return (
+    n(u.cacheCreationInputTokens) ??
+    n(u.inputTokenDetails?.cacheCreationTokens) ??
+    n(pm.cacheCreationInputTokens) ??
+    n(pm.cache_creation_input_tokens) ??
+    0
+  );
+}
+
 export function extractReasoningTokens(usage: unknown): number {
   if (!usage || typeof usage !== 'object') return 0;
   const u = usage as Record<string, unknown>;
@@ -1288,6 +1310,7 @@ export async function* streamChatCompletion(
               ),
               reasoningTokens: extractReasoningTokens(part.usage),
               cachedPromptTokens: extractCachedPromptTokens(part),
+              cacheCreationTokens: extractCacheCreationTokens(part),
             },
             responseHeaders: (part as { response?: { headers?: Record<string, string> } }).response?.headers,
           };
@@ -1356,6 +1379,19 @@ export async function* streamChatCompletion(
 }
 
 // ---------------------------------------------------------------------------
+/** Test seam for retry-jitter randomness so backoff delays stay deterministic in tests. */
+export const retryHooks: { random: () => number } = { random: Math.random };
+/**
+ * Equal jitter: 50–100% of the computed backoff. De-synchronizes concurrent
+ * retries (e.g. in-process subagents sharing one API key that all 429 at once and
+ * would otherwise retry in lockstep on a bare 2^n schedule) WITHOUT ever
+ * undercutting the backoff floor. Applied only to blind exponential backoff —
+ * never to an explicit Retry-After or a server rate-limit-reset window.
+ */
+function jitteredDelay(delayMs: number): number {
+  return Math.round(delayMs * (0.5 + 0.5 * retryHooks.random()));
+}
+
 // Retry logic with exponential backoff
 // ---------------------------------------------------------------------------
 
@@ -1518,9 +1554,9 @@ export async function* streamChatCompletionWithRetry(
             const info = parseRateLimitHeaders(chunk.responseHeaders);
             delayMs = shouldBackoff(info)
               ? Math.min(Math.max(suggestedWaitMs(info, expBackoff), baseDelay), maxDelay)
-              : expBackoff;
+              : jitteredDelay(expBackoff);
           } else {
-            delayMs = expBackoff;
+            delayMs = jitteredDelay(expBackoff);
           }
 
           if (options?.onRetry) {
@@ -1603,7 +1639,7 @@ export async function* streamChatCompletionWithRetry(
           yield { type: 'error', error: `Retry time limit exceeded (${maxTotalWait}ms)` };
           return;
         }
-        const timeoutDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+        const timeoutDelay = jitteredDelay(Math.min(baseDelay * Math.pow(2, attempt), maxDelay));
         if (options?.onRetry) {
           options.onRetry(attempt + 1, maxRetries, timeoutDelay, 0);
         }
@@ -1624,7 +1660,7 @@ export async function* streamChatCompletionWithRetry(
         yield { type: 'error', error: 'Network error (retry time limit exceeded)' };
         return;
       }
-      const netDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+      const netDelay = jitteredDelay(Math.min(baseDelay * Math.pow(2, attempt), maxDelay));
       if (options?.onRetry) {
         options.onRetry(attempt + 1, maxRetries, netDelay, 0);
       }

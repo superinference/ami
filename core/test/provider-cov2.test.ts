@@ -26,6 +26,7 @@ import {
   convertToolsForSDK,
   convertMessages,
   extractReasoningTokens,
+  extractCacheCreationTokens,
   extractRetryAfterSeconds,
   buildThinkingOptions,
   buildAnthropicCacheControl,
@@ -464,6 +465,32 @@ describe('extractReasoningTokens', () => {
   });
   it('ignores non-positive / non-finite values and returns 0', () => {
     assert.equal(extractReasoningTokens({ reasoningTokens: 0, outputTokenDetails: { reasoningTokens: -1 }, raw: { reasoning_tokens: NaN } }), 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractCacheCreationTokens — every extraction source and the zero fallback.
+// ---------------------------------------------------------------------------
+describe('extractCacheCreationTokens', () => {
+  it('returns 0 for null / non-object parts', () => {
+    assert.equal(extractCacheCreationTokens(null), 0);
+    assert.equal(extractCacheCreationTokens(undefined), 0);
+    assert.equal(extractCacheCreationTokens({}), 0);
+  });
+  it('reads usage.cacheCreationInputTokens', () => {
+    assert.equal(extractCacheCreationTokens({ usage: { cacheCreationInputTokens: 123 } }), 123);
+  });
+  it('reads usage.inputTokenDetails.cacheCreationTokens when top-level absent', () => {
+    assert.equal(extractCacheCreationTokens({ usage: { inputTokenDetails: { cacheCreationTokens: 77 } } }), 77);
+  });
+  it('reads providerMetadata.anthropic.cacheCreationInputTokens', () => {
+    assert.equal(extractCacheCreationTokens({ providerMetadata: { anthropic: { cacheCreationInputTokens: 55 } } }), 55);
+  });
+  it('reads providerMetadata.anthropic.cache_creation_input_tokens (snake_case)', () => {
+    assert.equal(extractCacheCreationTokens({ providerMetadata: { anthropic: { cache_creation_input_tokens: 9 } } }), 9);
+  });
+  it('ignores negative / non-finite values and returns 0', () => {
+    assert.equal(extractCacheCreationTokens({ usage: { cacheCreationInputTokens: -4, inputTokenDetails: { cacheCreationTokens: NaN } } }), 0);
   });
 });
 

@@ -4,7 +4,7 @@ import * as http from 'http';
 
 after(() => { setTimeout(() => process.exit(0), 200); });
 
-import { streamChatCompletionWithRetry } from '../src/provider';
+import { streamChatCompletionWithRetry, retryHooks } from '../src/provider';
 import { CostTracker } from '../src/cost-tracker';
 import type { ProviderConfig, Message, StreamChunk } from '../src/types';
 
@@ -535,5 +535,34 @@ describe('CostTracker - reset', () => {
     assert.equal(stats.requestCount, 0);
     assert.equal(stats.toolCallCount, 0);
     assert.equal(stats.turnCount, 0);
+  });
+});
+
+describe('streamChatCompletionWithRetry - equal jitter on blind backoff', () => {
+  after(() => { retryHooks.random = Math.random; });
+
+  async function captureBlindBackoffDelay(rand: number): Promise<number> {
+    retryHooks.random = () => rand;
+    const mock = await createRetryServer(429, 1); // 429 without Retry-After → blind/header backoff path
+    try {
+      let delay = -1;
+      await collectChunks(
+        streamChatCompletionWithRetry(makeConfig(mock.port), defaultMessages, [], new AbortController().signal, {
+          baseDelayMs: 1000,
+          onRetry: (_a, _m, d) => { delay = d; },
+        }),
+      );
+      return delay;
+    } finally {
+      mock.server.close();
+    }
+  }
+
+  it('random()=0 → 50% of the backoff (lower bound of equal jitter)', async () => {
+    assert.equal(await captureBlindBackoffDelay(0), 500, 'attempt-0 expBackoff=1000; 50% = 500');
+  });
+
+  it('random()=1 → 100% of the backoff (upper bound, never undercut nor inflated)', async () => {
+    assert.equal(await captureBlindBackoffDelay(1), 1000, 'attempt-0 expBackoff=1000; 100% = 1000');
   });
 });

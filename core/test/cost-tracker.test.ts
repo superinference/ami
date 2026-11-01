@@ -226,6 +226,49 @@ describe('CostTracker – prompt caching', () => {
   });
 });
 
+describe('CostTracker – cache-write (cache_creation) pricing', () => {
+  it('prices cache_creation tokens at 1.25x the input rate, additive to input', () => {
+    // claude-sonnet-4 input = $3/M. 1M uncached input + 1M cache-write:
+    //   input      = 1M/1M * 3            = 3.00
+    //   cache-write = 1M/1M * 3 * 1.25    = 3.75
+    //   total                              = 6.75
+    // Without pricing cache writes they'd be billed free → total would be 3.00.
+    const tracker = new CostTracker('claude-sonnet-4');
+    tracker.trackUsage({
+      promptTokens: 1_000_000,
+      completionTokens: 0,
+      cacheCreationTokens: 1_000_000,
+    });
+
+    const stats = tracker.getStats();
+    assert.equal(stats.cacheCreationTokens, 1_000_000);
+    assert.ok(
+      Math.abs(stats.totalCost - 6.75) < 1e-6,
+      `expected $6.75 (input 3 + cache-write 3.75), got $${stats.totalCost}`,
+    );
+  });
+
+  it('defaults cache_creation to 0 and leaves cost unchanged when absent', () => {
+    const tracker = new CostTracker('claude-sonnet-4');
+    tracker.trackUsage({ promptTokens: 1_000_000, completionTokens: 0 });
+
+    const stats = tracker.getStats();
+    assert.equal(stats.cacheCreationTokens, 0);
+    assert.ok(Math.abs(stats.totalCost - 3) < 1e-6, `expected $3 input-only, got $${stats.totalCost}`);
+  });
+
+  it('accumulates and resets cache_creation tokens', () => {
+    const tracker = new CostTracker('claude-sonnet-4');
+    tracker.trackUsage({ promptTokens: 0, completionTokens: 0, cacheCreationTokens: 400_000 });
+    tracker.trackUsage({ promptTokens: 0, completionTokens: 0, cacheCreationTokens: 600_000 });
+    assert.equal(tracker.getStats().cacheCreationTokens, 1_000_000);
+
+    tracker.reset();
+    assert.equal(tracker.getStats().cacheCreationTokens, 0);
+    assert.equal(tracker.getStats().totalCost, 0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Live pricing fetch
 // ---------------------------------------------------------------------------
