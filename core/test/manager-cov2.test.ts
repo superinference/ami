@@ -697,6 +697,32 @@ describe('findMcpConfigPaths', () => {
       if (prevUser !== undefined) process.env.USERPROFILE = prevUser;
     }
   });
+  it('includes Claude Code project .mcp.json (interop) in first-wins order', () => {
+    const cwd = tmp();
+    const home = tmp();
+    fs.mkdirSync(path.join(cwd, '.superinference'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.superinference', 'mcp.json'), '{}');
+    fs.writeFileSync(path.join(cwd, '.mcp.json'), '{}');
+    fs.mkdirSync(path.join(home, '.superinference'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.superinference', 'mcp.json'), '{}');
+    // A user-global ~/.claude.json must NOT be auto-loaded (too broad).
+    fs.writeFileSync(path.join(home, '.claude.json'), '{}');
+    const prevHome = process.env.HOME;
+    const prevUser = process.env.USERPROFILE;
+    process.env.HOME = home;
+    delete process.env.USERPROFILE;
+    try {
+      // AMI-project > Claude-project > AMI-user (first-wins). No ~/.claude.json.
+      assert.deepEqual(findMcpConfigPaths(cwd), [
+        path.join(cwd, '.superinference', 'mcp.json'),
+        path.join(cwd, '.mcp.json'),
+        path.join(home, '.superinference', 'mcp.json'),
+      ]);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      if (prevUser !== undefined) process.env.USERPROFILE = prevUser;
+    }
+  });
   it('returns an empty array when no config files exist', () => {
     const cwd = tmp();
     const home = tmp();

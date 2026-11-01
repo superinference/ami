@@ -868,9 +868,25 @@ export function findMcpConfigPaths(cwd: string): string[] {
   const paths: string[] = [];
   const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? '';
 
+  // Precedence is first-wins (addServer rejects a duplicate name, so the first
+  // config to register a server keeps it). Within a scope AMI's own config beats
+  // the Claude Code interop one; project scope beats user scope.
+  //
+  // We intentionally interop only at PROJECT scope (the shareable `.mcp.json` a
+  // repo commits), NOT user-global ~/.claude.json: that file aggregates every
+  // Claude Code server a developer ever configured (and a large per-project
+  // tree), so auto-loading it would silently spin up unrelated servers. Users
+  // who want global servers in AMI put them in ~/.superinference/mcp.json.
+
+  // 1. AMI project (.superinference/mcp.json in cwd) — highest.
   const projectConfig = path.join(cwd, '.superinference', 'mcp.json');
   if (fs.existsSync(projectConfig)) paths.push(projectConfig);
 
+  // 2. Claude Code project interop — the shareable `.mcp.json` at the repo root.
+  const claudeProjectConfig = path.join(cwd, '.mcp.json');
+  if (fs.existsSync(claudeProjectConfig)) paths.push(claudeProjectConfig);
+
+  // 3. AMI user-global (~/.superinference/mcp.json).
   const globalConfig = path.join(homeDir, '.superinference', 'mcp.json');
   if (fs.existsSync(globalConfig)) paths.push(globalConfig);
 
