@@ -372,6 +372,32 @@ describe('WorkspaceIndexer — getSummary minimal', () => {
       cleanup(dir);
     }
   });
+
+  it('ranks key symbols by file connectivity, not Map/alphabetical order', async () => {
+    const dir = makeProjectDir();
+    try {
+      // Filenames are chosen so the unreferenced leaf is indexed FIRST (readdir
+      // is alphabetical: aleaf.ts before zhub.ts) — so insertion order alone
+      // would list AlphaLeaf first. Only connectivity ranking puts the
+      // 2-dependents hub symbol ahead, which is the behavior under test.
+      fs.writeFileSync(path.join(dir, 'zhub.ts'), 'export class ZebraHub {}\n');
+      fs.writeFileSync(path.join(dir, 'aleaf.ts'), 'export class AlphaLeaf {}\n');
+      fs.writeFileSync(path.join(dir, 'c1.ts'), relImport('{ ZebraHub }', './zhub') + '\nexport const a = 1;\n');
+      fs.writeFileSync(path.join(dir, 'c2.ts'), relImport('{ ZebraHub }', './zhub') + '\nexport const b = 2;\n');
+      const indexer = new WorkspaceIndexer(dir);
+      await indexer.buildIndex();
+
+      const summary = indexer.getSummary();
+      assert.ok(summary.includes('Key symbols'), summary);
+      assert.ok(summary.includes('ZebraHub') && summary.includes('AlphaLeaf'), summary);
+      assert.ok(
+        summary.indexOf('ZebraHub') < summary.indexOf('AlphaLeaf'),
+        `hub symbol (2 dependents) must rank before the unreferenced leaf: ${summary}`,
+      );
+    } finally {
+      cleanup(dir);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

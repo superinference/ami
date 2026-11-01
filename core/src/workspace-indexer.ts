@@ -449,15 +449,22 @@ export class WorkspaceIndexer {
     const parts: string[] = [];
     parts.push(`Workspace: ${stats.fileCount} files, ${stats.symbolCount} symbols, ${stats.importEdges} import edges`);
 
-    // Key symbols — pick a few classes and functions
-    const keySymbols: string[] = [];
+    // Key symbols — a lightweight repo map: rank classes/functions by how
+    // connected their defining file is (reverse-import dependents), so the most
+    // depended-on code surfaces first instead of an arbitrary Map-order slice.
+    // Ties break alphabetically for a deterministic, cache-stable summary.
+    const fileRank = (fp: string): number => this.reverseImports.get(fp)?.size ?? 0;
+    const candidates: Array<{ name: string; type: string; filePath: string; line: number; rank: number }> = [];
     for (const [name, entries] of this.symbolIndex) {
-      if (entries.length > 0 && (entries[0].type === 'class' || entries[0].type === 'function')) {
-        const e = entries[0];
-        keySymbols.push(`${name} (${e.type}, ${path.relative(this.cwd, e.filePath)}:${e.line})`);
+      const e = entries[0];
+      if (e && (e.type === 'class' || e.type === 'function')) {
+        candidates.push({ name, type: e.type, filePath: e.filePath, line: e.line, rank: fileRank(e.filePath) });
       }
-      if (keySymbols.length >= 5) break;
     }
+    candidates.sort((a, b) => b.rank - a.rank || a.name.localeCompare(b.name));
+    const keySymbols = candidates.slice(0, 5).map(
+      c => `${c.name} (${c.type}, ${path.relative(this.cwd, c.filePath)}:${c.line})`,
+    );
     if (keySymbols.length > 0) {
       parts.push(`Key symbols: ${keySymbols.join(', ')}`);
     }
