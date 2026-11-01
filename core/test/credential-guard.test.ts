@@ -6,6 +6,8 @@ import {
   findCredentials,
   REDACT_PLACEHOLDER,
   CredentialGuard,
+  shannonEntropy,
+  isHighEntropySecret,
 } from '../src/credential-guard';
 
 // ---------------------------------------------------------------------------
@@ -208,5 +210,76 @@ describe('CredentialGuard', () => {
       guard.scan(`key=${OPENAI_KEY}`, `source_${i}`);
     }
     assert.equal(guard.getDetectionCount(), 1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Broadened detection: PEM private keys, Bearer tokens, entropy
+// ---------------------------------------------------------------------------
+const PRIVATE_KEY = [
+  '-----BEGIN RSA PRIVATE KEY-----',
+  'MIIEowIBAAKCAQEArandomBase64LookingKeyMaterialThatSpansLines1234567890',
+  'abcDEF987ghiJKL654mnoPQR321stuVWX098yzaBCD/+zzz==',
+  '-----END RSA PRIVATE KEY-----',
+].join('\n');
+const OPENSSH_KEY = [
+  '-----BEGIN OPENSSH PRIVATE KEY-----',
+  'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAA',
+  '-----END OPENSSH PRIVATE KEY-----',
+].join('\n');
+// 24 mixed chars → high entropy (~4.4 bits/char).
+const HIGH_ENTROPY = 'aZ3kP9xQ2mL7vB4nR8tW6sJ1';
+const BEARER = `Authorization: Bearer ${HIGH_ENTROPY}dKfh`;
+
+describe('shannonEntropy / isHighEntropySecret', () => {
+  it('returns 0 for empty input', () => {
+    assert.equal(shannonEntropy(''), 0);
+  });
+  it('low for a repeated char, high for random-looking', () => {
+    assert.equal(shannonEntropy('aaaaaaaaaaaaaaaa'), 0);
+    assert.ok(shannonEntropy(HIGH_ENTROPY) > 3.5);
+  });
+  it('isHighEntropySecret needs both length>=16 and entropy>=3.5', () => {
+    assert.equal(isHighEntropySecret('aZ3kP9'), false);        // too short
+    assert.equal(isHighEntropySecret('a'.repeat(40)), false);  // long but zero entropy
+    assert.equal(isHighEntropySecret(HIGH_ENTROPY), true);
+  });
+});
+
+describe('private-key / bearer / entropy detection', () => {
+  it('detects and redacts PEM private-key blocks (RSA + OPENSSH)', () => {
+    assert.equal(containsCredential(PRIVATE_KEY), true);
+    assert.equal(containsCredential(OPENSSH_KEY), true);
+    const red = redactCredentials(`here is the key:\n${PRIVATE_KEY}\ndone`);
+    assert.ok(!red.includes('KeyMaterialThatSpans'));
+    assert.ok(red.includes(REDACT_PLACEHOLDER));
+    const found = findCredentials(PRIVATE_KEY);
+    assert.ok(found.some((f) => f.type === 'private_key'));
+  });
+
+  it('detects and redacts Bearer tokens', () => {
+    assert.equal(containsCredential(BEARER), true);
+    const red = redactCredentials(BEARER);
+    assert.ok(red.includes(REDACT_PLACEHOLDER));
+    assert.ok(findCredentials(BEARER).some((f) => f.type === 'bearer_token'));
+  });
+
+  it('flags high-entropy values assigned to secret-ish keys (value only)', () => {
+    const text = `api_key="${HIGH_ENTROPY}" and port=8080`;
+    assert.equal(containsCredential(text), true);
+    const red = redactCredentials(text);
+    assert.ok(!red.includes(HIGH_ENTROPY));
+    assert.ok(red.includes('port=8080'));   // non-secret context preserved
+    const gen = findCredentials(text).filter((f) => f.type === 'generic_secret');
+    assert.equal(gen.length, 1);
+    assert.equal(text.slice(gen[0].start, gen[0].start + gen[0].length), HIGH_ENTROPY);
+  });
+
+  it('does NOT flag low-entropy or non-secret assignments (no false positives)', () => {
+    assert.equal(containsCredential('secret="aaaaaaaaaaaaaaaaaaaa"'), false); // zero entropy
+    assert.equal(containsCredential('commit=a1b2c3d4e5f6a7b8'), false);       // not a secret key name
+    const text = 'secret="aaaaaaaaaaaaaaaaaaaa"';
+    assert.equal(redactCredentials(text), text);                              // unchanged
+    assert.equal(findCredentials(text).length, 0);
   });
 });
