@@ -248,6 +248,13 @@ describe('mergeConfigs', () => {
     assert.deepEqual(result.fallbackModels, ['c'], 'cli overrides project');
   });
 
+  it('merges maxBudgetUsd and lets higher-priority layers override it', () => {
+    const project: ProjectConfig = { maxBudgetUsd: 10 };
+    assert.equal(mergeConfigs({}, {}, project, null).maxBudgetUsd, 10);
+    const cli: Partial<ProjectConfig> = { maxBudgetUsd: 2 };
+    assert.equal(mergeConfigs(cli, {}, project, null).maxBudgetUsd, 2, 'cli overrides project');
+  });
+
   it('project config overrides global config', () => {
     const global: ProjectConfig = { model: 'global-model', provider: 'openai' };
     const project: ProjectConfig = { model: 'project-model' };

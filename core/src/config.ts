@@ -22,6 +22,8 @@ export interface ProjectConfig {
   compactionModel?: string;
   maxTurns?: number;
   tokenBudget?: number;
+  /** Hard USD spend cap; session stops when estimated cost exceeds it. */
+  maxBudgetUsd?: number;
   skill?: string;
   /** Managed policy: when non-empty, only these models are selectable. */
   enforceAvailableModels?: string[];
@@ -293,6 +295,7 @@ export function mergeConfigs(
     if (layer.compactionModel !== undefined) merged.compactionModel = layer.compactionModel;
     if (layer.maxTurns !== undefined) merged.maxTurns = layer.maxTurns;
     if (layer.tokenBudget !== undefined) merged.tokenBudget = layer.tokenBudget;
+    if (layer.maxBudgetUsd !== undefined) merged.maxBudgetUsd = layer.maxBudgetUsd;
     if (layer.skill !== undefined) merged.skill = layer.skill;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
     if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
