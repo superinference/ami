@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { McpClient, MCP_TRANSPORTS } from '../src/mcp/client';
+import { McpClient, MCP_TRANSPORTS, MCP_PROTOCOL_VERSION } from '../src/mcp/client';
 import { McpManager, findMcpConfigPaths } from '../src/mcp/manager';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -90,6 +90,9 @@ describe('McpClient', () => {
       await client.connect();
       assert.equal(client.state, 'ready');
       assert.deepEqual(client.serverInfo, { name: 'test-server', version: '1.0.0' });
+      // Negotiation: the client stores the server's returned protocol version
+      // (here an older 2024-11-05) rather than forcing its own requested one.
+      assert.equal(client.protocolVersion, '2024-11-05');
 
       const tools = await client.listTools();
       assert.equal(tools.length, 1);
@@ -104,6 +107,42 @@ describe('McpClient', () => {
 
       const resourceContent = await client.readResource('test://doc') as any;
       assert.ok(resourceContent.contents[0].text === 'content here');
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  it('requests the latest protocol version and falls back to it when the server omits one', async () => {
+    // Server echoes the REQUESTED protocolVersion back as serverInfo.version so
+    // the test can assert what the client sent, and deliberately omits
+    // result.protocolVersion so the client must fall back to its requested value.
+    const serverScript = `
+      const readline = require('readline');
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on('line', (line) => {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'initialize') {
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0',
+              id: msg.id,
+              result: {
+                serverInfo: { name: 'echo-server', version: msg.params.protocolVersion },
+                capabilities: {},
+              },
+            }) + '\\n');
+          }
+        } catch {}
+      });
+    `;
+    const client = new McpClient({ command: 'node', args: ['-e', serverScript], requestTimeout: 5000 });
+    try {
+      await client.connect();
+      // The client sent the latest version it supports.
+      assert.equal(client.serverInfo!.version, MCP_PROTOCOL_VERSION);
+      assert.equal(MCP_PROTOCOL_VERSION, '2025-06-18');
+      // Server omitted protocolVersion → client falls back to the requested one.
+      assert.equal(client.protocolVersion, MCP_PROTOCOL_VERSION);
     } finally {
       client.disconnect();
     }

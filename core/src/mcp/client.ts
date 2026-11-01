@@ -1,10 +1,20 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
+import { AMI_CLIENT_INFO } from '../version';
 
 export const MCP_TRANSPORTS = ['stdio', 'sse', 'http'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
 
 export const DEFAULT_MCP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * Latest MCP protocol version we request in `initialize`. Servers that only
+ * support an older revision reply with their own version; we store the
+ * negotiated value and proceed, since our wire usage (initialize / tools.list /
+ * tools.call / notifications.initialized) is identical across these revisions.
+ * Single source of truth for every transport's initialize handshake.
+ */
+export const MCP_PROTOCOL_VERSION = '2025-06-18';
 
 const MIN_MCP_BUFFER = 1024;            // 1 KB
 const MAX_MCP_BUFFER = 100 * 1024 * 1024; // 100 MB
@@ -132,6 +142,7 @@ export class McpClient extends EventEmitter {
   private _state: McpClientState = 'disconnected';
   private _serverInfo: { name: string; version: string } | null = null;
   private _serverCapabilities: Record<string, unknown> = {};
+  private _protocolVersion: string | null = null;
   private _tools: McpToolSchema[] = [];
   private _resources: McpResource[] = [];
   private _prompts: McpPrompt[] = [];
@@ -176,6 +187,8 @@ export class McpClient extends EventEmitter {
   get state(): McpClientState { return this._state; }
   get serverInfo() { return this._serverInfo; }
   get serverCapabilities(): Record<string, unknown> { return { ...this._serverCapabilities }; }
+  /** The protocol version negotiated with the server (null until connected). */
+  get protocolVersion(): string | null { return this._protocolVersion; }
   get tools(): McpToolSchema[] { return [...this._tools]; }
   get resources(): McpResource[] { return [...this._resources]; }
   get prompts(): McpPrompt[] { return [...this._prompts]; }
@@ -250,13 +263,14 @@ export class McpClient extends EventEmitter {
     }
 
     const initResult = await this.sendRequest('initialize', {
-      protocolVersion: '2024-11-05',
+      protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: clientCapabilities,
-      clientInfo: { name: 'ami', version: '1.0.0' },
-    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown> };
+      clientInfo: AMI_CLIENT_INFO,
+    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string };
 
     this._serverInfo = initResult.serverInfo ?? { name: 'unknown', version: '0.0.0' };
     this._serverCapabilities = initResult.capabilities ?? {};
+    this._protocolVersion = initResult.protocolVersion ?? MCP_PROTOCOL_VERSION;
 
     await this.sendNotification('notifications/initialized', {});
 
@@ -285,9 +299,9 @@ export class McpClient extends EventEmitter {
       id: 1,
       method: 'initialize',
       params: {
-        protocolVersion: '2024-11-05',
+        protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: clientCapabilities,
-        clientInfo: { name: 'ami', version: '1.0.0' },
+        clientInfo: AMI_CLIENT_INFO,
       },
     });
 
@@ -332,6 +346,7 @@ export class McpClient extends EventEmitter {
             }
             this._serverInfo = result.result?.serverInfo ?? { name: 'unknown', version: '0.0.0' };
             this._serverCapabilities = result.result?.capabilities ?? {};
+            this._protocolVersion = result.result?.protocolVersion ?? MCP_PROTOCOL_VERSION;
             this.connectionStartTime = Date.now();
             this._state = 'ready';
             this.emit('ready');
@@ -362,13 +377,14 @@ export class McpClient extends EventEmitter {
     this.hasTriggeredClose = false;
 
     const initResult = await this.sendHttpRequest('initialize', {
-      protocolVersion: '2024-11-05',
+      protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { roots: { listChanged: true } },
-      clientInfo: { name: 'ami', version: '1.0.0' },
-    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown> };
+      clientInfo: AMI_CLIENT_INFO,
+    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string };
 
     this._serverInfo = initResult?.serverInfo ?? { name: 'unknown', version: '0.0.0' };
     this._serverCapabilities = initResult?.capabilities ?? {};
+    this._protocolVersion = initResult?.protocolVersion ?? MCP_PROTOCOL_VERSION;
 
     await this.sendHttpRequest('notifications/initialized', {});
 
