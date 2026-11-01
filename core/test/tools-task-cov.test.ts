@@ -222,25 +222,25 @@ describe('taskTool — sub-agent return-and-stop directive', () => {
 describe('taskTool — resume', () => {
   beforeEach(() => resetAgentRegistry());
 
-  it('resumes by registered name (resolves to agent id)', async () => {
-    await taskTool.execute(
-      { prompt: 'first', mode: 'explore', name: 'resumable' },
-      ctx({
-        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
-        _engineFactory: () => ({ submit: gen([{ type: 'text_delta', text: 'ok' }]) }),
-      }),
-    );
-    const id = getAgentByName('resumable')!;
-    const r = await taskTool.execute({ prompt: 'follow up', resume: 'resumable' }, ctx());
-    assert.ok(!r.isError);
-    assert.ok(r.output.includes('[resume]'));
-    assert.ok(r.output.includes(id), 'resolves the registered name to its id');
+  it('resumes a registered name by reusing its prior session id', async () => {
+    const seen: string[] = [];
+    const context = ctx({
+      _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+      _engineFactory: (cfg: any) => { seen.push(cfg.sessionId); return { submit: gen([{ type: 'text_delta', text: 'ok' }]) }; },
+    });
+    await taskTool.execute({ prompt: 'first', mode: 'explore', name: 'resumable' }, context);
+    // The name resolves to the agent id, whose stored session is reused.
+    assert.ok(getAgentByName('resumable'), 'name registered after spawn');
+    const r = await taskTool.execute({ prompt: 'follow up', resume: 'resumable' }, context);
+    assert.ok(!r.isError, r.output);
+    assert.equal(seen.length, 2);
+    assert.equal(seen[1], seen[0], 'resume continues on the original session');
   });
 
-  it('resumes by raw id when name is not registered', async () => {
+  it('errors when resuming an unregistered id (no prior session)', async () => {
     const r = await taskTool.execute({ prompt: 'follow up', resume: 'agent-raw-id' }, ctx());
-    assert.ok(!r.isError);
-    assert.ok(r.output.includes('agent-raw-id'));
+    assert.ok(r.isError);
+    assert.match(r.output, /no resumable agent found for "agent-raw-id"/);
   });
 });
 

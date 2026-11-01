@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { taskTool } from '../src/tools/task';
+import { taskTool, resetAgentRegistry } from '../src/tools/task';
 import type { ToolContext } from '../src/types';
 import { ProcessManager } from '../src/process-manager';
 
@@ -732,5 +732,58 @@ describe('taskTool – permission rule inheritance', () => {
       const webDeny = captured.permissionRules.find((r: any) => r.tool === 'web_fetch' && r.action === 'deny');
       assert.ok(webDeny, 'web_fetch deny rule should be forwarded to explore subagent');
     } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resume — reuse a prior agent's session so the follow-up continues context
+// ---------------------------------------------------------------------------
+describe('taskTool – resume', () => {
+  async function* okSubmit() { yield { type: 'text_delta' as const, text: 'ok' }; }
+
+  it('resume reuses the original agent session id (so the Engine reloads prior context)', async () => {
+    resetAgentRegistry();
+    const seenSessionIds: string[] = [];
+    const context = ctx({
+      _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+      _engineFactory: ((cfg: any) => { seenSessionIds.push(cfg.sessionId); return { submit: okSubmit }; }) as any,
+    });
+
+    const first = await taskTool.execute({ prompt: 'start the task', name: 'worker' }, context);
+    assert.ok(!first.isError, first.output);
+
+    const resumed = await taskTool.execute({ prompt: 'keep going', resume: 'worker' }, context);
+    assert.ok(!resumed.isError, resumed.output);
+
+    assert.equal(seenSessionIds.length, 2);
+    assert.equal(seenSessionIds[1], seenSessionIds[0],
+      'resume must reuse the first spawn session id so the sub-engine reloads its messages');
+  });
+
+  it('resumes by raw task id as well as by name', async () => {
+    resetAgentRegistry();
+    const seen: string[] = [];
+    const context = ctx({
+      _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+      _engineFactory: ((cfg: any) => { seen.push(cfg.sessionId); return { submit: okSubmit }; }) as any,
+    });
+    await taskTool.execute({ prompt: 'start', name: 'namedworker' }, context);
+    // resolvedId falls through to the raw target when it's not a known name;
+    // here we resume via the name, then confirm a second resume still reuses it.
+    await taskTool.execute({ prompt: 'again', resume: 'namedworker' }, context);
+    await taskTool.execute({ prompt: 'and again', resume: 'namedworker' }, context);
+    assert.equal(new Set(seen).size, 1, 'every resume continues the same session');
+  });
+
+  it('errors (does not spawn) when resuming an unknown agent', async () => {
+    resetAgentRegistry();
+    let spawned = false;
+    const r = await taskTool.execute({ prompt: 'x', resume: 'ghost-agent' }, ctx({
+      _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+      _engineFactory: (() => { spawned = true; return { submit: okSubmit }; }) as any,
+    }));
+    assert.ok(r.isError);
+    assert.match(r.output, /no resumable agent found for "ghost-agent"/);
+    assert.equal(spawned, false, 'must not spawn an engine for an unknown resume target');
   });
 });

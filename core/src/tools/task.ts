@@ -25,6 +25,10 @@ export const SUBAGENT_RETURN_DIRECTIVE =
   'files, run commands, or add verification or extra work unless the task explicitly requires it.';
 
 const agentNameRegistry = new Map<string, string>();
+// taskId -> the sub-engine sessionId it ran under. Lets `resume` recreate an
+// agent on its PRIOR session (the Engine reloads saved messages when given a
+// known sessionId), so a follow-up prompt continues the same context.
+const agentSessionRegistry = new Map<string, string>();
 
 export function getAgentByName(name: string): string | undefined {
   return agentNameRegistry.get(name);
@@ -39,6 +43,7 @@ export function getAgentNameById(taskId: string): string | undefined {
 
 export function resetAgentRegistry(): void {
   agentNameRegistry.clear();
+  agentSessionRegistry.clear();
 }
 
 const DEFAULT_MAX_AGENT_DEPTH = 5;
@@ -215,12 +220,21 @@ export const taskTool: ToolDefinition = {
       return { output: 'Error: prompt must not be empty.', isError: true };
     }
 
+    // Resume: resolve the prior sub-engine sessionId so the spawn below reuses
+    // it (the Engine reloads saved messages for a known sessionId), turning this
+    // prompt into a follow-up on the existing agent context.
+    let resumeSessionId: string | undefined;
     if (resumeTarget) {
       const resolvedId = agentNameRegistry.get(resumeTarget) || resumeTarget;
-      return {
-        output: `[resume] Sending follow-up to agent "${resolvedId}": ${prompt.slice(0, 200)}...\n\n` +
-          `Note: Full agent resume requires persistent session state. The prompt has been noted for re-dispatch.`,
-      };
+      resumeSessionId = agentSessionRegistry.get(resolvedId);
+      if (!resumeSessionId) {
+        const known = [...agentSessionRegistry.keys()];
+        return {
+          output: `Error: no resumable agent found for "${resumeTarget}". ` +
+            `Known agent ids: ${known.length ? known.join(', ') : '(none in this session)'}.`,
+          isError: true,
+        };
+      }
     }
 
     // Enforce session and concurrency caps before any spawn work
@@ -365,7 +379,7 @@ export const taskTool: ToolDefinition = {
       provider: providerConfig,
       cwd: effectiveCwd,
       tools,
-      sessionId: SessionManager.newId(),
+      sessionId: resumeSessionId ?? SessionManager.newId(),
       permissionMode: resolvedPermissionMode,
       permissionRules: context._parentPermissionRules,
       permissionPromptHandler: context._permissionPromptHandler,
@@ -412,6 +426,7 @@ export const taskTool: ToolDefinition = {
       if (agentName) {
         agentNameRegistry.set(agentName, taskId);
       }
+      if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
       const tasksDir = path.join(context.cwd, '.superinference', 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
       const outputPath = path.join(tasksDir, `${taskId}.output`);
@@ -528,6 +543,7 @@ export const taskTool: ToolDefinition = {
     if (agentName) {
       agentNameRegistry.set(agentName, taskId);
     }
+    if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
     let resultText = '';
 
     let effectivePromptForSubmit = effectivePrompt;
