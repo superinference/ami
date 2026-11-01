@@ -40,6 +40,29 @@ export interface SkillDefinition {
   defaultThinkingLevel?: ThinkingLevel; // thinking level applied when pinned (unless user overrides)
 }
 
+/**
+ * A skill is a *stance* when it carries stance capabilities — fields that change
+ * the session's tools, permissions, MCP servers, or thinking level when the skill
+ * is in effect (as opposed to a plain inline/fork skill or a workflow-doc skill
+ * that only contributes instructions). Stance skills are the ones that can be
+ * pinned via `--skill` OR dynamically activated by the model mid-session: when the
+ * user's request matches a stance (e.g. "run the kali mcp to portscan" → pentest),
+ * the engine switches into it, enabling its tooling (e.g. the Kali MCP server).
+ *
+ * This is the single discriminator that separates pinnable/activatable stances
+ * (pentest, sre, research, swebench) from `disable-model-invocation` workflow docs
+ * (review-changes-workflow, migration-workflow, …) that must NOT be activated as a
+ * stance.
+ */
+export function isStanceSkill(skill: SkillDefinition): boolean {
+  return !!(
+    (skill.autoAllowPatterns && skill.autoAllowPatterns.length > 0) ||
+    (skill.mcpServers && Object.keys(skill.mcpServers).length > 0) ||
+    (skill.mcpAutoAllowPatterns && skill.mcpAutoAllowPatterns.length > 0) ||
+    skill.defaultThinkingLevel
+  );
+}
+
 export interface AgentDefinition {
   name: string;
   description: string;

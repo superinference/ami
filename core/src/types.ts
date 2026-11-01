@@ -284,7 +284,7 @@ export const ENGINE_EVENT_TYPES = [
   'error', 'retry_attempt', 'error_classified', 'provider_changed',
   'checkpoint_created', 'analytics_summary', 'superinference_state',
   'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
-  'plan_mode_changed', 'task_updated',
+  'plan_mode_changed', 'task_updated', 'skill_activated',
   'subagent_start', 'subagent_progress', 'subagent_result', 'done',
 ] as const;
 
@@ -310,6 +310,7 @@ export type EngineEvent =
   | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
+  | { type: 'skill_activated'; skill: string; description: string; hasMcpServers: boolean; source: 'model' | 'user' }
   | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string }
   | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string }
   | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number }

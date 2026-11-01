@@ -1,7 +1,7 @@
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import type { SkillDefinition } from '../skills';
+import { type SkillDefinition, isStanceSkill } from '../skills';
 
 /**
  * Filter tools for a skill based on its allowedTools and disallowedTools settings.
@@ -74,6 +74,17 @@ export const skillTool: ToolDefinition = {
     }
 
     const skillDef = context._skillManager.getSkill(skillName);
+    if (skillDef && isStanceSkill(skillDef)) {
+      // Stance skills are activated by switching the session stance, which the
+      // engine special-cases BEFORE this tool runs (it registers the stance's
+      // MCP servers, permissions, and overlay). Reaching this tool means no
+      // engine interception happened (e.g. a standalone/sub-engine context) —
+      // never run a stance as a one-shot sub-skill; report how it is activated.
+      return {
+        output: `Skill "${skillName}" is a stance skill. It is activated by switching the session stance (which enables its tools, permissions, and MCP servers), not by running it as a one-shot skill. Pin it at launch with --skill ${skillName}, or it is activated automatically when invoked in an interactive/detached session.`,
+        isError: false,
+      };
+    }
     if (skillDef?.disableModelInvocation) {
       return { output: `Error: Skill "${skillName}" has disableModelInvocation set and cannot be invoked by the model.`, isError: true };
     }
