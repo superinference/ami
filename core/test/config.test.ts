@@ -255,6 +255,12 @@ describe('mergeConfigs', () => {
     assert.equal(mergeConfigs(cli, {}, project, null).maxBudgetUsd, 2, 'cli overrides project');
   });
 
+  it('merges the superinference reflection-gate block', () => {
+    const project: ProjectConfig = { superinference: { enforcing: true, useLLMCritic: true } };
+    const result = mergeConfigs({}, {}, project, null);
+    assert.deepEqual(result.superinference, { enforcing: true, useLLMCritic: true });
+  });
+
   it('project config overrides global config', () => {
     const global: ProjectConfig = { model: 'global-model', provider: 'openai' };
     const project: ProjectConfig = { model: 'project-model' };

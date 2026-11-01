@@ -24,6 +24,8 @@ export interface ProjectConfig {
   tokenBudget?: number;
   /** Hard USD spend cap; session stops when estimated cost exceeds it. */
   maxBudgetUsd?: number;
+  /** Opt-in SuperInference reflection gate (both default off). */
+  superinference?: { enforcing?: boolean; useLLMCritic?: boolean };
   skill?: string;
   /** Managed policy: when non-empty, only these models are selectable. */
   enforceAvailableModels?: string[];
@@ -296,6 +298,7 @@ export function mergeConfigs(
     if (layer.maxTurns !== undefined) merged.maxTurns = layer.maxTurns;
     if (layer.tokenBudget !== undefined) merged.tokenBudget = layer.tokenBudget;
     if (layer.maxBudgetUsd !== undefined) merged.maxBudgetUsd = layer.maxBudgetUsd;
+    if (layer.superinference !== undefined) merged.superinference = layer.superinference;
     if (layer.skill !== undefined) merged.skill = layer.skill;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
     if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
