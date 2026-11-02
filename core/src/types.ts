@@ -15,6 +15,15 @@ export type Theme = (typeof THEMES)[number];
 export const OUTPUT_STYLES = ['default', 'concise', 'explanatory'] as const;
 export type OutputStyle = (typeof OUTPUT_STYLES)[number];
 
+/**
+ * Single source of truth for the "explanatory" teaching-callout contract. The
+ * `explanatory` output-style overlay instructs the model to open each callout with
+ * a line beginning with this header; the TUI renderer keys on the SAME constant to
+ * style the block. Keeping one constant prevents the emission↔render drift that
+ * AGENTS.md warns about for dual prompt paths.
+ */
+export const INSIGHT_CALLOUT_HEADER = '★ Insight';
+
 export interface TextContent {
   type: 'text';
   text: string;
