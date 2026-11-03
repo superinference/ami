@@ -1,5 +1,7 @@
 import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError } from './client';
 import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
+import { McpOAuthSession } from './oauth';
+import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -54,6 +56,8 @@ export interface McpServerConfig {
   transport?: 'stdio' | 'sse' | 'http';
   url?: string;
   containerConfig?: ContainerConfig;
+  /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
+  oauth?: { redirectUri?: string; clientId?: string; scope?: string };
 }
 
 export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled'] as const;
@@ -142,6 +146,18 @@ export class McpManager extends EventEmitter {
     this._samplingHandler = fn;
   }
 
+  /** HTTP fetch seam for OAuth discovery/token calls (overridable in tests). */
+  _fetch: FetchLike = (globalThis.fetch as unknown as FetchLike);
+  /** Interactive OAuth consent, injected by a frontend. Headless default refuses with guidance. */
+  private _oauthAuthorizer: AuthorizeFn = async () => {
+    throw new Error('OAuth consent requires an interactive frontend; none is wired (headless/detached run)');
+  };
+
+  /** Wire the interactive OAuth consent leg (browser open + redirect capture). */
+  setOAuthAuthorizer(fn: AuthorizeFn): void {
+    this._oauthAuthorizer = fn;
+  }
+
   setRootPaths(paths: string[]): void {
     this.rootPaths = paths;
   }
@@ -194,6 +210,21 @@ export class McpManager extends EventEmitter {
       ...config.env,
       ...(this.rootPaths[0] ? { SUPERINFERENCE_PROJECT_DIR: this.rootPaths[0] } : {}),
     };
+    // OAuth 2.1 (2025-06-18): for an http/sse server that opts in, give the client
+    // a session that discovers the auth server on 401, drives consent, and manages
+    // tokens. The interactive consent leg comes from the manager-level authorizer.
+    let oauth: McpOAuthProvider | undefined;
+    if (config.oauth && (config.transport === 'http' || config.transport === 'sse') && config.url) {
+      oauth = new McpOAuthSession({
+        serverUrl: config.url,
+        fetchImpl: this._fetch,
+        authorize: (params) => this._oauthAuthorizer(params),
+        redirectUri: config.oauth.redirectUri ?? 'http://127.0.0.1:33418/oauth/callback',
+        clientId: config.oauth.clientId,
+        scope: config.oauth.scope,
+      });
+    }
+
     const client = this._createClient({
       command: resolvedCommand,
       args: resolvedArgs,
@@ -202,6 +233,7 @@ export class McpManager extends EventEmitter {
       requestTimeout: config.requestTimeout ?? (config.containerConfig ? 60000 : 30000),
       connectTimeout: config.connectTimeout ?? (config.containerConfig ? 120000 : 10000),
       rootPaths: this.rootPaths,
+      oauth,
     });
 
     client.on('error', (err) => this.emit('server-error', name, err));

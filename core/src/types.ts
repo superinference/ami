@@ -354,6 +354,25 @@ export interface EngineConfig {
   onPermissionRequest?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
   /** Centralized permission prompt handler. Both CLI and VSCode implement this interface. */
   permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
+  /**
+   * Resolve an MCP server elicitation request (2025-06-18). Interactive
+   * frontends prompt the user; absent this handler the engine declines, so a
+   * detached run never blocks. Receives the server name and the request.
+   */
+  onMcpElicitation?: (serverName: string, request: import('./mcp').McpElicitationRequest) => Promise<import('./mcp').McpElicitationResult>;
+  /**
+   * Approve/deny an MCP server sampling request (run an LLM turn on the server's
+   * behalf) before the engine executes the model call. Return false to refuse.
+   * Absent this handler the engine refuses sampling (safe default), per the
+   * spec's human-in-the-loop requirement.
+   */
+  onMcpSamplingApproval?: (serverName: string, request: import('./mcp').McpSamplingRequest) => Promise<boolean>;
+  /**
+   * Interactive OAuth 2.1 consent leg for HTTP MCP servers (open browser +
+   * capture the redirect code). Interactive frontends provide it; detached runs
+   * omit it so the manager's headless default refuses with guidance.
+   */
+  onMcpOAuthAuthorize?: import('./mcp').AuthorizeFn;
   /** Maximum token budget for context management. Defaults to 100 000. */
   tokenBudget?: number;
   /** Resume a specific session. When set, the engine loads its messages on init. */

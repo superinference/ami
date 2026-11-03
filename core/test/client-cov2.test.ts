@@ -1167,3 +1167,75 @@ describe('MCP-Protocol-Version header (HTTP)', () => {
     assert.equal(seen[1], '2025-06-18');       // ping: negotiated version header present
   });
 });
+
+describe('OAuth 2.1 HTTP integration', () => {
+  function initServer(onRequest: (msg: any, req: http.IncomingMessage, res: http.ServerResponse) => void) {
+    return startHttpServer((req, res) => {
+      let body = ''; req.on('data', (d) => body += d);
+      req.on('end', () => {
+        const msg = JSON.parse(body || '{}');
+        if (msg.method === 'initialize') {
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 's', version: '1' }, capabilities: {} } }));
+          return;
+        }
+        if (msg.method && msg.method.startsWith('notifications/')) { res.statusCode = 202; res.end(); return; }
+        onRequest(msg, req, res);
+      });
+    });
+  }
+
+  it('attaches the bearer token from the OAuth provider', async () => {
+    let seenAuth: string | undefined;
+    const { url } = await initServer((msg, req, res) => {
+      seenAuth = req.headers.authorization as string | undefined;
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }));
+    });
+    const oauth = { authorizationHeader: async () => 'Bearer tok-123', onUnauthorized: async () => false };
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000, oauth }));
+    await c.connectHTTP(url);
+    await c.ping();
+    assert.equal(seenAuth, 'Bearer tok-123');
+  });
+
+  it('re-authorizes on 401 and retries once on success', async () => {
+    let calls = 0; let sawWww: string | null = null;
+    const { url } = await initServer((msg, _req, res) => {
+      calls++;
+      if (calls === 1) {
+        res.statusCode = 401;
+        res.setHeader('WWW-Authenticate', 'Bearer resource_metadata="https://rs/.well-known/oauth-protected-resource"');
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+      } else {
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { ok: true } }));
+      }
+    });
+    const oauth = { authorizationHeader: async () => null, onUnauthorized: async (www: string | null) => { sawWww = www; return true; } };
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000, oauth }));
+    await c.connectHTTP(url);
+    const result = await (c as unknown as { sendHttpRequest: (m: string, p: object) => Promise<unknown> }).sendHttpRequest('tools/list', {});
+    assert.deepEqual(result, { ok: true });
+    assert.match(sawWww!, /resource_metadata/);
+    assert.equal(calls, 2);
+  });
+
+  it('rejects when re-authorization fails on 401', async () => {
+    const { url } = await initServer((_msg, _req, res) => { res.statusCode = 401; res.end(JSON.stringify({ error: 'nope' })); });
+    const oauth = { authorizationHeader: async () => null, onUnauthorized: async () => false };
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000, oauth }));
+    await c.connectHTTP(url);
+    await assert.rejects(
+      () => (c as unknown as { sendHttpRequest: (m: string, p: object) => Promise<unknown> }).sendHttpRequest('tools/list', {}),
+      /401 Unauthorized/,
+    );
+  });
+
+  it('does not re-authorize twice (the retried request is not re-triggered)', async () => {
+    let calls = 0;
+    const { url } = await initServer((_msg, _req, res) => { calls++; res.statusCode = 401; res.end(JSON.stringify({ error: 'again' })); });
+    const oauth = { authorizationHeader: async () => null, onUnauthorized: async () => true };
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000, oauth }));
+    await c.connectHTTP(url);
+    await assert.rejects(() => (c as unknown as { sendHttpRequest: (m: string, p: object) => Promise<unknown> }).sendHttpRequest('tools/list', {}));
+    assert.equal(calls, 2); // original + one retry, then no further re-auth
+  });
+});

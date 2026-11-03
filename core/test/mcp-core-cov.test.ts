@@ -664,6 +664,34 @@ describe('McpManager — targeted branches', () => {
     assert.equal((await fake.onSampling!({ messages: [] })).content.text, 'sa');
   });
 
+  it('creates an OAuth session for an opt-in http server and reads the authorizer at call-time', async () => {
+    const captured: any[] = [];
+    mgr._createClient = ((opts: any) => { captured.push(opts); return new FakeClient() as any; });
+    const routes: Record<string, any> = {
+      'https://rs/.well-known/oauth-protected-resource': { resource: 'https://rs', authorization_servers: ['https://as'] },
+      'https://as/.well-known/oauth-authorization-server': { issuer: 'https://as', authorization_endpoint: 'https://as/a', token_endpoint: 'https://as/t', registration_endpoint: 'https://as/r' },
+      'https://as/r': { client_id: 'cid' },
+      'https://as/t': { access_token: 'AT', token_type: 'Bearer' },
+    };
+    mgr._fetch = (async (url: string) => ({ ok: !!routes[url], status: routes[url] ? 200 : 404, json: async () => routes[url] ?? {} })) as any;
+    mgr.addServer('oauthsrv', { command: '', transport: 'http', url: 'https://rs', oauth: {} });
+    const opts = captured[0];
+    assert.ok(opts.oauth, 'client was created with an oauth provider');
+    // Default (headless) authorizer throws → the flow fails closed.
+    assert.equal(await opts.oauth.onUnauthorized(null), false);
+    // A wired authorizer applies even though it was set after the server was added.
+    mgr.setOAuthAuthorizer(async () => ({ code: 'c' }));
+    assert.equal(await opts.oauth.onUnauthorized(null), true);
+    assert.equal(await opts.oauth.authorizationHeader(), 'Bearer AT');
+  });
+
+  it('attaches no oauth provider when a server does not opt in', () => {
+    const captured: any[] = [];
+    mgr._createClient = ((opts: any) => { captured.push(opts); return new FakeClient() as any; });
+    mgr.addServer('plain', { command: 'x' });
+    assert.equal(captured[0].oauth, undefined);
+  });
+
   it('tools-changed handler swallows a rejected tool refresh', async () => {
     const fake = new FakeClient();
     mgr._createClient = (() => fake as any);

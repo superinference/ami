@@ -1,6 +1,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import { AMI_CLIENT_INFO } from '../version';
+import type { McpOAuthProvider } from './oauth';
 
 export const MCP_TRANSPORTS = ['stdio', 'sse', 'http'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
@@ -252,6 +253,8 @@ export class McpClient extends EventEmitter {
   private readonly connectTimeout: number;
   private readonly rootPaths: string[];
   private readonly headers: Record<string, string>;
+  /** Optional OAuth 2.1 layer for the HTTP transport (bearer token + 401 re-auth). */
+  private readonly oauth?: McpOAuthProvider;
 
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
@@ -275,6 +278,7 @@ export class McpClient extends EventEmitter {
     requestTimeout?: number;
     connectTimeout?: number;
     rootPaths?: string[];
+    oauth?: McpOAuthProvider;
   }) {
     super();
     this.command = options.command;
@@ -284,6 +288,7 @@ export class McpClient extends EventEmitter {
     this.requestTimeout = options.requestTimeout ?? 30000;
     this.connectTimeout = options.connectTimeout ?? 10000;
     this.rootPaths = options.rootPaths ?? [];
+    this.oauth = options.oauth;
   }
 
   get state(): McpClientState { return this._state; }
@@ -766,7 +771,7 @@ export class McpClient extends EventEmitter {
     return this.sendRequest(method, params, signal);
   }
 
-  private sendHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  private async sendHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, retried = false): Promise<unknown> {
     const isNotification = method.startsWith('notifications/');
     const msg: Record<string, unknown> = { jsonrpc: '2.0', method, params };
     if (!isNotification) {
@@ -774,6 +779,8 @@ export class McpClient extends EventEmitter {
     }
     const body = JSON.stringify(msg);
     const http = this.sseUrl!.startsWith('https') ? require('https') : require('http');
+    // OAuth 2.1 (2025-06-18): attach the current bearer token, if any, before the request.
+    const authHeader = this.oauth ? await this.oauth.authorizationHeader() : null;
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error('MCP request aborted'));
@@ -790,6 +797,9 @@ export class McpClient extends EventEmitter {
       if (method !== 'initialize' && this._protocolVersion) {
         headers['MCP-Protocol-Version'] = this._protocolVersion;
       }
+      if (authHeader && !headers.Authorization && !headers.authorization) {
+        headers.Authorization = authHeader;
+      }
       const req = http.request(new URL(this.sseUrl!), {
         method: 'POST',
         headers,
@@ -802,6 +812,18 @@ export class McpClient extends EventEmitter {
           // Notifications: server responds with 202 Accepted (empty body)
           if (isNotification) {
             resolve(undefined);
+            return;
+          }
+          // OAuth 2.1: a 401 triggers (re)authorization; on success retry once.
+          if (statusCode === 401 && this.oauth && !retried) {
+            const www = (res.headers?.['www-authenticate'] as string | undefined) ?? null;
+            this.oauth.onUnauthorized(www).then((ok: boolean) => {
+              if (ok) {
+                this.sendHttpRequest(method, params, signal, true).then(resolve, reject);
+              } else {
+                reject(new Error('MCP HTTP 401 Unauthorized (authorization failed)'));
+              }
+            }).catch(reject);
             return;
           }
           if (statusCode === 404 && this.isSessionExpiredBody(data)) {
