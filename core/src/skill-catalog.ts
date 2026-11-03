@@ -25,7 +25,8 @@ export interface SkillCatalogIndex {
 // Skill source tracking — where a skill was loaded from
 // ---------------------------------------------------------------------------
 
-export type SkillTrustTier = 'core' | 'installed' | 'project' | 'user';
+export const SKILL_TRUST_TIERS = ['core', 'installed', 'project', 'user'] as const;
+export type SkillTrustTier = (typeof SKILL_TRUST_TIERS)[number];
 
 export interface SkillSource {
   tier: SkillTrustTier;

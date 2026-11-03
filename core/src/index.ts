@@ -13,12 +13,12 @@ export type { SkillDefinition, AgentDefinition, SkillManagerLike } from './skill
 export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS } from './skills';
 // Skill catalog types + path-safety for URL-based skill discovery.
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult } from './skill-catalog';
-export { isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl } from './skill-catalog';
+export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl } from './skill-catalog';
 export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest } from './cost-tracker';
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
 export { safeReadFile, safeLstat, FILE_ENCODINGS } from './tools/tool-utils';
-export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES, MCP_TRANSPORTS, MCP_CLIENT_STATES, MCP_TERMINAL_ERROR_CODES } from './mcp/client';
+export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES, MCP_TRANSPORTS, MCP_CLIENT_STATES, MCP_TERMINAL_ERROR_CODES, MCP_ELICITATION_ACTIONS, MCP_LOG_LEVELS } from './mcp/client';
 export type { McpTransport } from './mcp/client';
 export { MCP_SERVER_STATES, matchMcpAutoAllow } from './mcp/manager';
 export type { McpServerState } from './mcp/manager';
