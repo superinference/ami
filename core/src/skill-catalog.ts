@@ -166,9 +166,11 @@ export function resolveSkillUrl(input: string): string {
     return trimmed.replace(/\/+$/, '');
   }
 
-  const ghMatch = trimmed.match(/^([^/]+)\/([^/]+)(?:\/(.+))?$/);
-  if (ghMatch) {
-    const [, owner, repo, subpath] = ghMatch;
+  const parts = trimmed.split('/');
+  if (parts.length >= 2 && parts[0] && parts[1]) {
+    const owner = parts[0];
+    const repo = parts[1];
+    const subpath = parts.length > 2 ? parts.slice(2).join('/') : '';
     const base = `https://raw.githubusercontent.com/${owner}/${repo}/main`;
     return subpath ? `${base}/${subpath}` : base;
   }
