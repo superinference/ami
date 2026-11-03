@@ -114,6 +114,7 @@ export const skillTool: ToolDefinition = {
 
     if (isInline && context._engineAddSystemReminder) {
       context._engineAddSystemReminder(`[Skill: ${skillName}]\n${skillContent}`);
+      context._engineSetActiveSkill?.(skillName);
       return { output: `Skill "${skillName}" activated inline. Following its instructions.` };
     }
     const allTools = createDefaultTools(context.cwd);

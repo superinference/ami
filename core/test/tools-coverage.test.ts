@@ -244,6 +244,7 @@ describe('skillTool — MCP prompt fallback', () => {
 describe('skillTool — inline execution', () => {
   it('activates inline skill via _engineAddSystemReminder', async () => {
     let addedReminder: string | null = null;
+    let activeSkill: string | null = null;
 
     const r = await skillTool.execute(
       { skill: 'inline-skill', args: 'my args' },
@@ -254,6 +255,7 @@ describe('skillTool — inline execution', () => {
           listSkills: () => [],
         } as any,
         _engineAddSystemReminder: (msg: string) => { addedReminder = msg; },
+        _engineSetActiveSkill: (name: string) => { activeSkill = name; },
       }),
     );
 
@@ -262,6 +264,7 @@ describe('skillTool — inline execution', () => {
     assert.ok(addedReminder);
     assert.ok(addedReminder!.includes('inline-skill'));
     assert.ok(addedReminder!.includes('Inline instructions here'));
+    assert.equal(activeSkill, 'inline-skill');
   });
 
   it('activates inline when skill context is undefined (defaults to inline)', async () => {
