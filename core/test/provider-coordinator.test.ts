@@ -38,6 +38,42 @@ describe('ProviderCoordinator', () => {
     assert.equal(coord.getState().usedFallback, true);
   });
 
+  it('setPrimaryConfig replaces the primary, resets to it, and refreshes state', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({ fallbackModel: 'gpt-3.5-turbo' }));
+    coord.recordError(); // move onto the fallback (fallbackIndex > 0)
+    assert.equal(coord.getConfig().model, 'gpt-3.5-turbo');
+
+    coord.setPrimaryConfig({
+      baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'sk-or-x',
+      model: 'openrouter/auto', provider: 'openrouter',
+      extraBody: { provider: { zdr: true } },
+    });
+
+    const cfg = coord.getConfig();
+    assert.equal(cfg.model, 'openrouter/auto', 'reset to the new primary (fallbackIndex 0)');
+    assert.deepEqual(cfg.extraBody, { provider: { zdr: true } });
+    assert.equal(coord.getState().currentModel, 'openrouter/auto');
+    assert.equal(coord.getState().currentProvider, 'openrouter');
+  });
+
+  it('setPrimaryConfig derives the model from the inferred provider when config.model is empty', () => {
+    const coord = new ProviderCoordinator(makeSubsystem());
+    // sk-or- key → inferred openrouter (with a default model); empty model falls back to it.
+    coord.setPrimaryConfig({ baseUrl: '', apiKey: 'sk-or-infer', model: '' });
+    assert.equal(coord.getState().currentProvider, 'openrouter');
+    assert.ok(coord.getState().currentModel.length > 0 && coord.getState().currentModel !== 'unknown',
+      'currentModel came from the inferred provider default');
+  });
+
+  it('setPrimaryConfig honours an explicit config.provider over inference', () => {
+    const coord = new ProviderCoordinator(makeSubsystem());
+    // Explicit provider on the config is kept as-is (it wins in getConfig()); the
+    // model carries through. Exercises the explicit-model arm of the state refresh.
+    coord.setPrimaryConfig({ baseUrl: 'https://example.test/v1', apiKey: 'sk-or-x', model: 'openrouter/auto', provider: 'openrouter' });
+    assert.equal(coord.getState().currentModel, 'openrouter/auto');
+    assert.equal(coord.getConfig().provider, 'openrouter');
+  });
+
   it('returns false when no fallback available', () => {
     const coord = new ProviderCoordinator(makeSubsystem());
     const switched = coord.recordError();

@@ -11,6 +11,7 @@
  */
 
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
+import { classifyZdrError } from './openrouter-zdr';
 
 export const ERROR_CATEGORIES = [
   'rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
@@ -357,6 +358,11 @@ export function networkErrorHint(lowerMsg: string): string {
 }
 
 export function friendlyErrorMessage(classified: ClassifiedError): string {
+  // OpenRouter ZDR-violation 404 masquerades as a generic error (often 'unknown'
+  // or 'model_unavailable'); surface actionable guidance before the category
+  // fallbacks so users learn it is an account data-policy setting, not a bad model.
+  const zdr = classifyZdrError(classified.message);
+  if (zdr.isZdr) return zdr.guidance!;
   if (classified.category === 'unknown' || classified.category === 'abort') {
     return classified.message;
   }

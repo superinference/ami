@@ -146,6 +146,17 @@ export class ProviderCoordinator {
     return this.chain.length > 0;
   }
 
+  /** Replace the active primary provider config and reset to it (fallbackIndex 0).
+   *  Used by the engine for in-session recovery (e.g. OpenRouter ZDR auto-switch),
+   *  refreshing the reported model/provider so status surfaces the change. */
+  setPrimaryConfig(config: ProviderConfig): void {
+    this.subsystem.primary = config;
+    this.fallbackIndex = 0;
+    const inferred = this.inferProvider(config);
+    this.state.currentModel = config.model || inferred?.defaultModel || 'unknown';
+    this.state.currentProvider = inferred?.provider || config.provider || 'unknown';
+  }
+
   updateRateLimits(headers: Record<string, string>): void {
     this.rateLimits.update(headers);
   }

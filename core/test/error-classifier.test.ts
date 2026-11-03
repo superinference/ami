@@ -573,6 +573,23 @@ describe('server_error friendly message includes status page hint', () => {
   });
 });
 
+describe('friendlyErrorMessage — OpenRouter ZDR-violation 404', () => {
+  const zdrMsg = 'HTTP 404: 0 endpoints out of 1 are available matching your data policy. ' +
+    'ZDR violation (account settings): configurable at https://openrouter.ai/settings/privacy';
+  it('surfaces actionable ZDR guidance instead of the raw 404', () => {
+    const result = classifyError(zdrMsg);
+    const msg = friendlyErrorMessage(result);
+    assert.ok(/account setting/i.test(msg), 'explains it is an account data-policy setting, not a bad model');
+    assert.ok(msg.includes('https://openrouter.ai/settings/privacy'), 'points at the privacy setting');
+    assert.notEqual(msg, zdrMsg, 'the raw 404 message is replaced by guidance');
+  });
+  it('leaves a non-ZDR error message untouched', () => {
+    const result = classifyError('HTTP 500 Internal Server Error');
+    const msg = friendlyErrorMessage(result);
+    assert.ok(!/data-policy setting/i.test(msg), 'generic errors do not get ZDR guidance');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // SDK typed error classification — fast path via Error objects
 // ---------------------------------------------------------------------------
