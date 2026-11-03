@@ -294,7 +294,7 @@ describe('tool-search', () => {
     setSearchableTools(tools);
     const r = await toolSearchTool.execute({ query: 'zzzznomatch' }, {} as ToolContext);
     assert.equal(r.isError, false);
-    assert.match(r.output, /No tools matched/);
+    assert.match(r.output, /No tools.* matched/);
   });
 
   test('missing query property is treated as empty', async () => {

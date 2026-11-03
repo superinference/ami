@@ -5,12 +5,15 @@ export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
-export { discoverPlugins } from './plugins';
-export type { PluginBundle } from './plugins';
+export { discoverPlugins, loadCommands } from './plugins';
+export type { PluginBundle, CommandDefinition } from './plugins';
 // Skill/agent TYPES + arg-safety live in core (bare building blocks). The
 // SkillManager (management) lives in common/src/skill-manager.ts.
 export type { SkillDefinition, AgentDefinition, SkillManagerLike } from './skills';
 export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS } from './skills';
+// Skill catalog types + path-safety for URL-based skill discovery.
+export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult } from './skill-catalog';
+export { isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl } from './skill-catalog';
 export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest } from './cost-tracker';
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';

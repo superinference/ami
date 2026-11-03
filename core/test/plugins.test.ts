@@ -4,8 +4,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { discoverPlugins } from '../src/plugins';
-import type { PluginBundle } from '../src/plugins';
+import { discoverPlugins, loadCommands } from '../src/plugins';
+import type { PluginBundle, CommandDefinition } from '../src/plugins';
 
 let tmpDir: string;
 
@@ -98,6 +98,7 @@ describe('discoverPlugins', () => {
     const bundles = discoverPlugins(tmpDir);
     assert.equal(bundles[0]!.skillsDir, undefined);
     assert.equal(bundles[0]!.agentsDir, undefined);
+    assert.equal(bundles[0]!.commandsDir, undefined);
     assert.equal(bundles[0]!.hooksFile, undefined);
   });
 
@@ -111,7 +112,7 @@ describe('discoverPlugins', () => {
     assert.deepEqual(names, ['Alpha', 'Beta', 'Gamma']);
   });
 
-  it('skips directories without .superinference-plugin/plugin.json', () => {
+  it('skips directories without .superinference-plugin or .claude-plugin manifest', () => {
     fs.mkdirSync(path.join(tmpDir, 'not-a-plugin'));
     makePlugin('real-plugin', { name: 'Real' });
     const bundles = discoverPlugins(tmpDir);
@@ -166,5 +167,220 @@ describe('discoverPlugins', () => {
     makePlugin('my-plugin', { name: 'MP' });
     const bundles = discoverPlugins(tmpDir);
     assert.equal(bundles[0]!.root, path.join(tmpDir, 'my-plugin'));
+  });
+
+  it('discovers a plugin via .claude-plugin fallback', () => {
+    const root = path.join(tmpDir, 'claude-plugin');
+    fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'Claude Plugin', version: '2.0.0' }),
+    );
+    const bundles = discoverPlugins(tmpDir);
+    assert.equal(bundles.length, 1);
+    assert.equal(bundles[0]!.name, 'Claude Plugin');
+    assert.equal(bundles[0]!.version, '2.0.0');
+  });
+
+  it('prefers .superinference-plugin over .claude-plugin when both exist', () => {
+    const root = path.join(tmpDir, 'dual-plugin');
+    fs.mkdirSync(path.join(root, '.superinference-plugin'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.superinference-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'SI Plugin' }),
+    );
+    fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'CC Plugin' }),
+    );
+    const bundles = discoverPlugins(tmpDir);
+    assert.equal(bundles.length, 1);
+    assert.equal(bundles[0]!.name, 'SI Plugin');
+  });
+
+  it('populates commandsDir when commands/ exists', () => {
+    makePlugin('with-commands', { name: 'CMD' }, { skills: false, agents: false, hooks: false });
+    const root = path.join(tmpDir, 'with-commands');
+    fs.mkdirSync(path.join(root, 'commands'), { recursive: true });
+    const bundles = discoverPlugins(tmpDir);
+    assert.ok(bundles[0]!.commandsDir);
+    assert.ok(bundles[0]!.commandsDir!.endsWith('commands'));
+  });
+});
+
+describe('loadCommands', () => {
+  it('returns empty array for non-existent directory', () => {
+    const cmds = loadCommands(path.join(tmpDir, 'nope'));
+    assert.deepEqual(cmds, []);
+  });
+
+  it('returns empty array for directory with no .toml files', () => {
+    const dir = path.join(tmpDir, 'no-toml');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'README.md'), 'hello');
+    const cmds = loadCommands(dir);
+    assert.deepEqual(cmds, []);
+  });
+
+  it('loads a valid command from a .toml file', () => {
+    const dir = path.join(tmpDir, 'commands');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'review.toml'), [
+      'description = "Quality review of the current changes"',
+      'prompt = "Review the current code changes carefully"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.name, 'review');
+    assert.equal(cmds[0]!.description, 'Quality review of the current changes');
+    assert.equal(cmds[0]!.prompt, 'Review the current code changes carefully');
+    assert.equal(cmds[0]!.filePath, path.join(dir, 'review.toml'));
+  });
+
+  it('handles backslash escapes in TOML values', () => {
+    const dir = path.join(tmpDir, 'esc-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'test.toml'), [
+      'description = "A \\"quoted\\" desc"',
+      'prompt = "Line one\\nLine two\\ttabbed"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.description, 'A "quoted" desc');
+    assert.equal(cmds[0]!.prompt, 'Line one\nLine two\ttabbed');
+  });
+
+  it('skips .toml files missing required fields', () => {
+    const dir = path.join(tmpDir, 'partial-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    // Missing prompt
+    fs.writeFileSync(path.join(dir, 'no-prompt.toml'), 'description = "desc only"');
+    // Missing description
+    fs.writeFileSync(path.join(dir, 'no-desc.toml'), 'prompt = "prompt only"');
+    // Valid
+    fs.writeFileSync(path.join(dir, 'valid.toml'), [
+      'description = "Valid"',
+      'prompt = "Do something"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.name, 'valid');
+  });
+
+  it('loads multiple commands from multiple .toml files', () => {
+    const dir = path.join(tmpDir, 'multi-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'alpha.toml'), [
+      'description = "Alpha command"',
+      'prompt = "Do alpha"',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, 'beta.toml'), [
+      'description = "Beta command"',
+      'prompt = "Do beta"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 2);
+    const names = cmds.map(c => c.name).sort();
+    assert.deepEqual(names, ['alpha', 'beta']);
+  });
+
+  it('ignores non-.toml files in the directory', () => {
+    const dir = path.join(tmpDir, 'mixed-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'readme.md'), '# Commands');
+    fs.writeFileSync(path.join(dir, 'valid.toml'), [
+      'description = "Valid"',
+      'prompt = "Run"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.name, 'valid');
+  });
+
+  it('handles backslash-backslash escape', () => {
+    const dir = path.join(tmpDir, 'bslash-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'bs.toml'), [
+      'description = "Path is C:\\\\Users"',
+      'prompt = "Use path C:\\\\Users"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.description, 'Path is C:\\Users');
+    assert.equal(cmds[0]!.prompt, 'Use path C:\\Users');
+  });
+
+  it('handles TOML values without a closing quote', () => {
+    const dir = path.join(tmpDir, 'noclose-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'open.toml'), [
+      'description = "no closing quote',
+      'prompt = "also no close',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    // parseTomlString returns what it accumulated before EOF
+    assert.equal(cmds[0]!.description, 'no closing quote');
+    assert.equal(cmds[0]!.prompt, 'also no close');
+  });
+
+  it('skips unreadable .toml files gracefully', () => {
+    const dir = path.join(tmpDir, 'unreadable-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    // Create a directory named like a .toml file so readFileSync throws
+    fs.mkdirSync(path.join(dir, 'bad.toml'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'good.toml'), [
+      'description = "Works"',
+      'prompt = "Do it"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.name, 'good');
+  });
+
+  it('handles empty string values in TOML', () => {
+    const dir = path.join(tmpDir, 'empty-val-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'empty.toml'), [
+      'description = ""',
+      'prompt = ""',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    // Empty strings are falsy, so both desc and prompt fail the if (desc && prompt) check
+    assert.equal(cmds.length, 0);
+  });
+
+  it('uses filename minus .toml extension as command name', () => {
+    const dir = path.join(tmpDir, 'name-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'my-custom-command.toml'), [
+      'description = "Custom"',
+      'prompt = "Run custom"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.name, 'my-custom-command');
+  });
+});
+
+describe('CommandDefinition shape', () => {
+  it('has name, description, prompt, and filePath fields', () => {
+    const dir = path.join(tmpDir, 'shape-cmds');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'check.toml'), [
+      'description = "Shape test"',
+      'prompt = "Verify shape"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    const cmd: CommandDefinition = cmds[0]!;
+    assert.equal(typeof cmd.name, 'string');
+    assert.equal(typeof cmd.description, 'string');
+    assert.equal(typeof cmd.prompt, 'string');
+    assert.equal(typeof cmd.filePath, 'string');
+    // Verify no extra enumerable properties
+    const keys = Object.keys(cmd).sort();
+    assert.deepEqual(keys, ['description', 'filePath', 'name', 'prompt']);
   });
 });
