@@ -378,6 +378,8 @@ class FakeClient extends EventEmitter {
   uptime: number | null = 42;
   _tools: any[] = [];
   behavior: Record<string, any> = {};
+  onElicitation?: (req: any) => Promise<any>;
+  onSampling?: (req: any) => Promise<any>;
   async connect() { if (this.behavior.connect) return this.behavior.connect(); }
   async connectHTTP(_url: string) { if (this.behavior.connectHTTP) return this.behavior.connectHTTP(_url); }
   async connectSSE(_url: string) { if (this.behavior.connectSSE) return this.behavior.connectSSE(_url); }
@@ -619,6 +621,47 @@ describe('McpManager — targeted branches', () => {
     mgr.addServer('retry', { command: 'x' });
     await mgr.connectServer('retry');
     assert.equal(attempts, 2);
+  });
+
+  it('forwards server-log, resource-updated and pagination-capped with the server name', async () => {
+    const fake = new FakeClient();
+    mgr._createClient = (() => fake as any);
+    mgr.addServer('obs', { command: 'x' });
+    const events: any[] = [];
+    mgr.on('server-log', (n, m) => events.push(['log', n, m]));
+    mgr.on('resource-updated', (n, u) => events.push(['updated', n, u]));
+    mgr.on('pagination-capped', (n, method, c) => events.push(['capped', n, method, c]));
+    fake.emit('log', { level: 'warning', data: 'hi' });
+    fake.emit('resource-updated', 'file:///x');
+    fake.emit('pagination-capped', 'tools/list', 1000);
+    await new Promise(r => setTimeout(r, 10));
+    assert.deepEqual(events, [
+      ['log', 'obs', { level: 'warning', data: 'hi' }],
+      ['updated', 'obs', 'file:///x'],
+      ['capped', 'obs', 'tools/list', 1000],
+    ]);
+  });
+
+  it('bridges elicitation to the wired handler with the server name, and declines without one', async () => {
+    const fake = new FakeClient();
+    mgr._createClient = (() => fake as any);
+    mgr.addServer('el', { command: 'x' });
+    // No handler yet → decline (never hangs).
+    assert.deepEqual(await fake.onElicitation!({ message: 'm', requestedSchema: {} }), { action: 'decline' });
+    // Handler wired after the server was added still applies (read at call-time).
+    const calls: any[] = [];
+    mgr.setElicitationHandler(async (name, req) => { calls.push([name, req]); return { action: 'accept', content: { ok: 1 } }; });
+    assert.deepEqual(await fake.onElicitation!({ message: 'q', requestedSchema: { type: 'object' } }), { action: 'accept', content: { ok: 1 } });
+    assert.deepEqual(calls, [['el', { message: 'q', requestedSchema: { type: 'object' } }]]);
+  });
+
+  it('bridges sampling to the wired handler, and rejects without one', async () => {
+    const fake = new FakeClient();
+    mgr._createClient = (() => fake as any);
+    mgr.addServer('sa', { command: 'x' });
+    await assert.rejects(() => fake.onSampling!({ messages: [] }), /sampling not supported \(no handler\) for server 'sa'/);
+    mgr.setSamplingHandler(async (name, _req) => ({ role: 'assistant', content: { type: 'text', text: name }, model: 'm' }));
+    assert.equal((await fake.onSampling!({ messages: [] })).content.text, 'sa');
   });
 
   it('tools-changed handler swallows a rejected tool refresh', async () => {

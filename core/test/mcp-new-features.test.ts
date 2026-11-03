@@ -8,7 +8,7 @@
  * - MCP tool call timeout (configurable via SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS)
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -299,44 +299,56 @@ describe('MCP server receives SUPERINFERENCE_PROJECT_DIR', () => {
 });
 
 describe('MCP capability discovery retry', () => {
-  it('sendWithRetry method exists in McpClient source', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
+  // Behavior-based (ESM-safe): assert the list methods route through the retry
+  // wrapper and callTool does not, by mocking the seams on a ready client — not
+  // by scraping source text. The methods paginate via collectPaginated, which
+  // itself calls sendWithRetry, so the retry guarantee is preserved.
+  function readyClient(): McpClient {
+    const c = new McpClient({ command: 'node', args: [] });
+    (c as unknown as { _state: string })._state = 'ready';
+    return c;
+  }
+
+  it('list methods route through sendWithRetry; callTool goes direct (no auto-retry)', async () => {
+    const c = readyClient();
+    // Return a shape carrying every list key so each method is satisfied.
+    const retry = mock.method(
+      c as unknown as { sendWithRetry: (m: string) => Promise<unknown> },
+      'sendWithRetry',
+      async () => ({ tools: [], resources: [], prompts: [] }),
     );
-    assert.ok(src.includes('sendWithRetry'), 'McpClient must have sendWithRetry method');
-    assert.ok(src.includes('isTransientConnectError'), 'sendWithRetry must use isTransientConnectError');
+    const auto = mock.method(
+      c as unknown as { sendRequestAuto: (m: string) => Promise<unknown> },
+      'sendRequestAuto',
+      async () => ({ content: [] }),
+    );
+    await c.listTools();
+    await c.listResources();
+    await c.listPrompts();
+    const retried = retry.mock.calls.map((call) => (call.arguments as unknown[])[0]);
+    assert.ok(retried.includes('tools/list'));
+    assert.ok(retried.includes('resources/list'));
+    assert.ok(retried.includes('prompts/list'));
+    await c.callTool('x', {});
+    assert.ok(!retry.mock.calls.some((call) => (call.arguments as unknown[])[0] === 'tools/call'));
+    assert.ok(auto.mock.calls.some((call) => (call.arguments as unknown[])[0] === 'tools/call'));
   });
 
-  it('listTools uses sendWithRetry', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
+  it('sendWithRetry retries a transient connect error then succeeds', async () => {
+    const c = readyClient();
+    let calls = 0;
+    mock.method(
+      c as unknown as { sendRequestAuto: (m: string, p: object) => Promise<unknown> },
+      'sendRequestAuto',
+      async () => {
+        calls++;
+        if (calls === 1) throw new Error('socket hang up'); // transient per isTransientConnectError
+        return { tools: [{ name: 't', description: '', inputSchema: {} }] };
+      },
     );
-    const listToolsBody = src.slice(src.indexOf('async listTools'), src.indexOf('async listTools') + 200);
-    assert.ok(listToolsBody.includes('sendWithRetry'), 'listTools must use sendWithRetry for transient error retry');
-  });
-
-  it('listResources uses sendWithRetry', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
-    );
-    const body = src.slice(src.indexOf('async listResources'), src.indexOf('async listResources') + 200);
-    assert.ok(body.includes('sendWithRetry'), 'listResources must use sendWithRetry');
-  });
-
-  it('listPrompts uses sendWithRetry', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
-    );
-    const body = src.slice(src.indexOf('async listPrompts'), src.indexOf('async listPrompts') + 200);
-    assert.ok(body.includes('sendWithRetry'), 'listPrompts must use sendWithRetry');
-  });
-
-  it('callTool does NOT use sendWithRetry (tool calls should not be auto-retried)', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src', 'mcp', 'client.ts'), 'utf-8',
-    );
-    const body = src.slice(src.indexOf('async callTool'), src.indexOf('async callTool') + 300);
-    assert.ok(!body.includes('sendWithRetry'), 'callTool must NOT use sendWithRetry — tool calls are not idempotent');
+    const tools = await c.listTools();
+    assert.equal(tools.length, 1);
+    assert.equal(calls, 2); // one retry
   });
 });
 

@@ -19,6 +19,9 @@ export const MCP_PROTOCOL_VERSION = '2025-06-18';
 const MIN_MCP_BUFFER = 1024;            // 1 KB
 const MAX_MCP_BUFFER = 100 * 1024 * 1024; // 100 MB
 
+/** Hard cap on cursor-pagination pages per list call — a runaway-server backstop. */
+export const MCP_MAX_PAGES = 1000;
+
 export function boundMcpResponse(
   content: string,
   maxBytes: number = DEFAULT_MCP_MAX_RESPONSE_BYTES,
@@ -58,21 +61,115 @@ export interface McpToolAnnotations {
 
 export interface McpToolSchema {
   name: string;
+  /** Human-display name (2025-06-18); falls back to `name` when absent. */
+  title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** JSON Schema for the tool's structured result (2025-06-18). */
+  outputSchema?: Record<string, unknown>;
   annotations?: McpToolAnnotations;
+  _meta?: Record<string, unknown>;
 }
 
 export interface McpResource {
   uri: string;
   name: string;
+  /** Human-display name (2025-06-18). */
+  title?: string;
+  mimeType?: string;
+}
+
+/** A parameterized resource URI (RFC 6570 template), from resources/templates/list. */
+export interface McpResourceTemplate {
+  uriTemplate: string;
+  name: string;
+  title?: string;
+  description?: string;
   mimeType?: string;
 }
 
 export interface McpPrompt {
   name: string;
+  title?: string;
   description?: string;
   arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+}
+
+// ---------------------------------------------------------------------------
+// 2025-06-18 client-capability request/response shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Elicitation (2025-06-18): a server asks the user, via the client, for
+ * structured input mid-operation. The client MUST reply with exactly one of
+ * three actions and MUST NOT block indefinitely — absent a handler, or on a
+ * handler error, it declines/cancels so the server can proceed.
+ */
+export const MCP_ELICITATION_ACTIONS = ['accept', 'decline', 'cancel'] as const;
+export type McpElicitationAction = (typeof MCP_ELICITATION_ACTIONS)[number];
+
+export interface McpElicitationRequest {
+  /** Human-readable prompt the server wants shown to the user. */
+  message: string;
+  /** Flat JSON Schema of primitive fields the server is requesting. */
+  requestedSchema: Record<string, unknown>;
+}
+
+export interface McpElicitationResult {
+  action: McpElicitationAction;
+  /** Present only when action === 'accept'. */
+  content?: Record<string, unknown>;
+}
+
+/**
+ * Sampling (`sampling/createMessage`): a server asks the client to run an LLM
+ * turn on its behalf. AMI is uniquely able to satisfy this because it owns the
+ * engine. Absent a handler the request is refused with a JSON-RPC error.
+ */
+export interface McpSamplingMessage {
+  role: 'user' | 'assistant';
+  content: { type: string; text?: string; data?: string; mimeType?: string; [key: string]: unknown };
+}
+
+export interface McpSamplingRequest {
+  messages: McpSamplingMessage[];
+  systemPrompt?: string;
+  maxTokens?: number;
+  temperature?: number;
+  stopSequences?: string[];
+  modelPreferences?: Record<string, unknown>;
+  includeContext?: 'none' | 'thisServer' | 'allServers';
+  metadata?: Record<string, unknown>;
+}
+
+export interface McpSamplingResult {
+  role: 'assistant';
+  content: { type: 'text'; text: string } | { type: string; [key: string]: unknown };
+  model: string;
+  stopReason?: string;
+}
+
+/** MCP log levels (RFC 5424 severities) for logging/setLevel. */
+export const MCP_LOG_LEVELS = ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency'] as const;
+export type McpLogLevel = (typeof MCP_LOG_LEVELS)[number];
+
+export interface McpLogMessage {
+  level: McpLogLevel;
+  logger?: string;
+  data: unknown;
+}
+
+/** completion/complete — argument autocompletion for prompts & resource templates. */
+export interface McpCompletionRef {
+  type: 'ref/prompt' | 'ref/resource';
+  name?: string;
+  uri?: string;
+}
+
+export interface McpCompletionResult {
+  values: string[];
+  total?: number;
+  hasMore?: boolean;
 }
 
 export interface McpPromptMessage {
@@ -162,8 +259,13 @@ export class McpClient extends EventEmitter {
   private connectionStartTime: number | null = null;
 
   private progressCallbacks = new Map<string, (progress: { percent?: number; message?: string }) => void>();
+  /** URIs this client has an active resources/subscribe for. */
+  private subscribedResources = new Set<string>();
 
-  onElicitation?: (params: unknown) => void;
+  /** Injected by the manager/engine: resolve a server elicitation request. */
+  onElicitation?: (request: McpElicitationRequest) => Promise<McpElicitationResult>;
+  /** Injected by the manager/engine: run an LLM turn for a sampling request. */
+  onSampling?: (request: McpSamplingRequest) => Promise<McpSamplingResult>;
 
   constructor(options: {
     command: string;
@@ -256,15 +358,25 @@ export class McpClient extends EventEmitter {
     }
   }
 
-  private async performInitialize(): Promise<void> {
-    const clientCapabilities: Record<string, unknown> = {};
+  /**
+   * The client capabilities AMI advertises at `initialize`. Single source of
+   * truth for all three transports so a server sees identical support
+   * regardless of how it was launched: elicitation + sampling always (AMI can
+   * fulfill both, gracefully declining/erroring when no handler is wired), and
+   * roots (with listChanged) only when root paths were configured.
+   */
+  private buildClientCapabilities(): Record<string, unknown> {
+    const caps: Record<string, unknown> = { elicitation: {}, sampling: {} };
     if (this.rootPaths.length > 0) {
-      clientCapabilities.roots = {};
+      caps.roots = { listChanged: true };
     }
+    return caps;
+  }
 
+  private async performInitialize(): Promise<void> {
     const initResult = await this.sendRequest('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: clientCapabilities,
+      capabilities: this.buildClientCapabilities(),
       clientInfo: AMI_CLIENT_INFO,
     }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string };
 
@@ -289,18 +401,13 @@ export class McpClient extends EventEmitter {
     const http = url.startsWith('https') ? require('https') : require('http');
     const urlObj = new URL(url);
 
-    const clientCapabilities: Record<string, unknown> = {};
-    if (this.rootPaths.length > 0) {
-      clientCapabilities.roots = {};
-    }
-
     const initBody = JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
       params: {
         protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: clientCapabilities,
+        capabilities: this.buildClientCapabilities(),
         clientInfo: AMI_CLIENT_INFO,
       },
     });
@@ -378,7 +485,7 @@ export class McpClient extends EventEmitter {
 
     const initResult = await this.sendHttpRequest('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: { roots: { listChanged: true } },
+      capabilities: this.buildClientCapabilities(),
       clientInfo: AMI_CLIENT_INFO,
     }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string };
 
@@ -410,10 +517,31 @@ export class McpClient extends EventEmitter {
     throw lastErr;
   }
 
+  /**
+   * Drive a cursor-paginated list method to completion (2025-06-18). Follows
+   * `nextCursor` until the server stops returning one, concatenating the array
+   * under `key`. Bounded by MCP_MAX_PAGES so a server that never drops the
+   * cursor cannot loop forever (it logs and stops rather than hanging).
+   */
+  private async collectPaginated<T>(method: string, key: string): Promise<T[]> {
+    const items: T[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MCP_MAX_PAGES; page++) {
+      const params: Record<string, unknown> = cursor !== undefined ? { cursor } : {};
+      const result = await this.sendWithRetry<Record<string, unknown>>(method, params);
+      const batch = (result?.[key] as T[] | undefined) ?? [];
+      items.push(...batch);
+      const next = result?.nextCursor;
+      if (typeof next !== 'string' || next.length === 0) return items;
+      cursor = next;
+    }
+    this.emit('pagination-capped', method, items.length);
+    return items;
+  }
+
   async listTools(): Promise<McpToolSchema[]> {
     this.assertReady();
-    const result = await this.sendWithRetry<{ tools: McpToolSchema[] }>('tools/list', {});
-    this._tools = result.tools ?? [];
+    this._tools = await this.collectPaginated<McpToolSchema>('tools/list', 'tools');
     return this._tools;
   }
 
@@ -428,9 +556,14 @@ export class McpClient extends EventEmitter {
 
   async listResources(): Promise<McpResource[]> {
     this.assertReady();
-    const result = await this.sendWithRetry<{ resources: McpResource[] }>('resources/list', {});
-    this._resources = result.resources ?? [];
+    this._resources = await this.collectPaginated<McpResource>('resources/list', 'resources');
     return this._resources;
+  }
+
+  /** resources/templates/list — parameterized resource URIs (2025-06-18). */
+  async listResourceTemplates(): Promise<McpResourceTemplate[]> {
+    this.assertReady();
+    return this.collectPaginated<McpResourceTemplate>('resources/templates/list', 'resourceTemplates');
   }
 
   async readResource(uri: string, signal?: AbortSignal): Promise<unknown> {
@@ -441,10 +574,22 @@ export class McpClient extends EventEmitter {
     return await this.sendRequestAuto('resources/read', { uri }, signal);
   }
 
+  /** resources/subscribe — ask the server to emit notifications/resources/updated for a URI. */
+  async subscribeResource(uri: string): Promise<void> {
+    this.assertReady();
+    await this.sendRequestAuto('resources/subscribe', { uri });
+    this.subscribedResources.add(uri);
+  }
+
+  async unsubscribeResource(uri: string): Promise<void> {
+    this.assertReady();
+    await this.sendRequestAuto('resources/unsubscribe', { uri });
+    this.subscribedResources.delete(uri);
+  }
+
   async listPrompts(): Promise<McpPrompt[]> {
     this.assertReady();
-    const result = await this.sendWithRetry<{ prompts: McpPrompt[] }>('prompts/list', {});
-    this._prompts = result.prompts ?? [];
+    this._prompts = await this.collectPaginated<McpPrompt>('prompts/list', 'prompts');
     return this._prompts;
   }
 
@@ -455,6 +600,25 @@ export class McpClient extends EventEmitter {
       messages: McpPromptMessage[];
     };
     return result;
+  }
+
+  /** logging/setLevel — set the minimum severity the server should emit. */
+  async setLogLevel(level: McpLogLevel): Promise<void> {
+    this.assertReady();
+    await this.sendRequestAuto('logging/setLevel', { level });
+  }
+
+  /** completion/complete — argument autocompletion for a prompt or resource template. */
+  async complete(
+    ref: McpCompletionRef,
+    argument: { name: string; value: string },
+    context?: { arguments?: Record<string, string> },
+  ): Promise<McpCompletionResult> {
+    this.assertReady();
+    const params: Record<string, unknown> = { ref, argument };
+    if (context) params.context = context;
+    const result = await this.sendRequestAuto('completion/complete', params) as { completion?: McpCompletionResult };
+    return result?.completion ?? { values: [] };
   }
 
   async ping(): Promise<void> {
@@ -616,13 +780,19 @@ export class McpClient extends EventEmitter {
         return;
       }
 
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        ...this.headers,
+      };
+      // 2025-06-18: every HTTP request after the initialize handshake MUST carry
+      // the negotiated protocol version so the server pins compatible framing.
+      if (method !== 'initialize' && this._protocolVersion) {
+        headers['MCP-Protocol-Version'] = this._protocolVersion;
+      }
       const req = http.request(new URL(this.sseUrl!), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json, text/event-stream',
-          ...this.headers,
-        },
+        headers,
         timeout: this.requestTimeout,
       }, (res: any) => {
         const statusCode = res.statusCode;
@@ -717,6 +887,7 @@ export class McpClient extends EventEmitter {
         abortHandler = () => {
           clearTimeout(timer);
           this.pendingRequests.delete(id);
+          this.sendCancelled(id, 'client aborted');
           reject(new Error('MCP request aborted'));
         };
         signal.addEventListener('abort', abortHandler, { once: true });
@@ -725,6 +896,17 @@ export class McpClient extends EventEmitter {
       this.pendingRequests.set(id, { resolve, reject, timer, abortHandler });
       this.writeMessage(request);
     });
+  }
+
+  /** notifications/cancelled — tell the server we abandoned an in-flight request. */
+  private sendCancelled(requestId: number, reason: string): void {
+    try {
+      if (this.process?.stdin?.writable) {
+        this.writeMessage({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId, reason } });
+      }
+    } catch {
+      /* best-effort: the connection may already be gone */
+    }
   }
 
   private sendNotification(method: string, params: Record<string, unknown>): Promise<void> {
@@ -737,12 +919,25 @@ export class McpClient extends EventEmitter {
     return Promise.resolve();
   }
 
-  private writeMessage(msg: JsonRpcRequest | JsonRpcNotification): void {
+  private writeMessage(msg: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse): void {
     if (!this.process?.stdin?.writable) {
       throw new Error('MCP server stdin not writable');
     }
     const json = JSON.stringify(msg);
     this.process.stdin.write(json + '\n');
+  }
+
+  /**
+   * Reply to a server→client JSON-RPC request by writing the response to the
+   * child's stdin. Used by the ping/roots/elicitation/sampling handlers so no
+   * server request is ever left unanswered. Only stdio can receive a server→
+   * client request today (the HTTP transport reads responses to its own POSTs,
+   * not server-initiated requests — that arrives with the SSE-stream work), so
+   * when there is no writable stdin this is a safe no-op.
+   */
+  private respondToServerRequest(id: number, payload: { result: unknown } | { error: { code: number; message: string } }): void {
+    if (!this.process?.stdin?.writable) return;
+    this.writeMessage({ jsonrpc: '2.0', id, ...payload } as JsonRpcResponse);
   }
 
   private processBuffer(): void {
@@ -790,10 +985,26 @@ export class McpClient extends EventEmitter {
   }
 
   private handleNotification(notification: JsonRpcNotification): void {
+    const id = (notification as JsonRpcNotification & { id?: number }).id;
+
+    // --- Server→client REQUESTS (carry an id; MUST be answered) -------------
     if (notification.method === 'elicitation/create' || notification.method === 'notifications/elicitation') {
-      this.onElicitation?.(notification.params);
+      void this.handleElicitation(notification as JsonRpcNotification & { id?: number });
     }
 
+    if (notification.method === 'sampling/createMessage') {
+      void this.handleSampling(notification as JsonRpcNotification & { id?: number });
+    }
+
+    if (notification.method === 'ping' && id !== undefined) {
+      this.respondToServerRequest(id, { result: {} });
+    }
+
+    if (notification.method === 'roots/list' && id !== undefined) {
+      this.respondToServerRequest(id, { result: { roots: this.getRoots() } });
+    }
+
+    // --- Server→client NOTIFICATIONS (no reply) ----------------------------
     if (notification.method === 'notifications/tools/list_changed') {
       this._tools = [];
       this.emit('tools-changed');
@@ -804,9 +1015,21 @@ export class McpClient extends EventEmitter {
       this.emit('resources-changed');
     }
 
+    if (notification.method === 'notifications/resources/updated') {
+      const params = notification.params as { uri?: string } | undefined;
+      if (params?.uri) this.emit('resource-updated', params.uri);
+    }
+
     if (notification.method === 'notifications/prompts/list_changed') {
       this._prompts = [];
       this.emit('prompts-changed');
+    }
+
+    if (notification.method === 'notifications/message') {
+      const params = notification.params as Partial<McpLogMessage> | undefined;
+      if (params) {
+        this.emit('log', { level: params.level ?? 'info', logger: params.logger, data: params.data } as McpLogMessage);
+      }
     }
 
     if (notification.method === 'notifications/progress') {
@@ -822,19 +1045,58 @@ export class McpClient extends EventEmitter {
       }
     }
 
-    if (notification.method === 'roots/list') {
-      const roots = this.getRoots();
-      if (this.process?.stdin?.writable) {
-        const response: JsonRpcResponse = {
-          jsonrpc: '2.0',
-          id: (notification as any).id ?? 0,
-          result: { roots },
-        };
-        this.writeMessage(response as any);
-      }
-    }
-
     this.emit('notification', notification.method, notification.params);
+  }
+
+  /**
+   * Resolve a server elicitation request: ask the user via the injected handler,
+   * then reply with the chosen action. Never blocks the read loop and never
+   * leaves the request unanswered — absent a handler it declines, on a handler
+   * error it cancels, so the server can always proceed.
+   */
+  private async handleElicitation(notification: JsonRpcNotification & { id?: number }): Promise<void> {
+    const raw = (notification.params ?? {}) as Partial<McpElicitationRequest>;
+    const request: McpElicitationRequest = {
+      message: typeof raw.message === 'string' ? raw.message : '',
+      requestedSchema:
+        raw.requestedSchema && typeof raw.requestedSchema === 'object'
+          ? (raw.requestedSchema as Record<string, unknown>)
+          : {},
+    };
+    let result: McpElicitationResult;
+    if (this.onElicitation) {
+      try {
+        result = await this.onElicitation(request);
+      } catch {
+        result = { action: 'cancel' };
+      }
+    } else {
+      result = { action: 'decline' };
+    }
+    if (notification.id !== undefined && notification.id !== null) {
+      this.respondToServerRequest(notification.id, { result });
+    }
+  }
+
+  /**
+   * Fulfill a server sampling request by running an LLM turn through the injected
+   * handler, then reply with the completion. Absent a handler, or on error, it
+   * replies with a JSON-RPC error (−32601 / −32603) so the server is not left
+   * hanging and can fall back.
+   */
+  private async handleSampling(notification: JsonRpcNotification & { id?: number }): Promise<void> {
+    const id = notification.id;
+    if (id === undefined || id === null) return;
+    if (!this.onSampling) {
+      this.respondToServerRequest(id, { error: { code: -32601, message: 'sampling not supported by this client' } });
+      return;
+    }
+    try {
+      const result = await this.onSampling((notification.params ?? {}) as unknown as McpSamplingRequest);
+      this.respondToServerRequest(id, { result });
+    } catch (err) {
+      this.respondToServerRequest(id, { error: { code: -32603, message: err instanceof Error ? err.message : 'sampling failed' } });
+    }
   }
 
   private rejectAllPending(error: Error): void {

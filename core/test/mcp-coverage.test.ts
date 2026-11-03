@@ -800,13 +800,14 @@ describe('McpClient — notification handling (additional)', () => {
     });
 
     const elicitParams: unknown[] = [];
-    client.onElicitation = (params) => elicitParams.push(params);
+    client.onElicitation = async (request) => { elicitParams.push(request); return { action: 'decline' as const }; };
 
     await client.connect();
     await new Promise(r => setTimeout(r, 200));
 
     assert.ok(elicitParams.length >= 1);
-    assert.deepEqual((elicitParams[0] as any).type, 'confirm');
+    // The handler receives the normalized request (message + requestedSchema).
+    assert.equal((elicitParams[0] as any).message, 'proceed?');
 
     client.disconnect();
   });

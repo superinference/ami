@@ -1,4 +1,5 @@
 import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError } from './client';
+import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -122,6 +123,25 @@ export class McpManager extends EventEmitter {
   /** MCP client factory seam (see {@link McpClientFactory}). */
   _createClient: McpClientFactory = (options) => new McpClient(options);
 
+  /** Engine-injected resolver for server elicitation requests (server name + request → user's answer). */
+  private _elicitationHandler: ((serverName: string, request: McpElicitationRequest) => Promise<McpElicitationResult>) | null = null;
+  /** Engine-injected resolver for server sampling requests (run an LLM turn on the server's behalf). */
+  private _samplingHandler: ((serverName: string, request: McpSamplingRequest) => Promise<McpSamplingResult>) | null = null;
+
+  /**
+   * Wire the elicitation resolver. Read at call-time, so it applies to servers
+   * already added as well as future ones. Absent a handler, every client
+   * declines (never hangs) — the detached-mode default.
+   */
+  setElicitationHandler(fn: (serverName: string, request: McpElicitationRequest) => Promise<McpElicitationResult>): void {
+    this._elicitationHandler = fn;
+  }
+
+  /** Wire the sampling resolver. Absent a handler, clients refuse with a JSON-RPC error. */
+  setSamplingHandler(fn: (serverName: string, request: McpSamplingRequest) => Promise<McpSamplingResult>): void {
+    this._samplingHandler = fn;
+  }
+
   setRootPaths(paths: string[]): void {
     this.rootPaths = paths;
   }
@@ -216,6 +236,24 @@ export class McpManager extends EventEmitter {
       coreLog('mcp', `Prompt list changed for ${name}`);
       this.emit('prompts-changed', name);
     });
+
+    client.on('log', (msg: McpLogMessage) => this.emit('server-log', name, msg));
+    client.on('resource-updated', (uri: string) => this.emit('resource-updated', name, uri));
+    client.on('pagination-capped', (method: string, count: number) => {
+      coreLog('mcp', `Pagination cap hit for ${name} on ${method} (${count} items)`);
+      this.emit('pagination-capped', name, method, count);
+    });
+
+    // Server→client request resolvers. Read the manager handler at call-time so
+    // a handler wired after the server was added still applies.
+    client.onElicitation = (request) =>
+      this._elicitationHandler
+        ? this._elicitationHandler(name, request)
+        : Promise.resolve({ action: 'decline' as const });
+    client.onSampling = (request) =>
+      this._samplingHandler
+        ? this._samplingHandler(name, request)
+        : Promise.reject(new Error(`sampling not supported (no handler) for server '${name}'`));
 
     this.clients.set(name, client);
   }

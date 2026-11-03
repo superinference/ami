@@ -22,6 +22,7 @@ import {
   boundMcpResponse,
   validateMcpBufferSize,
   DEFAULT_MCP_MAX_RESPONSE_BYTES,
+  MCP_MAX_PAGES,
 } from '../src/mcp/client';
 
 // NOTE: deliberately no `process.exit` in an after() hook — that would kill the
@@ -338,11 +339,14 @@ describe('handleNotification branches', () => {
   it('invokes onElicitation for elicitation/create and notifications/elicitation', async () => {
     const c = await connectedStdio();
     const got: unknown[] = [];
-    c.onElicitation = (params) => got.push(params);
-    feed(c, { jsonrpc: '2.0', method: 'elicitation/create', params: { a: 1 } });
-    feed(c, { jsonrpc: '2.0', method: 'notifications/elicitation', params: { b: 2 } });
+    c.onElicitation = async (request) => { got.push(request); return { action: 'decline' as const }; };
+    feed(c, { jsonrpc: '2.0', method: 'elicitation/create', params: { message: 'm', requestedSchema: { type: 'object' } } });
+    feed(c, { jsonrpc: '2.0', method: 'notifications/elicitation', params: { message: 'n', requestedSchema: {} } });
     await new Promise((r) => setTimeout(r, 20));
-    assert.deepEqual(got, [{ a: 1 }, { b: 2 }]);
+    assert.deepEqual(got, [
+      { message: 'm', requestedSchema: { type: 'object' } },
+      { message: 'n', requestedSchema: {} },
+    ]);
   });
 
   it('resets caches and emits *-changed for list_changed notifications', async () => {
@@ -890,5 +894,276 @@ describe('reconnect', () => {
     c.disconnect();
     await c.reconnect(); // transport === 'sse' && sseUrl → connectSSE
     assert.equal(c.state, 'ready');
+  });
+});
+
+// =========================================================================
+// 2025-06-18 capability surface
+// =========================================================================
+
+// A stdio server that answers the paginated list / template / subscribe /
+// logging / completion methods, layered on top of the base handshake server.
+const FEATURE_EXTRA = `
+  if (msg.method === 'tools/list') {
+    if (msg.params && msg.params.cursor === 'p2') {
+      process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:msg.id, result:{ tools:[{name:'t2',description:'',inputSchema:{}}] } }) + '\\n');
+    } else {
+      process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:msg.id, result:{ tools:[{name:'t1',description:'',inputSchema:{}}], nextCursor:'p2' } }) + '\\n');
+    }
+  }
+  if (msg.method === 'resources/templates/list') {
+    process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:msg.id, result:{ resourceTemplates:[{uriTemplate:'x://{id}',name:'tmpl'}] } }) + '\\n');
+  }
+  if (msg.method === 'resources/subscribe' || msg.method === 'resources/unsubscribe' || msg.method === 'logging/setLevel') {
+    process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:msg.id, result:{} }) + '\\n');
+  }
+  if (msg.method === 'completion/complete') {
+    process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:msg.id, result:{ completion:{ values:['alpha','beta'], total:2, hasMore:false } } }) + '\\n');
+  }
+`;
+
+function writeSpy(c: McpClient) {
+  return mock.method((c as unknown as { writeMessage: (m: unknown) => void }), 'writeMessage');
+}
+function lastResponses(spy: ReturnType<typeof writeSpy>): Array<Record<string, any>> {
+  return spy.mock.calls.map((c) => c.arguments[0] as Record<string, any>);
+}
+
+describe('buildClientCapabilities', () => {
+  it('always advertises elicitation and sampling; roots only with rootPaths', () => {
+    const bare = track(new McpClient({ command: 'node', args: [] }));
+    assert.deepEqual(
+      (bare as unknown as { buildClientCapabilities: () => unknown }).buildClientCapabilities(),
+      { elicitation: {}, sampling: {} },
+    );
+    const withRoots = track(new McpClient({ command: 'node', args: [], rootPaths: ['/w'] }));
+    assert.deepEqual(
+      (withRoots as unknown as { buildClientCapabilities: () => unknown }).buildClientCapabilities(),
+      { elicitation: {}, sampling: {}, roots: { listChanged: true } },
+    );
+  });
+});
+
+describe('elicitation request/response', () => {
+  it('accepts: replies with the handler action + content', async () => {
+    const c = await connectedStdio();
+    c.onElicitation = async () => ({ action: 'accept', content: { name: 'Ada' } });
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', id: 11, method: 'elicitation/create', params: { message: 'Your name?', requestedSchema: { type: 'object' } } });
+    await new Promise((r) => setTimeout(r, 20));
+    const resp = lastResponses(spy).find((m) => m.id === 11);
+    assert.deepEqual(resp?.result, { action: 'accept', content: { name: 'Ada' } });
+  });
+
+  it('declines when no handler is wired (never hangs)', async () => {
+    const c = await connectedStdio();
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', id: 12, method: 'elicitation/create', params: { message: 'm', requestedSchema: {} } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(lastResponses(spy).find((m) => m.id === 12)?.result, { action: 'decline' });
+  });
+
+  it('cancels when the handler throws', async () => {
+    const c = await connectedStdio();
+    c.onElicitation = async () => { throw new Error('ui closed'); };
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', id: 13, method: 'elicitation/create', params: {} });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(lastResponses(spy).find((m) => m.id === 13)?.result, { action: 'cancel' });
+  });
+
+  it('normalizes a malformed request and does not reply to the no-id notification form', async () => {
+    const c = await connectedStdio();
+    const seen: unknown[] = [];
+    c.onElicitation = async (req) => { seen.push(req); return { action: 'decline' as const }; };
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', method: 'notifications/elicitation', params: { message: 5, requestedSchema: 'nope' } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(seen, [{ message: '', requestedSchema: {} }]);
+    assert.equal(lastResponses(spy).length, 0); // no id → no response written
+  });
+});
+
+describe('sampling request/response', () => {
+  it('fulfills with the handler result', async () => {
+    const c = await connectedStdio();
+    c.onSampling = async () => ({ role: 'assistant', content: { type: 'text', text: 'hi' }, model: 'm', stopReason: 'endTurn' });
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', id: 21, method: 'sampling/createMessage', params: { messages: [] } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lastResponses(spy).find((m) => m.id === 21)?.result.content.text, 'hi');
+  });
+
+  it('errors -32601 when no handler is wired', async () => {
+    const c = await connectedStdio();
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', id: 22, method: 'sampling/createMessage', params: { messages: [] } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lastResponses(spy).find((m) => m.id === 22)?.error.code, -32601);
+  });
+
+  it('errors -32603 when the handler throws', async () => {
+    const c = await connectedStdio();
+    c.onSampling = async () => { throw new Error('model down'); };
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', id: 23, method: 'sampling/createMessage', params: { messages: [] } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lastResponses(spy).find((m) => m.id === 23)?.error.message, 'model down');
+  });
+
+  it('ignores a sampling request with no id', async () => {
+    const c = await connectedStdio();
+    c.onSampling = async () => ({ role: 'assistant', content: { type: 'text', text: 'x' }, model: 'm' });
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', method: 'sampling/createMessage', params: { messages: [] } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lastResponses(spy).length, 0);
+  });
+});
+
+describe('ping responder + roots no-id guard', () => {
+  it('answers a server ping with an empty result', async () => {
+    const c = await connectedStdio();
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', id: 31, method: 'ping' });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(lastResponses(spy).find((m) => m.id === 31)?.result, {});
+  });
+
+  it('does not answer a roots/list that arrives without an id', async () => {
+    const c = await connectedStdio('', { rootPaths: ['/w'] });
+    const spy = writeSpy(c);
+    feed(c, { jsonrpc: '2.0', method: 'roots/list' });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lastResponses(spy).length, 0);
+  });
+
+  it('respondToServerRequest is a safe no-op with no writable stdin', () => {
+    const c = track(new McpClient({ command: 'node', args: [] })); // never connected
+    assert.doesNotThrow(() =>
+      (c as unknown as { respondToServerRequest: (id: number, p: object) => void })
+        .respondToServerRequest(1, { result: {} }),
+    );
+  });
+});
+
+describe('logging + resource-updated notifications', () => {
+  it('emits a normalized log event (default level info)', async () => {
+    const c = await connectedStdio();
+    const logs: any[] = [];
+    c.on('log', (m) => logs.push(m));
+    feed(c, { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'error', logger: 'db', data: 'boom' } });
+    feed(c, { jsonrpc: '2.0', method: 'notifications/message', params: { data: 'no-level' } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(logs[0], { level: 'error', logger: 'db', data: 'boom' });
+    assert.equal(logs[1].level, 'info');
+  });
+
+  it('emits resource-updated only when a uri is present', async () => {
+    const c = await connectedStdio();
+    const uris: string[] = [];
+    c.on('resource-updated', (u: string) => uris.push(u));
+    feed(c, { jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri: 'file:///a' } });
+    feed(c, { jsonrpc: '2.0', method: 'notifications/resources/updated', params: {} });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(uris, ['file:///a']);
+  });
+});
+
+describe('cursor pagination', () => {
+  it('follows nextCursor across pages', async () => {
+    const c = await connectedStdio(FEATURE_EXTRA);
+    const tools = await c.listTools();
+    assert.deepEqual(tools.map((t) => t.name), ['t1', 't2']);
+  });
+
+  it('stops at MCP_MAX_PAGES and emits pagination-capped', async () => {
+    const c = await connectedStdio();
+    mock.method(
+      (c as unknown as { sendWithRetry: (m: string, p: object) => Promise<unknown> }),
+      'sendWithRetry',
+      async () => ({ tools: [{ name: 'x', description: '', inputSchema: {} }], nextCursor: 'always' }),
+    );
+    let capped: [string, number] | null = null;
+    c.on('pagination-capped', (method: string, count: number) => { capped = [method, count]; });
+    const tools = await c.listTools();
+    assert.equal(tools.length, MCP_MAX_PAGES);
+    assert.deepEqual(capped, ['tools/list', MCP_MAX_PAGES]);
+  });
+});
+
+describe('resource templates / subscribe / logging level / completion', () => {
+  it('lists resource templates', async () => {
+    const c = await connectedStdio(FEATURE_EXTRA);
+    const tmpls = await c.listResourceTemplates();
+    assert.equal(tmpls[0].uriTemplate, 'x://{id}');
+  });
+
+  it('subscribes and unsubscribes, tracking active URIs', async () => {
+    const c = await connectedStdio(FEATURE_EXTRA);
+    await c.subscribeResource('file:///a');
+    const set = (c as unknown as { subscribedResources: Set<string> }).subscribedResources;
+    assert.ok(set.has('file:///a'));
+    await c.unsubscribeResource('file:///a');
+    assert.ok(!set.has('file:///a'));
+  });
+
+  it('sets the log level', async () => {
+    const c = await connectedStdio(FEATURE_EXTRA);
+    await assert.doesNotReject(() => c.setLogLevel('warning'));
+  });
+
+  it('returns completion values, and falls back to empty on a bare result', async () => {
+    const c = await connectedStdio(FEATURE_EXTRA);
+    const res = await c.complete({ type: 'ref/prompt', name: 'p' }, { name: 'arg', value: 'al' }, { arguments: { other: 'x' } });
+    assert.deepEqual(res.values, ['alpha', 'beta']);
+
+    mock.method(
+      (c as unknown as { sendRequestAuto: (m: string, p: object) => Promise<unknown> }),
+      'sendRequestAuto',
+      async () => ({}),
+    );
+    assert.deepEqual((await c.complete({ type: 'ref/resource', uri: 'x://1' }, { name: 'a', value: '' })).values, []);
+  });
+});
+
+describe('cancellation notification', () => {
+  it('writes notifications/cancelled when an in-flight request is aborted', async () => {
+    const c = await connectedStdio();
+    const spy = writeSpy(c);
+    const ctrl = new AbortController();
+    const p = (c as unknown as { sendRequest: (m: string, pa: object, s: AbortSignal) => Promise<unknown> })
+      .sendRequest('slow/op', {}, ctrl.signal);
+    ctrl.abort();
+    await assert.rejects(() => p, /aborted/);
+    const cancelled = lastResponses(spy).find((m) => m.method === 'notifications/cancelled');
+    assert.ok(cancelled, 'a cancelled notification was sent');
+    assert.equal(typeof cancelled!.params.requestId, 'number');
+  });
+});
+
+describe('MCP-Protocol-Version header (HTTP)', () => {
+  it('omits the header on initialize and includes it on later requests', async () => {
+    const seen: Array<string | undefined> = [];
+    const { url } = await startHttpServer((req, res) => {
+      let body = ''; req.on('data', (d) => body += d);
+      req.on('end', () => {
+        const msg = JSON.parse(body || '{}');
+        if (msg.method === 'initialize') {
+          seen.push(req.headers['mcp-protocol-version'] as string | undefined);
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 's', version: '1' }, capabilities: {} } }));
+        } else if (msg.method && msg.method.startsWith('notifications/')) {
+          res.statusCode = 202; res.end();
+        } else {
+          seen.push(req.headers['mcp-protocol-version'] as string | undefined);
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }));
+        }
+      });
+    });
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000 }));
+    await c.connectHTTP(url);
+    await c.ping();
+    assert.equal(seen[0], undefined);          // initialize: no version header yet
+    assert.equal(seen[1], '2025-06-18');       // ping: negotiated version header present
   });
 });
