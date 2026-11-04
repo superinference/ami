@@ -74,7 +74,7 @@ describe('skillTool — definition', () => {
   it('has correct name and schema', () => {
     assert.equal(skillTool.name, 'skill');
     assert.equal(skillTool.isReadOnly, false);
-    assert.ok(skillTool.inputSchema.required?.includes('skill'));
+    assert.deepEqual(skillTool.inputSchema.required, []);
   });
 });
 
