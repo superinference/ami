@@ -153,6 +153,30 @@ describe('skillTool — MCP prompt resolves to no result', () => {
   });
 });
 
+describe('skillTool — clear deactivates inline skill', () => {
+  it('calls _engineSetActiveSkill(undefined) when clear: true', async () => {
+    let cleared = false;
+    const r = await skillTool.execute(
+      { clear: true },
+      ctx({
+        _engineSetActiveSkill: (name) => { if (name === undefined) cleared = true; },
+      }),
+    );
+    assert.ok(!r.isError);
+    assert.ok(r.output.includes('deactivated'));
+    assert.ok(cleared, '_engineSetActiveSkill must be called with undefined');
+  });
+
+  it('does not require a skill name when clearing', async () => {
+    const r = await skillTool.execute(
+      { clear: true },
+      ctx(),
+    );
+    assert.ok(!r.isError);
+    assert.ok(r.output.includes('core'));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // task-tracker.ts — hook rejection handling (.catch arms)
 // ---------------------------------------------------------------------------

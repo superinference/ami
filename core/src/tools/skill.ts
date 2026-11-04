@@ -49,8 +49,12 @@ export const skillTool: ToolDefinition = {
         type: 'string',
         description: 'Optional arguments passed to the skill (available as $ARGUMENTS in the skill template).',
       },
+      clear: {
+        type: 'boolean',
+        description: 'Set to true to deactivate the current inline skill when its task is complete and the conversation moves to a different topic.',
+      },
     },
-    required: ['skill'],
+    required: [],
   },
   isReadOnly: false,
 
@@ -58,6 +62,11 @@ export const skillTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
+    if (input.clear === true) {
+      context._engineSetActiveSkill?.(undefined);
+      return { output: 'Inline skill deactivated. Returning to core mode.' };
+    }
+
     // Accept common aliases for the skill name + args. Models frequently call
     // this with {name|skill_name|skillName, prompt} (skills are listed by name)
     // and would otherwise waste a turn on an "empty skill name" error before

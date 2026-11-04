@@ -114,7 +114,7 @@ export interface ToolContext {
   _mcpManager?: any;
   _parentMessages?: Message[];
   _engineAddSystemReminder?: (msg: string) => void;
-  _engineSetActiveSkill?: (name: string) => void;
+  _engineSetActiveSkill?: (name: string | undefined) => void;
   /** Signal the engine to load a deferred tool into the active set (tool_search select). */
   _loadDeferredTool?: (name: string) => void;
   /** Relay a child (sub-engine) event up to the parent engine's event stream so
