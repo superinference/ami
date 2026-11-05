@@ -20,7 +20,7 @@ export function detectRepetition(text: string): { isRepetitive: boolean; truncat
   }
 
   // Strategy 2: repeated phrase detection (catches inline repetition)
-  // Look for any phrase of 20+ chars repeated 5+ times
+  // Look for any phrase of 20+ chars repeated 5+ times (non-overlapping).
   const minPhraseLen = 20;
   const minRepeats = 5;
   const searchWindow = Math.min(text.length, 4000);
@@ -29,11 +29,14 @@ export function detectRepetition(text: string): { isRepetitive: boolean; truncat
   for (let phraseLen = minPhraseLen; phraseLen <= 80; phraseLen += 10) {
     const phrase = tail.slice(-phraseLen);
     if (phrase.trim().length < minPhraseLen) continue;
+    // Skip low-entropy phrases (e.g. border chars: ─────, ═════, -----)
+    // where overlapping matches cause false positives on decorative lines.
+    if (new Set(phrase.trim()).size <= 2) continue;
     let count = 0;
     let pos = 0;
     while ((pos = tail.indexOf(phrase, pos)) !== -1) {
       count++;
-      pos += 1;
+      pos += phrase.length;
       if (count >= minRepeats) {
         const firstOccurrence = text.indexOf(phrase);
         return { isRepetitive: true, truncateAt: firstOccurrence + phrase.length };

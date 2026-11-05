@@ -153,6 +153,82 @@ describe('detectRepetition – phrase-level repetition', () => {
 });
 
 // ---------------------------------------------------------------------------
+// False positive guards
+// ---------------------------------------------------------------------------
+
+describe('detectRepetition – false positive guards', () => {
+  it('does not false-positive on box-drawing border lines (─────)', () => {
+    const border = '─'.repeat(49);
+    const text = [
+      'Some valid introduction text that is long enough to pass the 200-char minimum.',
+      '',
+      `★ Insight ${border}`,
+      '- Point one about the implementation',
+      '- Point two about the trade-offs',
+      border,
+      '',
+      'More text after the insight callout that continues the explanation.',
+      '',
+      `★ Insight ${border}`,
+      '- Another insight about a different topic',
+      '- With multiple teaching points here',
+      border,
+    ].join('\n');
+    const result = detectRepetition(text);
+    assert.equal(result.isRepetitive, false,
+      'box-drawing borders must not trigger phrase repetition (low-entropy skip)');
+  });
+
+  it('does not false-positive on horizontal rules (═════)', () => {
+    const rule = '═'.repeat(50);
+    const lines = [`First section of content with enough text. ${rule}`];
+    for (let i = 0; i < 6; i++) lines.push(`Section ${i}: unique content number ${i * 31}. ${rule}`);
+    const result = detectRepetition(lines.join('\n'));
+    assert.equal(result.isRepetitive, false,
+      'repeated horizontal rules must not trigger phrase repetition');
+  });
+
+  it('does not false-positive on tool output footer borders', () => {
+    const footer = '─'.repeat(60);
+    const text = [
+      'Some long intro text that is unique and not repetitive at all.',
+      '',
+      '▶ Ran bash(ls -la)',
+      '  file1.txt  file2.txt  file3.txt',
+      footer,
+      '',
+      '▶ Ran bash(cat file1.txt)',
+      '  contents of file1',
+      footer,
+      '',
+      '▶ Ran bash(cat file2.txt)',
+      '  contents of file2',
+      footer,
+      '',
+      '▶ Ran bash(cat file3.txt)',
+      '  contents of file3',
+      footer,
+      '',
+      '▶ Ran bash(wc -l *.txt)',
+      '  4 total',
+      footer,
+    ].join('\n');
+    const result = detectRepetition(text);
+    assert.equal(result.isRepetitive, false,
+      'tool output footer borders (─) must not trigger phrase repetition');
+  });
+
+  it('still detects genuinely repetitive high-entropy phrases', () => {
+    const phrase = 'The quick brown fox jumps. ';
+    const text = 'Some valid intro text that sets the stage. ' + phrase.repeat(20);
+    const result = detectRepetition(text);
+    assert.equal(result.isRepetitive, true,
+      'high-entropy phrases repeated many times must still be detected');
+    assert.ok(result.truncateAt > 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
 
@@ -176,11 +252,12 @@ describe('detectRepetition – edge cases', () => {
     assert.equal(result.isRepetitive, false);
   });
 
-  it('handles text at exactly 200 chars', () => {
+  it('handles text at exactly 200 chars of single char (low-entropy skip)', () => {
     const text = 'a'.repeat(200);
-    // 200 chars of 'a' — phrase detection should catch this
+    // 200 chars of 'a' — low-entropy phrase (Set size ≤ 2) is skipped by Strategy 2
+    // so this is NOT detected as repetitive (it's a decorative/padding pattern)
     const result = detectRepetition(text);
-    assert.equal(result.isRepetitive, true);
+    assert.equal(result.isRepetitive, false);
   });
 
   it('resets count when different line breaks the sequence', () => {
