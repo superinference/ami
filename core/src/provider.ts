@@ -1250,6 +1250,24 @@ export async function* streamChatCompletion(
   try {
     const effectiveTemperature = resolveTemperature(modelId, config.temperature, options?.thinking);
 
+    // OpenAI SDK-native prompt-cache options. The transport-layer extraBody path
+    // (openAIPromptCacheBody) already handles prompt_cache_key for Azure and
+    // compat servers; SDK providerOptions adds promptCacheOptions (mode/ttl)
+    // which the transport layer cannot express.
+    const providerName = config.provider || inferred?.provider;
+    const oaiHost = config.baseUrl ?? '';
+    const isOfficialOpenAI = oaiHost.includes('api.openai.com') ||
+      ((providerName === 'openai' || providerName === 'azure-openai') && oaiHost.length === 0);
+    const isNativeOpenAI = !isAnthropic && isOfficialOpenAI;
+    const openAICacheOpts = isNativeOpenAI && config.promptCacheKey ? {
+      providerOptions: {
+        openai: {
+          promptCacheKey: config.promptCacheKey,
+          ...(config.promptCacheOptions ? { promptCacheOptions: config.promptCacheOptions } : {}),
+        },
+      },
+    } : {};
+
     const result = streamTextFn({
       model,
       instructions: systemPrompt,
@@ -1262,6 +1280,7 @@ export async function* streamChatCompletion(
       ),
       ...(effectiveTemperature !== undefined ? { temperature: effectiveTemperature } : {}),
       ...(options?.repairToolCall ? { repairToolCall: options.repairToolCall } : {}),
+      ...openAICacheOpts,
       abortSignal,
       maxRetries: 0,
       onError: ({ error }) => {

@@ -269,6 +269,50 @@ describe('streamChatCompletion — extraBody on the wire', () => {
     assert.equal(lastBody!['prompt_cache_key'], undefined);
     assert.equal(lastBody!['max_completion_tokens'], 16384);
   });
+
+  it('sends prompt_cache_options when pointing to an official OpenAI host', async () => {
+    const config: ProviderConfig = {
+      baseUrl: `http://127.0.0.1:${port}/api.openai.com/v1`,
+      apiKey: 'test-key',
+      provider: 'openai',
+      model: 'gpt-6-luna',
+      promptCacheKey: 'session-42',
+      promptCacheOptions: { mode: 'explicit', ttl: '12h' },
+    };
+    const ac = new AbortController();
+    for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) { /* drain */ }
+    assert.equal(lastBody!['prompt_cache_key'], 'session-42');
+    assert.deepEqual(lastBody!['prompt_cache_options'], { mode: 'explicit', ttl: '12h' });
+  });
+
+  it('does not send prompt_cache_options to non-OpenAI hosts', async () => {
+    const config: ProviderConfig = {
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'test-key',
+      provider: 'openai',
+      model: 'Qwen/Qwen3.8-27B',
+      promptCacheKey: 'session-42',
+      promptCacheOptions: { mode: 'explicit', ttl: '12h' },
+    };
+    const ac = new AbortController();
+    for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) { /* drain */ }
+    assert.equal(lastBody!['prompt_cache_key'], undefined);
+    assert.equal(lastBody!['prompt_cache_options'], undefined);
+  });
+
+  it('omits prompt_cache_options when promptCacheKey is absent', async () => {
+    const config: ProviderConfig = {
+      baseUrl: `http://127.0.0.1:${port}/api.openai.com/v1`,
+      apiKey: 'test-key',
+      provider: 'openai',
+      model: 'gpt-6-luna',
+      promptCacheOptions: { mode: 'explicit', ttl: '30m' },
+    };
+    const ac = new AbortController();
+    for await (const _chunk of streamChatCompletion(config, [{ role: 'user', content: 'Hi' }], [], ac.signal)) { /* drain */ }
+    assert.equal(lastBody!['prompt_cache_key'], undefined);
+    assert.equal(lastBody!['prompt_cache_options'], undefined);
+  });
 });
 
 describe('openAIPromptCacheBody', () => {

@@ -161,6 +161,8 @@ export interface ToolDefinition {
   inputSchema: ToolInputSchema;
   isReadOnly: boolean;
   isConcurrencySafe?: boolean;
+  /** True for tools originating from MCP servers — used for auto-deferral when schema tokens exceed the context budget. */
+  isMcp?: boolean;
   execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 }
 
@@ -194,6 +196,13 @@ export interface ProviderConfig {
    * OpenAI-compatible servers never see `prompt_cache_key`.
    */
   promptCacheKey?: string;
+  /**
+   * OpenAI SDK-native prompt-cache options. `mode` controls whether caching is
+   * implicit (automatic prefix matching, default) or explicit. `ttl` sets the
+   * server-side cache lifetime ('30m' or '12h'). Only effective on official
+   * OpenAI hosts; ignored by other providers.
+   */
+  promptCacheOptions?: { mode?: 'implicit' | 'explicit'; ttl?: '30m' | '12h' };
   /** Extra headers merged into every LLM API request. Used for gateway hint
    *  headers (request class, agent type, compaction state). */
   extraHeaders?: Record<string, string>;
@@ -351,6 +360,8 @@ export interface EngineConfig {
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on (beyond the essential set + tool_search). */
   alwaysLoadTools?: string[];
+  /** MCP server names whose tools bypass the MCP schema-size deferral threshold. */
+  alwaysLoadMcpServers?: string[];
   abortController?: AbortController;
   onPermissionRequest?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
   /** Centralized permission prompt handler. Both CLI and VSCode implement this interface. */
