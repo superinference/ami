@@ -2,7 +2,7 @@ import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as http from 'http';
 
-import { generateTitle } from '../src/title-generator';
+import { generateTitle, sanitizeTitle } from '../src/title-generator';
 import type { ProviderConfig } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -188,6 +188,28 @@ describe('generateTitle — title cleanup logic', () => {
     }
   });
 
+  it('flattens a multi-line / markdown title to one clean line', async () => {
+    // A model that returns markdown + newlines must not corrupt the separator bar.
+    const { server, port } = await createSSEServer(() => {
+      const lines: string[] = [
+        'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"},"index":0}]}',
+        `data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"delta":{"content":"# Heading\\n\\n- item one\\nmore"},"index":0}]}`,
+        'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}',
+        'data: [DONE]',
+      ];
+      return lines;
+    });
+    try {
+      const title = await generateTitle('test', makeProvider(port));
+      assert.ok(!title.includes('\n'), 'no newlines in title');
+      assert.ok(!title.startsWith('#'), 'heading marker stripped');
+      assert.ok(!title.includes('- '), 'list marker stripped');
+      assert.equal(title, 'Heading item one more');
+    } finally {
+      server.close();
+    }
+  });
+
   it('truncates to 50 chars', async () => {
     const longText = 'A'.repeat(80);
     const { server, port } = await createSSEServer(() => {
@@ -205,5 +227,32 @@ describe('generateTitle — title cleanup logic', () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe('sanitizeTitle — single-line markdown-free flattening', () => {
+  it('collapses newlines and tabs to single spaces', () => {
+    assert.equal(sanitizeTitle('line one\n\nline\ttwo\n  three'), 'line one line two three');
+  });
+  it('strips ATX heading markers', () => {
+    assert.equal(sanitizeTitle('### My Heading'), 'My Heading');
+  });
+  it('strips fenced and inline code markers', () => {
+    assert.equal(sanitizeTitle('```js\nconst x = `y`\n```'), 'const x = y');
+  });
+  it('strips blockquote markers', () => {
+    assert.equal(sanitizeTitle('> quoted text'), 'quoted text');
+  });
+  it('strips unordered and ordered list markers', () => {
+    assert.equal(sanitizeTitle('- first\n2. second\n* third'), 'first second third');
+  });
+  it('unwraps bold and italic emphasis', () => {
+    assert.equal(sanitizeTitle('**bold** and _italic_ and ***both***'), 'bold and italic and both');
+  });
+  it('leaves a plain single-line title unchanged', () => {
+    assert.equal(sanitizeTitle('Just a normal title'), 'Just a normal title');
+  });
+  it('returns empty string for whitespace-only input', () => {
+    assert.equal(sanitizeTitle('   \n\t  '), '');
   });
 });

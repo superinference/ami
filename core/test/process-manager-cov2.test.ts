@@ -236,6 +236,32 @@ describe('ProcessManager – registerAgent', () => {
     assert.equal(aborted, true, 'abortFn (proc.kill) must be called');
     assert.equal(pm.get('agent-k')!.status, 'killed');
   });
+
+  it('kill() on a registered agent NEVER signals the main process group (uses abortFn only)', (t) => {
+    // Red-green guard for the dangerous kill path: a registered agent's `proc.pid`
+    // IS the main process pid. The old kill() ran `process.kill(-proc.pid, SIGKILL)`
+    // → signalling the app's own process group (fatal if the app is a group leader),
+    // reaching abortFn only via the throw/catch fallback. The fix must call abortFn
+    // directly and never invoke process.kill for a registered agent.
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    let aborted = false;
+    const killPids: number[] = [];
+    // Spy on process.kill so a buggy process.kill(-process.pid) is observed (and
+    // neutralised) rather than actually signalling this test runner.
+    t.mock.method(process, 'kill', (pid: number) => { killPids.push(pid); return true; });
+    pm.registerAgent('agent-safe', {
+      command: '[agent] safe',
+      description: 'desc',
+      outputPath: path.join(tmpDir, 'safe.out'),
+      abortFn: () => { aborted = true; },
+    });
+    const killed = pm.kill('agent-safe');
+    assert.equal(killed, true);
+    assert.equal(aborted, true, 'abortFn must be invoked directly');
+    assert.deepEqual(killPids, [], 'process.kill must NOT be called for a registered (in-process) agent');
+    assert.equal(pm.get('agent-safe')!.status, 'killed');
+  });
 });
 
 // ---------------------------------------------------------------------------

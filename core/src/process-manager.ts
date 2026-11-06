@@ -96,6 +96,11 @@ interface InternalProcess extends BackgroundProcess {
   outputFd: number | null;
   bytesWritten: number;
   _intervalHandle?: ReturnType<typeof setInterval>;
+  /** True for in-process agents added via registerAgent(): there is NO real child
+   *  process — `proc` is a stub whose `pid` is the MAIN process pid and whose
+   *  `kill` is an abort callback. kill() MUST invoke that callback and must NEVER
+   *  run `process.kill(-pid)` on it (that targets the app's own process group). */
+  _registered?: boolean;
 }
 
 export class ProcessManager extends EventEmitter {
@@ -223,6 +228,11 @@ export class ProcessManager extends EventEmitter {
     if (entry._intervalHandle) {
       clearInterval(entry._intervalHandle);
       entry._intervalHandle = undefined;
+    } else if (entry._registered) {
+      // In-process agent (registerAgent): no real child. `proc.kill` is an abort
+      // callback — invoke it directly. Running process.kill(-proc.pid) here would
+      // signal the MAIN app's own process group (proc.pid === process.pid).
+      try { entry.proc.kill(); } catch { /* abort already fired */ }
     } else {
       // Destroy stdout/stderr streams BEFORE killing the process to prevent
       // EBADF errors. When the process is killed, the OS closes the child end
@@ -380,6 +390,7 @@ export class ProcessManager extends EventEmitter {
       outputFd: null,
       bytesWritten: 0,
       tokenCount: 0,
+      _registered: true,
     });
   }
 
