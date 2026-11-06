@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Allow superinference/ui to dispatch this (free, public) CI on the pinned core
+  # sha instead of re-running core tests on billed private minutes.
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -39,3 +42,11 @@ jobs:
       - name: Run tests
         working-directory: ./core
         run: npm test
+
+      # Accurate 99% coverage gate, measured via the native-ESM harness (NOT tsx,
+      # whose CJS-interop helpers inflate branch counts below a real 99%). This gate
+      # used to live only in the private superinference/ui CI; running it here keeps
+      # core fully validated on every push in this FREE public repo.
+      - name: Coverage gate (native-ESM, 99/99/99)
+        working-directory: ./core
+        run: node scripts/coverage-esm.mjs core --lines 99 --branches 99 --functions 99
