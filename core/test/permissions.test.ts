@@ -251,13 +251,27 @@ describe('PermissionManager — isPathAllowed', () => {
     assert.ok(pm.isPathAllowed(path.join(tmpDir, 'file.ts'), tmpDir));
   });
 
-  it('allows paths within home directory', () => {
+  it('DENIES paths within home but outside the launch cwd (workspace confinement)', () => {
+    // Regression guard: the agent must NOT silently read elsewhere in $HOME (e.g. a
+    // sibling project) just because it is under the home directory. Only the launch
+    // cwd (and explicitly-granted roots) are readable.
     const home = os.homedir();
-    assert.ok(pm.isPathAllowed(path.join(home, '.bashrc'), tmpDir));
+    const outside = path.join(home, 'some-other-project', 'notes.txt');
+    assert.equal(pm.isPathAllowed(outside, tmpDir), false);
   });
 
-  it('allows tilde paths', () => {
-    assert.ok(pm.isPathAllowed('~/projects/test.ts', tmpDir));
+  it('allows an out-of-cwd path ONLY after it is explicitly granted (registerAllowedRoot)', () => {
+    const home = os.homedir();
+    const grantedDir = path.join(home, 'granted-project');
+    const target = path.join(grantedDir, 'notes.txt');
+    assert.equal(pm.isPathAllowed(target, tmpDir), false); // before grant: denied
+    pm.registerAllowedRoot(grantedDir);
+    assert.equal(pm.isPathAllowed(target, tmpDir), true);  // after grant: allowed
+  });
+
+  it('tilde paths outside the launch cwd are denied (expand to home, not the workspace)', () => {
+    // ~/projects/test.ts expands to $HOME/projects/... which is outside the temp cwd.
+    assert.equal(pm.isPathAllowed('~/projects/test.ts', tmpDir), false);
   });
 
   it('denies system directories', () => {

@@ -85,12 +85,34 @@ export function resolveSearchPath(
       ? inputPath
       : path.resolve(cwd, inputPath)
     : cwd;
-  const abs = path.resolve(resolved);
-  const cwdAbs = path.resolve(cwd);
+  // Resolve symlinks on BOTH sides before the containment check: a symlink living inside
+  // cwd that points outside (e.g. cwd/link -> /etc) would otherwise pass a pure
+  // string-prefix check and let a search escape the workspace.
+  let abs = path.resolve(resolved);
+  let cwdAbs = path.resolve(cwd);
+  try { abs = fs.realpathSync(abs); } catch { /* may not exist yet — keep normalized */ }
+  try { cwdAbs = fs.realpathSync(cwdAbs); } catch { /* keep normalized */ }
   if (abs !== cwdAbs && !abs.startsWith(cwdAbs + path.sep)) {
     return { resolved, error: `Error: path "${inputPath}" is outside the workspace directory.` };
   }
   return { resolved };
+}
+
+/**
+ * Reject a glob/search pattern that would traverse ABOVE the search root. The search root
+ * itself is confined by resolveSearchPath, but a pattern like "../../**" passed to the
+ * globber still walks up out of the workspace. Patterns must stay relative-DOWN from the
+ * root (e.g. "**\/*.ts", "src/**"). Returns an error ToolResult, or null if the pattern is safe.
+ */
+export function rejectEscapingPattern(pattern: string): ToolResult | null {
+  const normalized = pattern.replace(/\\/g, '/');
+  if (normalized.split('/').some(seg => seg === '..')) {
+    return {
+      output: `Error: glob pattern "${pattern}" must not contain ".." path segments — it would escape the workspace. Use a pattern relative to the working directory (e.g. "**/*.ts").`,
+      isError: true,
+    };
+  }
+  return null;
 }
 
 export interface ToolDescriptionContext {

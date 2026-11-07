@@ -395,6 +395,10 @@ export interface EngineConfig {
   permissionMode?: string;
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
+  /** Extra absolute paths/dirs the user has granted read access to OUTSIDE the launch
+   *  cwd (e.g. dirs of `--context-file`/`--image` targets, or `--add-dir`). The tools are
+   *  confined to the launch cwd; these roots widen that boundary to user-pointed resources. */
+  allowedReadRoots?: string[];
   /** Model to fall back to on errors (e.g., 'gemini-2.0-flash' as fallback for 'gemini-1.5-pro'). */
   fallbackModel?: string;
   /** Ordered fallback model chain (up to 3), stepped through on provider errors. */

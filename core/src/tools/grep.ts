@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern } from './tool-utils';
 
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
@@ -145,6 +145,13 @@ export const grepTool: ToolDefinition = {
     const v = validatePatternAndPath(input.pattern, searchPath, context.cwd);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
+    // The file-FILTER glob (`include`) must not traverse above the search root — a filter
+    // like "../../**" would widen the search out of the workspace. (grep's `pattern` is a
+    // REGEX and is intentionally NOT path-checked.)
+    if (typeof include === 'string') {
+      const includeEscape = rejectEscapingPattern(include);
+      if (includeEscape) return includeEscape;
+    }
     const unreadable = assertReadableTarget(resolved);
     if (unreadable) return unreadable;
     if (!pattern || pattern.length < 1) return { output: 'Error: pattern is required.', isError: true };

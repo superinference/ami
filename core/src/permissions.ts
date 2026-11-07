@@ -834,6 +834,13 @@ export class PermissionManager {
   private rules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
+  /** Extra absolute paths/dirs the USER has explicitly granted read access to,
+   *  OUTSIDE the launch cwd — e.g. via `/add-dir`, `--context-file`, `--image`, or an
+   *  approved out-of-workspace read prompt. The launch cwd is always allowed (passed
+   *  per-call to the path checks); everything else outside it is confined unless listed
+   *  here. This is what makes "point the agent at /some/other/image.png" work while a
+   *  silent `cat ../../other-project/secret` stays blocked. */
+  private allowedReadRoots: Set<string> = new Set();
 
   // Denial circuit breaker — abort after too many consecutive or total denials
   private consecutiveDenials = 0;
@@ -841,9 +848,29 @@ export class PermissionManager {
   private readonly MAX_CONSECUTIVE = 3;
   private readonly MAX_TOTAL = 20;
 
-  constructor(mode?: PermissionMode, rules?: PermissionRule[]) {
+  constructor(mode?: PermissionMode, rules?: PermissionRule[], allowedRoots?: string[]) {
     if (mode) this.mode = mode;
     if (rules) this.rules = [...rules];
+    if (allowedRoots) for (const r of allowedRoots) this.registerAllowedRoot(r);
+  }
+
+  /**
+   * Grant read access to an absolute path (file or directory) that lies OUTSIDE the
+   * launch cwd. Sources: `/add-dir`, `--context-file`/`--image` launch flags, and
+   * user-approved out-of-workspace read prompts. Stored resolved + normalized so the
+   * containment check is a simple prefix match. Idempotent; ignores empty input.
+   */
+  registerAllowedRoot(p: string): void {
+    if (!p || typeof p !== 'string') return;
+    try {
+      const abs = path.isAbsolute(p) ? p : path.resolve(p);
+      this.allowedReadRoots.add(path.normalize(abs));
+    } catch { /* non-fatal: a bad path just isn't granted */ }
+  }
+
+  /** The user-granted read roots (absolute, normalized). For inspection/tests. */
+  getAllowedReadRoots(): string[] {
+    return [...this.allowedReadRoots];
   }
 
   // -------------------------------------------------------------------------
@@ -1173,22 +1200,30 @@ export class PermissionManager {
    *   - System directories (/etc, /usr, /bin, /var, /sys, /proc, etc.)
    *   - Paths containing ".." segments that escape cwd
    */
-  isPathAllowed(filePath: string, cwd: string): boolean {
+  /**
+   * Resolve a path for permission checks: expand ~, make absolute against cwd, and
+   * resolve symlinks (so an in-cwd symlink pointing at /etc or a sibling dir cannot
+   * smuggle access past the prefix check). A not-yet-existing path (a write target)
+   * keeps its normalized form.
+   */
+  private resolveForCheck(filePath: string, cwd: string): string {
     let resolved = expandPath(filePath, cwd);
-
-    // Resolve symlinks to prevent symlink-based escapes
     try {
       resolved = fs.realpathSync(resolved);
     } catch {
       // File may not exist yet (write operation) — keep the normalized path
     }
+    return resolved;
+  }
 
-    // Block sensitive files. Mirror the credential write-guard list so reads
-    // are no narrower than writes (.aws/credentials, .git-credentials,
-    // .kube/config, .docker/config.json, .gnupg/, .config/gcloud/, /etc/...).
-    if (isCredentialPath(resolved)) {
-      return false;
-    }
+  /**
+   * FORBIDDEN paths are never readable by the agent — even inside the workspace, even in
+   * a granted root, even with explicit user consent: credential/secret files and system
+   * directories. Mirrors the credential write-guard so reads are no narrower than writes
+   * (.aws/credentials, .git-credentials, .kube/config, .ssh keys, .env, .pem/.key, /etc…).
+   */
+  private isForbiddenReadPath(resolved: string): boolean {
+    if (isCredentialPath(resolved)) return true;
     const basename = path.basename(resolved).toLowerCase();
     const sensitiveNames = ['.env', 'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa'];
     const sensitiveExts = ['.pem', '.key', '.p12', '.pfx', '.keystore'];
@@ -1197,42 +1232,62 @@ export class PermissionManager {
     if (sensitiveNames.some(s => basename === s) ||
         sensitiveExts.some(e => basename.endsWith(e)) ||
         sensitivePatterns.some(p => p.test(basename))) {
-      return false;
+      return true;
     }
-
-    // Deny paths with ".." that escape the cwd
-    const relative = path.relative(cwd, resolved);
-    if (relative.startsWith('..') && path.isAbsolute(filePath)) {
-      // Absolute path outside cwd -- check if it's in the home directory
-      const homeDir = os.homedir();
-      const normalizedHome = path.normalize(homeDir);
-      const isInHome = resolved === normalizedHome || resolved.startsWith(normalizedHome + path.sep);
-      if (!isInHome) {
-        // Check against system directories
-        for (const sysDir of SYSTEM_DIRECTORIES) {
-          if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) {
-            return false;
-          }
-        }
-      }
-      return isInHome;
-    }
-
-    // Check against system directories for absolute paths
     for (const sysDir of SYSTEM_DIRECTORIES) {
-      if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) {
-        return false;
-      }
+      if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) return true;
     }
+    return false;
+  }
 
-    // Path is within cwd or within home
-    const normalizedCwd = path.normalize(cwd);
-    const homeDir = path.normalize(os.homedir());
+  /**
+   * WORKSPACE containment: a resolved path is inside the workspace iff it is under the
+   * launch cwd OR under a user-granted read root (registerAllowedRoot). This is the
+   * boundary that confines the agent to where it was started — sibling, parent, and
+   * other-$HOME paths are NOT inside unless the user explicitly granted them.
+   */
+  private isWithinWorkspace(resolved: string, cwd: string): boolean {
+    // Strip trailing separators so a cwd/root passed as "/ws/" doesn't become "/ws//"
+    // (path.normalize preserves a trailing slash), which would break the prefix match.
+    const strip = (p: string) => p.replace(/[/\\]+$/, '') || p;
+    const r = strip(resolved);
+    const ncwd = strip(path.normalize(cwd));
+    if (r === ncwd || r.startsWith(ncwd + path.sep)) return true;
+    for (const root of this.allowedReadRoots) {
+      const nr = strip(root);
+      if (r === nr || r.startsWith(nr + path.sep)) return true;
+    }
+    return false;
+  }
 
-    const inCwd = resolved === normalizedCwd || resolved.startsWith(normalizedCwd + path.sep);
-    const inHome = resolved === homeDir || resolved.startsWith(homeDir + path.sep);
+  /**
+   * Hard boundary for the tools' path guard: true only when a path is BOTH non-forbidden
+   * AND inside the workspace (launch cwd or a user-granted root). Confines the agent to
+   * its launch directory — reading elsewhere in $HOME (e.g. ~/dev/other-project), a
+   * sibling, or a parent is denied unless the user granted it via /add-dir or an approved
+   * out-of-workspace prompt. NOTE: callers that support user consent should prefer
+   * classifyReadAccess() so a user-pointed out-of-workspace file can be approved.
+   */
+  isPathAllowed(filePath: string, cwd: string): boolean {
+    const resolved = this.resolveForCheck(filePath, cwd);
+    if (this.isForbiddenReadPath(resolved)) return false;
+    return this.isWithinWorkspace(resolved, cwd);
+  }
 
-    return inCwd || inHome;
+  /**
+   * Three-way read classification that drives the consent flow:
+   *   'deny'   — forbidden (credential/system): never read, even with consent.
+   *   'allow'  — inside the workspace (cwd or a granted root): read without prompting.
+   *   'prompt' — outside the workspace but NOT forbidden: the user must consent. This is
+   *              what lets a file the user explicitly points at (e.g. an image under
+   *              /some/other/path) work, while a silent `cat ../../other/secret` is gated.
+   *              On approval the caller should registerAllowedRoot(dirname(path)).
+   */
+  classifyReadAccess(filePath: string, cwd: string): 'allow' | 'deny' | 'prompt' {
+    const resolved = this.resolveForCheck(filePath, cwd);
+    if (this.isForbiddenReadPath(resolved)) return 'deny';
+    if (this.isWithinWorkspace(resolved, cwd)) return 'allow';
+    return 'prompt';
   }
 
   // -------------------------------------------------------------------------

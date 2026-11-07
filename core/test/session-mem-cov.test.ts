@@ -486,9 +486,10 @@ describe('MemoryManager — instruction loading', () => {
     const base = mkTmp();
     const mgr = new MemoryManager(base);
 
-    // ~ import to a non-existent home path -> left unchanged (home-relative branch).
+    // ~ import expands to the home dir (OUTSIDE the workspace) -> blocked by confinement,
+    // replaced with a visible marker (never silently inlined).
     const tildeOut = mgr.resolveAtImports('@~/sm-cov-nonexistent-xyz', path.join(base, 'r.md'));
-    assert.ok(tildeOut.includes('@~/sm-cov-nonexistent-xyz'));
+    assert.ok(tildeOut.includes('import blocked — outside workspace'));
 
     // @import pointing at a directory (not a file) -> left unchanged.
     fs.mkdirSync(path.join(base, 'adir'));

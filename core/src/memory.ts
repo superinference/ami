@@ -331,6 +331,16 @@ export class MemoryManager {
             ? path.join(os.homedir(), p.slice(1))
             : path.resolve(path.dirname(basePath), p);
         } catch { return full; }
+        // WORKSPACE CONFINEMENT: never inline a file outside the launch cwd. A crafted
+        // CLAUDE.md/AGENTS.md could otherwise exfiltrate arbitrary files into the system
+        // prompt via `@~/.ssh/id_rsa`, `@/etc/passwd`, or `@../../other/secret`. Block it,
+        // leave a visible marker (so it is never silent), and notify via the hook.
+        const nres = path.normalize(resolved);
+        const ncwd = path.normalize(this.cwd);
+        if (nres !== ncwd && !nres.startsWith(ncwd + path.sep)) {
+          if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: resolved, loadReason: 'import-blocked-outside-workspace' });
+          return `${pre}[import blocked — outside workspace: ${path.basename(resolved)}]`;
+        }
         if (seen.has(resolved)) return `${pre}[circular import: ${path.basename(resolved)}]`;
         try {
           if (!fs.statSync(resolved).isFile()) return full;

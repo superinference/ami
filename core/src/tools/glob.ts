@@ -2,7 +2,7 @@
 // expandDirectories stays off so a directory pattern is not rewritten.
 import { glob } from 'tinyglobby';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validatePatternAndPath, assertReadableTarget } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern } from './tool-utils';
 
 const MAX_RESULTS = 200;
 
@@ -42,6 +42,11 @@ export const globTool: ToolDefinition = {
     const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
+    // The glob pattern itself must not traverse above the (already-confined) search root:
+    // a pattern like "../../**" would walk out of the workspace even though `resolved` is
+    // inside it. (grep's `pattern` is a REGEX, not a path, so this guard is glob-only.)
+    const patternEscape = rejectEscapingPattern(pattern);
+    if (patternEscape) return patternEscape;
     const unreadable = assertReadableTarget(resolved);
     if (unreadable) return unreadable;
 

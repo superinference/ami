@@ -558,11 +558,12 @@ describe('check() — compound allow-rule semantics', () => {
 
 describe('isPathAllowed — relative-escape arms', () => {
   const pm = new PermissionManager('ask');
-  it('allows an absolute path that escapes cwd but lands inside home', () => {
+  it('DENIES an absolute path that escapes cwd even when it lands inside home', () => {
+    // Confinement: outside the launch cwd is denied regardless of being under $HOME.
     const home = os.homedir();
     const cwd = path.join(home, 'proj', 'sub');
-    const target = path.join(home, 'notes.txt');
-    assert.equal(pm.isPathAllowed(target, cwd), true);
+    const target = path.join(home, 'notes.txt'); // sibling of proj/, under home
+    assert.equal(pm.isPathAllowed(target, cwd), false);
   });
   it('denies an absolute path that escapes cwd and is neither home nor a system dir', () => {
     const cwd = path.join(os.homedir(), 'proj');
@@ -1101,10 +1102,10 @@ describe('isPathAllowed — exact directory equality', () => {
       assert.equal(pm.isPathAllowed(real, real), true);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
-  it('allows the home directory itself', () => {
+  it('denies the home directory itself when it is not the launch cwd', () => {
     const home = fs.realpathSync(os.homedir());
     const dir = makeTempDir();
-    try { assert.equal(pm.isPathAllowed(home, dir), true); }
+    try { assert.equal(pm.isPathAllowed(home, dir), false); }
     finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
   it('denies a system directory root exactly', () => {
@@ -1125,13 +1126,15 @@ describe('check() — compound deny via main rule loop', () => {
     // matchBashPattern(..., 'deny') uses .some across sub-commands
     assert.equal(await pm.check('bash', { command: 'ls && rm build' }), 'deny');
   });
-  it('an in-home (non-cwd) path is allowed via the final inHome arm', () => {
+  it('an in-home (non-cwd) path is DENIED by confinement, and allowed once granted', () => {
     const pm = new PermissionManager('ask');
     const home = fs.realpathSync(os.homedir());
     const cwd = makeTempDir();
     try {
-      // target is under home but NOT under the temp cwd -> final `inCwd || inHome`
-      assert.equal(pm.isPathAllowed(path.join(home, 'some-visible-notes.md'), cwd), true);
+      const target = path.join(home, 'some-visible-notes.md'); // under home, outside cwd
+      assert.equal(pm.isPathAllowed(target, cwd), false);        // confined: denied
+      pm.registerAllowedRoot(home);                              // user grants home
+      assert.equal(pm.isPathAllowed(target, cwd), true);         // now allowed
     } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   });
 });
