@@ -23,6 +23,29 @@ export interface ShutdownResponse {
 
 const mailboxes = new Map<string, AgentMessage[]>();
 
+/**
+ * Eager-delivery notifiers (F3). A running agent registers a callback keyed by
+ * its name; send_message fires it synchronously after queueing a message so the
+ * agent can react right away (e.g. background its current command and poll its
+ * mailbox) instead of waiting until it next happens to check. Pull-based polling
+ * via pollMailbox() still works unchanged when no notifier is registered.
+ */
+const mailboxNotifiers = new Map<string, () => void>();
+
+export function registerMailboxNotifier(agentName: string, notify: () => void): void {
+  mailboxNotifiers.set(agentName, notify);
+}
+
+export function unregisterMailboxNotifier(agentName: string): void {
+  mailboxNotifiers.delete(agentName);
+}
+
+/** Fire a registered notifier for an agent, if any. Never throws. */
+export function notifyMailbox(agentName: string): void {
+  const fn = mailboxNotifiers.get(agentName);
+  if (fn) { try { fn(); } catch { /* a notifier must never break delivery */ } }
+}
+
 export function getMailbox(agentName: string): AgentMessage[] {
   return mailboxes.get(agentName) || [];
 }
@@ -33,6 +56,7 @@ export function clearMailbox(agentName: string): void {
 
 export function resetAllMailboxes(): void {
   mailboxes.clear();
+  mailboxNotifiers.clear();
 }
 
 export function pollMailbox(agentName: string): AgentMessage[] {
@@ -98,6 +122,7 @@ export const sendMessageTool: ToolDefinition = {
       const box = mailboxes.get(to) ?? [];
       box.push({ from, to, content, timestamp: Date.now() });
       mailboxes.set(to, box);
+      notifyMailbox(to);
       const routeTarget = parsedContent.routeTo || to;
       return { output: `Shutdown request sent to ${routeTarget} (id: ${request.requestId}) [from: ${from}]` };
     }
@@ -106,6 +131,7 @@ export const sendMessageTool: ToolDefinition = {
       const box = mailboxes.get(to) ?? [];
       box.push({ from, to, content: JSON.stringify(parsedContent), timestamp: Date.now() });
       mailboxes.set(to, box);
+      notifyMailbox(to);
       return { output: `Plan ${parsedContent.approve ? 'approved' : 'rejected'} — sent to ${to}` };
     }
 
@@ -121,7 +147,7 @@ export const sendMessageTool: ToolDefinition = {
     if (to === '*') {
       let sent = 0;
       for (const [name, box] of mailboxes) {
-        if (name !== from) { box.push(msg); sent++; }
+        if (name !== from) { box.push(msg); notifyMailbox(name); sent++; }
       }
       return { output: `Broadcast sent to ${sent} agents.` };
     }
@@ -130,6 +156,7 @@ export const sendMessageTool: ToolDefinition = {
       mailboxes.set(to, []);
     }
     mailboxes.get(to)!.push(msg);
+    notifyMailbox(to); // eager delivery (F3)
 
     const summaryTag = summary ? ` — "${summary}"` : '';
     return {

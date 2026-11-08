@@ -1,7 +1,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { sendMessageTool } from '../src/tools/send-message';
-import { getMailbox, clearMailbox, resetAllMailboxes } from '../src/tools/send-message';
+import { getMailbox, clearMailbox, resetAllMailboxes, registerMailboxNotifier, unregisterMailboxNotifier } from '../src/tools/send-message';
 import type { ToolContext } from '../src/types';
 
 function ctx(): ToolContext {
@@ -103,5 +103,52 @@ describe('sendMessageTool – messaging', () => {
     resetAllMailboxes();
     assert.equal(getMailbox('a').length, 0);
     assert.equal(getMailbox('b').length, 0);
+  });
+});
+
+describe('eager-delivery notifiers (F3)', () => {
+  beforeEach(() => resetAllMailboxes());
+
+  it('fires a registered notifier synchronously on send, and the message is queued', async () => {
+    let fired = 0;
+    registerMailboxNotifier('agent-x', () => { fired++; });
+    await sendMessageTool.execute!({ to: 'agent-x', content: 'hi' }, ctx());
+    assert.equal(fired, 1, 'notifier must fire on delivery');
+    assert.equal(getMailbox('agent-x').length, 1, 'message still queued for pull');
+  });
+
+  it('does not fire after unregister', async () => {
+    let fired = 0;
+    registerMailboxNotifier('agent-x', () => { fired++; });
+    unregisterMailboxNotifier('agent-x');
+    await sendMessageTool.execute!({ to: 'agent-x', content: 'hi' }, ctx());
+    assert.equal(fired, 0);
+  });
+
+  it('notifies each registered recipient on broadcast', async () => {
+    let a = 0, b = 0;
+    // broadcast only reaches agents that already have a mailbox
+    getMailbox('a'); await sendMessageTool.execute!({ to: 'a', content: 'seed' }, ctx());
+    getMailbox('b'); await sendMessageTool.execute!({ to: 'b', content: 'seed' }, ctx());
+    registerMailboxNotifier('a', () => { a++; });
+    registerMailboxNotifier('b', () => { b++; });
+    await sendMessageTool.execute!({ to: '*', content: 'broadcast', from: 'main' }, ctx());
+    assert.equal(a, 1);
+    assert.equal(b, 1);
+  });
+
+  it('a notifier that throws never breaks delivery', async () => {
+    registerMailboxNotifier('agent-x', () => { throw new Error('boom'); });
+    const r = await sendMessageTool.execute!({ to: 'agent-x', content: 'hi' }, ctx());
+    assert.equal(r.isError, undefined);
+    assert.equal(getMailbox('agent-x').length, 1);
+  });
+
+  it('resetAllMailboxes clears notifiers', async () => {
+    let fired = 0;
+    registerMailboxNotifier('agent-x', () => { fired++; });
+    resetAllMailboxes();
+    await sendMessageTool.execute!({ to: 'agent-x', content: 'hi' }, ctx());
+    assert.equal(fired, 0);
   });
 });
