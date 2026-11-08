@@ -1938,12 +1938,14 @@ export function detectPersistenceCommands(command: string): { blocked: boolean; 
   // --- at command ---
   // Block the `at` command (schedule future execution)
   // Match `at` as a standalone command, not as part of other words (e.g. `cat`, `stat`)
-  if (/(?:^|[\s;|&])at\s+(?:now|midnight|noon|teatime|\d|[+-])/i.test(stripped)) {
-    return { blocked: true, reason: 'at command schedules future command execution — potential persistence vector' };
-  }
-  // Also catch `at -f <file> <time>` form
+  // Catch the `at -f <file> <time>` form FIRST: the generic check below also
+  // matches `at -f` (via the `[+-]` alternative), so without this ordering the
+  // file-specific reason would be dead/unreachable.
   if (/(?:^|[\s;|&])at\s+-f\s/.test(stripped)) {
     return { blocked: true, reason: 'at -f schedules future command execution from file — potential persistence vector' };
+  }
+  if (/(?:^|[\s;|&])at\s+(?:now|midnight|noon|teatime|\d|[+-])/i.test(stripped)) {
+    return { blocked: true, reason: 'at command schedules future command execution — potential persistence vector' };
   }
 
   // --- systemctl enable/start ---
