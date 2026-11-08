@@ -385,6 +385,12 @@ export interface EngineConfig {
    * omit it so the manager's headless default refuses with guidance.
    */
   onMcpOAuthAuthorize?: import('./mcp').AuthorizeFn;
+  /**
+   * MCP servers to block, by name (case-insensitive) or normalized upstream URL.
+   * Default-open: an empty/absent list blocks nothing. A URL entry blocks every
+   * configured server pointing at that upstream, regardless of its name.
+   */
+  deniedMcpServers?: string[];
   /** Maximum token budget for context management. Defaults to 100 000. */
   tokenBudget?: number;
   /** Resume a specific session. When set, the engine loads its messages on init. */

@@ -847,6 +847,11 @@ export class McpManager extends EventEmitter {
         const cfg = serverConfig as McpServerConfig;
         if (!cfg.command && !cfg.url) continue;
         const expanded = this.expandConfigEnv(cfg);
+        // Skip denylisted servers without aborting the rest of the load (S9).
+        if (this.isServerDenied(name, expanded)) {
+          coreLog('mcp', `skipping denied MCP server "${name}"`);
+          continue;
+        }
         this.addServer(name, expanded);
       }
     } catch {

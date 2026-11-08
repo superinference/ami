@@ -1,5 +1,8 @@
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { McpManager, normalizeMcpUrl } from '../src/mcp/manager';
 
 // S9: deniedMcpServers — block a server by name or by normalized upstream URL,
@@ -56,6 +59,27 @@ describe('McpManager denylist (S9)', () => {
     mgr.setDeniedServerList(['', null as unknown as string, 'real']);
     assert.equal(mgr.isServerDenied('real'), true);
     assert.equal(mgr.isServerDenied(''), false);
+  });
+});
+
+describe('loadFromConfig honors the denylist (S9)', () => {
+  const dirs: string[] = [];
+  afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+
+  it('skips a denied server but loads the rest (no abort)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-mcp-cfg-'));
+    dirs.push(dir);
+    const cfgPath = path.join(dir, 'mcp.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ mcpServers: {
+      good: { command: 'echo' },
+      bad: { command: 'echo' },
+      alsogood: { command: 'echo' },
+    } }));
+    const mgr = new McpManager();
+    mgr.setDeniedServerList(['bad']);
+    mgr.loadFromConfig(cfgPath);
+    const names = mgr.listAllServers().map(s => s.name).sort();
+    assert.deepEqual(names, ['alsogood', 'good']);
   });
 });
 
