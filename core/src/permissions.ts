@@ -96,7 +96,7 @@ export function mostRestrictiveVerdict(verdicts: PermissionVerdict[]): Permissio
  * sensitive environment variables (API keys, tokens, etc.).
  */
 const SAFE_COMMANDS = new Set([
-  'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'pwd',
+  'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'echo', 'pwd',
   'which', 'whoami', 'date', 'uname', 'hostname',
   'cd', // directory change — no side effects on the filesystem
   'id', 'df', 'du', 'file', 'stat', 'readlink', 'basename', 'dirname',
@@ -118,7 +118,7 @@ const SAFE_COMMANDS = new Set([
   'seq', 'expr', 'printf', 'comm', 'cmp', 'numfmt', 'getconf', 'tsort', 'pr', 'fmt',
 ]);
 
-const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string> }> = {
+const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean }> = {
   jq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
     blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L']),
@@ -137,6 +137,12 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
   netstat: { allowed: new Set(['-t', '-u', '-l', '-n', '-p', '-a', '--tcp', '--udp', '--listening', '--numeric']), blocked: new Set([]) },
   lsof: { allowed: new Set(['-i', '-n', '-P', '-p']), blocked: new Set([]) },
   pgrep: { allowed: new Set(['-l', '-a', '-f', '-x']), blocked: new Set([]) },
+  // ripgrep: read-only search. Block preprocessor/exec-adjacent flags that can
+  // run an arbitrary command or escape the search sandbox (S7).
+  rg: { allowed: new Set(['-i', '-n', '-N', '-w', '-l', '-c', '-v', '-e', '-F', '-o', '-A', '-B', '-C', '-g', '-t', '-T', '-S', '-s', '-U', '-m', '-r', '--json', '--count', '--files', '--files-with-matches', '--no-heading', '--color', '--max-count', '--glob', '--type', '--hidden', '--no-ignore', '--context', '--ignore-case', '--line-number', '--fixed-strings', '--word-regexp']), blocked: new Set(['--pre', '--pre-glob', '--hostname-bin', '--search-zip', '-z']) },
+  // which: display/lookup only. Any flag outside this set falls through to a
+  // prompt instead of auto-safe (S8).
+  which: { allowed: new Set(['-a', '--all', '-s', '--read-alias', '--read-functions', '--skip-alias', '--skip-dot', '--skip-tilde', '-i', '--tty-only', '--version', '-v', '-V']), blocked: new Set([]), strict: true },
   tput: { allowed: new Set(['cols', 'lines', 'colors', 'setaf', 'sgr0']), blocked: new Set([]) },
   ss: { allowed: new Set(['-t', '-u', '-l', '-n', '-p', '-a']), blocked: new Set([]) },
 };
@@ -154,6 +160,9 @@ function validateCommandFlags(cmd: string, args: string[]): boolean {
       const flag = arg.replace(/^--?/, '').split('=')[0];
       const dashedFlag = arg.split('=')[0];
       if (flagDef.blocked.has(arg) || flagDef.blocked.has(flag) || flagDef.blocked.has(dashedFlag)) return false;
+      // strict allowlist: any flag not explicitly allowed is treated as unsafe
+      // (falls through to a prompt) rather than silently auto-safe.
+      if (flagDef.strict && !flagDef.allowed.has(dashedFlag)) return false;
     }
   }
   return true;
@@ -666,6 +675,7 @@ function extractBaseCommands(command: string): string[] {
 
     // Unwrap shell wrappers: env cmd, sudo cmd, bash -c "cmd"
     while (SHELL_WRAPPERS.has(cmd) && i + 1 < tokens.length) {
+      const wrapper = cmd;
       commands.push(cmd);
       i++;
       // Skip flags (e.g., sudo -u root, bash -c)
@@ -679,6 +689,15 @@ function extractBaseCommands(command: string): string[] {
           i = tokens.length;
           break;
         }
+      }
+      // Skip a leading duration/priority operand so the WRAPPED command is
+      // reached: `timeout 30 ls` -> ls, `nice 10 ls` -> ls (mirrors
+      // stripSafeWrappers in bash-security). Without this the base command is
+      // mis-detected as the numeric token and classified unsafe (S7).
+      if ((wrapper === 'timeout' || wrapper === 'stdbuf') && i < tokens.length && /^[\d.]/.test(tokens[i]!)) {
+        i++;
+      } else if (wrapper === 'nice' && i < tokens.length && /^\d+$/.test(tokens[i]!)) {
+        i++;
       }
       // After unwrapping a shell wrapper (especially env), skip env var
       // assignments (e.g., env PATH=/usr/bin ls -> skip PATH=/usr/bin)
@@ -793,6 +812,25 @@ export function stripEnvVarPrefix(cmd: string): string {
   return stripped;
 }
 
+/**
+ * Match a single bash sub-command against a rule pattern.
+ *
+ * For deny/ask rules we ALSO test a de-obfuscated form (r""m, r''m, "rm", r\m →
+ * rm) so a command-word split with empty quotes / backslashes / quotes cannot
+ * slip a real command past a user deny or ask rule (S3). Allow rules stay
+ * STRICT — they only match the literal stripped form — so de-obfuscation can
+ * never *broaden* an allow into auto-approving an obfuscated command.
+ */
+function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
+  const strippedRaw = stripEnvVarPrefix(sub);
+  if (matchPattern(pattern, strippedRaw)) return true;
+  if (ruleAction === 'allow') return false;
+  // Strip env prefix FIRST (handles quoted values like FOO="a b"), THEN collapse
+  // obfuscation and drop quote/backtick characters from the remaining command.
+  const deob = deobfuscateEnvExpansion(strippedRaw).replace(/["'`]/g, '');
+  return deob !== strippedRaw && matchPattern(pattern, deob);
+}
+
 function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
   const normalized = normalizeLineContinuations(command);
   const subCommands = splitCompoundCommand(normalized);
@@ -802,15 +840,14 @@ function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' 
     // structures) rather than the original normalized string, so that
     // e.g. "for f in *.ts; do cat $f; done" matches a "cat *" rule.
     const effective = subCommands.length === 1 ? subCommands[0] : normalized;
-    const stripped = stripEnvVarPrefix(effective);
-    return matchPattern(pattern, stripped);
+    return matchBashSub(pattern, effective, ruleAction);
   }
 
   if (ruleAction === 'allow') {
-    return subCommands.every(sub => matchPattern(pattern, stripEnvVarPrefix(sub)));
+    return subCommands.every(sub => matchBashSub(pattern, sub, 'allow'));
   }
   // deny / ask: any sub-command match triggers
-  return subCommands.some(sub => matchPattern(pattern, stripEnvVarPrefix(sub)));
+  return subCommands.some(sub => matchBashSub(pattern, sub, ruleAction));
 }
 
 /**

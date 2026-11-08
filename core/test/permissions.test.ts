@@ -1499,3 +1499,90 @@ describe('PermissionManager — mount-point system directory checks', () => {
     assert.equal(pm.isPathAllowed('/media/usb/data.txt', tmpDir), false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Changelog-triage fixes 2026-11-08: S3 (obfuscation vs user deny/ask rules),
+// S7 (timeout-wrapped read-only classification + rg), S8 (which flag gating).
+// ---------------------------------------------------------------------------
+describe('S3 — obfuscated command must not evade a user deny rule', () => {
+  for (const obf of ['r""m -rf x', "r''m -rf x", '"rm" -rf x', 'r\\m -rf x']) {
+    it(`deny rule catches obfuscated form in yolo mode: ${obf}`, async () => {
+      const pm = new PermissionManager('auto-allow', [
+        { tool: 'bash', pattern: 'rm*', action: 'deny' },
+      ]);
+      assert.equal(await pm.check('bash', { command: obf }), 'deny');
+    });
+    it(`deny rule catches obfuscated form in ask mode: ${obf}`, async () => {
+      const pm = new PermissionManager('ask', [
+        { tool: 'bash', pattern: 'rm*', action: 'deny' },
+      ]);
+      assert.equal(await pm.check('bash', { command: obf }), 'deny');
+    });
+  }
+
+  it('plain rm still denied (no regression)', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'rm*', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'rm -rf x' }), 'deny');
+  });
+
+  it('benign quoted command is NOT falsely denied', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'rm*', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo "hi there"' }), 'allow');
+  });
+
+  it('allow rule stays strict — obfuscated form is NOT broadened into it', async () => {
+    // An allow rule must only match the LITERAL command, never an obfuscated
+    // variant (over-allow guard). Use an unsafe-but-not-destructive command so
+    // the destructive-bash guard doesn't mask the result.
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'npm run build', action: 'allow' },
+    ]);
+    // literal form is allowed by the rule
+    assert.equal(await pm.check('bash', { command: 'npm run build' }), 'allow');
+    // obfuscated form is NOT auto-allowed by the strict allow rule → prompts
+    assert.notEqual(await pm.check('bash', { command: 'n""pm run build' }), 'allow');
+  });
+});
+
+describe('S7 — timeout-wrapped read-only commands classify safe; rg is safe', () => {
+  let pm: PermissionManager;
+  beforeEach(() => { pm = new PermissionManager('ask'); });
+
+  it('timeout DURATION <read-only> is safe', () => {
+    assert.equal(pm.classifyBashCommand('timeout 30 ls'), 'safe');
+    assert.equal(pm.classifyBashCommand('timeout 5s cat file'), 'safe');
+    assert.equal(pm.classifyBashCommand('timeout 30 grep foo file'), 'safe');
+  });
+
+  it('rg is a safe read-only command (bare and timeout-wrapped)', () => {
+    assert.equal(pm.classifyBashCommand('rg foo'), 'safe');
+    assert.equal(pm.classifyBashCommand('timeout 30 rg foo'), 'safe');
+  });
+
+  it('rg --pre (preprocessor exec) is NOT safe', () => {
+    assert.equal(pm.classifyBashCommand('rg --pre /bin/sh foo'), 'unsafe');
+  });
+
+  it('timeout-wrapped destructive command stays destructive', () => {
+    assert.equal(pm.classifyBashCommand('timeout 30 rm -rf x'), 'destructive');
+  });
+});
+
+describe('S8 — which flag gating', () => {
+  let pm: PermissionManager;
+  beforeEach(() => { pm = new PermissionManager('ask'); });
+
+  it('bare which is safe', () => {
+    assert.equal(pm.classifyBashCommand('which node'), 'safe');
+  });
+  it('which with an allowed display/lookup flag is safe', () => {
+    assert.equal(pm.classifyBashCommand('which -a node'), 'safe');
+  });
+  it('which with an unknown flag is not auto-safe', () => {
+    assert.equal(pm.classifyBashCommand('which --some-weird-flag node'), 'unsafe');
+  });
+});
