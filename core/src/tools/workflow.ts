@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { executeWorkflow, parseWorkflowMeta, WorkflowResolver } from './workflow-runtime';
+import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache } from './workflow-runtime';
 import { SUBAGENT_RETURN_DIRECTIVE } from './task';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -33,6 +33,10 @@ export const workflowTool: ToolDefinition = {
       maxConcurrent: {
         type: 'number',
         description: 'Max agents running concurrently for this run (1-256). Lower for strict rate limits, higher for fast self-hosted providers. Defaults to a CPU-derived cap.',
+      },
+      resumeKey: {
+        type: 'string',
+        description: 'Opt-in resume: re-invoking with the same resumeKey reuses the cached results of agents that already completed (same prompt + opts), so a resumed/retried run skips finished work. Cached under .superinference/workflows/.cache/.',
       },
     },
   },
@@ -141,11 +145,18 @@ export const workflowTool: ToolDefinition = {
     };
 
     try {
+      // Opt-in resume cache (B2): keyed per resumeKey, under a contained
+      // .cache subdir (segment sanitized to block path traversal).
+      const cache = typeof input.resumeKey === 'string' && input.resumeKey.trim()
+        ? new DiskWorkflowCache(path.join(context.cwd, '.superinference', 'workflows', '.cache', input.resumeKey.replace(/[^A-Za-z0-9_-]/g, '_')))
+        : undefined;
+
       const result = await executeWorkflow(script, agentHandler, {
         args: input.args,
         abortSignal: context.abortSignal,
         workflowResolver,
         maxConcurrent: typeof input.maxConcurrent === 'number' ? input.maxConcurrent : undefined,
+        cache,
       });
 
       const output = [

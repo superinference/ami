@@ -1,7 +1,38 @@
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
+import * as crypto from 'crypto';
 import { parseEnvInt } from '../utils/env';
+
+/**
+ * Opt-in cache of completed agent() results so a re-run/resume of a workflow
+ * skips agents that already finished (B2). Keyed on a stable hash of the prompt
+ * and the semantic agent options.
+ */
+export interface WorkflowAgentCache {
+  get(key: string): unknown | undefined;
+  set(key: string, value: unknown): void;
+}
+
+/** Stable cache key for an agent call — prompt + semantic opts (label/phase,
+ *  which are display-only, are excluded so a relabel does not bust the cache). */
+export function workflowAgentCacheKey(prompt: string, opts?: { schema?: unknown; model?: string; isolation?: string; agentType?: string }): string {
+  const norm = { prompt, schema: opts?.schema ?? null, model: opts?.model ?? null, isolation: opts?.isolation ?? null, agentType: opts?.agentType ?? null };
+  return crypto.createHash('sha256').update(JSON.stringify(norm)).digest('hex');
+}
+
+/** Disk-backed {@link WorkflowAgentCache}: one JSON file per key under `dir`. */
+export class DiskWorkflowCache implements WorkflowAgentCache {
+  constructor(private readonly dir: string) {}
+  private file(key: string): string { return path.join(this.dir, `${key}.json`); }
+  get(key: string): unknown | undefined {
+    try { return JSON.parse(fs.readFileSync(this.file(key), 'utf8')).value; } catch { return undefined; }
+  }
+  set(key: string, value: unknown): void {
+    try { fs.mkdirSync(this.dir, { recursive: true }); fs.writeFileSync(this.file(key), JSON.stringify({ value })); } catch { /* best-effort */ }
+  }
+}
 
 /**
  * Mockable filesystem seam (ESM-safe). Tests replace this via
@@ -131,6 +162,7 @@ export class WorkflowRuntime extends EventEmitter {
   private checkpoints: Map<string, unknown> = new Map();
   private readonly _workflowResolver: WorkflowResolver | null;
   private readonly _nestingDepth: number;
+  private readonly _cache: WorkflowAgentCache | null;
 
   constructor(options: {
     agentHandler: AgentHandler;
@@ -138,6 +170,7 @@ export class WorkflowRuntime extends EventEmitter {
     workflowResolver?: WorkflowResolver | null;
     nestingDepth?: number;
     maxConcurrent?: number;
+    cache?: WorkflowAgentCache | null;
   }) {
     super();
     this._agentHandler = options.agentHandler;
@@ -145,6 +178,7 @@ export class WorkflowRuntime extends EventEmitter {
     this._workflowResolver = options.workflowResolver ?? null;
     this._nestingDepth = options.nestingDepth ?? 0;
     this._maxConcurrent = Math.max(1, Math.min(256, Math.floor(options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT)));
+    this._cache = options.cache ?? null;
   }
 
   get logs(): string[] { return [...this._logs]; }
@@ -248,6 +282,19 @@ export class WorkflowRuntime extends EventEmitter {
       const phase = opts?.phase ?? this._currentPhase;
       this._phaseAgents.set(phase, (this._phaseAgents.get(phase) ?? 0) + 1);
 
+      // Resume short-circuit (B2): a cached result for this exact (prompt, opts)
+      // skips the handler entirely, so a re-run/resume doesn't re-invoke an agent
+      // that already completed. Only non-null results are cached (null = skip/error).
+      const cacheKey = this._cache ? workflowAgentCacheKey(prompt, opts) : null;
+      if (cacheKey && this._cache) {
+        const cached = this._cache.get(cacheKey);
+        if (cached !== undefined) {
+          this.emit('agent-start', { prompt: prompt.slice(0, 100), label: opts?.label, phase, agentNumber: this._agentCount, cached: true });
+          this.emit('agent-complete', { label: opts?.label, phase, agentNumber: this._agentCount, cached: true });
+          return cached;
+        }
+      }
+
       await this.acquireSlot();
       try {
         this.emit('agent-start', {
@@ -264,6 +311,10 @@ export class WorkflowRuntime extends EventEmitter {
           phase,
           agentNumber: this._agentCount,
         });
+
+        if (cacheKey && this._cache && result !== null && result !== undefined) {
+          this._cache.set(cacheKey, result);
+        }
 
         return result;
       } catch (err) {
@@ -452,6 +503,7 @@ export async function executeWorkflow(
     abortSignal?: AbortSignal;
     workflowResolver?: WorkflowResolver | null;
     maxConcurrent?: number;
+    cache?: WorkflowAgentCache | null;
   } = {},
 ): Promise<{ result: unknown; logs: string[]; agentCount: number }> {
   const scriptBody = stripMeta(script);
@@ -462,6 +514,7 @@ export async function executeWorkflow(
     budgetTotal: options.budgetTotal,
     workflowResolver: options.workflowResolver,
     maxConcurrent: options.maxConcurrent,
+    cache: options.cache,
   });
 
   if (options.abortSignal) {
