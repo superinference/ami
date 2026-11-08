@@ -87,16 +87,27 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'phi-4-mini': 131072,
 };
 
+/**
+ * Detect the Anthropic 1M-context beta marker on a model id: the bracketed
+ * `[1m]` form or a trailing `-1m`/`_1m`. Such a variant has a 1M window even
+ * when its base id is a 200k key (U4) — otherwise the substring match below
+ * would under-report it as 200k and trip compaction far too early.
+ */
+function hasOneMillionMarker(modelId: string): boolean {
+  return /\[1m\]|[-_]1m\b/i.test(modelId);
+}
+
 export function getContextWindow(modelId: string): number {
   const lower = modelId.toLowerCase();
+  const oneMillion = hasOneMillionMarker(modelId);
   for (const [key, tokens] of Object.entries(CONTEXT_WINDOWS)) {
     const keyLower = key.toLowerCase();
     const idx = lower.indexOf(keyLower);
     if (idx === -1) continue;
     if (keyLower.length <= 3 && idx > 0 && /[a-zA-Z0-9]/.test(lower[idx - 1])) continue;
-    return tokens;
+    return oneMillion ? Math.max(tokens, 1_000_000) : tokens;
   }
-  return DEFAULT_CONTEXT_WINDOW;
+  return oneMillion ? Math.max(DEFAULT_CONTEXT_WINDOW, 1_000_000) : DEFAULT_CONTEXT_WINDOW;
 }
 
 const ADVERTISED_CONTEXT_KEYS = [

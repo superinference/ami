@@ -12,6 +12,19 @@ describe('Model context windows', () => {
     assert.equal(getContextWindow('claude-haiku-4-5-20251001'), 200000);
   });
 
+  it('U4: [1m] context-beta variants report the 1M window, not the 200k base', () => {
+    // A 200k-base id with the [1m] beta marker must not be under-reported via
+    // substring match against the 200k key.
+    assert.equal(getContextWindow('claude-sonnet-4-5[1m]'), 1_000_000);
+    assert.equal(getContextWindow('claude-sonnet-4-6[1m]'), 1_000_000);
+    assert.equal(getContextWindow('claude-opus-4-1-20250805[1m]'), 1_000_000);
+    assert.equal(getContextWindow('claude-sonnet-4-5-1m'), 1_000_000);
+    // a model whose base already exceeds 1M keeps its larger window
+    assert.equal(getContextWindow('gpt-6-astra[1m]'), 1_050_000);
+    // no marker → unchanged
+    assert.equal(getContextWindow('claude-sonnet-4-6'), 200000);
+  });
+
   it('returns correct window for GPT models', () => {
     assert.equal(getContextWindow('gpt-4o'), 128000);
     assert.equal(getContextWindow('gpt-4-turbo-preview'), 128000);
