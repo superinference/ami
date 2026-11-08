@@ -91,6 +91,15 @@ export interface BackgroundProcess {
   tokenCount?: number;
 }
 
+/** Payload emitted on 'complete' and buffered for durable delivery (B4). */
+export interface CompletedTaskEvent {
+  taskId: string;
+  exitCode: number | null;
+  command: string;
+  description: string;
+  outputPath: string;
+}
+
 interface InternalProcess extends BackgroundProcess {
   proc: child_process.ChildProcess;
   outputFd: number | null;
@@ -107,6 +116,14 @@ export class ProcessManager extends EventEmitter {
   private processes = new Map<string, InternalProcess>();
   private tasksDir: string;
   readonly flowManager = new FlowManager();
+  /**
+   * Durable buffer of task completions not yet surfaced to the model (B4). A
+   * completion that fires while no listener is attached (API call in flight), or
+   * after the last running task drops runningCount() to 0, would otherwise be lost
+   * forever. The engine drains this each turn and at loop exit so every completion
+   * is reported exactly once.
+   */
+  private _completedBuffer: CompletedTaskEvent[] = [];
 
   constructor(cwd: string) {
     super();
@@ -203,7 +220,7 @@ export class ProcessManager extends EventEmitter {
       entry.exitCode = code;
       try { fs.closeSync(fd); } catch { /* already closed */ }
       entry.outputFd = null;
-      this.emit('complete', { taskId, exitCode: code, command: entry.command, description: entry.description, outputPath: entry.outputPath });
+      this.emitComplete({ taskId, exitCode: code, command: entry.command, description: entry.description, outputPath: entry.outputPath });
     });
 
     proc.on('error', (err) => {
@@ -214,10 +231,27 @@ export class ProcessManager extends EventEmitter {
         fs.closeSync(fd);
       } catch { /* ignore */ }
       entry.outputFd = null;
-      this.emit('complete', { taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath });
+      this.emitComplete({ taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath });
     });
 
     return taskId;
+  }
+
+  /** Emit a completion AND buffer it for durable drain (B4). */
+  private emitComplete(payload: CompletedTaskEvent): void {
+    this._completedBuffer.push(payload);
+    this.emit('complete', payload);
+  }
+
+  /**
+   * Return and clear the completions buffered since the last drain (B4). The
+   * engine calls this each turn (and at loop exit) so a completion that fired
+   * outside any listener window is still surfaced to the model exactly once.
+   */
+  drainCompletedTasks(): CompletedTaskEvent[] {
+    const drained = this._completedBuffer;
+    this._completedBuffer = [];
+    return drained;
   }
 
   kill(taskId: string): boolean {
