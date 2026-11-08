@@ -22,18 +22,21 @@ export const scheduleWakeupTool: ToolDefinition = {
         description: 'Short explanation of the chosen delay (shown to user).',
       },
     },
-    required: ['delaySeconds', 'prompt', 'reason'],
+    required: ['delaySeconds', 'reason'],
   },
   isReadOnly: false,
 
   async execute(input, context): Promise<ToolResult> {
     const delaySeconds = Math.max(60, Math.min(3600, (input.delaySeconds as number) || 60));
-    const prompt = input.prompt as string;
+    const rawPrompt = input.prompt as string | undefined;
     const reason = input.reason as string;
 
-    if (!prompt || !prompt.trim()) {
-      return { output: 'Error: prompt must not be empty.', isError: true };
-    }
+    // A self-paced loop re-supplies the prompt on every turn. If the model omits
+    // it (or sends an empty/whitespace prompt), DO NOT silently end the loop —
+    // schedule a fallback continuation wakeup instead, so the loop survives a
+    // malformed tool call (B3).
+    const hasPrompt = !!(rawPrompt && rawPrompt.trim());
+    const prompt = hasPrompt ? rawPrompt! : 'Continue the current task.';
 
     const now = new Date();
     const fireAt = new Date(now.getTime() + delaySeconds * 1000);
@@ -43,7 +46,8 @@ export const scheduleWakeupTool: ToolDefinition = {
     const job = sched.create({ cron: cronExpr, prompt, recurring: false, durable: false });
 
     return {
-      output: `Wakeup scheduled: ${job.id}\n  Delay: ${delaySeconds}s\n  Fire at: ${fireAt.toLocaleTimeString()}\n  Reason: ${reason}`,
+      output: `Wakeup scheduled: ${job.id}\n  Delay: ${delaySeconds}s\n  Fire at: ${fireAt.toLocaleTimeString()}\n  Reason: ${reason}` +
+        (hasPrompt ? '' : '\n  (no prompt supplied — using fallback continuation prompt)'),
     };
   },
 };

@@ -286,10 +286,10 @@ describe('scheduleWakeupTool', () => {
     assert.equal(scheduleWakeupTool.name, 'schedule_wakeup');
   });
 
-  it('requires delaySeconds, prompt, reason', () => {
+  it('requires delaySeconds and reason; prompt is optional (B3 fallback)', () => {
     assert.ok(scheduleWakeupTool.inputSchema.required?.includes('delaySeconds'));
-    assert.ok(scheduleWakeupTool.inputSchema.required?.includes('prompt'));
     assert.ok(scheduleWakeupTool.inputSchema.required?.includes('reason'));
+    assert.ok(!scheduleWakeupTool.inputSchema.required?.includes('prompt'));
   });
 
   it('creates a wakeup and returns details', async () => {
@@ -325,11 +325,12 @@ describe('scheduleWakeupTool', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('rejects empty prompt', async () => {
+  it('schedules a fallback wakeup when prompt is empty (B3)', async () => {
     const result = await scheduleWakeupTool.execute(
       { delaySeconds: 60, prompt: '', reason: 'test' },
       ctx(os.tmpdir()),
     );
-    assert.ok(result.isError);
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('fallback'));
   });
 });
