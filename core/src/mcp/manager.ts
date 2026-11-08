@@ -1,4 +1,4 @@
-import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError } from './client';
+import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError, MCP_PROTOCOL_VERSION } from './client';
 import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
 import { McpOAuthSession } from './oauth';
 import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
@@ -37,6 +37,45 @@ export function matchMcpAutoAllow(toolName: string, patterns: string[]): boolean
 }
 
 const TRANSIENT_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']);
+/**
+ * Normalize an MCP upstream URL for denylist comparison: `protocol//host/path`
+ * with host lower-cased and trailing slashes stripped. Returns null when the
+ * input is not a URL (e.g. a bare server name), so callers can route it to
+ * name-matching instead.
+ */
+export function normalizeMcpUrl(raw: string): string | null {
+  try {
+    const u = new URL(raw.trim());
+    const pathname = u.pathname.replace(/\/+$/, '');
+    return `${u.protocol}//${u.host.toLowerCase()}${pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A non-transient connect failure that looks like an MCP protocol handshake
+ * failure — typically an older/non-compliant server that dies or errors on the
+ * `initialize` exchange for the current protocol version (M3). We do NOT attempt
+ * backwards-compatible negotiation; we surface a clear, actionable error instead
+ * of the generic "exited with code N".
+ */
+export function isHandshakeFailure(err: unknown): boolean {
+  if (isTransientConnectError(err)) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /exited with code|\binitialize\b|protocol[- ]?version|unsupported protocol|protocolVersion/i.test(msg);
+}
+
+/** Wrap a handshake failure with a message naming the protocol version AMI speaks. */
+export function handshakeError(name: string, err: unknown): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `MCP server "${name}" failed the MCP handshake (AMI speaks protocol ${MCP_PROTOCOL_VERSION}). ` +
+    `This is often an older or non-compliant MCP server that does not support this protocol version — ` +
+    `update it or use a server compatible with MCP ${MCP_PROTOCOL_VERSION}. Original error: ${msg}`,
+  );
+}
+
 export function isTransientConnectError(err: unknown): boolean {
   if (err instanceof McpSessionExpiredError) return false;
   const code = (err as { code?: string })?.code;
@@ -117,6 +156,10 @@ export class McpManager extends EventEmitter {
 
   private _allowedServers: Set<string> | null = null;
   private _deniedServers: string[] = [];
+  /** Denylist entries resolved to lowercased server names. */
+  private _deniedServerNames: Set<string> = new Set();
+  /** Denylist entries resolved to normalized upstream URLs. */
+  private _deniedServerUrls: Set<string> = new Set();
 
   // Container-runtime hooks. Default to the real implementations; overridable in
   // tests so the auto-pull decision path can be driven deterministically without a
@@ -185,7 +228,36 @@ export class McpManager extends EventEmitter {
     }
   }
 
+  /**
+   * Configure servers to deny by name and/or normalized upstream URL (S9).
+   * Default-open: an empty list blocks nothing. An entry that parses as a URL is
+   * matched against each server's normalized `config.url` (origin + path, host
+   * lower-cased, trailing slash stripped) so two differently-named servers that
+   * point at the same upstream are both blocked; any other entry matches the
+   * server name (case-insensitive).
+   */
+  setDeniedServerList(entries: string[]): void {
+    this._deniedServerNames = new Set();
+    this._deniedServerUrls = new Set();
+    for (const e of entries || []) {
+      if (!e || typeof e !== 'string') continue;
+      const norm = normalizeMcpUrl(e);
+      if (norm) this._deniedServerUrls.add(norm);
+      else this._deniedServerNames.add(e.trim().toLowerCase());
+    }
+  }
+
+  /** True when a server should be blocked by the denylist (by name or URL). */
+  isServerDenied(name: string, config?: { url?: string }): boolean {
+    if (this._deniedServerNames.has(name.trim().toLowerCase())) return true;
+    const u = config?.url ? normalizeMcpUrl(config.url) : null;
+    return u !== null && this._deniedServerUrls.has(u);
+  }
+
   addServer(name: string, config: McpServerConfig): void {
+    if (this.isServerDenied(name, config)) {
+      throw new Error(`MCP server "${name}" is blocked by the denied-servers list`);
+    }
     this.enforceAllowlist(name);
     if (this.clients.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
@@ -531,7 +603,7 @@ export class McpManager extends EventEmitter {
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
-        throw err;
+        throw isHandshakeFailure(err) ? handshakeError(name, err) : err;
       }
     }
     throw lastErr;
