@@ -69,15 +69,22 @@ describe('spillToolText', () => {
 
   it('gracefully falls back on disk write failure instead of crashing', () => {
     const text = 'HEAD_MARKER' + 'x'.repeat(5000) + 'TAIL_MARKER';
-    // /nonexistent/path cannot be created, so mkdirSync will throw EACCES
-    // With the fix: function returns truncated text gracefully
-    // Without the fix: function throws and crashes
-    const result = spillToolText('/nonexistent/path/xyz', 'fail', text, 1000);
-    assert.ok(result.length < text.length, 'output should be truncated');
-    assert.ok(result.includes('truncated'), 'should mention truncation');
-    assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
-    assert.ok(result.startsWith('HEAD_MARKER'), 'head content must be preserved');
-    assert.ok(result.endsWith('TAIL_MARKER'), 'tail content must be preserved');
+    // A read-only (0o555) base dir makes creating .superinference/tool-results
+    // under it fail regardless of uid — robust even when the suite runs as root
+    // in a container (where `/nonexistent` is creatable by the root owner).
+    const roBase = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-nowrite-'));
+    fs.chmodSync(roBase, 0o555);
+    try {
+      const result = spillToolText(roBase, 'fail', text, 1000);
+      assert.ok(result.length < text.length, 'output should be truncated');
+      assert.ok(result.includes('truncated'), 'should mention truncation');
+      assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
+      assert.ok(result.startsWith('HEAD_MARKER'), 'head content must be preserved');
+      assert.ok(result.endsWith('TAIL_MARKER'), 'tail content must be preserved');
+    } finally {
+      fs.chmodSync(roBase, 0o755);
+      fs.rmSync(roBase, { recursive: true, force: true });
+    }
   });
 
   it('falls back gracefully when mkdir fails (file blocks dir creation)', () => {
@@ -119,10 +126,18 @@ describe('spillToolText', () => {
 
   it('falls back gracefully when cwd does not exist', () => {
     const text = 'r'.repeat(3000);
-    const result = spillToolText('/nonexistent/path/xyz-' + Date.now(), 'nopath', text, 1000);
-    assert.ok(result.includes('truncated') || result.includes('omitted'), 'result must mention truncation');
-    assert.ok(result.includes('could not persist'), 'fallback must mention disk write failure');
-    assert.ok(result.startsWith('r'), 'head content preserved');
-    assert.ok(result.endsWith('r'), 'tail content preserved');
+    // Read-only base dir → spill write fails regardless of uid (see note above).
+    const roBase = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-nopath-'));
+    fs.chmodSync(roBase, 0o555);
+    try {
+      const result = spillToolText(roBase, 'nopath', text, 1000);
+      assert.ok(result.includes('truncated') || result.includes('omitted'), 'result must mention truncation');
+      assert.ok(result.includes('could not persist'), 'fallback must mention disk write failure');
+      assert.ok(result.startsWith('r'), 'head content preserved');
+      assert.ok(result.endsWith('r'), 'tail content preserved');
+    } finally {
+      fs.chmodSync(roBase, 0o755);
+      fs.rmSync(roBase, { recursive: true, force: true });
+    }
   });
 });
