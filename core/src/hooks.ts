@@ -310,6 +310,39 @@ export function validateHookTimeout(timeoutMs: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Hook event serialization (stdin payload for command hooks)
+// ---------------------------------------------------------------------------
+// Claude Code hooks read a snake_case JSON object from stdin terminated by a
+// newline (hook_event_name / tool_name / tool_input / tool_response / …). AMI
+// historically emitted camelCase with an `event` key. serializeHookEvent emits
+// BOTH: the original camelCase keys (back-compat for AMI's own consumers/tests)
+// AND the Claude Code snake_case aliases + a trailing newline, so stock CC hooks
+// work unchanged. (R2-H4)
+const HOOK_EVENT_PASCAL: Record<string, string> = {
+  preToolUse: 'PreToolUse', postToolUse: 'PostToolUse', userPromptSubmit: 'UserPromptSubmit',
+  sessionStart: 'SessionStart', sessionEnd: 'SessionEnd', subagentStart: 'SubagentStart',
+  subagentStop: 'SubagentStop', preCompact: 'PreCompact', postCompact: 'PostCompact',
+  stop: 'Stop', error: 'Error', preSampling: 'PreSampling', postSampling: 'PostSampling',
+  permissionRequest: 'PermissionRequest', permissionDenied: 'PermissionDenied',
+};
+const HOOK_KEY_SNAKE: Record<string, string> = {
+  toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_response',
+  sessionId: 'session_id', subagentSessionId: 'subagent_session_id',
+  durationMs: 'duration_ms', turnCount: 'turn_count', messageCount: 'message_count',
+};
+
+export function serializeHookEvent(obj: Record<string, unknown>): string {
+  const out: Record<string, unknown> = { ...obj };
+  if (typeof obj.event === 'string') {
+    out.hook_event_name = HOOK_EVENT_PASCAL[obj.event] ?? obj.event;
+  }
+  for (const [camel, snake] of Object.entries(HOOK_KEY_SNAKE)) {
+    if (camel in obj && !(snake in obj)) out[snake] = obj[camel];
+  }
+  return JSON.stringify(out) + '\n';
+}
+
+// ---------------------------------------------------------------------------
 // HookManager
 // ---------------------------------------------------------------------------
 
@@ -687,7 +720,7 @@ export class HookManager extends EventEmitter {
           const fn: PreToolUseHookFn = async (ctx) => {
             if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return { action: 'allow' };
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return { action: 'allow' };
-            const eventData = JSON.stringify({ event: 'preToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput });
+            const eventData = serializeHookEvent({ event: 'preToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return { action: 'allow' }; }
             const result = await runner();
@@ -712,7 +745,7 @@ export class HookManager extends EventEmitter {
           const fn: PostToolUseHookFn = async (ctx) => {
             if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return;
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
-            const eventData = JSON.stringify({ event: 'postToolUse', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
+            const eventData = serializeHookEvent({ event: 'postToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput, toolOutput: ctx.toolOutput, isError: ctx.isError, duration_ms: ctx.durationMs });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             const result = await runner();
@@ -731,7 +764,7 @@ export class HookManager extends EventEmitter {
         }
         case 'preSampling': {
           const fn: PreSamplingHookFn = async (_ctx) => {
-            const eventData = JSON.stringify({ event: 'preSampling' });
+            const eventData = serializeHookEvent({ event: 'preSampling' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return { action: 'allow' }; }
             const result = await runner();
@@ -744,7 +777,7 @@ export class HookManager extends EventEmitter {
         }
         case 'postSampling': {
           const fn: HookFn = async () => {
-            const eventData = JSON.stringify({ event: 'postSampling' });
+            const eventData = serializeHookEvent({ event: 'postSampling' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -755,7 +788,7 @@ export class HookManager extends EventEmitter {
         }
         case 'stop': {
           const fn: HookFn = async () => {
-            const eventData = JSON.stringify({ event: 'stop' });
+            const eventData = serializeHookEvent({ event: 'stop' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -766,7 +799,7 @@ export class HookManager extends EventEmitter {
         }
         case 'error': {
           const fn: HookFn = async () => {
-            const eventData = JSON.stringify({ event: 'error' });
+            const eventData = serializeHookEvent({ event: 'error' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -777,7 +810,7 @@ export class HookManager extends EventEmitter {
         }
         case 'sessionStart': {
           const fn: SessionHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'sessionStart', sessionId: ctx.sessionId });
+            const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             const result = await runner();
@@ -795,7 +828,7 @@ export class HookManager extends EventEmitter {
         }
         case 'sessionEnd': {
           const fn: SessionHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'sessionEnd', sessionId: ctx.sessionId });
+            const eventData = serializeHookEvent({ event: 'sessionEnd', sessionId: ctx.sessionId });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -806,7 +839,7 @@ export class HookManager extends EventEmitter {
         }
         case 'subagentStart': {
           const fn: SubagentHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'subagentStart', prompt: ctx.prompt });
+            const eventData = serializeHookEvent({ event: 'subagentStart', prompt: ctx.prompt });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -817,7 +850,7 @@ export class HookManager extends EventEmitter {
         }
         case 'subagentStop': {
           const fn: SubagentHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'subagentStop', subagentSessionId: ctx.subagentSessionId });
+            const eventData = serializeHookEvent({ event: 'subagentStop', subagentSessionId: ctx.subagentSessionId });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -828,7 +861,7 @@ export class HookManager extends EventEmitter {
         }
         case 'preCompact': {
           const fn: CompactHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'preCompact', messageCount: ctx.messageCount });
+            const eventData = serializeHookEvent({ event: 'preCompact', messageCount: ctx.messageCount });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -839,7 +872,7 @@ export class HookManager extends EventEmitter {
         }
         case 'postCompact': {
           const fn: CompactHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'postCompact', messageCount: ctx.messageCount });
+            const eventData = serializeHookEvent({ event: 'postCompact', messageCount: ctx.messageCount });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -850,7 +883,7 @@ export class HookManager extends EventEmitter {
         }
         case 'permissionRequest': {
           const fn: PermissionHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput });
+            const eventData = serializeHookEvent({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             const result = await runner();
@@ -869,7 +902,7 @@ export class HookManager extends EventEmitter {
         }
         case 'permissionDenied': {
           const fn: PermissionHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'permissionDenied', toolName: ctx.toolName });
+            const eventData = serializeHookEvent({ event: 'permissionDenied', toolName: ctx.toolName });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -880,7 +913,7 @@ export class HookManager extends EventEmitter {
         }
         case 'userPromptSubmit': {
           const fn: UserPromptHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'userPromptSubmit', turnCount: ctx.turnCount });
+            const eventData = serializeHookEvent({ event: 'userPromptSubmit', turnCount: ctx.turnCount, prompt: ctx.prompt });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             const result = await runner();
@@ -896,7 +929,7 @@ export class HookManager extends EventEmitter {
         }
         case 'taskCreated': {
           const fn: TaskEventHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'taskCreated', taskId: ctx.taskId, subject: ctx.subject });
+            const eventData = serializeHookEvent({ event: 'taskCreated', taskId: ctx.taskId, subject: ctx.subject });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -907,7 +940,7 @@ export class HookManager extends EventEmitter {
         }
         case 'taskCompleted': {
           const fn: TaskEventHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'taskCompleted', taskId: ctx.taskId, subject: ctx.subject });
+            const eventData = serializeHookEvent({ event: 'taskCompleted', taskId: ctx.taskId, subject: ctx.subject });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -920,7 +953,7 @@ export class HookManager extends EventEmitter {
           const fn: PostToolUseHookFn = async (ctx) => {
             if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return;
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
-            const eventData = JSON.stringify({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
+            const eventData = serializeHookEvent({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -931,7 +964,7 @@ export class HookManager extends EventEmitter {
         }
         case 'notification': {
           const fn: NotificationHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'notification', message: ctx.message, title: ctx.title });
+            const eventData = serializeHookEvent({ event: 'notification', message: ctx.message, title: ctx.title });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -942,7 +975,7 @@ export class HookManager extends EventEmitter {
         }
         case 'setup': {
           const fn: SessionHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'setup', sessionId: ctx.sessionId, cwd: ctx.cwd });
+            const eventData = serializeHookEvent({ event: 'setup', sessionId: ctx.sessionId, cwd: ctx.cwd });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -953,7 +986,7 @@ export class HookManager extends EventEmitter {
         }
         case 'configChange': {
           const fn: ConfigChangeHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'configChange', source: ctx.source, filePath: ctx.filePath });
+            const eventData = serializeHookEvent({ event: 'configChange', source: ctx.source, filePath: ctx.filePath });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -964,7 +997,7 @@ export class HookManager extends EventEmitter {
         }
         case 'instructionsLoaded': {
           const fn: InstructionsHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'instructionsLoaded', filePath: ctx.filePath, loadReason: ctx.loadReason });
+            const eventData = serializeHookEvent({ event: 'instructionsLoaded', filePath: ctx.filePath, loadReason: ctx.loadReason });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -975,7 +1008,7 @@ export class HookManager extends EventEmitter {
         }
         case 'worktreeCreate': {
           const fn: WorktreeHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'worktreeCreate', name: ctx.name, worktreePath: ctx.worktreePath });
+            const eventData = serializeHookEvent({ event: 'worktreeCreate', name: ctx.name, worktreePath: ctx.worktreePath });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -986,7 +1019,7 @@ export class HookManager extends EventEmitter {
         }
         case 'worktreeRemove': {
           const fn: WorktreeHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'worktreeRemove', name: ctx.name, worktreePath: ctx.worktreePath });
+            const eventData = serializeHookEvent({ event: 'worktreeRemove', name: ctx.name, worktreePath: ctx.worktreePath });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -997,7 +1030,7 @@ export class HookManager extends EventEmitter {
         }
         case 'cwdChanged': {
           const fn: CwdChangedHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'cwdChanged', oldCwd: ctx.oldCwd, newCwd: ctx.newCwd });
+            const eventData = serializeHookEvent({ event: 'cwdChanged', oldCwd: ctx.oldCwd, newCwd: ctx.newCwd });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -1010,7 +1043,7 @@ export class HookManager extends EventEmitter {
           const fn: FileChangeHookFn = async (ctx) => {
             if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.filePath)) return;
             if (matcher && !matchesPattern(matcher, ctx.filePath)) return;
-            const eventData = JSON.stringify({ event: 'fileChanged', filePath: ctx.filePath, fileEvent: ctx.event });
+            const eventData = serializeHookEvent({ event: 'fileChanged', filePath: ctx.filePath, fileEvent: ctx.event });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -1021,7 +1054,7 @@ export class HookManager extends EventEmitter {
         }
         case 'elicitation': {
           const fn: ElicitationHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'elicitation', mcpServerName: ctx.mcpServerName, message: ctx.message });
+            const eventData = serializeHookEvent({ event: 'elicitation', mcpServerName: ctx.mcpServerName, message: ctx.message });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -1032,7 +1065,7 @@ export class HookManager extends EventEmitter {
         }
         case 'elicitationResult': {
           const fn: ElicitationHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'elicitationResult', mcpServerName: ctx.mcpServerName, message: ctx.message });
+            const eventData = serializeHookEvent({ event: 'elicitationResult', mcpServerName: ctx.mcpServerName, message: ctx.message });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
@@ -1043,7 +1076,7 @@ export class HookManager extends EventEmitter {
         }
         case 'stopFailure': {
           const fn: StopFailureHookFn = async (ctx) => {
-            const eventData = JSON.stringify({ event: 'stopFailure', error: ctx.error, hookIndex: ctx.hookIndex });
+            const eventData = serializeHookEvent({ event: 'stopFailure', error: ctx.error, hookIndex: ctx.hookIndex });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();

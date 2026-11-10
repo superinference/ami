@@ -97,7 +97,28 @@ describe('hooks.ts — runCommandHookAsync stdin delivery (guards A)', () => {
     await hm.executeStop({ messages: [], turnCount: 0 });
     const written = fs.readFileSync(outFile, 'utf-8');
     assert.ok(written.length > 0, 'stop hook must still receive a non-empty stdin payload');
-    assert.deepEqual(JSON.parse(written), { event: 'stop' });
+    // Payload now carries the Claude Code snake_case alias (hook_event_name)
+    // alongside the camelCase `event`, plus a trailing newline.
+    assert.deepEqual(JSON.parse(written), { event: 'stop', hook_event_name: 'Stop' });
+    assert.ok(written.endsWith('\n'), 'CC hook payloads are newline-terminated');
+  });
+
+  it('emits Claude Code snake_case fields alongside camelCase (preToolUse)', async () => {
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    const outFile = path.join(mkTmp(), 'pre.txt');
+    const cwd = writeHooks([
+      { event: 'preToolUse', hook: { type: 'command', command: `cat > ${outFile}` } },
+    ]);
+    hm.loadFromFile(cwd);
+    await hm.executePreToolUse(makePreToolCtx());
+    const p = JSON.parse(fs.readFileSync(outFile, 'utf-8'));
+    // Claude Code snake_case surface:
+    assert.equal(p.hook_event_name, 'PreToolUse');
+    assert.equal(p.tool_name, p.toolName, 'tool_name mirrors toolName');
+    assert.deepEqual(p.tool_input, p.toolInput, 'tool_input mirrors toolInput');
+    // camelCase retained for back-compat:
+    assert.equal(p.event, 'preToolUse');
   });
 });
 
