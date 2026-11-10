@@ -196,6 +196,32 @@ describe('streamChatCompletionWithRetry - retry on 429 with Retry-After', () => 
   });
 });
 
+describe('streamChatCompletionWithRetry - Retry-After honored for non-429 (503/529)', () => {
+  it('honors Retry-After on a 503 (previously only 429 did)', async () => {
+    // RED (pre-fix): the delay branch was `statusCode === 429 && retryAfter`, so a
+    // 503 carrying Retry-After fell through to exponential backoff (~40ms).
+    // GREEN: Retry-After is honored for any retryable status.
+    const mock = await createRetryServer(503, 1, { retryAfterSeconds: 1 });
+    try {
+      const config = makeConfig(mock.port);
+      const ac = new AbortController();
+      let capturedDelay = -1;
+      const chunks = await collectChunks(
+        streamChatCompletionWithRetry(config, defaultMessages, [], ac.signal, {
+          baseDelayMs: 40,
+          maxDelayMs: 60_000,
+          onRetry: (_a, _m, delayMs) => { capturedDelay = delayMs; },
+        }),
+      );
+      assert.ok(capturedDelay >= 900, `expected Retry-After (1s) honored on 503, got ${capturedDelay}ms`);
+      const content = chunks.filter((c) => c.type === 'content_delta');
+      assert.ok(content.length >= 1);
+    } finally {
+      mock.server.close();
+    }
+  });
+});
+
 describe('streamChatCompletionWithRetry - Retry-After: 0 floors to backoff', () => {
   it('does not produce a zero delay on Retry-After: 0 (floors to exponential backoff)', async () => {
     const mock = await createRetryServer(429, 1, { retryAfterSeconds: 0 });

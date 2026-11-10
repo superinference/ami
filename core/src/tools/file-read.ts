@@ -471,10 +471,14 @@ export const fileReadTool: ToolDefinition = {
       return { output: '[Binary file]' };
     }
 
-    // Check file cache — return short summary when unchanged
+    // Check file cache — return short summary when unchanged. Only short-circuit
+    // for a FULL re-read: a range read (offset/limit) must always be served even
+    // when the full file was cached, otherwise a new range gets a stale
+    // "File unchanged" stub for content it never actually saw (CC parity:
+    // FileReadTool gates the unchanged short-circuit on a matching range).
     const fileCache = getFileCache(context.cwd);
     const cached = fileCache.get(resolved);
-    if (cached) {
+    if (cached && input.offset === undefined && input.limit === undefined) {
       const lineCount = cached.content.split('\n').length;
       return { output: `File unchanged since last read: ${resolved} (${lineCount} lines)` };
     }
@@ -562,7 +566,7 @@ export const fileReadTool: ToolDefinition = {
     }
 
     if ((context as any)._skillManager) {
-      const matchingSkills = (context as any)._skillManager.findMatchingSkills?.(resolved);
+      const matchingSkills = (context as any)._skillManager.findMatchingSkills?.([resolved]);
       if (matchingSkills && matchingSkills.length > 0) {
         output += `\n\n[Relevant skills: ${matchingSkills.map((s: any) => s.name).join(', ')}]`;
       }

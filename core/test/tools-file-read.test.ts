@@ -738,3 +738,32 @@ describe('checkBinaryContent', () => {
     assert.equal(await checkBinaryContent(p), false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// H2 regression: a range read after a full read must NOT return the stale
+// "File unchanged" stub (CC parity — the unchanged short-circuit only applies
+// to a full re-read).
+// ---------------------------------------------------------------------------
+describe('fileReadTool – range read after full read (H2)', () => {
+  it('serves the range even when the full file was cached', async () => {
+    const fp = path.join(tmpDir, 'ranged.txt');
+    fs.writeFileSync(fp, Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join('\n'));
+
+    const full = await fileReadTool.execute({ file_path: fp }, ctx());
+    assert.ok(String(full.output).includes('line1'), 'full read returns content');
+
+    // RED (pre-fix): path-only cache hit returned "File unchanged" for this NEW range.
+    const ranged = await fileReadTool.execute({ file_path: fp, offset: 5, limit: 3 }, ctx());
+    assert.ok(!String(ranged.output).includes('File unchanged'),
+      `range read must not be short-circuited, got: ${String(ranged.output).slice(0, 80)}`);
+    assert.ok(String(ranged.output).includes('Showing'), 'range read returns range content');
+  });
+
+  it('still returns "File unchanged" for a FULL re-read', async () => {
+    const fp = path.join(tmpDir, 'full.txt');
+    fs.writeFileSync(fp, 'alpha\nbeta\ngamma');
+    await fileReadTool.execute({ file_path: fp }, ctx());
+    const again = await fileReadTool.execute({ file_path: fp }, ctx());
+    assert.ok(String(again.output).includes('File unchanged'), 'full re-read is still short-circuited');
+  });
+});

@@ -1563,7 +1563,10 @@ export async function* streamChatCompletionWithRetry(
           let delayMs: number;
           const retryAfterSeconds = chunk.retryAfter;
           const expBackoff = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
-          if (statusCode === 429 && retryAfterSeconds != null) {
+          if (retryAfterSeconds != null) {
+            // Honor Retry-After for ANY retryable status (429/500/503/529/…), not
+            // just 429 — an overloaded endpoint that sends Retry-After with a 529
+            // must be respected rather than hammered with exponential backoff.
             delayMs = Math.max(retryAfterSeconds * 1000, baseDelay);
           } else if (statusCode === 429 && chunk.responseHeaders) {
             // No Retry-After header: when the server's rate-limit headers say we
