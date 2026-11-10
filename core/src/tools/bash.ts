@@ -6,6 +6,7 @@ import { execCommand } from '../utils/shell';
 import { coerceBool } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
+import { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE } from './docker-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
@@ -638,6 +639,33 @@ export const bashTool: ToolDefinition = {
       if (cached !== null) return { output: cached, metadata: { readOnly: true, cached: true } };
     }
 
+    // Resolve the isolation backend BEFORE any execution path (foreground or
+    // background) so container mode cannot be escaped. In container mode EVERY
+    // command runs inside a container whose only writable mount is the project
+    // dir; if Docker is unavailable we fail closed and never touch the host.
+    // dangerouslyDisableSandbox cannot override enforced container mode.
+    let effectiveCommand: string;
+    if (context.sandbox?.mode === 'container') {
+      if (!isDockerAvailable()) {
+        return {
+          output:
+            'Error: SANDBOX REQUIRED — bash is configured to run only inside a container '
+            + '(sandbox mode=container) but no Docker daemon is reachable. Refusing to run on the '
+            + 'host. Start Docker (rootless: `systemctl --user start docker`) or change the sandbox policy.',
+          isError: true,
+        };
+      }
+      effectiveCommand = wrapWithDocker(command, context.cwd, {
+        image: context.sandbox.image || DEFAULT_DOCKER_IMAGE,
+        projectDir: context.sandbox.projectDir || context.cwd,
+        allowNetwork: context.sandbox.allowNetwork !== false,
+      });
+    } else {
+      const disableSandbox = input.dangerouslyDisableSandbox === true;
+      const useSandbox = !disableSandbox && shouldUseSandbox(command);
+      effectiveCommand = useSandbox ? wrapWithSandbox(command, context.cwd) : command;
+    }
+
     if (runInBackground && context.processManager) {
       const desc = (input.description as string) || command.slice(0, 80);
       const MAX_BG_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -648,7 +676,7 @@ export const bashTool: ToolDefinition = {
         requestedTimeout ?? (envBgTimeout ? parseInt(envBgTimeout, 10) : DEFAULT_BG_TIMEOUT_MS),
         MAX_BG_TIMEOUT_MS,
       );
-      const taskId = context.processManager.spawn(command, {
+      const taskId = context.processManager.spawn(effectiveCommand, {
         cwd: context.cwd,
         description: desc,
         env: scrubEnv(),
@@ -660,10 +688,6 @@ export const bashTool: ToolDefinition = {
         isError: false,
       };
     }
-
-    const disableSandbox = input.dangerouslyDisableSandbox === true;
-    const useSandbox = !disableSandbox && shouldUseSandbox(command);
-    const effectiveCommand = useSandbox ? wrapWithSandbox(command, context.cwd) : command;
 
     const result = await execCommandWithForkRetry(effectiveCommand, {
       cwd: context.cwd,
@@ -697,7 +721,7 @@ export const bashTool: ToolDefinition = {
         };
       }
       if (context.processManager) {
-        const taskId = context.processManager.spawn(command, {
+        const taskId = context.processManager.spawn(effectiveCommand, {
           cwd: context.cwd,
           description: `[auto-bg] ${command.slice(0, 60)}`,
           env: scrubEnv(),

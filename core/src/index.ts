@@ -93,6 +93,8 @@ export { ToolAnalytics } from './tool-analytics';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
+export { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE, _resetDockerAvailableCache } from './tools/docker-sandbox';
+export type { DockerSandboxConfig } from './tools/docker-sandbox';
 export { withExtraHeaders } from './provider';
 // Consumed by common (/model ZDR listing); the ZDR-error + request-side helpers are
 // used internally by core (error-classifier, provider) so are not re-exported here.

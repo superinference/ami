@@ -97,6 +97,21 @@ export interface ToolResult {
   metadata?: Record<string, unknown>;
 }
 
+/** Policy controlling whether/how bash commands run inside an isolation backend.
+ *  `mode: 'container'` forces every bash command through a container whose only
+ *  writable mount is the project dir; the host filesystem is unreachable. When
+ *  the backend is unavailable the bash tool fails closed (refuses to run on the
+ *  host). `mode: 'off'` (or undefined) runs on the host as before. */
+export interface SandboxPolicy {
+  mode: 'off' | 'container';
+  /** Container image (must contain the project toolchain). Default: node:26. */
+  image?: string;
+  /** The single writable mount (absolute). Defaults to the engine launch cwd. */
+  projectDir?: string;
+  /** Allow network inside the container (needed for npm/git). Default: true. */
+  allowNetwork?: boolean;
+}
+
 export interface ToolContext {
   cwd: string;
   abortSignal: AbortSignal;
@@ -138,6 +153,9 @@ export interface ToolContext {
    *  types.ts -> tools/web-utils import cycle. */
   _webFetchHttpGet?: unknown;
   detachedMode?: boolean;
+  /** Bash isolation policy. When mode==='container', every bash command runs in
+   *  a container (project-only writable); fail-closed if the backend is absent. */
+  sandbox?: SandboxPolicy;
   /** Current subagent nesting depth (0 = top-level). */
   _agentDepth?: number;
   /** Maximum subagent nesting depth (default 5). */
@@ -399,6 +417,11 @@ export interface EngineConfig {
   sessionDir?: string;
   /** Permission mode: 'ask' (default), 'auto-allow', or 'deny-all'. */
   permissionMode?: string;
+  /** Bash isolation policy forwarded to every ToolContext. When mode==='container',
+   *  all bash commands run inside a container (project-only writable), fail-closed.
+   *  Undefined = host execution (the default for programmatic/test use; the CLI sets
+   *  container mode for real runs). */
+  sandbox?: SandboxPolicy;
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Extra absolute paths/dirs the user has granted read access to OUTSIDE the launch
