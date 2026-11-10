@@ -263,7 +263,8 @@ export class EventConcurrencyLimiter {
 // Hook validation and safety
 // ---------------------------------------------------------------------------
 
-export const MAX_HOOK_TIMEOUT_MS = 30_000;
+export const MAX_HOOK_TIMEOUT_MS = 600_000; // 10 min — matches Claude Code's hook ceiling
+export const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // CC default when a hook sets no timeout
 export const MAX_HOOKS_PER_EVENT = 10;
 
 export const BLOCKED_HOOK_COMMANDS: ReadonlySet<string> = new Set([
@@ -447,15 +448,19 @@ async function runCommandHookAsync(
   timeout: number,
   stdinData?: string,
   args?: string[],
-): Promise<{ exitCode: number; output: string }> {
+): Promise<{ exitCode: number; stdout: string; stderr: string; output: string }> {
   return new Promise((resolve, reject) => {
     const proc = args && args.length > 0
       ? spawn(args[0], args.slice(1), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
       : spawn('bash', ['-c', command], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
-    let output = '';
-    proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
-    proc.stderr?.on('data', (d: Buffer) => { output += d.toString(); });
+    // Capture stdout and stderr SEPARATELY (Claude Code contract): a command hook's
+    // decision JSON is read from stdout, while the human-facing reason comes from
+    // stderr. `output` keeps the combined stream for back-compat logging.
+    let stdout = '';
+    let stderr = '';
+    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
 
     proc.stdin?.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code !== 'EPIPE') coreLog('hooks', `Hook stdin error: ${err.message}`);
@@ -477,7 +482,7 @@ async function runCommandHookAsync(
 
     proc.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ exitCode: code ?? 1, output });
+      resolve({ exitCode: code ?? 1, stdout, stderr, output: stdout + stderr });
     });
 
     proc.on('error', (err) => {
@@ -1506,20 +1511,30 @@ export class HookManager extends EventEmitter {
   ): Promise<string> {
     switch (config.type) {
       case 'command': {
-        const timeout = config.timeout ?? 10000;
+        // Claude Code hook contract: config.timeout is in SECONDS. Route through
+        // validateHookTimeout so it is clamped to [100ms, MAX_HOOK_TIMEOUT_MS].
+        const timeout = validateHookTimeout(config.timeout != null ? config.timeout * 1000 : DEFAULT_HOOK_TIMEOUT_MS);
         const hookEnv = this.buildHookEnv(
           'command',
           eventData ? (() => { try { return JSON.parse(eventData).toolName; } catch { return undefined; } })() : undefined,
         );
         try {
-          const { exitCode, output } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args);
-          if (exitCode !== 0) {
-            if (config.asyncRewake && exitCode === 2) {
-              this.emit('hookRewake', { event: 'command', message: output || 'Background hook completed with exit code 2' });
+          const { exitCode, stdout, stderr } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args);
+          // Claude Code exit-code contract:
+          //   0           = success — parse stdout for a decision
+          //   2           = BLOCKING error — reason from stderr → DENY
+          //   other != 0  = NON-blocking error — surface stderr, do NOT block the tool
+          if (exitCode === 2) {
+            if (config.asyncRewake) {
+              this.emit('hookRewake', { event: 'command', message: (stderr || stdout).trim() || 'Background hook completed with exit code 2' });
             }
-            return `DENY:${output || 'Hook denied'}`;
+            return `DENY:${(stderr || stdout || 'Hook blocked (exit 2)').trim()}`;
           }
-          const trimmed = output.trim();
+          if (exitCode !== 0) {
+            const msg = (stderr || stdout).trim();
+            return msg ? `SYSTEM:${msg}` : '';
+          }
+          const trimmed = stdout.trim();
           try {
             const parsed: HookDecisionOutput = JSON.parse(trimmed);
             if (parsed.decision === 'block' || parsed.decision === 'deny') return `DENY:${parsed.reason ?? 'Hook blocked'}`;

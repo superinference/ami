@@ -313,9 +313,9 @@ describe('processHookEntry — preToolUse command hook execution', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns deny when command exits non-zero', async () => {
+  it('returns deny when command exits 2 (blocking, reason from stderr)', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: 'echo "blocked" && exit 1' } },
+      { event: 'preToolUse', hook: { type: 'command', command: 'echo "blocked" >&2 && exit 2' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -327,7 +327,7 @@ describe('processHookEntry — preToolUse command hook execution', () => {
 
   it('skips hook when matcher does not match tool name', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: 'exit 1' }, matcher: 'file_write' },
+      { event: 'preToolUse', hook: { type: 'command', command: 'exit 2' }, matcher: 'file_write' },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -339,7 +339,7 @@ describe('processHookEntry — preToolUse command hook execution', () => {
 
   it('skips hook when "if" condition does not match tool name', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: 'exit 1', if: 'file_write' } },
+      { event: 'preToolUse', hook: { type: 'command', command: 'exit 2', if: 'file_write' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -420,7 +420,7 @@ describe('processHookEntry — postToolUse command hook execution', () => {
 
   it('postToolUse skips when if condition does not match', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'postToolUse', hook: { type: 'command', command: 'exit 1', if: 'file_write' } },
+      { event: 'postToolUse', hook: { type: 'command', command: 'exit 2', if: 'file_write' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -433,7 +433,7 @@ describe('processHookEntry — postToolUse command hook execution', () => {
 
   it('postToolUse skips when matcher does not match', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'postToolUse', hook: { type: 'command', command: 'exit 1' }, matcher: 'file_write' },
+      { event: 'postToolUse', hook: { type: 'command', command: 'exit 2' }, matcher: 'file_write' },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -487,7 +487,7 @@ describe('processHookEntry — preSampling command hook execution', () => {
 
   it('preSampling returns deny when command outputs DENY:', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'preSampling', hook: { type: 'command', command: 'echo "DENY:rate limited" && exit 1' } },
+      { event: 'preSampling', hook: { type: 'command', command: 'echo "DENY:rate limited"' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -909,7 +909,7 @@ describe('processHookEntry — remaining event hooks', () => {
 
   it('postToolUseFailure skips when if does not match', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'postToolUseFailure', hook: { type: 'command', command: 'exit 1', if: 'file_write' } },
+      { event: 'postToolUseFailure', hook: { type: 'command', command: 'exit 2', if: 'file_write' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -922,7 +922,7 @@ describe('processHookEntry — remaining event hooks', () => {
 
   it('postToolUseFailure skips when matcher does not match', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'postToolUseFailure', hook: { type: 'command', command: 'exit 1' }, matcher: 'file_write' },
+      { event: 'postToolUseFailure', hook: { type: 'command', command: 'exit 2' }, matcher: 'file_write' },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -1134,7 +1134,7 @@ describe('processHookEntry — remaining event hooks', () => {
 
   it('fileChanged skips when if does not match', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'fileChanged', hook: { type: 'command', command: 'exit 1', if: '.*\\.py$' } },
+      { event: 'fileChanged', hook: { type: 'command', command: 'exit 2', if: '.*\\.py$' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -1146,7 +1146,7 @@ describe('processHookEntry — remaining event hooks', () => {
 
   it('fileChanged skips when matcher does not match', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'fileChanged', hook: { type: 'command', command: 'exit 1' }, matcher: '.*\\.py$' },
+      { event: 'fileChanged', hook: { type: 'command', command: 'exit 2' }, matcher: '.*\\.py$' },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -1375,8 +1375,10 @@ describe('runHookByType — command hook JSON output', () => {
 // ---------------------------------------------------------------------------
 describe('runHookByType — command hook error/timeout', () => {
   it('handles command timeout gracefully', async () => {
+    // timeout is in SECONDS (Claude Code parity); 0.1s → clamped to 100ms, so the
+    // 30s sleep is killed almost immediately. Timeout rejects → caught → allow.
     const tmpDir = writeTmpHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: 'sleep 30', timeout: 100 } },
+      { event: 'preToolUse', hook: { type: 'command', command: 'sleep 30', timeout: 0.1 } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -1387,7 +1389,7 @@ describe('runHookByType — command hook error/timeout', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('handles non-existent command gracefully', async () => {
+  it('handles non-existent command as a non-blocking error (CC contract)', async () => {
     const tmpDir = writeTmpHooks([
       { event: 'preToolUse', hook: { type: 'command', command: 'nonexistentcommand12345' } },
     ]);
@@ -1395,8 +1397,9 @@ describe('runHookByType — command hook error/timeout', () => {
     hm.loadFromFile(tmpDir);
 
     const decision = await hm.executePreToolUse(makePreToolUseCtx());
-    // Non-zero exit code = deny
-    assert.equal(decision.action, 'deny');
+    // A missing binary exits 127 (not 2) → non-blocking per the CC exit-code
+    // contract: surface the error, do NOT deny the tool.
+    assert.notEqual(decision.action, 'deny');
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
@@ -1934,7 +1937,7 @@ describe('matchesPattern — via hooks', () => {
 
   it('pipe-separated pattern matches alternatives', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: 'exit 1', if: 'bash|file_write' } },
+      { event: 'preToolUse', hook: { type: 'command', command: 'exit 2', if: 'bash|file_write' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -1946,7 +1949,7 @@ describe('matchesPattern — via hooks', () => {
 
   it('regex pattern matching works', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: 'exit 1', if: '^file_' } },
+      { event: 'preToolUse', hook: { type: 'command', command: 'exit 2', if: '^file_' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);
@@ -1963,7 +1966,7 @@ describe('matchesPattern — via hooks', () => {
 
   it('invalid regex falls back to exact match', async () => {
     const tmpDir = writeTmpHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: 'exit 1', if: '[invalid' } },
+      { event: 'preToolUse', hook: { type: 'command', command: 'exit 2', if: '[invalid' } },
     ]);
     hm.setWorkspaceTrusted(true);
     hm.loadFromFile(tmpDir);

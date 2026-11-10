@@ -102,16 +102,29 @@ describe('hooks.ts — runCommandHookAsync stdin delivery (guards A)', () => {
 });
 
 describe('hooks.ts — command hook exit codes around runCommandHookAsync', () => {
-  it('non-zero exit from a real command hook denies the tool', async () => {
+  it('exit 2 (blocking) from a real command hook denies the tool (reason from stderr)', async () => {
     const hm = new HookManager();
     hm.setWorkspaceTrusted(true);
     const cwd = writeHooks([
-      { event: 'preToolUse', hook: { type: 'command', command: `echo 'nope' 1>&2; exit 3` } },
+      { event: 'preToolUse', hook: { type: 'command', command: `echo 'nope' 1>&2; exit 2` } },
     ]);
     hm.loadFromFile(cwd);
     const decision = await hm.executePreToolUse(makePreToolCtx());
     assert.equal(decision.action, 'deny');
     assert.match(String(decision.reason), /nope/);
+  });
+
+  // Red-green for the Claude Code exit-code contract: only exit 2 blocks; any
+  // OTHER non-zero exit is a non-blocking error (surface stderr, allow the tool).
+  it('other non-zero exit (e.g. 3) is NON-blocking — tool is NOT denied', async () => {
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    const cwd = writeHooks([
+      { event: 'preToolUse', hook: { type: 'command', command: `echo 'warn' 1>&2; exit 3` } },
+    ]);
+    hm.loadFromFile(cwd);
+    const decision = await hm.executePreToolUse(makePreToolCtx());
+    assert.notEqual(decision.action, 'deny');
   });
 
   it('exit code 2 with asyncRewake emits a hookRewake event', async () => {

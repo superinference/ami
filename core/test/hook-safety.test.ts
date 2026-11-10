@@ -9,8 +9,8 @@ import {
 } from '../src/hooks';
 
 describe('Hook safety constants', () => {
-  it('MAX_HOOK_TIMEOUT_MS is 30000', () => {
-    assert.equal(MAX_HOOK_TIMEOUT_MS, 30_000);
+  it('MAX_HOOK_TIMEOUT_MS is 600000 (10 min — Claude Code parity)', () => {
+    assert.equal(MAX_HOOK_TIMEOUT_MS, 600_000);
   });
 
   it('MAX_HOOKS_PER_EVENT is 10', () => {
@@ -141,8 +141,9 @@ describe('validateHookTimeout', () => {
   });
 
   it('clamps high values to MAX_HOOK_TIMEOUT_MS', () => {
-    assert.equal(validateHookTimeout(60_000), MAX_HOOK_TIMEOUT_MS);
-    assert.equal(validateHookTimeout(999_999), MAX_HOOK_TIMEOUT_MS);
+    assert.equal(validateHookTimeout(700_000), MAX_HOOK_TIMEOUT_MS);
+    assert.equal(validateHookTimeout(9_999_999), MAX_HOOK_TIMEOUT_MS);
+    assert.equal(validateHookTimeout(60_000), 60_000); // 60s is now under the 10-min ceiling
   });
 
   it('passes valid values through', () => {
