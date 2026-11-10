@@ -640,6 +640,10 @@ export class McpClient extends EventEmitter {
       try {
         if (this.transport === 'sse' && this.sseUrl) {
           await this.connectSSE(this.sseUrl);
+        } else if (this.transport === 'http' && this.sseUrl) {
+          // HTTP transport must re-establish over HTTP; falling through to
+          // connect() would spawn an (empty) stdio command and never reconnect.
+          await this.connectHTTP(this.sseUrl);
         } else {
           await this.connect();
         }

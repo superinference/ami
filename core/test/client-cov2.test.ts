@@ -895,6 +895,20 @@ describe('reconnect', () => {
     await c.reconnect(); // transport === 'sse' && sseUrl → connectSSE
     assert.equal(c.state, 'ready');
   });
+
+  it('uses the HTTP path when transport is http (H5: was spawning an empty stdio command)', async () => {
+    const { url } = await startHttpServer((req, res) => {
+      let body = ''; req.on('data', (d) => body += d);
+      req.on('end', () => res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { serverInfo: { name: 'h', version: '1' } } })));
+    });
+    // command 'x' is invalid: if reconnect fell through to connect()/stdio it would
+    // fail to spawn. With the http branch it re-establishes over HTTP → ready.
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000 }));
+    await c.connectHTTP(url);
+    c.disconnect();
+    await c.reconnect(); // transport === 'http' && sseUrl → connectHTTP
+    assert.equal(c.state, 'ready');
+  });
 });
 
 // =========================================================================
