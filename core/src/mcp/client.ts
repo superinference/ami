@@ -20,6 +20,18 @@ export const MCP_PROTOCOL_VERSION = '2025-06-18';
 const MIN_MCP_BUFFER = 1024;            // 1 KB
 const MAX_MCP_BUFFER = 100 * 1024 * 1024; // 100 MB
 
+/**
+ * Hard cap on the stdio read buffer (L31). A stdio MCP server streams
+ * newline-delimited JSON over stdout and we accumulate bytes in `this.buffer`
+ * until a newline completes a message. A malicious/buggy server that never
+ * sends a newline (or emits one gigantic line) would otherwise grow this buffer
+ * without bound → memory-exhaustion DoS. When the un-terminated remainder left
+ * after extracting complete messages exceeds this cap, the buffer is dropped and
+ * a `protocol-error` is emitted; complete messages parsed on the same pass are
+ * unaffected, so normal framing keeps working.
+ */
+export const MCP_MAX_STDIO_BUFFER = 16 * 1024 * 1024; // 16 MiB
+
 /** Hard cap on cursor-pagination pages per list call — a runaway-server backstop. */
 export const MCP_MAX_PAGES = 1000;
 
@@ -1142,6 +1154,20 @@ export class McpClient extends EventEmitter {
       } catch {
         this.emit('parse-error', trimmed);
       }
+    }
+
+    // L31: bound the accumulated read buffer. Every complete (newline-delimited)
+    // message above has already been routed; what remains is a single
+    // not-yet-terminated line. If that remainder exceeds the cap, a server is
+    // either never sending a newline or streaming one oversized line — drop it
+    // and signal the overflow rather than letting the buffer grow without bound.
+    if (this.buffer.length > MCP_MAX_STDIO_BUFFER) {
+      const droppedBytes = this.buffer.length;
+      this.buffer = '';
+      this.emit(
+        'protocol-error',
+        `MCP stdio read buffer exceeded ${MCP_MAX_STDIO_BUFFER} bytes without a complete message; dropped ${droppedBytes} buffered bytes`,
+      );
     }
   }
 

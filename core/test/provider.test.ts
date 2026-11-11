@@ -23,6 +23,8 @@ import {
   resolveCacheTtl,
   PROMPT_CACHE_TTL_ENV,
   streamChatCompletionWithRetry,
+  withDynamicBoundaryStrip,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from '../src/provider';
 import type { StreamChunk } from '../src/types';
 import { fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../src/model-capabilities';
@@ -2367,5 +2369,42 @@ describe('request-id header is wired into the outgoing request path', () => {
     }
     assert.equal(seen[0], '11111111-2222-3333-4444-555555555555', 'generated request-id must reach the wire');
     assert.equal(seen[1], 'caller-request-id', 'caller-set request-id must not be overwritten');
+  });
+});
+
+describe('withDynamicBoundaryStrip (L22)', () => {
+  it('strips the DYNAMIC_CONTEXT boundary from an anthropic-style body.system', async () => {
+    let seen: any;
+    const base = (async (_i: any, init: any) => { seen = init; return new Response('{}'); }) as any;
+    const f = withDynamicBoundaryStrip(base);
+    const body = JSON.stringify({ system: `STATIC${SYSTEM_PROMPT_DYNAMIC_BOUNDARY}DYNAMIC`, messages: [] });
+    await f('http://x', { method: 'POST', body } as any);
+    const sentSystem = JSON.parse(seen.body).system;
+    assert.ok(!sentSystem.includes('---DYNAMIC_CONTEXT---'), 'boundary must be stripped');
+    assert.ok(sentSystem.includes('STATIC') && sentSystem.includes('DYNAMIC'), 'content preserved');
+    assert.equal(sentSystem, 'STATIC\n\nDYNAMIC');
+  });
+  it('strips the boundary from an openai-style system message in messages[]', async () => {
+    let seen: any;
+    const base = (async (_i: any, init: any) => { seen = init; return new Response('{}'); }) as any;
+    const f = withDynamicBoundaryStrip(base);
+    const body = JSON.stringify({ messages: [{ role: 'system', content: `A${SYSTEM_PROMPT_DYNAMIC_BOUNDARY}B` }] });
+    await f('http://x', { method: 'POST', body } as any);
+    const content = JSON.parse(seen.body).messages[0].content;
+    assert.ok(!content.includes('---DYNAMIC_CONTEXT---'));
+    assert.equal(content, 'A\n\nB');
+  });
+  it('is a no-op when the boundary is absent', async () => {
+    let seen: any;
+    const base = (async (_i: any, init: any) => { seen = init; return new Response('{}'); }) as any;
+    const body = JSON.stringify({ system: 'no boundary here', messages: [] });
+    await withDynamicBoundaryStrip(base)('http://x', { method: 'POST', body } as any);
+    assert.equal(seen.body, body);
+  });
+  it('passes through a non-string body untouched', async () => {
+    let seen: any;
+    const base = (async (_i: any, init: any) => { seen = init; return new Response('{}'); }) as any;
+    await withDynamicBoundaryStrip(base)('http://x', { method: 'GET' } as any);
+    assert.equal(seen.body, undefined);
   });
 });

@@ -896,6 +896,33 @@ export function withProxyDispatcher(
   }) as typeof globalThis.fetch;
 }
 
+/**
+ * L22: strip the `---DYNAMIC_CONTEXT---` prompt-cache boundary sentinel from the
+ * outgoing request body on NON-vertex providers, so the model never sees a stray
+ * marker line. On anthropic-vertex the boundary is CONSUMED by
+ * injectAnthropicCacheControl (it splits the system into cached + dynamic blocks),
+ * so this wrapper is applied ONLY to non-vertex fetches. It operates on the raw
+ * serialized JSON (replacing the JSON-escaped boundary with a plain `\n\n`
+ * separator), so it is body-shape agnostic — it fixes both Anthropic's `system`
+ * string and the OpenAI-style system message in `messages[]`. No-op when the
+ * sentinel is absent.
+ */
+export function withDynamicBoundaryStrip(
+  baseFetch: typeof globalThis.fetch | undefined,
+): typeof globalThis.fetch {
+  const base = baseFetch ?? globalThis.fetch;
+  // The boundary as it appears inside a JSON string (newlines escaped), derived
+  // from the const so it never drifts.
+  const escaped = JSON.stringify(SYSTEM_PROMPT_DYNAMIC_BOUNDARY).slice(1, -1);
+  const escapedSep = JSON.stringify('\n\n').slice(1, -1);
+  return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (init && typeof init.body === 'string' && init.body.includes('---DYNAMIC_CONTEXT---')) {
+      init = { ...init, body: init.body.split(escaped).join(escapedSep) };
+    }
+    return base(input, init);
+  }) as typeof globalThis.fetch;
+}
+
 export function resolveModel(config: ProviderConfig) {
   const { apiKey } = config;
   const fromKey = inferProviderFromApiKey(apiKey);
@@ -927,7 +954,11 @@ export function resolveModel(config: ProviderConfig) {
   const headersWithRequestId = { ...(config.extraHeaders ?? {}), ...buildRequestIdHeader(config.extraHeaders) };
   const headerFetch = withExtraHeaders(headersWithRequestId, proxyFetch);
   const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? proxyFetch);
-  const fetch = bodyFetch ?? headerFetch ?? (proxyActive ? proxyFetch : undefined);
+  const composedFetch = bodyFetch ?? headerFetch ?? (proxyActive ? proxyFetch : undefined);
+  // L22: on the anthropic-vertex path the boundary is consumed by the cache
+  // splitter; everywhere else strip it so the model never sees the sentinel.
+  const isVertexPath = provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured());
+  const fetch = isVertexPath ? composedFetch : withDynamicBoundaryStrip(composedFetch);
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {

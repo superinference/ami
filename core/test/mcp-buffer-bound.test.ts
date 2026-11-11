@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES } from '../src/mcp/client';
+import {
+  boundMcpResponse,
+  validateMcpBufferSize,
+  DEFAULT_MCP_MAX_RESPONSE_BYTES,
+  MCP_MAX_STDIO_BUFFER,
+  McpClient,
+} from '../src/mcp/client';
 
 describe('boundMcpResponse', () => {
   it('passes through small responses unchanged', () => {
@@ -98,5 +104,109 @@ describe('validateMcpBufferSize', () => {
 describe('DEFAULT_MCP_MAX_RESPONSE_BYTES', () => {
   it('is 10MB', () => {
     assert.equal(DEFAULT_MCP_MAX_RESPONSE_BYTES, 10 * 1024 * 1024);
+  });
+});
+
+// ===========================================================================
+// L31 — stdio read buffer is bounded (memory-exhaustion DoS backstop)
+// ===========================================================================
+describe('MCP stdio read buffer bound (L31)', () => {
+  it('exposes a 16 MiB cap', () => {
+    assert.equal(MCP_MAX_STDIO_BUFFER, 16 * 1024 * 1024);
+  });
+
+  it('parses normal newline-delimited messages and keeps the buffer empty', () => {
+    const client = new McpClient({ command: '' });
+    const notifications: Array<[string, unknown]> = [];
+    let protocolErrors = 0;
+    let parseErrors = 0;
+    client.on('notification', (method: string, params: unknown) => notifications.push([method, params]));
+    client.on('protocol-error', () => protocolErrors++);
+    client.on('parse-error', () => parseErrors++);
+
+    // Two complete JSON-RPC notifications plus an incomplete trailing fragment.
+    (client as any).buffer =
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'a' } }) + '\n' +
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'b' } }) + '\n' +
+      '{"jsonrpc":"2.0","method":"partial"';
+    (client as any).processBuffer();
+
+    assert.equal(notifications.length, 2);
+    assert.equal(protocolErrors, 0);
+    assert.equal(parseErrors, 0);
+    // The incomplete fragment (well under the cap) is retained for the next chunk.
+    assert.equal((client as any).buffer, '{"jsonrpc":"2.0","method":"partial"');
+  });
+
+  it('drops the buffer and emits protocol-error when the un-terminated remainder exceeds the cap', () => {
+    const client = new McpClient({ command: '' });
+    const errors: string[] = [];
+    let parseErrors = 0;
+    client.on('protocol-error', (msg: string) => errors.push(msg));
+    client.on('parse-error', () => parseErrors++);
+
+    // One giant line with NO newline — classic never-terminates DoS.
+    (client as any).buffer = 'x'.repeat(MCP_MAX_STDIO_BUFFER + 1);
+    (client as any).processBuffer();
+
+    assert.equal(errors.length, 1, 'exactly one protocol-error emitted');
+    assert.match(errors[0], /exceeded 16777216 bytes/);
+    assert.match(errors[0], /dropped \d+ buffered bytes/);
+    // Buffer is reset — bounded, no unbounded growth.
+    assert.equal((client as any).buffer, '');
+    // The oversized fragment is not treated as a parseable line.
+    assert.equal(parseErrors, 0);
+  });
+
+  it('still routes complete messages on the same pass that overflows', () => {
+    const client = new McpClient({ command: '' });
+    const notifications: string[] = [];
+    let protocolErrors = 0;
+    client.on('notification', (method: string) => notifications.push(method));
+    client.on('protocol-error', () => protocolErrors++);
+
+    // A valid complete message, then an oversized un-terminated remainder.
+    (client as any).buffer =
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }) + '\n' +
+      'y'.repeat(MCP_MAX_STDIO_BUFFER + 1);
+    (client as any).processBuffer();
+
+    assert.ok(notifications.includes('notifications/tools/list_changed'), 'complete message still parsed');
+    assert.equal(protocolErrors, 1);
+    assert.equal((client as any).buffer, '');
+  });
+
+  it('does not drop an un-terminated remainder at or below the cap', () => {
+    const client = new McpClient({ command: '' });
+    let protocolErrors = 0;
+    client.on('protocol-error', () => protocolErrors++);
+
+    // Exactly at the cap with no newline — retained, not dropped.
+    (client as any).buffer = 'z'.repeat(MCP_MAX_STDIO_BUFFER);
+    (client as any).processBuffer();
+
+    assert.equal(protocolErrors, 0);
+    assert.equal((client as any).buffer.length, MCP_MAX_STDIO_BUFFER);
+  });
+
+  it('bounds accumulation driven through the stdout data handler', () => {
+    const client = new McpClient({ command: '' });
+    let protocolErrors = 0;
+    client.on('protocol-error', () => protocolErrors++);
+
+    // Simulate the real stdout 'data' accumulation path across chunks.
+    const feed = (chunk: string) => {
+      (client as any).buffer += chunk;
+      (client as any).processBuffer();
+    };
+    const chunk = 'q'.repeat(4 * 1024 * 1024); // 4 MiB, no newline
+    feed(chunk);
+    feed(chunk);
+    feed(chunk);
+    feed(chunk);
+    feed(chunk); // 20 MiB total, never a newline → must have been bounded
+
+    assert.ok(protocolErrors >= 1, 'overflow was signalled');
+    assert.ok((client as any).buffer.length <= MCP_MAX_STDIO_BUFFER, 'buffer stayed bounded');
   });
 });
