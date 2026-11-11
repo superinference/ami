@@ -66,11 +66,12 @@ describe('STREAM_CHUNK_TYPES', () => {
 });
 
 describe('OUTPUT_STYLES', () => {
-  it('contains all 3 output styles', () => {
-    assert.equal(OUTPUT_STYLES.length, 3);
+  it('contains the 4 built-in output styles (incl. learning — audit #5)', () => {
+    assert.equal(OUTPUT_STYLES.length, 4);
     assert.ok(OUTPUT_STYLES.includes('default'));
     assert.ok(OUTPUT_STYLES.includes('concise'));
     assert.ok(OUTPUT_STYLES.includes('explanatory'));
+    assert.ok(OUTPUT_STYLES.includes('learning'));
   });
 });
 

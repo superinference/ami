@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 
-function deepSortKeys(obj: unknown): unknown {
+/** Recursively sort object keys so JSON.stringify is canonical (for stable hashing). */
+export function deepSortKeys(obj: unknown): unknown {
   if (Array.isArray(obj)) return obj.map(deepSortKeys);
   if (obj && typeof obj === 'object') {
     const sorted: Record<string, unknown> = {};

@@ -1,12 +1,10 @@
 import type { Message } from './types';
+// Single source of truth for the ~4-chars/token heuristic (dedup: audit #16). Re-export
+// it here too so existing importers of estimateTokens from this module keep working.
+import { estimateTokens } from './utils/tokens';
+export { estimateTokens } from './utils/tokens';
 
-const CHARS_PER_TOKEN = 4;
 const OVERHEAD_PER_MESSAGE = 4; // role header, delimiters
-
-export function estimateTokens(text: string): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}
 
 export function estimateToolCallTokens(
   toolName: string,
