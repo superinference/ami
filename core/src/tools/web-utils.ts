@@ -26,6 +26,10 @@ export function isPrivateIP(ip: string): boolean {
   if (/^10\./.test(ip)) return true;
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
   if (/^192\.168\./.test(ip)) return true;
+  // "This host on this network" (0.0.0.0/8) — the whole first-octet-0 range,
+  // not just the 0.0.0.0 literal. Many stacks route 0.0.0.x to localhost, so
+  // it can bypass a loopback-only block (SSRF micro-gap).
+  if (/^0\./.test(ip)) return true;
   // Loopback
   if (/^127\./.test(ip)) return true;
   // Link-local
@@ -43,7 +47,7 @@ export function isBlockedRedirectTarget(url: string): boolean {
     const hostname = parsed.hostname.toLowerCase();
     if (BLOCKED_HOSTNAMES.has(hostname)) return true;
     // Block obvious private IP patterns in the hostname itself
-    if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.0\.0\.0|169\.254\.)/.test(hostname)) return true;
+    if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.|169\.254\.)/.test(hostname)) return true;
     if (hostname === '::1' || hostname.startsWith('[::')) return true;
     return false;
   } catch { return true; }

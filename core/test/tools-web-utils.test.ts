@@ -64,6 +64,12 @@ describe('isPrivateIP', () => {
   it('::1 is private', () => assert.ok(isPrivateIP('::1')));
   it(':: is private', () => assert.ok(isPrivateIP('::')));
   it('0.0.0.0 is private', () => assert.ok(isPrivateIP('0.0.0.0')));
+  // 0.0.0.0/8 "this host" range — whole first-octet-0 block, not just the literal
+  it('0.0.0.1 is private (0.0.0.0/8)', () => assert.ok(isPrivateIP('0.0.0.1')));
+  it('0.1.2.3 is private (0.0.0.0/8)', () => assert.ok(isPrivateIP('0.1.2.3')));
+  it('0.255.255.255 is private (0.0.0.0/8)', () => assert.ok(isPrivateIP('0.255.255.255')));
+  it('::ffff:0.0.0.1 is private (0.0.0.0/8 via mapped v6)', () => assert.ok(isPrivateIP('::ffff:0.0.0.1')));
+  it('10.0.0.0 is still public-boundary sanity (first octet 10, not 0)', () => assert.ok(isPrivateIP('10.0.0.0')));
   it('fe80::1 is private (link-local)', () => assert.ok(isPrivateIP('fe80::1')));
   it('fc00::1 is private', () => assert.ok(isPrivateIP('fc00::1')));
   it('fd12::1 is private', () => assert.ok(isPrivateIP('fd12::1')));
@@ -112,6 +118,14 @@ describe('isBlockedRedirectTarget', () => {
 
   it('blocks 0.0.0.0', () => {
     assert.ok(isBlockedRedirectTarget('http://0.0.0.0/path'));
+  });
+
+  it('blocks 0.0.0.0/8 range (0.0.0.1)', () => {
+    assert.ok(isBlockedRedirectTarget('http://0.0.0.1/path'));
+  });
+
+  it('blocks 0.0.0.0/8 range (0.1.2.3)', () => {
+    assert.ok(isBlockedRedirectTarget('http://0.1.2.3/path'));
   });
 
   it('blocks 169.254.x URLs', () => {
