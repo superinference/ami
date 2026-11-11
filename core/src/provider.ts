@@ -16,6 +16,7 @@ import { createDeepInfra } from '@ai-sdk/deepinfra';
 import { createCerebras } from '@ai-sdk/cerebras';
 import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
+import { randomUUID } from 'node:crypto';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
@@ -563,6 +564,32 @@ export function deepMergeRecords(
   return out;
 }
 
+/** Client request-id header name (L6). Carries a per-request id for log correlation / traceability. */
+export const REQUEST_ID_HEADER = 'x-superinference-request-id';
+
+/**
+ * Test seam for request-id generation so tests can assert a deterministic id.
+ * Defaults to crypto.randomUUID so production behavior is unchanged.
+ */
+export const requestIdHooks: { generate: () => string } = { generate: randomUUID };
+
+/**
+ * L6: build the client request-id header for an outgoing API call. Returns a
+ * single `{ 'x-superinference-request-id': <uuid> }` entry so logs on both ends
+ * can be correlated. Purely ADDITIVE: if the caller/config already set that
+ * header (any casing), returns `{}` so the caller's value is never overwritten.
+ */
+export function buildRequestIdHeader(
+  existingHeaders?: Record<string, string>,
+): Record<string, string> {
+  if (existingHeaders) {
+    for (const key of Object.keys(existingHeaders)) {
+      if (key.toLowerCase() === REQUEST_ID_HEADER) return {};
+    }
+  }
+  return { [REQUEST_ID_HEADER]: requestIdHooks.generate() };
+}
+
 export function withExtraHeaders(
   extraHeaders: Record<string, string> | undefined,
   baseFetch: typeof globalThis.fetch = globalThis.fetch,
@@ -894,7 +921,11 @@ export function resolveModel(config: ProviderConfig) {
   // is set, so proxyFetch === globalThis.fetch and behavior is unchanged.
   const proxyFetch = withProxyDispatcher(globalThis.fetch)!;
   const proxyActive = proxyFetch !== globalThis.fetch;
-  const headerFetch = withExtraHeaders(config.extraHeaders, proxyFetch);
+  // L6: attach a client-generated request-id header for log correlation /
+  // traceability, unless the caller already set one. Additive — merged into the
+  // same extra-header fetch wrapper so it rides every outgoing API request.
+  const headersWithRequestId = { ...(config.extraHeaders ?? {}), ...buildRequestIdHeader(config.extraHeaders) };
+  const headerFetch = withExtraHeaders(headersWithRequestId, proxyFetch);
   const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? proxyFetch);
   const fetch = bodyFetch ?? headerFetch ?? (proxyActive ? proxyFetch : undefined);
 

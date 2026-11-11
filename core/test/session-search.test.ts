@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { searchSessions } from '../src/session-search';
+import { searchSessions, searchSessionsRanked } from '../src/session-search';
 
 describe('searchSessions', () => {
   let tmpDir: string;
@@ -155,5 +155,110 @@ describe('searchSessions', () => {
       .filter(r => r.sessionId === 'older' || r.sessionId === 'newer')
       .map(r => r.sessionId);
     assert.deepEqual(ids, ['newer', 'older']);
+  });
+});
+
+describe('searchSessionsRanked (optional LLM-ranking tier)', () => {
+  let tmpDir: string;
+
+  // Three sessions each matching the query token with equal score, so the
+  // substring/recency order is deterministic and a reranker can reorder them.
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-rank-test-'));
+    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(path.join(sessDir, 'a.json'), JSON.stringify({
+      id: 'alpha',
+      createdAt: '2024-03-01T00:00:00.000Z',
+      messages: [{ role: 'user', content: 'ranktoken alpha' }],
+    }));
+    fs.writeFileSync(path.join(sessDir, 'b.json'), JSON.stringify({
+      id: 'beta',
+      createdAt: '2024-02-01T00:00:00.000Z',
+      messages: [{ role: 'user', content: 'ranktoken beta' }],
+    }));
+    fs.writeFileSync(path.join(sessDir, 'c.json'), JSON.stringify({
+      id: 'gamma',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      messages: [{ role: 'user', content: 'ranktoken gamma' }],
+    }));
+  });
+
+  it('with no rankFn is identical to searchSessions (zero behavior change)', async () => {
+    const substring = searchSessions(tmpDir, 'ranktoken');
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken');
+    assert.deepEqual(ranked, substring);
+  });
+
+  it('with no rankFn preserves substring recency order (newest first)', async () => {
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken');
+    assert.deepEqual(ranked.map(r => r.sessionId), ['alpha', 'beta', 'gamma']);
+  });
+
+  it('respects limit before reranking', async () => {
+    let seen = 0;
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken', {
+      limit: 2,
+      rankFn: async (_q, candidates) => {
+        seen = candidates.length;
+        return candidates.map(c => c.sessionId);
+      },
+    });
+    assert.equal(seen, 2);
+    assert.equal(ranked.length, 2);
+  });
+
+  it('reorders candidates per the injected rankFn', async () => {
+    const rankFn = async (query: string, candidates: { sessionId: string }[]) => {
+      assert.equal(query, 'ranktoken');
+      assert.equal(candidates.length, 3);
+      // Deliberately invert the default (recency) order.
+      return ['gamma', 'beta', 'alpha'];
+    };
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken', { rankFn });
+    assert.deepEqual(ranked.map(r => r.sessionId), ['gamma', 'beta', 'alpha']);
+    // Prove it differs from the no-rankFn (substring) order.
+    const substring = await searchSessionsRanked(tmpDir, 'ranktoken');
+    assert.notDeepEqual(ranked.map(r => r.sessionId), substring.map(r => r.sessionId));
+  });
+
+  it('appends candidates omitted from the rankFn output in original order', async () => {
+    // Ranker only mentions one id; the other two must be appended (original order).
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken', {
+      rankFn: async () => ['gamma'],
+    });
+    assert.deepEqual(ranked.map(r => r.sessionId), ['gamma', 'alpha', 'beta']);
+  });
+
+  it('ignores unknown ids returned by the rankFn', async () => {
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken', {
+      rankFn: async () => ['does-not-exist', 'beta'],
+    });
+    assert.deepEqual(ranked.map(r => r.sessionId), ['beta', 'alpha', 'gamma']);
+  });
+
+  it('degrades gracefully to substring order when rankFn throws', async () => {
+    const substring = searchSessions(tmpDir, 'ranktoken');
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken', {
+      rankFn: async () => { throw new Error('LLM unavailable'); },
+    });
+    assert.deepEqual(ranked.map(r => r.sessionId), substring.map(r => r.sessionId));
+  });
+
+  it('degrades gracefully to substring order when rankFn rejects', async () => {
+    const substring = searchSessions(tmpDir, 'ranktoken');
+    const ranked = await searchSessionsRanked(tmpDir, 'ranktoken', {
+      rankFn: () => Promise.reject(new Error('timeout')),
+    });
+    assert.deepEqual(ranked.map(r => r.sessionId), substring.map(r => r.sessionId));
+  });
+
+  it('does not invoke rankFn when there are no candidates', async () => {
+    let called = false;
+    const ranked = await searchSessionsRanked(tmpDir, 'nonexistentterm12345', {
+      rankFn: async () => { called = true; return []; },
+    });
+    assert.equal(ranked.length, 0);
+    assert.equal(called, false);
   });
 });

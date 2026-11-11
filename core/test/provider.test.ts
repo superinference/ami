@@ -17,6 +17,9 @@ import {
   fetchAdvertisedContextWindow,
   fetchHuggingFaceContextWindow,
   buildRepairToolCall,
+  buildRequestIdHeader,
+  requestIdHooks,
+  REQUEST_ID_HEADER,
 } from '../src/provider';
 import { fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../src/model-capabilities';
 import { estimateTokens } from '../src/utils/tokens';
@@ -2167,5 +2170,90 @@ describe('buildRepairToolCall', () => {
       assert.ok(result !== null, `${hallucinated} should be corrected`);
       assert.equal(result!.toolName, expected, `${hallucinated} should map to ${expected}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRequestIdHeader (L6 — client request-id for traceability)
+// ---------------------------------------------------------------------------
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+describe('buildRequestIdHeader', () => {
+  it('uses x-superinference-request-id as the header name', () => {
+    assert.equal(REQUEST_ID_HEADER, 'x-superinference-request-id');
+  });
+
+  it('returns a uuid-shaped header when none is present', () => {
+    const header = buildRequestIdHeader();
+    const value = header[REQUEST_ID_HEADER];
+    assert.ok(typeof value === 'string' && UUID_RE.test(value), `expected uuid, got ${value}`);
+    assert.deepEqual(Object.keys(header), [REQUEST_ID_HEADER]);
+  });
+
+  it('returns a header when existing headers do not include it', () => {
+    const header = buildRequestIdHeader({ 'x-other': 'v' });
+    assert.ok(UUID_RE.test(header[REQUEST_ID_HEADER]!));
+  });
+
+  it('returns {} when the header is already present (no overwrite)', () => {
+    const header = buildRequestIdHeader({ [REQUEST_ID_HEADER]: 'caller-set' });
+    assert.deepEqual(header, {});
+  });
+
+  it('detects a present header case-insensitively', () => {
+    const header = buildRequestIdHeader({ 'X-SuperInference-Request-Id': 'caller-set' });
+    assert.deepEqual(header, {});
+  });
+
+  it('generates a unique id across calls', () => {
+    const a = buildRequestIdHeader()[REQUEST_ID_HEADER];
+    const b = buildRequestIdHeader()[REQUEST_ID_HEADER];
+    assert.notEqual(a, b);
+  });
+
+  it('honors the requestIdHooks.generate seam for deterministic ids', () => {
+    const original = requestIdHooks.generate;
+    try {
+      requestIdHooks.generate = () => 'deterministic-id';
+      assert.equal(buildRequestIdHeader()[REQUEST_ID_HEADER], 'deterministic-id');
+    } finally {
+      requestIdHooks.generate = original;
+    }
+  });
+});
+
+describe('request-id header is wired into the outgoing request path', () => {
+  it('sends x-superinference-request-id on the wire (and does not overwrite a caller value)', async () => {
+    const seen: Array<string | undefined> = [];
+    const cap = http.createServer((req, res) => {
+      seen.push(req.headers[REQUEST_ID_HEADER] as string | undefined);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end('data: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}\n\ndata: {"id":"c","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}]}\n\ndata: [DONE]\n\n');
+    });
+    await new Promise<void>(resolve => cap.listen(0, '127.0.0.1', () => resolve()));
+    const capPort = (cap.address() as { port: number }).port;
+    const original = requestIdHooks.generate;
+    try {
+      requestIdHooks.generate = () => '11111111-2222-3333-4444-555555555555';
+      // Auto-generated case.
+      const cfg = makeConfig({ baseUrl: `http://127.0.0.1:${capPort}/v1`, model: 'test-model' });
+      for await (const _c of streamChatCompletion(cfg, [{ role: 'user', content: 'Hi' }], [], new AbortController().signal)) {
+        // drain
+      }
+      // Caller-set case must survive unchanged.
+      const cfg2 = makeConfig({
+        baseUrl: `http://127.0.0.1:${capPort}/v1`,
+        model: 'test-model',
+        extraHeaders: { [REQUEST_ID_HEADER]: 'caller-request-id' },
+      });
+      for await (const _c of streamChatCompletion(cfg2, [{ role: 'user', content: 'Hi' }], [], new AbortController().signal)) {
+        // drain
+      }
+    } finally {
+      requestIdHooks.generate = original;
+      await new Promise<void>(resolve => cap.close(() => resolve()));
+    }
+    assert.equal(seen[0], '11111111-2222-3333-4444-555555555555', 'generated request-id must reach the wire');
+    assert.equal(seen[1], 'caller-request-id', 'caller-set request-id must not be overwritten');
   });
 });
