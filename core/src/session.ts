@@ -44,6 +44,7 @@ export interface Session {
     skill?: string;
     thinkingLevel?: string;
     outputStyle?: string;
+    goal?: string;
   };
 }
 

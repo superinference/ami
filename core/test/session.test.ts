@@ -48,6 +48,32 @@ describe('SessionManager', () => {
     assert.equal(sm.load('nonexistent'), null);
   });
 
+  it('persists settings.goal across save/load (M37)', () => {
+    const session = makeSession('s-goal', [{ role: 'user', content: 'hello' }]);
+    session.settings = { goal: 'Ship M37' };
+    sm.save(session);
+
+    // Raw JSON must carry the goal so --resume can restore it.
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(sm.getSessionDir(), 's-goal.json'), 'utf-8'),
+    );
+    assert.equal(raw.settings.goal, 'Ship M37');
+
+    const loaded = sm.load('s-goal');
+    assert.ok(loaded);
+    assert.equal(loaded.settings?.goal, 'Ship M37');
+  });
+
+  it('leaves settings.goal undefined when no goal was set (M37)', () => {
+    const session = makeSession('s-no-goal', [{ role: 'user', content: 'hi' }]);
+    session.settings = { skill: 'code' };
+    sm.save(session);
+
+    const loaded = sm.load('s-no-goal');
+    assert.ok(loaded);
+    assert.equal(loaded.settings?.goal, undefined);
+  });
+
   it('loadLatest returns null when no sessions exist', () => {
     assert.equal(sm.loadLatest(), null);
   });
