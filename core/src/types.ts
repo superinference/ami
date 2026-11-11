@@ -26,7 +26,12 @@ export type ChatMode = (typeof CHAT_MODES)[number];
 export const THEMES = ['default', 'dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
 
-export const OUTPUT_STYLES = ['default', 'concise', 'explanatory'] as const;
+// The built-in output-style NAMES (the string overlays live in common's
+// output-style-manager BUILTIN_OUTPUT_STYLES). `learning` is a first-class built-in —
+// accepted by the engine, /output-style, and --output-style, and documented in HELP —
+// so it MUST be advertised here too (audit #5: the manifest was under-advertising it).
+// A gate (output-style-manager test) asserts these names === the manager's built-in set.
+export const OUTPUT_STYLES = ['default', 'concise', 'explanatory', 'learning'] as const;
 export type OutputStyle = (typeof OUTPUT_STYLES)[number];
 
 /**
