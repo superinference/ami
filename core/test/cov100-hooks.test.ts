@@ -201,3 +201,33 @@ describe('hooks.ts — loadFromFile plugins discovery (guards B)', () => {
     assert.equal(hm.getSummary().stop, 0);
   });
 });
+
+describe('loadFromFile — .claude/settings.json (R2-M8, Claude Code compat)', () => {
+  it('loads a map-keyed hook from .claude/settings.json and runs it', async () => {
+    const cwd = mkTmp();
+    fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'echo blocked >&2; exit 2' }] }] } }),
+    );
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(cwd);
+    const decision = await hm.executePreToolUse(makePreToolCtx());
+    assert.equal(decision.action, 'deny', 'hook from .claude/settings.json must run and block (exit 2)');
+  });
+
+  it('gates project .claude/settings.json hooks behind workspace trust', async () => {
+    const cwd = mkTmp();
+    fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'exit 2' }] }] } }),
+    );
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(false); // untrusted → project hooks skipped
+    hm.loadFromFile(cwd);
+    const decision = await hm.executePreToolUse(makePreToolCtx());
+    assert.notEqual(decision.action, 'deny', 'untrusted project hook must not run');
+  });
+});

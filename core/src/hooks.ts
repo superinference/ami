@@ -644,6 +644,12 @@ export class HookManager extends EventEmitter {
     const sources: Array<{ path: string; source: 'project' | 'user' }> = [
       { path: filePath, source: 'project' },
       { path: userHooksPath, source: 'user' },
+      // Claude Code compatibility: load hooks from .claude/settings.json
+      // ({ "hooks": { "PreToolUse": [{ matcher, hooks: [...] }] } }). The
+      // map-keyed `hooks` field is handled by normalizeMapKeyedHooks below, and
+      // project-scoped entries are gated by workspace trust. (R2-M8)
+      { path: path.join(cwd, '.claude', 'settings.json'), source: 'project' },
+      { path: path.join(os.homedir(), '.claude', 'settings.json'), source: 'user' },
     ];
 
     // Plugin bundles contribute hooks.json (project-scoped ones gated by trust).
