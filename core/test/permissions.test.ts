@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations, stripEnvVarPrefix, isBuildConfigFile } from '../src/permissions';
+import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations, stripEnvVarPrefix, isBuildConfigFile, normalizePermissionMode, PERMISSION_MODES } from '../src/permissions';
 import type { PermissionMode, PermissionRule } from '../src/permissions';
 
 function makeTempDir(): string {
@@ -1701,5 +1701,51 @@ describe('M9 — deny always wins regardless of rule order', () => {
       { tool: 'web_fetch', action: 'ask' },
     ]);
     assert.equal(await pm.check('web_fetch', { url: 'http://x' }), 'allow');
+  });
+});
+
+describe('normalizePermissionMode (discovery-driven acceptance + dedup)', () => {
+  it('accepts every canonical mode and rejects unknowns', () => {
+    for (const m of PERMISSION_MODES) assert.equal(normalizePermissionMode(m), m);
+    assert.equal(normalizePermissionMode('bogus'), null);
+    assert.equal(normalizePermissionMode(''), null);
+  });
+
+  it('maps the removed legacy duplicate dontAsk → deny-all', () => {
+    assert.equal(normalizePermissionMode('dontAsk'), 'deny-all');
+    // and dontAsk is no longer an advertised mode
+    assert.ok(!(PERMISSION_MODES as readonly string[]).includes('dontAsk'));
+  });
+});
+
+// Dynamic semantic-duplicate gate: no two DISTINCT permission modes may produce an
+// identical verdict across a probe matrix. This is exactly what would have caught the
+// dontAsk ≡ deny-all duplicate before it shipped — and prevents a new one.
+describe('permission modes are semantically distinct (no duplicates)', () => {
+  it('no two modes yield identical verdicts across a tool/input probe matrix', async () => {
+    const probes: Array<[string, Record<string, unknown>]> = [
+      ['file_read', { file_path: 'a.ts' }],
+      ['file_edit', { file_path: 'a.ts' }],
+      ['file_edit', { file_path: 'package.json' }],
+      ['bash', { command: 'ls' }],
+      ['bash', { command: 'rm -rf build' }],
+      ['bash', { command: 'cat ~/.ssh/id_rsa' }],
+      ['web_fetch', { url: 'http://x' }],
+      ['grep', { pattern: 'x' }],
+    ];
+    const sig = async (mode: PermissionMode): Promise<string> => {
+      const pm = new PermissionManager(mode);
+      const out: string[] = [];
+      for (const [t, i] of probes) out.push(await pm.check(t, i));
+      return out.join('|');
+    };
+    const seen = new Map<string, string>();
+    for (const mode of PERMISSION_MODES) {
+      const s = await sig(mode);
+      const dup = seen.get(s);
+      assert.equal(dup, undefined,
+        `permission modes "${dup}" and "${mode}" are SEMANTIC DUPLICATES (identical verdicts: ${s}) — merge them`);
+      seen.set(s, mode);
+    }
   });
 });

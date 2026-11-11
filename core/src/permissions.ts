@@ -9,8 +9,26 @@ import { deobfuscateEnvExpansion } from './tools/command-normalize';
 // Types
 // ---------------------------------------------------------------------------
 
-export const PERMISSION_MODES = ['ask', 'auto-allow', 'deny-all', 'acceptEdits', 'dontAsk', 'bypassPermissions', 'plan'] as const;
+// Each mode is a DISTINCT permission semantic (names mix AMI-native kebab and
+// Claude-Code wire-names — that is intentional, we match CC semantics, not a naming
+// convention). `dontAsk` was removed: it was a semantic DUPLICATE of `deny-all` (both
+// deny every tool call); normalizePermissionMode maps the legacy spelling to deny-all.
+export const PERMISSION_MODES = ['ask', 'auto-allow', 'deny-all', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+/**
+ * The single acceptance boundary for a permission-mode string (discovery-driven: the
+ * valid set IS {@link PERMISSION_MODES}, so a new mode is accepted everywhere the moment
+ * it is added to the const — no hardcoded subset can drift, cf. ui#19). Returns the mode,
+ * maps the removed legacy duplicate `dontAsk` → `deny-all` for back-compat, or null if
+ * unknown. Every consumer (CLI `--permission-mode`, project config, `/permissions <mode>`)
+ * MUST validate through this rather than an inline list.
+ */
+export function normalizePermissionMode(raw: string): PermissionMode | null {
+  const m = raw.trim();
+  if (m === 'dontAsk') return 'deny-all';
+  return (PERMISSION_MODES as readonly string[]).includes(m) ? (m as PermissionMode) : null;
+}
 
 export interface PermissionRule {
   tool: string;       // tool name or '*'
@@ -978,7 +996,7 @@ export class PermissionManager {
 
     // dangerouslyDisableSandbox always requires explicit confirmation
     if (toolName === 'bash' && input.dangerouslyDisableSandbox === true) {
-      if (this.mode === 'deny-all' || this.mode === 'dontAsk') return 'deny';
+      if (this.mode === 'deny-all') return 'deny';
       return 'ask';
     }
 
@@ -992,7 +1010,6 @@ export class PermissionManager {
       return 'allow';
     }
     if (this.mode === 'deny-all') return 'deny';
-    if (this.mode === 'dontAsk') return 'deny';
 
     if (this.mode === 'bypassPermissions') {
       const safetyPaths = [
@@ -1489,7 +1506,7 @@ export class PermissionManager {
    * a matching rule (first match wins, like check()) whose action is 'deny'?
    *
    * Unlike check(), this deliberately ignores mode-level decisions
-   * ('deny-all' / 'dontAsk' / default 'ask'). Read-only tools are safe by
+   * ('deny-all' / default 'ask'). Read-only tools are safe by
    * design and must keep running under those modes (detached mode defaults to
    * 'deny-all' yet relies on read-only tools), so the read-only path uses this
    * to honor only a rule/denial the user set explicitly — closing the gap where

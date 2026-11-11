@@ -37,6 +37,7 @@ import { detectProvider, listProviders, listModels, formatModelList } from '../s
 // ── permissions.ts ─────────────────────────────────────────────────────────
 import {
   PermissionManager,
+  normalizePermissionMode,
   containsUnquotedExpansion,
   stripSafeEnvVars,
   detectHardlineCommand,
@@ -1591,9 +1592,11 @@ describe('PermissionManager — acceptEdits mode (lines 541-548)', () => {
   });
 });
 
-describe('PermissionManager — dontAsk mode (line 518)', () => {
-  it('denies everything in dontAsk mode', async () => {
-    const pm = new PermissionManager('dontAsk');
+describe('PermissionManager — legacy dontAsk → deny-all alias', () => {
+  it('denies everything via the normalized legacy dontAsk alias (dedup back-compat)', async () => {
+    const mode = normalizePermissionMode('dontAsk');
+    assert.equal(mode, 'deny-all');
+    const pm = new PermissionManager(mode!);
     assert.equal(await pm.check('file_read', {}), 'deny');
     assert.equal(await pm.check('bash', { command: 'ls' }), 'deny');
   });

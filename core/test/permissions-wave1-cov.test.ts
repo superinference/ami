@@ -7,6 +7,7 @@ import * as os from 'os';
 
 import {
   PermissionManager,
+  normalizePermissionMode,
   PolicyMemo,
   verdictRank,
   stripSafeEnvVars,
@@ -398,8 +399,8 @@ describe('check() — dangerouslyDisableSandbox arms', () => {
     const pm = new PermissionManager('deny-all');
     assert.equal(await pm.check('bash', { command: 'ls', dangerouslyDisableSandbox: true }), 'deny');
   });
-  it('denies in dontAsk mode', async () => {
-    const pm = new PermissionManager('dontAsk');
+  it('denies via the legacy dontAsk→deny-all alias (dedup back-compat)', async () => {
+    const pm = new PermissionManager(normalizePermissionMode('dontAsk')!);
     assert.equal(await pm.check('bash', { command: 'ls', dangerouslyDisableSandbox: true }), 'deny');
   });
 });

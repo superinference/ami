@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { PermissionManager } from '../src/permissions';
+import { PermissionManager, normalizePermissionMode } from '../src/permissions';
 
 describe('dangerouslyDisableSandbox permission guard', () => {
   const sandboxInput = { command: 'ls -la', dangerouslyDisableSandbox: true };
@@ -31,8 +31,10 @@ describe('dangerouslyDisableSandbox permission guard', () => {
     assert.equal(await pm.check('bash', sandboxInput), 'deny');
   });
 
-  it('returns deny in dontAsk mode', async () => {
-    const pm = new PermissionManager('dontAsk');
+  it('legacy dontAsk normalizes to deny-all and denies (dedup back-compat)', async () => {
+    const mode = normalizePermissionMode('dontAsk');
+    assert.equal(mode, 'deny-all');
+    const pm = new PermissionManager(mode!);
     assert.equal(await pm.check('bash', sandboxInput), 'deny');
   });
 
