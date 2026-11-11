@@ -322,6 +322,162 @@ describe('tool_search with skills', () => {
   });
 });
 
+describe('tool_search — select: multi-name (M4a)', () => {
+  beforeEach(() => { setSearchableTools(mockTools); });
+
+  it('loads multiple tools with select:A,B', async () => {
+    const loaded: string[] = [];
+    const c: ToolContext = { ...ctx, _loadDeferredTool: (n: string) => { loaded.push(n); } };
+    const result = await toolSearchTool.execute({ query: 'select:bash,grep' }, c);
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(result.output);
+    assert.ok(Array.isArray(parsed.tools));
+    assert.equal(parsed.tools.length, 2);
+    assert.deepEqual(parsed.tools.map((t: any) => t.name), ['bash', 'grep']);
+    assert.deepEqual(parsed.notFound, []);
+    // Every matched tool must be loaded as a deferred tool.
+    assert.deepEqual(loaded, ['bash', 'grep']);
+  });
+
+  it('still loads a single tool with select:A (unchanged shape)', async () => {
+    const result = await toolSearchTool.execute({ query: 'select:bash' }, ctx);
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(result.output);
+    // Single select returns a bare payload, NOT the {tools,skills,notFound} wrapper.
+    assert.equal(parsed.name, 'bash');
+    assert.ok(parsed.inputSchema);
+    assert.equal(parsed.tools, undefined);
+  });
+
+  it('trims whitespace and ignores empty names in a multi-select', async () => {
+    const result = await toolSearchTool.execute({ query: 'select: bash , , grep , ' }, ctx);
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(result.output);
+    assert.deepEqual(parsed.tools.map((t: any) => t.name), ['bash', 'grep']);
+    assert.deepEqual(parsed.notFound, []);
+  });
+
+  it('dedupes repeated names (two uniques stay multi)', async () => {
+    const result = await toolSearchTool.execute({ query: 'select:bash,bash,grep' }, ctx);
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(result.output);
+    assert.equal(parsed.tools.length, 2);
+    assert.deepEqual(parsed.tools.map((t: any) => t.name), ['bash', 'grep']);
+  });
+
+  it('collapses to the single-name path when dupes reduce to one', async () => {
+    const result = await toolSearchTool.execute({ query: 'select:bash,bash' }, ctx);
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(result.output);
+    assert.equal(parsed.name, 'bash');
+    assert.equal(parsed.tools, undefined);
+  });
+
+  it('reports unknown names in notFound while still loading the known ones', async () => {
+    const loaded: string[] = [];
+    const c: ToolContext = { ...ctx, _loadDeferredTool: (n: string) => { loaded.push(n); } };
+    const result = await toolSearchTool.execute({ query: 'select:bash,nope' }, c);
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(result.output);
+    assert.deepEqual(parsed.tools.map((t: any) => t.name), ['bash']);
+    assert.deepEqual(parsed.notFound, ['nope']);
+    assert.deepEqual(loaded, ['bash']);
+  });
+
+  it('errors gracefully when every name in a multi-select is unknown', async () => {
+    const result = await toolSearchTool.execute({ query: 'select:nope,nada' }, ctx);
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('not found'));
+    assert.ok(result.output.includes('"nope"'));
+    assert.ok(result.output.includes('"nada"'));
+  });
+
+  it('resolves skills alongside tools in a multi-select', async () => {
+    const result = await toolSearchTool.execute({ query: 'select:bash,research' }, ctxWithSkills);
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(result.output);
+    assert.deepEqual(parsed.tools.map((t: any) => t.name), ['bash']);
+    assert.equal(parsed.skills.length, 1);
+    assert.equal(parsed.skills[0].name, 'research');
+    assert.equal(parsed.skills[0].type, 'skill');
+  });
+
+  it('treats a bare select: (all-empty) as a single not-found', async () => {
+    const result = await toolSearchTool.execute({ query: 'select:' }, ctx);
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('not found'));
+  });
+});
+
+describe('tool_search — +required keyword terms (M4b)', () => {
+  beforeEach(() => { setSearchableTools(mockTools); });
+
+  it('restricts matches to tools whose name contains the +term, ranked by the rest', async () => {
+    const result = await toolSearchTool.execute({ query: '+file read' }, ctx);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('file_read'));
+    assert.ok(result.output.includes('file_write'));
+    // bash/grep names lack "file" so they are excluded even if desc/rank match.
+    assert.ok(!result.output.includes('**bash**'));
+    assert.ok(!result.output.includes('**grep**'));
+    // "read" ranks file_read above file_write.
+    assert.ok(result.output.indexOf('file_read') < result.output.indexOf('file_write'));
+  });
+
+  it('returns no matches when no tool name contains the +term', async () => {
+    const result = await toolSearchTool.execute({ query: '+zzznotaname read' }, ctx);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('No tools or skills matched'));
+  });
+
+  it('surfaces name matches even with no plain ranking terms (+term only)', async () => {
+    setSearchableTools([
+      { name: 'slack_send', description: 'send a slack message', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: false, execute: async () => ({ output: '', isError: false }) },
+      { name: 'email_send', description: 'send an email', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: false, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    const result = await toolSearchTool.execute({ query: '+slack' }, ctx);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('slack_send'));
+    assert.ok(!result.output.includes('email_send'));
+  });
+
+  it('requires ALL +terms to appear in the name (multiple + terms)', async () => {
+    setSearchableTools([
+      { name: 'slack_send', description: 'send to slack', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: false, execute: async () => ({ output: '', isError: false }) },
+      { name: 'slack_read', description: 'read from slack', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+      { name: 'email_send', description: 'send an email', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: false, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    const result = await toolSearchTool.execute({ query: '+slack +send' }, ctx);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('slack_send'));
+    assert.ok(!result.output.includes('slack_read'));
+    assert.ok(!result.output.includes('email_send'));
+  });
+
+  it('applies the +term gate to skills by name too', async () => {
+    const result = await toolSearchTool.execute({ query: '+research stance' }, ctxWithSkills);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('research'));
+    // "explain"/"pentest" names lack "research" so they are gated out.
+    assert.ok(!result.output.includes('**explain**'));
+    assert.ok(!result.output.includes('**pentest**'));
+  });
+
+  it('ignores a lone "+" term and ranks by the remaining plain terms', async () => {
+    const result = await toolSearchTool.execute({ query: '+ file' }, ctx);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('file_read'));
+    assert.ok(result.output.includes('file_write'));
+  });
+
+  it('leaves plain (no-+) keyword ranking unchanged', async () => {
+    const result = await toolSearchTool.execute({ query: 'file' }, ctx);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('file_read'));
+    assert.ok(result.output.includes('file_write'));
+  });
+});
+
 describe('tool_search metadata', () => {
   it('has the correct name', () => {
     assert.equal(toolSearchTool.name, 'tool_search');

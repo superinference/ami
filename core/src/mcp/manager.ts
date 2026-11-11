@@ -120,6 +120,13 @@ export interface PendingServerInfo {
   state: McpServerState;
   error?: string;
   imageAvailable?: boolean;
+  /**
+   * M14 — true when this is a PROJECT-tier server from a repo's config that has
+   * not yet been approved by the user. Such a server is registered as pending and
+   * is NOT auto-connected (a cloned repo could point MCP at anything); it only
+   * connects after an explicit {@link McpManager.approvePendingServer} call.
+   */
+  needsApproval?: boolean;
 }
 
 function resolveEnvVars(headers: Record<string, string>): Record<string, string> {
@@ -147,6 +154,13 @@ export class McpManager extends EventEmitter {
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingServers = new Map<string, PendingServerInfo>();
   private serverErrors = new Map<string, string>();
+  /**
+   * M14 — names of PROJECT-tier MCP servers the user has approved. Seeded from a
+   * persisted store by the integrator ({@link setApprovedServers}) and extended by
+   * {@link approvePendingServer}. A project server in this set connects normally;
+   * one that is not is gated behind approval (registered pending, not auto-connected).
+   */
+  private _approvedServers = new Set<string>();
 
   /** Timestamp (ms) of the last tool call per server name. */
   _lastUsedAt = new Map<string, number>();
@@ -362,7 +376,7 @@ export class McpManager extends EventEmitter {
     this.clients.set(name, client);
   }
 
-  addPendingServer(name: string, config: McpServerConfig): void {
+  addPendingServer(name: string, config: McpServerConfig, opts?: { needsApproval?: boolean }): void {
     this.enforceAllowlist(name);
     if (this.clients.has(name) || this.pendingServers.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
@@ -374,11 +388,66 @@ export class McpManager extends EventEmitter {
         imageAvailable = this._isImageAvailable(runtime, config.containerConfig.image);
       }
     }
-    const info: PendingServerInfo = { name, config, state: 'pending', imageAvailable };
+    const info: PendingServerInfo = { name, config, state: 'pending', imageAvailable, needsApproval: opts?.needsApproval };
     this.pendingServers.set(name, info);
     this.configs.set(name, config);
-    coreLog('mcp', `pending MCP server registered: ${name} (image available: ${imageAvailable ?? 'n/a'})`);
+    coreLog('mcp', `pending MCP server registered: ${name} (image available: ${imageAvailable ?? 'n/a'}${opts?.needsApproval ? ', awaiting approval' : ''})`);
     this.emit('server-state-changed', name, 'pending');
+  }
+
+  /**
+   * M14 — seed the set of approved PROJECT-tier MCP servers. The integrator loads
+   * this from a persisted store (approval survives restarts) before calling
+   * {@link loadFromConfig}; a project server whose name is here connects normally,
+   * all others are gated. Replaces any previously-set approvals.
+   */
+  setApprovedServers(names: string[]): void {
+    this._approvedServers = new Set(names);
+  }
+
+  /** M14 — current approved PROJECT-tier server names (for the integrator to persist). */
+  getApprovedServers(): string[] {
+    return [...this._approvedServers];
+  }
+
+  /** M14 — true when the named project server has been approved. */
+  isServerApproved(name: string): boolean {
+    return this._approvedServers.has(name);
+  }
+
+  /**
+   * M14 — true when the named server is registered pending BECAUSE it still needs
+   * the user's approval (a not-yet-trusted project-tier config), as opposed to a
+   * lazy/on-demand pending server.
+   */
+  needsApproval(name: string): boolean {
+    const pending = this.pendingServers.get(name);
+    return !!pending && pending.needsApproval === true && !this.clients.has(name);
+  }
+
+  /** M14 — list the project-tier servers currently awaiting user approval. */
+  listPendingApprovals(): PendingServerInfo[] {
+    const result: PendingServerInfo[] = [];
+    for (const info of this.pendingServers.values()) {
+      if (info.needsApproval && !this.clients.has(info.name)) result.push(info);
+    }
+    return result;
+  }
+
+  /**
+   * M14 — approve a pending project-tier MCP server and connect it. Records the
+   * approval (so it is returned by {@link getApprovedServers} for persistence and
+   * the server connects normally next time), clears the approval gate, and brings
+   * the server up via the normal on-demand connect path.
+   */
+  async approvePendingServer(name: string): Promise<void> {
+    const pending = this.pendingServers.get(name);
+    if (!pending) {
+      throw new Error(`MCP server '${name}' is not pending approval`);
+    }
+    this._approvedServers.add(name);
+    pending.needsApproval = false;
+    await this.ensureConnected(name);
   }
 
   async ensureConnected(name: string): Promise<void> {
@@ -390,6 +459,11 @@ export class McpManager extends EventEmitter {
     const pending = this.pendingServers.get(name);
     if (pending?.state === 'disabled') {
       throw new Error(`MCP server '${name}' is disabled. Use /mcp start ${name} to re-enable it.`);
+    }
+    // M14 — a not-yet-approved project-tier server must not be connected on demand
+    // (e.g. by the mcp-connect tool); it stays pending until explicitly approved.
+    if (pending?.needsApproval) {
+      throw new Error(`MCP server '${name}' requires approval before it can connect. Use /mcp approve ${name} to approve it.`);
     }
     if (!pending) {
       if (!this.clients.has(name)) throw new Error(`MCP server '${name}' not found`);
@@ -834,7 +908,17 @@ export class McpManager extends EventEmitter {
     this._deniedServers = [];
   }
 
-  loadFromConfig(configPath: string): void {
+  /**
+   * Load MCP server configs from a JSON file.
+   *
+   * M14 — when `opts.projectScoped` is true, this config came from a repo (a
+   * project-tier `.mcp.json` / `.superinference/mcp.json`), which is untrusted: a
+   * cloned repo could point MCP at anything. Each NEW server that is not already in
+   * the approved set is registered PENDING (awaiting approval) instead of being
+   * auto-connected; only servers the user previously approved connect normally.
+   * For user/global-tier configs (the default), every server is added as before.
+   */
+  loadFromConfig(configPath: string, opts?: { projectScoped?: boolean }): void {
     if (!fs.existsSync(configPath)) return;
     try {
       const raw = fs.readFileSync(configPath, 'utf-8');
@@ -850,6 +934,12 @@ export class McpManager extends EventEmitter {
         // Skip denylisted servers without aborting the rest of the load (S9).
         if (this.isServerDenied(name, expanded)) {
           coreLog('mcp', `skipping denied MCP server "${name}"`);
+          continue;
+        }
+        // M14 — gate project-tier servers behind approval unless already approved.
+        if (opts?.projectScoped && !this._approvedServers.has(name)) {
+          coreLog('mcp', `project MCP server "${name}" requires approval — registered pending`);
+          this.addPendingServer(name, expanded, { needsApproval: true });
           continue;
         }
         this.addServer(name, expanded);

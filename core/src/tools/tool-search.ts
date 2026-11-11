@@ -14,6 +14,33 @@ function formatSkillActivation(skill: SkillDefinition): string {
   return `Run with: skill({skill: "${skill.name}"})`;
 }
 
+function toolPayload(tool: ToolDefinition): Record<string, unknown> {
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    isReadOnly: tool.isReadOnly,
+  };
+}
+
+function skillPayload(skill: SkillDefinition): Record<string, unknown> {
+  return {
+    type: 'skill',
+    name: skill.name,
+    description: skill.description,
+    whenToUse: skill.whenToUse || null,
+    isStance: isStanceSkill(skill),
+    activation: formatSkillActivation(skill),
+  };
+}
+
+function notFoundMessage(names: string[], skills: SkillDefinition[]): string {
+  const availableTools = _allTools.map(t => t.name);
+  const availableSkills = skills.map(s => s.name);
+  const label = names.map(n => `"${n}"`).join(', ');
+  return `${label} not found.\nTools: ${availableTools.join(', ')}\nSkills: ${availableSkills.length > 0 ? availableSkills.join(', ') : '(none)'}`;
+}
+
 export const toolSearchTool: ToolDefinition = {
   name: 'tool_search',
   description:
@@ -45,47 +72,74 @@ export const toolSearchTool: ToolDefinition = {
     const skills = context._skillManager?.listSkills() ?? [];
 
     if (query.startsWith('select:')) {
-      const name = query.slice('select:'.length).trim();
-      const tool = _allTools.find(t => t.name === name);
-      if (tool) {
-        context._loadDeferredTool?.(name);
-        return {
-          output: JSON.stringify({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-            isReadOnly: tool.isReadOnly,
-          }, null, 2),
-          isError: false,
-        };
+      // Parse one or more comma-separated names: trim each, drop empties, dedupe.
+      const rawNames = query
+        .slice('select:'.length)
+        .split(',')
+        .map(n => n.trim())
+        .filter(n => n.length > 0);
+      const names = [...new Set(rawNames)];
+
+      // Single-name select: preserve the original behavior — a bare JSON payload
+      // for the matched tool/skill, or a not-found error listing what's available.
+      if (names.length <= 1) {
+        const name = names[0] ?? '';
+        const tool = _allTools.find(t => t.name === name);
+        if (tool) {
+          context._loadDeferredTool?.(name);
+          return { output: JSON.stringify(toolPayload(tool), null, 2), isError: false };
+        }
+        const skill = context._skillManager?.getSkill(name);
+        if (skill) {
+          return { output: JSON.stringify(skillPayload(skill), null, 2), isError: false };
+        }
+        return { output: notFoundMessage([name], skills), isError: true };
       }
-      const skill = context._skillManager?.getSkill(name);
-      if (skill) {
-        return {
-          output: JSON.stringify({
-            type: 'skill',
-            name: skill.name,
-            description: skill.description,
-            whenToUse: skill.whenToUse || null,
-            isStance: isStanceSkill(skill),
-            activation: formatSkillActivation(skill),
-          }, null, 2),
-          isError: false,
-        };
+
+      // Multi-name select: resolve every listed name, loading all matched tools.
+      const toolsOut: Record<string, unknown>[] = [];
+      const skillsOut: Record<string, unknown>[] = [];
+      const notFound: string[] = [];
+      for (const name of names) {
+        const tool = _allTools.find(t => t.name === name);
+        if (tool) {
+          context._loadDeferredTool?.(name);
+          toolsOut.push(toolPayload(tool));
+          continue;
+        }
+        const skill = context._skillManager?.getSkill(name);
+        if (skill) {
+          skillsOut.push(skillPayload(skill));
+          continue;
+        }
+        notFound.push(name);
       }
-      const availableTools = _allTools.map(t => t.name);
-      const availableSkills = skills.map(s => s.name);
+      if (toolsOut.length === 0 && skillsOut.length === 0) {
+        return { output: notFoundMessage(notFound, skills), isError: true };
+      }
       return {
-        output: `"${name}" not found.\nTools: ${availableTools.join(', ')}\nSkills: ${availableSkills.length > 0 ? availableSkills.join(', ') : '(none)'}`,
-        isError: true,
+        output: JSON.stringify({ tools: toolsOut, skills: skillsOut, notFound }, null, 2),
+        isError: false,
       };
     }
 
-    const keywords = query.toLowerCase().split(/\s+/);
+    // Split terms into `+`-prefixed required-in-name terms and plain ranking
+    // terms. A required term MUST appear in the item's name; plain terms only
+    // affect ranking. With no `+` terms this reduces to the original behavior.
+    const rawTerms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const requiredTerms: string[] = [];
+    const rankTerms: string[] = [];
+    for (const term of rawTerms) {
+      if (term.startsWith('+') && term.length > 1) requiredTerms.push(term.slice(1));
+      else if (!term.startsWith('+')) rankTerms.push(term);
+    }
+
     const scoredTools = _allTools.map(tool => {
-      let score = 0;
+      const nameLower = tool.name.toLowerCase();
+      if (!requiredTerms.every(rt => nameLower.includes(rt))) return { tool, score: 0 };
+      let score = requiredTerms.length * 2;
       const text = `${tool.name} ${tool.description}`.toLowerCase();
-      for (const kw of keywords) {
+      for (const kw of rankTerms) {
         if (text.includes(kw)) score++;
         if (tool.name.includes(kw)) score += 2;
       }
@@ -96,9 +150,11 @@ export const toolSearchTool: ToolDefinition = {
     .slice(0, 5);
 
     const scoredSkills = skills.map(skill => {
-      let score = 0;
+      const nameLower = skill.name.toLowerCase();
+      if (!requiredTerms.every(rt => nameLower.includes(rt))) return { skill, score: 0 };
+      let score = requiredTerms.length * 2;
       const text = `${skill.name} ${skill.description || ''} ${skill.whenToUse || ''}`.toLowerCase();
-      for (const kw of keywords) {
+      for (const kw of rankTerms) {
         if (text.includes(kw)) score++;
         if (skill.name.includes(kw)) score += 2;
       }
