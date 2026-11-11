@@ -435,7 +435,12 @@ function isSafeEnvVar(key: string): boolean {
   return SAFE_PREFIX_PATTERNS.some(p => p.test(key));
 }
 
-function isSensitiveEnvVar(key: string): boolean {
+// NOTE: distinct from the exported env-access-guard `isSensitiveEnvVar` (which is a coarse
+// substring gate for whether a plugin may READ an env value). THIS policy decides what to
+// STRIP from a spawned subprocess's env (exact set + safe-var exclusions + suffix patterns)
+// — a different threat model, hence a different name (audit #21: not a duplicate, renamed to
+// end the same-name collision).
+function isSubprocessSensitiveEnvVar(key: string): boolean {
   if (SENSITIVE_ENV_SET.has(key)) return true;
   if (isSafeEnvVar(key)) return false;
   return SENSITIVE_SUFFIX_PATTERNS.some(p => p.test(key));
@@ -444,7 +449,7 @@ function isSensitiveEnvVar(key: string): boolean {
 export function sanitizeEnvForSubprocess(env: Record<string, string | undefined>): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const key of Object.keys(env)) {
-    if (!isSensitiveEnvVar(key)) {
+    if (!isSubprocessSensitiveEnvVar(key)) {
       out[key] = env[key];
     }
   }
