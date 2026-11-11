@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { globTool } from '../src/tools/glob';
+import { globTool, globHooks } from '../src/tools/glob';
 import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
@@ -58,6 +58,13 @@ describe('globTool – validation', () => {
     const result = await globTool.execute({ pattern: '' }, ctx());
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('must not be empty'));
+  });
+
+  it('rejects a pattern that escapes the workspace with ".." segments', async () => {
+    const result = await globTool.execute({ pattern: '../../**/*.ts' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('must not contain ".."'),
+      `expected escaping-pattern error, got: ${result.output}`);
   });
 });
 
@@ -309,5 +316,59 @@ describe('globTool – path is not a directory (G6)', () => {
     );
     assert.ok(!result.isError);
     assert.ok(result.output.includes('d.ts'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mtime sort — stat-failure fallback (entry's stat throws → mtime 0)
+// ---------------------------------------------------------------------------
+describe('globTool – stat-failure fallback in mtime sort', () => {
+  const realGlob = globHooks.glob;
+  afterEach(() => {
+    globHooks.glob = realGlob;
+  });
+
+  it('treats an un-stat-able entry as mtime 0 and still returns it sorted', async () => {
+    // Return one real file plus a phantom entry that does not exist on disk, so
+    // fs.statSync(path.resolve(resolved, entry)) throws → the catch sets mtime 0.
+    // The real file (stamped with a positive mtime) must sort ahead of the
+    // phantom (mtime 0), proving the fallback value was used in the comparison.
+    fs.utimesSync(path.join(tmpDir, 'a.ts'), new Date(9_000_000), new Date(9_000_000));
+    globHooks.glob = (async () => ['a.ts', 'phantom-does-not-exist.ts']) as typeof realGlob;
+    const result = await globTool.execute({ pattern: '*.ts' }, ctx());
+    assert.ok(!result.isError);
+    const lines = result.output.trim().split('\n').slice(1);
+    assert.deepEqual(lines, ['a.ts', 'phantom-does-not-exist.ts']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// glob implementation throws — catch branch (both Error and non-Error)
+// ---------------------------------------------------------------------------
+describe('globTool – glob implementation throws', () => {
+  const realGlob = globHooks.glob;
+  afterEach(() => {
+    globHooks.glob = realGlob;
+  });
+
+  it('returns an error result with the message when glob throws an Error', async () => {
+    globHooks.glob = (async () => {
+      throw new Error('boom from glob');
+    }) as typeof realGlob;
+    const result = await globTool.execute({ pattern: '**/*.ts' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Error searching for files:'));
+    assert.ok(result.output.includes('boom from glob'));
+  });
+
+  it('stringifies a non-Error throw value in the catch branch', async () => {
+    globHooks.glob = (async () => {
+      // eslint-disable-next-line no-throw-literal
+      throw 'plain-string-failure';
+    }) as typeof realGlob;
+    const result = await globTool.execute({ pattern: '**/*.ts' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Error searching for files:'));
+    assert.ok(result.output.includes('plain-string-failure'));
   });
 });

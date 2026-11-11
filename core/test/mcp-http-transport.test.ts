@@ -614,3 +614,242 @@ describe('MCP HTTP transport — server→client GET SSE stream (M13)', () => {
     assert.ok(getCount >= 2, `expected the stream to re-open after close, saw ${getCount} GET(s)`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M13 defensive branches: batch payloads, OAuth on the stream, malformed SSE,
+// non-200 reconnect, reconnect exhaustion, and disconnect teardown.
+// ---------------------------------------------------------------------------
+
+/** Minimal POST handler shared by the inline servers below (init + ack POSTs). */
+function respondInitOrAck(
+  msg: Record<string, unknown>,
+  res: http.ServerResponse,
+  extraInitHeaders: Record<string, string> = {},
+): void {
+  if (msg.method === 'initialize') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...extraInitHeaders });
+    res.end(JSON.stringify({
+      jsonrpc: '2.0', id: msg.id,
+      result: { protocolVersion: '2025-06-18', serverInfo: { name: 's', version: '1' }, capabilities: {} },
+    }));
+    return;
+  }
+  res.writeHead(202); res.end();
+}
+
+describe('MCP HTTP transport — server→client stream defensive branches (M13)', () => {
+  let server: http.Server;
+  let port: number;
+  let client: McpClient;
+  const openStreams: http.ServerResponse[] = [];
+
+  afterEach(async () => {
+    for (const s of openStreams) { try { s.end(); } catch { /* ignore */ } }
+    openStreams.length = 0;
+    if (client) client.disconnect();
+    if (server) await closeServer(server);
+  });
+
+  it('routes a JSON-RPC BATCH (array) pushed on the stream', { timeout: 5000 }, async () => {
+    server = createStreamingMcpServer({
+      onStream: (res) => {
+        openStreams.push(res);
+        res.write(`event: message\ndata: ${JSON.stringify([
+          { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'one' } },
+          { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'two' } },
+        ])}\n\n`);
+      },
+    });
+    port = await listenOnRandom(server);
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
+
+    const datas: string[] = [];
+    const got = new Promise<void>((resolve) => {
+      client.on('notification', (m: string, p: { data?: string } | undefined) => {
+        if (m === 'notifications/message') { datas.push(p?.data ?? ''); if (datas.length === 2) resolve(); }
+      });
+    });
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    let timer: ReturnType<typeof setTimeout>;
+    const to = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('batch not fully routed')), 3000); });
+    await Promise.race([got, to]).finally(() => clearTimeout(timer));
+    assert.deepEqual([...datas].sort(), ['one', 'two']);
+  });
+
+  it('POSTs a server-request response carrying the OAuth Authorization header', { timeout: 5000 }, async () => {
+    const postAuths: Array<string | undefined> = [];
+    server = http.createServer((req, res) => {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        openStreams.push(res);
+        res.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'ping' })}\n\n`);
+        return;
+      }
+      let body = ''; req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const msg = body ? JSON.parse(body) : {};
+        if (typeof msg.method === 'string' && msg.method.startsWith('notifications/')) { res.writeHead(202); res.end(); return; }
+        // The client's POSTed response to our ping (id 9, result, no method).
+        if (msg.id === 9 && msg.result !== undefined && msg.method === undefined) {
+          postAuths.push(req.headers.authorization as string | undefined);
+        }
+        respondInitOrAck(msg, res, { 'Mcp-Session-Id': 'sess-oauth' });
+      });
+    });
+    port = await listenOnRandom(server);
+    const oauth = { authorizationHeader: async () => 'Bearer stream-tok', onUnauthorized: async () => false };
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000, oauth });
+
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && postAuths.length === 0) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(postAuths.length, 1, 'client should POST a response to the server ping');
+    assert.equal(postAuths[0], 'Bearer stream-tok', 'POSTed response must carry the OAuth bearer token');
+  });
+
+  it('keeps a custom Authorization header on the GET stream even when OAuth is present', { timeout: 5000 }, async () => {
+    let getAuth: string | undefined;
+    server = http.createServer((req, res) => {
+      if (req.method === 'GET') {
+        getAuth = req.headers.authorization as string | undefined;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        openStreams.push(res);
+        return;
+      }
+      let body = ''; req.on('data', (c) => { body += c; });
+      req.on('end', () => { respondInitOrAck(body ? JSON.parse(body) : {}, res); });
+    });
+    port = await listenOnRandom(server);
+    const oauth = { authorizationHeader: async () => 'Bearer oauth-tok', onUnauthorized: async () => false };
+    client = new McpClient({ command: '', headers: { Authorization: 'Bearer custom-static' }, requestTimeout: 5000, connectTimeout: 5000, oauth });
+
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && !getAuth) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(getAuth, 'Bearer custom-static', 'a preset Authorization header must not be overwritten by OAuth');
+  });
+
+  it('emits parse-error for a malformed SSE data payload', { timeout: 5000 }, async () => {
+    server = createStreamingMcpServer({ onStream: (res) => { openStreams.push(res); res.write('event: message\ndata: {not valid json\n\n'); } });
+    port = await listenOnRandom(server);
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
+
+    const got = new Promise<string>((resolve) => client.on('parse-error', (p: string) => resolve(p)));
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    let timer: ReturnType<typeof setTimeout>;
+    const to = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('no parse-error emitted')), 3000); });
+    const payload = await Promise.race([got, to]).finally(() => clearTimeout(timer));
+    assert.match(payload, /not valid json/);
+  });
+
+  it('ignores SSE events without a data line and parses "data:" without a space', { timeout: 5000 }, async () => {
+    server = createStreamingMcpServer({
+      onStream: (res) => {
+        openStreams.push(res);
+        res.write(': keep-alive comment\n\n');        // no data: line → dataParts empty, ignored
+        res.write('event: ping\n\n');                  // still no data: line, ignored
+        res.write('data:' + JSON.stringify({ jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'nospace' } }) + '\n\n');
+      },
+    });
+    port = await listenOnRandom(server);
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
+
+    const got = new Promise<{ data?: string }>((resolve) => client.on('notification', (m: string, p: { data?: string } | undefined) => { if (m === 'notifications/message') resolve(p ?? {}); }));
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    let timer: ReturnType<typeof setTimeout>;
+    const to = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('no-space data not routed')), 3000); });
+    const params = await Promise.race([got, to]).finally(() => clearTimeout(timer));
+    assert.equal(params.data, 'nospace');
+  });
+
+  it('reconnects the stream after a non-200/405 GET status', { timeout: 6000 }, async () => {
+    let getCount = 0;
+    server = http.createServer((req, res) => {
+      if (req.method === 'GET') {
+        getCount++;
+        if (getCount === 1) { res.writeHead(500); res.end(); return; } // unexpected status → reconnect
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        openStreams.push(res);
+        return;
+      }
+      let body = ''; req.on('data', (c) => { body += c; });
+      req.on('end', () => { respondInitOrAck(body ? JSON.parse(body) : {}, res); });
+    });
+    port = await listenOnRandom(server);
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
+    client.on('error', () => { /* ignore transient */ });
+
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && getCount < 2) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(getCount >= 2, `expected a reconnect after HTTP 500, saw ${getCount} GET(s)`);
+  });
+
+  it('emits http-stream-closed when reconnect attempts are exhausted', { timeout: 5000 }, async () => {
+    server = createStreamingMcpServer({ getStatus: 405 }); // degrade to POST-only, stays ready + open
+    port = await listenOnRandom(server);
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
+
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    const closed = new Promise<void>((resolve) => client.on('http-stream-closed', () => resolve()));
+    // Push the attempt counter to the ceiling so the next schedule gives up.
+    const c = client as unknown as { httpStreamReconnectAttempts: number; maxReconnectAttempts: number; scheduleHttpStreamReconnect: () => void };
+    c.httpStreamReconnectAttempts = c.maxReconnectAttempts;
+    c.scheduleHttpStreamReconnect();
+    let timer: ReturnType<typeof setTimeout>;
+    const to = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('http-stream-closed not emitted')), 2000); });
+    await Promise.race([closed, to]).finally(() => clearTimeout(timer));
+  });
+
+  it('tears down the GET stream on disconnect and does not reconnect after', { timeout: 5000 }, async () => {
+    let getCount = 0;
+    server = http.createServer((req, res) => {
+      if (req.method === 'GET') { getCount++; res.writeHead(200, { 'Content-Type': 'text/event-stream' }); openStreams.push(res); return; }
+      let body = ''; req.on('data', (c) => { body += c; });
+      req.on('end', () => { respondInitOrAck(body ? JSON.parse(body) : {}, res); });
+    });
+    port = await listenOnRandom(server);
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
+    client.on('error', () => { /* ignore */ });
+
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && getCount < 1) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(getCount >= 1, 'the GET stream should have opened');
+
+    client.disconnect();
+    assert.equal((client as unknown as { httpStreamReq: unknown }).httpStreamReq, null, 'disconnect must null the stream request');
+    const afterDisconnect = getCount;
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(getCount, afterDisconnect, 'no reconnect should occur after disconnect');
+  });
+
+  it('openHttpStream is a no-op once the stream is closed', { timeout: 5000 }, async () => {
+    server = createStreamingMcpServer({});
+    port = await listenOnRandom(server);
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
+
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    client.disconnect(); // sets httpStreamClosed = true
+    await assert.doesNotReject(() => (client as unknown as { openHttpStream: () => Promise<void> }).openHttpStream());
+  });
+
+  it('aborts opening the GET stream if disconnected while building headers', { timeout: 5000 }, async () => {
+    let getCount = 0;
+    server = http.createServer((req, res) => {
+      if (req.method === 'GET') { getCount++; res.writeHead(200, { 'Content-Type': 'text/event-stream' }); openStreams.push(res); return; }
+      let body = ''; req.on('data', (c) => { body += c; });
+      req.on('end', () => { respondInitOrAck(body ? JSON.parse(body) : {}, res); });
+    });
+    port = await listenOnRandom(server);
+    // A slow OAuth header keeps openHttpStream suspended in buildStreamHeaders
+    // until after we disconnect — exercising the post-await httpStreamClosed guard.
+    const oauth = { authorizationHeader: async () => { await new Promise((r) => setTimeout(r, 40)); return 'Bearer slow'; }, onUnauthorized: async () => false };
+    client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000, oauth });
+
+    await client.connectHTTP(`http://127.0.0.1:${port}/`);
+    client.disconnect(); // flips httpStreamClosed before the slow header resolves
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(getCount, 0, 'the GET stream must not open once disconnected mid-build');
+  });
+});
