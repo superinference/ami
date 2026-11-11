@@ -487,8 +487,16 @@ export interface EngineConfig {
   mode?: 'ask' | 'edit' | 'agent';
   /** Per-request timeout in milliseconds for the API provider. Default: 300 000 (5 min). */
   requestTimeoutMs?: number;
-  /** @internal Override provider-level max retries (for testing). */
+  /** @internal Override provider-level max retries. Set for testing and by the
+   *  unattended-retry mode (persistent retry through long outages). */
   _providerMaxRetries?: number;
+  /** Unattended/persistent retry mode for long detached runs. When on, the
+   *  provider keeps retrying transient failures through a long outage window
+   *  (per-attempt delay capped, total window bounded) instead of giving up after
+   *  the default ~5 attempts. Opt-in via SUPERINFERENCE_UNATTENDED_RETRY=1
+   *  (CLAUDE_CODE_UNATTENDED_RETRY accepted for compatibility) or project config.
+   *  Mode-agnostic: identical in interactive and detached runs. */
+  unattendedRetry?: boolean;
   /** @internal Override provider-level base delay in ms (for testing). */
   _providerBaseDelayMs?: number;
   /** Maximum tool iterations before prompting to continue. Default 200. */
