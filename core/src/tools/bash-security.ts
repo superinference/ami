@@ -1175,6 +1175,10 @@ const CREDENTIAL_PATH_PATTERNS: RegExp[] = [
   /\.config\/glab-cli\//,
   /(^|\/)\.npmrc$/,
   /\.claude\/\.credentials\.json$/,
+  // AMI provider-credential store: the symmetric key (.credkey) sits beside the
+  // ciphertext (credentials.enc); both are owner-readable, so without this guard
+  // an agent could `cat` them and self-decrypt every provider key. (C1)
+  /(^|\/)\.ami\/provision\//,
   /\/etc\/(passwd|shadow|sudoers)\b/,
 ];
 

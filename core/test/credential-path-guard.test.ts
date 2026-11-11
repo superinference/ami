@@ -24,6 +24,8 @@ describe('isCredentialPath', () => {
     ['~/.config/glab-cli/config.yml', '.config/glab-cli/config.yml'],
     ['~/.npmrc', '.npmrc'],
     ['~/.claude/.credentials.json', '.claude/.credentials.json'],
+    ['AMI provision key', '.ami/provision/.credkey'],
+    ['AMI provision ciphertext', '.ami/provision/credentials.enc'],
     ['/etc/shadow', '/etc/shadow'],
     ['/etc/passwd', '/etc/passwd'],
     ['/etc/sudoers', '/etc/sudoers'],
