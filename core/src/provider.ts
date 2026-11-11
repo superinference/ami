@@ -1310,6 +1310,14 @@ export function extractReasoningTokens(usage: unknown): number {
 // Build provider-specific thinking / reasoning options
 // ---------------------------------------------------------------------------
 
+// Maps a THINKING_LEVELS value to an Anthropic adaptive-thinking effort. 'off' never
+// reaches the adaptive branch (filtered by the enabled check); every other level maps
+// 1:1. ('xhigh' exists in the API effort scale but not in THINKING_LEVELS, so it is not
+// produced here — adding it to THINKING_LEVELS would auto-extend this via the level key.)
+const ADAPTIVE_EFFORT_BY_LEVEL: Record<string, 'low' | 'medium' | 'high' | 'xhigh' | 'max'> = {
+  low: 'low', medium: 'medium', high: 'high', max: 'max',
+};
+
 export function buildThinkingOptions(
   modelId: string,
   thinking: ThinkingConfig | undefined,
@@ -1317,13 +1325,19 @@ export function buildThinkingOptions(
   if (!thinking?.enabled) return {};
   const caps = getModelCapabilities(modelId);
 
-  // Anthropic Claude — thinking via providerOptions.anthropic.thinking
+  // Anthropic Claude (adaptive family: Opus 4.x / Sonnet 4.x) — adaptive thinking
+  // + output-config effort. The legacy { type: 'enabled', budget_tokens } shape is
+  // DEPRECATED on Opus/Sonnet 4.6 and REJECTED with a 400 on Opus 4.7/4.8 (and removed
+  // on the 5.x family), which made thinking requests fail outright — ui#17. Adaptive
+  // thinking lets the model decide depth; `effort` (mapped from the thinking level) is
+  // the supported depth control that replaces the fixed token budget.
   if (caps?.supportsAdaptiveThinking) {
-    const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level, modelId);
+    const effort = ADAPTIVE_EFFORT_BY_LEVEL[thinking.level] ?? 'high';
     return {
       providerOptions: {
         anthropic: {
-          thinking: { type: 'enabled' as const, budgetTokens },
+          thinking: { type: 'adaptive' as const },
+          effort,
         },
       },
     };

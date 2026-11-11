@@ -524,16 +524,47 @@ describe('buildThinkingOptions', () => {
     assert.deepEqual(buildThinkingOptions('claude-sonnet-4-6', { enabled: false, level: 'high' } as ThinkingConfig), {});
   });
 
-  it('Anthropic adaptive thinking uses an explicit budget when provided', () => {
-    const opts = buildThinkingOptions('claude-sonnet-4-6', { enabled: true, level: 'high', budgetTokens: 4096 }) as any;
-    assert.equal(opts.providerOptions.anthropic.thinking.type, 'enabled');
-    assert.equal(opts.providerOptions.anthropic.thinking.budgetTokens, 4096);
+  // ui#17: the adaptive Claude family (Opus 4.x / Sonnet 4.x) must emit adaptive thinking
+  // + effort — NOT the legacy { type: 'enabled', budget_tokens } shape, which is deprecated
+  // on 4.6 and REJECTED with a 400 on Opus 4.7/4.8 (making thinking requests fail outright).
+  it('Anthropic adaptive thinking emits { type: "adaptive" } + effort, never the legacy budget shape', () => {
+    const opts = buildThinkingOptions('claude-sonnet-4-6', { enabled: true, level: 'high' }) as any;
+    assert.equal(opts.providerOptions.anthropic.thinking.type, 'adaptive');
+    assert.equal(opts.providerOptions.anthropic.effort, 'high');
+    // The legacy 400-triggering fields must be gone.
+    assert.equal(opts.providerOptions.anthropic.thinking.budgetTokens, undefined);
+    assert.notEqual(opts.providerOptions.anthropic.thinking.type, 'enabled');
   });
 
-  it('Anthropic adaptive thinking derives a budget from the level when none given', () => {
-    const opts = buildThinkingOptions('claude-sonnet-4-6', { enabled: true, level: 'medium' }) as any;
-    assert.equal(typeof opts.providerOptions.anthropic.thinking.budgetTokens, 'number');
-    assert.ok(opts.providerOptions.anthropic.thinking.budgetTokens > 0);
+  it('Anthropic adaptive thinking ignores an explicit budgetTokens (adaptive has no token budget)', () => {
+    // Even when a caller passes budgetTokens, the adaptive shape must not forward it —
+    // the API would 400 on 4.7/4.8. effort (from the level) is the only depth control.
+    const opts = buildThinkingOptions('claude-sonnet-4-6', { enabled: true, level: 'medium', budgetTokens: 4096 }) as any;
+    assert.equal(opts.providerOptions.anthropic.thinking.type, 'adaptive');
+    assert.equal(opts.providerOptions.anthropic.effort, 'medium');
+    assert.equal(opts.providerOptions.anthropic.thinking.budgetTokens, undefined);
+  });
+
+  // The models named in ui#17 — these 400 on the legacy shape, so they are the sharpest reproducers.
+  for (const model of ['claude-opus-4-8', 'claude-opus-4-7']) {
+    it(`${model} emits adaptive thinking + effort (ui#17 reproducer — legacy shape 400s here)`, () => {
+      const opts = buildThinkingOptions(model, { enabled: true, level: 'high' }) as any;
+      assert.equal(opts.providerOptions.anthropic.thinking.type, 'adaptive');
+      assert.equal(opts.providerOptions.anthropic.effort, 'high');
+      assert.equal(opts.providerOptions.anthropic.thinking.budgetTokens, undefined);
+    });
+  }
+
+  it('Anthropic adaptive effort falls back to "high" for an unknown level', () => {
+    const opts = buildThinkingOptions('claude-opus-4-8', { enabled: true, level: 'bogus' as any }) as any;
+    assert.equal(opts.providerOptions.anthropic.effort, 'high');
+  });
+
+  it('Anthropic adaptive effort maps each THINKING_LEVELS value 1:1', () => {
+    for (const [level, effort] of [['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['max', 'max']] as const) {
+      const opts = buildThinkingOptions('claude-opus-4-8', { enabled: true, level }) as any;
+      assert.equal(opts.providerOptions.anthropic.effort, effort, `${level} → ${effort}`);
+    }
   });
 
   it('OpenAI o-series maps level→reasoningEffort, "max"→"high"', () => {

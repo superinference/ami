@@ -1061,14 +1061,20 @@ describe('streamChatCompletion - abort signal', () => {
 // ---------------------------------------------------------------------------
 describe('buildThinkingOptions format matches SDK expectations', () => {
   it('Anthropic thinking output matches @ai-sdk/anthropic providerOptions schema', () => {
+    // Adaptive thinking is the forward-compatible shape (ui#17): the model decides depth,
+    // `effort` is the only knob — so this never needs per-model-version changes again, and
+    // it is exactly what the installed @ai-sdk/anthropic thinking schema accepts
+    // ({ type: 'adaptive' } + sibling `effort`). The legacy { type:'enabled', budget_tokens }
+    // shape 400s on Opus 4.7/4.8, so it must not be produced for any adaptive model.
     const result = buildThinkingOptions('claude-opus-4', { enabled: true, level: 'max', budgetTokens: 128000 });
     const po = result.providerOptions as Record<string, any>;
     assert.ok(po, 'must return providerOptions');
     assert.ok(po.anthropic, 'must have anthropic namespace');
     assert.ok(po.anthropic.thinking, 'must have thinking config');
-    assert.equal(po.anthropic.thinking.type, 'enabled', 'type must be "enabled"');
-    assert.equal(typeof po.anthropic.thinking.budgetTokens, 'number', 'budgetTokens must be a number');
-    assert.ok(po.anthropic.thinking.budgetTokens > 0, 'budgetTokens must be positive');
+    assert.equal(po.anthropic.thinking.type, 'adaptive', 'type must be "adaptive"');
+    assert.equal(po.anthropic.effort, 'max', 'effort is the depth control (sibling of thinking)');
+    assert.equal(po.anthropic.thinking.budgetTokens, undefined, 'must NOT send budgetTokens (400s on 4.7/4.8)');
+    assert.notEqual(po.anthropic.thinking.type, 'enabled', 'must NOT use the legacy enabled shape');
     assert.ok(!('experimental_thinking' in result), 'must NOT use deprecated experimental_thinking key');
     assert.ok(!('enabled' in po.anthropic.thinking), 'must NOT use boolean enabled (old format)');
   });
