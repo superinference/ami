@@ -437,6 +437,16 @@ export interface EngineConfig {
    * configured server pointing at that upstream, regardless of its name.
    */
   deniedMcpServers?: string[];
+  /**
+   * M14 — opt-in gate for PROJECT-tier MCP servers (configs under cwd:
+   * `.superinference/mcp.json` + `.mcp.json`). Default OFF/undefined: project MCP
+   * servers auto-connect exactly as before. When true, a NEW (not-yet-approved)
+   * project server is registered PENDING instead of auto-connecting; the user
+   * approves it via `/mcp approve`, and the approval persists to
+   * `<cwd>/.superinference/approved-mcp.json`. User/global-tier configs are never
+   * gated.
+   */
+  mcpRequireApproval?: boolean;
   /** Maximum token budget for context management. Defaults to 100 000. */
   tokenBudget?: number;
   /** Resume a specific session. When set, the engine loads its messages on init. */
