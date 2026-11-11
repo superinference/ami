@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSubsystems, EXIT_REASONS, STREAM_CHUNK_TYPES, OUTPUT_STYLES, ENGINE_EVENT_TYPES, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES } from '../src/types';
-import type { EngineConfig } from '../src/types';
+import { buildSubsystems, EXIT_REASONS, STREAM_CHUNK_TYPES, OUTPUT_STYLES, ENGINE_EVENT_TYPES, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, asSessionId } from '../src/types';
+import type { EngineConfig, SessionId } from '../src/types';
 
 function cfg(overrides: Partial<EngineConfig> = {}): EngineConfig {
   return {
@@ -89,5 +89,23 @@ describe('runtime const arrays are non-empty', () => {
   });
   it('THEMES has 3 values', () => {
     assert.equal(THEMES.length, 3);
+  });
+});
+
+describe('type-branded SessionId', () => {
+  it('asSessionId is runtime-identity (brand is compile-time only)', () => {
+    assert.equal(asSessionId('session-x'), 'session-x');
+    const sid: SessionId = asSessionId('s1');
+    assert.equal(typeof sid, 'string');
+    assert.equal(sid.toUpperCase(), 'S1'); // behaves as a real string
+  });
+
+  it('the brand is nominal (compile-time regression guard)', () => {
+    const sid: SessionId = asSessionId('s');
+    // @ts-expect-error a raw string must NOT be assignable to a SessionId (branding on).
+    const bad: SessionId = 'raw';
+    // A SessionId IS assignable to a plain string (subtype) — no error expected here.
+    const ok: string = sid;
+    assert.ok([bad, ok].every(v => typeof v === 'string'));
   });
 });

@@ -1,5 +1,19 @@
 import type { SuperInferenceConfig } from './superinference/types';
 
+/**
+ * Type-branded session id: a nominal `string` subtype so a raw string can't be silently
+ * passed where a persisted session id is expected. It stays assignable TO `string`
+ * (reads / pass-through / Map keys need no cast); only MINTING one from a raw string goes
+ * through {@link asSessionId}. The brand symbol is unexported, so the type is truly
+ * nominal. (round-2 "type-branded ids".) Agent ids are intentionally NOT branded yet —
+ * the subagent/process subsystem has no single id-mint boundary, so a brand there would
+ * be a dead, speculative export; brand it when that boundary exists.
+ */
+declare const SESSION_ID_BRAND: unique symbol;
+export type SessionId = string & { readonly [SESSION_ID_BRAND]: true };
+/** Mint a {@link SessionId} from a raw string (the single branding boundary). */
+export function asSessionId(id: string): SessionId { return id as SessionId; }
+
 export const OUTPUT_FORMATS = ['json', 'jsonl', 'text'] as const;
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 

@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { Message, ProviderConfig } from './types';
+import type { Message, ProviderConfig, SessionId } from './types';
+import { asSessionId } from './types';
 
 /**
  * Content longer than this is offloaded to a content-addressed blob sidecar
@@ -33,7 +34,7 @@ function isSessionBlobRef(v: unknown): v is SessionBlobRef {
 }
 
 export interface Session {
-  id: string;
+  id: SessionId;
   title?: string;
   messages: Message[];
   createdAt: string;
@@ -49,7 +50,7 @@ export interface Session {
 }
 
 export interface SessionListEntry {
-  id: string;
+  id: SessionId;
   date: string;
   preview: string;
 }
@@ -263,7 +264,7 @@ export class SessionManager {
   /**
    * Generate a timestamp-based session ID.
    */
-  static newId(): string {
+  static newId(): SessionId {
     const now = new Date();
     const pad = (n: number, len = 2) => String(n).padStart(len, '0');
     const seq = SessionManager._idCounter++;
@@ -278,7 +279,7 @@ export class SessionManager {
       '-',
       pad(now.getMilliseconds(), 3),
     ].join('');
-    return `session-${stamp}-${seq}`;
+    return asSessionId(`session-${stamp}-${seq}`);
   }
 
   /**
