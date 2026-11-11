@@ -49,6 +49,8 @@ export interface ProjectConfig {
   allowedMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
   managedMcpServers?: Record<string, unknown>;
+  /** SL1: shell command whose stdout is rendered as a custom status line. */
+  statusLine?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +312,7 @@ export function mergeConfigs(
     if (layer.fallbackModels !== undefined) merged.fallbackModels = layer.fallbackModels;
     if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = layer.allowedMcpServers;
     if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
+    if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower

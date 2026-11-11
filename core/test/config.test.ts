@@ -261,6 +261,15 @@ describe('mergeConfigs', () => {
     assert.deepEqual(result.superinference, { enforcing: true, useLLMCritic: true });
   });
 
+  it('merges the statusLine custom command (SL1)', () => {
+    const project: ProjectConfig = { statusLine: 'echo hi' };
+    const result = mergeConfigs({}, {}, project, null);
+    assert.equal(result.statusLine, 'echo hi');
+    // higher layer overrides
+    const cli: Partial<ProjectConfig> = { statusLine: 'echo bye' };
+    assert.equal(mergeConfigs(cli, {}, project, null).statusLine, 'echo bye');
+  });
+
   it('project config overrides global config', () => {
     const global: ProjectConfig = { model: 'global-model', provider: 'openai' };
     const project: ProjectConfig = { model: 'project-model' };
