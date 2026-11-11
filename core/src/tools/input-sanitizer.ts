@@ -3,8 +3,11 @@
 // prompts from concealing part of a command from the user.
 // ---------------------------------------------------------------------------
 
+// The `u` flag makes this codepoint-aware so the astral Unicode TAG block
+// (U+E0000–U+E007F) is stripped too — that block can smuggle a full hidden ASCII
+// instruction past a human reviewer and into the model (prompt injection). (H1)
 // eslint-disable-next-line security/detect-bidi-characters -- intentional: this regex MUST contain bidi chars to strip them
-const INVISIBLE_RE = new RegExp('[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB]', 'g');
+const INVISIBLE_RE = new RegExp('[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB\\u{E0000}-\\u{E007F}]', 'gu');
 
 export function stripInvisibleUnicode(text: string): string {
   return text.replace(INVISIBLE_RE, '');

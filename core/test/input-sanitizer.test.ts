@@ -204,6 +204,14 @@ describe('stripInvisibleUnicode', () => {
     assert.equal(stripInvisibleUnicode('pass­word'), 'password');
   });
 
+  it('removes astral Unicode TAG characters (U+E0000-E007F — ASCII smuggling) (H1)', () => {
+    // A hidden instruction smuggled via tag chars (e.g. tag-letters spelling "hi")
+    // must be stripped. Pre-fix the regex lacked the tag block + the `u` flag.
+    const smuggled = 'ok' + String.fromCodePoint(0xE0068, 0xE0069) + '!'; // tag 'h','i'
+    assert.equal(stripInvisibleUnicode(smuggled), 'ok!');
+    assert.equal(stripInvisibleUnicode('a' + String.fromCodePoint(0xE0001) + 'b'), 'ab');
+  });
+
   it('removes bidirectional overrides (U+202A-U+202E)', () => {
     assert.equal(stripInvisibleUnicode('abc‪def‮ghi'), 'abcdefghi');
   });
