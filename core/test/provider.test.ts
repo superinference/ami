@@ -530,10 +530,35 @@ describe('convertToolsForSDK', () => {
       assert.deepEqual(out.system[0].cache_control, cc);
       assert.equal(out.system[1].cache_control, undefined);
     });
-    it('does NOT mark any message (conversation tail grows, never read-hits)', () => {
-      const body = JSON.stringify({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] });
+    it('marks the last content block of the last message (rolling breakpoint, H15)', () => {
+      const body = JSON.stringify({
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'first' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] },
+        ],
+      });
       const out = JSON.parse(injectAnthropicCacheControl(body, cc));
-      assert.equal(out.messages[0].content[0].cache_control, undefined);
+      // Only the final block of the final message carries the marker.
+      assert.deepEqual(out.messages[1].content[1].cache_control, cc, 'last block of last message marked');
+      assert.equal(out.messages[1].content[0].cache_control, undefined, 'non-last block not marked');
+      assert.equal(out.messages[0].content[0].cache_control, undefined, 'earlier message not marked');
+    });
+    it('promotes string-form last-message content to a cached text block (H15)', () => {
+      const body = JSON.stringify({ messages: [{ role: 'user', content: 'hi there' }] });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.ok(Array.isArray(out.messages[0].content));
+      assert.equal(out.messages[0].content[0].text, 'hi there');
+      assert.deepEqual(out.messages[0].content[0].cache_control, cc);
+    });
+    it('leaves an empty-string last message unmarked (nothing to cache)', () => {
+      const body = JSON.stringify({ messages: [{ role: 'user', content: '' }] });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.equal(out.messages[0].content, '');
+    });
+    it('is safe when the last message content is an empty array', () => {
+      const body = JSON.stringify({ messages: [{ role: 'user', content: [] }] });
+      const out = JSON.parse(injectAnthropicCacheControl(body, cc));
+      assert.deepEqual(out.messages[0].content, []);
     });
     it('returns the original text unchanged on non-JSON input', () => {
       assert.equal(injectAnthropicCacheControl('not json', cc), 'not json');

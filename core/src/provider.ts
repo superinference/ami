@@ -697,9 +697,24 @@ export function injectAnthropicCacheControl(bodyText: string, cacheControl: Reco
     const first = body.system[0];
     if (first && typeof first === 'object') first.cache_control = cc;
   }
-  // Deliberately NOT marking a trailing message: the conversation tail grows every
-  // turn, so a marker there never read-hits. The stable tools+static-system prefix
-  // is the cache win; a rolling conversation breakpoint can be added later.
+  // Rolling conversation breakpoint (H15): mark the LAST message's final content
+  // block. The marker moves to the new tail every turn, but caching reads the
+  // LONGEST stable prefix ending at ANY prior breakpoint — so the previous turn's
+  // tail (now a stable interior prefix) read-hits on this turn, and we write a
+  // fresh cache through the current tail. This keeps the growing conversation
+  // cached, not just the tools+static-system prefix. Stays within Anthropic's
+  // 4-breakpoint cap (last-tool + static-system + last-message = 3).
+  if (Array.isArray(body.messages) && body.messages.length > 0) {
+    const lastMsg = body.messages[body.messages.length - 1];
+    if (lastMsg && typeof lastMsg === 'object') {
+      if (typeof lastMsg.content === 'string' && lastMsg.content !== '') {
+        lastMsg.content = [{ type: 'text', text: lastMsg.content, cache_control: cc }];
+      } else if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
+        const lastBlock = lastMsg.content[lastMsg.content.length - 1];
+        if (lastBlock && typeof lastBlock === 'object') lastBlock.cache_control = cc;
+      }
+    }
+  }
   return JSON.stringify(body);
 }
 
