@@ -639,7 +639,7 @@ describe('grep tool', () => {
 
   it('finds pattern across files', async () => {
     const result = await grepTool.execute(
-      { pattern: 'hello', path: tmpDir },
+      { pattern: 'hello', path: tmpDir, output_mode: 'content' },
       makeContext(tmpDir),
     );
     assert.equal(result.isError, undefined);
@@ -658,7 +658,7 @@ describe('grep tool', () => {
 
   it('supports include filter', async () => {
     const result = await grepTool.execute(
-      { pattern: 'hello', path: tmpDir, include: '*.ts' },
+      { pattern: 'hello', path: tmpDir, include: '*.ts', output_mode: 'content' },
       makeContext(tmpDir),
     );
     assert.equal(result.isError, undefined);

@@ -16,7 +16,7 @@ import { createDeepInfra } from '@ai-sdk/deepinfra';
 import { createCerebras } from '@ai-sdk/cerebras';
 import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
-import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI } from './model-capabilities';
+import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
@@ -742,6 +742,133 @@ export function withVertexAnthropicCache(
   }) as typeof globalThis.fetch;
 }
 
+/** Anthropic beta token that unlocks the 1M-context window. */
+export const ONE_MILLION_CONTEXT_BETA = 'context-1m-2025-08-07';
+
+/**
+ * Comma-join Anthropic beta tokens without duplicating one that is already
+ * present. `anthropic-beta` is a comma-separated list, so an existing
+ * `extended-cache-ttl-2025-04-11` and a new `context-1m-2025-08-07` must both
+ * survive as `extended-cache-ttl-2025-04-11,context-1m-2025-08-07`.
+ */
+export function mergeBetaTokens(existing: string | null | undefined, token: string): string {
+  const tokens = (existing ?? '')
+    .split(',')
+    .map(t => t.trim())
+    .filter(Boolean);
+  if (!tokens.includes(token)) tokens.push(token);
+  return tokens.join(',');
+}
+
+/**
+ * Wrap a fetch so every outgoing request carries `betaToken` in its
+ * `anthropic-beta` header, comma-joined with any token already set (never
+ * duplicated). Used to add the 1M-context beta on the anthropic-vertex path,
+ * where the header cannot be passed to the SDK constructor.
+ */
+export function withAnthropicBetaHeader(
+  baseFetch: typeof globalThis.fetch,
+  betaToken: string,
+): typeof globalThis.fetch {
+  return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const headers = new Headers(init?.headers as Record<string, string> | undefined);
+    headers.set('anthropic-beta', mergeBetaTokens(headers.get('anthropic-beta'), betaToken));
+    return baseFetch(input, { ...init, headers });
+  }) as typeof globalThis.fetch;
+}
+
+// ---------------------------------------------------------------------------
+// Proxy support (HTTPS_PROXY / HTTP_PROXY / NO_PROXY). NODE_EXTRA_CA_CERTS is
+// already honored by Node at startup, so only proxy routing is wired here.
+// ---------------------------------------------------------------------------
+
+function hostMatchesNoProxy(noProxy: string | undefined, hostname: string): boolean {
+  if (!noProxy) return false;
+  const host = hostname.toLowerCase();
+  for (const raw of noProxy.split(/[,\s]+/)) {
+    const entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === '*') return true;
+    const bare = entry.replace(/^\./, '');
+    if (host === bare || host.endsWith('.' + bare)) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve the proxy URL to use for `url` from the standard proxy env vars, or
+ * `undefined` when none applies. An https target prefers `HTTPS_PROXY` (falling
+ * back to `HTTP_PROXY`); an http target uses `HTTP_PROXY`. A `NO_PROXY` match
+ * (exact host, domain suffix, or `*`) always wins and returns `undefined`.
+ * Pure + exported so it is unit-testable without touching the network.
+ */
+export function resolveProxyForUrl(env: NodeJS.ProcessEnv, url: string): string | undefined {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return undefined; }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
+  const proxy = parsed.protocol === 'https:'
+    ? (env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy)
+    : (env.HTTP_PROXY ?? env.http_proxy);
+  if (!proxy) return undefined;
+  if (hostMatchesNoProxy(env.NO_PROXY ?? env.no_proxy, parsed.hostname)) return undefined;
+  return proxy;
+}
+
+const proxyAgentCache = new Map<string, unknown>();
+let proxyAgentCtorPromise: Promise<(new (url: string) => unknown) | null> | undefined;
+
+/** Load undici's ProxyAgent lazily; resolves to null when undici is absent. */
+function loadProxyAgentCtor(): Promise<(new (url: string) => unknown) | null> {
+  if (proxyAgentCtorPromise === undefined) {
+    proxyAgentCtorPromise = import('undici')
+      .then(m => (typeof m.ProxyAgent === 'function' ? (m.ProxyAgent as unknown as new (url: string) => unknown) : null))
+      .catch(() => null);
+  }
+  return proxyAgentCtorPromise;
+}
+
+async function getProxyAgent(proxyUrl: string): Promise<unknown | undefined> {
+  if (proxyAgentCache.has(proxyUrl)) return proxyAgentCache.get(proxyUrl) ?? undefined;
+  const Ctor = await loadProxyAgentCtor();
+  const agent = Ctor ? new Ctor(proxyUrl) : null;
+  proxyAgentCache.set(proxyUrl, agent);
+  return agent ?? undefined;
+}
+
+function requestUrl(input: string | URL | { url?: unknown }): string | undefined {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  const maybe = (input as { url?: unknown }).url;
+  return typeof maybe === 'string' ? maybe : undefined;
+}
+
+/**
+ * Wrap a fetch so requests to proxied hosts are routed through an undici
+ * ProxyAgent dispatcher. Returns `baseFetch` UNCHANGED (same reference, which
+ * may be `undefined`) when no proxy env var is set — so default behavior is
+ * byte-for-byte identical. When undici is unavailable the wrapper is a no-op.
+ */
+export function withProxyDispatcher(
+  baseFetch: typeof globalThis.fetch | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): typeof globalThis.fetch | undefined {
+  const hasProxyEnv = !!(env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy);
+  if (!hasProxyEnv) return baseFetch;
+  const base = baseFetch ?? globalThis.fetch;
+  return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const callerDispatcher = init && typeof init === 'object' ? (init as { dispatcher?: unknown }).dispatcher : undefined;
+    if (!callerDispatcher) {
+      const url = requestUrl(input as string | URL | { url?: unknown });
+      const proxyUrl = url ? resolveProxyForUrl(env, url) : undefined;
+      if (proxyUrl) {
+        const agent = await getProxyAgent(proxyUrl);
+        if (agent) return base(input, { ...init, dispatcher: agent } as RequestInit);
+      }
+    }
+    return base(input, init);
+  }) as typeof globalThis.fetch;
+}
+
 export function resolveModel(config: ProviderConfig) {
   const { apiKey } = config;
   const fromKey = inferProviderFromApiKey(apiKey);
@@ -763,9 +890,13 @@ export function resolveModel(config: ProviderConfig) {
   const provider = (config.provider as ProviderName) || (isOpenRouterModel ? 'openrouter' : inferred?.provider);
   const model = stripOpenRouterPrefix(rawModel);
   const baseUrl = config.baseUrl || (isOpenRouterModel ? PROVIDER_BASE_URLS.openrouter! : inferred?.defaultBaseUrl || '');
-  const headerFetch = withExtraHeaders(config.extraHeaders);
-  const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? globalThis.fetch);
-  const fetch = bodyFetch ?? headerFetch;
+  // Proxy routing (HTTPS_PROXY/HTTP_PROXY/NO_PROXY). A no-op when no proxy env
+  // is set, so proxyFetch === globalThis.fetch and behavior is unchanged.
+  const proxyFetch = withProxyDispatcher(globalThis.fetch)!;
+  const proxyActive = proxyFetch !== globalThis.fetch;
+  const headerFetch = withExtraHeaders(config.extraHeaders, proxyFetch);
+  const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? proxyFetch);
+  const fetch = bodyFetch ?? headerFetch ?? (proxyActive ? proxyFetch : undefined);
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
@@ -779,9 +910,15 @@ export function resolveModel(config: ProviderConfig) {
     // cost-NEGATIVE (1.25x write premium, no read discount), so it is gated behind
     // AMI_VERTEX_PROMPT_CACHE=1 for re-testing when the vertex/SDK read path works.
     // See UI issue #10. Native Anthropic (below) caches normally.
+    // 1M-context beta header (R2-M31) must also ride on the vertex path, where
+    // it cannot be passed to the SDK constructor — inject it at the fetch layer.
+    const wantsOneM = supportsOneMillionContextBeta(model);
+    const vertexBase = wantsOneM
+      ? withAnthropicBetaHeader(headerFetch ?? proxyFetch, ONE_MILLION_CONTEXT_BETA)
+      : (headerFetch ?? proxyFetch);
     const vertexCacheFetch = process.env.AMI_VERTEX_PROMPT_CACHE === '1'
-      ? withVertexAnthropicCache(headerFetch ?? globalThis.fetch, config.cacheTtl)
-      : (headerFetch ?? undefined);
+      ? withVertexAnthropicCache(vertexBase, config.cacheTtl)
+      : (wantsOneM ? vertexBase : (headerFetch ?? (proxyActive ? proxyFetch : undefined)));
     return createVertexAnthropic({
       project,
       location,
@@ -791,11 +928,16 @@ export function resolveModel(config: ProviderConfig) {
 
   // Native Anthropic SDK
   if (provider === 'anthropic' || model.startsWith('claude') || baseUrl.includes('anthropic.com')) {
+    // Combine beta tokens: extended-cache (1h TTL) + 1M-context (R2-M31). Both
+    // ride the single comma-separated anthropic-beta header; never duplicated.
+    const anthropicBetas: string[] = [];
+    if (config.cacheTtl === '1h') anthropicBetas.push('extended-cache-ttl-2025-04-11');
+    if (supportsOneMillionContextBeta(model)) anthropicBetas.push(ONE_MILLION_CONTEXT_BETA);
     return createAnthropic({
       apiKey,
       baseURL: baseUrl || undefined,
-      fetch: withGzipCompression(headerFetch ?? globalThis.fetch),
-      ...(config.cacheTtl === '1h' ? { headers: { 'anthropic-beta': 'extended-cache-ttl-2025-04-11' } } : {}),
+      fetch: withGzipCompression(headerFetch ?? proxyFetch),
+      ...(anthropicBetas.length > 0 ? { headers: { 'anthropic-beta': anthropicBetas.join(',') } } : {}),
     })(model);
   }
 

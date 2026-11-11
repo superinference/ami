@@ -104,7 +104,7 @@ describe('grepTool – search', () => {
   });
 
   it('searches using regex patterns', async () => {
-    const result = await grepTool.execute({ pattern: 'function' }, ctx());
+    const result = await grepTool.execute({ pattern: 'function', output_mode: 'content' }, ctx());
     assert.ok(!result.isError);
     assert.ok(result.output.includes('function'));
   });
@@ -155,7 +155,7 @@ describe('grepTool – output truncation', () => {
     const lines = Array.from({ length: 300 }, (_, i) => `matchline_${i}`).join('\n');
     fs.writeFileSync(path.join(tmpDir, 'big.txt'), lines);
 
-    const result = await grepTool.execute({ pattern: 'matchline' }, ctx());
+    const result = await grepTool.execute({ pattern: 'matchline', output_mode: 'content' }, ctx());
     assert.ok(!result.isError);
     // Should have matches but not all 300
     assert.ok(result.output.includes('matchline_0'));
@@ -223,7 +223,7 @@ describe('grepTool – alternation when only grep is installed', () => {
     process.env.PATH = bin;
     try {
       const result = await grepTool.execute(
-        { pattern: 'BLP|TestOther', path: tmpDir, include: '*.go' },
+        { pattern: 'BLP|TestOther', path: tmpDir, include: '*.go', output_mode: 'content' },
         ctx(),
       );
       assert.ok(!result.isError, result.output);
@@ -265,7 +265,7 @@ describe('grepTool – invalid regex and suite logs', () => {
     );
     fs.writeFileSync(path.join(tmpDir, 'blp_test.go'), 'func TestBLPModel() {}\n');
     const result = await grepTool.execute(
-      { pattern: 'TestBLPModel', path: tmpDir },
+      { pattern: 'TestBLPModel', path: tmpDir, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -389,9 +389,26 @@ describe('grepTool – output modes', () => {
     assert.ok(result.output.includes('hello.ts'));
   });
 
-  it('defaults to content mode with line numbers', async () => {
+  it('defaults to files_with_matches mode when no output_mode is given', async () => {
+    // Claude Code parity: the default output mode is files_with_matches, so an
+    // unspecified call returns the file listing (paths only), NOT matching lines.
     const result = await grepTool.execute(
       { pattern: 'function hello' },
+      ctx(),
+    );
+    assert.ok(!result.isError, result.output);
+    // The file that matches is listed by path...
+    assert.ok(result.output.includes('hello.ts'));
+    // ...and the matched LINE text is NOT present. In content mode the output
+    // line is `hello.ts:1:export function hello() {}` — which DOES contain the
+    // matched text "function hello". In files_with_matches it is the path only.
+    // This discriminates the new default from the old `content` default.
+    assert.ok(!result.output.includes('function hello'));
+  });
+
+  it('still returns matching lines when output_mode is content', async () => {
+    const result = await grepTool.execute(
+      { pattern: 'function hello', output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -427,7 +444,7 @@ describe('grepTool – case insensitive', () => {
 describe('grepTool – context lines', () => {
   it('includes surrounding context with context_lines', async () => {
     const result = await grepTool.execute(
-      { pattern: 'function hello', context_lines: 1 },
+      { pattern: 'function hello', context_lines: 1, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -436,7 +453,7 @@ describe('grepTool – context lines', () => {
 
   it('uses before_context and after_context independently', async () => {
     const result = await grepTool.execute(
-      { pattern: 'function hello', before_context: 0, after_context: 1 },
+      { pattern: 'function hello', before_context: 0, after_context: 1, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -467,7 +484,7 @@ describe('grepTool – pagination', () => {
     fs.writeFileSync(path.join(tmpDir, 'paged.txt'), lines);
 
     const result = await grepTool.execute(
-      { pattern: 'linedata', head_limit: 5 },
+      { pattern: 'linedata', head_limit: 5, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -479,7 +496,7 @@ describe('grepTool – pagination', () => {
     fs.writeFileSync(path.join(tmpDir, 'offset.txt'), lines);
 
     const result = await grepTool.execute(
-      { pattern: 'item_', head_limit: 5, offset: 10 },
+      { pattern: 'item_', head_limit: 5, offset: 10, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -499,7 +516,7 @@ describe('grepTool – pagination', () => {
     fs.writeFileSync(path.join(tmpDir, 'unlimited.txt'), lines);
 
     const result = await grepTool.execute(
-      { pattern: 'unlim_', head_limit: 0 },
+      { pattern: 'unlim_', head_limit: 0, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -526,7 +543,7 @@ describe('grepTool – file type filter', () => {
 describe('grepTool – line numbers', () => {
   it('suppresses line numbers when line_numbers is false', async () => {
     const result = await grepTool.execute(
-      { pattern: 'hello', line_numbers: false },
+      { pattern: 'hello', line_numbers: false, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -541,7 +558,7 @@ describe('grepTool – dash-prefixed pattern', () => {
   it('searches for patterns starting with dash', async () => {
     fs.writeFileSync(path.join(tmpDir, 'dash.txt'), '--flag-value\nnormal\n');
     const result = await grepTool.execute(
-      { pattern: '--flag', path: tmpDir },
+      { pattern: '--flag', path: tmpDir, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -693,7 +710,7 @@ describe('grepTool – grep fallback output modes', () => {
     process.env.PATH = bin;
     try {
       const result = await grepTool.execute(
-        { pattern: 'function hello', context_lines: 1 },
+        { pattern: 'function hello', context_lines: 1, output_mode: 'content' },
         ctx(),
       );
       assert.ok(!result.isError, result.output);
@@ -745,7 +762,7 @@ describe('grepTool – suite log filtering', () => {
       '{"Action":"pass","Package":"pkg","Test":"TestFoo","Elapsed":1.5}\nreal_match\n',
     );
     const result = await grepTool.execute(
-      { pattern: 'pass|real_match', path: tmpDir },
+      { pattern: 'pass|real_match', path: tmpDir, output_mode: 'content' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);

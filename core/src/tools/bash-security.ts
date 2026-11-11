@@ -798,12 +798,20 @@ function validateASTCommands(command: string): SecurityCheckResult {
 
 const MAX_AUTO_APPROVE_LENGTH = 10_000;
 
-export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean }): SecurityCheckResult {
+export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean }): SecurityCheckResult {
   if (command.length > MAX_AUTO_APPROVE_LENGTH) {
     return fail(CHECK_IDS.COMMAND_TOO_LONG, `Command is ${command.length} characters (limit ${MAX_AUTO_APPROVE_LENGTH}) — too long to auto-approve`);
   }
 
   const detached = options?.detachedMode === true;
+  // Validator relaxation in detached mode is OPT-IN. By default detached mode
+  // runs the EXACT SAME validators as interactive mode — an unsupervised agent
+  // must not silently get more latitude. Only when the caller explicitly passes
+  // `relaxDetachedValidators: true` do we skip the three false-positive-prone
+  // validators (newlines, redirections, find/grep shell-metachars). The
+  // destructive-command guards (git credential theft, nuclear rm, dd, source/
+  // eval, etc.) always run in BOTH modes regardless of this flag.
+  const relaxDetached = detached && options?.relaxDetachedValidators === true;
   let result: SecurityCheckResult;
 
   // Invisible Unicode check — must run FIRST, before any pattern matching,
@@ -998,9 +1006,11 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   result = validateUnicodeWhitespace(command);
   if (!result.safe) return result;
 
-  // Detached mode: skip newline validation — multi-line commands (heredocs,
-  // compound build scripts) are model-generated, not adversarial injection.
-  if (!detached) {
+  // Detached mode (opt-in relaxation only): skip newline validation — multi-line
+  // commands (heredocs, compound build scripts) are model-generated, not
+  // adversarial injection. Without the explicit opt-in, detached runs this check
+  // exactly like interactive mode.
+  if (!relaxDetached) {
     result = validateNewlines(command);
     if (!result.safe) return result;
   }
@@ -1017,9 +1027,11 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   result = validateDevTcpUdpRedirects(command);
   if (!result.safe) return result;
 
-  // Detached mode: skip redirect validation — file output redirections
-  // (capturing test output, writing reports) are core to SWE-bench workflows.
-  if (!detached) {
+  // Detached mode (opt-in relaxation only): skip redirect validation — file
+  // output redirections (capturing test output, writing reports) are core to
+  // SWE-bench workflows. Without the explicit opt-in, detached runs this check
+  // exactly like interactive mode.
+  if (!relaxDetached) {
     result = validateRedirections(command, extracted);
     if (!result.safe) return result;
   }
@@ -1049,9 +1061,11 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   result = validateJqDangerous(command);
   if (!result.safe) return result;
 
-  // Detached mode: skip shell metachar validation in find/grep/xargs —
-  // pipes with fd redirects (2>&1 | grep) are standard build patterns.
-  if (!detached) {
+  // Detached mode (opt-in relaxation only): skip shell metachar validation in
+  // find/grep/xargs — pipes with fd redirects (2>&1 | grep) are standard build
+  // patterns. Without the explicit opt-in, detached runs this check exactly like
+  // interactive mode.
+  if (!relaxDetached) {
     result = validateShellMetacharsInCommands(command);
     if (!result.safe) return result;
   }

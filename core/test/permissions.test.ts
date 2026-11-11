@@ -132,8 +132,12 @@ describe('PermissionManager — rule management', () => {
     assert.equal(pm.getRules().length, 1);
   });
 
-  it('addRule prepends', async () => {
-    const pm = new PermissionManager('ask', [{ tool: 'bash', action: 'deny' }]);
+  it('addRule prepends (takes priority over existing allow/ask rules)', async () => {
+    // A prepended allow out-ranks an existing lower-priority ask rule (first-match
+    // among non-deny rules). Deny is intentionally NOT used here: under M9 a deny
+    // wins regardless of order, so it could not demonstrate prepend priority — the
+    // M9 precedence behavior is covered by its own tests below.
+    const pm = new PermissionManager('ask', [{ tool: 'bash', action: 'ask' }]);
     pm.addRule({ tool: 'bash', action: 'allow' });
     assert.equal(await pm.check('bash', { command: 'ls' }), 'allow');
   });
@@ -1584,5 +1588,118 @@ describe('S8 — which flag gating', () => {
   });
   it('which with an unknown flag is not auto-safe', () => {
     assert.equal(pm.classifyBashCommand('which --some-weird-flag node'), 'unsafe');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M1 — command-substitution decomposition for deny matching
+// A DENIED command must not be able to hide inside $(...) or `...` substitutions.
+// ---------------------------------------------------------------------------
+
+describe('M1 — deny matching decomposes command substitutions', () => {
+  it('denies a denied command hidden inside $(...)', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'echo *', action: 'allow' },
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo $(rm -rf x)' }), 'deny');
+  });
+
+  it('denies a denied command hidden inside backticks', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'echo *', action: 'allow' },
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo `rm -rf x`' }), 'deny');
+  });
+
+  it('denies a denied command hidden inside NESTED $(...)', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'echo *', action: 'allow' },
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo $(echo $(rm -rf x))' }), 'deny');
+  });
+
+  it('a benign substitution without the denied inner command stays allowed', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'echo *', action: 'allow' },
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'echo $(date)' }), 'allow');
+  });
+
+  it('allow matching is NOT broadened by inner commands (only denies are added)', async () => {
+    // An allow rule for `echo *` must not auto-allow because an inner `rm` exists;
+    // decomposition only ever adds denies. With no deny rule present, the outer
+    // echo still matches the allow — but the destructive inner elevates to ask.
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'allow' },
+    ]);
+    // `rm *` allow must NOT match `echo $(rm -rf x)` via inner decomposition.
+    assert.notEqual(await pm.check('bash', { command: 'echo $(rm -rf x)' }), 'allow');
+  });
+
+  it('checkDenyRules also decomposes substitutions', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+    ]);
+    assert.equal(pm.checkDenyRules('bash', 'echo $(rm -rf x)').denied, true);
+    assert.equal(pm.checkDenyRules('bash', 'echo $(date)').denied, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M9 — deny UNCONDITIONALLY wins over allow/ask, regardless of rule order.
+// ---------------------------------------------------------------------------
+
+describe('M9 — deny always wins regardless of rule order', () => {
+  it('[allow X, deny X] in that order -> X is DENIED (ask mode)', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'curl *', action: 'allow' },
+      { tool: 'bash', pattern: 'curl *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'curl http://x' }), 'deny');
+  });
+
+  it('[deny X, allow Y] -> Y still allowed, X denied (order-independent)', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'curl *', action: 'deny' },
+      { tool: 'bash', pattern: 'wget *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'curl http://x' }), 'deny');
+    assert.equal(await pm.check('bash', { command: 'wget http://x' }), 'allow');
+  });
+
+  it('a prepended allow can no longer shadow an existing deny', async () => {
+    const pm = new PermissionManager('ask', [{ tool: 'bash', pattern: 'curl *', action: 'deny' }]);
+    pm.addRule({ tool: 'bash', pattern: 'curl *', action: 'allow' }); // prepended -> higher priority
+    assert.equal(await pm.check('bash', { command: 'curl http://x' }), 'deny');
+  });
+
+  it('[allow X, deny X] in that order -> X is DENIED (auto-allow mode)', async () => {
+    const pm = new PermissionManager('auto-allow', [
+      { tool: 'bash', pattern: 'curl *', action: 'allow' },
+      { tool: 'bash', pattern: 'curl *', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'curl http://x' }), 'deny');
+    // A command no deny matches is still auto-allowed.
+    assert.equal(await pm.check('bash', { command: 'ls' }), 'allow');
+  });
+
+  it('a pattern-less deny after an allow still wins (whole-tool deny)', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'web_fetch', action: 'allow' },
+      { tool: 'web_fetch', action: 'deny' },
+    ]);
+    assert.equal(await pm.check('web_fetch', { url: 'http://x' }), 'deny');
+  });
+
+  it('with no deny rule, allow/ask first-match precedence is preserved', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'web_fetch', action: 'allow' },
+      { tool: 'web_fetch', action: 'ask' },
+    ]);
+    assert.equal(await pm.check('web_fetch', { url: 'http://x' }), 'allow');
   });
 });

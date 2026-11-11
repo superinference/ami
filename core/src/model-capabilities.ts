@@ -97,6 +97,20 @@ function hasOneMillionMarker(modelId: string): boolean {
   return /\[1m\]|[-_]1m\b/i.test(modelId);
 }
 
+/**
+ * Anthropic's 1M-context window is gated behind the `context-1m-2025-08-07`
+ * beta header. Per Anthropic's docs it is available on Claude Sonnet 4 and
+ * later (e.g. `claude-sonnet-4`, `claude-sonnet-4-5`, `claude-sonnet-5`). We
+ * detect conservatively by model-id substring: only the Sonnet family, only
+ * major version 4 and above, so the header is never sent to a model that would
+ * reject it. The id may carry a gateway prefix (e.g.
+ * `openrouter/anthropic/claude-sonnet-4-5`), so the match is unanchored.
+ */
+export function supportsOneMillionContextBeta(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  return /claude-sonnet-(?:[4-9]|\d{2,})/i.test(modelId);
+}
+
 export function getContextWindow(modelId: string): number {
   const lower = modelId.toLowerCase();
   const oneMillion = hasOneMillionMarker(modelId);

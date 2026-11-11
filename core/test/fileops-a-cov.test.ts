@@ -692,7 +692,7 @@ describe('globTool', () => {
     }
     const res = await globTool.execute({ pattern: '*.md' }, ctx());
     assert.ok(res.output.includes('(truncated)'));
-    assert.ok(res.output.includes('showing 200 of 230'));
+    assert.ok(res.output.includes('showing 100 of 230'));
   });
 
   it('errors on an unreadable base path', async () => {
@@ -831,9 +831,9 @@ function seedGrepFiles(): void {
 }
 
 describe('grepTool – searches', () => {
-  it('finds matches in content mode (default)', async () => {
+  it('finds matches in content mode', async () => {
     seedGrepFiles();
-    const res = await grepTool.execute({ pattern: 'needle' }, ctx());
+    const res = await grepTool.execute({ pattern: 'needle', output_mode: 'content' }, ctx());
     assert.ok(res.output.includes('needle'));
     assert.ok(res.output.includes('matches in'));
   });
@@ -852,7 +852,7 @@ describe('grepTool – searches', () => {
 
   it('case-insensitive matching', async () => {
     seedGrepFiles();
-    const res = await grepTool.execute({ pattern: 'NEEDLE', case_insensitive: true }, ctx());
+    const res = await grepTool.execute({ pattern: 'NEEDLE', case_insensitive: true, output_mode: 'content' }, ctx());
     assert.ok(res.output.includes('needle'));
   });
 
@@ -881,7 +881,7 @@ describe('grepTool – searches', () => {
 
   it('handles a pattern starting with a dash', async () => {
     fs.writeFileSync(path.join(tmpDir, 'dash.txt'), 'value = -42;\n');
-    const res = await grepTool.execute({ pattern: '-42' }, ctx());
+    const res = await grepTool.execute({ pattern: '-42', output_mode: 'content' }, ctx());
     assert.ok(res.output.includes('-42') || res.output.includes('No matches'));
   });
 
@@ -894,14 +894,14 @@ describe('grepTool – searches', () => {
   it('truncates with head_limit and reports the range', async () => {
     const fp = path.join(tmpDir, 'many.txt');
     fs.writeFileSync(fp, Array.from({ length: 20 }, (_, i) => `match ${i}`).join('\n') + '\n');
-    const res = await grepTool.execute({ pattern: 'match', head_limit: 3 }, ctx());
+    const res = await grepTool.execute({ pattern: 'match', head_limit: 3, output_mode: 'content' }, ctx());
     assert.ok(res.output.includes('showing lines') || res.output.includes('truncated'));
   });
 
   it('offset into results reports a shifted range', async () => {
     const fp = path.join(tmpDir, 'off.txt');
     fs.writeFileSync(fp, Array.from({ length: 10 }, (_, i) => `hit ${i}`).join('\n') + '\n');
-    const res = await grepTool.execute({ pattern: 'hit', offset: 2, head_limit: 3 }, ctx());
+    const res = await grepTool.execute({ pattern: 'hit', offset: 2, head_limit: 3, output_mode: 'content' }, ctx());
     assert.ok(res.output.includes('showing lines 3-'));
   });
 
@@ -924,7 +924,7 @@ describe('grepTool – searches', () => {
       fp,
       '{"Action":"pass","Test":"TestFoo","Elapsed":0.1}\nreal needle line\n',
     );
-    const res = await grepTool.execute({ pattern: 'needle|Action' }, ctx());
+    const res = await grepTool.execute({ pattern: 'needle|Action', output_mode: 'content' }, ctx());
     assert.ok(res.output.includes('real needle line'));
     assert.ok(!res.output.includes('"Action"'));
   });

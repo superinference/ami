@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   shouldUseSandbox,
+  buildSandboxExemptPatterns,
   wrapWithSandbox,
   wrapWithUnshare,
   getSandboxStatus,
@@ -85,6 +86,114 @@ describe('shouldUseSandbox', () => {
     assert.equal(shouldUseSandbox('bash -c "pytest tests/test_client.py -q"'), false);
     assert.equal(shouldUseSandbox('python -c "print(1)"'), true);
     assert.equal(shouldUseSandbox('bash -c "echo hello"'), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M11: configurable excludedCommands — operators/policy can control which
+// command prefixes bypass the sandbox. Defaults are unchanged when no config
+// is given.
+// ---------------------------------------------------------------------------
+
+describe('shouldUseSandbox — configurable excludedCommands (M11)', () => {
+  it('keeps default exemptions unchanged when no config is given', () => {
+    // Defaults still exempt git/npm/go; still sandbox curl/python -c.
+    assert.equal(shouldUseSandbox('git status'), false);
+    assert.equal(shouldUseSandbox('curl https://example.com'), true);
+    // Empty options object = no behavior change.
+    assert.equal(shouldUseSandbox('git status', {}), false);
+    assert.equal(shouldUseSandbox('curl https://example.com', {}), true);
+    // An empty excludedCommands list = no behavior change either.
+    assert.equal(shouldUseSandbox('curl https://example.com', { excludedCommands: [] }), true);
+  });
+
+  it('additive excludedCommands exempts a command that defaults would sandbox', () => {
+    // `curl` triggers the sandbox by default...
+    assert.equal(shouldUseSandbox('curl https://example.com'), true);
+    // ...but an operator can additively exempt it.
+    assert.equal(
+      shouldUseSandbox('curl https://example.com', { excludedCommands: ['curl'] }),
+      false,
+    );
+    // Defaults still apply alongside the custom entry.
+    assert.equal(shouldUseSandbox('git status', { excludedCommands: ['curl'] }), false);
+  });
+
+  it('additive excludedCommands supports multi-word prefixes', () => {
+    // A non-default trigger wrapped so the inner command is a sandbox trigger.
+    assert.equal(shouldUseSandbox('python -c "print(1)"'), true);
+    assert.equal(
+      shouldUseSandbox('python -c "print(1)"', { excludedCommands: ['python -c'] }),
+      false,
+    );
+  });
+
+  it('overrideDefaults replaces the hardcoded exemptions entirely', () => {
+    // With override + empty list, nothing is exempt — previously-exempt build
+    // commands that also match a trigger are now sandboxed, and the defaults no
+    // longer apply. `git` alone is not a trigger, so still false; but a command
+    // that was ONLY exempt via defaults + is a trigger now gets sandboxed.
+    // `pip install` matches no trigger, so stays false; use a trigger-matching
+    // case: `npx tsx` is exempt by default and not a trigger (false both ways),
+    // so assert on the override semantics via a custom allowlist instead.
+    assert.equal(
+      shouldUseSandbox('curl https://example.com', { excludedCommands: ['git'], overrideDefaults: true }),
+      true,
+    );
+    // With override, the default `git` exemption is gone but our custom `git`
+    // entry restores it.
+    assert.equal(
+      shouldUseSandbox('git status', { excludedCommands: ['git'], overrideDefaults: true }),
+      false,
+    );
+  });
+
+  it('overrideDefaults with empty list disables all exemptions', () => {
+    // A command that the DEFAULT exemptions would let bypass AND that is a
+    // sandbox trigger: `python3 -m pytest` is exempt by default, but pytest is
+    // not a trigger. Use `bash -c "pytest ..."` which defaults exempt but is a
+    // trigger via `bash -c`.
+    assert.equal(shouldUseSandbox('bash -c "pytest tests/ -q"'), false);
+    assert.equal(
+      shouldUseSandbox('bash -c "pytest tests/ -q"', { excludedCommands: [], overrideDefaults: true }),
+      true,
+    );
+  });
+
+  it('ignores empty/whitespace-only custom entries', () => {
+    assert.equal(
+      shouldUseSandbox('curl https://example.com', { excludedCommands: ['', '   '] }),
+      true,
+    );
+  });
+
+  it('treats custom entries as literal (regex metacharacters escaped)', () => {
+    // A '.' in an entry must match literally, not as "any char".
+    assert.equal(
+      shouldUseSandbox('curl https://example.com', { excludedCommands: ['c.rl'] }),
+      true,
+      'c.rl must not match curl — metacharacters are escaped',
+    );
+  });
+});
+
+describe('buildSandboxExemptPatterns (M11)', () => {
+  it('returns the defaults when no options supplied', () => {
+    const patterns = buildSandboxExemptPatterns();
+    assert.ok(patterns.some(p => p.test('git status')));
+    assert.ok(patterns.some(p => p.test('npm test')));
+  });
+
+  it('appends custom entries by default', () => {
+    const patterns = buildSandboxExemptPatterns({ excludedCommands: ['docker'] });
+    assert.ok(patterns.some(p => p.test('git status')), 'defaults retained');
+    assert.ok(patterns.some(p => p.test('docker build')), 'custom entry added');
+  });
+
+  it('replaces defaults when overrideDefaults is true', () => {
+    const patterns = buildSandboxExemptPatterns({ excludedCommands: ['docker'], overrideDefaults: true });
+    assert.ok(!patterns.some(p => p.test('git status')), 'defaults dropped');
+    assert.ok(patterns.some(p => p.test('docker build')), 'custom entry present');
   });
 });
 

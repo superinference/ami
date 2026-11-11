@@ -61,7 +61,7 @@ describe('grep tool error reporting', () => {
   it('returns matches for a pattern that does appear', async () => {
     fs.writeFileSync(path.join(tmpDir, 'test.txt'), 'hello world\nfoo bar\n');
     const result = await grepTool.execute(
-      { pattern: 'hello', path: tmpDir },
+      { pattern: 'hello', path: tmpDir, output_mode: 'content' },
       ctx(),
     );
     assert.ok(result.output.includes('hello'));

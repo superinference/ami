@@ -90,14 +90,15 @@ describe('globTool – search', () => {
     assert.ok(result.output.includes('No files found'));
   });
 
-  it('results are sorted alphabetically', async () => {
+  it('results are sorted by mtime descending (newest first)', async () => {
+    // a.ts older, b.ts newer — expect b before a regardless of alpha order.
+    fs.utimesSync(path.join(tmpDir, 'a.ts'), new Date(1_000_000), new Date(1_000_000));
+    fs.utimesSync(path.join(tmpDir, 'b.ts'), new Date(2_000_000), new Date(2_000_000));
     const result = await globTool.execute({ pattern: '*.ts' }, ctx());
     assert.ok(!result.isError);
-    const lines = result.output.trim().split('\n');
-    for (let i = 1; i < lines.length; i++) {
-      assert.ok(lines[i - 1].localeCompare(lines[i]) <= 0,
-        `Expected ${lines[i - 1]} <= ${lines[i]}`);
-    }
+    const lines = result.output.trim().split('\n').slice(1); // drop summary line
+    assert.ok(lines.indexOf('b.ts') < lines.indexOf('a.ts'),
+      `Expected b.ts (newer) before a.ts (older): ${lines.join(', ')}`);
   });
 
   it('respects the path option', async () => {
@@ -126,15 +127,15 @@ describe('globTool – search', () => {
 // Truncation — more than MAX_RESULTS (200) files
 // ---------------------------------------------------------------------------
 describe('globTool – truncation', () => {
-  it('truncates when results exceed 200', async () => {
-    for (let i = 0; i < 210; i++) {
+  it('truncates when results exceed MAX_RESULTS (100)', async () => {
+    for (let i = 0; i < 110; i++) {
       fs.writeFileSync(path.join(tmpDir, `gen_${String(i).padStart(3, '0')}.txt`), '');
     }
     const result = await globTool.execute({ pattern: '**/*.txt' }, ctx());
     assert.ok(!result.isError);
     assert.ok(result.output.includes('truncated'));
-    assert.ok(result.output.includes('200'));
-    assert.ok(result.output.includes('210'));
+    assert.ok(result.output.includes('showing 100 of 110 matches'));
+    assert.ok(result.output.includes('110'));
   });
 });
 
@@ -156,5 +157,157 @@ describe('globTool – error handling', () => {
       ctx(),
     );
     assert.ok(typeof result.output === 'string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G2 — mtime-descending sort
+// ---------------------------------------------------------------------------
+describe('globTool – mtime sort (G2)', () => {
+  it('orders multiple files newest-first by mtime', async () => {
+    // Create three files, stamp them with increasing mtimes in a non-alpha order.
+    fs.writeFileSync(path.join(tmpDir, 'zebra.log'), '');
+    fs.writeFileSync(path.join(tmpDir, 'apple.log'), '');
+    fs.writeFileSync(path.join(tmpDir, 'mango.log'), '');
+    fs.utimesSync(path.join(tmpDir, 'apple.log'), new Date(1_000_000), new Date(1_000_000)); // oldest
+    fs.utimesSync(path.join(tmpDir, 'mango.log'), new Date(2_000_000), new Date(2_000_000)); // middle
+    fs.utimesSync(path.join(tmpDir, 'zebra.log'), new Date(3_000_000), new Date(3_000_000)); // newest
+    const result = await globTool.execute({ pattern: '*.log' }, ctx());
+    assert.ok(!result.isError);
+    const lines = result.output.trim().split('\n').slice(1);
+    assert.deepEqual(lines, ['zebra.log', 'mango.log', 'apple.log']);
+  });
+
+  it('breaks mtime ties with a stable alphabetical secondary sort', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'y.log'), '');
+    fs.writeFileSync(path.join(tmpDir, 'x.log'), '');
+    fs.writeFileSync(path.join(tmpDir, 'z.log'), '');
+    const sameTime = new Date(5_000_000);
+    for (const f of ['x.log', 'y.log', 'z.log']) {
+      fs.utimesSync(path.join(tmpDir, f), sameTime, sameTime);
+    }
+    const result = await globTool.execute({ pattern: '*.log' }, ctx());
+    assert.ok(!result.isError);
+    const lines = result.output.trim().split('\n').slice(1);
+    assert.deepEqual(lines, ['x.log', 'y.log', 'z.log']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G3 — overridable node_modules / .git excludes
+// ---------------------------------------------------------------------------
+describe('globTool – overridable excludes (G3)', () => {
+  it('excludes node_modules by default', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'node_modules', 'pkg', 'index.ts'), '');
+    const result = await globTool.execute({ pattern: '**/*.ts' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('node_modules'));
+  });
+
+  it('includes node_modules when the pattern references it', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'node_modules', 'pkg', 'index.ts'), '');
+    const result = await globTool.execute({ pattern: '**/node_modules/**/*.ts' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('node_modules/pkg/index.ts'));
+  });
+
+  it('excludes .git by default', async () => {
+    fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.git', 'hook.ts'), '');
+    const result = await globTool.execute({ pattern: '**/*.ts' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('.git/'));
+  });
+
+  it('includes .git when the pattern references it', async () => {
+    fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.git', 'hook.ts'), '');
+    const result = await globTool.execute({ pattern: '.git/**/*.ts' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('.git/hook.ts'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G4 — count limit (100) + char cap (50_000) boundaries
+// ---------------------------------------------------------------------------
+describe('globTool – limit + char cap (G4)', () => {
+  function makeFlatFiles(n: number) {
+    for (let i = 0; i < n; i++) {
+      fs.writeFileSync(path.join(tmpDir, `f_${String(i).padStart(4, '0')}.dat`), '');
+    }
+  }
+
+  it('does NOT truncate at exactly MAX_RESULTS (100) files', async () => {
+    makeFlatFiles(100);
+    const result = await globTool.execute({ pattern: '**/*.dat' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.startsWith('[100 files]'));
+    assert.ok(!result.output.includes('truncated'));
+    const lines = result.output.trim().split('\n').slice(1);
+    assert.equal(lines.length, 100);
+  });
+
+  it('truncates at MAX_RESULTS + 1 (101) files', async () => {
+    makeFlatFiles(101);
+    const result = await globTool.execute({ pattern: '**/*.dat' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('(truncated)'));
+    assert.ok(result.output.includes('showing 100 of 101 matches'));
+  });
+
+  it('applies the character cap even when under the count limit', async () => {
+    // Two deeply-nested long-named dirs make each relative path ~600 chars, so
+    // ~84 of 100 matches already blow past MAX_OUTPUT_CHARS (50_000).
+    const seg = 'd'.repeat(200);
+    const deep = path.join(tmpDir, seg, seg, seg);
+    fs.mkdirSync(deep, { recursive: true });
+    for (let i = 0; i < 100; i++) {
+      fs.writeFileSync(path.join(deep, `file_${String(i).padStart(3, '0')}.big`), '');
+    }
+    const result = await globTool.execute({ pattern: '**/*.big' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('(truncated)'));
+    const m = result.output.match(/showing (\d+) of (\d+) matches/);
+    assert.ok(m, `expected a truncation note, got: ${result.output.slice(0, 200)}`);
+    const shown = Number(m![1]);
+    const total = Number(m![2]);
+    assert.equal(total, 100);
+    assert.ok(shown < 100, `char cap should show fewer than 100 (got ${shown})`);
+    // The character cap really bounds the list body (summary + note add a little).
+    const body = result.output.split('\n').slice(1).join('\n');
+    assert.ok(body.length <= 50_000 + 200, `body length ${body.length} exceeds cap`);
+  });
+
+  it('returns a no-files message for an empty result set', async () => {
+    const result = await globTool.execute({ pattern: '**/*.nonexistent-ext' }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('No files found'));
+    assert.ok(!result.output.includes('truncated'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G6 — path points at a non-directory
+// ---------------------------------------------------------------------------
+describe('globTool – path is not a directory (G6)', () => {
+  it('errors clearly when path points at a file', async () => {
+    const filePath = path.join(tmpDir, 'a.ts');
+    const result = await globTool.execute({ pattern: '*.ts', path: filePath }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('is not a directory'),
+      `expected not-a-directory error, got: ${result.output}`);
+    assert.ok(result.output.includes(filePath));
+  });
+
+  it('still works when path points at a real directory', async () => {
+    const result = await globTool.execute(
+      { pattern: '*.ts', path: path.join(tmpDir, 'src') },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('d.ts'));
   });
 });

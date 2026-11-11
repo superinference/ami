@@ -767,3 +767,85 @@ describe('fileReadTool – range read after full read (H2)', () => {
     assert.ok(String(again.output).includes('File unchanged'), 'full re-read is still short-circuited');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Notebook (.ipynb) pagination by cell index (M26)
+// ---------------------------------------------------------------------------
+
+describe('fileReadTool – notebook cell pagination', () => {
+  function writeNotebook(nCells: number): string {
+    const cells = Array.from({ length: nCells }, (_, i) => ({
+      cell_type: i % 2 === 0 ? 'code' : 'markdown',
+      source: [`CELL_BODY_${i}`],
+      metadata: {},
+      id: `cid-${i}`,
+      outputs: i % 2 === 0 ? [{ output_type: 'stream', text: [`OUT_${i}\n`] }] : [],
+    }));
+    const nb = {
+      cells,
+      metadata: { kernelspec: { display_name: 'Python 3', name: 'python3' } },
+      nbformat: 4,
+      nbformat_minor: 5,
+    };
+    const fp = path.join(tmpDir, 'paged.ipynb');
+    fs.writeFileSync(fp, JSON.stringify(nb));
+    return fp;
+  }
+
+  it('full read (no offset/limit) shows all cells', async () => {
+    const fp = writeNotebook(5);
+    const result = await fileReadTool.execute({ file_path: fp }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('5 cells'));
+    for (let i = 0; i < 5; i++) {
+      assert.ok(result.output.includes(`CELL_BODY_${i}`), `cell ${i} present in full read`);
+    }
+    // No window header when reading the whole notebook.
+    assert.ok(!result.output.includes('Cells '), 'no cell-window header for full read');
+  });
+
+  it('windows to the right cells with offset + limit', async () => {
+    const fp = writeNotebook(20);
+    const result = await fileReadTool.execute({ file_path: fp, offset: 2, limit: 3 }, ctx());
+    assert.ok(!result.isError);
+    // Shown: cells 2,3,4. Not shown: 0,1,5...
+    for (const i of [2, 3, 4]) {
+      assert.ok(result.output.includes(`CELL_BODY_${i}`), `cell ${i} should be shown`);
+    }
+    for (const i of [0, 1, 5, 19]) {
+      assert.ok(!result.output.includes(`CELL_BODY_${i}`), `cell ${i} should NOT be shown`);
+    }
+    // Absolute cell indices preserved in the per-cell headers.
+    assert.ok(result.output.includes('--- Cell 2 '));
+    assert.ok(result.output.includes('--- Cell 4 '));
+  });
+
+  it('includes a "Cells X-Y of N" header when windowed', async () => {
+    const fp = writeNotebook(20);
+    const result = await fileReadTool.execute({ file_path: fp, offset: 0, limit: 5 }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('Cells 0-4 of 20'),
+      `expected "Cells 0-4 of 20" header, got: ${result.output.slice(0, 200)}`);
+  });
+
+  it('handles offset only (defaults limit to all remaining cells)', async () => {
+    const fp = writeNotebook(6);
+    const result = await fileReadTool.execute({ file_path: fp, offset: 4 }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('Cells 4-5 of 6'));
+    assert.ok(result.output.includes('CELL_BODY_4'));
+    assert.ok(result.output.includes('CELL_BODY_5'));
+    assert.ok(!result.output.includes('CELL_BODY_3'));
+  });
+
+  it('handles out-of-range offset gracefully (empty window, clamped)', async () => {
+    const fp = writeNotebook(4);
+    const result = await fileReadTool.execute({ file_path: fp, offset: 99, limit: 3 }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('Cells (none shown) of 4'),
+      `expected empty-window header, got: ${result.output.slice(0, 200)}`);
+    for (let i = 0; i < 4; i++) {
+      assert.ok(!result.output.includes(`CELL_BODY_${i}`), `cell ${i} must not appear`);
+    }
+  });
+});

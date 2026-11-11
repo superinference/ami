@@ -79,8 +79,8 @@ export const grepTool: ToolDefinition = {
       output_mode: {
         type: 'string',
         enum: ['content', 'files_with_matches', 'count'],
-        description: 'Output format: content (default, matching lines with context), files_with_matches (file names only — more token-efficient), count (match counts per file).',
-        default: 'content',
+        description: 'Output format: files_with_matches (default, file names only — more token-efficient), content (matching lines with context), count (match counts per file).',
+        default: 'files_with_matches',
       },
       case_insensitive: {
         type: 'boolean',
@@ -131,7 +131,7 @@ export const grepTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const include = input.include as string | undefined;
-    const outputMode = (input.output_mode as string) || 'content';
+    const outputMode = (input.output_mode as string) || 'files_with_matches';
     const lineNumbers = input.line_numbers as boolean | undefined;
     const caseInsensitive = (input.case_insensitive as boolean) ?? false;
     const contextLines = input.context_lines as number | undefined;

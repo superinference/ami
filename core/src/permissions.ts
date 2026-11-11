@@ -792,6 +792,42 @@ function splitCompoundCommand(cmd: string): string[] {
 }
 
 /**
+ * Extract the inner command string(s) from `$(...)` command substitutions and
+ * `` `...` `` backticks, recursively (nested substitutions included).
+ *
+ * Used ONLY for deny/ask matching (M1): a DENIED command must not be able to hide
+ * inside a substitution (e.g. `echo $(rm -rf x)` or `` echo `rm -rf x` ``). Allow
+ * matching never consults this — decomposition can only ADD denies, never broaden
+ * an allow.
+ */
+function extractCommandSubstitutions(command: string): string[] {
+  const results: string[] = [];
+  const walk = (s: string): void => {
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '$' && i + 1 < s.length && s[i + 1] === '(') {
+        const end = findMatchingParen(s, i + 2);
+        if (end !== -1) {
+          const inner = s.slice(i + 2, end);
+          results.push(inner);
+          walk(inner); // nested $(...) / backticks
+          i = end;
+        }
+      } else if (s[i] === '`') {
+        const end = s.indexOf('`', i + 1);
+        if (end !== -1) {
+          const inner = s.slice(i + 1, end);
+          results.push(inner);
+          walk(inner);
+          i = end;
+        }
+      }
+    }
+  };
+  walk(command);
+  return results;
+}
+
+/**
  * Match a bash command against a permission rule pattern, handling:
  * 1. Line continuation normalization (\<newline> → join)
  * 2. Compound command decomposition:
@@ -835,19 +871,32 @@ function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' 
   const normalized = normalizeLineContinuations(command);
   const subCommands = splitCompoundCommand(normalized);
 
+  let baseMatch: boolean;
   if (subCommands.length <= 1) {
     // Use the single sub-command (which has been unwrapped from control
     // structures) rather than the original normalized string, so that
     // e.g. "for f in *.ts; do cat $f; done" matches a "cat *" rule.
     const effective = subCommands.length === 1 ? subCommands[0] : normalized;
-    return matchBashSub(pattern, effective, ruleAction);
+    baseMatch = matchBashSub(pattern, effective, ruleAction);
+  } else if (ruleAction === 'allow') {
+    baseMatch = subCommands.every(sub => matchBashSub(pattern, sub, 'allow'));
+  } else {
+    // deny / ask: any sub-command match triggers
+    baseMatch = subCommands.some(sub => matchBashSub(pattern, sub, ruleAction));
   }
+  if (baseMatch) return true;
 
-  if (ruleAction === 'allow') {
-    return subCommands.every(sub => matchBashSub(pattern, sub, 'allow'));
+  // M1: deny/ask rules ALSO decompose `$(...)` / backtick command substitutions
+  // (recursively) and match each extracted inner command, so a denied command
+  // cannot hide inside a substitution (e.g. `echo $(rm -rf x)`). Allow matching
+  // stays STRICT above — decomposition can only ADD denies, never broaden allows.
+  if (ruleAction === 'allow') return false;
+  for (const inner of extractCommandSubstitutions(normalized)) {
+    for (const sub of splitCompoundCommand(inner)) {
+      if (matchBashSub(pattern, sub, ruleAction)) return true;
+    }
   }
-  // deny / ask: any sub-command match triggers
-  return subCommands.some(sub => matchBashSub(pattern, sub, ruleAction));
+  return false;
 }
 
 /**
@@ -934,27 +983,12 @@ export class PermissionManager {
     }
 
     // Fast path: mode-level overrides — but in auto-allow mode, explicit
-    // deny rules still fire (Gap #32). We use first-match ordering: if the
-    // first matching rule is allow, auto-allow wins; if deny, deny wins.
+    // deny rules still fire (Gap #32). M9: a matching deny UNCONDITIONALLY wins
+    // over the auto-allow, regardless of rule order (an earlier allow can no
+    // longer shadow a later deny). paramPattern rules stay skipped on this
+    // fast-path (unchanged behavior); everything else is auto-allowed.
     if (this.mode === 'auto-allow') {
-      for (const rule of this.rules) {
-        if (rule.paramPattern) continue;
-        const toolMatches = this.toolNameMatches(rule.tool, toolName);
-        if (!toolMatches) continue;
-        if (rule.pattern) {
-          const inputStr = this.inputToString(toolName, input);
-          const matched = toolName === 'bash' && typeof input.command === 'string'
-            ? matchBashPattern(rule.pattern, inputStr, rule.action)
-            : matchPattern(rule.pattern, inputStr);
-          if (matched) {
-            if (rule.action === 'deny') return 'deny';
-            break; // allow/ask rule matched first — fall through to auto-allow
-          }
-        } else {
-          if (rule.action === 'deny') return 'deny';
-          break; // non-deny blanket rule — fall through to auto-allow
-        }
-      }
+      if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
       return 'allow';
     }
     if (this.mode === 'deny-all') return 'deny';
@@ -1029,9 +1063,18 @@ export class PermissionManager {
       if (cached !== null) return cached;
     }
 
-    // Evaluate rules in order (first match wins). AMI intentionally uses
-    // first-match so a prepended allow can override a broad deny and vice versa.
+    // M9: a matching deny rule UNCONDITIONALLY wins over any allow/ask, regardless
+    // of rule order. Scan the whole rule list for a deny first; only if none matches
+    // do allow/ask rules get evaluated in order (first match wins) below.
+    if (this.anyDenyMatches(toolName, input)) {
+      if (this._memo) this._memo.set(toolName, this._hashInput(input), 'deny');
+      return 'deny';
+    }
+
+    // Evaluate allow/ask rules in order (first match wins). Deny rules were already
+    // resolved above and unconditionally win, so they are skipped here.
     for (const rule of this.rules) {
+      if (rule.action === 'deny') continue;
       const toolMatches = this.toolNameMatches(rule.tool, toolName);
       if (!toolMatches) continue;
       // Tool(param:value) matching — all named params must match their globs.
@@ -1488,6 +1531,39 @@ export class PermissionManager {
       if (typeof v !== 'string' || !matchPattern(glob, v)) return false;
     }
     return true;
+  }
+
+  /**
+   * M9: does ANY deny rule match this call, regardless of rule order? A matching
+   * deny UNCONDITIONALLY wins over allow/ask. Unlike hasExplicitDeny (first-match,
+   * returns the first matching rule's action), this scans the WHOLE rule list for a
+   * deny, so an earlier allow can never shadow a later deny.
+   *
+   * `skipParamPattern` preserves the auto-allow fast-path's long-standing behavior
+   * of ignoring structured paramPattern rules (they are enforced by the ordered
+   * rule loop in check()'s rule-evaluated modes, not by the auto-allow fast-path).
+   */
+  private anyDenyMatches(
+    toolName: string,
+    input: Record<string, unknown>,
+    skipParamPattern = false,
+  ): boolean {
+    for (const rule of this.rules) {
+      if (rule.action !== 'deny') continue;
+      if (skipParamPattern && rule.paramPattern) continue;
+      if (!this.toolNameMatches(rule.tool, toolName)) continue;
+      if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
+      if (rule.pattern) {
+        const inputStr = this.inputToString(toolName, input);
+        const matched = toolName === 'bash' && typeof input.command === 'string'
+          ? matchBashPattern(rule.pattern, inputStr, 'deny')
+          : matchPattern(rule.pattern, inputStr);
+        if (matched) return true;
+      } else {
+        return true;
+      }
+    }
+    return false;
   }
 
   hasExplicitDeny(toolName: string, input: Record<string, unknown>): boolean {

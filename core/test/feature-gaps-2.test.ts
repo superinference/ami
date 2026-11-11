@@ -248,7 +248,7 @@ describe('grep – new features', () => {
     fs.writeFileSync(f, 'line1\nline2\nMATCH\nline4\nline5\n');
 
     const result = await grepTool.execute(
-      { pattern: 'MATCH', path: tmpDir, context_lines: 1 },
+      { pattern: 'MATCH', path: tmpDir, context_lines: 1, output_mode: 'content' },
       ctx({ cwd: tmpDir }),
     );
     assert.ok(!result.isError);
@@ -261,7 +261,7 @@ describe('grep – new features', () => {
     fs.writeFileSync(path.join(tmpDir, 'test.txt'), 'Hello World\nhello world\nHELLO WORLD\n');
 
     const result = await grepTool.execute(
-      { pattern: 'hello', path: tmpDir, case_insensitive: true },
+      { pattern: 'hello', path: tmpDir, case_insensitive: true, output_mode: 'content' },
       ctx({ cwd: tmpDir }),
     );
     assert.ok(!result.isError);
@@ -398,7 +398,7 @@ describe('grep – offset and head_limit', () => {
     fs.writeFileSync(path.join(tmpDir, 'test.txt'), lines);
 
     const result = await grepTool.execute(
-      { pattern: 'match_line', path: tmpDir, head_limit: 5 },
+      { pattern: 'match_line', path: tmpDir, head_limit: 5, output_mode: 'content' },
       ctx({ cwd: tmpDir }),
     );
     assert.ok(!result.isError);
@@ -413,7 +413,7 @@ describe('grep – offset and head_limit', () => {
     fs.writeFileSync(path.join(tmpDir, 'test.txt'), lines);
 
     const result = await grepTool.execute(
-      { pattern: 'line_', path: tmpDir, offset: 5, head_limit: 3 },
+      { pattern: 'line_', path: tmpDir, offset: 5, head_limit: 3, output_mode: 'content' },
       ctx({ cwd: tmpDir }),
     );
     assert.ok(!result.isError);

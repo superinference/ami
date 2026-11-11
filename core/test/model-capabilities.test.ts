@@ -17,6 +17,7 @@ import {
   requiresResponsesAPI,
   discoverFromModelList,
   modelSupportsVision,
+  supportsOneMillionContextBeta,
   DEFAULT_MAX_OUTPUT_TOKENS,
   OUTPUT_FIT_SAFETY_TOKENS,
   MIN_FITTED_OUTPUT_TOKENS,
@@ -833,5 +834,30 @@ describe('requiresResponsesAPI', () => {
     assert.equal(requiresResponsesAPI('claude-opus-4'), false);
     assert.equal(requiresResponsesAPI('gemini-2.5-pro'), false);
     assert.equal(requiresResponsesAPI('deepseek-r1'), false);
+  });
+});
+
+describe('supportsOneMillionContextBeta (R2-M31)', () => {
+  it('detects Claude Sonnet 4+ model ids (conservative substring match)', () => {
+    assert.equal(supportsOneMillionContextBeta('claude-sonnet-4'), true);
+    assert.equal(supportsOneMillionContextBeta('claude-sonnet-4-5'), true);
+    assert.equal(supportsOneMillionContextBeta('claude-sonnet-4-6'), true);
+    assert.equal(supportsOneMillionContextBeta('claude-sonnet-5'), true);
+    assert.equal(supportsOneMillionContextBeta('claude-sonnet-5-5'), true);
+    // Carries a gateway/provider prefix — still matched (unanchored).
+    assert.equal(supportsOneMillionContextBeta('openrouter/anthropic/claude-sonnet-4-5'), true);
+    assert.equal(supportsOneMillionContextBeta('CLAUDE-SONNET-4-5'), true);
+  });
+
+  it('does not detect non-qualifying ids (be conservative)', () => {
+    assert.equal(supportsOneMillionContextBeta('claude-sonnet-3'), false);
+    assert.equal(supportsOneMillionContextBeta('claude-3-5-sonnet'), false);
+    assert.equal(supportsOneMillionContextBeta('claude-opus-4'), false);
+    assert.equal(supportsOneMillionContextBeta('claude-haiku-4'), false);
+    assert.equal(supportsOneMillionContextBeta('gpt-5.6-luna'), false);
+    assert.equal(supportsOneMillionContextBeta(''), false);
+    // Non-string input is tolerated.
+    assert.equal(supportsOneMillionContextBeta(undefined as unknown as string), false);
+    assert.equal(supportsOneMillionContextBeta(null as unknown as string), false);
   });
 });

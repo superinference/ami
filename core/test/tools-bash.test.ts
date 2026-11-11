@@ -7,6 +7,7 @@ import * as childProcess from 'child_process';
 import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustion, resolveBashTimeout, detectGitCommit, injectFindMaxdepth, extractBashReadPaths, diagnoseError } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 import { detectHardlineCommand } from '../src/permissions';
+import { detectCredentialPathWrite, detectSessionTranscriptWrite } from '../src/tools/bash-security';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
@@ -976,12 +977,14 @@ describe('credential-path write guard', () => {
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
 
-  it('control: a normal write to a non-credential path is allowed', async () => {
+  it('control: the credential-path guard does not over-block a normal path', () => {
+    // M10: detached now runs the same validators as interactive, so a bare
+    // redirect (`echo hi > file`) is blocked regardless of path. Prove the
+    // credential guard itself does not over-block a normal, non-credential path
+    // by calling it directly rather than through the full bash pipeline.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cred3-'));
     try {
-      const res = await bashTool.execute({ command: `echo hi > ${path.join(tmp, 'notes.txt')}` }, ctx({ cwd: tmp, detachedMode: true } as any));
-      assert.ok(!res.isError, `normal write should be allowed, got ${JSON.stringify(res)}`);
-      assert.equal(fs.readFileSync(path.join(tmp, 'notes.txt'), 'utf8').trim(), 'hi');
+      assert.equal(detectCredentialPathWrite(`echo hi > ${path.join(tmp, 'notes.txt')}`).blocked, false);
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
 });
@@ -1127,11 +1130,14 @@ describe('session transcript write guard', () => {
       assert.equal(fs.existsSync(target), true, 'transcript must not be deleted');
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
-  it('control: writing a normal file is allowed', async () => {
+  it('control: the session-transcript guard does not over-block a normal path', () => {
+    // M10: a bare redirect is blocked in detached (parity with interactive), so
+    // the full pipeline no longer allows `echo hi > file`. Prove the session
+    // transcript guard itself does not over-block a normal, non-transcript path
+    // by calling it directly.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess2-'));
     try {
-      const res = await bashTool.execute({ command: `echo hi > ${path.join(tmp, 'notes.txt')}` }, ctx({ cwd: tmp, detachedMode: true } as any));
-      assert.ok(!res.isError);
+      assert.equal(detectSessionTranscriptWrite(`echo hi > ${path.join(tmp, 'notes.txt')}`).blocked, false);
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
 });

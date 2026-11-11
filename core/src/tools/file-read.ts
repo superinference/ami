@@ -409,9 +409,25 @@ export const fileReadTool: ToolDefinition = {
         const parts: string[] = [];
         const kernelName = nb.metadata?.kernelspec?.display_name || nb.metadata?.kernelspec?.name || 'unknown';
         parts.push(`File: ${resolved} (Jupyter Notebook, ${cells.length} cells, kernel: ${kernelName})`);
+
+        // Paginate by CELL index: offset = starting cell (0-based, AMI convention),
+        // limit = number of cells to render. When both are omitted, render all cells
+        // (preserving prior behavior, subject to the token cap below).
+        const hasCellWindow = input.offset !== undefined || input.limit !== undefined;
+        const startCell = Math.max(0, Math.min(offset, cells.length));
+        const endCell = hasCellWindow
+          ? Math.min(startCell + limit, cells.length)
+          : cells.length;
+        if (hasCellWindow) {
+          parts.push(
+            endCell > startCell
+              ? `Cells ${startCell}-${endCell - 1} of ${cells.length}`
+              : `Cells (none shown) of ${cells.length}`,
+          );
+        }
         parts.push('');
 
-        for (let idx = 0; idx < cells.length; idx++) {
+        for (let idx = startCell; idx < endCell; idx++) {
           const cell = cells[idx];
           const cellId = cell.id || `cell-${idx}`;
           const src = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');

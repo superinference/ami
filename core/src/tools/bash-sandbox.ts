@@ -75,13 +75,53 @@ const SANDBOX_EXEMPT_PATTERNS = [
   /\buv\s+pip\b/,
 ];
 
-export function shouldUseSandbox(command: string): boolean {
+/**
+ * Options controlling which command prefixes bypass the sandbox.
+ *
+ * By default the hardcoded `SANDBOX_EXEMPT_PATTERNS` (package managers, build
+ * tools, test runners) are exempt. Operators/policy can extend or replace that
+ * set via `excludedCommands`:
+ *   - `excludedCommands` is a list of literal command prefixes (e.g. `'docker'`,
+ *     `'bazel build'`) that should NOT be sandboxed. Each is matched at a word
+ *     boundary against the command.
+ *   - When `overrideDefaults` is false/omitted, `excludedCommands` is ADDITIVE
+ *     to the hardcoded defaults (no behavior change by default — an empty/absent
+ *     list keeps exactly the current exemptions).
+ *   - When `overrideDefaults` is true, `excludedCommands` REPLACES the hardcoded
+ *     defaults entirely (an operator opting into a stricter or fully custom
+ *     exemption policy).
+ */
+export interface SandboxExemptionOptions {
+  excludedCommands?: string[];
+  overrideDefaults?: boolean;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Resolve the effective list of sandbox-exempt patterns for a given policy.
+ * Returns the hardcoded defaults when no options are supplied, so the default
+ * behavior is unchanged.
+ */
+export function buildSandboxExemptPatterns(options?: SandboxExemptionOptions): RegExp[] {
+  const custom = (options?.excludedCommands ?? [])
+    .map(c => c.trim())
+    .filter(c => c.length > 0)
+    .map(c => new RegExp('\\b' + escapeRegExp(c) + '\\b'));
+  if (options?.overrideDefaults) return custom;
+  return [...SANDBOX_EXEMPT_PATTERNS, ...custom];
+}
+
+export function shouldUseSandbox(command: string, options?: SandboxExemptionOptions): boolean {
   // Match exemptions on the original command so `bash -c "pytest ..."` and
   // `python tests/runtests.py` are not wrapped. Quote-stripping hides the
   // inner command and leaves `bash -c`, which is a sandbox trigger.
-  if (SANDBOX_EXEMPT_PATTERNS.some(p => p.test(command))) return false;
+  const exemptPatterns = buildSandboxExemptPatterns(options);
+  if (exemptPatterns.some(p => p.test(command))) return false;
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
-  if (SANDBOX_EXEMPT_PATTERNS.some(p => p.test(stripped))) return false;
+  if (exemptPatterns.some(p => p.test(stripped))) return false;
   return SANDBOX_TRIGGER_PATTERNS.some(p => p.test(stripped));
 }
 
