@@ -93,6 +93,25 @@ describe('discoverPlugins', () => {
     assert.ok(bundles[0]!.hooksFile!.endsWith('hooks.json'));
   });
 
+  it('populates hooksFile from the Claude Code hooks/hooks.json subdir (impeccable layout)', () => {
+    const root = makePlugin('cc-hooks', { name: 'CC' });
+    fs.mkdirSync(path.join(root, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'hooks', 'hooks.json'), '{"hooks":{}}');
+    const bundles = discoverPlugins(tmpDir);
+    const b = bundles.find(x => x.name === 'CC')!;
+    assert.ok(b.hooksFile, 'hooksFile should resolve to the hooks/ subdir');
+    assert.ok(b.hooksFile!.endsWith(path.join('hooks', 'hooks.json')));
+  });
+
+  it('prefers root hooks.json over the hooks/ subdir when both exist', () => {
+    const root = makePlugin('plugin-both', { name: 'BOTH' }, { hooks: true });
+    fs.mkdirSync(path.join(root, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'hooks', 'hooks.json'), '{"hooks":{}}');
+    const b = discoverPlugins(tmpDir).find(x => x.name === 'BOTH')!;
+    // Root file is <root>/hooks.json, NOT the <root>/hooks/hooks.json subdir.
+    assert.equal(b.hooksFile, path.join(root, 'hooks.json'));
+  });
+
   it('returns undefined for missing component dirs', () => {
     makePlugin('minimal', { name: 'Min' });
     const bundles = discoverPlugins(tmpDir);

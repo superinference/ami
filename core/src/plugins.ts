@@ -44,6 +44,17 @@ function hardenedResolve(root: string, rel: string): string | undefined {
 }
 
 /**
+ * A plugin's hooks file is at <root>/hooks.json (AMI's original layout) or
+ * <root>/hooks/hooks.json (the Claude Code convention — used by the impeccable
+ * plugin). Prefer the root file, fall back to the subdir. hardenedResolve returns
+ * undefined for a nonexistent/escaping path, so this naturally yields the first
+ * one that actually exists (or undefined).
+ */
+function resolvePluginHooksFile(root: string): string | undefined {
+  return hardenedResolve(root, 'hooks.json') ?? hardenedResolve(root, path.join('hooks', 'hooks.json'));
+}
+
+/**
  * Minimal TOML string parser for the simple `key = "value"` format used by
  * command definition files. Handles backslash escapes (\n, \t, \\, \").
  */
@@ -138,7 +149,9 @@ export function discoverPlugins(dir: string): PluginBundle[] {
         skillsDir: hardenedResolve(root, 'skills'),
         agentsDir: hardenedResolve(root, 'agents'),
         commandsDir: hardenedResolve(root, 'commands'),
-        hooksFile: hardenedResolve(root, 'hooks.json'),
+        // Hooks live at <root>/hooks.json OR, per the Claude Code convention
+        // (used by e.g. the impeccable plugin), <root>/hooks/hooks.json.
+        hooksFile: resolvePluginHooksFile(root),
       });
     } catch {
       // Skip a malformed bundle rather than failing all discovery.
