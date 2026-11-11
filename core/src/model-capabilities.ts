@@ -1,6 +1,12 @@
 export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+// The reasoning-EFFORT scale for code review / subagents (distinct from THINKING_LEVELS:
+// no 'off', adds 'xhigh'). Canonical source for /review --effort, the band's effort chip,
+// and the --introspect manifest, so a hardcoded subset can't drift (audit #14).
+export const REVIEW_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ReviewEffortLevel = (typeof REVIEW_EFFORT_LEVELS)[number];
+
 export interface ModelCapabilities {
   reasoning: boolean;
   defaultThinkingLevel: ThinkingLevel;
