@@ -153,6 +153,61 @@ describe('fileReadTool – offset and limit', () => {
 });
 
 // ---------------------------------------------------------------------------
+// L10: capped range reads surface a clear, actionable notice (not a silent cut)
+// ---------------------------------------------------------------------------
+
+describe('fileReadTool – capped range notice (L10)', () => {
+  it('signals more content when an explicit range is cut short by limit', async () => {
+    // 50-line file; read a window (offset 0, limit 10) that stops well before EOF.
+    const file = path.join(tmpDir, 'long-range.txt');
+    fs.writeFileSync(
+      file,
+      Array.from({ length: 50 }, (_, i) => `line${i + 1}`).join('\n') + '\n',
+    );
+
+    const result = await fileReadTool.execute(
+      { file_path: file, offset: 0, limit: 10 },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    // RED before fix: the streaming range path returned no "more lines" signal,
+    // so the model could not tell the window stopped short of the file end.
+    assert.ok(
+      result.output.includes('more lines follow'),
+      `expected a capped-range notice, got:\n${result.output}`,
+    );
+    // The notice must be actionable: point at the next offset to continue.
+    assert.ok(
+      result.output.includes('offset=10'),
+      `notice must suggest the next offset, got:\n${result.output}`,
+    );
+    // Content is still returned (we cap-and-notice, never hard-throw).
+    assert.ok(result.output.includes('line10'));
+    assert.ok(!result.output.includes('line11'));
+  });
+
+  it('adds no notice when the range reaches end of file (in-limit read unchanged)', async () => {
+    // 5-line file; window (offset 1, limit 10) spans past EOF → nothing dropped.
+    const file = path.join(tmpDir, 'short-range.txt');
+    fs.writeFileSync(file, 'a\nb\nc\nd\ne\n');
+
+    const result = await fileReadTool.execute(
+      { file_path: file, offset: 1, limit: 10 },
+      ctx(),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('Showing'));
+    assert.ok(result.output.includes('b'));
+    assert.ok(result.output.includes('e'));
+    // No content was capped, so no "more lines" notice must appear.
+    assert.ok(
+      !result.output.includes('more lines follow'),
+      `in-limit read must not claim more content, got:\n${result.output}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Binary detection
 // ---------------------------------------------------------------------------
 

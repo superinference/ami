@@ -1304,6 +1304,27 @@ export function buildAnthropicCacheControl(cacheTtl?: '5m' | '1h'): { type: 'eph
   return cacheTtl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
 }
 
+/** Env var that sets a configurable DEFAULT prompt-cache TTL. */
+export const PROMPT_CACHE_TTL_ENV = 'AMI_PROMPT_CACHE_TTL';
+
+/**
+ * L4: resolve the effective prompt-cache TTL. An explicit per-request
+ * `config.cacheTtl` always wins; when it is unset, `AMI_PROMPT_CACHE_TTL`
+ * supplies a configurable DEFAULT (accepts only '5m' or '1h' — any other value,
+ * including whitespace or junk, is ignored). With neither set this returns
+ * `undefined` (Anthropic's standard 5-minute ephemeral cache), so the default
+ * behavior is unchanged. Purely ADDITIVE + behavior-preserving when the env is
+ * absent. Exported for unit testing.
+ */
+export function resolveCacheTtl(
+  configTtl: '5m' | '1h' | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): '5m' | '1h' | undefined {
+  if (configTtl !== undefined) return configTtl;
+  const raw = env[PROMPT_CACHE_TTL_ENV]?.trim();
+  return raw === '5m' || raw === '1h' ? raw : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // repairToolCall — fix hallucinated tool names at the stream level
 // ---------------------------------------------------------------------------
@@ -1679,6 +1700,13 @@ export async function* streamChatCompletionWithRetry(
   // and network-retry branches, which real transports surface as error chunks
   // rather than thrown errors.
   const streamImpl = options?.streamImpl ?? streamChatCompletion;
+  // L4: resolve the configurable DEFAULT prompt-cache TTL (AMI_PROMPT_CACHE_TTL)
+  // ONCE, before the retry loop. Done here — not inside streamChatCompletion — so
+  // the gateway-rejection recovery below (which clears cacheTtl to drop the
+  // extended-cache beta header a proxy rejected) is NOT re-defaulted on the next
+  // attempt and the recovery can actually succeed. Byte-identical when the env is
+  // unset and when the caller already set config.cacheTtl.
+  config = { ...config, cacheTtl: resolveCacheTtl(config.cacheTtl) };
   const envTimeout = Number(process.env.SUPERINFERENCE_API_TIMEOUT_MS);
   const timeoutMs = options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS);
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;

@@ -20,7 +20,11 @@ import {
   buildRequestIdHeader,
   requestIdHooks,
   REQUEST_ID_HEADER,
+  resolveCacheTtl,
+  PROMPT_CACHE_TTL_ENV,
+  streamChatCompletionWithRetry,
 } from '../src/provider';
+import type { StreamChunk } from '../src/types';
 import { fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../src/model-capabilities';
 import { estimateTokens } from '../src/utils/tokens';
 import type { ToolDefinition, ProviderConfig, Message } from '../src/types';
@@ -1887,6 +1891,114 @@ describe('buildAnthropicCacheControl', () => {
     assert.deepEqual(buildAnthropicCacheControl('1h'), { type: 'ephemeral', ttl: '1h' });
     assert.deepEqual(buildAnthropicCacheControl('5m'), { type: 'ephemeral' });
     assert.deepEqual(buildAnthropicCacheControl(undefined), { type: 'ephemeral' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCacheTtl (L4) — configurable DEFAULT prompt-cache TTL
+// ---------------------------------------------------------------------------
+describe('resolveCacheTtl', () => {
+  it('returns an explicit per-request cacheTtl verbatim (env never overrides it)', () => {
+    assert.equal(resolveCacheTtl('5m', { [PROMPT_CACHE_TTL_ENV]: '1h' }), '5m');
+    assert.equal(resolveCacheTtl('1h', { [PROMPT_CACHE_TTL_ENV]: '5m' }), '1h');
+    assert.equal(resolveCacheTtl('1h', {}), '1h');
+  });
+
+  it('falls back to the env DEFAULT only when config is unset', () => {
+    assert.equal(resolveCacheTtl(undefined, { [PROMPT_CACHE_TTL_ENV]: '1h' }), '1h');
+    assert.equal(resolveCacheTtl(undefined, { [PROMPT_CACHE_TTL_ENV]: '5m' }), '5m');
+    assert.equal(resolveCacheTtl(undefined, { [PROMPT_CACHE_TTL_ENV]: ' 1h ' }), '1h'); // trimmed
+  });
+
+  it('ignores a junk/empty env value and preserves the 5m default (undefined)', () => {
+    assert.equal(resolveCacheTtl(undefined, {}), undefined);
+    assert.equal(resolveCacheTtl(undefined, { [PROMPT_CACHE_TTL_ENV]: '' }), undefined);
+    assert.equal(resolveCacheTtl(undefined, { [PROMPT_CACHE_TTL_ENV]: '2h' }), undefined);
+    assert.equal(resolveCacheTtl(undefined, { [PROMPT_CACHE_TTL_ENV]: 'forever' }), undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L4 integration — streamChatCompletionWithRetry applies the env DEFAULT TTL to
+// the config it hands the underlying stream, once, before the retry loop.
+// ---------------------------------------------------------------------------
+describe('streamChatCompletionWithRetry — default prompt-cache TTL (L4)', () => {
+  const baseConfig: ProviderConfig = { baseUrl: 'http://localhost:1', apiKey: 'k', model: 'claude-x' };
+  const msgs: Message[] = [{ role: 'user', content: 'hi' }];
+
+  async function drain(gen: AsyncGenerator<StreamChunk>): Promise<StreamChunk[]> {
+    const out: StreamChunk[] = [];
+    for await (const c of gen) out.push(c);
+    return out;
+  }
+
+  it('injects AMI_PROMPT_CACHE_TTL as the cacheTtl seen by the stream when config is unset', async () => {
+    const prev = process.env[PROMPT_CACHE_TTL_ENV];
+    process.env[PROMPT_CACHE_TTL_ENV] = '1h';
+    try {
+      const seen: Array<'5m' | '1h' | undefined> = [];
+      const streamImpl = (async function* (cfg: ProviderConfig): AsyncGenerator<StreamChunk> {
+        seen.push(cfg.cacheTtl);
+        yield { type: 'done', finishReason: 'stop' };
+      }) as unknown as typeof streamChatCompletion;
+
+      await drain(streamChatCompletionWithRetry(baseConfig, msgs, [], new AbortController().signal, { streamImpl }));
+      assert.deepEqual(seen, ['1h']); // RED without the resolveCacheTtl wiring: would be [undefined]
+    } finally {
+      if (prev === undefined) delete process.env[PROMPT_CACHE_TTL_ENV];
+      else process.env[PROMPT_CACHE_TTL_ENV] = prev;
+    }
+  });
+
+  it('lets an explicit config.cacheTtl win over the env default', async () => {
+    const prev = process.env[PROMPT_CACHE_TTL_ENV];
+    process.env[PROMPT_CACHE_TTL_ENV] = '1h';
+    try {
+      const seen: Array<'5m' | '1h' | undefined> = [];
+      const streamImpl = (async function* (cfg: ProviderConfig): AsyncGenerator<StreamChunk> {
+        seen.push(cfg.cacheTtl);
+        yield { type: 'done', finishReason: 'stop' };
+      }) as unknown as typeof streamChatCompletion;
+
+      await drain(streamChatCompletionWithRetry(
+        { ...baseConfig, cacheTtl: '5m' }, msgs, [], new AbortController().signal, { streamImpl },
+      ));
+      assert.deepEqual(seen, ['5m']);
+    } finally {
+      if (prev === undefined) delete process.env[PROMPT_CACHE_TTL_ENV];
+      else process.env[PROMPT_CACHE_TTL_ENV] = prev;
+    }
+  });
+
+  it('does not re-apply the env default after a gateway-rejection clears cacheTtl', async () => {
+    // Guards the decision to resolve the default in the retry wrapper (once,
+    // before the loop) rather than in streamChatCompletion: otherwise the
+    // gateway-rejection recovery (which drops the extended-cache beta by clearing
+    // cacheTtl) would be re-defaulted to '1h' on retry and loop forever.
+    const prev = process.env[PROMPT_CACHE_TTL_ENV];
+    process.env[PROMPT_CACHE_TTL_ENV] = '1h';
+    try {
+      const seen: Array<'5m' | '1h' | undefined> = [];
+      let call = 0;
+      const streamImpl = (async function* (cfg: ProviderConfig): AsyncGenerator<StreamChunk> {
+        seen.push(cfg.cacheTtl);
+        if (call++ === 0) {
+          yield { type: 'error', error: 'HTTP 400: unknown beta: extended-cache-ttl-2025-04-11' };
+          return;
+        }
+        yield { type: 'done', finishReason: 'stop' };
+      }) as unknown as typeof streamChatCompletion;
+
+      await drain(streamChatCompletionWithRetry(
+        baseConfig, msgs, [], new AbortController().signal, { streamImpl, baseDelayMs: 0 },
+      ));
+      // First attempt sees the env default; after the gateway recovery clears it,
+      // the retry sees undefined — NOT re-defaulted back to '1h'.
+      assert.deepEqual(seen, ['1h', undefined]);
+    } finally {
+      if (prev === undefined) delete process.env[PROMPT_CACHE_TTL_ENV];
+      else process.env[PROMPT_CACHE_TTL_ENV] = prev;
+    }
   });
 });
 

@@ -177,18 +177,25 @@ export function parseImageToolOutput(output: string): ImageContent[] | null {
   return null;
 }
 
-async function readFileInRange(filePath: string, offset: number, limit: number): Promise<string> {
+async function readFileInRange(
+  filePath: string,
+  offset: number,
+  limit: number,
+): Promise<{ text: string; hasMore: boolean }> {
   const lines: string[] = [];
   const stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
   const rl = require('readline').createInterface({ input: stream, crlfDelay: Infinity });
   let lineNum = 0;
+  let hasMore = false;
   for await (const line of rl) {
     lineNum++;
-    if (lineNum > offset + limit) break;
+    // Reaching this line means at least one line exists past the window, so the
+    // output is being capped by `limit` (not EOF) — signal that to the caller.
+    if (lineNum > offset + limit) { hasMore = true; break; }
     if (lineNum > offset) lines.push(`${lineNum}\t${line}`);
   }
   stream.destroy();
-  return lines.join('\n');
+  return { text: lines.join('\n'), hasMore };
 }
 
 export const fileReadTool: ToolDefinition = {
@@ -503,9 +510,14 @@ export const fileReadTool: ToolDefinition = {
     // (UTF-16/BOM files bypass streaming and are fully decoded below).
     if (!isBomText && (input.offset !== undefined || input.limit !== undefined)) {
       fileCache.trackMtime(resolved, stat.mtimeMs);
-      const rangeText = await readFileInRange(resolved, offset, limit);
+      const { text: rangeText, hasMore } = await readFileInRange(resolved, offset, limit);
       if (!rangeText) return { output: '(empty file)' };
       let output = `File: ${resolved}\nShowing ${limit} lines from offset ${offset}\n\n${rangeText}`;
+      // Make a capped range visible: without this the model sees "Showing N lines
+      // from offset M" and cannot tell the window stopped short of the file's end.
+      if (hasMore) {
+        output += `\n\n[... output capped at ${limit} lines; more lines follow. Use offset=${offset + limit} to continue reading, or a larger limit.]`;
+      }
       const estimatedTokens = Math.ceil(output.length / 4);
       if (estimatedTokens > MAX_FILE_READ_TOKENS) {
         output = output.slice(0, MAX_FILE_READ_TOKENS * 4) + `\n\n[... truncated: exceeds ${MAX_FILE_READ_TOKENS} token budget. Narrow offset/limit.]`;
