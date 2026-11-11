@@ -23,6 +23,8 @@ import { McpManager } from '../src/mcp/manager';
  *  resources/read, keeping the response socket open. */
 function createHangingResourceServer(pending: http.ServerResponse[]): http.Server {
   return http.createServer((req, res) => {
+    // Decline the client's post-init GET SSE stream (POST-only mock).
+    if (req.method === 'GET') { res.writeHead(405); res.end(); return; }
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {

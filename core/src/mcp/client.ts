@@ -226,6 +226,10 @@ const SHUTDOWN_SIGTERM_MS = 400;
 const SHUTDOWN_TOTAL_MS = 500;
 const SHUTDOWN_POLL_MS = 50;
 
+/** Backoff bounds for re-opening the Streamable-HTTP server→client GET stream. */
+const HTTP_STREAM_RECONNECT_BASE_MS = 1000;
+const HTTP_STREAM_RECONNECT_MAX_MS = 30000;
+
 export class McpClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private processPid: number | null = null;
@@ -264,6 +268,17 @@ export class McpClient extends EventEmitter {
   private progressCallbacks = new Map<string, (progress: { percent?: number; message?: string }) => void>();
   /** URIs this client has an active resources/subscribe for. */
   private subscribedResources = new Set<string>();
+
+  // --- Streamable-HTTP server→client GET SSE stream state -------------------
+  /** Session id returned by the server (Mcp-Session-Id), echoed on later calls. */
+  private httpSessionId: string | null = null;
+  /** The in-flight GET stream request, so disconnect can tear it down. */
+  private httpStreamReq: { destroy: () => void } | null = null;
+  /** Partial SSE buffer for the GET stream (events split on a blank line). */
+  private httpStreamBuffer = '';
+  /** Set when the stream was closed intentionally (disconnect) — stops reconnect. */
+  private httpStreamClosed = false;
+  private httpStreamReconnectAttempts = 0;
 
   /** Injected by the manager/engine: resolve a server elicitation request. */
   onElicitation?: (request: McpElicitationRequest) => Promise<McpElicitationResult>;
@@ -503,6 +518,13 @@ export class McpClient extends EventEmitter {
     this.connectionStartTime = Date.now();
     this._state = 'ready';
     this.emit('ready');
+
+    // Streamable-HTTP: open the server→client GET SSE stream so the server can
+    // push notifications and requests (sampling, elicitation, progress, roots).
+    // Best-effort — a server that declines (405) leaves us on the POST-only path.
+    this.httpStreamClosed = false;
+    this.httpStreamReconnectAttempts = 0;
+    this.openHttpStream().catch(() => { /* POST path remains fully usable */ });
   }
 
   private async sendWithRetry<T>(method: string, params: Record<string, unknown>, maxAttempts: number = 3): Promise<T> {
@@ -675,6 +697,7 @@ export class McpClient extends EventEmitter {
     if (this.hasTriggeredClose && !this.process) return;
     const wasConnected = this._state === 'ready' || this._state === 'connecting';
     this.hasTriggeredClose = true;
+    this.closeHttpStream();
 
     const proc = this.process;
     const pid = this.processPid;
@@ -801,6 +824,10 @@ export class McpClient extends EventEmitter {
       if (method !== 'initialize' && this._protocolVersion) {
         headers['MCP-Protocol-Version'] = this._protocolVersion;
       }
+      // Echo the server-assigned session id (if any) on every subsequent request.
+      if (this.httpSessionId) {
+        headers['Mcp-Session-Id'] = this.httpSessionId;
+      }
       if (authHeader && !headers.Authorization && !headers.authorization) {
         headers.Authorization = authHeader;
       }
@@ -810,6 +837,9 @@ export class McpClient extends EventEmitter {
         timeout: this.requestTimeout,
       }, (res: any) => {
         const statusCode = res.statusCode;
+        // Capture the session id the server assigns at initialize (2025 spec).
+        const sid = res.headers?.['mcp-session-id'];
+        if (typeof sid === 'string' && sid) this.httpSessionId = sid;
         let data = '';
         res.on('data', (d: Buffer) => data += d);
         res.on('end', () => {
@@ -888,6 +918,135 @@ export class McpClient extends EventEmitter {
     });
   }
 
+  /**
+   * Streamable-HTTP server→client channel (MCP spec): after initialization open a
+   * long-lived GET with `Accept: text/event-stream` (carrying the negotiated
+   * protocol version + any `Mcp-Session-Id`) so the server can push JSON-RPC
+   * notifications and requests (sampling, elicitation, progress, roots). Incoming
+   * messages route through the SAME dispatcher the stdio/sse transports use, and
+   * server→client requests are answered via respondToServerRequest. A server that
+   * does not offer the stream replies 405 (Method Not Allowed) — we then degrade
+   * to POST-only without erroring. An unexpected close reconnects with bounded
+   * exponential backoff (mirroring the client's reconnect policy).
+   */
+  private async openHttpStream(): Promise<void> {
+    if (this.transport !== 'http' || !this.sseUrl || this.httpStreamClosed) return;
+    const http = this.sseUrl.startsWith('https') ? require('https') : require('http');
+    const headers = await this.buildStreamHeaders('text/event-stream');
+    if (this.httpStreamClosed) return;
+    this.httpStreamBuffer = '';
+    const req = http.request(new URL(this.sseUrl), { method: 'GET', headers }, (res: any) => {
+      const statusCode = res.statusCode;
+      // 405 / 404 / 501 → the server does not offer the GET stream: POST-only.
+      if (statusCode === 405 || statusCode === 404 || statusCode === 501) {
+        res.resume();
+        this.httpStreamReq = null;
+        this.emit('http-stream-unsupported', statusCode);
+        return;
+      }
+      if (statusCode !== 200) {
+        res.resume();
+        this.httpStreamReq = null;
+        this.scheduleHttpStreamReconnect();
+        return;
+      }
+      this.httpStreamReconnectAttempts = 0;
+      res.setEncoding('utf-8');
+      res.on('data', (chunk: string) => {
+        this.httpStreamBuffer += chunk;
+        this.processHttpStreamBuffer();
+      });
+      res.on('end', () => { this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
+      res.on('error', () => { this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
+    });
+    req.on('error', () => { this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
+    this.httpStreamReq = req;
+    req.end();
+  }
+
+  /** Shared header builder for the GET stream + POSTed server-request responses. */
+  private async buildStreamHeaders(accept: string): Promise<Record<string, string>> {
+    const authHeader = this.oauth ? await this.oauth.authorizationHeader() : null;
+    const headers: Record<string, string> = { Accept: accept, ...this.headers };
+    if (this._protocolVersion) headers['MCP-Protocol-Version'] = this._protocolVersion;
+    if (this.httpSessionId) headers['Mcp-Session-Id'] = this.httpSessionId;
+    if (authHeader && !headers.Authorization && !headers.authorization) headers.Authorization = authHeader;
+    return headers;
+  }
+
+  /** Drain every complete SSE event from the GET stream buffer. */
+  private processHttpStreamBuffer(): void {
+    this.httpStreamBuffer = this.httpStreamBuffer.replace(/\r\n/g, '\n');
+    let sep: number;
+    while ((sep = this.httpStreamBuffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = this.httpStreamBuffer.slice(0, sep);
+      this.httpStreamBuffer = this.httpStreamBuffer.slice(sep + 2);
+      this.handleSseStreamEvent(rawEvent);
+    }
+  }
+
+  /** Parse one SSE event's `data:` payload(s) and route the JSON-RPC message. */
+  private handleSseStreamEvent(rawEvent: string): void {
+    const dataParts: string[] = [];
+    for (const line of rawEvent.split('\n')) {
+      if (line.startsWith('data:')) {
+        dataParts.push(line.slice(line.startsWith('data: ') ? 6 : 5));
+      }
+    }
+    if (dataParts.length === 0) return;
+    const payload = dataParts.join('\n');
+    try {
+      const parsed = JSON.parse(payload);
+      if (Array.isArray(parsed)) {
+        for (const m of parsed) this.routeMessage(m as JsonRpcResponse | JsonRpcNotification);
+      } else {
+        this.routeMessage(parsed as JsonRpcResponse | JsonRpcNotification);
+      }
+    } catch {
+      this.emit('parse-error', payload);
+    }
+  }
+
+  private scheduleHttpStreamReconnect(): void {
+    if (this.httpStreamClosed || this._state !== 'ready') return;
+    if (this.httpStreamReconnectAttempts >= this.maxReconnectAttempts) {
+      this.emit('http-stream-closed');
+      return;
+    }
+    const attempt = this.httpStreamReconnectAttempts++;
+    const delay = Math.min(HTTP_STREAM_RECONNECT_BASE_MS * Math.pow(2, attempt), HTTP_STREAM_RECONNECT_MAX_MS);
+    const timer = setTimeout(() => {
+      if (this.httpStreamClosed || this._state !== 'ready') return;
+      this.openHttpStream().catch(() => { /* a later close retries, bounded */ });
+    }, delay);
+    timer.unref?.();
+  }
+
+  /** Tear down the GET stream and stop any reconnect (called from disconnect). */
+  private closeHttpStream(): void {
+    this.httpStreamClosed = true;
+    const req = this.httpStreamReq;
+    this.httpStreamReq = null;
+    if (req) {
+      try { req.destroy(); } catch { /* already gone */ }
+    }
+  }
+
+  /** POST a JSON-RPC response back to the HTTP endpoint for a server→client request. */
+  private postServerResponse(id: number, payload: { result: unknown } | { error: { code: number; message: string } }): void {
+    const url = this.sseUrl;
+    if (!url) return;
+    const http = url.startsWith('https') ? require('https') : require('http');
+    this.buildStreamHeaders('application/json, text/event-stream').then((streamHeaders) => {
+      const headers = { 'Content-Type': 'application/json', ...streamHeaders };
+      const req = http.request(new URL(url), { method: 'POST', headers, timeout: this.requestTimeout }, (res: any) => res.resume());
+      req.on('error', () => { /* best-effort: the server times out its own request */ });
+      req.on('timeout', () => { try { req.destroy(); } catch { /* ignore */ } });
+      req.write(JSON.stringify({ jsonrpc: '2.0', id, ...payload }));
+      req.end();
+    }).catch(() => { /* best-effort */ });
+  }
+
   private sendRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -954,16 +1113,20 @@ export class McpClient extends EventEmitter {
   }
 
   /**
-   * Reply to a server→client JSON-RPC request by writing the response to the
-   * child's stdin. Used by the ping/roots/elicitation/sampling handlers so no
-   * server request is ever left unanswered. Only stdio can receive a server→
-   * client request today (the HTTP transport reads responses to its own POSTs,
-   * not server-initiated requests — that arrives with the SSE-stream work), so
-   * when there is no writable stdin this is a safe no-op.
+   * Reply to a server→client JSON-RPC request. Used by the ping/roots/
+   * elicitation/sampling handlers so no server request is ever left unanswered.
+   * Stdio writes the response to the child's stdin; the Streamable-HTTP transport
+   * (whose server→client requests arrive on the GET SSE stream) POSTs it back to
+   * the same endpoint. With neither available this is a safe no-op.
    */
   private respondToServerRequest(id: number, payload: { result: unknown } | { error: { code: number; message: string } }): void {
-    if (!this.process?.stdin?.writable) return;
-    this.writeMessage({ jsonrpc: '2.0', id, ...payload } as JsonRpcResponse);
+    if (this.process?.stdin?.writable) {
+      this.writeMessage({ jsonrpc: '2.0', id, ...payload } as JsonRpcResponse);
+      return;
+    }
+    if ((this.transport === 'http' || this.transport === 'sse') && this.sseUrl) {
+      this.postServerResponse(id, payload);
+    }
   }
 
   private processBuffer(): void {
@@ -975,16 +1138,25 @@ export class McpClient extends EventEmitter {
       if (!trimmed) continue;
       try {
         const msg = JSON.parse(trimmed) as JsonRpcResponse | JsonRpcNotification;
-        if ('id' in msg && msg.id !== undefined && 'method' in msg) {
-          this.handleNotification(msg as JsonRpcNotification);
-        } else if ('id' in msg && msg.id !== undefined) {
-          this.handleResponse(msg as JsonRpcResponse);
-        } else if ('method' in msg) {
-          this.handleNotification(msg as JsonRpcNotification);
-        }
+        this.routeMessage(msg);
       } catch {
         this.emit('parse-error', trimmed);
       }
+    }
+  }
+
+  /**
+   * Dispatch a parsed JSON-RPC message to the right handler. Shared by the stdio
+   * read loop (processBuffer) and the Streamable-HTTP GET stream so server→client
+   * requests and notifications are handled identically across transports.
+   */
+  private routeMessage(msg: JsonRpcResponse | JsonRpcNotification): void {
+    if ('id' in msg && msg.id !== undefined && 'method' in msg) {
+      this.handleNotification(msg as JsonRpcNotification);
+    } else if ('id' in msg && msg.id !== undefined) {
+      this.handleResponse(msg as JsonRpcResponse);
+    } else if ('method' in msg) {
+      this.handleNotification(msg as JsonRpcNotification);
     }
   }
 

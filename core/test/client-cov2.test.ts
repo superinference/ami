@@ -76,7 +76,14 @@ function stdioArgs(extra = ''): string[] {
 
 function startHttpServer(handler: http.RequestListener): Promise<{ url: string; server: http.Server }> {
   return new Promise((resolve) => {
-    const server = http.createServer(handler);
+    const server = http.createServer((req, res) => {
+      // After init the client opens a standalone GET SSE stream (Streamable-HTTP
+      // server→client channel). These mocks only speak POST JSON-RPC, so decline
+      // the GET with 405 → the client degrades to POST-only. (Also avoids the
+      // GET's empty body crashing the handler's JSON.parse.)
+      if (req.method === 'GET') { res.writeHead(405); res.end(); return; }
+      handler(req, res);
+    });
     liveServers.push(server);
     server.listen(0, '127.0.0.1', () => {
       const port = (server.address() as AddressInfo).port;
