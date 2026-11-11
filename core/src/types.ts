@@ -52,6 +52,10 @@ export interface ToolCallContent {
 export interface UserMessage {
   role: 'user';
   content: string | Array<TextContent | ImageContent>;
+  /** Engine-injected ephemeral control message (turn-local nudge). Excluded from
+   *  the persisted session transcript so --resume is not polluted; still sent to
+   *  the model during the live turn. */
+  isMeta?: boolean;
 }
 
 export interface AssistantMessage {
@@ -69,6 +73,10 @@ export interface ToolMessage {
 export interface SystemMessage {
   role: 'system';
   content: string;
+  /** Engine-injected ephemeral control message (turn-local nudge). Excluded from
+   *  the persisted session transcript so --resume is not polluted; still sent to
+   *  the model during the live turn. */
+  isMeta?: boolean;
 }
 
 export type Message = UserMessage | AssistantMessage | ToolMessage | SystemMessage;
