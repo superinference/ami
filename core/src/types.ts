@@ -119,6 +119,15 @@ export interface ToolContext {
   /** Tracks file paths that have been read during this session.
    *  Used by file_edit to enforce read-before-write. */
   filesRead?: Set<string>;
+  /** Session id for session/agent-scoped tool state (e.g. todo_write store, T2).
+   *  Populated by the engine; absent in bare/test contexts (falls back to global). */
+  sessionId?: string;
+  /** Sub-agent id, when the tool runs inside a forked sub-engine. Combined with
+   *  sessionId to key per-agent tool state (T2). */
+  agentId?: string;
+  /** Operator-configured command prefixes exempt from the bash sandbox (M11).
+   *  Threaded to shouldUseSandbox; undefined → the hardcoded defaults only. */
+  sandboxExcludedCommands?: string[];
   processManager?: import('./process-manager').ProcessManager;
   _providerConfig?: ProviderConfig;
   _permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
@@ -322,8 +331,18 @@ export const ENGINE_EVENT_TYPES = [
   'checkpoint_created', 'analytics_summary', 'superinference_state',
   'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
   'plan_mode_changed', 'task_updated', 'skill_activated',
-  'subagent_start', 'subagent_progress', 'subagent_result', 'done',
+  'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update', 'done',
 ] as const;
+
+/** A single todo item as rendered to the user (T1/T5). `id` is optional
+ *  (Claude-Code parity); `activeForm` is the present-continuous label shown while
+ *  the item is in progress. */
+export interface TodoItemView {
+  id?: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  activeForm?: string;
+}
 
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
@@ -351,6 +370,7 @@ export type EngineEvent =
   | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string }
   | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string }
   | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number }
+  | { type: 'todo_update'; todos: TodoItemView[] }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 export interface EngineConfig {
@@ -422,6 +442,9 @@ export interface EngineConfig {
    *  Undefined = host execution (the default for programmatic/test use; the CLI sets
    *  container mode for real runs). */
   sandbox?: SandboxPolicy;
+  /** Operator-configured command prefixes exempt from the bash sandbox (M11),
+   *  forwarded to every ToolContext. Additive to the built-in defaults. */
+  sandboxExcludedCommands?: string[];
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Extra absolute paths/dirs the user has granted read access to OUTSIDE the launch

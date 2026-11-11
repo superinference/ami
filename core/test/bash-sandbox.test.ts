@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   shouldUseSandbox,
@@ -11,6 +11,8 @@ import {
   buildNetworkAllowlist,
   getDefaultMemoryMB,
 } from '../src/tools/bash-sandbox';
+import { bashTool, _bashHooks } from '../src/tools/bash';
+import type { ToolContext } from '../src/types';
 
 describe('shouldUseSandbox', () => {
   it('triggers on curl', () => {
@@ -537,5 +539,87 @@ describe('AMI_TOOL_MEMORY_LIMIT_MB env var', () => {
     const wrapped = wrapWithSandbox('echo test', '/tmp', { maxMemoryMB: 2048 });
     const memKB = 2048 * 1024;
     assert.ok(wrapped.includes(`ulimit -v ${memKB}`), `expected ulimit -v ${memKB} in: ${wrapped}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M11 — context.sandboxExcludedCommands is threaded from ToolContext through
+// bashTool.execute into shouldUseSandbox (bash.ts, non-container host path).
+//
+// This proves the WIRING, not just shouldUseSandbox's own option handling
+// (covered above). We drive the real bashTool.execute and intercept the exact
+// command string handed to the shell via `_bashHooks.execCommand` (the same
+// capture seam docker-sandbox.test.ts uses). A sandbox-trigger command
+// (`curl ...`) is normally WRAPPED; listing its prefix in
+// `sandboxExcludedCommands` must make it run UNWRAPPED — which can only happen
+// if the context field actually reaches shouldUseSandbox.
+//
+// Discriminating: if bash.ts dropped the field (passed `undefined`), the
+// excluded run would still be wrapped and the "unwrapped" assertion fails.
+// ---------------------------------------------------------------------------
+describe('bashTool.execute — sandboxExcludedCommands threading (M11)', () => {
+  const TRIGGER = 'curl https://example.com';
+
+  function baseCtx(overrides: Partial<ToolContext> = {}): ToolContext {
+    // No `sandbox` → the non-container host path runs shouldUseSandbox.
+    return {
+      cwd: process.cwd(),
+      abortSignal: new AbortController().signal,
+      ...overrides,
+    } as ToolContext;
+  }
+
+  async function captureExecuted(ctx: ToolContext): Promise<string> {
+    let captured = '';
+    const spy = mock.method(_bashHooks, 'execCommand', async (cmd: string) => {
+      captured = cmd;
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+    try {
+      const result = await bashTool.execute({ command: TRIGGER }, ctx);
+      assert.equal(result.isError, false, `execute should succeed: ${JSON.stringify(result)}`);
+      assert.equal(spy.mock.callCount(), 1, 'execCommand should run exactly once');
+      return captured;
+    } finally {
+      mock.restoreAll();
+    }
+  }
+
+  afterEach(() => mock.restoreAll());
+
+  it('sanity: the trigger command is sandboxed by default', () => {
+    // Guards the premise — if curl ever stops triggering the sandbox the
+    // discriminating assertions below would pass vacuously.
+    assert.equal(shouldUseSandbox(TRIGGER), true);
+    assert.equal(shouldUseSandbox(TRIGGER, { excludedCommands: ['curl'] }), false);
+  });
+
+  it('WRAPS the command when no exclusion is configured', async () => {
+    const executed = await captureExecuted(baseCtx());
+    assert.notEqual(executed, TRIGGER, 'a sandbox trigger must not run raw');
+    assert.match(
+      executed,
+      /unshare|ulimit/,
+      `expected a sandbox wrapper (unshare/ulimit), got: ${executed}`,
+    );
+  });
+
+  it('runs UNWRAPPED when the command prefix is in context.sandboxExcludedCommands', async () => {
+    const executed = await captureExecuted(baseCtx({ sandboxExcludedCommands: ['curl'] }));
+    // Can only be unwrapped if context.sandboxExcludedCommands reached
+    // shouldUseSandbox — i.e. the bash.ts threading is honored.
+    assert.equal(
+      executed,
+      TRIGGER,
+      `exclusion must bypass the sandbox and run the raw command, got: ${executed}`,
+    );
+  });
+
+  it('an unrelated exclusion still wraps the trigger (field is honored, not ignored)', async () => {
+    // Proves the field is genuinely consulted: excluding `docker` (not `curl`)
+    // leaves curl sandboxed, so a non-empty field does not blanket-disable.
+    const executed = await captureExecuted(baseCtx({ sandboxExcludedCommands: ['docker'] }));
+    assert.notEqual(executed, TRIGGER);
+    assert.match(executed, /unshare|ulimit/, executed);
   });
 });

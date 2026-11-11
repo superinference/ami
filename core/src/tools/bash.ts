@@ -662,7 +662,7 @@ export const bashTool: ToolDefinition = {
       });
     } else {
       const disableSandbox = input.dangerouslyDisableSandbox === true;
-      const useSandbox = !disableSandbox && shouldUseSandbox(command);
+      const useSandbox = !disableSandbox && shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
       effectiveCommand = useSandbox ? wrapWithSandbox(command, context.cwd) : command;
     }
 
