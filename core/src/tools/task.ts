@@ -24,6 +24,35 @@ export const SUBAGENT_RETURN_DIRECTIVE =
   'When you have the answer, give it directly as your final message and STOP — do not create or edit ' +
   'files, run commands, or add verification or extra work unless the task explicitly requires it.';
 
+/**
+ * Dedicated LEAN system prompt for a mode-only sub-agent (a `task` delegation with no
+ * named `subagent_type`). It REPLACES the full interactive coding stance so a bounded
+ * delegation returns its result and STOPS instead of over-working (the measured failure:
+ * a trivial "reply X" delegation wrote files, ran commands, and looped without
+ * terminating because the full coding system prompt — "write files, verify, never stop"
+ * — won over a stapled user-message directive). Safety is unaffected: bash/permission
+ * guards run at the tool/executor layer, not in the system prompt. ui#13.
+ *
+ * `fork` keeps the full stance (it is an explicit context-inheriting clone), and a named
+ * `subagent_type` keeps its own authoritative identity — neither uses this.
+ */
+export const SUBAGENT_SYSTEM_PROMPT =
+  `You are a focused sub-agent handling exactly one delegated task inside a larger session.
+
+- Do precisely what the task asks — nothing more. Do not add verification, cleanup, refactors, or "while I'm here" work the task did not request.
+- Use tools only when the task requires them; prefer answering directly. Do NOT create or edit files, run commands, or run tests unless the task explicitly requires it.
+- When you have the result, give it directly and concisely as your final message, then STOP. Your final message IS the deliverable returned to the caller.
+- Do not loop re-checking, re-running, or re-announcing completion. One correct answer, then stop.
+- Read any error in full and fix the root cause; never fabricate results. If the task is impossible or underspecified, say so plainly and stop.`;
+
+/** Lean system prompt for a read-only `explore`-mode sub-agent. ui#13. */
+export const EXPLORE_SUBAGENT_SYSTEM_PROMPT =
+  `You are a read-only exploration sub-agent handling one search/investigation task.
+
+- Investigate using read and search tools only. Do NOT modify files, run mutating commands, or make any changes.
+- Gather exactly what the task asks for, cite concrete locations (file:line) where relevant, then report your findings directly and concisely as your final message and STOP. Your final message IS the deliverable.
+- Do not over-explore beyond what the task asks. One focused report, then stop.`;
+
 const agentNameRegistry = new Map<string, string>();
 // taskId -> the sub-engine sessionId it ran under. Lets `resume` recreate an
 // agent on its PRIOR session (the Engine reloads saved messages when given a
@@ -374,6 +403,16 @@ export const taskTool: ToolDefinition = {
       agentPermissionMode ||
       (effectiveMode === 'explore' ? 'auto-allow' : 'ask');
 
+    // ui#13: a mode-only sub-agent (no named subagent_type) runs on a dedicated LEAN
+    // system prompt that REPLACES the full coding stance, so it returns its result and
+    // STOPS instead of over-working. `fork` is exempt (an explicit context-inheriting
+    // clone that should behave like the parent); a named agent keeps agentSystemPrompt.
+    // Use the RAW `mode` (not effectiveMode, which fork reassigns to 'general'): fork is
+    // the documented context-inheriting clone and keeps the full stance + directive staple.
+    const modeOnlySystemPrompt = (!agentSystemPrompt && mode !== 'fork')
+      ? (mode === 'explore' ? EXPLORE_SUBAGENT_SYSTEM_PROMPT : SUBAGENT_SYSTEM_PROMPT)
+      : undefined;
+
     const childDepth = getSubagentDepthContext(currentDepth, maxDepth);
     const subConfig: EngineConfig = {
       provider: providerConfig,
@@ -394,7 +433,7 @@ export const taskTool: ToolDefinition = {
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip stance-skill resolution (which would inject e.g. the
       // swebench stance workflow into a verification-only agent).
-      systemPrompt: agentSystemPrompt || undefined,
+      systemPrompt: agentSystemPrompt || modeOnlySystemPrompt || undefined,
       tokenBudget: agentTokenBudget || undefined,
     };
 
@@ -403,16 +442,15 @@ export const taskTool: ToolDefinition = {
     }
 
     // agentSystemPrompt is now in subConfig.systemPrompt — the user message is
-    // just the task prompt. For mode-only tasks (no subagent_type), there is no
-    // agentSystemPrompt and the engine uses its own stance-driven system prompt
-    // (the full interactive coding agent: write files, verify, never stop). That
-    // framing makes a delegated sub-agent OVER-WORK a bounded task — writing
-    // files, running commands, and looping on verification instead of answering
-    // and returning — so trivial delegations ran for minutes and sometimes never
-    // terminated. Frame mode-only sub-agents to return their result and STOP,
-    // mirroring how a workflow agent is told its final message IS the result.
-    // A named subagent_type keeps its own authoritative identity (no directive).
-    const effectivePrompt = agentSystemPrompt
+    // just the task prompt. ui#13: general/explore mode-only sub-agents now carry the
+    // return-and-STOP framing in a dedicated LEAN *system* prompt (modeOnlySystemPrompt)
+    // that replaces the full coding stance — so the user-message directive is redundant
+    // for them and is dropped (the system role is authoritative; stapling it to a
+    // user-message that the full stance overrode was the original, ineffective design).
+    // Only `fork` (no agentSystemPrompt, no lean prompt — it inherits the full stance as
+    // a clone) still needs the user-message directive to bound it. A named subagent_type
+    // keeps its own authoritative identity (no directive).
+    const effectivePrompt = (agentSystemPrompt || modeOnlySystemPrompt)
       ? prompt
       : `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
 

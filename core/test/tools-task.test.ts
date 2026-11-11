@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { taskTool, resetAgentRegistry } from '../src/tools/task';
+import { taskTool, resetAgentRegistry, SUBAGENT_SYSTEM_PROMPT, EXPLORE_SUBAGENT_SYSTEM_PROMPT, SUBAGENT_RETURN_DIRECTIVE } from '../src/tools/task';
 import type { ToolContext } from '../src/types';
 import { ProcessManager } from '../src/process-manager';
 
@@ -46,6 +46,68 @@ describe('taskTool – definition', () => {
     const modeProp = taskTool.inputSchema.properties.mode;
     assert.ok(modeProp.enum?.includes('explore'));
     assert.ok(modeProp.enum?.includes('general'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ui#13 — subagent framing: lean system prompt for mode-only delegations
+// ---------------------------------------------------------------------------
+
+describe('taskTool – ui#13 subagent framing', () => {
+  async function capture(input: Record<string, unknown>, extra?: Partial<ToolContext>) {
+    let capturedSystemPrompt: string | undefined;
+    let capturedPrompt = '';
+    async function* fakeSubmit(prompt: string) {
+      capturedPrompt = prompt;
+      yield { type: 'text_delta' as const, text: 'ok' };
+    }
+    const result = await taskTool.execute(input, ctx({
+      _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
+      _engineFactory: (cfg) => { capturedSystemPrompt = cfg.systemPrompt; return { submit: fakeSubmit }; },
+      ...extra,
+    } as Partial<ToolContext>));
+    return { result, capturedSystemPrompt, capturedPrompt };
+  }
+
+  it('general mode-only delegation runs on the LEAN subagent system prompt (not the full coding stance)', async () => {
+    const { capturedSystemPrompt, capturedPrompt } = await capture({ prompt: 'reply with the word red' });
+    assert.equal(capturedSystemPrompt, SUBAGENT_SYSTEM_PROMPT,
+      'mode-only subagent must get the dedicated lean system prompt, not undefined (which falls back to the full coding stance)');
+    // The return/STOP framing now lives in the SYSTEM role, so the user-message
+    // directive is dropped — the task prompt reaches the sub-agent verbatim.
+    assert.equal(capturedPrompt, 'reply with the word red');
+    assert.ok(!capturedPrompt.includes(SUBAGENT_RETURN_DIRECTIVE),
+      'the redundant user-message directive must not be stapled when the lean system prompt is used');
+  });
+
+  it('explore mode runs on the read-only lean explore system prompt', async () => {
+    const { capturedSystemPrompt, capturedPrompt } = await capture({ prompt: 'find the config loader', mode: 'explore' });
+    assert.equal(capturedSystemPrompt, EXPLORE_SUBAGENT_SYSTEM_PROMPT);
+    assert.ok(!capturedPrompt.includes(SUBAGENT_RETURN_DIRECTIVE));
+  });
+
+  it('fork mode keeps the full stance (no lean prompt) and still gets the user-message directive', async () => {
+    const { capturedSystemPrompt, capturedPrompt } = await capture({ prompt: 'continue the work', mode: 'fork' });
+    assert.equal(capturedSystemPrompt, undefined,
+      'fork is a context-inheriting clone: it must NOT be given the lean prompt');
+    assert.ok(capturedPrompt.startsWith(SUBAGENT_RETURN_DIRECTIVE),
+      'fork (no lean system prompt) still relies on the stapled directive to bound it');
+  });
+
+  it('a named subagent_type keeps its own authoritative identity (no lean prompt, no directive)', async () => {
+    const fakeSkillManager = {
+      getAgent: (t: string) => t === 'verifier'
+        ? { name: 'verifier', systemPrompt: 'VERIFIER IDENTITY', permissionMode: 'auto-allow', tools: ['file_read'] }
+        : undefined,
+      listAgents: () => [{ name: 'verifier' }],
+    };
+    const { capturedSystemPrompt, capturedPrompt } = await capture(
+      { prompt: 'verify the fix', subagent_type: 'verifier' },
+      { _skillManager: fakeSkillManager as unknown as ToolContext['_skillManager'] },
+    );
+    assert.equal(capturedSystemPrompt, 'VERIFIER IDENTITY');
+    assert.equal(capturedPrompt, 'verify the fix');
+    assert.ok(!capturedPrompt.includes(SUBAGENT_RETURN_DIRECTIVE));
   });
 });
 

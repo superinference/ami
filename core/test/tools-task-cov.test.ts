@@ -16,6 +16,8 @@ import {
   filterToolsForAgent,
   DEFAULT_MAX_AGENTS_PER_SESSION,
   DEFAULT_MAX_CONCURRENT_AGENTS,
+  SUBAGENT_SYSTEM_PROMPT,
+  SUBAGENT_RETURN_DIRECTIVE,
 } from '../src/tools/task';
 import { scoutTool } from '../src/tools/scout';
 import {
@@ -184,18 +186,23 @@ describe('taskTool — run_in_background string coercion', () => {
 describe('taskTool — sub-agent return-and-stop directive', () => {
   beforeEach(() => resetAgentRegistry());
 
-  it('prepends the directive for a mode-only sub-agent', async () => {
+  it('uses the lean system prompt (not a stapled directive) for a mode-only sub-agent (ui#13)', async () => {
     let submitted = '';
+    let sysPrompt: string | undefined;
     await taskTool.execute(
       { prompt: 'Reply with one word: red' },
       ctx({
         _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
-        _engineFactory: () => ({ submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'red' }])(p); } }),
+        _engineFactory: (cfg: any) => { sysPrompt = cfg.systemPrompt; return { submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'red' }])(p); } }; },
       }),
     );
-    assert.match(submitted, /sub-agent handling one delegated task/);
-    assert.match(submitted, /STOP/);
-    assert.ok(submitted.includes('Reply with one word: red'), 'original task is preserved after the directive');
+    // The return-and-STOP framing now lives in the dedicated lean SYSTEM prompt, which
+    // replaces the full coding stance — so the task prompt reaches the sub-agent verbatim
+    // and the old user-message directive is no longer stapled.
+    assert.equal(sysPrompt, SUBAGENT_SYSTEM_PROMPT);
+    assert.match(sysPrompt!, /STOP/);
+    assert.equal(submitted, 'Reply with one word: red');
+    assert.ok(!submitted.includes(SUBAGENT_RETURN_DIRECTIVE), 'no stapled user-message directive for mode-only tasks');
   });
 
   it('does NOT prepend the directive for a named subagent_type (own identity)', async () => {
