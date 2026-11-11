@@ -126,6 +126,7 @@ export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from '.
 export { detectToolConflict, isReservedToolName, ToolRegistryGuard } from './tools/tool-registry-guard';
 export type { ToolConflict } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
+export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
 export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration } from './conversation-summary';
 export type { ConversationMeta } from './conversation-summary';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recoverJsonStringFields } from './tools/input-sanitizer';

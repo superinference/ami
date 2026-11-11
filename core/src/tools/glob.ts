@@ -1,6 +1,7 @@
 // fast-glob pulls braces (GHSA-vfj7-8cjw-p6xm), which has no patched release.
 // expandDirectories stays off so a directory pattern is not rewritten.
 import { glob } from 'tinyglobby';
+import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
@@ -11,11 +12,58 @@ const MAX_RESULTS = 100;
 const MAX_OUTPUT_CHARS = 50_000;
 
 /**
+ * G5: opt-in env flag to route glob through `rg --files` (ripgrep's parallel walker,
+ * much faster on very large trees) instead of the in-process tinyglobby walk. OFF by
+ * default — `rg`'s `-g` uses gitignore-glob semantics (a pattern without `/` matches at
+ * ANY depth), which differs from tinyglobby's glob semantics (`*.ts` = top level only),
+ * so enabling it is a deliberate choice, not a silent default. When set but `rg` is
+ * missing or errors, we fall back to tinyglobby so results are always produced.
+ */
+export const GLOB_RIPGREP_ENV = 'AMI_GLOB_RG';
+
+/** True when the G5 ripgrep route is opted in via the env flag. */
+export function isRipgrepGlobEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env[GLOB_RIPGREP_ENV] ?? '').trim().toLowerCase();
+  return v !== '' && v !== '0' && v !== 'false' && v !== 'no' && v !== 'off';
+}
+
+/**
+ * List files matching `pattern` under `cwd` via `rg --files`, honoring `ignore` as
+ * `-g '!…'` excludes. Resolves to the relative paths, `[]` when rg ran but matched
+ * nothing, or `null` when rg is unavailable / errored (signal the caller to fall back).
+ * Injectable via {@link globHooks.rgFiles} for tests (no real ripgrep needed).
+ */
+function ripgrepFiles(pattern: string, cwd: string, ignore: string[]): Promise<string[] | null> {
+  return new Promise((resolve) => {
+    const args = ['--files', '--no-ignore', '--hidden', '-g', pattern];
+    for (const ig of ignore) { args.push('-g', `!${ig}`); }
+    globHooks.execFileImpl('rg', args, { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 15_000 }, (err, stdout) => {
+      if (err) {
+        // rg exits 1 when it matched no files (valid empty result); any other error
+        // (ENOENT = not installed, non-zero crash) means "can't use rg" → fall back.
+        // execFile sets `code` to the numeric exit code on non-zero exit, or a string
+        // like 'ENOENT' when the binary is missing.
+        const code = (err as { code?: number | string }).code;
+        resolve(code === 1 ? [] : null);
+        return;
+      }
+      resolve(stdout.split('\n').map(l => l.trim()).filter(Boolean));
+    });
+  });
+}
+
+/**
  * Indirection seam for the underlying glob implementation. Production uses
  * tinyglobby's `glob`; tests swap it to exercise the error branch (tinyglobby
- * itself rarely throws). Behavior is unchanged in production.
+ * itself rarely throws). `rgFiles` is the G5 ripgrep walker; `execFileImpl` is the
+ * child-process seam it uses (injectable so the rg branches are unit-testable
+ * without a real ripgrep binary).
  */
-export const globHooks: { glob: typeof glob } = { glob };
+export const globHooks: {
+  glob: typeof glob;
+  rgFiles: (pattern: string, cwd: string, ignore: string[]) => Promise<string[] | null>;
+  execFileImpl: typeof execFile;
+} = { glob, rgFiles: ripgrepFiles, execFileImpl: execFile };
 
 export const globTool: ToolDefinition = {
   name: 'glob',
@@ -79,14 +127,22 @@ export const globTool: ToolDefinition = {
     if (!pattern.includes('.git')) ignore.push('**/.git/**');
 
     try {
-      const entries = await globHooks.glob(pattern, {
-        cwd: resolved,
-        ignore,
-        dot: true,
-        onlyFiles: true,
-        absolute: false,
-        expandDirectories: false,
-      });
+      // G5: opt-in ripgrep route (fast parallel walk); falls back to tinyglobby when
+      // rg is unavailable/errors so results are always produced.
+      let entries: string[] | null = null;
+      if (isRipgrepGlobEnabled()) {
+        entries = await globHooks.rgFiles(pattern, resolved, ignore);
+      }
+      if (entries === null) {
+        entries = await globHooks.glob(pattern, {
+          cwd: resolved,
+          ignore,
+          dot: true,
+          onlyFiles: true,
+          absolute: false,
+          expandDirectories: false,
+        });
+      }
 
       if (entries.length === 0) {
         return { output: `No files found matching pattern: ${pattern}` };
