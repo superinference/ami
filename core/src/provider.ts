@@ -1179,6 +1179,47 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
   });
 }
 
+/**
+ * Split the stable leading system prompt from the message stream for the top-level
+ * `system` parameter.
+ *
+ * H3: only the LEADING run of role:'system' messages (the base system prompt) is
+ * hoisted into `system` — that string is part of the cached prompt prefix on EVERY
+ * cache breakpoint. A role:'system' message that appears AFTER the conversation has
+ * begun is an ephemeral/dynamic nudge (budget warnings, hook rewakes, cron notices,
+ * …); hoisting it would change the cached prefix every turn and bust the prompt cache.
+ * Such messages are kept IN the stream as user-role `<system-reminder>` blocks so the
+ * model still sees them, but the cached prefix stays byte-stable turn to turn. This is
+ * Claude Code's behavior (reminders ride as role:'user'). Introspection: the count of
+ * demoted nudges is returned as `demoted` for callers/telemetry.
+ */
+export function hoistSystemPrompt(
+  messages: Message[],
+): { system?: string; rest: Message[]; demoted: number } {
+  let system: string | undefined;
+  let started = false;
+  let demoted = 0;
+  const rest: Message[] = [];
+  for (const m of messages) {
+    if (m.role === 'system' && !started && typeof m.content === 'string') {
+      system = (system ? system + '\n\n' : '') + m.content;
+      continue;
+    }
+    if (m.role === 'system') {
+      const wrapped = typeof m.content === 'string'
+        ? `<system-reminder>${m.content}</system-reminder>`
+        : m.content;
+      rest.push({ ...m, role: 'user', content: wrapped });
+      started = true;
+      demoted++;
+      continue;
+    }
+    started = true;
+    rest.push(m);
+  }
+  return { system, rest, demoted };
+}
+
 // ---------------------------------------------------------------------------
 // Extract reasoning / thinking tokens from AI SDK usage objects
 // ---------------------------------------------------------------------------
@@ -1420,14 +1461,10 @@ export async function* streamChatCompletion(
   const sdkTools = tools.length > 0 ? convertToolsForSDK(tools) : undefined;
 
   // Extract system message and pass via `system` parameter to avoid AI SDK warning
-  let systemPrompt: string | undefined;
-  const nonSystemMessages = messages.filter(m => {
-    if (m.role === 'system') {
-      systemPrompt = (systemPrompt ? systemPrompt + '\n\n' : '') + m.content;
-      return false;
-    }
-    return true;
-  });
+  // H3: hoist only the LEADING system prompt into the cached `system` prefix;
+  // ephemeral mid-conversation role:'system' nudges stay in-stream as user-role
+  // <system-reminder> blocks so they don't bust the prompt cache. (hoistSystemPrompt)
+  const { system: systemPrompt, rest: nonSystemMessages } = hoistSystemPrompt(messages);
   const isAnthropic = modelId.startsWith('claude') ||
     config.baseUrl?.includes('anthropic.com') ||
     config.provider === 'anthropic' ||

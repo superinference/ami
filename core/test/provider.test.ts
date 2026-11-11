@@ -25,6 +25,7 @@ import {
   streamChatCompletionWithRetry,
   withDynamicBoundaryStrip,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+  hoistSystemPrompt,
 } from '../src/provider';
 import type { StreamChunk } from '../src/types';
 import { fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS } from '../src/model-capabilities';
@@ -349,6 +350,64 @@ describe('resolveModel - key prefix auto-detection', () => {
 
 // ---------------------------------------------------------------------------
 // convertMessages - message format conversion
+// ---------------------------------------------------------------------------
+// hoistSystemPrompt — H3: keep the cached system prefix stable across turns
+// ---------------------------------------------------------------------------
+describe('hoistSystemPrompt (H3)', () => {
+  it('hoists the leading system prompt and drops it from the stream', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'BASE PROMPT' },
+      { role: 'user', content: 'hi' },
+    ];
+    const { system, rest, demoted } = hoistSystemPrompt(messages);
+    assert.equal(system, 'BASE PROMPT');
+    assert.equal(demoted, 0);
+    assert.deepEqual(rest, [{ role: 'user', content: 'hi' }]);
+  });
+
+  it('concatenates a leading RUN of system messages', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'A' },
+      { role: 'system', content: 'B' },
+      { role: 'user', content: 'hi' },
+    ];
+    const { system, demoted } = hoistSystemPrompt(messages);
+    assert.equal(system, 'A\n\nB');
+    assert.equal(demoted, 0);
+  });
+
+  it('demotes a mid-conversation system nudge to a user <system-reminder> block, NOT the cached prefix', () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'BASE PROMPT' },
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'system', content: 'token budget 90% used' },
+    ];
+    const { system, rest, demoted } = hoistSystemPrompt(messages);
+    // The cached prefix is ONLY the base prompt — the nudge is not hoisted.
+    assert.equal(system, 'BASE PROMPT');
+    assert.equal(demoted, 1);
+    const last = rest[rest.length - 1];
+    assert.equal(last.role, 'user');
+    assert.equal(last.content, '<system-reminder>token budget 90% used</system-reminder>');
+    // The nudge content must NOT appear in the cached system string.
+    assert.ok(!(system ?? '').includes('token budget'));
+  });
+
+  it('keeps the cached system prefix byte-identical when only the ephemeral nudge changes (cache-bust discriminator)', () => {
+    const base: Message[] = [
+      { role: 'system', content: 'BASE PROMPT' },
+      { role: 'user', content: 'hi' },
+    ];
+    const turn1 = hoistSystemPrompt([...base, { role: 'system', content: 'nudge turn 1' }]);
+    const turn2 = hoistSystemPrompt([...base, { role: 'system', content: 'a DIFFERENT nudge on turn 2' }]);
+    // The system param (the cached prefix) is identical across turns even though the
+    // per-turn nudge differs — this is exactly what keeps the prompt cache warm.
+    assert.equal(turn1.system, turn2.system);
+    assert.equal(turn1.system, 'BASE PROMPT');
+  });
+});
+
 // ---------------------------------------------------------------------------
 describe('convertMessages', () => {
   it('converts a simple user message', () => {
