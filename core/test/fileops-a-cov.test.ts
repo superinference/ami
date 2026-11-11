@@ -83,6 +83,8 @@ describe('fileEditTool – create / overwrite success paths', () => {
     const old = Array.from({ length: 30 }, (_, i) => `old${i}`).join('\n');
     fs.writeFileSync(fp, old);
     const context = ctx();
+    // H10: an existing non-empty file must be read before it can be overwritten.
+    context.filesRead!.add(fp);
     const res = await fileEditTool.execute(
       { file_path: fp, new_string: Array.from({ length: 30 }, (_, i) => `new${i}`).join('\n') },
       context,

@@ -242,7 +242,7 @@ describe('file_edit tool — write and create', () => {
       assert.equal(fs.readFileSync(fp, 'utf-8'), 'now filled');
     });
 
-    it('auto-reads and allows overwrite when file not in filesRead', async () => {
+    it('blocks overwrite of an unread existing file and preserves it (H10)', async () => {
       const fp = path.join(tmpDir, 'need-read.txt');
       fs.writeFileSync(fp, 'keep me');
       const filesRead = new Set<string>();
@@ -251,8 +251,10 @@ describe('file_edit tool — write and create', () => {
         { file_path: fp, content: 'overwrite' },
         ctx,
       );
-      assert.notEqual(result.isError, true, 'auto-read must allow overwrite without prior file_read');
-      assert.ok(filesRead.has(fp), 'auto-read must track file in filesRead');
+      assert.equal(result.isError, true, 'overwrite without a prior file_read must be rejected');
+      assert.match(result.output, /must file_read .* before overwriting/);
+      assert.equal(fs.readFileSync(fp, 'utf-8'), 'keep me', 'original content must be preserved');
+      assert.ok(!filesRead.has(fp), 'blocked overwrite must not seed filesRead');
     });
 
     it('rejects Jupyter notebooks', async () => {

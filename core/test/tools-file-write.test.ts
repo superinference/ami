@@ -197,7 +197,7 @@ describe('fileEditTool – workspace boundary', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – read-before-write enforcement', () => {
-  it('auto-reads and allows overwrite when filesRead is set but file was not read', async () => {
+  it('blocks overwrite of an existing non-empty file that was not read first (H10)', async () => {
     const file = path.join(tmpDir, 'existing-unread.txt');
     fs.writeFileSync(file, 'original\n');
     const filesRead = new Set<string>();
@@ -206,9 +206,12 @@ describe('fileEditTool – read-before-write enforcement', () => {
       { file_path: file, content: 'overwritten\n' },
       ctx({ filesRead }),
     );
-    assert.ok(!result.isError, 'auto-read must allow overwrite without prior file_read');
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'overwritten\n');
-    assert.ok(filesRead.has(file), 'auto-read must track file in filesRead');
+    assert.ok(result.isError, 'overwrite without a prior file_read must be rejected');
+    assert.match(result.output, /must file_read .* before overwriting/);
+    // The original content must be preserved — nothing was clobbered.
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'original\n');
+    // A blocked overwrite must NOT mark the file as read.
+    assert.ok(!filesRead.has(file), 'blocked overwrite must not seed filesRead');
   });
 
   it('allows overwrite when file was previously read', async () => {
@@ -246,15 +249,38 @@ describe('fileEditTool – read-before-write enforcement', () => {
     assert.ok(!result.isError);
   });
 
-  it('auto-reads and modifies file without prior read', async () => {
+  it('blocks modifying an existing file without a prior read, leaving it untouched (H10)', async () => {
     const file = path.join(tmpDir, 'protected.txt');
     fs.writeFileSync(file, 'original\n');
 
-    await fileEditTool.execute(
-      { file_path: file, content: 'should-write\n' },
+    const result = await fileEditTool.execute(
+      { file_path: file, content: 'should-not-write\n' },
       ctx({ filesRead: new Set() }),
     );
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'should-write\n');
+    assert.ok(result.isError, 'overwrite of an unread existing file must be blocked');
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'original\n');
+  });
+
+  it('allows overwrite once the blocked file is read first (H10 unblock)', async () => {
+    const file = path.join(tmpDir, 'read-then-write.txt');
+    fs.writeFileSync(file, 'original\n');
+    const filesRead = new Set<string>();
+
+    // First attempt without a read is blocked.
+    const blocked = await fileEditTool.execute(
+      { file_path: file, content: 'overwritten\n' },
+      ctx({ filesRead }),
+    );
+    assert.ok(blocked.isError);
+
+    // Simulate a file_read by seeding filesRead, then the overwrite succeeds.
+    filesRead.add(file);
+    const allowed = await fileEditTool.execute(
+      { file_path: file, content: 'overwritten\n' },
+      ctx({ filesRead }),
+    );
+    assert.ok(!allowed.isError);
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'overwritten\n');
   });
 });
 

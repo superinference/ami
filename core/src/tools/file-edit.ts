@@ -148,9 +148,23 @@ export async function writeEntireFile(
   if (nonUtfResult) return nonUtfResult;
   const isNew = !fileExists || oldContent.length === 0;
 
+  // H10: read-before-overwrite. Overwriting an existing non-empty file without
+  // having read it first risks silently clobbering content the model never saw.
+  // Require a prior file_read (which seeds filesRead) before a full overwrite.
+  // New-file / empty-file creation is exempt (isNew) — there is nothing to lose.
+  // When filesRead tracking is disabled (undefined) the guard does not apply,
+  // preserving the lenient behavior for non-tracked contexts.
+  // H10: read-before-overwrite. Overwriting an existing non-empty file without
+  // having read it first risks silently clobbering content the model never saw.
+  // Require a prior file_read (which seeds filesRead) before a full overwrite.
+  // New-file / empty-file creation is exempt (isNew) — there is nothing to lose.
+  // When filesRead tracking is disabled (undefined) the guard does not apply,
+  // preserving the lenient behavior for non-tracked contexts.
   if (fileExists && oldContent.length > 0 && context.filesRead && !context.filesRead.has(resolved)) {
-    context.filesRead.add(resolved);
-    getFileCache(context.cwd).setWritten(resolved, oldContent);
+    return {
+      output: `Error: You must file_read "${resolved}" before overwriting it, to avoid clobbering content you have not seen. Read the file first, then write.`,
+      isError: true,
+    };
   }
 
   if (fileExists && oldContent.length > 0 && context.filesRead?.has(resolved)) {
