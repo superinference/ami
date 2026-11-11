@@ -51,6 +51,9 @@ export interface ProjectConfig {
   managedMcpServers?: Record<string, unknown>;
   /** SL1: shell command whose stdout is rendered as a custom status line. */
   statusLine?: string;
+  /** Bash commands exempted from the container sandbox (audit #4: settable + consumed,
+   *  now also typed + merged across config layers). */
+  sandboxExcludedCommands?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +316,7 @@ export function mergeConfigs(
     if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = layer.allowedMcpServers;
     if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
     if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
+    if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = layer.sandboxExcludedCommands;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower

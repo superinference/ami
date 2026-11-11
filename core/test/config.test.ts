@@ -270,6 +270,13 @@ describe('mergeConfigs', () => {
     assert.equal(mergeConfigs(cli, {}, project, null).statusLine, 'echo bye');
   });
 
+  it('merges sandboxExcludedCommands across layers (audit #4)', () => {
+    const project: ProjectConfig = { sandboxExcludedCommands: ['git', 'ls'] };
+    assert.deepEqual(mergeConfigs({}, {}, project, null).sandboxExcludedCommands, ['git', 'ls']);
+    const cli: Partial<ProjectConfig> = { sandboxExcludedCommands: ['docker'] };
+    assert.deepEqual(mergeConfigs(cli, {}, project, null).sandboxExcludedCommands, ['docker']);
+  });
+
   it('project config overrides global config', () => {
     const global: ProjectConfig = { model: 'global-model', provider: 'openai' };
     const project: ProjectConfig = { model: 'project-model' };

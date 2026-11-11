@@ -213,7 +213,10 @@ interface JsonRpcNotification {
 export const MCP_CLIENT_STATES = ['disconnected', 'connecting', 'ready', 'error'] as const;
 export type McpClientState = (typeof MCP_CLIENT_STATES)[number];
 
-export const MCP_TERMINAL_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ECONNREFUSED', 'ESRCH', 'SPAWN_ERROR', 'SESSION_EXPIRED', 'UNKNOWN'] as const;
+// Only codes classifyError() can actually PRODUCE are advertised here (audit #8: the old
+// 'SESSION_EXPIRED' was never produced — no MCP transport emitted it — so it was removed to
+// keep the --introspect manifest honest. Re-add it only alongside code that produces it.)
+export const MCP_TERMINAL_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ECONNREFUSED', 'ESRCH', 'SPAWN_ERROR', 'UNKNOWN'] as const;
 export type McpTerminalErrorCode = (typeof MCP_TERMINAL_ERROR_CODES)[number];
 
 export interface McpTerminalError {
