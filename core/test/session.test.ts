@@ -145,21 +145,22 @@ describe('SessionManager', () => {
     assert.ok(dir.includes('.superinference'));
   });
 
-  it('truncates long user messages on save', () => {
+  it('preserves full long user content across save/load via blob offload (H14)', () => {
     const longContent = 'x'.repeat(10000);
     sm.save(makeSession('trunc', [{ role: 'user', content: longContent }]));
     const loaded = sm.load('trunc');
     assert.ok(loaded);
-    assert.ok(loaded.messages[0].content!.length < 10000);
-    assert.ok((loaded.messages[0].content as string).includes('truncated'));
+    assert.equal((loaded.messages[0].content as string).length, 10000);
+    assert.equal(loaded.messages[0].content, longContent);
   });
 
-  it('truncates long tool messages on save', () => {
+  it('preserves full long tool content across save/load via blob offload (H14)', () => {
     const longContent = 'y'.repeat(10000);
     sm.save(makeSession('trunc-tool', [{ role: 'tool', content: longContent, tool_call_id: 'tc1' }]));
     const loaded = sm.load('trunc-tool');
     assert.ok(loaded);
-    assert.ok((loaded.messages[0].content as string).includes('truncated'));
+    assert.equal((loaded.messages[0].content as string).length, 10000);
+    assert.equal(loaded.messages[0].content, longContent);
   });
 
   it('does not truncate short messages', () => {

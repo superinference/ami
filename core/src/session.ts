@@ -1,8 +1,36 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import type { Message, ProviderConfig } from './types';
 
+/**
+ * Content longer than this is offloaded to a content-addressed blob sidecar
+ * rather than truncated in place. The value also caps the inline on-screen
+ * preview stored next to the blob reference.
+ */
 const MAX_CONTENT_LENGTH = 5000;
+
+/**
+ * On-disk reference that replaces a large message content string. The full
+ * content lives in `<sessionDir>/blobs/<sessionId>/<sha256>.blob`; only a short
+ * preview is kept inline so `list()` and corrupt-blob fallbacks stay cheap.
+ * Rehydrated back to the full string on load — so --resume no longer loses
+ * tool output or long user messages (H14).
+ */
+interface SessionBlobRef {
+  __siSessionBlob: string; // sha256 of the full UTF-8 content
+  preview: string;
+  length: number;
+}
+
+function isSessionBlobRef(v: unknown): v is SessionBlobRef {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    typeof (v as { __siSessionBlob?: unknown }).__siSessionBlob === 'string'
+  );
+}
 
 export interface Session {
   id: string;
@@ -25,12 +53,9 @@ export interface SessionListEntry {
   preview: string;
 }
 
-/**
- * Truncate message content to avoid bloated session files.
- * Tool outputs and long user messages are capped at MAX_CONTENT_LENGTH chars.
- */
 /** Compaction summaries are the ONLY record of the pre-compaction conversation.
- *  Truncating them loses history on --resume, so they are exempt from the cap. */
+ *  They are kept inline in full (never offloaded) so a missing blob can never
+ *  cost us the summarized history on --resume. */
 const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
 
 export function safeCharSlice(s: string, start: number, end?: number): string {
@@ -41,24 +66,6 @@ export function safeCharSlice(s: string, start: number, end?: number): string {
   const firstCode = result.charCodeAt(0);
   if (firstCode >= 0xDC00 && firstCode <= 0xDFFF) result = result.slice(1);
   return result;
-}
-
-function truncateMessage(msg: Message): Message {
-  if (msg.role === 'system' && typeof msg.content === 'string' &&
-      msg.content.startsWith(COMPACTION_SUMMARY_PREFIX)) {
-    return msg;
-  }
-  if (msg.role === 'user' || msg.role === 'system') {
-    if (typeof msg.content === 'string' && msg.content.length > MAX_CONTENT_LENGTH) {
-      return { ...msg, content: safeCharSlice(msg.content, 0, MAX_CONTENT_LENGTH) + '\n... (truncated)' };
-    }
-  }
-  if (msg.role === 'tool') {
-    if (typeof msg.content === 'string' && msg.content.length > MAX_CONTENT_LENGTH) {
-      return { ...msg, content: safeCharSlice(msg.content, 0, MAX_CONTENT_LENGTH) + '\n... (truncated)' };
-    }
-  }
-  return msg;
 }
 
 function sanitizeSessionId(id: string): string {
@@ -92,21 +99,82 @@ export class SessionManager {
 
   /**
    * Save a session to disk as a JSON file.
-   * Message content longer than 5000 chars is truncated.
+   * Message content longer than 5000 chars is offloaded to a content-addressed
+   * blob sidecar (full content preserved) with only a preview kept inline, so
+   * --resume restores the complete conversation (H14).
    */
   save(session: Session): void {
     this.ensureDir();
     const safeId = sanitizeSessionId(session.id);
-    const truncatedMessages = session.messages.map(truncateMessage);
-    const data: Session = {
+    const blobDir = this.blobDirFor(safeId);
+    const storedMessages = session.messages.map(m => this.offloadMessage(m, blobDir));
+    const data = {
       ...session,
       id: safeId,
-      messages: truncatedMessages,
+      messages: storedMessages,
       updatedAt: new Date().toISOString(),
     };
     const filePath = path.join(this.sessionDir, `${safeId}.json`);
     assertPathWithin(filePath, this.sessionDir);
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  }
+
+  /** Directory holding a session's content-addressed blobs. */
+  private blobDirFor(safeId: string): string {
+    return path.join(this.sessionDir, 'blobs', safeId);
+  }
+
+  /**
+   * Offload an over-long string content to a blob, returning a message whose
+   * content is a {@link SessionBlobRef}. Compaction summaries stay inline in
+   * full; assistant content is left untouched (it was never truncated). If the
+   * blob write fails we fall back to an inline truncation so a save never
+   * crashes or bloats the JSON.
+   */
+  private offloadMessage(msg: Message, blobDir: string): Message {
+    if (
+      msg.role === 'system' &&
+      typeof msg.content === 'string' &&
+      msg.content.startsWith(COMPACTION_SUMMARY_PREFIX)
+    ) {
+      return msg;
+    }
+    if (
+      (msg.role === 'user' || msg.role === 'system' || msg.role === 'tool') &&
+      typeof msg.content === 'string' &&
+      msg.content.length > MAX_CONTENT_LENGTH
+    ) {
+      const full = msg.content;
+      const preview = safeCharSlice(full, 0, MAX_CONTENT_LENGTH);
+      try {
+        const sha = crypto.createHash('sha256').update(full, 'utf-8').digest('hex');
+        fs.mkdirSync(blobDir, { recursive: true });
+        const blobPath = path.join(blobDir, `${sha}.blob`);
+        // Content-addressed: identical content across saves dedupes to one file.
+        if (!fs.existsSync(blobPath)) fs.writeFileSync(blobPath, full, 'utf-8');
+        const ref: SessionBlobRef = { __siSessionBlob: sha, preview, length: full.length };
+        return { ...msg, content: ref as unknown as string };
+      } catch {
+        return { ...msg, content: preview + '\n... (truncated)' };
+      }
+    }
+    return msg;
+  }
+
+  /** Rehydrate a stored message, replacing any {@link SessionBlobRef} content
+   *  with the full blob contents (or the preview if the blob is unavailable). */
+  private rehydrateMessage(msg: Message, blobDir: string): Message {
+    const stored = (msg as { content?: unknown }).content;
+    if (isSessionBlobRef(stored)) {
+      let content: string;
+      try {
+        content = fs.readFileSync(path.join(blobDir, `${stored.__siSessionBlob}.blob`), 'utf-8');
+      } catch {
+        content = stored.preview + '\n... (truncated; blob unavailable)';
+      }
+      return { ...msg, content: content as unknown as string };
+    }
+    return msg;
   }
 
   /**
@@ -154,7 +222,8 @@ export class SessionManager {
     const entries: SessionListEntry[] = [];
 
     for (const filePath of files) {
-      const session = this.readSessionFile(filePath);
+      // Preview only needs inline data — skip blob rehydration for speed.
+      const session = this.readSessionFile(filePath, false);
       if (!session) continue;
 
       const preview = this.extractPreview(session);
@@ -184,6 +253,10 @@ export class SessionManager {
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
+    // Remove the session's blob sidecar so deleted content is not left on disk.
+    const blobDir = this.blobDirFor(safeId);
+    assertPathWithin(blobDir, this.sessionDir);
+    try { fs.rmSync(blobDir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 
   /**
@@ -226,10 +299,16 @@ export class SessionManager {
       .map(e => path.join(this.sessionDir, e));
   }
 
-  private readSessionFile(filePath: string): Session | null {
+  private readSessionFile(filePath: string, rehydrate = true): Session | null {
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(raw) as Session;
+      const parsed = JSON.parse(raw) as Session;
+      if (rehydrate && Array.isArray(parsed.messages)) {
+        const safeId = path.basename(filePath).replace(/\.json$/, '');
+        const blobDir = this.blobDirFor(safeId);
+        parsed.messages = parsed.messages.map(m => this.rehydrateMessage(m, blobDir));
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -237,8 +316,12 @@ export class SessionManager {
 
   private extractPreview(session: Session): string {
     const firstUser = session.messages.find(m => m.role === 'user');
-    if (!firstUser || typeof firstUser.content !== 'string') return '(no messages)';
-    const flat = firstUser.content.replace(/\n/g, ' ').trim();
+    if (!firstUser) return '(no messages)';
+    // An over-long first message is stored as a blob ref — use its preview.
+    const raw = (firstUser as { content?: unknown }).content;
+    const text = isSessionBlobRef(raw) ? raw.preview : raw;
+    if (typeof text !== 'string') return '(no messages)';
+    const flat = text.replace(/\n/g, ' ').trim();
     if (!flat) return '(no messages)';
     return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;
   }

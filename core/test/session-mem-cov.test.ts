@@ -77,8 +77,9 @@ describe('SessionManager — default dir, ensureDir, truncation, preview', () =>
     assert.equal(mgr.load('sess-1')!.id, 'sess-1');
   });
 
-  it('truncates long user/system/tool content and exempts compaction summaries', () => {
-    const mgr = new SessionManager('/unused', mkTmp());
+  it('offloads long user/system/tool content to blobs and restores it in full; exempts compaction summaries (H14)', () => {
+    const sessDir = mkTmp();
+    const mgr = new SessionManager('/unused', sessDir);
     const long = 'x'.repeat(6000);
     mgr.save(baseSession({
       messages: [
@@ -89,30 +90,77 @@ describe('SessionManager — default dir, ensureDir, truncation, preview', () =>
         { role: 'assistant', content: 'short' },
       ],
     }));
+    // On disk, the big messages are stored as blob references (preview only),
+    // not the full content — the JSON stays small.
+    const raw = JSON.parse(fs.readFileSync(path.join(sessDir, 'sess-1.json'), 'utf-8'));
+    assert.equal(typeof raw.messages[0].content.__siSessionBlob, 'string');
+    assert.ok(raw.messages[0].content.preview.length <= 5000);
+    assert.equal(raw.messages[0].content.length, 6000);
+    // Compaction summary is kept inline in full (never offloaded).
+    assert.equal(typeof raw.messages[3].content, 'string');
+    // Blob sidecar directory exists.
+    assert.ok(fs.existsSync(path.join(sessDir, 'blobs', 'sess-1')));
+    // On load, the full content is rehydrated — no data lost on --resume.
     const [u, s, t, summary, a] = mgr.load('sess-1')!.messages;
-    assert.ok((u.content as string).endsWith('... (truncated)'));
-    assert.ok((s.content as string).endsWith('... (truncated)'));
-    assert.ok((t.content as string).endsWith('... (truncated)'));
-    assert.ok((u.content as string).length < 6000);
+    assert.equal(u.content, long);
+    assert.equal((s.content as string).length, 6000);
+    assert.equal((t.content as string).length, 6000);
     assert.equal((summary.content as string).length, '[Previous conversation summary]'.length + 6000);
     assert.equal(a.content, 'short');
   });
 
-  it('trims a trailing high surrogate at the truncation boundary', () => {
-    const mgr = new SessionManager('/unused', mkTmp());
+  it('trims a trailing high surrogate at the blob-preview boundary; restores full content (H14)', () => {
+    const sessDir = mkTmp();
+    const mgr = new SessionManager('/unused', sessDir);
     const content = 'a'.repeat(4999) + '😀' + 'b'.repeat(2000);
     mgr.save(baseSession({ messages: [{ role: 'user', content }] }));
-    const body = (mgr.load('sess-1')!.messages[0].content as string).replace('\n... (truncated)', '');
-    assert.equal(body.length, 4999);
-    assert.equal(body.charCodeAt(body.length - 1), 'a'.charCodeAt(0));
+    const raw = JSON.parse(fs.readFileSync(path.join(sessDir, 'sess-1.json'), 'utf-8'));
+    const preview = raw.messages[0].content.preview as string;
+    assert.equal(preview.length, 4999);
+    assert.equal(preview.charCodeAt(preview.length - 1), 'a'.charCodeAt(0));
+    // The emoji survives in the blob — full content restored intact.
+    assert.equal(mgr.load('sess-1')!.messages[0].content, content);
   });
 
-  it('trims a leading low surrogate at the start of truncated content', () => {
-    const mgr = new SessionManager('/unused', mkTmp());
+  it('trims a leading low surrogate at the blob-preview start (H14)', () => {
+    const sessDir = mkTmp();
+    const mgr = new SessionManager('/unused', sessDir);
     const content = '\uDC00' + 'x'.repeat(6000); // lone leading low surrogate
     mgr.save(baseSession({ messages: [{ role: 'user', content }] }));
-    const body = (mgr.load('sess-1')!.messages[0].content as string).replace('\n... (truncated)', '');
-    assert.equal(body[0], 'x'); // leading low surrogate stripped
+    const raw = JSON.parse(fs.readFileSync(path.join(sessDir, 'sess-1.json'), 'utf-8'));
+    assert.equal((raw.messages[0].content.preview as string)[0], 'x'); // leading low surrogate stripped
+    // Full content is restored from the blob (length preserved).
+    assert.equal((mgr.load('sess-1')!.messages[0].content as string).length, 6001);
+  });
+
+  it('falls back to the preview when the blob file is missing (H14 resilience)', () => {
+    const sessDir = mkTmp();
+    const mgr = new SessionManager('/unused', sessDir);
+    mgr.save(baseSession({ messages: [{ role: 'user', content: 'z'.repeat(6000) }] }));
+    // Simulate blob loss (e.g. partial disk corruption).
+    fs.rmSync(path.join(sessDir, 'blobs', 'sess-1'), { recursive: true, force: true });
+    const loaded = mgr.load('sess-1')!;
+    assert.ok((loaded.messages[0].content as string).endsWith('... (truncated; blob unavailable)'));
+  });
+
+  it('falls back to inline truncation when the blob cannot be written (H14 resilience)', () => {
+    const sessDir = mkTmp();
+    // Make the blobs path a FILE so mkdir of the per-session blob dir fails.
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(path.join(sessDir, 'blobs'), 'not a dir');
+    const mgr = new SessionManager('/unused', sessDir);
+    mgr.save(baseSession({ messages: [{ role: 'user', content: 'q'.repeat(6000) }] }));
+    const loaded = mgr.load('sess-1')!;
+    assert.ok((loaded.messages[0].content as string).endsWith('... (truncated)'));
+  });
+
+  it('delete removes the session blob sidecar (H14)', () => {
+    const sessDir = mkTmp();
+    const mgr = new SessionManager('/unused', sessDir);
+    mgr.save(baseSession({ messages: [{ role: 'user', content: 'w'.repeat(6000) }] }));
+    assert.ok(fs.existsSync(path.join(sessDir, 'blobs', 'sess-1')));
+    mgr.delete('sess-1');
+    assert.equal(fs.existsSync(path.join(sessDir, 'blobs', 'sess-1')), false);
   });
 
   it('extractPreview shortens long first user messages and reports no-messages', () => {
@@ -124,6 +172,17 @@ describe('SessionManager — default dir, ensureDir, truncation, preview', () =>
     assert.ok(a.preview.endsWith('...'));
     assert.equal(a.preview.length, 103);
     assert.equal(list.find(e => e.id === 'b')!.preview, '(no messages)');
+  });
+
+  it('extractPreview uses the blob-ref preview when the first user message was offloaded (H14)', () => {
+    const mgr = new SessionManager('/unused', mkTmp());
+    // First user message > 5000 chars is stored as a blob ref; list() must still
+    // produce a readable preview from the inline preview field (no blob read).
+    mgr.save(baseSession({ id: 'big', messages: [{ role: 'user', content: 'hello world '.repeat(600) }] }));
+    const entry = mgr.list().find(e => e.id === 'big')!;
+    assert.ok(entry.preview.startsWith('hello world'));
+    assert.ok(entry.preview.endsWith('...'));
+    assert.equal(entry.preview.length, 103);
   });
 
   it('list() sorts across missing / empty / invalid date fields', () => {
