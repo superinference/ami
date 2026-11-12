@@ -45,7 +45,7 @@ export const enterWorktreeTool: ToolDefinition = {
   name: 'enter_worktree',
   description:
     'Create or enter a git worktree for isolated file modifications. ' +
-    'Creates a new branch under .superinference/worktrees/. ' +
+    'Creates a new branch under .ami/worktrees/. ' +
     'Use exit_worktree to leave.',
   inputSchema: {
     type: 'object',
@@ -109,13 +109,13 @@ export const enterWorktreeTool: ToolDefinition = {
     if (validationError) return { output: `Error: ${validationError}`, isError: true };
 
     // Opportunistically clean up stale worktrees (> 30 days, no uncommitted changes)
-    const worktreesBase = path.join(context.cwd, '.superinference', 'worktrees');
+    const worktreesBase = path.join(context.cwd, '.ami', 'worktrees');
     if (fs.existsSync(worktreesBase)) {
       const { cleanupStaleWorktrees } = require('../worktree-manager');
       try { cleanupStaleWorktrees(context.cwd); } catch { /* non-critical */ }
     }
 
-    const worktreeDir = path.join(context.cwd, '.superinference', 'worktrees', slug);
+    const worktreeDir = path.join(context.cwd, '.ami', 'worktrees', slug);
     if (fs.existsSync(worktreeDir)) {
       return { output: `Error: worktree "${slug}" already exists at ${worktreeDir}. Use path to enter an existing worktree.`, isError: true };
     }

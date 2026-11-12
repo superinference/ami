@@ -126,7 +126,7 @@ describe('enterWorktreeTool.execute', () => {
     initRepoWithCommit(repo);
     const created = await enterWorktreeTool.execute({ name: 'reg1' }, ctx({ cwd: repo }));
     assert.equal(created.isError, undefined);
-    const wtDir = path.join(repo, '.superinference', 'worktrees', 'reg1');
+    const wtDir = path.join(repo, '.ami', 'worktrees', 'reg1');
     const r = await enterWorktreeTool.execute({ path: wtDir }, ctx({ cwd: repo }));
     assert.equal(r.isError, undefined);
     assert.match(r.output, /Entered existing worktree/);
@@ -182,9 +182,9 @@ describe('enterWorktreeTool.execute', () => {
     assert.equal(r.isError, undefined);
     assert.match(r.output, /Worktree created/);
     assert.match(r.output, /Branch: worktree\/feat1/);
-    assert.ok(fs.existsSync(path.join(repo, '.superinference', 'worktrees', 'feat1')));
+    assert.ok(fs.existsSync(path.join(repo, '.ami', 'worktrees', 'feat1')));
     // cwd mutated to the worktree dir
-    assert.equal((context as any).cwd, path.join(repo, '.superinference', 'worktrees', 'feat1'));
+    assert.equal((context as any).cwd, path.join(repo, '.ami', 'worktrees', 'feat1'));
     await new Promise(res => setTimeout(res, 20));
     assert.deepEqual(hookCalls.sort(), ['create', 'cwd']);
   });
@@ -228,7 +228,7 @@ describe('enterWorktreeTool.execute', () => {
   it('errors when the target worktree directory already exists', async () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
-    const wtDir = path.join(repo, '.superinference', 'worktrees', 'dup');
+    const wtDir = path.join(repo, '.ami', 'worktrees', 'dup');
     fs.mkdirSync(wtDir, { recursive: true });
     const r = await enterWorktreeTool.execute({ name: 'dup' }, ctx({ cwd: repo }));
     assert.equal(r.isError, true);
@@ -339,7 +339,7 @@ describe('enterWorktreeTool.execute', () => {
     // Make the worktrees base path a FILE: existsSync() is true so cleanup runs,
     // but readdirSync inside cleanupStaleWorktrees throws ENOTDIR — the error must
     // be swallowed (non-critical) and surface only as a later creation failure.
-    const si = path.join(repo, '.superinference');
+    const si = path.join(repo, '.ami');
     fs.mkdirSync(si, { recursive: true });
     fs.writeFileSync(path.join(si, 'worktrees'), 'not a directory');
     const r = await enterWorktreeTool.execute({ name: 'afterclean' }, ctx({ cwd: repo }));
@@ -467,7 +467,7 @@ describe('worktree-manager helpers', () => {
   it('cleanupStaleWorktrees skips non-stale, changed, non-git, and non-dir entries; swallows remove errors', () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
-    const wtBase = path.join(repo, '.superinference', 'worktrees');
+    const wtBase = path.join(repo, '.ami', 'worktrees');
     fs.mkdirSync(wtBase, { recursive: true });
     const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000); // 60 days ago
 
@@ -584,7 +584,7 @@ describe('worktree-manager helpers', () => {
   it('cleanupStaleWorktrees swallows statSync errors (broken symlink entry)', () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
-    const wtBase = path.join(repo, '.superinference', 'worktrees');
+    const wtBase = path.join(repo, '.ami', 'worktrees');
     fs.mkdirSync(wtBase, { recursive: true });
     // A broken symlink: statSync (follows links) throws ENOENT → outer catch.
     fs.symlinkSync(path.join(repo, 'no-such-target'), path.join(wtBase, 'broken-link'));
@@ -649,13 +649,13 @@ describe('worktree-manager helpers', () => {
 
     // worktrees path is a FILE → readdirSync throws → [].
     const fileBase = track(mkTmp());
-    fs.mkdirSync(path.join(fileBase, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(fileBase, '.superinference', 'worktrees'), 'not a dir');
+    fs.mkdirSync(path.join(fileBase, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(fileBase, '.ami', 'worktrees'), 'not a dir');
     assert.deepEqual(findStaleWorktrees(fileBase), []);
 
     // Mixed entries.
     const repo = track(mkTmp());
-    const wtBase = path.join(repo, '.superinference', 'worktrees');
+    const wtBase = path.join(repo, '.ami', 'worktrees');
     fs.mkdirSync(wtBase, { recursive: true });
     // valid worktree (directory .git)
     const good = path.join(wtBase, 'good');
@@ -723,7 +723,7 @@ describe('cron tools', () => {
     assert.match(r.output, /Recurring: true/);
     assert.match(r.output, /Durable: true/);
     // Persisted to disk because durable.
-    assert.ok(fs.existsSync(path.join(dir, '.superinference', 'scheduled_tasks.json')));
+    assert.ok(fs.existsSync(path.join(dir, '.ami', 'scheduled_tasks.json')));
   });
 
   it('cron_create defaults recurring=true and durable=false when omitted', async () => {
@@ -805,7 +805,7 @@ describe('cron tools', () => {
 
   it('cron_list shows "N/A" for a durable job loaded without a nextRun', async () => {
     const dir = track(mkTmp());
-    const sidir = path.join(dir, '.superinference');
+    const sidir = path.join(dir, '.ami');
     fs.mkdirSync(sidir, { recursive: true });
     fs.writeFileSync(
       path.join(sidir, 'scheduled_tasks.json'),
@@ -844,14 +844,14 @@ describe('plan_mode tool', () => {
     assert.match(r.output, /Entered plan mode/);
     assert.equal(isPlanModeActive(), true);
     const planFile = getPlanFilePath();
-    assert.ok(planFile && planFile.startsWith(path.join(dir, '.superinference', 'plans')));
+    assert.ok(planFile && planFile.startsWith(path.join(dir, '.ami', 'plans')));
     assert.ok(fs.existsSync(path.dirname(planFile!)));
   });
 
   it('enter tolerates a plan-dir mkdir failure', async () => {
     const dir = track(mkTmp());
-    // Make .superinference a FILE so mkdirSync(.superinference/plans) throws.
-    fs.writeFileSync(path.join(dir, '.superinference'), 'blocking file');
+    // Make .ami a FILE so mkdirSync(.ami/plans) throws.
+    fs.writeFileSync(path.join(dir, '.ami'), 'blocking file');
     const r = await planModeTool.execute({ action: 'enter' }, ctx({ cwd: dir }));
     assert.equal(r.isError, false);
     assert.match(r.output, /Entered plan mode/);
@@ -871,9 +871,9 @@ describe('plan_mode tool', () => {
     const r = await planModeTool.execute({ action: 'enter' });
     assert.equal(r.isError, false);
     const planFile = getPlanFilePath();
-    assert.ok(planFile && planFile.startsWith(path.join(cwd, '.superinference', 'plans')));
+    assert.ok(planFile && planFile.startsWith(path.join(cwd, '.ami', 'plans')));
     // Clean up the plan file/dir created in the real cwd.
-    try { fs.rmSync(path.join(cwd, '.superinference', 'plans'), { recursive: true, force: true }); } catch { /* ok */ }
+    try { fs.rmSync(path.join(cwd, '.ami', 'plans'), { recursive: true, force: true }); } catch { /* ok */ }
   });
 
   it('verify reports "not in plan mode" when inactive', async () => {

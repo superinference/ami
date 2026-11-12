@@ -36,7 +36,7 @@ export const scoutTool: ToolDefinition = {
       repo.includes('://') || repo.startsWith('/') || repo.startsWith('.')
         ? repo
         : `https://github.com/${repo}`;
-    const cacheDir = path.join(context.cwd, '.superinference', 'scout-cache');
+    const cacheDir = path.join(context.cwd, '.ami', 'scout-cache');
     const repoName = repo.replace(/[^a-zA-Z0-9_-]/g, '_');
     const localPath = path.join(cacheDir, repoName);
 

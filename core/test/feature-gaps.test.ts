@@ -123,7 +123,7 @@ describe('task_tracker – disk persistence', () => {
       ctx({ cwd: tmpDir }),
     );
 
-    const persistFile = path.join(tmpDir, '.superinference', 'tasks.json');
+    const persistFile = path.join(tmpDir, '.ami', 'tasks.json');
     assert.ok(fs.existsSync(persistFile), 'tasks.json should exist');
 
     const data = JSON.parse(fs.readFileSync(persistFile, 'utf-8'));
@@ -143,7 +143,7 @@ describe('task_tracker – disk persistence', () => {
       ctx({ cwd: tmpDir }),
     );
 
-    const persistFile = path.join(tmpDir, '.superinference', 'tasks.json');
+    const persistFile = path.join(tmpDir, '.ami', 'tasks.json');
     const data = JSON.parse(fs.readFileSync(persistFile, 'utf-8'));
     assert.ok(data.tasks.some((t: any) => t.status === 'in_progress'));
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -176,7 +176,7 @@ describe('task_tracker – disk persistence', () => {
       ctx({ cwd: tmpDir }),
     );
 
-    const persistFile = path.join(tmpDir, '.superinference', 'tasks.json');
+    const persistFile = path.join(tmpDir, '.ami', 'tasks.json');
     const data = JSON.parse(fs.readFileSync(persistFile, 'utf-8'));
     assert.equal(data.tasks.length, 0);
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -188,9 +188,9 @@ describe('task_tracker – disk persistence', () => {
 // ---------------------------------------------------------------------------
 
 describe('HookManager – config file loading', () => {
-  it('loads hooks from .superinference/hooks.json', () => {
+  it('loads hooks from .ami/hooks.json', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-hooks-'));
-    const hookDir = path.join(tmpDir, '.superinference');
+    const hookDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(hookDir, { recursive: true });
 
     const config = {
@@ -223,7 +223,7 @@ describe('HookManager – config file loading', () => {
 
   it('handles malformed hooks.json gracefully', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-hooks-'));
-    const hookDir = path.join(tmpDir, '.superinference');
+    const hookDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(hookDir, { recursive: true });
     fs.writeFileSync(path.join(hookDir, 'hooks.json'), '{ invalid json }}}');
 

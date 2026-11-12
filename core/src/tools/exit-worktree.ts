@@ -58,8 +58,8 @@ export const exitWorktreeTool: ToolDefinition = {
       return { output: 'Error: could not determine worktree path.', isError: true };
     }
 
-    if (!worktreePath.includes('.superinference/worktrees/')) {
-      return { output: 'No active worktree session (not inside a .superinference/worktrees/ path).', isError: false };
+    if (!worktreePath.includes('.ami/worktrees/')) {
+      return { output: 'No active worktree session (not inside a .ami/worktrees/ path).', isError: false };
     }
 
     if (action === 'keep') {
@@ -108,7 +108,7 @@ export const exitWorktreeTool: ToolDefinition = {
         if (_exitWorktreeHooks.existsSync(worktreePath)) {
           _exitWorktreeHooks.rmSync(worktreePath, { recursive: true, force: true });
         }
-        const repoRoot = worktreePath.split('.superinference/worktrees/')[0];
+        const repoRoot = worktreePath.split('.ami/worktrees/')[0];
         _exitWorktreeHooks.execSync('git worktree prune', { cwd: repoRoot, stdio: 'ignore' });
       } catch {
         return { output: `Error removing worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };

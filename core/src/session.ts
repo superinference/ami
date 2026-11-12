@@ -87,7 +87,7 @@ export class SessionManager {
   private static _idCounter = 0;
 
   constructor(cwd: string, sessionDirOverride?: string) {
-    this.sessionDir = sessionDirOverride ?? path.join(cwd, '.superinference', 'sessions');
+    this.sessionDir = sessionDirOverride ?? path.join(cwd, '.ami', 'sessions');
   }
 
   /**

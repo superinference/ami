@@ -94,7 +94,7 @@ describe('fileEditTool – create / overwrite success paths', () => {
     assert.ok(res.output.includes('more removed'));
     assert.ok(res.output.includes('more added'));
     // trackFileHistory created a backup
-    const histDir = path.join(tmpDir, '.superinference', 'file-history');
+    const histDir = path.join(tmpDir, '.ami', 'file-history');
     assert.ok(fs.existsSync(histDir));
     assert.ok(fs.readdirSync(histDir).length >= 1);
   });
@@ -143,7 +143,7 @@ describe('fileEditTool – single replace success paths', () => {
 
   it('trackFileHistory prunes backups beyond the 20-entry cap', async () => {
     const fp = path.join(tmpDir, 'hist.txt');
-    const histDir = path.join(tmpDir, '.superinference', 'file-history');
+    const histDir = path.join(tmpDir, '.ami', 'file-history');
     fs.mkdirSync(histDir, { recursive: true });
     const safe = 'hist.txt';
     // Pre-seed 25 old backups so the next edit triggers pruning.
@@ -545,7 +545,7 @@ describe('fileReadTool – text reads', () => {
   });
 
   it('prepends a staleness note for old memory files', async () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     const fp = path.join(memDir, 'notes.md');
     fs.writeFileSync(fp, 'remembered fact\n');
@@ -1108,9 +1108,9 @@ describe('fileEditTool – deeper error paths', () => {
     assert.ok(res.output.includes('modified since you last read it'));
   });
 
-  it('still succeeds when history tracking cannot write (.superinference is a file)', async () => {
-    // .superinference as a file makes trackFileHistory's mkdir throw (caught).
-    fs.writeFileSync(path.join(tmpDir, '.superinference'), 'blocking file');
+  it('still succeeds when history tracking cannot write (.ami is a file)', async () => {
+    // .ami as a file makes trackFileHistory's mkdir throw (caught).
+    fs.writeFileSync(path.join(tmpDir, '.ami'), 'blocking file');
     const fp = path.join(tmpDir, 'edit-me.txt');
     fs.writeFileSync(fp, 'hello world\n');
     const res = await fileEditTool.execute(
@@ -1160,7 +1160,7 @@ describe('fileEditTool – deeper error paths', () => {
 
   it('prunes history even when an old backup entry cannot be unlinked', async () => {
     const fp = path.join(tmpDir, 'prune-me.txt');
-    const histDir = path.join(tmpDir, '.superinference', 'file-history');
+    const histDir = path.join(tmpDir, '.ami', 'file-history');
     fs.mkdirSync(histDir, { recursive: true });
     const safe = 'prune-me.txt';
     // A directory named like a .bak entry: unlink on it rejects (.catch arm).

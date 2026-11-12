@@ -27,7 +27,7 @@ describe('configTool wave1 coverage', () => {
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('Usage'));
     // The guard must NOT have written a config file for an undefined value.
-    assert.equal(fs.existsSync(path.join(dir, '.superinference', 'config.json')), false);
+    assert.equal(fs.existsSync(path.join(dir, '.ami', 'config.json')), false);
   });
 
   it('set with an explicit undefined value short-circuits to the Usage error', async () => {
@@ -36,13 +36,13 @@ describe('configTool wave1 coverage', () => {
     const result = await configTool.execute!({ action: 'set', key: 'model', value: undefined }, ctx);
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('Usage'));
-    assert.equal(fs.existsSync(path.join(dir, '.superinference', 'config.json')), false);
+    assert.equal(fs.existsSync(path.join(dir, '.ami', 'config.json')), false);
   });
 
   it('set recovers when the existing config.json holds corrupt JSON', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'corrupt-'));
     const ctx = { cwd: dir } as ToolContext;
-    const configDir = path.join(dir, '.superinference');
+    const configDir = path.join(dir, '.ami');
     const configPath = path.join(configDir, 'config.json');
     fs.mkdirSync(configDir, { recursive: true });
     // Pre-existing garbage that JSON.parse cannot handle -> inner catch resets to {}.
@@ -62,7 +62,7 @@ describe('configTool wave1 coverage', () => {
   it('get recovers (no-config message) when config.json holds corrupt JSON', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'corrupt-get-'));
     const ctx = { cwd: dir } as ToolContext;
-    const configDir = path.join(dir, '.superinference');
+    const configDir = path.join(dir, '.ami');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'config.json'), '}}not json{{');
 
@@ -73,9 +73,9 @@ describe('configTool wave1 coverage', () => {
   it('set returns an isError result when the config directory cannot be created', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'writefail-'));
     const ctx = { cwd: dir } as ToolContext;
-    // Create a FILE named ".superinference" so mkdirSync(dirname) hits ENOTDIR
+    // Create a FILE named ".ami" so mkdirSync(dirname) hits ENOTDIR
     // and the outer catch returns an error result instead of throwing.
-    fs.writeFileSync(path.join(dir, '.superinference'), 'blocker');
+    fs.writeFileSync(path.join(dir, '.ami'), 'blocker');
 
     const result = await configTool.execute!({ action: 'set', key: 'model', value: 'gpt-4o' }, ctx);
     assert.equal(result.isError, true);

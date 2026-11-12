@@ -96,8 +96,8 @@ describe('MemoryManager — injection detection in instructions', () => {
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
     try {
-      fs.mkdirSync(path.join(fakeHome, '.superinference'), { recursive: true });
-      fs.writeFileSync(path.join(fakeHome, '.superinference', 'CLAUDE.md'), 'HOME_SI_SENTINEL_88');
+      fs.mkdirSync(path.join(fakeHome, '.ami'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHome, '.ami', 'CLAUDE.md'), 'HOME_SI_SENTINEL_88');
       const mgr = new MemoryManager(tmpDir);
       const sources = await mgr.collectInstructionSources();
       assert.ok(sources.some(s => s.content.includes('HOME_SI_SENTINEL_88')),
@@ -109,15 +109,15 @@ describe('MemoryManager — injection detection in instructions', () => {
     }
   });
 
-  it('loads user-global instructions from ~/.superinference (preferred over ~/.claude)', () => {
+  it('loads user-global instructions from ~/.ami (preferred over ~/.claude)', () => {
     const fakeHome = createTmpDir();
     const prevHome = process.env.HOME;
     const prevUserProfile = process.env.USERPROFILE;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
     try {
-      fs.mkdirSync(path.join(fakeHome, '.superinference'), { recursive: true });
-      fs.writeFileSync(path.join(fakeHome, '.superinference', 'CLAUDE.md'), 'SI_HOME_SENTINEL_99');
+      fs.mkdirSync(path.join(fakeHome, '.ami'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHome, '.ami', 'CLAUDE.md'), 'SI_HOME_SENTINEL_99');
       const mgr = new MemoryManager(tmpDir);
       assert.ok(mgr.getMemoryContext().includes('SI_HOME_SENTINEL_99'));
     } finally {
@@ -207,7 +207,7 @@ describe('MemoryManager — injection detection in instructions', () => {
   });
 
   it('sanitizes memory file content for injections', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'injected.md'),
@@ -321,7 +321,7 @@ describe('MemoryManager — saveMemory edge cases', () => {
     const mgr = new MemoryManager(tmpDir);
     mgr.saveMemory('Test!@#$%^&*()', 'content', 'desc', 'user');
 
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     const files = fs.readdirSync(memDir);
     assert.equal(files.length, 1);
     assert.ok(!files[0].includes('!'));
@@ -333,7 +333,7 @@ describe('MemoryManager — saveMemory edge cases', () => {
     mgr.saveMemory('test_mem', 'first version', 'desc', 'project');
     mgr.saveMemory('test_mem', 'second version', 'desc', 'project');
 
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     const files = fs.readdirSync(memDir);
     assert.equal(files.length, 1);
 
@@ -378,7 +378,7 @@ describe('MemoryManager — session memory', () => {
     const mgr = new MemoryManager(tmpDir);
     mgr.saveSessionMemory('empty-session', []);
 
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     assert.ok(!fs.existsSync(memDir) || fs.readdirSync(memDir).length === 0);
   });
 
@@ -392,7 +392,7 @@ describe('MemoryManager — session memory', () => {
 
     mgr.saveSessionMemory('grouped-session', facts);
 
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     const content = fs.readFileSync(
       path.join(memDir, 'session-grouped-session.md'),
       'utf-8',
@@ -409,14 +409,14 @@ describe('MemoryManager — session memory', () => {
 
     mgr.saveSessionMemory('session!@#special', facts);
 
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     const files = fs.readdirSync(memDir);
     assert.equal(files.length, 1);
     assert.ok(!files[0].includes('!'));
   });
 
   it('loadSessionMemory skips invalid categories', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     const content = `---
@@ -440,7 +440,7 @@ type: project
   });
 
   it('loadSessionMemory handles malformed fact lines', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     const content = `---
@@ -462,7 +462,7 @@ type: project
   });
 
   it('loadSessionMemory handles NaN confidence', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     const content = `---
@@ -490,7 +490,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   afterEach(() => { cleanupTmpDir(tmpDir); });
 
   it('formats memory without type tag when type is undefined', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'no_type.md'),
@@ -504,7 +504,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   });
 
   it('includes description as blockquote', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'with_desc.md'),
@@ -517,7 +517,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   });
 
   it('handles memory without description', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'no_desc.md'),
@@ -531,7 +531,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   });
 
   it('handles memory without name (uses filename)', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'unnamed.md'),
@@ -619,7 +619,7 @@ describe('MemoryManager — loadMemories sorting', () => {
   afterEach(() => { cleanupTmpDir(tmpDir); });
 
   it('sorts memories newest first', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     fs.writeFileSync(
@@ -643,7 +643,7 @@ describe('MemoryManager — loadMemories sorting', () => {
   });
 
   it('keeps the newest memory when dir exceeds MAX_MEMORY_FILES (200)', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     for (let i = 0; i < 201; i++) {
       const n = String(i).padStart(3, '0');

@@ -127,7 +127,7 @@ export class ProcessManager extends EventEmitter {
 
   constructor(cwd: string) {
     super();
-    this.tasksDir = path.join(cwd, '.superinference', 'tasks');
+    this.tasksDir = path.join(cwd, '.ami', 'tasks');
     fs.mkdirSync(this.tasksDir, { recursive: true });
   }
 

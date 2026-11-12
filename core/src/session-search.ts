@@ -18,7 +18,7 @@ function recencyMs(timestamp?: string): number {
 }
 
 export function searchSessions(cwd: string, query: string, limit: number = 20): SearchResult[] {
-  const sessionsDir = path.join(cwd, '.superinference', 'sessions');
+  const sessionsDir = path.join(cwd, '.ami', 'sessions');
   if (!fs.existsSync(sessionsDir)) return [];
 
   const phrase = query.toLowerCase().trim();

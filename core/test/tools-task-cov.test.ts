@@ -434,7 +434,7 @@ describe('taskTool — worktree isolation', () => {
         }),
       );
       assert.ok(!r.isError, r.output);
-      assert.ok(runCwd.includes(path.join('.superinference', 'worktrees')),
+      assert.ok(runCwd.includes(path.join('.ami', 'worktrees')),
         'subagent must run inside the worktree path');
       assert.ok(r.output.includes('worktree cleaned up'),
         'a change-free worktree must be cleaned up');
@@ -480,7 +480,7 @@ describe('taskTool — background lifecycle', () => {
       );
       const taskId = res.output.match(/agent-[a-f0-9]+/)![0];
       await sleep(400);
-      const outputPath = path.join(tmp, '.superinference', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(tmp, '.ami', 'tasks', `${taskId}.output`);
       const content = fs.readFileSync(outputPath, 'utf-8');
       assert.ok(content.includes('stalled'), `stall notice must be written, got: "${content}"`);
       assert.ok(shutdownCalled, 'stalled subagent engine must be shut down');
@@ -685,7 +685,7 @@ describe('taskTool — abort & hook rejection handling', () => {
             // Remove the tasks dir created synchronously by execute, so the
             // background IIFE's fs.openSync throws ENOENT and the IIFE rejects
             // into its trailing .catch(() => {}).
-            fs.rmSync(path.join(tmp, '.superinference', 'tasks'), { recursive: true, force: true });
+            fs.rmSync(path.join(tmp, '.ami', 'tasks'), { recursive: true, force: true });
             return { submit: gen([{ type: 'text_delta', text: 'never written' }]) };
           },
         }),
@@ -739,7 +739,7 @@ describe('taskTool — background event streaming', () => {
       assert.equal(getAgentByName('bg-rich'), taskId, 'bg agent name registered');
       assert.equal(recorded, 1, 'limiter.recordSpawn called on bg path');
       await sleep(120);
-      const content = fs.readFileSync(path.join(tmp, '.superinference', 'tasks', `${taskId}.output`), 'utf-8');
+      const content = fs.readFileSync(path.join(tmp, '.ami', 'tasks', `${taskId}.output`), 'utf-8');
       assert.ok(content.includes('[thinking] '), 'thinking_delta written');
       assert.ok(content.includes('answer body'), 'text_delta written');
       assert.ok(content.includes('ls -la'), 'tool_use_start command summary');
@@ -770,7 +770,7 @@ describe('taskTool — background event streaming', () => {
       );
       const taskId = res.output.match(/agent-[a-f0-9]+/)![0];
       await sleep(80);
-      const content = fs.readFileSync(path.join(tmp, '.superinference', 'tasks', `${taskId}.output`), 'utf-8');
+      const content = fs.readFileSync(path.join(tmp, '.ami', 'tasks', `${taskId}.output`), 'utf-8');
       assert.ok(content.includes('subagent produced no output'));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -949,7 +949,7 @@ describe('scoutTool', () => {
       // Pre-seed the cache so no clone happens; repoName derives from the raw repo string.
       const repoStr = 'file:///seeded/repo';
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const cached = path.join(work, '.superinference', 'scout-cache', repoName);
+      const cached = path.join(work, '.ami', 'scout-cache', repoName);
       fs.mkdirSync(cached, { recursive: true });
       fs.writeFileSync(path.join(cached, 'main.go'), 'package main\n');
 
@@ -967,7 +967,7 @@ describe('scoutTool', () => {
     try {
       const repoStr = 'octo/widget';
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const cached = path.join(work, '.superinference', 'scout-cache', repoName);
+      const cached = path.join(work, '.ami', 'scout-cache', repoName);
       fs.mkdirSync(cached, { recursive: true });
       fs.writeFileSync(path.join(cached, 'readme.md'), 'lowercase readme body\n');
       const r = await scoutTool.execute({ repo: repoStr }, ctx({ cwd: work }));
@@ -983,7 +983,7 @@ describe('scoutTool', () => {
     try {
       const repoStr = './local-thing';
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const cached = path.join(work, '.superinference', 'scout-cache', repoName);
+      const cached = path.join(work, '.ami', 'scout-cache', repoName);
       fs.mkdirSync(cached, { recursive: true });
       fs.writeFileSync(path.join(cached, 'x.py'), 'print(1)\n');
       const r = await scoutTool.execute({ repo: repoStr }, ctx({ cwd: work }));
@@ -1034,10 +1034,10 @@ describe('teamCreateTool / teamDeleteTool', () => {
     assert.equal(team?.name, 'alpha');
     assert.equal(team?.description, 'research squad');
     const saved = JSON.parse(
-      fs.readFileSync(path.join(tmp, '.superinference', 'teams', 'alpha', 'team.json'), 'utf-8'),
+      fs.readFileSync(path.join(tmp, '.ami', 'teams', 'alpha', 'team.json'), 'utf-8'),
     );
     assert.equal(saved.name, 'alpha');
-    assert.ok(fs.existsSync(path.join(tmp, '.superinference', 'teams', 'alpha', 'memory')));
+    assert.ok(fs.existsSync(path.join(tmp, '.ami', 'teams', 'alpha', 'memory')));
   });
 
   it('refuses to create a second team while one exists', async () => {
@@ -1061,7 +1061,7 @@ describe('teamCreateTool / teamDeleteTool', () => {
 
   it('deletes the active team and removes its directory', async () => {
     await teamCreateTool.execute({ team_name: 'gamma' }, ctx({ cwd: tmp }));
-    const teamDir = path.join(tmp, '.superinference', 'teams', 'gamma');
+    const teamDir = path.join(tmp, '.ami', 'teams', 'gamma');
     assert.ok(fs.existsSync(teamDir));
     const r = await teamDeleteTool.execute({}, ctx({ cwd: tmp }));
     assert.ok(!r.isError);
@@ -1076,7 +1076,7 @@ describe('teamCreateTool / teamDeleteTool', () => {
     // Build a second cwd where the computed teamDir cannot be removed:
     // make the parent `teams` directory read-only so unlink fails with EACCES.
     const roRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'si-team-ro-'));
-    const teamsDir = path.join(roRoot, '.superinference', 'teams');
+    const teamsDir = path.join(roRoot, '.ami', 'teams');
     const victimDir = path.join(teamsDir, 'delta');
     fs.mkdirSync(victimDir, { recursive: true });
     fs.writeFileSync(path.join(victimDir, 'f'), 'x');

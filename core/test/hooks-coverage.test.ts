@@ -56,8 +56,8 @@ function makePreSamplingCtx(overrides: Partial<PreSamplingContext> = {}): PreSam
   return { messages: [], turnCount: 1, apiMessages: [], ...overrides };
 }
 
-/** Create a temp directory with a .superinference/hooks.json */
-function writeTmpHooks(entries: any[], subDir = '.superinference'): string {
+/** Create a temp directory with a .ami/hooks.json */
+function writeTmpHooks(entries: any[], subDir = '.ami'): string {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
   const dir = path.join(tmpDir, subDir);
   fs.mkdirSync(dir, { recursive: true });
@@ -65,9 +65,9 @@ function writeTmpHooks(entries: any[], subDir = '.superinference'): string {
   return tmpDir;
 }
 
-/** Create a .superinference/config.json with hooks */
+/** Create a .ami/config.json with hooks */
 function writeTmpConfig(cwd: string, entries: any[]): void {
-  const dir = path.join(cwd, '.superinference');
+  const dir = path.join(cwd, '.ami');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ hooks: entries }));
 }
@@ -144,7 +144,7 @@ describe('loadFromFile — trusted workspace project hooks', () => {
 
   it('loads the Claude Code map-keyed hooks.json format (capitalized events)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'hooks.json'), JSON.stringify({
       hooks: {
@@ -171,7 +171,7 @@ describe('loadFromFile — trusted workspace project hooks', () => {
 
   it('handles invalid JSON in hooks.json gracefully', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'hooks.json'), '{ invalid json }}}');
     hm.setWorkspaceTrusted(true);
@@ -182,7 +182,7 @@ describe('loadFromFile — trusted workspace project hooks', () => {
 
   it('handles hooks.json with missing hooks array', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'hooks.json'), JSON.stringify({ notHooks: true }));
     hm.setWorkspaceTrusted(true);
@@ -206,7 +206,7 @@ describe('loadFromFile — trusted workspace project hooks', () => {
 // loadFromFile — config.json hooks
 // ---------------------------------------------------------------------------
 describe('loadFromFile — config.json hooks', () => {
-  it('loads hooks from .superinference/config.json', () => {
+  it('loads hooks from .ami/config.json', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
     writeTmpConfig(tmpDir, [
       { event: 'stop', hook: { type: 'command', command: 'echo done' } },
@@ -218,7 +218,7 @@ describe('loadFromFile — config.json hooks', () => {
 
   it('ignores config.json without hooks array', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ noHooks: true }));
     hm.loadFromFile(tmpDir);
@@ -228,7 +228,7 @@ describe('loadFromFile — config.json hooks', () => {
 
   it('handles config.json parse errors silently', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-cov-'));
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{broken');
     hm.loadFromFile(tmpDir);

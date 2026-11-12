@@ -197,7 +197,7 @@ describe('readMcpResourceTool', () => {
       );
       assert.ok(res.output.length < big.length, 'output should be truncated');
       assert.match(res.output, /persisted to/);
-      const spillDir = path.join(tmp, '.superinference', 'tool-results');
+      const spillDir = path.join(tmp, '.ami', 'tool-results');
       assert.ok(fs.readdirSync(spillDir).length >= 1, 'a spill file should exist');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

@@ -97,8 +97,8 @@ describe('config: file loaders', () => {
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
   it('loadProjectConfig returns parsed config', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'));
-    fs.writeFileSync(path.join(dir, '.superinference', 'config.json'), '{"model": "m1"}');
+    fs.mkdirSync(path.join(dir, '.ami'));
+    fs.writeFileSync(path.join(dir, '.ami', 'config.json'), '{"model": "m1"}');
     assert.deepEqual(loadProjectConfig(dir), { model: 'm1' });
   });
 
@@ -107,14 +107,14 @@ describe('config: file loaders', () => {
   });
 
   it('loadProjectConfig returns null on invalid JSON (caught)', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'));
-    fs.writeFileSync(path.join(dir, '.superinference', 'config.json'), '{not json');
+    fs.mkdirSync(path.join(dir, '.ami'));
+    fs.writeFileSync(path.join(dir, '.ami', 'config.json'), '{not json');
     assert.equal(loadProjectConfig(dir), null);
   });
 
   it('loadLocalConfig reads config.local.json', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'));
-    fs.writeFileSync(path.join(dir, '.superinference', 'config.local.json'), '{"skill": "p"}');
+    fs.mkdirSync(path.join(dir, '.ami'));
+    fs.writeFileSync(path.join(dir, '.ami', 'config.local.json'), '{"skill": "p"}');
     assert.deepEqual(loadLocalConfig(dir), { skill: 'p' });
   });
 
@@ -124,8 +124,8 @@ describe('config: file loaders', () => {
     try {
       process.env.HOME = dir;
       delete process.env.USERPROFILE;
-      fs.mkdirSync(path.join(dir, '.superinference'));
-      fs.writeFileSync(path.join(dir, '.superinference', 'config.json'), '{"maxTurns": 7}');
+      fs.mkdirSync(path.join(dir, '.ami'));
+      fs.writeFileSync(path.join(dir, '.ami', 'config.json'), '{"maxTurns": 7}');
       assert.deepEqual(loadGlobalConfig(), { maxTurns: 7 });
     } finally {
       process.env.HOME = prevHome;
@@ -139,8 +139,8 @@ describe('config: file loaders', () => {
     try {
       delete process.env.HOME;
       process.env.USERPROFILE = dir;
-      fs.mkdirSync(path.join(dir, '.superinference'));
-      fs.writeFileSync(path.join(dir, '.superinference', 'config.json'), '{"tokenBudget": 9}');
+      fs.mkdirSync(path.join(dir, '.ami'));
+      fs.writeFileSync(path.join(dir, '.ami', 'config.json'), '{"tokenBudget": 9}');
       assert.deepEqual(loadGlobalConfig(), { tokenBudget: 9 });
     } finally {
       if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
@@ -217,7 +217,7 @@ describe('config: ConfigService', () => {
   let svc: ConfigService | null;
   beforeEach(() => {
     dir = mkTmp();
-    sdir = path.join(dir, '.superinference');
+    sdir = path.join(dir, '.ami');
     fs.mkdirSync(sdir);
     cfgPath = path.join(sdir, 'config.json');
     fs.writeFileSync(cfgPath, '{"model": "a"}');
@@ -347,7 +347,7 @@ describe('config: ConfigService', () => {
   it('watch() returns early when directory is absent', () => {
     const empty = mkTmp();
     try {
-      const s = new ConfigService(empty); // .superinference does not exist
+      const s = new ConfigService(empty); // .ami does not exist
       s.watch();
       // No watcher created; stop is safe
       s.stop();
@@ -624,7 +624,7 @@ describe('cron: CronScheduler core', () => {
     const j = sched.create({ cron: '0 0 * * *', prompt: 'x', recurring: false, durable: true });
     assert.equal(j.recurring, false);
     assert.equal(j.durable, true);
-    assert.ok(fs.existsSync(path.join(dir, '.superinference', 'scheduled_tasks.json')));
+    assert.ok(fs.existsSync(path.join(dir, '.ami', 'scheduled_tasks.json')));
   });
 
   it('enforces MAX_JOBS', () => {
@@ -755,9 +755,9 @@ describe('cron: ticker, locks and expiry', () => {
 
   it('tick skips durable jobs when the lock is held by another session', () => {
     // Pre-write a fresh foreign lock.
-    fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
     fs.writeFileSync(
-      path.join(dir, '.superinference', 'cron.lock'),
+      path.join(dir, '.ami', 'cron.lock'),
       JSON.stringify({ sessionId: 'other', pid: 1, timestamp: Date.now() }),
     );
     const sched = new CronScheduler(dir, 'mine');
@@ -769,9 +769,9 @@ describe('cron: ticker, locks and expiry', () => {
   });
 
   it('tick runs durable jobs when it can acquire the lock, replacing a stale lock', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
     fs.writeFileSync(
-      path.join(dir, '.superinference', 'cron.lock'),
+      path.join(dir, '.ami', 'cron.lock'),
       JSON.stringify({ sessionId: 'old', pid: 1, timestamp: Date.now() - 10 * 60 * 1000 }),
     );
     const sched = new CronScheduler(dir, 'mine');
@@ -788,19 +788,19 @@ describe('cron: ticker, locks and expiry', () => {
     assert.equal(inner.acquireLock(), true); // create new lock
     assert.equal(inner.acquireLock(), true); // fresh + same session -> true
     inner.releaseLock();
-    assert.ok(!fs.existsSync(path.join(dir, '.superinference', 'cron.lock')));
+    assert.ok(!fs.existsSync(path.join(dir, '.ami', 'cron.lock')));
   });
 
   it('acquireLock returns false on a corrupt lock file', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.superinference', 'cron.lock'), '{corrupt');
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'cron.lock'), '{corrupt');
     const sched = new CronScheduler(dir, 'self');
     assert.equal((sched as unknown as { acquireLock: () => boolean }).acquireLock(), false);
   });
 
   it('releaseLock leaves a foreign lock intact', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
-    const lockPath = path.join(dir, '.superinference', 'cron.lock');
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    const lockPath = path.join(dir, '.ami', 'cron.lock');
     fs.writeFileSync(lockPath, JSON.stringify({ sessionId: 'someone-else', pid: 1, timestamp: Date.now() }));
     const sched = new CronScheduler(dir, 'self');
     (sched as unknown as { releaseLock: () => void }).releaseLock();
@@ -814,8 +814,8 @@ describe('cron: ticker, locks and expiry', () => {
   });
 
   it('releaseLock swallows a corrupt lock file', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.superinference', 'cron.lock'), '{not json');
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'cron.lock'), '{not json');
     const sched = new CronScheduler(dir, 'self');
     assert.doesNotThrow(() => (sched as unknown as { releaseLock: () => void }).releaseLock());
   });
@@ -860,13 +860,13 @@ describe('cron: durable persistence', () => {
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
   it('loads only durable jobs from disk, estimating jitter for malformed crons', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
     const jobs: CronJob[] = [
       { id: 'cron_9_a', cron: 'weird', prompt: 'durable', recurring: true, durable: true, createdAt: Date.now(), nextRun: Date.now() - 20 * 60 * 1000 },
       { id: 'cron_3_c', cron: '0 0 * * *', prompt: 'durable2', recurring: true, durable: true, createdAt: Date.now() },
       { id: 'cron_8_b', cron: '0 0 * * *', prompt: 'ephemeral', recurring: true, durable: false, createdAt: Date.now() },
     ];
-    fs.writeFileSync(path.join(dir, '.superinference', 'scheduled_tasks.json'), JSON.stringify(jobs));
+    fs.writeFileSync(path.join(dir, '.ami', 'scheduled_tasks.json'), JSON.stringify(jobs));
     const sched = new CronScheduler(dir, 's');
     assert.equal(sched.list().length, 2);
     assert.equal(sched.get('cron_9_a')!.prompt, 'durable');
@@ -890,16 +890,16 @@ describe('cron: durable persistence', () => {
   });
 
   it('tolerates an unreadable durable file', () => {
-    fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.superinference', 'scheduled_tasks.json'), '{not an array');
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'scheduled_tasks.json'), '{not an array');
     const sched = new CronScheduler(dir, 's');
     assert.equal(sched.list().length, 0);
     sched.stopTicker();
   });
 
   it('saveDurable swallows write errors when the dir path is a file', () => {
-    // Make .superinference a FILE so mkdirSync/write fail inside saveDurable.
-    fs.writeFileSync(path.join(dir, '.superinference'), 'blocker');
+    // Make .ami a FILE so mkdirSync/write fail inside saveDurable.
+    fs.writeFileSync(path.join(dir, '.ami'), 'blocker');
     const sched = new CronScheduler(dir, 's');
     assert.doesNotThrow(() => sched.create({ cron: '0 0 * * *', prompt: 'p', durable: true }));
     sched.stopTicker();

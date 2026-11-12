@@ -318,7 +318,7 @@ function makeTmpGitRepo(): string {
 }
 
 function makeWorktreeDir(repoDir: string, name: string): string {
-  const wtPath = path.join(repoDir, '.superinference', 'worktrees', name);
+  const wtPath = path.join(repoDir, '.ami', 'worktrees', name);
   fs.mkdirSync(wtPath, { recursive: true });
   child_process.execSync('git init', { cwd: wtPath, stdio: 'ignore' });
   child_process.execSync('git config user.email "t@t.com"', { cwd: wtPath, stdio: 'ignore' });

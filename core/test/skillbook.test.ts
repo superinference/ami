@@ -11,7 +11,7 @@ describe('Skillbook', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-test-'));
-    fs.mkdirSync(path.join(tmpDir, '.superinference'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.ami'), { recursive: true });
     skillbook = new Skillbook(tmpDir);
   });
 
@@ -118,7 +118,7 @@ describe('Skillbook', () => {
 
   it('handles corrupt skillbook file gracefully', () => {
     const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-corrupt-'));
-    const siDir = path.join(corruptDir, '.superinference');
+    const siDir = path.join(corruptDir, '.ami');
     fs.mkdirSync(siDir, { recursive: true });
     fs.writeFileSync(path.join(siDir, 'skillbook.json'), 'NOT VALID JSON{{{');
     const sb = new Skillbook(corruptDir);

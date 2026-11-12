@@ -74,7 +74,7 @@ export function worktreeBranchName(slug: string): string {
 
 export function createWorktreeSession(cwd: string, name: string): WorktreeSession {
   const startMs = Date.now();
-  const worktreeDir = path.join(cwd, '.superinference', 'worktrees', name);
+  const worktreeDir = path.join(cwd, '.ami', 'worktrees', name);
   const branch = worktreeBranchName(name);
 
   let originalBranch: string | undefined;
@@ -143,7 +143,7 @@ export function countWorktreeChanges(worktreePath: string, cwd: string): { uncom
 }
 
 export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): string[] {
-  const worktreeDir = path.join(cwd, '.superinference', 'worktrees');
+  const worktreeDir = path.join(cwd, '.ami', 'worktrees');
   if (!fs.existsSync(worktreeDir)) return [];
 
   const cleaned: string[] = [];
@@ -273,7 +273,7 @@ export function validateWorktreeGitFile(worktreePath: string): { valid: boolean;
 }
 
 export function findStaleWorktrees(repoPath: string): string[] {
-  const worktreeDir = path.join(repoPath, '.superinference', 'worktrees');
+  const worktreeDir = path.join(repoPath, '.ami', 'worktrees');
   if (!fs.existsSync(worktreeDir)) return [];
 
   const stale: string[] = [];

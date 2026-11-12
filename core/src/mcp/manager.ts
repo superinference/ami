@@ -912,7 +912,7 @@ export class McpManager extends EventEmitter {
    * Load MCP server configs from a JSON file.
    *
    * M14 — when `opts.projectScoped` is true, this config came from a repo (a
-   * project-tier `.mcp.json` / `.superinference/mcp.json`), which is untrusted: a
+   * project-tier `.mcp.json` / `.ami/mcp.json`), which is untrusted: a
    * cloned repo could point MCP at anything. Each NEW server that is not already in
    * the approved set is registered PENDING (awaiting approval) instead of being
    * auto-connected; only servers the user previously approved connect normally.
@@ -1113,18 +1113,18 @@ export function findMcpConfigPaths(cwd: string): string[] {
   // repo commits), NOT user-global ~/.claude.json: that file aggregates every
   // Claude Code server a developer ever configured (and a large per-project
   // tree), so auto-loading it would silently spin up unrelated servers. Users
-  // who want global servers in AMI put them in ~/.superinference/mcp.json.
+  // who want global servers in AMI put them in ~/.ami/mcp.json.
 
-  // 1. AMI project (.superinference/mcp.json in cwd) — highest.
-  const projectConfig = path.join(cwd, '.superinference', 'mcp.json');
+  // 1. AMI project (.ami/mcp.json in cwd) — highest.
+  const projectConfig = path.join(cwd, '.ami', 'mcp.json');
   if (fs.existsSync(projectConfig)) paths.push(projectConfig);
 
   // 2. Claude Code project interop — the shareable `.mcp.json` at the repo root.
   const claudeProjectConfig = path.join(cwd, '.mcp.json');
   if (fs.existsSync(claudeProjectConfig)) paths.push(claudeProjectConfig);
 
-  // 3. AMI user-global (~/.superinference/mcp.json).
-  const globalConfig = path.join(homeDir, '.superinference', 'mcp.json');
+  // 3. AMI user-global (~/.ami/mcp.json).
+  const globalConfig = path.join(homeDir, '.ami', 'mcp.json');
   if (fs.existsSync(globalConfig)) paths.push(globalConfig);
 
   return paths;

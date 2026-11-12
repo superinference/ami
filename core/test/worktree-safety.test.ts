@@ -125,7 +125,7 @@ describe('findStaleWorktrees', () => {
 
   it('returns empty when all worktrees are valid', () => {
     const repo = mkTmp();
-    const wtDir = path.join(repo, '.superinference', 'worktrees');
+    const wtDir = path.join(repo, '.ami', 'worktrees');
     const wt1 = path.join(wtDir, 'valid-wt');
     fs.mkdirSync(wt1, { recursive: true });
     fs.mkdirSync(path.join(wt1, '.git'));
@@ -135,7 +135,7 @@ describe('findStaleWorktrees', () => {
 
   it('finds stale worktrees (missing .git)', () => {
     const repo = mkTmp();
-    const wtDir = path.join(repo, '.superinference', 'worktrees');
+    const wtDir = path.join(repo, '.ami', 'worktrees');
     const staleWt = path.join(wtDir, 'stale-wt');
     fs.mkdirSync(staleWt, { recursive: true });
     const result = findStaleWorktrees(repo);
@@ -145,7 +145,7 @@ describe('findStaleWorktrees', () => {
 
   it('finds stale worktrees (gitdir points to nonexistent dir)', () => {
     const repo = mkTmp();
-    const wtDir = path.join(repo, '.superinference', 'worktrees');
+    const wtDir = path.join(repo, '.ami', 'worktrees');
     const staleWt = path.join(wtDir, 'stale-gitdir');
     fs.mkdirSync(staleWt, { recursive: true });
     fs.writeFileSync(path.join(staleWt, '.git'), 'gitdir: /nonexistent/place\n');
@@ -156,7 +156,7 @@ describe('findStaleWorktrees', () => {
 
   it('mixes valid and stale worktrees', () => {
     const repo = mkTmp();
-    const wtDir = path.join(repo, '.superinference', 'worktrees');
+    const wtDir = path.join(repo, '.ami', 'worktrees');
     const validWt = path.join(wtDir, 'valid');
     fs.mkdirSync(validWt, { recursive: true });
     fs.mkdirSync(path.join(validWt, '.git'));
@@ -172,7 +172,7 @@ describe('findStaleWorktrees', () => {
 
   it('skips non-directory entries in worktrees folder', () => {
     const repo = mkTmp();
-    const wtDir = path.join(repo, '.superinference', 'worktrees');
+    const wtDir = path.join(repo, '.ami', 'worktrees');
     fs.mkdirSync(wtDir, { recursive: true });
     fs.writeFileSync(path.join(wtDir, 'not-a-dir.txt'), 'hello');
     const result = findStaleWorktrees(repo);

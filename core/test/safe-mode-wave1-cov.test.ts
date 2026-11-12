@@ -78,7 +78,7 @@ describe('SafeModeGuard — check guard integrity', () => {
   // Enabled guard allows partially-blocked project_config without recording it.
   it('enabled guard allows project_config and records nothing', () => {
     const guard = new SafeModeGuard({ enabled: true });
-    assert.equal(guard.check('project_config', '/p/.superinference/config.yaml'), true);
+    assert.equal(guard.check('project_config', '/p/.ami/config.yaml'), true);
     assert.equal(guard.getBlockedCount(), 0);
   });
 

@@ -247,7 +247,7 @@ describe('MemoryGate persistTo()', () => {
 
     gate.persistTo(memory, 'Fix critical bug');
 
-    const memoryDir = path.join(tmpDir, '.superinference', 'memory');
+    const memoryDir = path.join(tmpDir, '.ami', 'memory');
     assert.ok(fs.existsSync(memoryDir), 'Memory directory should exist');
 
     const files = fs.readdirSync(memoryDir).filter(f => f.endsWith('.md'));
@@ -268,7 +268,7 @@ describe('MemoryGate persistTo()', () => {
 
     gate.persistTo(memory, 'Empty task');
 
-    const memoryDir = path.join(tmpDir, '.superinference', 'memory');
+    const memoryDir = path.join(tmpDir, '.ami', 'memory');
     assert.equal(fs.existsSync(memoryDir), false, 'Memory directory should not be created');
 
     fs.rmSync(tmpDir, { recursive: true, force: true });

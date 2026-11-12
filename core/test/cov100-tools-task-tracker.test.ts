@@ -25,7 +25,7 @@ function mkTmp(): string {
 }
 
 function writeTasksFile(dir: string, data: unknown): string {
-  const sub = path.join(dir, '.superinference');
+  const sub = path.join(dir, '.ami');
   fs.mkdirSync(sub, { recursive: true });
   const file = path.join(sub, 'tasks.json');
   fs.writeFileSync(file, JSON.stringify(data), 'utf-8');
@@ -101,7 +101,7 @@ describe('task-tracker: persistence + formatting behavior', () => {
 
   it('loadFromDisk recovers to a fresh (empty) state on corrupt JSON', async () => {
     const dir = mkTmp();
-    const sub = path.join(dir, '.superinference');
+    const sub = path.join(dir, '.ami');
     fs.mkdirSync(sub, { recursive: true });
     fs.writeFileSync(path.join(sub, 'tasks.json'), '{ this is not valid json', 'utf-8');
 
@@ -119,7 +119,7 @@ describe('task-tracker: persistence + formatting behavior', () => {
   });
 
   it('missing tasks file leaves an empty fresh state (readFileSync throws -> catch)', () => {
-    const dir = mkTmp(); // no .superinference/tasks.json written
+    const dir = mkTmp(); // no .ami/tasks.json written
     setTaskPersistPath(dir);
     assert.equal(getTaskState().size, 0);
   });
@@ -137,7 +137,7 @@ describe('task-tracker: persistence + formatting behavior', () => {
     );
 
     // File now exists on disk.
-    const file = path.join(dir, '.superinference', 'tasks.json');
+    const file = path.join(dir, '.ami', 'tasks.json');
     assert.ok(fs.existsSync(file));
 
     // Reload into a brand-new in-memory state by pointing at the same dir.

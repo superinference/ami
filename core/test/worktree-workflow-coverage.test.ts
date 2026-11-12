@@ -51,7 +51,7 @@ function makeTmpGitRepo(): string {
 
 /** Create a fake worktree directory inside a git repo with its own git init. */
 function makeWorktreeDir(repoDir: string, name: string): string {
-  const wtPath = path.join(repoDir, '.superinference', 'worktrees', name);
+  const wtPath = path.join(repoDir, '.ami', 'worktrees', name);
   fs.mkdirSync(wtPath, { recursive: true });
   child_process.execSync('git init', { cwd: wtPath, stdio: 'ignore' });
   child_process.execSync('git config user.email "t@t.com"', { cwd: wtPath, stdio: 'ignore' });
@@ -371,7 +371,7 @@ describe('createWorktreeSession (lines 57-82)', () => {
     setWorktreeSession(null);
     try {
       child_process.execSync('git worktree prune', { cwd: tmpDir, stdio: 'ignore' });
-      const wtDir = path.join(tmpDir, '.superinference', 'worktrees');
+      const wtDir = path.join(tmpDir, '.ami', 'worktrees');
       if (fs.existsSync(wtDir)) {
         for (const entry of fs.readdirSync(wtDir)) {
           try {
@@ -387,7 +387,7 @@ describe('createWorktreeSession (lines 57-82)', () => {
     const session = createWorktreeSession(tmpDir, 'my-feature');
 
     assert.equal(session.originalCwd, tmpDir);
-    assert.ok(session.worktreePath.includes('.superinference/worktrees/my-feature'));
+    assert.ok(session.worktreePath.includes('.ami/worktrees/my-feature'));
     assert.equal(session.worktreeName, 'my-feature');
     assert.equal(session.worktreeBranch, 'worktree-my-feature');
     assert.ok(session.originalBranch, 'Should have originalBranch');
@@ -673,8 +673,8 @@ try {
     assert.ok(r.output.includes('Workflow not found') || r.output.includes('error:'));
   });
 
-  it('resolves child workflow via string name from .superinference/workflows/', async () => {
-    const wfDir = path.join(tmpDir, '.superinference', 'workflows');
+  it('resolves child workflow via string name from .ami/workflows/', async () => {
+    const wfDir = path.join(tmpDir, '.ami', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
     fs.writeFileSync(path.join(wfDir, 'helper.js'), `export const meta = {
   name: 'helper',

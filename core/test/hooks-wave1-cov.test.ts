@@ -35,8 +35,8 @@ const tmpDirs: string[] = [];
 function writeHooks(entries: HookConfigEntry[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-hooks-w1-'));
   tmpDirs.push(dir);
-  fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.superinference', 'hooks.json'), JSON.stringify({ hooks: entries }));
+  fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.ami', 'hooks.json'), JSON.stringify({ hooks: entries }));
   return dir;
 }
 
@@ -418,10 +418,10 @@ describe('loadFromFile — plugin bundle hooks', () => {
   function writePluginBundle(): string {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'si-hooks-plug-'));
     tmpDirs.push(cwd);
-    const bundle = path.join(cwd, '.superinference', 'plugins', 'guard-plugin');
-    fs.mkdirSync(path.join(bundle, '.superinference-plugin'), { recursive: true });
+    const bundle = path.join(cwd, '.ami', 'plugins', 'guard-plugin');
+    fs.mkdirSync(path.join(bundle, '.ami-plugin'), { recursive: true });
     fs.writeFileSync(
-      path.join(bundle, '.superinference-plugin', 'plugin.json'),
+      path.join(bundle, '.ami-plugin', 'plugin.json'),
       JSON.stringify({ name: 'guard-plugin', version: '1.0.0' }),
     );
     fs.writeFileSync(

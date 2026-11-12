@@ -3,8 +3,8 @@ mcp/mcp_server.py.log
 
 .claude/
 .cursor/
-.superinference/
 .ami/
+.superinference/
 
 ui/
 references/

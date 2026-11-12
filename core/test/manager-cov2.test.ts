@@ -679,10 +679,10 @@ describe('findMcpConfigPaths', () => {
   it('returns project and global config paths when both exist', () => {
     const cwd = tmp();
     const home = tmp();
-    fs.mkdirSync(path.join(cwd, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.superinference', 'mcp.json'), '{}');
-    fs.mkdirSync(path.join(home, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.superinference', 'mcp.json'), '{}');
+    fs.mkdirSync(path.join(cwd, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.ami', 'mcp.json'), '{}');
+    fs.mkdirSync(path.join(home, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.ami', 'mcp.json'), '{}');
     const prevHome = process.env.HOME;
     const prevUser = process.env.USERPROFILE;
     process.env.HOME = home;
@@ -700,11 +700,11 @@ describe('findMcpConfigPaths', () => {
   it('includes Claude Code project .mcp.json (interop) in first-wins order', () => {
     const cwd = tmp();
     const home = tmp();
-    fs.mkdirSync(path.join(cwd, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.superinference', 'mcp.json'), '{}');
+    fs.mkdirSync(path.join(cwd, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.ami', 'mcp.json'), '{}');
     fs.writeFileSync(path.join(cwd, '.mcp.json'), '{}');
-    fs.mkdirSync(path.join(home, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.superinference', 'mcp.json'), '{}');
+    fs.mkdirSync(path.join(home, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.ami', 'mcp.json'), '{}');
     // A user-global ~/.claude.json must NOT be auto-loaded (too broad).
     fs.writeFileSync(path.join(home, '.claude.json'), '{}');
     const prevHome = process.env.HOME;
@@ -714,9 +714,9 @@ describe('findMcpConfigPaths', () => {
     try {
       // AMI-project > Claude-project > AMI-user (first-wins). No ~/.claude.json.
       assert.deepEqual(findMcpConfigPaths(cwd), [
-        path.join(cwd, '.superinference', 'mcp.json'),
+        path.join(cwd, '.ami', 'mcp.json'),
         path.join(cwd, '.mcp.json'),
-        path.join(home, '.superinference', 'mcp.json'),
+        path.join(home, '.ami', 'mcp.json'),
       ]);
     } finally {
       if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;

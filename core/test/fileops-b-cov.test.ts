@@ -688,7 +688,7 @@ describe('spill-output — uncovered paths', () => {
       const result = spillToolText('', 'cwdfallback', text, 1000);
       assert.ok(result.length < text.length);
       // The spill directory was created under process.cwd() (the empty-cwd fallback).
-      const spillDir = path.join(dir, '.superinference', 'tool-results');
+      const spillDir = path.join(dir, '.ami', 'tool-results');
       assert.ok(fs.existsSync(spillDir));
       assert.match(result, /persisted to/);
     } finally {

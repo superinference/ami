@@ -224,7 +224,7 @@ describe('CronScheduler — releaseLock (lines 186-195)', () => {
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('releaseLock does not remove lock owned by a different session', () => {
-    const lockDir = path.join(tmpDir, '.superinference');
+    const lockDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(lockDir, { recursive: true });
     const lockPath = path.join(lockDir, 'cron.lock');
     fs.writeFileSync(lockPath, JSON.stringify({
@@ -253,7 +253,7 @@ describe('CronScheduler — acquireLock stale lock (lines 167-171)', () => {
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('acquires lock when existing lock is stale (> 120s)', () => {
-    const lockDir = path.join(tmpDir, '.superinference');
+    const lockDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(lockDir, { recursive: true });
     const lockPath = path.join(lockDir, 'cron.lock');
     fs.writeFileSync(lockPath, JSON.stringify({
@@ -269,7 +269,7 @@ describe('CronScheduler — acquireLock stale lock (lines 167-171)', () => {
   });
 
   it('returns own session when lock is fresh and owned by us (line 170)', () => {
-    const lockDir = path.join(tmpDir, '.superinference');
+    const lockDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(lockDir, { recursive: true });
     const lockPath = path.join(lockDir, 'cron.lock');
     fs.writeFileSync(lockPath, JSON.stringify({
@@ -754,14 +754,14 @@ describe('cleanupStaleWorktrees (lines 94-131)', () => {
   });
 
   it('returns empty array when worktree directory is empty', () => {
-    const worktreeDir = path.join(tmpDir, '.superinference', 'worktrees');
+    const worktreeDir = path.join(tmpDir, '.ami', 'worktrees');
     fs.mkdirSync(worktreeDir, { recursive: true });
     const cleaned = cleanupStaleWorktrees(tmpDir);
     assert.deepEqual(cleaned, []);
   });
 
   it('skips non-directory entries', () => {
-    const worktreeDir = path.join(tmpDir, '.superinference', 'worktrees');
+    const worktreeDir = path.join(tmpDir, '.ami', 'worktrees');
     fs.mkdirSync(worktreeDir, { recursive: true });
     fs.writeFileSync(path.join(worktreeDir, 'not-a-dir'), 'file');
     const cleaned = cleanupStaleWorktrees(tmpDir);
@@ -769,7 +769,7 @@ describe('cleanupStaleWorktrees (lines 94-131)', () => {
   });
 
   it('skips directories that are not old enough', () => {
-    const worktreeDir = path.join(tmpDir, '.superinference', 'worktrees');
+    const worktreeDir = path.join(tmpDir, '.ami', 'worktrees');
     const freshDir = path.join(worktreeDir, 'fresh-worktree');
     fs.mkdirSync(freshDir, { recursive: true });
     const cleaned = cleanupStaleWorktrees(tmpDir);
@@ -777,7 +777,7 @@ describe('cleanupStaleWorktrees (lines 94-131)', () => {
   });
 
   it('applies half-age threshold for ephemeral worktree names', () => {
-    const worktreeDir = path.join(tmpDir, '.superinference', 'worktrees');
+    const worktreeDir = path.join(tmpDir, '.ami', 'worktrees');
     // agent-abcdef0 matches EPHEMERAL_WORKTREE_PATTERNS
     const ephemeralDir = path.join(worktreeDir, 'agent-abcdef0');
     fs.mkdirSync(ephemeralDir, { recursive: true });
@@ -910,7 +910,7 @@ describe('MemoryManager — saveMemory defaults and name sanitization (lines 449
   it('defaults memoryType to project when not specified', () => {
     const mgr = new MemoryManager(tmpDir);
     mgr.saveMemory('default-type', 'content');
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     const content = fs.readFileSync(path.join(memDir, 'default-type.md'), 'utf-8');
     assert.ok(content.includes('type: project'));
   });
@@ -918,7 +918,7 @@ describe('MemoryManager — saveMemory defaults and name sanitization (lines 449
   it('defaults description to name when not specified', () => {
     const mgr = new MemoryManager(tmpDir);
     mgr.saveMemory('my-memory', 'content');
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     const content = fs.readFileSync(path.join(memDir, 'my-memory.md'), 'utf-8');
     assert.ok(content.includes('description: my-memory'));
   });
@@ -926,7 +926,7 @@ describe('MemoryManager — saveMemory defaults and name sanitization (lines 449
   it('sanitizes name with consecutive underscores and leading/trailing underscores', () => {
     const mgr = new MemoryManager(tmpDir);
     mgr.saveMemory('__hello___world__', 'content');
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     const files = fs.readdirSync(memDir);
     assert.equal(files.length, 1);
     // Consecutive underscores collapsed, leading/trailing stripped
@@ -942,7 +942,7 @@ describe('MemoryManager — getMemoryContext with team memories (lines 504-528)'
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('includes team memories section when team memories exist', () => {
-    const teamDir = path.join(tmpDir, '.superinference', 'memory', 'team');
+    const teamDir = path.join(tmpDir, '.ami', 'memory', 'team');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(path.join(teamDir, 'team-rule.md'), 'Always run tests before merging.');
 
@@ -953,7 +953,7 @@ describe('MemoryManager — getMemoryContext with team memories (lines 504-528)'
   });
 
   it('includes memory guidelines when memories exist (lines 509-525)', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(path.join(memDir, 'guide.md'), '---\nname: guide\ntype: user\n---\nSome guidance.');
 
@@ -966,7 +966,7 @@ describe('MemoryManager — getMemoryContext with team memories (lines 504-528)'
   });
 
   it('includes memory guidelines when only team memories exist', () => {
-    const teamDir = path.join(tmpDir, '.superinference', 'memory', 'team');
+    const teamDir = path.join(tmpDir, '.ami', 'memory', 'team');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(path.join(teamDir, 'convention.md'), 'Use snake_case for Python.');
 
@@ -989,7 +989,7 @@ describe('MemoryManager — getMemoryContext age tags (lines 488-494)', () => {
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('adds age verification note for memories > 1 day old', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(path.join(memDir, 'old-mem.md'), '---\nname: old-mem\ntype: project\n---\nOld data.');
     // Set mtime to 3 days ago
@@ -1002,7 +1002,7 @@ describe('MemoryManager — getMemoryContext age tags (lines 488-494)', () => {
   });
 
   it('does not add age note for fresh memories', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(path.join(memDir, 'fresh.md'), '---\nname: fresh\ntype: project\n---\nFresh data.');
 
@@ -1022,7 +1022,7 @@ describe('MemoryManager — loadMemories stale marker (line 398-399)', () => {
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('marks memories older than 30 days as STALE', () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(path.join(memDir, 'ancient.md'), '---\nname: ancient\ntype: project\n---\nVery old data.');
     const pastTime = new Date(Date.now() - 45 * 86400_000);
@@ -1049,7 +1049,7 @@ describe('MemoryManager — loadTeamMemories (lines 571-589)', () => {
   });
 
   it('loads team memories with sanitization', () => {
-    const teamDir = path.join(tmpDir, '.superinference', 'memory', 'team');
+    const teamDir = path.join(tmpDir, '.ami', 'memory', 'team');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(path.join(teamDir, 'convention.md'), '---\nname: conv\n---\nUse TypeScript strict mode.');
 
@@ -1060,7 +1060,7 @@ describe('MemoryManager — loadTeamMemories (lines 571-589)', () => {
   });
 
   it('filters out empty content files', () => {
-    const teamDir = path.join(tmpDir, '.superinference', 'memory', 'team');
+    const teamDir = path.join(tmpDir, '.ami', 'memory', 'team');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(path.join(teamDir, 'empty.md'), '---\nname: empty\n---\n');
     fs.writeFileSync(path.join(teamDir, 'real.md'), 'Real content.');
@@ -1072,7 +1072,7 @@ describe('MemoryManager — loadTeamMemories (lines 571-589)', () => {
   });
 
   it('skips non-.md files', () => {
-    const teamDir = path.join(tmpDir, '.superinference', 'memory', 'team');
+    const teamDir = path.join(tmpDir, '.ami', 'memory', 'team');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(path.join(teamDir, 'notes.txt'), 'Some notes');
     fs.writeFileSync(path.join(teamDir, 'rules.md'), 'A rule.');
@@ -1093,7 +1093,7 @@ describe('MemoryManager — addToMemoryIndex / removeFromMemoryIndex (lines 853-
   it('addToMemoryIndex creates file if it does not exist', async () => {
     const mgr = new MemoryManager(tmpDir);
     await mgr.addToMemoryIndex(tmpDir, '- [test](test.md) -- A test entry');
-    const indexPath = path.join(tmpDir, '.superinference', 'memory', 'MEMORY.md');
+    const indexPath = path.join(tmpDir, '.ami', 'memory', 'MEMORY.md');
     assert.ok(fs.existsSync(indexPath));
     const content = fs.readFileSync(indexPath, 'utf-8');
     assert.ok(content.includes('- [test](test.md)'));
@@ -1103,7 +1103,7 @@ describe('MemoryManager — addToMemoryIndex / removeFromMemoryIndex (lines 853-
     const mgr = new MemoryManager(tmpDir);
     await mgr.addToMemoryIndex(tmpDir, '- [dup](dup.md) -- Duplicate');
     await mgr.addToMemoryIndex(tmpDir, '- [dup](dup.md) -- Duplicate');
-    const indexPath = path.join(tmpDir, '.superinference', 'memory', 'MEMORY.md');
+    const indexPath = path.join(tmpDir, '.ami', 'memory', 'MEMORY.md');
     const content = fs.readFileSync(indexPath, 'utf-8');
     const count = (content.match(/\[dup\]/g) || []).length;
     assert.equal(count, 1, 'Entry should appear only once');
@@ -1116,7 +1116,7 @@ describe('MemoryManager — addToMemoryIndex / removeFromMemoryIndex (lines 853-
 
     await mgr.removeFromMemoryIndex(tmpDir, 'remove.md');
 
-    const indexPath = path.join(tmpDir, '.superinference', 'memory', 'MEMORY.md');
+    const indexPath = path.join(tmpDir, '.ami', 'memory', 'MEMORY.md');
     const content = fs.readFileSync(indexPath, 'utf-8');
     assert.ok(!content.includes('remove.md'), 'Removed entry should be gone');
     assert.ok(content.includes('keep.md'), 'Kept entry should remain');
@@ -1136,7 +1136,7 @@ describe('MemoryManager — loadRulesForFile with paths frontmatter (lines 740-7
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('filters rules by paths frontmatter', async () => {
-    const rulesDir = path.join(tmpDir, '.superinference', 'rules');
+    const rulesDir = path.join(tmpDir, '.ami', 'rules');
     fs.mkdirSync(rulesDir, { recursive: true });
     fs.writeFileSync(path.join(rulesDir, 'ts-only.md'),
       '---\npaths: *.ts, src/*.ts\n---\nTypeScript-only rule.');
@@ -1150,7 +1150,7 @@ describe('MemoryManager — loadRulesForFile with paths frontmatter (lines 740-7
   });
 
   it('excludes rules whose paths do not match', async () => {
-    const rulesDir = path.join(tmpDir, '.superinference', 'rules');
+    const rulesDir = path.join(tmpDir, '.ami', 'rules');
     fs.mkdirSync(rulesDir, { recursive: true });
     fs.writeFileSync(path.join(rulesDir, 'py-only.md'),
       '---\npaths: *.py\n---\nPython rule.');
@@ -1239,7 +1239,7 @@ describe('MemoryManager — collectInstructionSources with currentFile (line 895
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('uses loadRulesForFile when currentFile is provided', async () => {
-    const rulesDir = path.join(tmpDir, '.superinference', 'rules');
+    const rulesDir = path.join(tmpDir, '.ami', 'rules');
     fs.mkdirSync(rulesDir, { recursive: true });
     fs.writeFileSync(path.join(rulesDir, 'ts-rule.md'),
       '---\npaths: *.ts\n---\nTS only.');
@@ -1253,7 +1253,7 @@ describe('MemoryManager — collectInstructionSources with currentFile (line 895
   });
 
   it('uses loadRulesDirectory when no currentFile', async () => {
-    const rulesDir = path.join(tmpDir, '.superinference', 'rules');
+    const rulesDir = path.join(tmpDir, '.ami', 'rules');
     fs.mkdirSync(rulesDir, { recursive: true });
     fs.writeFileSync(path.join(rulesDir, 'all.md'), 'Universal rule.');
 
@@ -1274,7 +1274,7 @@ describe('MemoryManager — collectInstructionSources with currentFile (line 895
   });
 
   it('includes user memories in collected sources', async () => {
-    const memDir = path.join(tmpDir, '.superinference', 'memory');
+    const memDir = path.join(tmpDir, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(path.join(memDir, 'pref.md'), '---\nname: pref\ntype: user\n---\nPreference content.');
 
@@ -1525,7 +1525,7 @@ describe('PermissionManager — bypassPermissions mode (lines 520-532)', () => {
   it('asks for bash commands touching safety paths', async () => {
     const pm = new PermissionManager('bypassPermissions');
     assert.equal(await pm.check('bash', { command: 'cat .git/config' }), 'ask');
-    assert.equal(await pm.check('bash', { command: 'cat .superinference/config' }), 'ask');
+    assert.equal(await pm.check('bash', { command: 'cat .ami/config' }), 'ask');
     assert.equal(await pm.check('bash', { command: 'cat .bashrc' }), 'ask');
     assert.equal(await pm.check('bash', { command: 'cat .ssh/id_rsa' }), 'ask');
     assert.equal(await pm.check('bash', { command: 'cat .aws/credentials' }), 'ask');
@@ -1841,7 +1841,7 @@ describe('PermissionManager — loadRules with pattern and reason fields (lines 
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('loads rules with optional pattern and reason fields', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'permissions.json'), JSON.stringify({
       rules: [
@@ -1861,7 +1861,7 @@ describe('PermissionManager — loadRules with pattern and reason fields (lines 
   });
 
   it('handles rule with non-string pattern (ignores it)', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'permissions.json'), JSON.stringify({
       rules: [

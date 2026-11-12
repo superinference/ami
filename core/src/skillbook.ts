@@ -26,7 +26,7 @@ export class Skillbook {
   private persistPath: string;
 
   constructor(cwd: string) {
-    this.persistPath = path.join(cwd, '.superinference', 'skillbook.json');
+    this.persistPath = path.join(cwd, '.ami', 'skillbook.json');
     this.loadFromDisk();
   }
 

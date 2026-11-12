@@ -288,7 +288,7 @@ export const webFetchTool: ToolDefinition = {
       const binaryTypes = ['image/', 'application/zip', 'application/octet-stream'];
       if (binaryTypes.some(t => contentType?.includes(t))) {
         const ext = contentType?.split('/').pop()?.split(';')[0] || 'bin';
-        const spillDir = path.join(context.cwd, '.superinference', 'tool-results');
+        const spillDir = path.join(context.cwd, '.ami', 'tool-results');
         fs.mkdirSync(spillDir, { recursive: true });
         const spillFile = path.join(spillDir, `fetch-${Date.now()}.${ext}`);
         // Write the raw bytes, not the lossy UTF-8 string, so the saved file is intact.

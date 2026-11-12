@@ -106,7 +106,7 @@ describe('workflowTool resumeKey wiring (B2)', () => {
     const cwd = mkcwd();
     const r = await workflowTool.execute!({ script, resumeKey: 'my-run' }, { cwd } as never);
     assert.equal(r.isError, false);
-    const cacheDir = path.join(cwd, '.superinference', 'workflows', '.cache', 'my-run');
+    const cacheDir = path.join(cwd, '.ami', 'workflows', '.cache', 'my-run');
     assert.ok(fs.existsSync(cacheDir), 'resume cache dir must be created');
     assert.ok(fs.readdirSync(cacheDir).length >= 1, 'a completed agent result must be cached');
   });
@@ -115,7 +115,7 @@ describe('workflowTool resumeKey wiring (B2)', () => {
     const cwd = mkcwd();
     await workflowTool.execute!({ script, resumeKey: '../../etc/evil' }, { cwd } as never);
     // nothing escaped the .cache dir; the sanitized segment stays contained
-    const base = path.join(cwd, '.superinference', 'workflows', '.cache');
+    const base = path.join(cwd, '.ami', 'workflows', '.cache');
     assert.ok(fs.existsSync(base));
     for (const entry of fs.readdirSync(base)) assert.ok(!entry.includes('..') && !entry.includes('/'));
   });
@@ -123,6 +123,6 @@ describe('workflowTool resumeKey wiring (B2)', () => {
   it('creates no cache when resumeKey is absent', async () => {
     const cwd = mkcwd();
     await workflowTool.execute!({ script }, { cwd } as never);
-    assert.ok(!fs.existsSync(path.join(cwd, '.superinference', 'workflows', '.cache')));
+    assert.ok(!fs.existsSync(path.join(cwd, '.ami', 'workflows', '.cache')));
   });
 });

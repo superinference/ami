@@ -14,7 +14,7 @@ export function createMcpAuthTool(serverName: string): ToolDefinition {
         await mcpManager.reconnect?.(serverName);
         return { output: `Authentication completed for "${serverName}". Server tools should now be available.` };
       } catch (err) {
-        return { output: `Authentication failed: ${err instanceof Error ? err.message : String(err)}. Configure credentials in .superinference/mcp.json.`, isError: true };
+        return { output: `Authentication failed: ${err instanceof Error ? err.message : String(err)}. Configure credentials in .ami/mcp.json.`, isError: true };
       }
     },
   };

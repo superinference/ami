@@ -168,7 +168,7 @@ describe('SessionManager', () => {
 
   it('getSessionDir returns the configured directory', () => {
     const dir = sm.getSessionDir();
-    assert.ok(dir.includes('.superinference'));
+    assert.ok(dir.includes('.ami'));
   });
 
   it('preserves full long user content across save/load via blob offload (H14)', () => {

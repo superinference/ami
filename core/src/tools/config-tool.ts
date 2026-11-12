@@ -16,7 +16,7 @@ export const configTool: ToolDefinition = {
   },
   isReadOnly: false,
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    const configPath = path.join(context.cwd, '.superinference', 'config.json');
+    const configPath = path.join(context.cwd, '.ami', 'config.json');
     const action = input.action as string;
     if (action === 'get') {
       try {
@@ -24,7 +24,7 @@ export const configTool: ToolDefinition = {
         const config = JSON.parse(raw);
         if (input.key) return { output: `${input.key} = ${JSON.stringify(config[input.key as string])}` };
         return { output: JSON.stringify(config, null, 2) };
-      } catch { return { output: 'No project config found. Create .superinference/config.json.' }; }
+      } catch { return { output: 'No project config found. Create .ami/config.json.' }; }
     }
     if (action === 'set' && input.key && input.value !== undefined) {
       try {

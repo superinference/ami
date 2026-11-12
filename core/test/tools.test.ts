@@ -859,7 +859,7 @@ describe('scout tool', () => {
       cwd: upstream, stdio: 'ignore',
     });
     // Clear the scout cache to force re-clone
-    const cacheDir = path.join(tmpDir, '.superinference', 'scout-cache');
+    const cacheDir = path.join(tmpDir, '.ami', 'scout-cache');
     fs.rmSync(cacheDir, { recursive: true, force: true });
 
     const result = await scoutTool.execute(

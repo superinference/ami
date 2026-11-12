@@ -27,7 +27,7 @@ describe('spillToolText', () => {
     assert.ok(result.includes('truncated'));
     assert.ok(result.includes('file_read'));
 
-    const spillDir = path.join(tmpDir, '.superinference', 'tool-results');
+    const spillDir = path.join(tmpDir, '.ami', 'tool-results');
     assert.ok(fs.existsSync(spillDir));
     const files = fs.readdirSync(spillDir).filter(f => f.startsWith('big-'));
     assert.ok(files.length > 0);
@@ -57,7 +57,7 @@ describe('spillToolText', () => {
   it('writes spill file on success and includes path in output', () => {
     const text = 'y'.repeat(2000);
     const result = spillToolText(tmpDir, 'happy', text, 500);
-    const spillDir = path.join(tmpDir, '.superinference', 'tool-results');
+    const spillDir = path.join(tmpDir, '.ami', 'tool-results');
     assert.ok(fs.existsSync(spillDir));
     const files = fs.readdirSync(spillDir).filter(f => f.startsWith('happy-'));
     assert.ok(files.length > 0, 'spill file should be created');
@@ -69,7 +69,7 @@ describe('spillToolText', () => {
 
   it('gracefully falls back on disk write failure instead of crashing', () => {
     const text = 'HEAD_MARKER' + 'x'.repeat(5000) + 'TAIL_MARKER';
-    // A read-only (0o555) base dir makes creating .superinference/tool-results
+    // A read-only (0o555) base dir makes creating .ami/tool-results
     // under it fail regardless of uid — robust even when the suite runs as root
     // in a container (where `/nonexistent` is creatable by the root owner).
     const roBase = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-nowrite-'));
@@ -88,12 +88,12 @@ describe('spillToolText', () => {
   });
 
   it('falls back gracefully when mkdir fails (file blocks dir creation)', () => {
-    // Create a regular file at .superinference, blocking mkdirSync recursive
+    // Create a regular file at .ami, blocking mkdirSync recursive
     const blockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-block-'));
-    fs.writeFileSync(path.join(blockDir, '.superinference'), 'blocker');
+    fs.writeFileSync(path.join(blockDir, '.ami'), 'blocker');
     try {
       const text = 'HEAD' + 'q'.repeat(5000) + 'TAIL';
-      // mkdirSync will fail with ENOTDIR because .superinference is a file
+      // mkdirSync will fail with ENOTDIR because .ami is a file
       const result = spillToolText(blockDir, 'enotdir', text, 1000);
       assert.ok(result.includes('truncated'), 'result must mention truncation');
       assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
@@ -107,7 +107,7 @@ describe('spillToolText', () => {
   it('falls back gracefully when write fails (read-only spill dir)', () => {
     // Create the spill directory structure but make tool-results read-only
     const roDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-ro-'));
-    const spillDir = path.join(roDir, '.superinference', 'tool-results');
+    const spillDir = path.join(roDir, '.ami', 'tool-results');
     fs.mkdirSync(spillDir, { recursive: true });
     fs.chmodSync(spillDir, 0o444);
     try {

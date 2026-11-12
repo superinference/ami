@@ -43,7 +43,7 @@ export const planModeTool: ToolDefinition = {
       }
       _planModeActive = true;
       const cwd = context?.cwd || process.cwd();
-      const planDir = path.join(cwd, '.superinference', 'plans');
+      const planDir = path.join(cwd, '.ami', 'plans');
       try { fs.mkdirSync(planDir, { recursive: true }); } catch { /* ok */ }
       _planFilePath = path.join(planDir, `plan-${Date.now()}.md`);
       return { output: `Entered plan mode. Plan file: ${_planFilePath}\nWritable tools are now blocked. Use Read, Bash (read-only), grep, glob to explore.\nWrite your plan to the plan file, then call exit to submit for approval.`, isError: false };

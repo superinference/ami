@@ -193,7 +193,7 @@ describe('PermissionManager — persistence', () => {
   });
 
   it('loadRules handles malformed JSON', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'permissions.json'), 'not json', 'utf-8');
     const pm = new PermissionManager();
@@ -202,7 +202,7 @@ describe('PermissionManager — persistence', () => {
   });
 
   it('loadRules ignores invalid mode values', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'permissions.json'), JSON.stringify({
       mode: 'invalid-mode',
@@ -214,7 +214,7 @@ describe('PermissionManager — persistence', () => {
   });
 
   it('loadRules skips rules with invalid action', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'permissions.json'), JSON.stringify({
       rules: [
@@ -228,12 +228,12 @@ describe('PermissionManager — persistence', () => {
     assert.equal(pm.getRules().length, 1);
   });
 
-  it('saveRules creates .superinference directory if needed', () => {
+  it('saveRules creates .ami directory if needed', () => {
     const subDir = path.join(tmpDir, 'nested', 'dir');
     fs.mkdirSync(subDir, { recursive: true });
     const pm = new PermissionManager('deny-all');
     pm.saveRules(subDir);
-    assert.ok(fs.existsSync(path.join(subDir, '.superinference', 'permissions.json')));
+    assert.ok(fs.existsSync(path.join(subDir, '.ami', 'permissions.json')));
   });
 });
 
@@ -871,10 +871,10 @@ describe('Tool(param:value) permission rules', () => {
   it('loadRules drops non-string paramPattern values (malformed persisted rule)', () => {
     const dir = makeTempDir();
     try {
-      fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
       // model:123 is invalid; the rule must not load as a paramPattern deny.
       fs.writeFileSync(
-        path.join(dir, '.superinference', 'permissions.json'),
+        path.join(dir, '.ami', 'permissions.json'),
         JSON.stringify({ mode: 'auto-allow', rules: [{ tool: 'task', action: 'deny', paramPattern: { model: 123 } }] }),
       );
       const pm = new PermissionManager('auto-allow', []);
@@ -889,11 +889,11 @@ describe('Tool(param:value) permission rules', () => {
   it('loadRules skips a rule with a PARTIALLY malformed paramPattern (no silent widening)', () => {
     const dir = makeTempDir();
     try {
-      fs.mkdirSync(path.join(dir, '.superinference'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
       // One valid key, one non-string: keeping only {command} would widen a deny
       // meant to be constrained by both — the whole rule must be skipped.
       fs.writeFileSync(
-        path.join(dir, '.superinference', 'permissions.json'),
+        path.join(dir, '.ami', 'permissions.json'),
         JSON.stringify({ mode: 'auto-allow', rules: [{ tool: 'bash', action: 'deny', paramPattern: { command: 'rm*', extra: 123 } }] }),
       );
       const pm = new PermissionManager('auto-allow', []);

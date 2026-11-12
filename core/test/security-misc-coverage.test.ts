@@ -1329,7 +1329,7 @@ describe('loadLocalConfig', () => {
   });
 
   it('loads config.local.json when present', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.local.json'), '{"model": "local-model"}');
     const result = loadLocalConfig(tmpDir);
@@ -1386,7 +1386,7 @@ describe('ConfigService -- onConfigChange callback', () => {
   });
 
   it('calls onConfigChange callback on reload', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
 
@@ -1407,7 +1407,7 @@ describe('ConfigService -- onConfigChange callback', () => {
   });
 
   it('handles onConfigChange callback errors gracefully', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
 
@@ -1442,7 +1442,7 @@ describe('ConfigService -- watch', () => {
   });
 
   it('watch() sets up watcher and stop() tears it down', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{}');
 

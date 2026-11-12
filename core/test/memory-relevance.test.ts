@@ -15,7 +15,7 @@ function writeMemory(name: string, description: string, memType: string, body: s
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-memrel-'));
-  memoryDir = path.join(tmpDir, '.superinference', 'memory');
+  memoryDir = path.join(tmpDir, '.ami', 'memory');
   fs.mkdirSync(memoryDir, { recursive: true });
 });
 

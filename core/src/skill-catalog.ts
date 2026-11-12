@@ -35,7 +35,7 @@ export interface SkillSource {
 }
 
 // ---------------------------------------------------------------------------
-// Installed skill manifest (persisted at ~/.superinference/installed-skills/)
+// Installed skill manifest (persisted at ~/.ami/installed-skills/)
 // ---------------------------------------------------------------------------
 
 export interface InstalledSkillManifest {

@@ -1013,7 +1013,7 @@ export class PermissionManager {
 
     if (this.mode === 'bypassPermissions') {
       const safetyPaths = [
-        '.git/', '.superinference/', '.bashrc', '.zshrc', '.profile', '.gitconfig',
+        '.git/', '.ami/', '.bashrc', '.zshrc', '.profile', '.gitconfig',
         '.vscode/', '.ssh/', '.gnupg/', '.aws/', '.config/',
       ];
       if (toolName === 'bash' || toolName === 'file_edit' || toolName === 'file_write') {
@@ -1635,11 +1635,11 @@ export class PermissionManager {
   // -------------------------------------------------------------------------
 
   /**
-   * Load permission rules from `.superinference/permissions.json` relative
+   * Load permission rules from `.ami/permissions.json` relative
    * to the given working directory.
    */
   loadRules(cwd: string): void {
-    const filePath = path.join(cwd, '.superinference', 'permissions.json');
+    const filePath = path.join(cwd, '.ami', 'permissions.json');
     if (!fs.existsSync(filePath)) return;
 
     try {
@@ -1681,10 +1681,10 @@ export class PermissionManager {
   }
 
   /**
-   * Persist the current rules to `.superinference/permissions.json`.
+   * Persist the current rules to `.ami/permissions.json`.
    */
   saveRules(cwd: string): void {
-    const dirPath = path.join(cwd, '.superinference');
+    const dirPath = path.join(cwd, '.ami');
     if (!fs.existsSync(dirPath)) {
       fs.mkdirSync(dirPath, { recursive: true });
     }

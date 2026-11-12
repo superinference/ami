@@ -33,7 +33,7 @@ describe('configTool', () => {
     const result = await configTool.execute!({ action: 'set', key: 'model', value: 'gpt-4o' }, ctx);
     assert.ok(result.output.includes('model'));
     assert.ok(result.output.includes('gpt-4o'));
-    const configPath = path.join(tmpDir, '.superinference', 'config.json');
+    const configPath = path.join(tmpDir, '.ami', 'config.json');
     assert.ok(fs.existsSync(configPath));
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     assert.equal(config.model, 'gpt-4o');

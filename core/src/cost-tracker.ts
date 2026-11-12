@@ -154,6 +154,18 @@ function matchPricing(model: string): PricingEntry {
   return DEFAULT_PRICING;
 }
 
+/**
+ * True when `model` resolves to a REAL pricing-table entry (exact or substring), not the generic
+ * DEFAULT_PRICING fallback. The cross-session reader uses this to flag spend as estimated for
+ * models it can't price precisely (common for other agents' models in a cross-agent view).
+ */
+export function isPricedModel(model: string): boolean {
+  if (!model) return false;
+  const table = livePricing ?? FALLBACK_PRICING;
+  if (table[model]) return true;
+  return Object.keys(table).some(key => model.includes(key));
+}
+
 // ---------------------------------------------------------------------------
 // CostTracker
 // ---------------------------------------------------------------------------
@@ -283,15 +295,38 @@ export class CostTracker {
     cacheCreationTokens: number,
     completionTokens: number,
   ): number {
-    const [inputPPM, outputPPM, cachedPPM] = matchPricing(model);
-    const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
-    return (
-      (uncachedPromptTokens / 1_000_000) * inputPPM +
-      (cachedPromptTokens / 1_000_000) * actualCachedPPM +
-      (cacheCreationTokens / 1_000_000) * inputPPM * CACHE_WRITE_PRICE_RATIO +
-      (completionTokens / 1_000_000) * outputPPM
-    );
+    return estimateUsageCost(model, {
+      uncachedPromptTokens,
+      cachedPromptTokens,
+      cacheCreationTokens,
+      completionTokens,
+    });
   }
+}
+
+/**
+ * Pure cost estimate for one usage record — the SINGLE source of truth shared by the live
+ * CostTracker and any after-the-fact re-pricing (e.g. the cross-session journal reader), so
+ * a replayed session can never disagree with the live session's dollars. Uses the same
+ * live/fallback pricing table + cache ratios as trackUsage.
+ */
+export function estimateUsageCost(
+  model: string,
+  u: {
+    uncachedPromptTokens: number;
+    cachedPromptTokens: number;
+    cacheCreationTokens: number;
+    completionTokens: number;
+  },
+): number {
+  const [inputPPM, outputPPM, cachedPPM] = matchPricing(model);
+  const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
+  return (
+    (Math.max(0, u.uncachedPromptTokens) / 1_000_000) * inputPPM +
+    (Math.max(0, u.cachedPromptTokens) / 1_000_000) * actualCachedPPM +
+    (Math.max(0, u.cacheCreationTokens) / 1_000_000) * inputPPM * CACHE_WRITE_PRICE_RATIO +
+    (Math.max(0, u.completionTokens) / 1_000_000) * outputPPM
+  );
 }
 
 // ---------------------------------------------------------------------------

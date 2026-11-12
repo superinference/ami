@@ -24,7 +24,7 @@ export const workflowTool: ToolDefinition = {
       },
       name: {
         type: 'string',
-        description: 'Name of a saved workflow to load from .superinference/workflows/.',
+        description: 'Name of a saved workflow to load from .ami/workflows/.',
       },
       args: {
         type: 'string',
@@ -36,7 +36,7 @@ export const workflowTool: ToolDefinition = {
       },
       resumeKey: {
         type: 'string',
-        description: 'Opt-in resume: re-invoking with the same resumeKey reuses the cached results of agents that already completed (same prompt + opts), so a resumed/retried run skips finished work. Cached under .superinference/workflows/.cache/.',
+        description: 'Opt-in resume: re-invoking with the same resumeKey reuses the cached results of agents that already completed (same prompt + opts), so a resumed/retried run skips finished work. Cached under .ami/workflows/.cache/.',
       },
     },
   },
@@ -55,12 +55,12 @@ export const workflowTool: ToolDefinition = {
     } else if (input.name) {
       const name = input.name as string;
       const searchPaths = [
-        path.join(context.cwd, '.superinference', 'workflows', `${name}.js`),
-        path.join(context.cwd, '.superinference', 'workflows', `${name}.mjs`),
+        path.join(context.cwd, '.ami', 'workflows', `${name}.js`),
+        path.join(context.cwd, '.ami', 'workflows', `${name}.mjs`),
       ];
       const found = searchPaths.find(p => fs.existsSync(p));
       if (!found) {
-        return { output: `Error: Workflow '${name}' not found in .superinference/workflows/`, isError: true };
+        return { output: `Error: Workflow '${name}' not found in .ami/workflows/`, isError: true };
       }
       script = fs.readFileSync(found, 'utf-8');
     } else if (input.script) {
@@ -88,7 +88,7 @@ export const workflowTool: ToolDefinition = {
       if (pm) {
         taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
         const label = String(opts?.label || prompt).slice(0, 80);
-        outputPath = path.join(context.cwd, '.superinference', 'tasks', `${taskId}.out`);
+        outputPath = path.join(context.cwd, '.ami', 'tasks', `${taskId}.out`);
         try { fs.mkdirSync(path.dirname(outputPath), { recursive: true }); } catch { /* ok */ }
         pm.registerAgent(taskId, {
           command: `[agent] ${label}`,
@@ -131,8 +131,8 @@ export const workflowTool: ToolDefinition = {
       let scriptContent: string | null = null;
       if (typeof nameOrRef === 'string') {
         const searchPaths = [
-          path.join(context.cwd, '.superinference', 'workflows', `${nameOrRef}.js`),
-          path.join(context.cwd, '.superinference', 'workflows', `${nameOrRef}.mjs`),
+          path.join(context.cwd, '.ami', 'workflows', `${nameOrRef}.js`),
+          path.join(context.cwd, '.ami', 'workflows', `${nameOrRef}.mjs`),
         ];
         const found = searchPaths.find(p => fs.existsSync(p));
         if (found) scriptContent = fs.readFileSync(found, 'utf-8');
@@ -148,7 +148,7 @@ export const workflowTool: ToolDefinition = {
       // Opt-in resume cache (B2): keyed per resumeKey, under a contained
       // .cache subdir (segment sanitized to block path traversal).
       const cache = typeof input.resumeKey === 'string' && input.resumeKey.trim()
-        ? new DiskWorkflowCache(path.join(context.cwd, '.superinference', 'workflows', '.cache', input.resumeKey.replace(/[^A-Za-z0-9_-]/g, '_')))
+        ? new DiskWorkflowCache(path.join(context.cwd, '.ami', 'workflows', '.cache', input.resumeKey.replace(/[^A-Za-z0-9_-]/g, '_')))
         : undefined;
 
       const result = await executeWorkflow(script, agentHandler, {

@@ -458,11 +458,11 @@ export interface EngineConfig {
   deniedMcpServers?: string[];
   /**
    * M14 — opt-in gate for PROJECT-tier MCP servers (configs under cwd:
-   * `.superinference/mcp.json` + `.mcp.json`). Default OFF/undefined: project MCP
+   * `.ami/mcp.json` + `.mcp.json`). Default OFF/undefined: project MCP
    * servers auto-connect exactly as before. When true, a NEW (not-yet-approved)
    * project server is registered PENDING instead of auto-connecting; the user
    * approves it via `/mcp approve`, and the approval persists to
-   * `<cwd>/.superinference/approved-mcp.json`. User/global-tier configs are never
+   * `<cwd>/.ami/approved-mcp.json`. User/global-tier configs are never
    * gated.
    */
   mcpRequireApproval?: boolean;
@@ -470,7 +470,7 @@ export interface EngineConfig {
   tokenBudget?: number;
   /** Resume a specific session. When set, the engine loads its messages on init. */
   sessionId?: string;
-  /** Override the default session directory ({cwd}/.superinference/sessions/). */
+  /** Override the default session directory ({cwd}/.ami/sessions/). */
   sessionDir?: string;
   /** Permission mode: 'ask' (default), 'auto-allow', or 'deny-all'. */
   permissionMode?: string;
@@ -513,7 +513,7 @@ export interface EngineConfig {
   outputStyle?: string;
   /** Managed allowlist of selectable models; non-listed models are blocked. */
   enforceAvailableModels?: string[];
-  /** Merged project-level configuration (from .superinference/config.json). */
+  /** Merged project-level configuration (from .ami/config.json). */
   projectConfig?: import('./config').ProjectConfig;
   /** Maximum number of tool-call steps before forcing a summary. When reached,
    *  the engine injects an assistant prefill requesting a summary and stops
@@ -562,7 +562,7 @@ export interface EngineConfig {
   /** Maximum tool iterations before prompting to continue. Default 200. */
   maxToolIterations?: number;
   /** Safe mode: skip loading untrusted project-local config — no project hooks
-   *  (.superinference/hooks.json), no MCP server auto-connect, and no project
+   *  (.ami/hooks.json), no MCP server auto-connect, and no project
    *  memory/skills in the system prompt. For running in untrusted repos. */
   safeMode?: boolean;
   /** Bare mode: strip system prompt to minimal identity + date. No persona,

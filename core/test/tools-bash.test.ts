@@ -227,7 +227,7 @@ describe('bashTool – output truncation', () => {
         { command: `go test -json ./... >/dev/null 2>&1; cat ${payload}` },
         ctx({ cwd: dir }),
       );
-      assert.equal(fs.existsSync(path.join(dir, '.superinference')), false);
+      assert.equal(fs.existsSync(path.join(dir, '.ami')), false);
       assert.equal(result.output.includes('TestOk0'), false);
       assert.match(result.output, /TestBLPModel/);
       assert.equal(result.output.includes('chars persisted'), false);
@@ -260,7 +260,7 @@ describe('bashTool – output truncation', () => {
       assert.equal(result.output.includes('"Action":"pass"'), false);
       assert.match(result.output, /TestBLPModel/);
       assert.ok(result.output.length < 20_000, `output length ${result.output.length}`);
-      assert.equal(fs.existsSync(path.join(dir, '.superinference')), false);
+      assert.equal(fs.existsSync(path.join(dir, '.ami')), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1091,10 +1091,10 @@ describe('resolveBashTimeout — BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS',
 });
 
 describe('session transcript write guard', () => {
-  it('blocks rm of a .superinference/sessions transcript and leaves it intact', async () => {
+  it('blocks rm of a .ami/sessions transcript and leaves it intact', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess-'));
     try {
-      const dir = path.join(tmp, '.superinference', 'sessions');
+      const dir = path.join(tmp, '.ami', 'sessions');
       fs.mkdirSync(dir, { recursive: true });
       const target = path.join(dir, 's.jsonl');
       fs.writeFileSync(target, '{"m":1}\n');
@@ -1107,7 +1107,7 @@ describe('session transcript write guard', () => {
   it('blocks destructive removal of the sessions directory itself and leaves it intact', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess3-'));
     try {
-      const dir = path.join(tmp, '.superinference', 'sessions');
+      const dir = path.join(tmp, '.ami', 'sessions');
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 's.jsonl'), '{"m":1}\n');
       // No trailing slash: the dir itself is the target of rm -rf.
@@ -1120,7 +1120,7 @@ describe('session transcript write guard', () => {
   it('blocks find -delete of session transcripts', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess4-'));
     try {
-      const dir = path.join(tmp, '.superinference', 'sessions');
+      const dir = path.join(tmp, '.ami', 'sessions');
       fs.mkdirSync(dir, { recursive: true });
       const target = path.join(dir, 's.jsonl');
       fs.writeFileSync(target, '{"m":1}\n');

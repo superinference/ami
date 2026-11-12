@@ -502,7 +502,7 @@ describe('loadRules — paramPattern sanitization', () => {
   it('skips a rule whose paramPattern has a non-string value', () => {
     const dir = makeTempDir();
     try {
-      const cfgDir = path.join(dir, '.superinference');
+      const cfgDir = path.join(dir, '.ami');
       fs.mkdirSync(cfgDir, { recursive: true });
       fs.writeFileSync(path.join(cfgDir, 'permissions.json'), JSON.stringify({
         rules: [
@@ -582,7 +582,7 @@ describe('loadRules — paramPattern array/empty rejection', () => {
   it('skips rules whose paramPattern is an array or an empty object', () => {
     const dir = makeTempDir();
     try {
-      const cfgDir = path.join(dir, '.superinference');
+      const cfgDir = path.join(dir, '.ami');
       fs.mkdirSync(cfgDir, { recursive: true });
       fs.writeFileSync(path.join(cfgDir, 'permissions.json'), JSON.stringify({
         rules: [
@@ -804,7 +804,7 @@ describe('loadRules — extra validation arms', () => {
   it('skips a rule whose paramPattern is a bare string, ignores invalid mode, keeps valid rule', () => {
     const dir = makeTempDir();
     try {
-      const cfgDir = path.join(dir, '.superinference');
+      const cfgDir = path.join(dir, '.ami');
       fs.mkdirSync(cfgDir, { recursive: true });
       fs.writeFileSync(path.join(cfgDir, 'permissions.json'), JSON.stringify({
         mode: 'not-a-real-mode',
@@ -827,7 +827,7 @@ describe('loadRules — extra validation arms', () => {
   it('silently ignores a malformed permissions.json', () => {
     const dir = makeTempDir();
     try {
-      const cfgDir = path.join(dir, '.superinference');
+      const cfgDir = path.join(dir, '.ami');
       fs.mkdirSync(cfgDir, { recursive: true });
       fs.writeFileSync(path.join(cfgDir, 'permissions.json'), '{ not json ');
       const pm = new PermissionManager('ask');
@@ -841,7 +841,7 @@ describe('loadRules — extra validation arms', () => {
   it('applies a valid persisted mode', () => {
     const dir = makeTempDir();
     try {
-      const cfgDir = path.join(dir, '.superinference');
+      const cfgDir = path.join(dir, '.ami');
       fs.mkdirSync(cfgDir, { recursive: true });
       fs.writeFileSync(path.join(cfgDir, 'permissions.json'), JSON.stringify({ mode: 'acceptEdits' }));
       const pm = new PermissionManager('ask');

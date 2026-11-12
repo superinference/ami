@@ -4,7 +4,7 @@ import { log as coreLog } from './logger';
 
 /**
  * Project-level configuration that can be stored in
- * `.superinference/config.json` (project) or `~/.superinference/config.json`
+ * `.ami/config.json` (project) or `~/.ami/config.json`
  * (global).  The file format is JSONC — single-line (//) and block comments
  * are stripped before parsing.
  *
@@ -104,30 +104,30 @@ export function stripJsoncComments(input: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Load a project-level config from `<cwd>/.superinference/config.json`.
+ * Load a project-level config from `<cwd>/.ami/config.json`.
  * Returns `null` when the file does not exist.
  */
 export function loadProjectConfig(cwd: string): ProjectConfig | null {
-  const configPath = path.join(cwd, '.superinference', 'config.json');
+  const configPath = path.join(cwd, '.ami', 'config.json');
   return loadConfigFile(configPath);
 }
 
 /**
- * Load a local config from `<cwd>/.superinference/config.local.json`.
+ * Load a local config from `<cwd>/.ami/config.local.json`.
  * This file is typically gitignored for user-specific overrides.
  */
 export function loadLocalConfig(cwd: string): ProjectConfig | null {
-  return loadConfigFile(path.join(cwd, '.superinference', 'config.local.json'));
+  return loadConfigFile(path.join(cwd, '.ami', 'config.local.json'));
 }
 
 /**
- * Load the global config from `~/.superinference/config.json`.
+ * Load the global config from `~/.ami/config.json`.
  * Returns `null` when the file does not exist.
  */
 export function loadGlobalConfig(): ProjectConfig | null {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   if (!home) return null;
-  const configPath = path.join(home, '.superinference', 'config.json');
+  const configPath = path.join(home, '.ami', 'config.json');
   return loadConfigFile(configPath);
 }
 
@@ -183,7 +183,7 @@ export class ConfigService {
   private onConfigChangeCallbacks: Array<(source: string, path: string) => void> = [];
 
   constructor(cwd: string) {
-    this.configPath = path.join(cwd, '.superinference', 'config.json');
+    this.configPath = path.join(cwd, '.ami', 'config.json');
     this.config = loadConfigFile(this.configPath) ?? {};
   }
 
@@ -265,9 +265,9 @@ export class ConfigService {
  * Priority (highest first):
  *   1. `cliArgs`       — flags passed on the command line
  *   2. `envVars`       — values derived from environment variables
- *   3. `localConfig`   — `.superinference/config.local.json` (gitignored)
- *   4. `projectConfig` — `.superinference/config.json` in the project
- *   5. `globalConfig`  — `~/.superinference/config.json`
+ *   3. `localConfig`   — `.ami/config.local.json` (gitignored)
+ *   4. `projectConfig` — `.ami/config.json` in the project
+ *   5. `globalConfig`  — `~/.ami/config.json`
  *   6. `managedConfig` — `/etc/superinference/config.json`
  *
  * Only defined (non-undefined) values participate in the merge.

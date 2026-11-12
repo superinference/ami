@@ -37,10 +37,10 @@ function mkTmp(): string {
   return d;
 }
 
-/** Write a project-scoped .superinference/hooks.json and return its cwd. */
+/** Write a project-scoped .ami/hooks.json and return its cwd. */
 function writeHooks(entries: HookConfigEntry[]): string {
   const cwd = mkTmp();
-  const dir = path.join(cwd, '.superinference');
+  const dir = path.join(cwd, '.ami');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'hooks.json'), JSON.stringify({ hooks: entries }));
   return cwd;
@@ -169,10 +169,10 @@ describe('hooks.ts — loadFromFile plugins discovery (guards B)', () => {
   it('contributes hooks from a real plugin bundle hooks.json', async () => {
     const cwd = mkTmp();
     // Build a project-scoped plugin bundle that contributes a hooks.json.
-    const bundleRoot = path.join(cwd, '.superinference', 'plugins', 'my-bundle');
-    fs.mkdirSync(path.join(bundleRoot, '.superinference-plugin'), { recursive: true });
+    const bundleRoot = path.join(cwd, '.ami', 'plugins', 'my-bundle');
+    fs.mkdirSync(path.join(bundleRoot, '.ami-plugin'), { recursive: true });
     fs.writeFileSync(
-      path.join(bundleRoot, '.superinference-plugin', 'plugin.json'),
+      path.join(bundleRoot, '.ami-plugin', 'plugin.json'),
       JSON.stringify({ name: 'my-bundle', version: '1.0.0' }),
     );
     const markerDir = mkTmp();
@@ -192,7 +192,7 @@ describe('hooks.ts — loadFromFile plugins discovery (guards B)', () => {
   });
 
   it('loadFromFile does not throw when the plugins dir is absent (catch is defensive)', () => {
-    const cwd = mkTmp(); // no .superinference/plugins tree at all
+    const cwd = mkTmp(); // no .ami/plugins tree at all
     const hm = new HookManager();
     hm.setWorkspaceTrusted(true);
     // discoverPlugins returns [] for a missing dir; the surrounding try/catch

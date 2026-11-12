@@ -120,7 +120,7 @@ describe('loadProjectConfig', () => {
   });
 
   it('loads valid config', () => {
-    const configDir = path.join(tmpDir, '.superinference');
+    const configDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ model: 'gpt-4o', maxTurns: 5 }));
     const result = loadProjectConfig(tmpDir);
@@ -130,7 +130,7 @@ describe('loadProjectConfig', () => {
   });
 
   it('loads config with JSONC comments', () => {
-    const configDir = path.join(tmpDir, '.superinference');
+    const configDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'config.json'), '{\n  // comment\n  "model": "claude-opus-4"\n}');
     const result = loadProjectConfig(tmpDir);
@@ -139,7 +139,7 @@ describe('loadProjectConfig', () => {
   });
 
   it('returns null on invalid JSON', () => {
-    const configDir = path.join(tmpDir, '.superinference');
+    const configDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'config.json'), '{invalid json!!!');
     const result = loadProjectConfig(tmpDir);
@@ -184,7 +184,7 @@ describe('loadGlobalConfig', () => {
 
   it('loads valid global config', () => {
     process.env.HOME = tmpDir;
-    const configDir = path.join(tmpDir, '.superinference');
+    const configDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'config.json'), '{"provider": "anthropic"}');
     const result = loadGlobalConfig();
@@ -195,7 +195,7 @@ describe('loadGlobalConfig', () => {
   it('falls back to USERPROFILE when HOME is not set', () => {
     delete process.env.HOME;
     process.env.USERPROFILE = tmpDir;
-    const configDir = path.join(tmpDir, '.superinference');
+    const configDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'config.json'), '{"model": "gpt-4o"}');
     const result = loadGlobalConfig();
@@ -349,8 +349,8 @@ describe('ConfigService', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('loads config from .superinference/config.json', () => {
-    const dir = path.join(tmpDir, '.superinference');
+  it('loads config from .ami/config.json', () => {
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "test-model"}');
 
@@ -365,7 +365,7 @@ describe('ConfigService', () => {
   });
 
   it('returns defensive copy from get()', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "m1"}');
 
@@ -376,7 +376,7 @@ describe('ConfigService', () => {
   });
 
   it('reload() detects changes and notifies listeners', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
 
@@ -397,7 +397,7 @@ describe('ConfigService', () => {
   });
 
   it('reload() returns false when config unchanged', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "same"}');
 
@@ -406,7 +406,7 @@ describe('ConfigService', () => {
   });
 
   it('onChange() returns unsubscribe function', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
 
@@ -425,7 +425,7 @@ describe('ConfigService', () => {
   });
 
   it('stop() cleans up watcher', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{}');
 
@@ -443,7 +443,7 @@ describe('ConfigService', () => {
   });
 
   it('watch() triggers reload on config file change', async () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "before"}');
 
@@ -460,7 +460,7 @@ describe('ConfigService', () => {
   });
 
   it('watch() debounces rapid config changes', async () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v0"}');
 
@@ -479,7 +479,7 @@ describe('ConfigService', () => {
   });
 
   it('handles listener errors gracefully', () => {
-    const dir = path.join(tmpDir, '.superinference');
+    const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{"model": "v1"}');
 

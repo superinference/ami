@@ -638,8 +638,8 @@ log('from file');
     assert.ok(r.output.includes('from file'));
   });
 
-  it('loads script from .superinference/workflows/ by name', async () => {
-    const wfDir = path.join(tmpDir, '.superinference', 'workflows');
+  it('loads script from .ami/workflows/ by name', async () => {
+    const wfDir = path.join(tmpDir, '.ami', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
     fs.writeFileSync(
       path.join(wfDir, 'test-wf.js'),
@@ -661,7 +661,7 @@ log('named workflow');
   });
 
   it('loads .mjs workflows by name', async () => {
-    const wfDir = path.join(tmpDir, '.superinference', 'workflows');
+    const wfDir = path.join(tmpDir, '.ami', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
     fs.writeFileSync(
       path.join(wfDir, 'mjs-wf.mjs'),
@@ -771,7 +771,7 @@ log('step 2');
 
   it('workflowResolver resolves named workflows', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wf-res-'));
-    const wfDir = path.join(tmpDir, '.superinference', 'workflows');
+    const wfDir = path.join(tmpDir, '.ami', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
     fs.writeFileSync(
       path.join(wfDir, 'sub.js'),
@@ -874,7 +874,7 @@ describe('teamCreateTool and teamDeleteTool', () => {
     assert.ok(getCurrentTeam());
     assert.equal(getCurrentTeam()!.name, 'alpha');
 
-    const teamDir = path.join(tmpDir, '.superinference', 'teams', 'alpha');
+    const teamDir = path.join(tmpDir, '.ami', 'teams', 'alpha');
     assert.ok(fs.existsSync(path.join(teamDir, 'team.json')));
     assert.ok(fs.existsSync(path.join(teamDir, 'memory')));
   });
@@ -895,7 +895,7 @@ describe('teamCreateTool and teamDeleteTool', () => {
     assert.ok(r.output.includes('deleted'));
     assert.equal(getCurrentTeam(), null);
 
-    const teamDir = path.join(tmpDir, '.superinference', 'teams', 'to-delete');
+    const teamDir = path.join(tmpDir, '.ami', 'teams', 'to-delete');
     assert.ok(!fs.existsSync(teamDir));
   });
 
@@ -1616,7 +1616,7 @@ describe('taskTool — background agent error handling', () => {
       // Check the output file was written with error info
       const taskId = r.output.match(/agent-[a-f0-9]+/)?.[0];
       assert.ok(taskId);
-      const outputPath = path.join(tmpDir, '.superinference', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(tmpDir, '.ami', 'tasks', `${taskId}.output`);
       if (fs.existsSync(outputPath)) {
         const content = fs.readFileSync(outputPath, 'utf-8');
         assert.ok(content.includes('bg agent crash') || content.includes('no output'));
@@ -1699,7 +1699,7 @@ describe('taskTrackerTool — persistence', () => {
     );
 
     // Verify file written
-    const filePath = path.join(tmpDir, '.superinference', 'tasks.json');
+    const filePath = path.join(tmpDir, '.ami', 'tasks.json');
     assert.ok(fs.existsSync(filePath));
 
     // Reset and reload
@@ -2305,7 +2305,7 @@ describe('configTool — coverage', () => {
   });
 
   it('get returns full config', async () => {
-    const cfgDir = path.join(tmpDir, '.superinference');
+    const cfgDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(
       path.join(cfgDir, 'config.json'),
@@ -2322,7 +2322,7 @@ describe('configTool — coverage', () => {
   });
 
   it('get returns specific key', async () => {
-    const cfgDir = path.join(tmpDir, '.superinference');
+    const cfgDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(
       path.join(cfgDir, 'config.json'),
@@ -2355,13 +2355,13 @@ describe('configTool — coverage', () => {
     assert.ok(!r.isError);
     assert.ok(r.output.includes('Set model'));
 
-    const configPath = path.join(tmpDir, '.superinference', 'config.json');
+    const configPath = path.join(tmpDir, '.ami', 'config.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     assert.equal(config.model, 'claude-sonnet-4');
   });
 
   it('set merges with existing config', async () => {
-    const cfgDir = path.join(tmpDir, '.superinference');
+    const cfgDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(
       path.join(cfgDir, 'config.json'),

@@ -1,11 +1,43 @@
 import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { CostTracker, categorizeTool, _resetPricingCache, _fetchPricing } from '../src/cost-tracker';
+import { CostTracker, categorizeTool, estimateUsageCost, isPricedModel, _resetPricingCache, _fetchPricing } from '../src/cost-tracker';
 
 // Ensure each test group uses the fallback table (no live fetch interference)
 beforeEach(() => {
   _resetPricingCache();
+});
+
+describe('estimateUsageCost (shared pure pricing — live + reader)', () => {
+  it('prices uncached/cached/cache-creation/output from the same table as trackUsage', () => {
+    _resetPricingCache();
+    // gpt-4o fallback: input 2.5/Mtok, output 10/Mtok.
+    const cost = estimateUsageCost('gpt-4o', {
+      uncachedPromptTokens: 1_000_000, cachedPromptTokens: 0, cacheCreationTokens: 0, completionTokens: 1_000_000,
+    });
+    assert.ok(Math.abs(cost - (2.5 + 10)) < 1e-6, `expected ~12.5, got ${cost}`);
+    // A live CostTracker.trackUsage on the same inputs must agree (single source of truth).
+    const t = new CostTracker('gpt-4o');
+    t.trackUsage({ promptTokens: 1_000_000, completionTokens: 1_000_000 });
+    assert.ok(Math.abs(t.getStats().totalCost - cost) < 1e-6, 'tracker and pure fn agree');
+  });
+  it('floors negative token counts to 0 (never negative cost)', () => {
+    _resetPricingCache();
+    const cost = estimateUsageCost('gpt-4o', {
+      uncachedPromptTokens: -100, cachedPromptTokens: -1, cacheCreationTokens: -1, completionTokens: -1,
+    });
+    assert.equal(cost, 0);
+  });
+});
+
+describe('isPricedModel (pricing-coverage detection)', () => {
+  it('true for table models (exact + substring), false for unknown + empty', () => {
+    _resetPricingCache();
+    assert.equal(isPricedModel('gpt-4o'), true);           // exact
+    assert.equal(isPricedModel('claude-opus-4-20250514'), true); // substring 'claude-opus-4'
+    assert.equal(isPricedModel('totally-unknown-xyz'), false);
+    assert.equal(isPricedModel(''), false);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -55,8 +55,8 @@ export class CronScheduler {
 
   constructor(cwd: string, sessionId?: string) {
     this.cwd = cwd;
-    this.persistPath = path.join(cwd, '.superinference', 'scheduled_tasks.json');
-    this.lockPath = path.join(cwd, '.superinference', 'cron.lock');
+    this.persistPath = path.join(cwd, '.ami', 'scheduled_tasks.json');
+    this.lockPath = path.join(cwd, '.ami', 'cron.lock');
     this.sessionId = sessionId || `session_${process.pid}_${Date.now().toString(36)}`;
     this.loadDurable();
   }

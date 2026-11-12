@@ -144,7 +144,7 @@ describe('worktree tools – lifecycle', () => {
       assert.ok(createResult.output.includes('test-wt'));
       assert.ok(createResult.output.includes('worktree/test-wt'));
 
-      const wtPath = path.join(tmpDir, '.superinference', 'worktrees', 'test-wt');
+      const wtPath = path.join(tmpDir, '.ami', 'worktrees', 'test-wt');
       assert.ok(fs.existsSync(wtPath), 'Worktree directory should exist');
       assert.ok(fs.existsSync(path.join(wtPath, 'README.md')), 'Worktree should contain files');
 
@@ -201,7 +201,7 @@ describe('worktree tools – lifecycle', () => {
       const create = await enterWorktreeTool.execute({ name: 'enter-existing' }, ctx({ cwd: tmpDir }));
       assert.ok(!create.isError, `Create failed: ${create.output}`);
 
-      const wtPath = path.join(tmpDir, '.superinference', 'worktrees', 'enter-existing');
+      const wtPath = path.join(tmpDir, '.ami', 'worktrees', 'enter-existing');
       const enter = await enterWorktreeTool.execute({ path: wtPath }, ctx({ cwd: tmpDir }));
       assert.ok(!enter.isError, `Enter failed: ${enter.output}`);
       assert.ok(enter.output.includes('Entered existing worktree'));
@@ -286,7 +286,7 @@ describe('worktree tools – lifecycle', () => {
       const first = await enterWorktreeTool.execute({ name: 'first-wt' }, ctx({ cwd: tmpDir }));
       assert.ok(!first.isError, `First create failed: ${first.output}`);
 
-      const worktreesDir = path.join(tmpDir, '.superinference', 'worktrees');
+      const worktreesDir = path.join(tmpDir, '.ami', 'worktrees');
       assert.ok(fs.existsSync(worktreesDir), 'worktrees dir should exist after first create');
 
       const second = await enterWorktreeTool.execute({ name: 'second-wt' }, ctx({ cwd: tmpDir }));

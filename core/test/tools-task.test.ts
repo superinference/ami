@@ -363,7 +363,7 @@ describe('taskTool – run_in_background', () => {
 
       await new Promise(r => setTimeout(r, 100));
 
-      const outputPath = path.join(tmpDir, '.superinference', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(tmpDir, '.ami', 'tasks', `${taskId}.output`);
       const content = fs.readFileSync(outputPath, 'utf-8');
       assert.ok(content.includes('async result'));
     } finally {
@@ -535,7 +535,7 @@ describe('taskTool – background agents stream output incrementally (regression
 
       await new Promise(r => setTimeout(r, 100));
 
-      const outputPath = path.join(tmpDir, '.superinference', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(tmpDir, '.ami', 'tasks', `${taskId}.output`);
       const midContent = fs.readFileSync(outputPath, 'utf-8');
       assert.ok(midContent.includes('partial result here'),
         `output file should contain streamed content during execution, got: "${midContent}"`);

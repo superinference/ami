@@ -28,7 +28,7 @@ export function getTaskState(): Map<number, Task> {
 }
 
 export function setTaskPersistPath(cwd: string): void {
-  persistPath = path.join(cwd, '.superinference', 'tasks.json');
+  persistPath = path.join(cwd, '.ami', 'tasks.json');
   loadFromDisk();
 }
 

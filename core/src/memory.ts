@@ -50,7 +50,7 @@ export interface MemoryEntry {
 
 /**
  * Instruction source with level differentiation.
- * - managed: from .superinference/rules/ directory (team-managed rules)
+ * - managed: from .ami/rules/ directory (team-managed rules)
  * - user: from memory/ or user-specific files (CLAUDE.local.md, SUPERINFERENCE.local.md)
  * - project: from project instruction files (CLAUDE.md, SUPERINFERENCE.md, etc.)
  */
@@ -157,7 +157,7 @@ export function parseFrontmatterList(value: string): string[] {
 }
 
 /** Directory name for SuperInference memory storage. */
-const MEMORY_DIR = '.superinference/memory';
+const MEMORY_DIR = '.ami/memory';
 
 const STALE_MEMORY_DAYS = 30;
 
@@ -465,7 +465,7 @@ export class MemoryManager {
   }
 
   /**
-   * Load all memory entries from the .superinference/memory/ directory.
+   * Load all memory entries from the .ami/memory/ directory.
    *
    * Scans for .md files, parses their frontmatter, and returns an array of
    * MemoryEntry objects sorted by modification time (newest first).
@@ -524,7 +524,7 @@ export class MemoryManager {
   }
 
   /**
-   * Save a memory entry to the .superinference/memory/ directory.
+   * Save a memory entry to the .ami/memory/ directory.
    *
    * Creates the memory directory if it doesn't exist. The memory is written
    * as a markdown file with YAML frontmatter containing name, description,
@@ -570,12 +570,12 @@ export class MemoryManager {
    */
   /**
    * Load user-global instruction files (the equivalent of ~/.claude/CLAUDE.md).
-   * Reads the first existing instruction file from ~/.superinference/ then
+   * Reads the first existing instruction file from ~/.ami/ then
    * ~/.claude/, resolving @path imports. Returns '' when none exist.
    */
   loadUserGlobalInstructions(): string {
     const sections: string[] = [];
-    for (const base of [path.join(os.homedir(), '.superinference'), path.join(os.homedir(), '.claude')]) {
+    for (const base of [path.join(os.homedir(), '.ami'), path.join(os.homedir(), '.claude')]) {
       const found = this.findInstructionFile(base);
       if (!found) continue;
       try {
@@ -722,11 +722,11 @@ export class MemoryManager {
 
   /**
    * Load team memories from the shared team memory directory.
-   * Team memories live in .superinference/memory/team/ and are
+   * Team memories live in .ami/memory/team/ and are
    * typically committed to version control for shared context.
    */
   loadTeamMemories(): string[] {
-    const teamDir = path.join(this.cwd, '.superinference', 'memory', 'team');
+    const teamDir = path.join(this.cwd, '.ami', 'memory', 'team');
     if (!fs.existsSync(teamDir)) return [];
     return this.loadMemoriesFromDir(teamDir);
   }
@@ -756,7 +756,7 @@ export class MemoryManager {
   /**
    * Save session memory facts to a session-specific markdown file.
    *
-   * Facts are stored as `.superinference/memory/session-<sessionId>.md`
+   * Facts are stored as `.ami/memory/session-<sessionId>.md`
    * with each fact rendered as a bullet point grouped by category.
    */
   saveSessionMemory(sessionId: string, facts: SessionFact[]): void {
@@ -800,7 +800,7 @@ export class MemoryManager {
   /**
    * Load session memory facts from a session-specific markdown file.
    *
-   * Parses the `.superinference/memory/session-<sessionId>.md` file and
+   * Parses the `.ami/memory/session-<sessionId>.md` file and
    * returns an array of SessionFact objects.
    */
   loadSessionMemory(sessionId: string): SessionFact[] {
@@ -858,14 +858,14 @@ export class MemoryManager {
   // ── Rules directory scanning ──────────────────────────────────────────
 
   /**
-   * Scan and load instruction files from `.superinference/rules/` recursively.
+   * Scan and load instruction files from `.ami/rules/` recursively.
    *
    * Reads all `.md` and `.txt` files, sanitizes their content, and returns
    * each file's content as a string. Files with `paths:` frontmatter are
    * included unconditionally here — use `loadRulesForFile()` for filtered loading.
    */
   async loadRulesDirectory(cwd: string): Promise<string[]> {
-    const rulesDir = path.join(cwd, '.superinference', 'rules');
+    const rulesDir = path.join(cwd, '.ami', 'rules');
     const rules: string[] = [];
 
     try {
@@ -889,13 +889,13 @@ export class MemoryManager {
   }
 
   /**
-   * Load rules from `.superinference/rules/` that apply to a specific file.
+   * Load rules from `.ami/rules/` that apply to a specific file.
    *
    * Rules with a `paths:` frontmatter field are only included when the
    * current file matches one of the globs. Rules without `paths:` always apply.
    */
   async loadRulesForFile(cwd: string, currentFile: string): Promise<InstructionSource[]> {
-    const rulesDir = path.join(cwd, '.superinference', 'rules');
+    const rulesDir = path.join(cwd, '.ami', 'rules');
     const sources: InstructionSource[] = [];
 
     try {
@@ -1009,12 +1009,12 @@ export class MemoryManager {
   /**
    * Read the MEMORY.md index file and return all index entries.
    *
-   * The index file lives at `.superinference/memory/MEMORY.md` and contains
+   * The index file lives at `.ami/memory/MEMORY.md` and contains
    * lines like `- [topic](filename.md) — description` that serve as a
    * human-readable and machine-parseable table of contents.
    */
   async readMemoryIndex(cwd: string): Promise<string[]> {
-    const indexPath = path.join(cwd, '.superinference', 'memory', 'MEMORY.md');
+    const indexPath = path.join(cwd, '.ami', 'memory', 'MEMORY.md');
     try {
       const content = await fsp.readFile(indexPath, 'utf-8');
       return content.split('\n').filter(l => l.startsWith('- ['));
@@ -1030,7 +1030,7 @@ export class MemoryManager {
    * `- [topic](filename.md) — description`.
    */
   async addToMemoryIndex(cwd: string, entry: string): Promise<void> {
-    const indexPath = path.join(cwd, '.superinference', 'memory', 'MEMORY.md');
+    const indexPath = path.join(cwd, '.ami', 'memory', 'MEMORY.md');
     try {
       await fsp.mkdir(path.dirname(indexPath), { recursive: true });
       let content = '';
@@ -1047,7 +1047,7 @@ export class MemoryManager {
    * Matches by substring — if any line contains the given text, it is removed.
    */
   async removeFromMemoryIndex(cwd: string, entrySubstring: string): Promise<void> {
-    const indexPath = path.join(cwd, '.superinference', 'memory', 'MEMORY.md');
+    const indexPath = path.join(cwd, '.ami', 'memory', 'MEMORY.md');
     try {
       const content = await fsp.readFile(indexPath, 'utf-8');
       const lines = content.split('\n').filter(l => !l.includes(entrySubstring));
@@ -1061,7 +1061,7 @@ export class MemoryManager {
    * Collect all instruction sources with level annotations.
    *
    * Returns an array of `InstructionSource` objects from all three levels:
-   * - `managed`: from `.superinference/rules/` directory
+   * - `managed`: from `.ami/rules/` directory
    * - `project`: from project instruction files (CLAUDE.md, SUPERINFERENCE.md, etc.)
    * - `user`: from `.local.md` variants and memory entries
    *
@@ -1070,14 +1070,14 @@ export class MemoryManager {
   async collectInstructionSources(currentFile?: string): Promise<InstructionSource[]> {
     const sources: InstructionSource[] = [];
 
-    // 1. Managed rules from .superinference/rules/
+    // 1. Managed rules from .ami/rules/
     if (currentFile) {
       const managed = await this.loadRulesForFile(this.cwd, currentFile);
       sources.push(...managed);
     } else {
       const rules = await this.loadRulesDirectory(this.cwd);
       for (const content of rules) {
-        sources.push({ content, level: 'managed', path: path.join(this.cwd, '.superinference', 'rules') });
+        sources.push({ content, level: 'managed', path: path.join(this.cwd, '.ami', 'rules') });
       }
     }
 
@@ -1121,7 +1121,7 @@ export class MemoryManager {
       depth++;
     }
 
-    // 4. User-global instructions (~/.superinference, ~/.claude/CLAUDE.md)
+    // 4. User-global instructions (~/.ami, ~/.claude/CLAUDE.md)
     const userGlobal = this.loadUserGlobalInstructions();
     if (userGlobal) {
       sources.push({ content: userGlobal, level: 'user', path: '<user-global>' });

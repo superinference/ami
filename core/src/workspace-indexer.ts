@@ -106,7 +106,7 @@ const EXT_TO_LANG: Record<string, string> = {
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '__pycache__', 'venv', '.venv',
   'coverage', '.next', '.cache', '.tox', 'target', '.turbo', '.parcel-cache',
-  '.nuxt', '.output', '.idea', '.vscode', 'vendor', 'references', '.superinference',
+  '.nuxt', '.output', '.idea', '.vscode', 'vendor', 'references', '.ami',
 ]);
 
 const MAX_FILE_SIZE = 500 * 1024; // 500 KB

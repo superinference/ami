@@ -198,7 +198,7 @@ export const taskTool: ToolDefinition = {
       },
       subagent_type: {
         type: 'string',
-        description: 'Name of an agent definition to use (from .superinference/agents/). Overrides mode, tools, and system prompt.',
+        description: 'Name of an agent definition to use (from .ami/agents/). Overrides mode, tools, and system prompt.',
       },
       model: {
         type: 'string',
@@ -465,7 +465,7 @@ export const taskTool: ToolDefinition = {
         agentNameRegistry.set(agentName, taskId);
       }
       if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
-      const tasksDir = path.join(context.cwd, '.superinference', 'tasks');
+      const tasksDir = path.join(context.cwd, '.ami', 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
       const outputPath = path.join(tasksDir, `${taskId}.output`);
       fs.writeFileSync(outputPath, '');

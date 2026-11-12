@@ -14,8 +14,19 @@ export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_AR
 // Skill catalog types + path-safety for URL-based skill discovery.
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult } from './skill-catalog';
 export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl } from './skill-catalog';
-export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES } from './cost-tracker';
+export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, estimateUsageCost } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest } from './cost-tracker';
+export {
+  resolveConfigDir, projectSlug, journalPathFor, subagentJournalPathFor,
+  toReferenceToolName, toReferenceModelId, buildUsageFields,
+  buildAssistantEntry, buildUserEntry, appendEntry,
+  dashboardConfigPath, registerDataDir, maybeRegisterDataDir,
+  AMI_TO_CLAUDE_TOOL, AMI_TO_REFERENCE_MODEL, COMPAT_VERSION,
+} from './reference-journal';
+export type {
+  JournalUsageInput, JournalUsage, JournalContentBlock, StructuredPatchHunk,
+  AssistantEntry, AssistantEntryArgs, UserEntry, UserEntryArgs,
+} from './reference-journal';
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
 export { safeReadFile, safeLstat, FILE_ENCODINGS } from './tools/tool-utils';
 export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES, MCP_TRANSPORTS, MCP_CLIENT_STATES, MCP_TERMINAL_ERROR_CODES, MCP_ELICITATION_ACTIONS, MCP_LOG_LEVELS } from './mcp/client';

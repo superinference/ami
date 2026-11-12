@@ -2,7 +2,7 @@
  * M14 — per-server approval for PROJECT-tier MCP configs.
  *
  * Project-local MCP server configs (from a cloned repo's `.mcp.json` /
- * `.superinference/mcp.json`) must NOT auto-connect: a cloned repo could point MCP
+ * `.ami/mcp.json`) must NOT auto-connect: a cloned repo could point MCP
  * at anything. These tests prove a new project server lands PENDING (awaiting
  * approval) instead of being registered as a connectable client, that approval
  * connects it, that a previously-approved server connects normally, and that

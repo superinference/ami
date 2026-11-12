@@ -1273,12 +1273,12 @@ export function detectCredentialPathWrite(command: string): { blocked: boolean; 
 
 /**
  * Block write-intent bash commands that would tamper with the agent's own
- * session transcript store (.superinference/sessions/*.jsonl). Unconditional.
+ * session transcript store (.ami/sessions/*.jsonl). Unconditional.
  */
 export function detectSessionTranscriptWrite(command: string): { blocked: boolean; description: string | null } {
   // Match both writes INSIDE the sessions dir and destructive ops on the dir
-  // itself (e.g. `rm -rf .superinference/sessions`): trailing slash OR end-of-token.
-  const re = /(^|\/)\.superinference\/sessions(\/|$)/;
+  // itself (e.g. `rm -rf .ami/sessions`): trailing slash OR end-of-token.
+  const re = /(^|\/)\.ami\/sessions(\/|$)/;
   const norm = command.replace(/\\/g, '/');
   for (const t of collectWriteTargets(command)) {
     if (re.test(t.replace(/\\/g, '/'))) {
@@ -1288,7 +1288,7 @@ export function detectSessionTranscriptWrite(command: string): { blocked: boolea
   // `find <...sessions...> -delete` / `-exec rm`/`-execdir rm` deletes files
   // without a write-intent verb that collectWriteTargets models — catch it.
   // Use a looser path match (the dir token is followed by a space, not `/`).
-  const sessionsAnywhere = /(^|\/)\.superinference\/sessions(?![\w])/;
+  const sessionsAnywhere = /(^|\/)\.ami\/sessions(?![\w])/;
   if (/\bfind\b/.test(norm) && sessionsAnywhere.test(norm) &&
       (/\s-delete\b/.test(norm) || /-exec(dir)?\s+rm\b/.test(norm))) {
     return { blocked: true, description: 'find-based deletion of a protected session transcript path' };

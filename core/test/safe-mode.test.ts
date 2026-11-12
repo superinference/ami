@@ -130,11 +130,11 @@ describe('SafeModeGuard', () => {
 
   it('check records path when blocking', () => {
     const guard = new SafeModeGuard({ enabled: true });
-    guard.check('prompt_override', '/project/.superinference/override.yaml');
+    guard.check('prompt_override', '/project/.ami/override.yaml');
     const blocked = guard.getBlocked();
     assert.equal(blocked.length, 1);
     assert.equal(blocked[0].resource, 'prompt_override');
-    assert.equal(blocked[0].path, '/project/.superinference/override.yaml');
+    assert.equal(blocked[0].path, '/project/.ami/override.yaml');
     assert.ok(blocked[0].timestamp > 0);
   });
 

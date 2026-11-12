@@ -419,7 +419,7 @@ describe('process-manager ProcessManager signal/timer paths', () => {
 
 function writeHooks(entries: any[]): string {
   const tmpDir = makeTmpDir('infra-b-hooks-');
-  const dir = path.join(tmpDir, '.superinference');
+  const dir = path.join(tmpDir, '.ami');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'hooks.json'), JSON.stringify({ hooks: entries }));
   return tmpDir;

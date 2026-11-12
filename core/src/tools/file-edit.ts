@@ -16,7 +16,7 @@ interface SequentialEdit {
 
 async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
   try {
-    const historyDir = path.join(cwd, '.superinference', 'file-history');
+    const historyDir = path.join(cwd, '.ami', 'file-history');
     await fs.promises.mkdir(historyDir, { recursive: true });
 
     const timestamp = Date.now();

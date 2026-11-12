@@ -23,7 +23,7 @@ let memoryDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-cmemcov-'));
-  memoryDir = path.join(tmpDir, '.superinference', 'memory');
+  memoryDir = path.join(tmpDir, '.ami', 'memory');
   fs.mkdirSync(memoryDir, { recursive: true });
 });
 
@@ -43,7 +43,7 @@ function writeMemory(name: string, body: string, description?: string): void {
 // ===========================================================================
 describe('session-search recencyMs invalid-timestamp tie-break', () => {
   it('ranks two equal-score results whose timestamps are unparseable', () => {
-    const sessionsDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessionsDir = path.join(tmpDir, '.ami', 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
     // Two sessions, identical matching content => identical score, so the sort
     // comparator falls through to the recency tie-break, which calls recencyMs

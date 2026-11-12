@@ -23,9 +23,9 @@ function makePlugin(name: string, manifest: Record<string, unknown>, opts?: {
   hooks?: boolean;
 }): string {
   const root = path.join(tmpDir, name);
-  fs.mkdirSync(path.join(root, '.superinference-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(root, '.ami-plugin'), { recursive: true });
   fs.writeFileSync(
-    path.join(root, '.superinference-plugin', 'plugin.json'),
+    path.join(root, '.ami-plugin', 'plugin.json'),
     JSON.stringify(manifest),
   );
   if (opts?.skills) {
@@ -131,7 +131,7 @@ describe('discoverPlugins', () => {
     assert.deepEqual(names, ['Alpha', 'Beta', 'Gamma']);
   });
 
-  it('skips directories without .superinference-plugin or .claude-plugin manifest', () => {
+  it('skips directories without .ami-plugin or .claude-plugin manifest', () => {
     fs.mkdirSync(path.join(tmpDir, 'not-a-plugin'));
     makePlugin('real-plugin', { name: 'Real' });
     const bundles = discoverPlugins(tmpDir);
@@ -148,8 +148,8 @@ describe('discoverPlugins', () => {
 
   it('skips plugins with malformed JSON manifest', () => {
     const badRoot = path.join(tmpDir, 'bad-json');
-    fs.mkdirSync(path.join(badRoot, '.superinference-plugin'), { recursive: true });
-    fs.writeFileSync(path.join(badRoot, '.superinference-plugin', 'plugin.json'), 'not json');
+    fs.mkdirSync(path.join(badRoot, '.ami-plugin'), { recursive: true });
+    fs.writeFileSync(path.join(badRoot, '.ami-plugin', 'plugin.json'), 'not json');
     makePlugin('good', { name: 'Good' });
     const bundles = discoverPlugins(tmpDir);
     assert.equal(bundles.length, 1);
@@ -161,9 +161,9 @@ describe('discoverPlugins', () => {
     fs.writeFileSync(path.join(outsideDir, 'hooks.json'), '{}');
 
     const pluginRoot = path.join(tmpDir, 'escape-plugin');
-    fs.mkdirSync(path.join(pluginRoot, '.superinference-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, '.ami-plugin'), { recursive: true });
     fs.writeFileSync(
-      path.join(pluginRoot, '.superinference-plugin', 'plugin.json'),
+      path.join(pluginRoot, '.ami-plugin', 'plugin.json'),
       JSON.stringify({ name: 'escape' }),
     );
     // Symlink hooks.json to outside the plugin root
@@ -201,11 +201,11 @@ describe('discoverPlugins', () => {
     assert.equal(bundles[0]!.version, '2.0.0');
   });
 
-  it('prefers .superinference-plugin over .claude-plugin when both exist', () => {
+  it('prefers .ami-plugin over .claude-plugin when both exist', () => {
     const root = path.join(tmpDir, 'dual-plugin');
-    fs.mkdirSync(path.join(root, '.superinference-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.ami-plugin'), { recursive: true });
     fs.writeFileSync(
-      path.join(root, '.superinference-plugin', 'plugin.json'),
+      path.join(root, '.ami-plugin', 'plugin.json'),
       JSON.stringify({ name: 'SI Plugin' }),
     );
     fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });

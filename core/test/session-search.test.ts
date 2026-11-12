@@ -10,7 +10,7 @@ describe('searchSessions', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-test-'));
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.mkdirSync(sessDir, { recursive: true });
     fs.writeFileSync(path.join(sessDir, 'session-1.json'), JSON.stringify({
       id: 'session-1',
@@ -56,21 +56,21 @@ describe('searchSessions', () => {
   });
 
   it('skips malformed JSON session files', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'bad.json'), 'not json');
     const results = searchSessions(tmpDir, 'typescript');
     assert.ok(results.length > 0);
   });
 
   it('skips non-json files', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'readme.txt'), 'not a session');
     const results = searchSessions(tmpDir, 'typescript');
     assert.ok(results.length > 0);
   });
 
   it('handles messages with non-string content', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'array-content.json'), JSON.stringify({
       id: 'array-content',
       messages: [
@@ -83,7 +83,7 @@ describe('searchSessions', () => {
   });
 
   it('handles session without id', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'no-id.json'), JSON.stringify({
       messages: [{ role: 'user', content: 'unique search keyword zzzxxx' }],
     }));
@@ -93,7 +93,7 @@ describe('searchSessions', () => {
   });
 
   it('handles session without messages', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'no-msgs.json'), JSON.stringify({ id: 'no-msgs' }));
     const results = searchSessions(tmpDir, 'test');
     const hit = results.find(r => r.sessionId === 'no-msgs');
@@ -101,7 +101,7 @@ describe('searchSessions', () => {
   });
 
   it('sorts results by score (more matching terms = higher)', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'multi.json'), JSON.stringify({
       id: 'multi',
       messages: [{ role: 'user', content: 'typescript error fix deploy' }],
@@ -113,7 +113,7 @@ describe('searchSessions', () => {
   });
 
   it('truncates content to 300 chars', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'long.json'), JSON.stringify({
       id: 'long',
       messages: [{ role: 'user', content: 'keyword ' + 'x'.repeat(400) }],
@@ -124,7 +124,7 @@ describe('searchSessions', () => {
   });
 
   it('hoists literal (contiguous) phrase matches above scattered-term matches', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'phrase.json'), JSON.stringify({
       id: 'phrase',
       messages: [
@@ -139,7 +139,7 @@ describe('searchSessions', () => {
   });
 
   it('breaks score ties by recency (newer sessions first)', () => {
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.writeFileSync(path.join(sessDir, 'aaa-older.json'), JSON.stringify({
       id: 'older',
       createdAt: '2020-01-01T00:00:00.000Z',
@@ -165,7 +165,7 @@ describe('searchSessionsRanked (optional LLM-ranking tier)', () => {
   // substring/recency order is deterministic and a reranker can reorder them.
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-rank-test-'));
-    const sessDir = path.join(tmpDir, '.superinference', 'sessions');
+    const sessDir = path.join(tmpDir, '.ami', 'sessions');
     fs.mkdirSync(sessDir, { recursive: true });
     fs.writeFileSync(path.join(sessDir, 'a.json'), JSON.stringify({
       id: 'alpha',

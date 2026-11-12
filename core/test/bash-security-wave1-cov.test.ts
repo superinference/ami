@@ -451,24 +451,24 @@ describe('validateBashSecurity — detector integration blocks', () => {
 
 describe('detectSessionTranscriptWrite', () => {
   it('blocks a redirect write into the sessions dir', () => {
-    const r = detectSessionTranscriptWrite('echo x > .superinference/sessions/a.jsonl');
+    const r = detectSessionTranscriptWrite('echo x > .ami/sessions/a.jsonl');
     assert.equal(r.blocked, true);
     assert.match(r.description!, /session transcript/);
   });
 
   it('blocks rm -rf of the sessions dir itself', () => {
-    const r = detectSessionTranscriptWrite('rm -rf .superinference/sessions');
+    const r = detectSessionTranscriptWrite('rm -rf .ami/sessions');
     assert.equal(r.blocked, true);
   });
 
   it('blocks a find -delete targeting the sessions dir', () => {
-    const r = detectSessionTranscriptWrite('find ./.superinference/sessions -delete');
+    const r = detectSessionTranscriptWrite('find ./.ami/sessions -delete');
     assert.equal(r.blocked, true);
     assert.match(r.description!, /find-based deletion/);
   });
 
   it('blocks a find -exec rm targeting the sessions dir', () => {
-    const r = detectSessionTranscriptWrite('find .superinference/sessions -exec rm {} ;');
+    const r = detectSessionTranscriptWrite('find .ami/sessions -exec rm {} ;');
     assert.equal(r.blocked, true);
   });
 
@@ -635,7 +635,7 @@ describe('detectNuclearCommand — guard + fork bomb', () => {
 
 describe('write guards — quoted redirect targets', () => {
   it('blocks a double-quoted redirect into the sessions dir', () => {
-    const r = detectSessionTranscriptWrite('echo x > ".superinference/sessions/a"');
+    const r = detectSessionTranscriptWrite('echo x > ".ami/sessions/a"');
     assert.equal(r.blocked, true);
   });
 
@@ -879,7 +879,7 @@ describe('write guards — operand and key=value targets', () => {
   });
 
   it('blocks a dd of= into the sessions dir', () => {
-    const r = detectSessionTranscriptWrite('dd if=/dev/zero of=.superinference/sessions/x');
+    const r = detectSessionTranscriptWrite('dd if=/dev/zero of=.ami/sessions/x');
     assert.equal(r.blocked, true);
   });
 });
@@ -1143,7 +1143,7 @@ describe('detectPersistenceCommands — edge vectors', () => {
 
 describe('detectSessionTranscriptWrite — find -execdir', () => {
   it('blocks a find -execdir rm matching the sessions path', () => {
-    const r = detectSessionTranscriptWrite("find / -path '*/.superinference/sessions*' -execdir rm {} ;");
+    const r = detectSessionTranscriptWrite("find / -path '*/.ami/sessions*' -execdir rm {} ;");
     assert.equal(r.blocked, true);
   });
 });

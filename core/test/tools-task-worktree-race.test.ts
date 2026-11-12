@@ -102,7 +102,7 @@ describe('taskTool — worktree not removed while a background agent is live', (
       );
 
       assert.ok(!r.isError, r.output);
-      assert.ok(runCwd.includes(path.join('.superinference', 'worktrees')),
+      assert.ok(runCwd.includes(path.join('.ami', 'worktrees')),
         'subagent must run inside the worktree path');
       // DISCRIMINATING: on current source the worktree is removed because the
       // cleanup only checks git cleanliness, ignoring runningAgentCount().

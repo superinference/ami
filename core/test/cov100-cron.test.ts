@@ -73,7 +73,7 @@ describe('cron tick() loop (cov100)', () => {
     assert.equal(fired.length, 1, 'durable due job should run when lock is acquirable');
     assert.equal((fired[0] as { id: string }).id, job.id);
     // Acquiring the lock wrote a lock file owned by this session.
-    const lockPath = path.join(cwd, '.superinference', 'cron.lock');
+    const lockPath = path.join(cwd, '.ami', 'cron.lock');
     assert.ok(fs.existsSync(lockPath), 'acquireLock should have created the lock file');
     const lock = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
     assert.equal(lock.sessionId, 'sess-C');
@@ -85,7 +85,7 @@ describe('cron tick() loop (cov100)', () => {
     job.nextRun = Date.now() - 10_000_000;
 
     // A different, fresh (non-stale) session owns the lock -> acquireLock() fails.
-    const lockDir = path.join(cwd, '.superinference');
+    const lockDir = path.join(cwd, '.ami');
     fs.mkdirSync(lockDir, { recursive: true });
     fs.writeFileSync(
       path.join(lockDir, 'cron.lock'),

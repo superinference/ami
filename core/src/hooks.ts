@@ -634,12 +634,12 @@ export class HookManager extends EventEmitter {
   private stopFailureHooks: StopFailureHookFn[] = [];
 
   /**
-   * Load hooks from .superinference/hooks.json.
+   * Load hooks from .ami/hooks.json.
    * Command hooks execute a shell command; exit code 0 = allow, non-zero = deny.
    */
   loadFromFile(cwd: string): void {
-    const filePath = path.join(cwd, '.superinference', 'hooks.json');
-    const userHooksPath = path.join(os.homedir(), '.superinference', 'hooks.json');
+    const filePath = path.join(cwd, '.ami', 'hooks.json');
+    const userHooksPath = path.join(os.homedir(), '.ami', 'hooks.json');
 
     const sources: Array<{ path: string; source: 'project' | 'user' }> = [
       { path: filePath, source: 'project' },
@@ -656,8 +656,8 @@ export class HookManager extends EventEmitter {
     try {
       const { discoverPlugins } = require('./plugins');
       const pluginDirs: Array<[string, 'user' | 'project']> = [
-        [path.join(os.homedir(), '.superinference', 'plugins'), 'user'],
-        [path.join(cwd, '.superinference', 'plugins'), 'project'],
+        [path.join(os.homedir(), '.ami', 'plugins'), 'user'],
+        [path.join(cwd, '.ami', 'plugins'), 'project'],
       ];
       for (const [dir, src] of pluginDirs) {
         for (const bundle of discoverPlugins(dir)) {
@@ -695,7 +695,7 @@ export class HookManager extends EventEmitter {
     }
 
     try {
-      const configPath = path.join(cwd, '.superinference', 'config.json');
+      const configPath = path.join(cwd, '.ami', 'config.json');
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf-8');
         const config = JSON.parse(raw);

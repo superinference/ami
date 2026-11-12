@@ -34,7 +34,7 @@ export const teamCreateTool: ToolDefinition = {
     const rawName = input.team_name as string;
     const name = sanitizeTeamName(rawName);
     if (!name) return { output: 'Error: team_name must contain only alphanumeric characters, hyphens, and underscores.', isError: true };
-    const teamDir = path.join(context.cwd, '.superinference', 'teams', name);
+    const teamDir = path.join(context.cwd, '.ami', 'teams', name);
     fs.mkdirSync(teamDir, { recursive: true });
     fs.mkdirSync(path.join(teamDir, 'memory'), { recursive: true });
     currentTeam = { name, description: input.description as string | undefined, members: [], createdAt: new Date().toISOString() };
@@ -51,7 +51,7 @@ export const teamDeleteTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     if (!currentTeam) return { output: 'Error: No active team.', isError: true };
     const name = currentTeam.name;
-    const teamDir = path.join(context.cwd, '.superinference', 'teams', name);
+    const teamDir = path.join(context.cwd, '.ami', 'teams', name);
     try { fs.rmSync(teamDir, { recursive: true, force: true }); } catch {}
     currentTeam = null;
     return { output: `Team "${name}" deleted.` };

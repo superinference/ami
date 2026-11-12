@@ -263,7 +263,7 @@ describe('HookManager — args exec form', () => {
 
   it('preToolUse hook with args spawns without shell', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-args-'));
-    const hooksDir = path.join(tmpDir, '.superinference');
+    const hooksDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(hooksDir, { recursive: true });
     fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({
       hooks: [{
@@ -298,7 +298,7 @@ describe('HookManager — SUPERINFERENCE_EFFORT in hook env', () => {
 
   it('hook receives SUPERINFERENCE_EFFORT env var', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-effort-'));
-    const hooksDir = path.join(tmpDir, '.superinference');
+    const hooksDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(hooksDir, { recursive: true });
 
     const markerFile = path.join(tmpDir, 'effort.txt');
@@ -340,7 +340,7 @@ describe('hook env sanitization', () => {
 
   it('hook api key stripping — ANTHROPIC_API_KEY and OPENAI_API_KEY not passed to subprocess', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-sanitize-'));
-    const hooksDir = path.join(tmpDir, '.superinference');
+    const hooksDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(hooksDir, { recursive: true });
 
     const markerFile = path.join(tmpDir, 'env-dump.txt');

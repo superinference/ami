@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * A discovered plugin bundle: a directory with a `.superinference-plugin/plugin.json`
+ * A discovered plugin bundle: a directory with a `.ami-plugin/plugin.json`
  * (or `.claude-plugin/plugin.json` fallback) manifest that contributes skills/,
  * agents/, commands/, and hooks.json to the registries.
  */
@@ -119,7 +119,7 @@ export function loadCommands(dir: string): CommandDefinition[] {
 
 /**
  * Discover local plugin bundles under `dir`. Each immediate subdirectory with a
- * `.superinference-plugin/plugin.json` manifest (or `.claude-plugin/plugin.json`
+ * `.ami-plugin/plugin.json` manifest (or `.claude-plugin/plugin.json`
  * fallback) is a bundle; its skills/agents/commands/hooks component paths are
  * path-traversal hardened to its own root.
  */
@@ -136,7 +136,7 @@ export function discoverPlugins(dir: string): PluginBundle[] {
     try {
       if (!fs.statSync(root).isDirectory()) continue;
       // Claude Code compatibility: check .claude-plugin/plugin.json as fallback
-      let manifestPath = path.join(root, '.superinference-plugin', 'plugin.json');
+      let manifestPath = path.join(root, '.ami-plugin', 'plugin.json');
       if (!fs.existsSync(manifestPath)) {
         manifestPath = path.join(root, '.claude-plugin', 'plugin.json');
       }

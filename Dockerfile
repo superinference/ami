@@ -63,7 +63,7 @@ RUN printf '#!/bin/bash\nset -euo pipefail\nsudo apt-get update -qq 2>/dev/null\
 # AMI-specific directories
 USER sandbox
 RUN mkdir -p /sandbox/.config/superinference \
-             /sandbox/.superinference
+             /sandbox/.ami
 
 # Install AMI binary (Apache 2.0 — safe to redistribute)
 RUN curl -fsSL https://www.superinference.org/install.sh | bash
@@ -81,7 +81,7 @@ COPY policy.yaml /etc/openshell/policy.yaml
 # OpenShift assigns random UIDs in GID 0 (root group). All writable
 # paths must be group-writable and owned by GID 0 so any UID can write.
 RUN chgrp -R 0 /sandbox && chmod -R g=u /sandbox && \
-    chmod -R g+w /sandbox/.local /sandbox/.config /sandbox/.superinference \
+    chmod -R g+w /sandbox/.local /sandbox/.config /sandbox/.ami \
                  /sandbox/.venv /sandbox/.uv /sandbox/.npm 2>/dev/null; \
     chmod g+w /sandbox
 

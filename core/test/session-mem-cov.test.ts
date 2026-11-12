@@ -62,10 +62,10 @@ function findDeadPid(): number {
 // session.ts — SessionManager basics + truncation
 // ===========================================================================
 describe('SessionManager — default dir, ensureDir, truncation, preview', () => {
-  it('uses the default .superinference/sessions dir when no override given', () => {
+  it('uses the default .ami/sessions dir when no override given', () => {
     const cwd = mkTmp();
     const mgr = new SessionManager(cwd);
-    assert.equal(mgr.getSessionDir(), path.join(cwd, '.superinference', 'sessions'));
+    assert.equal(mgr.getSessionDir(), path.join(cwd, '.ami', 'sessions'));
   });
 
   it('creates the session dir on save when it does not exist', () => {
@@ -511,8 +511,8 @@ describe('MemoryManager — instruction loading', () => {
 
   it('loadUserGlobalInstructions tolerates an unreadable global instruction file', () => {
     const home = mkTmp();
-    fs.mkdirSync(path.join(home, '.superinference'), { recursive: true });
-    const f = path.join(home, '.superinference', 'CLAUDE.md');
+    fs.mkdirSync(path.join(home, '.ami'), { recursive: true });
+    const f = path.join(home, '.ami', 'CLAUDE.md');
     fs.writeFileSync(f, 'global-secret');
     fs.chmodSync(f, 0);
     const prevHome = process.env.HOME;
@@ -608,7 +608,7 @@ describe('MemoryManager — instruction loading', () => {
     fs.mkdirSync(path.join(cwd, '.git'), { recursive: true });
     fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'proj-rule');
     fs.writeFileSync(path.join(cwd, 'CLAUDE.local.md'), 'local-rule');
-    const rulesDir = path.join(cwd, '.superinference', 'rules');
+    const rulesDir = path.join(cwd, '.ami', 'rules');
     fs.mkdirSync(rulesDir, { recursive: true });
     fs.writeFileSync(path.join(rulesDir, 'r.md'), 'managed-rule');
     writeMemory(cwd, 'mem1', 'a stored memory body', 0);
@@ -628,7 +628,7 @@ describe('MemoryManager — instruction loading', () => {
 // memory.ts — memory loading age/stale/unreadable + context
 // ===========================================================================
 function writeMemory(cwd: string, name: string, body: string, ageDays = 0, desc = `desc ${name}`): void {
-  const memDir = path.join(cwd, '.superinference', 'memory');
+  const memDir = path.join(cwd, '.ami', 'memory');
   fs.mkdirSync(memDir, { recursive: true });
   const fp = path.join(memDir, `${name}.md`);
   fs.writeFileSync(fp, `---\nname: ${name}\ndescription: ${desc}\ntype: project\n---\n\n${body}\n`);
@@ -643,7 +643,7 @@ describe('MemoryManager — memory loading + context', () => {
     const cwd = mkTmp();
     writeMemory(cwd, 'oldmem', 'ancient knowledge', 40);
     writeMemory(cwd, 'freshmem', 'recent knowledge', 0);
-    fs.mkdirSync(path.join(cwd, '.superinference', 'memory', 'bogus.md')); // readFileSync -> EISDIR
+    fs.mkdirSync(path.join(cwd, '.ami', 'memory', 'bogus.md')); // readFileSync -> EISDIR
     const mems = new MemoryManager(cwd).loadMemories();
     assert.ok(mems.find(m => m.name === 'oldmem')!.content.startsWith('[STALE'));
     assert.ok(!mems.find(m => m.name === 'freshmem')!.content.startsWith('[STALE'));
@@ -673,7 +673,7 @@ describe('MemoryManager — memory loading + context', () => {
 
   it('getMemoryContext includes team memories section', () => {
     const cwd = mkTmp();
-    const teamDir = path.join(cwd, '.superinference', 'memory', 'team');
+    const teamDir = path.join(cwd, '.ami', 'memory', 'team');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(path.join(teamDir, 't.md'), '---\nname: t\n---\n\nshared-team-fact');
     const ctx = new MemoryManager(cwd).getMemoryContext();
@@ -683,7 +683,7 @@ describe('MemoryManager — memory loading + context', () => {
 
   it('loadTeamMemories returns [] when a team entry is unreadable', () => {
     const cwd = mkTmp();
-    const teamDir = path.join(cwd, '.superinference', 'memory', 'team');
+    const teamDir = path.join(cwd, '.ami', 'memory', 'team');
     fs.mkdirSync(path.join(teamDir, 'dir.md'), { recursive: true }); // readFileSync -> EISDIR -> catch
     assert.deepEqual(new MemoryManager(cwd).loadTeamMemories(), []);
   });
@@ -709,7 +709,7 @@ describe('MemoryManager — memory loading + context', () => {
     // age. RED (no clamp): memoryAgeDays -> -1 -> freshness "-1 days ago".
     // GREEN (Math.max(0, …)): -> 0 -> "today".
     const cwd = mkTmp();
-    const memDir = path.join(cwd, '.superinference', 'memory');
+    const memDir = path.join(cwd, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     const fp = path.join(memDir, 'm-future.md');
     fs.writeFileSync(fp, '---\nname: m-future\ndescription: d\ntype: project\n---\n\nb\n');
@@ -749,7 +749,7 @@ describe('MemoryManager — relevance scoring', () => {
 
   it('scores memories that lack a description field', () => {
     const cwd = mkTmp();
-    const memDir = path.join(cwd, '.superinference', 'memory');
+    const memDir = path.join(cwd, '.ami', 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     // One memory with NO description frontmatter -> description-fallback branch.
     fs.writeFileSync(path.join(memDir, 'nodesc.md'), '---\nname: nodesc\ntype: project\n---\n\ndatabase tuning notes');
@@ -788,7 +788,7 @@ describe('MemoryManager — session memory, rules, index', () => {
 
   it('loadRulesForFile respects matching/non-matching paths frontmatter', async () => {
     const cwd = mkTmp();
-    const rulesDir = path.join(cwd, '.superinference', 'rules');
+    const rulesDir = path.join(cwd, '.ami', 'rules');
     fs.mkdirSync(rulesDir, { recursive: true });
     fs.writeFileSync(path.join(rulesDir, 'ts-only.md'), '---\npaths: src/*.ts\n---\nTypeScript rule body');
     fs.writeFileSync(path.join(rulesDir, 'py-only.md'), '---\npaths: src/*.py\n---\nPython rule body');
@@ -803,7 +803,7 @@ describe('MemoryManager — session memory, rules, index', () => {
 
   it('loadRulesDirectory / loadRulesForFile skip subdirectories and non-md/txt files', async () => {
     const cwd = mkTmp();
-    const rulesDir = path.join(cwd, '.superinference', 'rules');
+    const rulesDir = path.join(cwd, '.ami', 'rules');
     fs.mkdirSync(path.join(rulesDir, 'nested'), { recursive: true }); // a directory entry -> skipped
     fs.writeFileSync(path.join(rulesDir, 'notes.json'), 'ignored');    // non md/txt -> skipped
     fs.writeFileSync(path.join(rulesDir, 'real.md'), 'real-rule-body');
@@ -819,7 +819,7 @@ describe('MemoryManager — session memory, rules, index', () => {
 
   it('loadRulesDirectory / loadRulesForFile tolerate an unreadable rule file', async () => {
     const cwd = mkTmp();
-    const rulesDir = path.join(cwd, '.superinference', 'rules');
+    const rulesDir = path.join(cwd, '.ami', 'rules');
     fs.mkdirSync(rulesDir, { recursive: true });
     const f = path.join(rulesDir, 'blocked.md');
     fs.writeFileSync(f, 'rule body');
@@ -848,7 +848,7 @@ describe('MemoryManager — session memory, rules, index', () => {
 
     // MEMORY.md as a directory -> writeFile throws -> best-effort catch, no throw.
     const cwd2 = mkTmp();
-    fs.mkdirSync(path.join(cwd2, '.superinference', 'memory', 'MEMORY.md'), { recursive: true });
+    fs.mkdirSync(path.join(cwd2, '.ami', 'memory', 'MEMORY.md'), { recursive: true });
     await assert.doesNotReject(() => new MemoryManager(cwd2).addToMemoryIndex(cwd2, '- [x](x.md)'));
   });
 });

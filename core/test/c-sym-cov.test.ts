@@ -282,7 +282,7 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('loads stored tasks and falls back to nextId=1 when stored nextId is falsy', () => {
-    const sdir = path.join(dir, '.superinference');
+    const sdir = path.join(dir, '.ami');
     fs.mkdirSync(sdir, { recursive: true });
     fs.writeFileSync(
       path.join(sdir, 'tasks.json'),
@@ -299,7 +299,7 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('loads a persisted file with an empty task list', () => {
-    const sdir = path.join(dir, '.superinference');
+    const sdir = path.join(dir, '.ami');
     fs.mkdirSync(sdir, { recursive: true });
     fs.writeFileSync(
       path.join(sdir, 'tasks.json'),
@@ -310,7 +310,7 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('ignores an invalid tasks.json (load catch arm)', () => {
-    const sdir = path.join(dir, '.superinference');
+    const sdir = path.join(dir, '.ami');
     fs.mkdirSync(sdir, { recursive: true });
     fs.writeFileSync(path.join(sdir, 'tasks.json'), '{ not valid json');
     setTaskPersistPath(dir);
@@ -318,7 +318,7 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('swallows a save failure when the persist directory cannot be created', async () => {
-    // Point the persist root at a regular file so mkdir of its .superinference
+    // Point the persist root at a regular file so mkdir of its .ami
     // child throws ENOTDIR, exercising saveToDisk's catch arm.
     const asFile = path.join(dir, 'afile');
     fs.writeFileSync(asFile, 'x');
@@ -328,7 +328,7 @@ describe('task_tracker — disk load/save branches', () => {
       ctx(),
     );
     assert.ok(!r.isError);
-    assert.ok(!fs.existsSync(path.join(asFile, '.superinference', 'tasks.json')));
+    assert.ok(!fs.existsSync(path.join(asFile, '.ami', 'tasks.json')));
   });
 
   it('renders the default icon for an unrecognized status', async () => {

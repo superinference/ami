@@ -108,7 +108,7 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
     // finish('completed', ...) updated the entry and wrote the output file.
     assert.equal(calls.updates.length, 1);
     assert.deepEqual(calls.updates[0].updates, { status: 'completed', exitCode: 0 });
-    const outFile = path.join(cwd, '.superinference', 'tasks', `${reg.taskId}.out`);
+    const outFile = path.join(cwd, '.ami', 'tasks', `${reg.taskId}.out`);
     assert.equal(fs.readFileSync(outFile, 'utf-8'), 'Hello world');
   });
 
@@ -147,7 +147,7 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
 
     // The failed agent still wrote its (empty) output as '(no output)'.
     const reg = calls.registered[0];
-    const outFile = path.join(cwd, '.superinference', 'tasks', `${reg.taskId}.out`);
+    const outFile = path.join(cwd, '.ami', 'tasks', `${reg.taskId}.out`);
     assert.equal(fs.readFileSync(outFile, 'utf-8'), '(no output)');
 
     // shutdown() ran on the failure path too.

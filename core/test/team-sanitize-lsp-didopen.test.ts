@@ -34,7 +34,7 @@ describe('teamCreateTool — team name sanitization', () => {
     const result = await teamCreateTool.execute({ team_name: 'alpha-team_1' }, ctx());
     assert.equal(result.isError, undefined);
     assert.ok(result.output.includes('alpha-team_1'));
-    const teamDir = path.join(tmpDir, '.superinference', 'teams', 'alpha-team_1');
+    const teamDir = path.join(tmpDir, '.ami', 'teams', 'alpha-team_1');
     assert.ok(fs.existsSync(teamDir));
   });
 

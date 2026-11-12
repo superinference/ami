@@ -30,7 +30,7 @@ const DAY_MS = 1000 * 60 * 60 * 24;
  * landing squarely on `ageDays`, immune to sub-second drift during the test).
  */
 function writeMemoryAged(cwd: string, name: string, ageDays: number): void {
-  const memDir = path.join(cwd, '.superinference', 'memory');
+  const memDir = path.join(cwd, '.ami', 'memory');
   fs.mkdirSync(memDir, { recursive: true });
   const fp = path.join(memDir, `${name}.md`);
   fs.writeFileSync(

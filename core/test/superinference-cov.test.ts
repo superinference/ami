@@ -275,7 +275,7 @@ describe('Skillbook — operations and persistence', () => {
       entry: { section: 'context', keywords: ['retry', 'backoff'], issue: 'flaky net', insight: 'use jitter' },
     });
     assert.ok(added);
-    assert.ok(fs.existsSync(path.join(cwd, '.superinference', 'skillbook.json')));
+    assert.ok(fs.existsSync(path.join(cwd, '.ami', 'skillbook.json')));
 
     const reloaded = new Skillbook(cwd);
     assert.equal(reloaded.getAll().length, 1);
@@ -364,22 +364,22 @@ describe('Skillbook — operations and persistence', () => {
 
   it('loadFromDisk tolerates corrupt JSON and missing entries key', () => {
     const corrupt = mkTmp('sb-corrupt-');
-    fs.mkdirSync(path.join(corrupt, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(corrupt, '.superinference', 'skillbook.json'), '{ not valid json');
+    fs.mkdirSync(path.join(corrupt, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(corrupt, '.ami', 'skillbook.json'), '{ not valid json');
     const sb1 = new Skillbook(corrupt);
     assert.equal(sb1.getAll().length, 0);
 
     const noEntries = mkTmp('sb-noentries-');
-    fs.mkdirSync(path.join(noEntries, '.superinference'), { recursive: true });
-    fs.writeFileSync(path.join(noEntries, '.superinference', 'skillbook.json'), JSON.stringify({ version: 1 }));
+    fs.mkdirSync(path.join(noEntries, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(noEntries, '.ami', 'skillbook.json'), JSON.stringify({ version: 1 }));
     const sb2 = new Skillbook(noEntries);
     assert.equal(sb2.getAll().length, 0);
   });
 
   it('saveToDisk swallows write failures (best-effort persistence)', () => {
     const cwd = mkTmp('sb-fail-');
-    // Put a FILE where the .superinference directory needs to be → mkdirSync throws.
-    fs.writeFileSync(path.join(cwd, '.superinference'), 'blocking file');
+    // Put a FILE where the .ami directory needs to be → mkdirSync throws.
+    fs.writeFileSync(path.join(cwd, '.ami'), 'blocking file');
     const sb = new Skillbook(cwd);
     // apply() calls saveToDisk() internally; must not throw.
     assert.doesNotThrow(() => {

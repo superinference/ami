@@ -123,7 +123,7 @@ describe('worktree session state', () => {
   it('setWorktreeSession stores and getCurrentWorktreeSession retrieves', () => {
     const session = {
       originalCwd: '/tmp/test',
-      worktreePath: '/tmp/test/.superinference/worktrees/x',
+      worktreePath: '/tmp/test/.ami/worktrees/x',
       worktreeName: 'x',
       worktreeBranch: 'worktree-x',
       createdAt: new Date().toISOString(),
@@ -194,7 +194,7 @@ describe('createWorktreeSession', () => {
     execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' } });
 
     // Create the worktree directory manually (simulating enter-worktree.ts scenario)
-    const worktreeDir = path.join(tmpDir, '.superinference', 'worktrees', 'pre-existing');
+    const worktreeDir = path.join(tmpDir, '.ami', 'worktrees', 'pre-existing');
     fs.mkdirSync(worktreeDir, { recursive: true });
 
     // Should not throw even though the dir exists
@@ -288,7 +288,7 @@ describe('findStaleWorktrees', () => {
   });
 
   it('returns stale worktrees (missing .git)', () => {
-    const wtDir = path.join(tmpDir, '.superinference', 'worktrees', 'stale-one');
+    const wtDir = path.join(tmpDir, '.ami', 'worktrees', 'stale-one');
     fs.mkdirSync(wtDir, { recursive: true });
     const stale = findStaleWorktrees(tmpDir);
     assert.equal(stale.length, 1);
@@ -296,7 +296,7 @@ describe('findStaleWorktrees', () => {
   });
 
   it('excludes valid worktrees', () => {
-    const wtDir = path.join(tmpDir, '.superinference', 'worktrees', 'valid-one');
+    const wtDir = path.join(tmpDir, '.ami', 'worktrees', 'valid-one');
     fs.mkdirSync(wtDir, { recursive: true });
     fs.mkdirSync(path.join(wtDir, '.git'), { recursive: true });
     assert.deepEqual(findStaleWorktrees(tmpDir), []);

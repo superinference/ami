@@ -349,7 +349,7 @@ describe('McpManager config loading', () => {
   });
 
   it('loadFromConfig reads server configs', () => {
-    const configDir = path.join(tmpDir, '.superinference');
+    const configDir = path.join(tmpDir, '.ami');
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, 'mcp.json');
     fs.writeFileSync(configPath, JSON.stringify({

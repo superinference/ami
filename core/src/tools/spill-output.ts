@@ -24,7 +24,7 @@ export function spillToolText(cwd: string, prefix: string, text: string, limit: 
   let spillFile: string | null = null;
   let errCode: string | undefined;
   try {
-    const spillDir = path.join(cwd || process.cwd(), '.superinference', 'tool-results');
+    const spillDir = path.join(cwd || process.cwd(), '.ami', 'tool-results');
     fs.mkdirSync(spillDir, { recursive: true });
     spillFile = path.join(spillDir, `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.txt`);
     fs.writeFileSync(spillFile, text, 'utf-8');

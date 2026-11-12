@@ -292,12 +292,12 @@ describe('ProcessManager – tasks directory', () => {
 
   afterEach(async () => { await cleanupPm(pm); fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('creates .superinference/tasks directory', () => {
+  it('creates .ami/tasks directory', () => {
     tmpDir = makeTmpDir();
     const subDir = path.join(tmpDir, 'subproject');
     fs.mkdirSync(subDir, { recursive: true });
     pm = new ProcessManager(subDir);
-    assert.ok(fs.existsSync(path.join(subDir, '.superinference', 'tasks')));
+    assert.ok(fs.existsSync(path.join(subDir, '.ami', 'tasks')));
   });
 
   it('output file exists on disk after spawn', async () => {
