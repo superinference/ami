@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { detectCommandChaining } from '../permissions';
@@ -456,6 +457,55 @@ export function sanitizeEnvForSubprocess(env: Record<string, string | undefined>
   return out;
 }
 
+/** True if `name` resolves to an executable file on any dir of `pathValue`. */
+function isExecutableOnPath(name: string, pathValue: string | undefined): boolean {
+  if (!pathValue) return false;
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      const p = path.join(dir, name);
+      if (fs.statSync(p).isFile()) { fs.accessSync(p, fs.constants.X_OK); return true; }
+    } catch { /* not in this dir */ }
+  }
+  return false;
+}
+
+// Cache the resolved shim dir for the process (undefined = not yet computed, null = not applicable).
+let cachedPythonShimDir: string | null | undefined;
+/** Test seam: forget the memoized python-shim decision. */
+export function _resetPythonShimCache(): void { cachedPythonShimDir = undefined; }
+
+/**
+ * Many modern distros ship only `python3` (no `python` symlink), so an agent that runs
+ * `python foo.py` hits `bash: python: command not found` and the task fails unverified (ui#25).
+ * When — and only when — `python` is absent but `python3` is present, materialize a tiny
+ * `python` → `python3` shim in a private 0700 temp dir (random name, owned by us, so it is NOT
+ * an attacker-plantable PATH-injection vector) and return its path to prepend to PATH. Returns
+ * null when a real `python` exists, when there is no `python3` to delegate to, on Windows, or on
+ * any fs error. Memoized per process. `pathValue`/`make` are injectable for tests.
+ */
+export function ensurePythonShimDir(pathValue: string | undefined = process.env.PATH, make = true): string | null {
+  if (cachedPythonShimDir !== undefined) return cachedPythonShimDir;
+  if (process.platform === 'win32' ||
+      isExecutableOnPath('python', pathValue) ||
+      !isExecutableOnPath('python3', pathValue)) {
+    cachedPythonShimDir = null;
+    return null;
+  }
+  try {
+    const dir = make ? fs.mkdtempSync(path.join(os.tmpdir(), 'ami-pyshim-')) : path.join(os.tmpdir(), 'ami-pyshim');
+    if (make) {
+      const shim = path.join(dir, 'python');
+      fs.writeFileSync(shim, '#!/bin/sh\nexec python3 "$@"\n', { mode: 0o755 });
+      fs.chmodSync(shim, 0o755); // writeFileSync mode is subject to umask; force exec bits
+    }
+    cachedPythonShimDir = dir;
+  } catch {
+    cachedPythonShimDir = null;
+  }
+  return cachedPythonShimDir;
+}
+
 function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   const env = sanitizeEnvForSubprocess({ ...process.env }) as NodeJS.ProcessEnv;
   env.GIT_EDITOR = 'false';
@@ -472,6 +522,11 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   env.MANPAGER = 'cat';
   delete env.FORCE_COLOR;
   env.NO_COLOR = '1';
+  // python → python3 shim: prepend a private shim dir so `python foo.py` works on python3-only
+  // hosts instead of failing with "command not found" (issue #25). No-op when a real `python`
+  // already exists (shim dir is null).
+  const shimDir = ensurePythonShimDir(env.PATH);
+  if (shimDir) env.PATH = env.PATH ? shimDir + path.delimiter + env.PATH : shimDir;
   // Active-skill env (e.g. CLAUDE_SKILL_DIR / CLAUDE_PLUGIN_ROOT) so imported Claude-Code skills
   // that shell out via $CLAUDE_SKILL_DIR work (issue #22). Applied last; never stripped.
   if (extra) for (const [k, v] of Object.entries(extra)) env[k] = v;
