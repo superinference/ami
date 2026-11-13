@@ -437,8 +437,52 @@ function validateBackslashEscapedOperators(command: string): SecurityCheckResult
   return PASS;
 }
 
+/**
+ * Replace heredoc constructs — `<<DELIM … DELIM` and the dash form `<<-DELIM … <indent>DELIM`,
+ * with quoted (`<<'EOF'` / `<<"EOF"`) or bare delimiters — with a single-line placeholder so the
+ * newline guard does not treat a heredoc BODY (inert stdin data) as command separation (ui#26).
+ * This loosens ONLY the structural newline check: any dangerous content inside a heredoc body is
+ * still scanned by the destructive-command detectors (detectDangerousRm / detectNuclearCommand /
+ * command-substitution guards), which run on the RAW command string, unaffected by this stripping.
+ * Exported for unit coverage.
+ */
+export function stripHeredocBodies(command: string): string {
+  // Opening operator: `<<` or `<<-`, optional spaces, optional quote, a delimiter WORD, matching
+  // quote. The delimiter charset ([A-Za-z_][\w]*) contains no regex metacharacters, so it can be
+  // interpolated into the closing matcher without escaping.
+  const open = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1/g;
+  let result = '';
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = open.exec(command)) !== null) {
+    const delim = m[2];
+    const dashForm = m[0].startsWith('<<-');
+    const opEnd = open.lastIndex;              // end of the `<<WORD` operator token
+    const lineEnd = command.indexOf('\n', opEnd);
+    if (lineEnd === -1) break; // no body line → not an active heredoc; leave the rest intact
+    // `<<-` permits a tab/space-indented closing delimiter; plain `<<` requires it at line start.
+    const close = dashForm
+      ? new RegExp(`\\n[ \\t]*${delim}(?=[\\s]|$)`)
+      : new RegExp(`\\n${delim}(?=[\\s]|$)`);
+    const rest = command.slice(lineEnd);
+    const cm = close.exec(rest);
+    if (!cm) continue; // unterminated heredoc → leave as-is (the raw newlines stay, still guarded)
+    const closeAbs = lineEnd + cm.index + cm[0].length;
+    // Drop the `<<WORD` operator itself AND the body+delimiter, but KEEP any remainder of the
+    // opening line (e.g. a trailing `| grep x` or `> file`) so other guards still see it.
+    result += command.slice(lastIndex, m.index) + ' '
+            + command.slice(opEnd, lineEnd) + ' __HEREDOC__';
+    lastIndex = closeAbs;
+    open.lastIndex = closeAbs;
+  }
+  result += command.slice(lastIndex);
+  return result;
+}
+
 function validateNewlines(command: string): SecurityCheckResult {
-  const extracted = extractQuotedContent(command);
+  // Heredoc bodies are data, not command separation — strip them before the structural check so
+  // legitimate multi-line heredocs are not mistaken for smuggled extra commands (ui#26).
+  const extracted = extractQuotedContent(stripHeredocBodies(command));
   if (!/[\n\r]/.test(extracted.fullyUnquoted)) return PASS;
   if (/(?<![\\])[\n\r]\s*\S/.test(extracted.fullyUnquoted)) {
     return fail(CHECK_IDS.NEWLINES, 'Command contains newlines that could separate multiple commands');
@@ -724,7 +768,13 @@ function validateCommandSubstitution(command: string, extracted: { fullyUnquoted
 }
 
 function validateRedirections(command: string, extracted: { fullyUnquoted: string }): SecurityCheckResult {
-  const content = stripSafeRedirections(extracted.fullyUnquoted);
+  // Heredoc operators (<<WORD) and their bodies are stdin DATA, not file redirections — strip them
+  // first so a heredoc (and any < / > inside its body, e.g. HTML/XML/comparisons) is not mistaken
+  // for an unquoted file redirect. A real `> file` on the heredoc's opening line is preserved and
+  // still blocked; dangerous body content is still caught by the destructive detectors (ui#26).
+  const base = stripHeredocBodies(command);
+  const reExtracted = base === command ? extracted : extractQuotedContent(base);
+  const content = stripSafeRedirections(reExtracted.fullyUnquoted);
   if (/[<>]/.test(content)) {
     return fail(CHECK_IDS.REDIRECTIONS, 'Blocked: unquoted redirect operators detected');
   }
