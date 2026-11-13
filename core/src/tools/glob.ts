@@ -91,7 +91,7 @@ export const globTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd);
+    const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd, context.allowedReadRoots);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
     // The glob pattern itself must not traverse above the (already-confined) search root:

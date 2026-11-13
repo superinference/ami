@@ -16,6 +16,7 @@ after(() => { setTimeout(() => process.exit(0), 200); });
 
 import { skillTool } from '../src/tools/skill';
 import { workflowTool } from '../src/tools/workflow';
+import { projectStateDir } from '../src/reference-journal';
 import {
   teamCreateTool,
   teamDeleteTool,
@@ -1616,7 +1617,7 @@ describe('taskTool — background agent error handling', () => {
       // Check the output file was written with error info
       const taskId = r.output.match(/agent-[a-f0-9]+/)?.[0];
       assert.ok(taskId);
-      const outputPath = path.join(tmpDir, '.ami', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(projectStateDir(tmpDir, 'tasks'), `${taskId}.output`);
       if (fs.existsSync(outputPath)) {
         const content = fs.readFileSync(outputPath, 'utf-8');
         assert.ok(content.includes('bg agent crash') || content.includes('no output'));
@@ -1699,7 +1700,7 @@ describe('taskTrackerTool — persistence', () => {
     );
 
     // Verify file written
-    const filePath = path.join(tmpDir, '.ami', 'tasks.json');
+    const filePath = path.join(projectStateDir(tmpDir), 'tasks.json');
     assert.ok(fs.existsSync(filePath));
 
     // Reset and reload

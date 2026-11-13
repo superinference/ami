@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { MemoryManager } from '../src/memory';
+import { projectStateDir } from '../src/reference-journal';
 
 let tmpDir: string;
 let memoryDir: string;
@@ -15,7 +16,7 @@ function writeMemory(name: string, description: string, memType: string, body: s
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-memrel-'));
-  memoryDir = path.join(tmpDir, '.ami', 'memory');
+  memoryDir = projectStateDir(tmpDir, 'memory');
   fs.mkdirSync(memoryDir, { recursive: true });
 });
 

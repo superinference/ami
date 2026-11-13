@@ -73,12 +73,45 @@ export function validateRequiredString(
 }
 
 /**
+ * LOGICAL workspace containment for the core path guards: true when the (already
+ * absolute-resolved) `resolved` is the launch cwd, under it, or under any permission-granted
+ * read root. This is a pure string/prefix test — it does NOT follow symlinks, so callers
+ * keep their explicit realpath step to detect symlink escapes (and to emit the distinct
+ * "resolves outside … via symlink" message). The granted roots are what the permission layer
+ * (PermissionManager.getAllowedReadRoots) has already approved for this call — `/add-dir`,
+ * `--context-file`/`--image`, an approved out-of-workspace prompt, or auto-allow/yolo — which
+ * is what lets a skill loaded from an external folder read its own resources while an
+ * ungranted sibling/parent/other-$HOME path stays blocked.
+ */
+export function isWithinWorkspaceRoots(
+  resolved: string,
+  cwd: string,
+  allowedRoots: readonly string[] = [],
+): boolean {
+  const strip = (p: string): string => { const n = path.resolve(p); return n.replace(/[/\\]+$/, '') || n; };
+  const target = strip(resolved);
+  for (const root of [cwd, ...allowedRoots].filter(Boolean)) {
+    const r = strip(root);
+    if (target === r || target.startsWith(r + path.sep)) return true;
+  }
+  return false;
+}
+
+/** realpath a path for symlink-aware containment; falls back to the normalized path when it
+ *  does not exist yet (so not-yet-created targets still get a logical check). */
+function realpathOrResolve(p: string): string {
+  try { return fs.realpathSync(path.resolve(p)); } catch { return path.resolve(p); }
+}
+
+/**
  * Resolve a search path relative to cwd.
  * If inputPath is provided, resolves it absolutely; otherwise returns cwd.
+ * `allowedRoots` are permission-granted dirs outside cwd that count as in-bounds.
  */
 export function resolveSearchPath(
   inputPath: string | undefined,
   cwd: string,
+  allowedRoots: readonly string[] = [],
 ): { resolved: string; error?: string } {
   const resolved = inputPath
     ? path.isAbsolute(inputPath)
@@ -87,12 +120,12 @@ export function resolveSearchPath(
     : cwd;
   // Resolve symlinks on BOTH sides before the containment check: a symlink living inside
   // cwd that points outside (e.g. cwd/link -> /etc) would otherwise pass a pure
-  // string-prefix check and let a search escape the workspace.
-  let abs = path.resolve(resolved);
-  let cwdAbs = path.resolve(cwd);
-  try { abs = fs.realpathSync(abs); } catch { /* may not exist yet — keep normalized */ }
-  try { cwdAbs = fs.realpathSync(cwdAbs); } catch { /* keep normalized */ }
-  if (abs !== cwdAbs && !abs.startsWith(cwdAbs + path.sep)) {
+  // string-prefix check and let a search escape the workspace. Granted roots are
+  // realpath-resolved too so a symlinked grant still matches its real target.
+  const abs = realpathOrResolve(resolved);
+  const realCwd = realpathOrResolve(cwd);
+  const realRoots = allowedRoots.map(realpathOrResolve);
+  if (!isWithinWorkspaceRoots(abs, realCwd, realRoots)) {
     return { resolved, error: `Error: path "${inputPath}" is outside the workspace directory.` };
   }
   return { resolved };
@@ -170,6 +203,7 @@ export function isSensitivePath(filePath: string): boolean {
 export function resolveFilePath(
   filePath: string,
   cwd: string,
+  allowedRoots: readonly string[] = [],
 ): { resolved: string; error?: ToolResult } {
   const resolved = path.isAbsolute(filePath)
     ? filePath
@@ -177,14 +211,13 @@ export function resolveFilePath(
   if (isSensitivePath(resolved)) {
     return { resolved, error: { output: `Error: access to "${filePath}" is blocked — sensitive system path.`, isError: true } };
   }
-  const cwdAbs = path.resolve(cwd);
-  if (!path.resolve(resolved).startsWith(cwdAbs + path.sep) &&
-      path.resolve(resolved) !== cwdAbs) {
+  // Logical (pre-symlink) containment: cwd OR a permission-granted root.
+  if (!isWithinWorkspaceRoots(resolved, cwd, allowedRoots)) {
     return { resolved, error: { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true } };
   }
   try {
     const real = fs.realpathSync(resolved);
-    if (!real.startsWith(cwdAbs + path.sep) && real !== cwdAbs) {
+    if (!isWithinWorkspaceRoots(real, cwd, allowedRoots)) {
       return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
     }
   } catch {
@@ -192,7 +225,7 @@ export function resolveFilePath(
     const parentDir = path.dirname(resolved);
     try {
       const realParent = fs.realpathSync(parentDir);
-      if (!realParent.startsWith(cwdAbs + path.sep) && realParent !== cwdAbs) {
+      if (!isWithinWorkspaceRoots(realParent, cwd, allowedRoots)) {
         return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
       }
     } catch {
@@ -211,8 +244,9 @@ export function resolveFilePath(
 export function safeReadFile(
   filePath: string,
   cwd: string,
+  allowedRoots: readonly string[] = [],
 ): { content: string; encoding: FileEncoding; error?: undefined } | { error: ToolResult; content?: undefined; encoding?: undefined } {
-  const { resolved, error } = resolveFilePath(filePath, cwd);
+  const { resolved, error } = resolveFilePath(filePath, cwd, allowedRoots);
   if (error) return { error };
 
   try {
@@ -222,8 +256,7 @@ export function safeReadFile(
       if (isCredentialPath(target)) {
         return { error: { output: `Error: "${filePath}" is a symlink targeting a sensitive file: ${target}`, isError: true } };
       }
-      const cwdAbs = path.resolve(cwd);
-      if (!target.startsWith(cwdAbs + path.sep) && target !== cwdAbs) {
+      if (!isWithinWorkspaceRoots(target, cwd, allowedRoots)) {
         return { error: { output: `Error: "${filePath}" is a symlink resolving outside the workspace.`, isError: true } };
       }
     }
@@ -245,10 +278,10 @@ export function safeReadFile(
 export function safeLstat(
   filePath: string,
   cwd: string,
+  allowedRoots: readonly string[] = [],
 ): { stat: fs.Stats; error?: undefined } | { error: ToolResult; stat?: undefined } {
-  const cwdAbs = path.resolve(cwd);
   const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
-  if (!path.resolve(resolved).startsWith(cwdAbs + path.sep) && path.resolve(resolved) !== cwdAbs) {
+  if (!isWithinWorkspaceRoots(resolved, cwd, allowedRoots)) {
     return { error: { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true } };
   }
 
@@ -351,10 +384,11 @@ export function validatePatternAndPath(
   pattern: unknown,
   searchPath: string | undefined,
   cwd: string,
+  allowedRoots: readonly string[] = [],
 ): { pattern: string; resolved: string; error?: undefined } | { error: ToolResult; pattern?: undefined; resolved?: undefined } {
   const invalid = validateRequiredString(pattern, 'pattern');
   if (invalid) return { error: invalid };
-  const { resolved, error: pathError } = resolveSearchPath(searchPath, cwd);
+  const { resolved, error: pathError } = resolveSearchPath(searchPath, cwd, allowedRoots);
   if (pathError) return { error: { output: pathError, isError: true } };
   return { pattern: pattern as string, resolved };
 }

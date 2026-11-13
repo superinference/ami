@@ -8,6 +8,7 @@ import { bashTool, detectSelfKill, detectDetachedGitDiscard, isBashForkExhaustio
 import type { ToolContext } from '../src/types';
 import { detectHardlineCommand } from '../src/permissions';
 import { detectCredentialPathWrite, detectSessionTranscriptWrite } from '../src/tools/bash-security';
+import { projectStateDir } from '../src/reference-journal';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
@@ -227,7 +228,7 @@ describe('bashTool – output truncation', () => {
         { command: `go test -json ./... >/dev/null 2>&1; cat ${payload}` },
         ctx({ cwd: dir }),
       );
-      assert.equal(fs.existsSync(path.join(dir, '.ami')), false);
+      assert.equal(fs.existsSync(projectStateDir(dir, 'tool-results')), false);
       assert.equal(result.output.includes('TestOk0'), false);
       assert.match(result.output, /TestBLPModel/);
       assert.equal(result.output.includes('chars persisted'), false);
@@ -260,7 +261,7 @@ describe('bashTool – output truncation', () => {
       assert.equal(result.output.includes('"Action":"pass"'), false);
       assert.match(result.output, /TestBLPModel/);
       assert.ok(result.output.length < 20_000, `output length ${result.output.length}`);
-      assert.equal(fs.existsSync(path.join(dir, '.ami')), false);
+      assert.equal(fs.existsSync(projectStateDir(dir, 'tool-results')), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

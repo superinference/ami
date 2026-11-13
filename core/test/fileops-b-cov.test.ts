@@ -16,6 +16,7 @@ import {
 import { suggestSimilarPaths } from '../src/tools/path-suggest';
 import { syntheticOutputTool } from '../src/tools/synthetic-output';
 import { spillToolText, buildSpillBanner } from '../src/tools/spill-output';
+import { projectStateDir } from '../src/reference-journal';
 
 // ===========================================================================
 // notebook-edit.ts — uncovered branches/functions
@@ -688,7 +689,7 @@ describe('spill-output — uncovered paths', () => {
       const result = spillToolText('', 'cwdfallback', text, 1000);
       assert.ok(result.length < text.length);
       // The spill directory was created under process.cwd() (the empty-cwd fallback).
-      const spillDir = path.join(dir, '.ami', 'tool-results');
+      const spillDir = projectStateDir(dir, 'tool-results');
       assert.ok(fs.existsSync(spillDir));
       assert.match(result, /persisted to/);
     } finally {

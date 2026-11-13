@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { projectStateDir } from '../reference-journal';
 import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -36,7 +37,7 @@ export const scoutTool: ToolDefinition = {
       repo.includes('://') || repo.startsWith('/') || repo.startsWith('.')
         ? repo
         : `https://github.com/${repo}`;
-    const cacheDir = path.join(context.cwd, '.ami', 'scout-cache');
+    const cacheDir = projectStateDir(context.cwd, 'scout-cache');
     const repoName = repo.replace(/[^a-zA-Z0-9_-]/g, '_');
     const localPath = path.join(cacheDir, repoName);
 

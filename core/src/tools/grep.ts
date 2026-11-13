@@ -142,7 +142,7 @@ export const grepTool: ToolDefinition = {
     const beforeContext = input.before_context as number | undefined;
     const afterContext = input.after_context as number | undefined;
     const searchPath = (input.path ?? input.file_path) as string | undefined;
-    const v = validatePatternAndPath(input.pattern, searchPath, context.cwd);
+    const v = validatePatternAndPath(input.pattern, searchPath, context.cwd, context.allowedReadRoots);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
     // The file-FILTER glob (`include`) must not traverse above the search root — a filter

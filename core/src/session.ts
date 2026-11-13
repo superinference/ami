@@ -3,6 +3,9 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import type { Message, ProviderConfig, SessionId } from './types';
 import { asSessionId } from './types';
+import { projectStateDir } from './reference-journal';
+import { assertPathWithin } from './path-safety';
+export { assertPathWithin } from './path-safety';
 
 /**
  * Content longer than this is offloaded to a content-addressed blob sidecar
@@ -74,20 +77,14 @@ function sanitizeSessionId(id: string): string {
   return id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
 }
 
-export function assertPathWithin(filePath: string, baseDir: string): void {
-  const resolved = path.resolve(filePath);
-  const resolvedBase = path.resolve(baseDir);
-  if (!resolved.startsWith(resolvedBase + path.sep) && resolved !== resolvedBase) {
-    throw new Error(`Path traversal blocked: ${filePath} escapes ${baseDir}`);
-  }
-}
-
 export class SessionManager {
   private sessionDir: string;
   private static _idCounter = 0;
 
   constructor(cwd: string, sessionDirOverride?: string) {
-    this.sessionDir = sessionDirOverride ?? path.join(cwd, '.ami', 'sessions');
+    // Resume blobs live GLOBALLY under ~/.ami/projects/<cwd-slug>/sessions (like Claude Code's
+    // ~/.claude/projects/<slug>/), not inside the repo — keyed by cwd slug.
+    this.sessionDir = sessionDirOverride ?? projectStateDir(cwd, 'sessions');
   }
 
   /**

@@ -48,6 +48,7 @@ import {
 } from '../src/formatter';
 import { ToolAnalytics } from '../src/tool-analytics';
 import { TurnMetrics } from '../src/turn-metrics';
+import { projectStateDir } from '../src/reference-journal';
 
 function mkTmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'infra-a-'));
@@ -624,7 +625,7 @@ describe('cron: CronScheduler core', () => {
     const j = sched.create({ cron: '0 0 * * *', prompt: 'x', recurring: false, durable: true });
     assert.equal(j.recurring, false);
     assert.equal(j.durable, true);
-    assert.ok(fs.existsSync(path.join(dir, '.ami', 'scheduled_tasks.json')));
+    assert.ok(fs.existsSync(path.join(projectStateDir(dir), 'scheduled_tasks.json')));
   });
 
   it('enforces MAX_JOBS', () => {
@@ -755,9 +756,9 @@ describe('cron: ticker, locks and expiry', () => {
 
   it('tick skips durable jobs when the lock is held by another session', () => {
     // Pre-write a fresh foreign lock.
-    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
     fs.writeFileSync(
-      path.join(dir, '.ami', 'cron.lock'),
+      path.join(projectStateDir(dir), 'cron.lock'),
       JSON.stringify({ sessionId: 'other', pid: 1, timestamp: Date.now() }),
     );
     const sched = new CronScheduler(dir, 'mine');
@@ -769,9 +770,9 @@ describe('cron: ticker, locks and expiry', () => {
   });
 
   it('tick runs durable jobs when it can acquire the lock, replacing a stale lock', () => {
-    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
     fs.writeFileSync(
-      path.join(dir, '.ami', 'cron.lock'),
+      path.join(projectStateDir(dir), 'cron.lock'),
       JSON.stringify({ sessionId: 'old', pid: 1, timestamp: Date.now() - 10 * 60 * 1000 }),
     );
     const sched = new CronScheduler(dir, 'mine');
@@ -788,19 +789,19 @@ describe('cron: ticker, locks and expiry', () => {
     assert.equal(inner.acquireLock(), true); // create new lock
     assert.equal(inner.acquireLock(), true); // fresh + same session -> true
     inner.releaseLock();
-    assert.ok(!fs.existsSync(path.join(dir, '.ami', 'cron.lock')));
+    assert.ok(!fs.existsSync(path.join(projectStateDir(dir), 'cron.lock')));
   });
 
   it('acquireLock returns false on a corrupt lock file', () => {
-    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.ami', 'cron.lock'), '{corrupt');
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
+    fs.writeFileSync(path.join(projectStateDir(dir), 'cron.lock'), '{corrupt');
     const sched = new CronScheduler(dir, 'self');
     assert.equal((sched as unknown as { acquireLock: () => boolean }).acquireLock(), false);
   });
 
   it('releaseLock leaves a foreign lock intact', () => {
-    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
-    const lockPath = path.join(dir, '.ami', 'cron.lock');
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
+    const lockPath = path.join(projectStateDir(dir), 'cron.lock');
     fs.writeFileSync(lockPath, JSON.stringify({ sessionId: 'someone-else', pid: 1, timestamp: Date.now() }));
     const sched = new CronScheduler(dir, 'self');
     (sched as unknown as { releaseLock: () => void }).releaseLock();
@@ -814,8 +815,8 @@ describe('cron: ticker, locks and expiry', () => {
   });
 
   it('releaseLock swallows a corrupt lock file', () => {
-    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.ami', 'cron.lock'), '{not json');
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
+    fs.writeFileSync(path.join(projectStateDir(dir), 'cron.lock'), '{not json');
     const sched = new CronScheduler(dir, 'self');
     assert.doesNotThrow(() => (sched as unknown as { releaseLock: () => void }).releaseLock());
   });
@@ -860,13 +861,13 @@ describe('cron: durable persistence', () => {
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
   it('loads only durable jobs from disk, estimating jitter for malformed crons', () => {
-    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
     const jobs: CronJob[] = [
       { id: 'cron_9_a', cron: 'weird', prompt: 'durable', recurring: true, durable: true, createdAt: Date.now(), nextRun: Date.now() - 20 * 60 * 1000 },
       { id: 'cron_3_c', cron: '0 0 * * *', prompt: 'durable2', recurring: true, durable: true, createdAt: Date.now() },
       { id: 'cron_8_b', cron: '0 0 * * *', prompt: 'ephemeral', recurring: true, durable: false, createdAt: Date.now() },
     ];
-    fs.writeFileSync(path.join(dir, '.ami', 'scheduled_tasks.json'), JSON.stringify(jobs));
+    fs.writeFileSync(path.join(projectStateDir(dir), 'scheduled_tasks.json'), JSON.stringify(jobs));
     const sched = new CronScheduler(dir, 's');
     assert.equal(sched.list().length, 2);
     assert.equal(sched.get('cron_9_a')!.prompt, 'durable');
@@ -890,16 +891,18 @@ describe('cron: durable persistence', () => {
   });
 
   it('tolerates an unreadable durable file', () => {
-    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.ami', 'scheduled_tasks.json'), '{not an array');
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
+    fs.writeFileSync(path.join(projectStateDir(dir), 'scheduled_tasks.json'), '{not an array');
     const sched = new CronScheduler(dir, 's');
     assert.equal(sched.list().length, 0);
     sched.stopTicker();
   });
 
   it('saveDurable swallows write errors when the dir path is a file', () => {
-    // Make .ami a FILE so mkdirSync/write fail inside saveDurable.
-    fs.writeFileSync(path.join(dir, '.ami'), 'blocker');
+    // Make the project-state dir a FILE so mkdirSync/write fail inside saveDurable.
+    const stateDir = projectStateDir(dir);
+    fs.mkdirSync(path.dirname(stateDir), { recursive: true });
+    fs.writeFileSync(stateDir, 'blocker');
     const sched = new CronScheduler(dir, 's');
     assert.doesNotThrow(() => sched.create({ cron: '0 0 * * *', prompt: 'p', durable: true }));
     sched.stopTicker();

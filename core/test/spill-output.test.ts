@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 import { spillToolText } from '../src/tools/spill-output';
+import { projectStateDir } from '../src/reference-journal';
 
 describe('spillToolText', () => {
   let tmpDir: string;
@@ -14,6 +15,19 @@ describe('spillToolText', () => {
   });
 
   after(() => { fs.rmSync(tmpDir, { recursive: true }); });
+
+  // Spill output now lands in the GLOBAL per-project state dir
+  // (<dataDir>/projects/<cwd-slug>/tool-results), not <cwd>/.ami/tool-results.
+  // The fallback tests therefore inject write failures by pointing the data dir
+  // (SUPERINFERENCE_DATA_DIR) at an unwritable location for the duration of the call.
+  const withDataDir = (dir: string, fn: () => void) => {
+    const saved = process.env.SUPERINFERENCE_DATA_DIR;
+    process.env.SUPERINFERENCE_DATA_DIR = dir;
+    try { fn(); } finally {
+      if (saved === undefined) delete process.env.SUPERINFERENCE_DATA_DIR;
+      else process.env.SUPERINFERENCE_DATA_DIR = saved;
+    }
+  };
 
   it('returns text unchanged when under limit', () => {
     const text = 'short text';
@@ -27,7 +41,7 @@ describe('spillToolText', () => {
     assert.ok(result.includes('truncated'));
     assert.ok(result.includes('file_read'));
 
-    const spillDir = path.join(tmpDir, '.ami', 'tool-results');
+    const spillDir = projectStateDir(tmpDir, 'tool-results');
     assert.ok(fs.existsSync(spillDir));
     const files = fs.readdirSync(spillDir).filter(f => f.startsWith('big-'));
     assert.ok(files.length > 0);
@@ -57,7 +71,7 @@ describe('spillToolText', () => {
   it('writes spill file on success and includes path in output', () => {
     const text = 'y'.repeat(2000);
     const result = spillToolText(tmpDir, 'happy', text, 500);
-    const spillDir = path.join(tmpDir, '.ami', 'tool-results');
+    const spillDir = projectStateDir(tmpDir, 'tool-results');
     assert.ok(fs.existsSync(spillDir));
     const files = fs.readdirSync(spillDir).filter(f => f.startsWith('happy-'));
     assert.ok(files.length > 0, 'spill file should be created');
@@ -69,75 +83,84 @@ describe('spillToolText', () => {
 
   it('gracefully falls back on disk write failure instead of crashing', () => {
     const text = 'HEAD_MARKER' + 'x'.repeat(5000) + 'TAIL_MARKER';
-    // A read-only (0o555) base dir makes creating .ami/tool-results
+    // A read-only (0o555) data dir makes creating projects/<slug>/tool-results
     // under it fail regardless of uid — robust even when the suite runs as root
     // in a container (where `/nonexistent` is creatable by the root owner).
-    const roBase = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-nowrite-'));
-    fs.chmodSync(roBase, 0o555);
+    const roData = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-nowrite-'));
+    fs.chmodSync(roData, 0o555);
     try {
-      const result = spillToolText(roBase, 'fail', text, 1000);
-      assert.ok(result.length < text.length, 'output should be truncated');
-      assert.ok(result.includes('truncated'), 'should mention truncation');
-      assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
-      assert.ok(result.startsWith('HEAD_MARKER'), 'head content must be preserved');
-      assert.ok(result.endsWith('TAIL_MARKER'), 'tail content must be preserved');
+      withDataDir(roData, () => {
+        const result = spillToolText(tmpDir, 'fail', text, 1000);
+        assert.ok(result.length < text.length, 'output should be truncated');
+        assert.ok(result.includes('truncated'), 'should mention truncation');
+        assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
+        assert.ok(result.startsWith('HEAD_MARKER'), 'head content must be preserved');
+        assert.ok(result.endsWith('TAIL_MARKER'), 'tail content must be preserved');
+      });
     } finally {
-      fs.chmodSync(roBase, 0o755);
-      fs.rmSync(roBase, { recursive: true, force: true });
+      fs.chmodSync(roData, 0o755);
+      fs.rmSync(roData, { recursive: true, force: true });
     }
   });
 
   it('falls back gracefully when mkdir fails (file blocks dir creation)', () => {
-    // Create a regular file at .ami, blocking mkdirSync recursive
-    const blockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-block-'));
-    fs.writeFileSync(path.join(blockDir, '.ami'), 'blocker');
+    // Put a regular file where the `projects` dir must be created, so the
+    // recursive mkdir of projects/<slug>/tool-results fails with ENOTDIR.
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-block-'));
+    fs.writeFileSync(path.join(dataDir, 'projects'), 'blocker');
     try {
-      const text = 'HEAD' + 'q'.repeat(5000) + 'TAIL';
-      // mkdirSync will fail with ENOTDIR because .ami is a file
-      const result = spillToolText(blockDir, 'enotdir', text, 1000);
-      assert.ok(result.includes('truncated'), 'result must mention truncation');
-      assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
-      assert.ok(result.startsWith('HEAD'), 'head content must be preserved');
-      assert.ok(result.endsWith('TAIL'), 'tail content must be preserved');
+      withDataDir(dataDir, () => {
+        const text = 'HEAD' + 'q'.repeat(5000) + 'TAIL';
+        // mkdirSync will fail with ENOTDIR because `projects` is a file
+        const result = spillToolText(tmpDir, 'enotdir', text, 1000);
+        assert.ok(result.includes('truncated'), 'result must mention truncation');
+        assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
+        assert.ok(result.startsWith('HEAD'), 'head content must be preserved');
+        assert.ok(result.endsWith('TAIL'), 'tail content must be preserved');
+      });
     } finally {
-      fs.rmSync(blockDir, { recursive: true });
+      fs.rmSync(dataDir, { recursive: true });
     }
   });
 
   it('falls back gracefully when write fails (read-only spill dir)', () => {
     // Create the spill directory structure but make tool-results read-only
-    const roDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-ro-'));
-    const spillDir = path.join(roDir, '.ami', 'tool-results');
-    fs.mkdirSync(spillDir, { recursive: true });
-    fs.chmodSync(spillDir, 0o444);
-    try {
-      const text = 'FRONT' + 'w'.repeat(5000) + 'BACK';
-      // writeFileSync will fail with EACCES on read-only directory
-      const result = spillToolText(roDir, 'readonly', text, 1000);
-      assert.ok(result.includes('truncated'), 'result must mention truncation');
-      assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
-      assert.ok(result.startsWith('FRONT'), 'head content must be preserved');
-      assert.ok(result.endsWith('BACK'), 'tail content must be preserved');
-    } finally {
-      fs.chmodSync(spillDir, 0o755);
-      fs.rmSync(roDir, { recursive: true });
-    }
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-ro-'));
+    withDataDir(dataDir, () => {
+      const spillDir = projectStateDir(tmpDir, 'tool-results');
+      fs.mkdirSync(spillDir, { recursive: true });
+      fs.chmodSync(spillDir, 0o444);
+      try {
+        const text = 'FRONT' + 'w'.repeat(5000) + 'BACK';
+        // writeFileSync will fail with EACCES on read-only directory
+        const result = spillToolText(tmpDir, 'readonly', text, 1000);
+        assert.ok(result.includes('truncated'), 'result must mention truncation');
+        assert.ok(!result.includes('persisted to /'), 'fallback must not contain spill file path');
+        assert.ok(result.startsWith('FRONT'), 'head content must be preserved');
+        assert.ok(result.endsWith('BACK'), 'tail content must be preserved');
+      } finally {
+        fs.chmodSync(spillDir, 0o755);
+      }
+    });
+    fs.rmSync(dataDir, { recursive: true });
   });
 
   it('falls back gracefully when cwd does not exist', () => {
     const text = 'r'.repeat(3000);
-    // Read-only base dir → spill write fails regardless of uid (see note above).
-    const roBase = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-nopath-'));
-    fs.chmodSync(roBase, 0o555);
+    // Read-only data dir → spill write fails regardless of uid (see note above).
+    const roData = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-nopath-'));
+    fs.chmodSync(roData, 0o555);
     try {
-      const result = spillToolText(roBase, 'nopath', text, 1000);
-      assert.ok(result.includes('truncated') || result.includes('omitted'), 'result must mention truncation');
-      assert.ok(result.includes('could not persist'), 'fallback must mention disk write failure');
-      assert.ok(result.startsWith('r'), 'head content preserved');
-      assert.ok(result.endsWith('r'), 'tail content preserved');
+      withDataDir(roData, () => {
+        const result = spillToolText(tmpDir, 'nopath', text, 1000);
+        assert.ok(result.includes('truncated') || result.includes('omitted'), 'result must mention truncation');
+        assert.ok(result.includes('could not persist'), 'fallback must mention disk write failure');
+        assert.ok(result.startsWith('r'), 'head content preserved');
+        assert.ok(result.endsWith('r'), 'tail content preserved');
+      });
     } finally {
-      fs.chmodSync(roBase, 0o755);
-      fs.rmSync(roBase, { recursive: true, force: true });
+      fs.chmodSync(roData, 0o755);
+      fs.rmSync(roData, { recursive: true, force: true });
     }
   });
 });

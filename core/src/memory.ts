@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { projectStateDir } from './reference-journal';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -157,7 +158,6 @@ export function parseFrontmatterList(value: string): string[] {
 }
 
 /** Directory name for SuperInference memory storage. */
-const MEMORY_DIR = '.ami/memory';
 
 const STALE_MEMORY_DAYS = 30;
 
@@ -726,7 +726,7 @@ export class MemoryManager {
    * typically committed to version control for shared context.
    */
   loadTeamMemories(): string[] {
-    const teamDir = path.join(this.cwd, '.ami', 'memory', 'team');
+    const teamDir = path.join(this.getMemoryDir(), 'team');
     if (!fs.existsSync(teamDir)) return [];
     return this.loadMemoriesFromDir(teamDir);
   }
@@ -750,7 +750,9 @@ export class MemoryManager {
    * Returns the absolute path to the memory directory.
    */
   getMemoryDir(): string {
-    return path.join(this.cwd, MEMORY_DIR);
+    // Auto-memory lives GLOBALLY under ~/.ami/projects/<cwd-slug>/memory (like Claude Code's
+    // ~/.claude/projects/<slug>/memory), keyed by cwd slug.
+    return projectStateDir(this.cwd, 'memory');
   }
 
   /**
@@ -1014,7 +1016,7 @@ export class MemoryManager {
    * human-readable and machine-parseable table of contents.
    */
   async readMemoryIndex(cwd: string): Promise<string[]> {
-    const indexPath = path.join(cwd, '.ami', 'memory', 'MEMORY.md');
+    const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
     try {
       const content = await fsp.readFile(indexPath, 'utf-8');
       return content.split('\n').filter(l => l.startsWith('- ['));
@@ -1030,7 +1032,7 @@ export class MemoryManager {
    * `- [topic](filename.md) — description`.
    */
   async addToMemoryIndex(cwd: string, entry: string): Promise<void> {
-    const indexPath = path.join(cwd, '.ami', 'memory', 'MEMORY.md');
+    const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
     try {
       await fsp.mkdir(path.dirname(indexPath), { recursive: true });
       let content = '';
@@ -1047,7 +1049,7 @@ export class MemoryManager {
    * Matches by substring — if any line contains the given text, it is removed.
    */
   async removeFromMemoryIndex(cwd: string, entrySubstring: string): Promise<void> {
-    const indexPath = path.join(cwd, '.ami', 'memory', 'MEMORY.md');
+    const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
     try {
       const content = await fsp.readFile(indexPath, 'utf-8');
       const lines = content.split('\n').filter(l => !l.includes(entrySubstring));

@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { MemoryManager } from '../src/memory';
+import { projectStateDir } from '../src/reference-journal';
 
 // ===========================================================================
 // memory.ts lines 170-177 — memoryFreshness() age-band labeling.
@@ -30,7 +31,7 @@ const DAY_MS = 1000 * 60 * 60 * 24;
  * landing squarely on `ageDays`, immune to sub-second drift during the test).
  */
 function writeMemoryAged(cwd: string, name: string, ageDays: number): void {
-  const memDir = path.join(cwd, '.ami', 'memory');
+  const memDir = projectStateDir(cwd, 'memory');
   fs.mkdirSync(memDir, { recursive: true });
   const fp = path.join(memDir, `${name}.md`);
   fs.writeFileSync(

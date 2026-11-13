@@ -8,6 +8,7 @@ import { createMcpConnectTool } from '../src/tools/mcp-connect';
 import { listMcpResourcesTool, readMcpResourceTool } from '../src/tools/mcp-resources';
 import { lspDiagnosticsTool, lspReferencesTool, _lspDiagHooks } from '../src/tools/lsp-diagnostics';
 import type { ToolContext } from '../src/types';
+import { projectStateDir } from '../src/reference-journal';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -197,7 +198,7 @@ describe('readMcpResourceTool', () => {
       );
       assert.ok(res.output.length < big.length, 'output should be truncated');
       assert.match(res.output, /persisted to/);
-      const spillDir = path.join(tmp, '.ami', 'tool-results');
+      const spillDir = projectStateDir(tmp, 'tool-results');
       assert.ok(fs.readdirSync(spillDir).length >= 1, 'a spill file should exist');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

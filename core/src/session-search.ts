@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { projectStateDir } from './reference-journal';
 
 /** @public Search result returned by session search for library consumers. */
 export interface SearchResult {
@@ -18,7 +19,7 @@ function recencyMs(timestamp?: string): number {
 }
 
 export function searchSessions(cwd: string, query: string, limit: number = 20): SearchResult[] {
-  const sessionsDir = path.join(cwd, '.ami', 'sessions');
+  const sessionsDir = projectStateDir(cwd, 'sessions');
   if (!fs.existsSync(sessionsDir)) return [];
 
   const phrase = query.toLowerCase().trim();

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ProcessManager } from '../src/process-manager';
+import { projectStateDir } from '../src/reference-journal';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ami-pm-test-'));
@@ -297,7 +298,7 @@ describe('ProcessManager – tasks directory', () => {
     const subDir = path.join(tmpDir, 'subproject');
     fs.mkdirSync(subDir, { recursive: true });
     pm = new ProcessManager(subDir);
-    assert.ok(fs.existsSync(path.join(subDir, '.ami', 'tasks')));
+    assert.ok(fs.existsSync(projectStateDir(subDir, 'tasks')));
   });
 
   it('output file exists on disk after spawn', async () => {

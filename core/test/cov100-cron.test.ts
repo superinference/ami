@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { CronScheduler } from '../src/cron';
+import { projectStateDir } from '../src/reference-journal';
 
 // Exercises the private scheduler tick() loop (expireOld -> getDueJobs -> run
 // each due job once), including the durable-job lock gate. tick() normally only
@@ -73,7 +74,7 @@ describe('cron tick() loop (cov100)', () => {
     assert.equal(fired.length, 1, 'durable due job should run when lock is acquirable');
     assert.equal((fired[0] as { id: string }).id, job.id);
     // Acquiring the lock wrote a lock file owned by this session.
-    const lockPath = path.join(cwd, '.ami', 'cron.lock');
+    const lockPath = path.join(projectStateDir(cwd), 'cron.lock');
     assert.ok(fs.existsSync(lockPath), 'acquireLock should have created the lock file');
     const lock = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
     assert.equal(lock.sessionId, 'sess-C');
@@ -85,7 +86,7 @@ describe('cron tick() loop (cov100)', () => {
     job.nextRun = Date.now() - 10_000_000;
 
     // A different, fresh (non-stale) session owns the lock -> acquireLock() fails.
-    const lockDir = path.join(cwd, '.ami');
+    const lockDir = projectStateDir(cwd);
     fs.mkdirSync(lockDir, { recursive: true });
     fs.writeFileSync(
       path.join(lockDir, 'cron.lock'),

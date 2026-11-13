@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as child_process from 'child_process';
@@ -465,7 +466,7 @@ export const taskTool: ToolDefinition = {
         agentNameRegistry.set(agentName, taskId);
       }
       if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
-      const tasksDir = path.join(context.cwd, '.ami', 'tasks');
+      const tasksDir = projectStateDir(context.cwd, 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
       const outputPath = path.join(tasksDir, `${taskId}.output`);
       fs.writeFileSync(outputPath, '');
