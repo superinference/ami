@@ -16,9 +16,72 @@
 
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { validateBashSecurity } from '../src/tools/bash-security';
+import { validateBashSecurity, stripHeredocBodies, detectNuclearCommand } from '../src/tools/bash-security';
 
 const RELAX = { detachedMode: true, relaxDetachedValidators: true } as const;
+
+// ---------------------------------------------------------------------------
+// ui#26: the newline + redirect structural guards wrongly blocked LEGITIMATE
+// heredocs (their body is inert stdin data, not command separation / redirects).
+// These pass in interactive AND detached-default mode now; genuine command
+// separation (cmd1\ncmd2) and real file redirects stay blocked; destructive
+// content inside a heredoc body is still caught by the nuclear layer.
+// ---------------------------------------------------------------------------
+describe('ui#26 — heredocs are allowed, injection/destructive patterns are not', () => {
+  const ALLOWED: Array<[string, string]> = [
+    ['simple heredoc', 'cat <<EOF\nhello\nworld\nEOF'],
+    ['quoted-delimiter python heredoc', "python3 - <<'PY'\nimport sys\nprint(sys.version)\nPY"],
+    ['dash-form heredoc with indented close', 'cat <<-END\n\tfoo\n\tEND'],
+    ['heredoc body containing angle brackets (HTML)', 'cat <<EOF\n<html><body>x</body></html>\nEOF'],
+    ['heredoc with a pipe on the opening line', 'cat <<EOF | grep x\naaa\nxbbb\nEOF'],
+  ];
+  for (const [name, cmd] of ALLOWED) {
+    it(`allows ${name} (interactive)`, () => {
+      const r = validateBashSecurity(cmd);
+      assert.equal(r.safe, true, `expected allow, got: ${r.message}`);
+    });
+    it(`allows ${name} (detached default, no opt-in)`, () => {
+      const r = validateBashSecurity(cmd, { detachedMode: true });
+      assert.equal(r.safe, true, `expected allow, got: ${r.message}`);
+    });
+  }
+
+  it('STILL blocks genuine newline-separated commands (not a heredoc)', () => {
+    assert.equal(validateBashSecurity('cd /repo && make build\n./run_tests.sh').safe, false);
+  });
+  it('STILL blocks a real file redirect on a heredoc opening line', () => {
+    assert.equal(validateBashSecurity('cat <<EOF > /etc/passwd\nowned\nEOF').safe, false);
+  });
+  it('STILL blocks a plain output/input redirect', () => {
+    assert.equal(validateBashSecurity('echo hi > /etc/passwd').safe, false);
+    assert.equal(validateBashSecurity('cat < /etc/shadow').safe, false);
+  });
+  it('defense-in-depth: destructive content in a heredoc body is still caught by the nuclear guard', () => {
+    // validateBashSecurity classifies structure; the bash tool runs detectNuclearCommand on the
+    // RAW command first, so an executable heredoc (bash/sh/python) can never smuggle a nuke.
+    assert.equal(detectNuclearCommand('bash <<EOF\nrm -rf /\nEOF').blocked, true);
+    assert.equal(detectNuclearCommand('sh <<SH\n:(){ :|:& };:\nSH').blocked, true);
+  });
+});
+
+describe('stripHeredocBodies (ui#26)', () => {
+  it('removes the <<WORD operator and body, keeping the rest of the opening line', () => {
+    assert.equal(stripHeredocBodies('cat <<EOF\nhi\nEOF'), 'cat   __HEREDOC__');
+    assert.equal(stripHeredocBodies('cat <<EOF | grep x\na\nEOF'), 'cat   | grep x __HEREDOC__');
+  });
+  it('leaves a command with no heredoc untouched', () => {
+    assert.equal(stripHeredocBodies('echo hello'), 'echo hello');
+    assert.equal(stripHeredocBodies('cd a && b\nc'), 'cd a && b\nc');
+  });
+  it('leaves an unterminated heredoc as-is (still guarded by the newline check)', () => {
+    const cmd = 'cat <<EOF\nno closing delimiter here';
+    assert.equal(stripHeredocBodies(cmd), cmd);
+    assert.equal(validateBashSecurity(cmd).safe, false);
+  });
+  it('does not treat a << with no delimiter line as a heredoc', () => {
+    assert.equal(stripHeredocBodies('echo "<<EOF"'), 'echo "<<EOF"');
+  });
+});
 
 describe('validateBashSecurity — detached mode relaxation (opt-in)', () => {
   // -----------------------------------------------------------------------
