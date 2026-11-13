@@ -80,7 +80,7 @@ export type {
 } from './types';
 export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType } from './types';
 export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES } from './types';
-export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, requiresResponsesAPI, THINKING_LEVELS, REVIEW_EFFORT_LEVELS } from './model-capabilities';
+export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, THINKING_LEVELS, REVIEW_EFFORT_LEVELS } from './model-capabilities';
 export { PERMISSION_MODES, BASH_CLASSIFICATIONS } from './permissions';
 export { detectProvider, listModels, validateModel } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs } from './config';

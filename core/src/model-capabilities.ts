@@ -295,20 +295,66 @@ export function huggingfaceRepoCandidates(modelId: string, records: Record<strin
   return out;
 }
 
+/**
+ * Parse a Claude model id into family/major/minor, ignoring any trailing date snapshot
+ * (…-YYYYMMDD or …@YYYYMMDD). A flat regex cannot do this reliably because an 8-digit
+ * date segment looks like a very large minor version — so we split the post-major segments
+ * and treat only a 1-2 digit leading segment as the minor version.
+ *
+ * Examples:
+ *   claude-sonnet-4-5            -> { sonnet, 4, 5 }
+ *   claude-sonnet-4-5-20251022  -> { sonnet, 4, 5 }   (date ignored)
+ *   claude-sonnet-4-20250514    -> { sonnet, 4, 0 }   (bare 4.0, dated — NOT minor 20250514)
+ *   claude-opus-4               -> { opus, 4, 0 }
+ *   claude-opus-5-5             -> { opus, 5, 5 }
+ *   openrouter/anthropic/claude-sonnet-4-6 -> { sonnet, 4, 6 }  (unanchored)
+ */
+export function parseClaudeVersion(
+  modelId: string,
+): { family: string; major: number; minor: number } | null {
+  if (typeof modelId !== 'string') return null;
+  // Simple anchor (no nested quantifier → no ReDoS); the trailing version segments are parsed by
+  // splitting on '-' rather than a `(?:-\d+)*` group.
+  const m = /claude-(opus|sonnet|haiku|fable|mythos)-(\d+)/i.exec(modelId);
+  if (!m) return null;
+  const family = m[1].toLowerCase();
+  const major = parseInt(m[2], 10);
+  const after = modelId.slice(m.index + m[0].length); // e.g. '-5', '-5-20251022', '-20250514', ''
+  const segs = after.split('-').filter(Boolean);
+  // A 1-2 digit leading segment is the minor version; a longer run (a …-YYYYMMDD date) is not.
+  const minor = segs.length > 0 && /^\d{1,2}$/.test(segs[0]) ? parseInt(segs[0], 10) : 0;
+  return { family, major, minor };
+}
+
+/**
+ * Capabilities for a thinking-capable Claude model, classified by version. Adaptive thinking
+ * (`thinking: { type:'adaptive' }`) is supported ONLY on Claude 4.6+ and the 5.x family; the
+ * pre-4.6 Claude 4.x models (opus 4/4.1/4.5, sonnet 4/4.5) REJECT adaptive thinking with an
+ * HTTP 400 ("adaptive thinking is not supported on this model") and must use the legacy
+ * `{ type:'enabled', budget_tokens }` shape instead. This split is exactly what the
+ * @ai-sdk/anthropic provider's own model metadata encodes (supportsAdaptiveThinking) — ui#24.
+ * Returns null for non-reasoning Claude families (e.g. haiku), which keep thinking off.
+ */
+export function claudeReasoningCapabilities(modelId: string): ModelCapabilities | null {
+  const v = parseClaudeVersion(modelId);
+  if (!v) return null;
+  // Current reasoning scope: Opus / Sonnet. Other families (haiku, …) stay non-reasoning.
+  if (v.family !== 'opus' && v.family !== 'sonnet') return null;
+  const supportsAdaptiveThinking = v.major >= 5 || (v.major === 4 && v.minor >= 6);
+  return {
+    reasoning: true,
+    defaultThinkingLevel: 'medium',
+    supportsAdaptiveThinking,
+    requiresTemperatureOne: true,
+    temperatureMustBeUnset: false,
+    maxThinkingBudget: 128000,
+  };
+}
+
 const REASONING_MODELS: Array<{
   pattern: RegExp;
   capabilities: ModelCapabilities;
 }> = [
-  // Anthropic Claude 4.x — adaptive thinking
-  { pattern: /claude-opus-4/,
-    capabilities: { reasoning: true, defaultThinkingLevel: 'medium',
-      supportsAdaptiveThinking: true, requiresTemperatureOne: true,
-      temperatureMustBeUnset: false, maxThinkingBudget: 128000 } },
-  { pattern: /claude-sonnet-4/,
-    capabilities: { reasoning: true, defaultThinkingLevel: 'medium',
-      supportsAdaptiveThinking: true, requiresTemperatureOne: true,
-      temperatureMustBeUnset: false, maxThinkingBudget: 128000 } },
-
   // OpenAI reasoning models — reasoning_effort
   { pattern: /^o1($|-)/,
     capabilities: { reasoning: true, defaultThinkingLevel: 'medium',
@@ -430,6 +476,11 @@ export function getModelCapabilities(modelId: string): ModelCapabilities | null 
   if (typeof modelId !== 'string') return null;
   const dynamic = dynamicCapabilities.get(modelId.toLowerCase());
   if (dynamic !== undefined) return dynamic;
+  // Claude thinking classification is version-aware (adaptive is 4.6+/5.x; pre-4.6 uses
+  // legacy budget_tokens — ui#24), which a flat regex can't do without mis-reading dated
+  // snapshots. Handle it before the generic pattern table.
+  const claudeCaps = claudeReasoningCapabilities(modelId);
+  if (claudeCaps) return claudeCaps;
   for (const entry of REASONING_MODELS) {
     if (entry.pattern.test(modelId)) {
       return entry.capabilities;
