@@ -17,7 +17,7 @@ export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIn
 export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, estimateUsageCost } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest } from './cost-tracker';
 export {
-  resolveConfigDir, projectStateDir, projectSlug, journalPathFor, subagentJournalPathFor,
+  resolveConfigDir, migrateLegacyDataDir, projectStateDir, projectSlug, journalPathFor, subagentJournalPathFor,
   toReferenceToolName, toReferenceModelId, buildUsageFields,
   buildAssistantEntry, buildUserEntry, appendEntry,
   dashboardConfigPath, registerDataDir, maybeRegisterDataDir,

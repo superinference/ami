@@ -151,6 +151,10 @@ export interface ToolContext {
    *  it reflects the just-granted dir. Absent/empty → confined to cwd only (the default
    *  for bare engines and tests with no permission manager). */
   allowedReadRoots?: string[];
+  /** Env vars exported into the `bash` tool's subprocess for the active skill — notably
+   *  CLAUDE_SKILL_DIR (and CLAUDE_PLUGIN_ROOT for plugin-packaged skills), so imported
+   *  Claude-Code skills that shell out via `$CLAUDE_SKILL_DIR/scripts/...` work (issue #22). */
+  skillEnv?: Record<string, string>;
   abortSignal: AbortSignal;
   onProgress?: (data: string) => void;
   /** Tracks file paths that have been read during this session.
