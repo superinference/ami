@@ -6,6 +6,7 @@ import * as os from 'os';
 
 import { SessionManager } from '../src/session';
 import type { Session } from '../src/session';
+import { projectStateDir } from '../src/reference-journal';
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'si-session-test-'));
@@ -166,9 +167,8 @@ describe('SessionManager', () => {
     assert.ok(ids.size > 1, 'rapid newId() calls should produce distinct IDs');
   });
 
-  it('getSessionDir returns the configured directory', () => {
-    const dir = sm.getSessionDir();
-    assert.ok(dir.includes('.ami'));
+  it('getSessionDir returns the global per-project sessions dir', () => {
+    assert.equal(sm.getSessionDir(), projectStateDir(tmpDir, 'sessions'));
   });
 
   it('preserves full long user content across save/load via blob offload (H14)', () => {

@@ -141,6 +141,16 @@ export interface SandboxPolicy {
 
 export interface ToolContext {
   cwd: string;
+  /** Absolute paths/dirs OUTSIDE the launch cwd that the permission layer has already
+   *  granted read access to for this call — via `/add-dir`, `--context-file`/`--image`,
+   *  an approved out-of-workspace prompt, or auto-allow/yolo. The core path guards treat
+   *  these as in-bounds in ADDITION to cwd, so a skill loaded from an external folder
+   *  (e.g. ~/.ami/plugins/<name>) can read its own bundled resources. Populated by the
+   *  tool executor from PermissionManager.getAllowedReadRoots() right AFTER the per-call
+   *  permission check (which is what asks/denies/auto-allows and registers the root), so
+   *  it reflects the just-granted dir. Absent/empty → confined to cwd only (the default
+   *  for bare engines and tests with no permission manager). */
+  allowedReadRoots?: string[];
   abortSignal: AbortSignal;
   onProgress?: (data: string) => void;
   /** Tracks file paths that have been read during this session.
@@ -470,7 +480,7 @@ export interface EngineConfig {
   tokenBudget?: number;
   /** Resume a specific session. When set, the engine loads its messages on init. */
   sessionId?: string;
-  /** Override the default session directory ({cwd}/.ami/sessions/). */
+  /** Override the default session directory (~/.ami/projects/<cwd-slug>/sessions/). */
   sessionDir?: string;
   /** Permission mode: 'ask' (default), 'auto-allow', or 'deny-all'. */
   permissionMode?: string;

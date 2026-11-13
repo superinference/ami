@@ -19,7 +19,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { assertPathWithin } from './session';
+import { assertPathWithin } from './path-safety';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
 export const COMPAT_VERSION = '2.1.307';
@@ -76,6 +76,19 @@ export function projectSlug(cwd: string): string {
 /** Sanitize a session id for use as a filename (no separators / traversal). */
 function sanitizeId(id: string): string {
   return id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
+}
+
+/**
+ * The GLOBAL per-project state dir — `<configDir>/projects/<cwd-slug>/` — mirroring Claude Code's
+ * `~/.claude/projects/<cwd-slug>/`. All per-project RUNTIME state (session transcripts, resume
+ * blobs, checkpoints, tasks, plans, memory, …) lives here keyed by cwd slug, so the in-repo
+ * `<cwd>/.ami/` holds only committed CONFIG. An optional `sub` names a subfolder (e.g. 'sessions').
+ */
+export function projectStateDir(cwd: string, sub = '', env: NodeJS.ProcessEnv = process.env): string {
+  const base = path.join(resolveConfigDir(env), 'projects', projectSlug(cwd));
+  const dir = sub ? path.join(base, sub) : base;
+  assertPathWithin(dir, base);
+  return dir;
 }
 
 /** Absolute path of a session's journal file under <configDir>/projects/<slug>/. */

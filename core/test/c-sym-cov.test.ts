@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { projectStateDir } from '../src/reference-journal';
 
 import {
   getWorkspaceIndexer,
@@ -282,7 +283,7 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('loads stored tasks and falls back to nextId=1 when stored nextId is falsy', () => {
-    const sdir = path.join(dir, '.ami');
+    const sdir = projectStateDir(dir);
     fs.mkdirSync(sdir, { recursive: true });
     fs.writeFileSync(
       path.join(sdir, 'tasks.json'),
@@ -299,7 +300,7 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('loads a persisted file with an empty task list', () => {
-    const sdir = path.join(dir, '.ami');
+    const sdir = projectStateDir(dir);
     fs.mkdirSync(sdir, { recursive: true });
     fs.writeFileSync(
       path.join(sdir, 'tasks.json'),
@@ -310,7 +311,7 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('ignores an invalid tasks.json (load catch arm)', () => {
-    const sdir = path.join(dir, '.ami');
+    const sdir = projectStateDir(dir);
     fs.mkdirSync(sdir, { recursive: true });
     fs.writeFileSync(path.join(sdir, 'tasks.json'), '{ not valid json');
     setTaskPersistPath(dir);
@@ -318,17 +319,18 @@ describe('task_tracker — disk load/save branches', () => {
   });
 
   it('swallows a save failure when the persist directory cannot be created', async () => {
-    // Point the persist root at a regular file so mkdir of its .ami
-    // child throws ENOTDIR, exercising saveToDisk's catch arm.
-    const asFile = path.join(dir, 'afile');
-    fs.writeFileSync(asFile, 'x');
-    setTaskPersistPath(asFile);
+    // Put a regular FILE where the global per-project state dir should be, so mkdir of the
+    // tasks dir throws ENOTDIR — exercising saveToDisk's catch arm.
+    const blocker = projectStateDir(dir);
+    fs.mkdirSync(path.dirname(blocker), { recursive: true });
+    fs.writeFileSync(blocker, 'x');
+    setTaskPersistPath(dir);
     const r = await taskTrackerTool.execute(
       { action: 'create', subject: 'nofs' },
       ctx(),
     );
     assert.ok(!r.isError);
-    assert.ok(!fs.existsSync(path.join(asFile, '.ami', 'tasks.json')));
+    assert.ok(!fs.existsSync(path.join(blocker, 'tasks.json')));
   });
 
   it('renders the default icon for an unrecognized status', async () => {

@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 
 /**
@@ -24,7 +25,7 @@ export function spillToolText(cwd: string, prefix: string, text: string, limit: 
   let spillFile: string | null = null;
   let errCode: string | undefined;
   try {
-    const spillDir = path.join(cwd || process.cwd(), '.ami', 'tool-results');
+    const spillDir = projectStateDir(cwd || process.cwd(), 'tool-results');
     fs.mkdirSync(spillDir, { recursive: true });
     spillFile = path.join(spillDir, `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.txt`);
     fs.writeFileSync(spillFile, text, 'utf-8');

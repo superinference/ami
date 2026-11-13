@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { projectStateDir } from '../reference-journal';
 import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache } from './workflow-runtime';
 import { SUBAGENT_RETURN_DIRECTIVE } from './task';
 import * as fs from 'fs';
@@ -88,7 +89,7 @@ export const workflowTool: ToolDefinition = {
       if (pm) {
         taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
         const label = String(opts?.label || prompt).slice(0, 80);
-        outputPath = path.join(context.cwd, '.ami', 'tasks', `${taskId}.out`);
+        outputPath = path.join(projectStateDir(context.cwd, 'tasks'), `${taskId}.out`);
         try { fs.mkdirSync(path.dirname(outputPath), { recursive: true }); } catch { /* ok */ }
         pm.registerAgent(taskId, {
           command: `[agent] ${label}`,

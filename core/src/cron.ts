@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { projectStateDir } from './reference-journal';
 import * as path from 'path';
 import { log as coreLog } from './logger';
 
@@ -55,8 +56,8 @@ export class CronScheduler {
 
   constructor(cwd: string, sessionId?: string) {
     this.cwd = cwd;
-    this.persistPath = path.join(cwd, '.ami', 'scheduled_tasks.json');
-    this.lockPath = path.join(cwd, '.ami', 'cron.lock');
+    this.persistPath = path.join(projectStateDir(cwd), 'scheduled_tasks.json');
+    this.lockPath = path.join(projectStateDir(cwd), 'cron.lock');
     this.sessionId = sessionId || `session_${process.pid}_${Date.now().toString(36)}`;
     this.loadDurable();
   }

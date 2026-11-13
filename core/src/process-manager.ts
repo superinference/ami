@@ -1,4 +1,5 @@
 import * as child_process from 'child_process';
+import { projectStateDir } from './reference-journal';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -127,7 +128,7 @@ export class ProcessManager extends EventEmitter {
 
   constructor(cwd: string) {
     super();
-    this.tasksDir = path.join(cwd, '.ami', 'tasks');
+    this.tasksDir = projectStateDir(cwd, 'tasks');
     fs.mkdirSync(this.tasksDir, { recursive: true });
   }
 

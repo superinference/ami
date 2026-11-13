@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 import { MemoryManager, parseFrontmatter } from '../src/memory';
+import { projectStateDir } from '../src/reference-journal';
 
 let tmpDir: string;
 
@@ -207,7 +208,7 @@ describe('MemoryManager — injection detection in instructions', () => {
   });
 
   it('sanitizes memory file content for injections', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'injected.md'),
@@ -321,7 +322,7 @@ describe('MemoryManager — saveMemory edge cases', () => {
     const mgr = new MemoryManager(tmpDir);
     mgr.saveMemory('Test!@#$%^&*()', 'content', 'desc', 'user');
 
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     const files = fs.readdirSync(memDir);
     assert.equal(files.length, 1);
     assert.ok(!files[0].includes('!'));
@@ -333,7 +334,7 @@ describe('MemoryManager — saveMemory edge cases', () => {
     mgr.saveMemory('test_mem', 'first version', 'desc', 'project');
     mgr.saveMemory('test_mem', 'second version', 'desc', 'project');
 
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     const files = fs.readdirSync(memDir);
     assert.equal(files.length, 1);
 
@@ -378,7 +379,7 @@ describe('MemoryManager — session memory', () => {
     const mgr = new MemoryManager(tmpDir);
     mgr.saveSessionMemory('empty-session', []);
 
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     assert.ok(!fs.existsSync(memDir) || fs.readdirSync(memDir).length === 0);
   });
 
@@ -392,7 +393,7 @@ describe('MemoryManager — session memory', () => {
 
     mgr.saveSessionMemory('grouped-session', facts);
 
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     const content = fs.readFileSync(
       path.join(memDir, 'session-grouped-session.md'),
       'utf-8',
@@ -409,14 +410,14 @@ describe('MemoryManager — session memory', () => {
 
     mgr.saveSessionMemory('session!@#special', facts);
 
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     const files = fs.readdirSync(memDir);
     assert.equal(files.length, 1);
     assert.ok(!files[0].includes('!'));
   });
 
   it('loadSessionMemory skips invalid categories', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     const content = `---
@@ -440,7 +441,7 @@ type: project
   });
 
   it('loadSessionMemory handles malformed fact lines', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     const content = `---
@@ -462,7 +463,7 @@ type: project
   });
 
   it('loadSessionMemory handles NaN confidence', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     const content = `---
@@ -490,7 +491,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   afterEach(() => { cleanupTmpDir(tmpDir); });
 
   it('formats memory without type tag when type is undefined', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'no_type.md'),
@@ -504,7 +505,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   });
 
   it('includes description as blockquote', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'with_desc.md'),
@@ -517,7 +518,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   });
 
   it('handles memory without description', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'no_desc.md'),
@@ -531,7 +532,7 @@ describe('MemoryManager — getMemoryContext formatting', () => {
   });
 
   it('handles memory without name (uses filename)', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(
       path.join(memDir, 'unnamed.md'),
@@ -619,7 +620,7 @@ describe('MemoryManager — loadMemories sorting', () => {
   afterEach(() => { cleanupTmpDir(tmpDir); });
 
   it('sorts memories newest first', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
 
     fs.writeFileSync(
@@ -643,7 +644,7 @@ describe('MemoryManager — loadMemories sorting', () => {
   });
 
   it('keeps the newest memory when dir exceeds MAX_MEMORY_FILES (200)', () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     for (let i = 0; i < 201; i++) {
       const n = String(i).padStart(3, '0');

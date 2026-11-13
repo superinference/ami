@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 
@@ -28,7 +29,7 @@ export function getTaskState(): Map<number, Task> {
 }
 
 export function setTaskPersistPath(cwd: string): void {
-  persistPath = path.join(cwd, '.ami', 'tasks.json');
+  persistPath = path.join(projectStateDir(cwd), 'tasks.json');
   loadFromDisk();
 }
 

@@ -18,6 +18,7 @@ import {
 } from '../src/session';
 import { SessionMemoryExtractor } from '../src/session-memory';
 import { MemoryManager } from '../src/memory';
+import { projectStateDir } from '../src/reference-journal';
 import type { ProviderConfig, Message } from '../src/types';
 import type { SessionFact } from '../src/session-memory';
 import type { StreamChunk } from '../src/types';
@@ -65,7 +66,7 @@ describe('SessionManager — default dir, ensureDir, truncation, preview', () =>
   it('uses the default .ami/sessions dir when no override given', () => {
     const cwd = mkTmp();
     const mgr = new SessionManager(cwd);
-    assert.equal(mgr.getSessionDir(), path.join(cwd, '.ami', 'sessions'));
+    assert.equal(mgr.getSessionDir(), projectStateDir(cwd, 'sessions'));
   });
 
   it('creates the session dir on save when it does not exist', () => {
@@ -628,7 +629,7 @@ describe('MemoryManager — instruction loading', () => {
 // memory.ts — memory loading age/stale/unreadable + context
 // ===========================================================================
 function writeMemory(cwd: string, name: string, body: string, ageDays = 0, desc = `desc ${name}`): void {
-  const memDir = path.join(cwd, '.ami', 'memory');
+  const memDir = projectStateDir(cwd, 'memory');
   fs.mkdirSync(memDir, { recursive: true });
   const fp = path.join(memDir, `${name}.md`);
   fs.writeFileSync(fp, `---\nname: ${name}\ndescription: ${desc}\ntype: project\n---\n\n${body}\n`);
@@ -643,7 +644,7 @@ describe('MemoryManager — memory loading + context', () => {
     const cwd = mkTmp();
     writeMemory(cwd, 'oldmem', 'ancient knowledge', 40);
     writeMemory(cwd, 'freshmem', 'recent knowledge', 0);
-    fs.mkdirSync(path.join(cwd, '.ami', 'memory', 'bogus.md')); // readFileSync -> EISDIR
+    fs.mkdirSync(path.join(projectStateDir(cwd, 'memory'), 'bogus.md')); // readFileSync -> EISDIR
     const mems = new MemoryManager(cwd).loadMemories();
     assert.ok(mems.find(m => m.name === 'oldmem')!.content.startsWith('[STALE'));
     assert.ok(!mems.find(m => m.name === 'freshmem')!.content.startsWith('[STALE'));
@@ -673,7 +674,7 @@ describe('MemoryManager — memory loading + context', () => {
 
   it('getMemoryContext includes team memories section', () => {
     const cwd = mkTmp();
-    const teamDir = path.join(cwd, '.ami', 'memory', 'team');
+    const teamDir = path.join(projectStateDir(cwd, 'memory'), 'team');
     fs.mkdirSync(teamDir, { recursive: true });
     fs.writeFileSync(path.join(teamDir, 't.md'), '---\nname: t\n---\n\nshared-team-fact');
     const ctx = new MemoryManager(cwd).getMemoryContext();
@@ -683,7 +684,7 @@ describe('MemoryManager — memory loading + context', () => {
 
   it('loadTeamMemories returns [] when a team entry is unreadable', () => {
     const cwd = mkTmp();
-    const teamDir = path.join(cwd, '.ami', 'memory', 'team');
+    const teamDir = path.join(projectStateDir(cwd, 'memory'), 'team');
     fs.mkdirSync(path.join(teamDir, 'dir.md'), { recursive: true }); // readFileSync -> EISDIR -> catch
     assert.deepEqual(new MemoryManager(cwd).loadTeamMemories(), []);
   });
@@ -709,7 +710,7 @@ describe('MemoryManager — memory loading + context', () => {
     // age. RED (no clamp): memoryAgeDays -> -1 -> freshness "-1 days ago".
     // GREEN (Math.max(0, …)): -> 0 -> "today".
     const cwd = mkTmp();
-    const memDir = path.join(cwd, '.ami', 'memory');
+    const memDir = projectStateDir(cwd, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     const fp = path.join(memDir, 'm-future.md');
     fs.writeFileSync(fp, '---\nname: m-future\ndescription: d\ntype: project\n---\n\nb\n');
@@ -749,7 +750,7 @@ describe('MemoryManager — relevance scoring', () => {
 
   it('scores memories that lack a description field', () => {
     const cwd = mkTmp();
-    const memDir = path.join(cwd, '.ami', 'memory');
+    const memDir = projectStateDir(cwd, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     // One memory with NO description frontmatter -> description-fallback branch.
     fs.writeFileSync(path.join(memDir, 'nodesc.md'), '---\nname: nodesc\ntype: project\n---\n\ndatabase tuning notes');
@@ -848,7 +849,7 @@ describe('MemoryManager — session memory, rules, index', () => {
 
     // MEMORY.md as a directory -> writeFile throws -> best-effort catch, no throw.
     const cwd2 = mkTmp();
-    fs.mkdirSync(path.join(cwd2, '.ami', 'memory', 'MEMORY.md'), { recursive: true });
+    fs.mkdirSync(path.join(projectStateDir(cwd2, 'memory'), 'MEMORY.md'), { recursive: true });
     await assert.doesNotReject(() => new MemoryManager(cwd2).addToMemoryIndex(cwd2, '- [x](x.md)'));
   });
 });

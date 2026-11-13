@@ -396,7 +396,7 @@ export const fileEditTool: ToolDefinition = {
       return { output: `Error: Cannot edit device or special file: ${filePath}`, isError: true };
     }
 
-    const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd);
+    const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd, context.allowedReadRoots);
     if (pathError) return pathError;
 
     if (isBlockedPath(resolved)) {

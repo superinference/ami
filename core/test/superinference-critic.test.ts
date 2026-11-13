@@ -8,6 +8,7 @@ import { Critic } from '../src/superinference/critic';
 import { MemoryGate } from '../src/superinference/memory-gate';
 import { Retriever } from '../src/superinference/retriever';
 import { MemoryManager } from '../src/memory';
+import { projectStateDir } from '../src/reference-journal';
 import type { CriticDecision } from '../src/superinference/types';
 
 // ---------------------------------------------------------------------------
@@ -247,7 +248,7 @@ describe('MemoryGate persistTo()', () => {
 
     gate.persistTo(memory, 'Fix critical bug');
 
-    const memoryDir = path.join(tmpDir, '.ami', 'memory');
+    const memoryDir = projectStateDir(tmpDir, 'memory');
     assert.ok(fs.existsSync(memoryDir), 'Memory directory should exist');
 
     const files = fs.readdirSync(memoryDir).filter(f => f.endsWith('.md'));
@@ -268,7 +269,7 @@ describe('MemoryGate persistTo()', () => {
 
     gate.persistTo(memory, 'Empty task');
 
-    const memoryDir = path.join(tmpDir, '.ami', 'memory');
+    const memoryDir = projectStateDir(tmpDir, 'memory');
     assert.equal(fs.existsSync(memoryDir), false, 'Memory directory should not be created');
 
     fs.rmSync(tmpDir, { recursive: true, force: true });

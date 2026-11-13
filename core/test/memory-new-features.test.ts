@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { MemoryManager, matchesPaths, parseFrontmatter, MEMORY_TYPES, sanitizeMemoryContent } from '../src/memory';
+import { projectStateDir } from '../src/reference-journal';
 
 let tmpDir: string;
 
@@ -137,7 +138,7 @@ describe('MemoryManager — loadRulesDirectory', () => {
 
 describe('MemoryManager — readMemoryIndex', () => {
   it('reads MEMORY.md index', async () => {
-    const memDir = path.join(tmpDir, '.ami', 'memory');
+    const memDir = projectStateDir(tmpDir, 'memory');
     fs.mkdirSync(memDir, { recursive: true });
     fs.writeFileSync(path.join(memDir, 'MEMORY.md'), '- [Test](test.md) — A test memory\n- [Other](other.md) — Another memory');
 
@@ -331,7 +332,7 @@ describe('memory modified timestamp', () => {
   it('saveMemory includes a modified ISO timestamp in frontmatter', () => {
     const mm = new MemoryManager(tmpDir);
     mm.saveMemory('test-modified', 'some content', 'test description', 'project');
-    const filePath = path.join(tmpDir, '.ami', 'memory', 'test-modified.md');
+    const filePath = path.join(projectStateDir(tmpDir, 'memory'), 'test-modified.md');
     const content = fs.readFileSync(filePath, 'utf-8');
     assert.ok(content.includes('modified:'), 'frontmatter must include modified field');
     const match = content.match(/modified:\s*(.+)/);
@@ -344,7 +345,7 @@ describe('memory modified timestamp', () => {
 
   it('updating a memory changes the modified timestamp', async () => {
     const mm = new MemoryManager(tmpDir);
-    const filePath = path.join(tmpDir, '.ami', 'memory', 'test-update.md');
+    const filePath = path.join(projectStateDir(tmpDir, 'memory'), 'test-update.md');
 
     mm.saveMemory('test-update', 'version 1', 'desc', 'project');
     const first = fs.readFileSync(filePath, 'utf-8');
@@ -368,7 +369,7 @@ describe('memory modified timestamp', () => {
   it('frontmatter contains all expected fields', () => {
     const mm = new MemoryManager(tmpDir);
     mm.saveMemory('fields-check', 'body text', 'a description', 'user');
-    const filePath = path.join(tmpDir, '.ami', 'memory', 'fields-check.md');
+    const filePath = path.join(projectStateDir(tmpDir, 'memory'), 'fields-check.md');
     const content = fs.readFileSync(filePath, 'utf-8');
     assert.ok(content.includes('name: fields-check'));
     assert.ok(content.includes('description: a description'));

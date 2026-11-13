@@ -20,6 +20,7 @@ import {
   SUBAGENT_RETURN_DIRECTIVE,
 } from '../src/tools/task';
 import { scoutTool } from '../src/tools/scout';
+import { projectStateDir } from '../src/reference-journal';
 import {
   teamCreateTool,
   teamDeleteTool,
@@ -480,7 +481,7 @@ describe('taskTool — background lifecycle', () => {
       );
       const taskId = res.output.match(/agent-[a-f0-9]+/)![0];
       await sleep(400);
-      const outputPath = path.join(tmp, '.ami', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(projectStateDir(tmp, 'tasks'), `${taskId}.output`);
       const content = fs.readFileSync(outputPath, 'utf-8');
       assert.ok(content.includes('stalled'), `stall notice must be written, got: "${content}"`);
       assert.ok(shutdownCalled, 'stalled subagent engine must be shut down');
@@ -685,7 +686,7 @@ describe('taskTool — abort & hook rejection handling', () => {
             // Remove the tasks dir created synchronously by execute, so the
             // background IIFE's fs.openSync throws ENOENT and the IIFE rejects
             // into its trailing .catch(() => {}).
-            fs.rmSync(path.join(tmp, '.ami', 'tasks'), { recursive: true, force: true });
+            fs.rmSync(projectStateDir(tmp, 'tasks'), { recursive: true, force: true });
             return { submit: gen([{ type: 'text_delta', text: 'never written' }]) };
           },
         }),
@@ -739,7 +740,7 @@ describe('taskTool — background event streaming', () => {
       assert.equal(getAgentByName('bg-rich'), taskId, 'bg agent name registered');
       assert.equal(recorded, 1, 'limiter.recordSpawn called on bg path');
       await sleep(120);
-      const content = fs.readFileSync(path.join(tmp, '.ami', 'tasks', `${taskId}.output`), 'utf-8');
+      const content = fs.readFileSync(path.join(projectStateDir(tmp, 'tasks'), `${taskId}.output`), 'utf-8');
       assert.ok(content.includes('[thinking] '), 'thinking_delta written');
       assert.ok(content.includes('answer body'), 'text_delta written');
       assert.ok(content.includes('ls -la'), 'tool_use_start command summary');
@@ -770,7 +771,7 @@ describe('taskTool — background event streaming', () => {
       );
       const taskId = res.output.match(/agent-[a-f0-9]+/)![0];
       await sleep(80);
-      const content = fs.readFileSync(path.join(tmp, '.ami', 'tasks', `${taskId}.output`), 'utf-8');
+      const content = fs.readFileSync(path.join(projectStateDir(tmp, 'tasks'), `${taskId}.output`), 'utf-8');
       assert.ok(content.includes('subagent produced no output'));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -949,7 +950,7 @@ describe('scoutTool', () => {
       // Pre-seed the cache so no clone happens; repoName derives from the raw repo string.
       const repoStr = 'file:///seeded/repo';
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const cached = path.join(work, '.ami', 'scout-cache', repoName);
+      const cached = path.join(projectStateDir(work, 'scout-cache'), repoName);
       fs.mkdirSync(cached, { recursive: true });
       fs.writeFileSync(path.join(cached, 'main.go'), 'package main\n');
 
@@ -967,7 +968,7 @@ describe('scoutTool', () => {
     try {
       const repoStr = 'octo/widget';
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const cached = path.join(work, '.ami', 'scout-cache', repoName);
+      const cached = path.join(projectStateDir(work, 'scout-cache'), repoName);
       fs.mkdirSync(cached, { recursive: true });
       fs.writeFileSync(path.join(cached, 'readme.md'), 'lowercase readme body\n');
       const r = await scoutTool.execute({ repo: repoStr }, ctx({ cwd: work }));
@@ -983,7 +984,7 @@ describe('scoutTool', () => {
     try {
       const repoStr = './local-thing';
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const cached = path.join(work, '.ami', 'scout-cache', repoName);
+      const cached = path.join(projectStateDir(work, 'scout-cache'), repoName);
       fs.mkdirSync(cached, { recursive: true });
       fs.writeFileSync(path.join(cached, 'x.py'), 'print(1)\n');
       const r = await scoutTool.execute({ repo: repoStr }, ctx({ cwd: work }));

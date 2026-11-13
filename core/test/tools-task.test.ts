@@ -6,6 +6,7 @@ import * as os from 'os';
 import { taskTool, resetAgentRegistry, SUBAGENT_SYSTEM_PROMPT, EXPLORE_SUBAGENT_SYSTEM_PROMPT, SUBAGENT_RETURN_DIRECTIVE } from '../src/tools/task';
 import type { ToolContext } from '../src/types';
 import { ProcessManager } from '../src/process-manager';
+import { projectStateDir } from '../src/reference-journal';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
@@ -363,7 +364,7 @@ describe('taskTool – run_in_background', () => {
 
       await new Promise(r => setTimeout(r, 100));
 
-      const outputPath = path.join(tmpDir, '.ami', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(projectStateDir(tmpDir, 'tasks'), `${taskId}.output`);
       const content = fs.readFileSync(outputPath, 'utf-8');
       assert.ok(content.includes('async result'));
     } finally {
@@ -535,7 +536,7 @@ describe('taskTool – background agents stream output incrementally (regression
 
       await new Promise(r => setTimeout(r, 100));
 
-      const outputPath = path.join(tmpDir, '.ami', 'tasks', `${taskId}.output`);
+      const outputPath = path.join(projectStateDir(tmpDir, 'tasks'), `${taskId}.output`);
       const midContent = fs.readFileSync(outputPath, 'utf-8');
       assert.ok(midContent.includes('partial result here'),
         `output file should contain streamed content during execution, got: "${midContent}"`);

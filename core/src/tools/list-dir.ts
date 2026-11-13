@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { isWithinWorkspaceRoots } from './tool-utils';
 
 const MAX_ENTRIES = 1000;
 
@@ -36,13 +37,16 @@ export const listDirTool: ToolDefinition = {
       : path.resolve(context.cwd, dirPath);
 
     const abs = path.resolve(resolved);
-    const cwdAbs = path.resolve(context.cwd);
-    if (abs !== cwdAbs && !abs.startsWith(cwdAbs + path.sep)) {
+    // In-bounds = launch cwd OR a permission-granted read root (so a skill loaded from an
+    // external folder can list its own bundle). The ungranted default is cwd-only.
+    if (!isWithinWorkspaceRoots(abs, context.cwd, context.allowedReadRoots)) {
       return { output: `Error: path "${dirPath}" is outside the workspace directory.`, isError: true };
     }
+    // Symlink-escape guard: a symlinked dir inside the bounds that resolves outside both
+    // cwd and every granted root is rejected (a pure prefix check would miss it).
     try {
       const real = fs.realpathSync(abs);
-      if (real !== cwdAbs && !real.startsWith(cwdAbs + path.sep)) {
+      if (!isWithinWorkspaceRoots(real, context.cwd, context.allowedReadRoots)) {
         return { output: `Error: path "${dirPath}" resolves outside the workspace via symlink.`, isError: true };
       }
     } catch {

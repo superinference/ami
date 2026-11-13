@@ -12,6 +12,7 @@ import {
 import { SessionMemoryExtractor } from '../src/session-memory';
 import type { StreamChunk, ProviderConfig, Message } from '../src/types';
 import { searchSessions } from '../src/session-search';
+import { projectStateDir } from '../src/reference-journal';
 import { listModelsDiagnostic } from '../src/model-registry';
 import { MODEL_PREFERENCE } from '../src/provider';
 
@@ -23,7 +24,7 @@ let memoryDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-cmemcov-'));
-  memoryDir = path.join(tmpDir, '.ami', 'memory');
+  memoryDir = projectStateDir(tmpDir, 'memory');
   fs.mkdirSync(memoryDir, { recursive: true });
 });
 
@@ -43,7 +44,7 @@ function writeMemory(name: string, body: string, description?: string): void {
 // ===========================================================================
 describe('session-search recencyMs invalid-timestamp tie-break', () => {
   it('ranks two equal-score results whose timestamps are unparseable', () => {
-    const sessionsDir = path.join(tmpDir, '.ami', 'sessions');
+    const sessionsDir = projectStateDir(tmpDir, 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
     // Two sessions, identical matching content => identical score, so the sort
     // comparator falls through to the recency tie-break, which calls recencyMs

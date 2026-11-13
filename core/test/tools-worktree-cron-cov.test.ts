@@ -36,6 +36,7 @@ import {
   TRAILER_REGEX,
   _gitCommitFs,
 } from '../src/tools/git-commit';
+import { projectStateDir } from '../src/reference-journal';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -723,7 +724,7 @@ describe('cron tools', () => {
     assert.match(r.output, /Recurring: true/);
     assert.match(r.output, /Durable: true/);
     // Persisted to disk because durable.
-    assert.ok(fs.existsSync(path.join(dir, '.ami', 'scheduled_tasks.json')));
+    assert.ok(fs.existsSync(path.join(projectStateDir(dir), 'scheduled_tasks.json')));
   });
 
   it('cron_create defaults recurring=true and durable=false when omitted', async () => {
@@ -805,7 +806,7 @@ describe('cron tools', () => {
 
   it('cron_list shows "N/A" for a durable job loaded without a nextRun', async () => {
     const dir = track(mkTmp());
-    const sidir = path.join(dir, '.ami');
+    const sidir = projectStateDir(dir);
     fs.mkdirSync(sidir, { recursive: true });
     fs.writeFileSync(
       path.join(sidir, 'scheduled_tasks.json'),
@@ -844,14 +845,16 @@ describe('plan_mode tool', () => {
     assert.match(r.output, /Entered plan mode/);
     assert.equal(isPlanModeActive(), true);
     const planFile = getPlanFilePath();
-    assert.ok(planFile && planFile.startsWith(path.join(dir, '.ami', 'plans')));
+    assert.ok(planFile && planFile.startsWith(projectStateDir(dir, 'plans')));
     assert.ok(fs.existsSync(path.dirname(planFile!)));
   });
 
   it('enter tolerates a plan-dir mkdir failure', async () => {
     const dir = track(mkTmp());
-    // Make .ami a FILE so mkdirSync(.ami/plans) throws.
-    fs.writeFileSync(path.join(dir, '.ami'), 'blocking file');
+    // Make the project state dir a FILE so mkdirSync(<stateDir>/plans) throws.
+    const base = projectStateDir(dir);
+    fs.mkdirSync(path.dirname(base), { recursive: true });
+    fs.writeFileSync(base, 'blocking file');
     const r = await planModeTool.execute({ action: 'enter' }, ctx({ cwd: dir }));
     assert.equal(r.isError, false);
     assert.match(r.output, /Entered plan mode/);
@@ -871,9 +874,9 @@ describe('plan_mode tool', () => {
     const r = await planModeTool.execute({ action: 'enter' });
     assert.equal(r.isError, false);
     const planFile = getPlanFilePath();
-    assert.ok(planFile && planFile.startsWith(path.join(cwd, '.ami', 'plans')));
-    // Clean up the plan file/dir created in the real cwd.
-    try { fs.rmSync(path.join(cwd, '.ami', 'plans'), { recursive: true, force: true }); } catch { /* ok */ }
+    assert.ok(planFile && planFile.startsWith(projectStateDir(cwd, 'plans')));
+    // Clean up the plan file/dir created for the real cwd.
+    try { fs.rmSync(projectStateDir(cwd, 'plans'), { recursive: true, force: true }); } catch { /* ok */ }
   });
 
   it('verify reports "not in plan mode" when inactive', async () => {

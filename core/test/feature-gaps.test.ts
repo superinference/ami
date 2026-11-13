@@ -6,6 +6,7 @@ import * as os from 'os';
 import { fileReadTool } from '../src/tools/file-read';
 import { resetTaskState, setTaskPersistPath } from '../src/tools/task-tracker';
 import { taskTrackerTool } from '../src/tools/task-tracker';
+import { projectStateDir } from '../src/reference-journal';
 import { HookManager } from '../src/hooks';
 import type { ToolContext } from '../src/types';
 
@@ -123,7 +124,7 @@ describe('task_tracker – disk persistence', () => {
       ctx({ cwd: tmpDir }),
     );
 
-    const persistFile = path.join(tmpDir, '.ami', 'tasks.json');
+    const persistFile = path.join(projectStateDir(tmpDir), 'tasks.json');
     assert.ok(fs.existsSync(persistFile), 'tasks.json should exist');
 
     const data = JSON.parse(fs.readFileSync(persistFile, 'utf-8'));
@@ -143,7 +144,7 @@ describe('task_tracker – disk persistence', () => {
       ctx({ cwd: tmpDir }),
     );
 
-    const persistFile = path.join(tmpDir, '.ami', 'tasks.json');
+    const persistFile = path.join(projectStateDir(tmpDir), 'tasks.json');
     const data = JSON.parse(fs.readFileSync(persistFile, 'utf-8'));
     assert.ok(data.tasks.some((t: any) => t.status === 'in_progress'));
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -176,7 +177,7 @@ describe('task_tracker – disk persistence', () => {
       ctx({ cwd: tmpDir }),
     );
 
-    const persistFile = path.join(tmpDir, '.ami', 'tasks.json');
+    const persistFile = path.join(projectStateDir(tmpDir), 'tasks.json');
     const data = JSON.parse(fs.readFileSync(persistFile, 'utf-8'));
     assert.equal(data.tasks.length, 0);
     fs.rmSync(tmpDir, { recursive: true, force: true });

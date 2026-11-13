@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { workflowTool } from '../src/tools/workflow';
 import { SUBAGENT_RETURN_DIRECTIVE } from '../src/tools/task';
+import { projectStateDir } from '../src/reference-journal';
 
 // Targets the agentHandler path in workflow.ts that only runs when BOTH an
 // engine factory AND a processManager are present: taskId/registration (src
@@ -108,7 +109,7 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
     // finish('completed', ...) updated the entry and wrote the output file.
     assert.equal(calls.updates.length, 1);
     assert.deepEqual(calls.updates[0].updates, { status: 'completed', exitCode: 0 });
-    const outFile = path.join(cwd, '.ami', 'tasks', `${reg.taskId}.out`);
+    const outFile = path.join(projectStateDir(cwd, 'tasks'), `${reg.taskId}.out`);
     assert.equal(fs.readFileSync(outFile, 'utf-8'), 'Hello world');
   });
 
@@ -147,7 +148,7 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
 
     // The failed agent still wrote its (empty) output as '(no output)'.
     const reg = calls.registered[0];
-    const outFile = path.join(cwd, '.ami', 'tasks', `${reg.taskId}.out`);
+    const outFile = path.join(projectStateDir(cwd, 'tasks'), `${reg.taskId}.out`);
     assert.equal(fs.readFileSync(outFile, 'utf-8'), '(no output)');
 
     // shutdown() ran on the failure path too.
