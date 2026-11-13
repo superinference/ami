@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { resolveConfigDir } from './reference-journal';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
@@ -656,7 +657,7 @@ export class HookManager extends EventEmitter {
     try {
       const { discoverPlugins } = require('./plugins');
       const pluginDirs: Array<[string, 'user' | 'project']> = [
-        [path.join(os.homedir(), '.ami', 'plugins'), 'user'],
+        [path.join(resolveConfigDir(), 'plugins'), 'user'],
         [path.join(cwd, '.ami', 'plugins'), 'project'],
       ];
       for (const [dir, src] of pluginDirs) {

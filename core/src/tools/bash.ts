@@ -456,7 +456,7 @@ export function sanitizeEnvForSubprocess(env: Record<string, string | undefined>
   return out;
 }
 
-function scrubEnv(): NodeJS.ProcessEnv {
+function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   const env = sanitizeEnvForSubprocess({ ...process.env }) as NodeJS.ProcessEnv;
   env.GIT_EDITOR = 'false';
   env.GIT_PAGER = 'cat';
@@ -472,6 +472,9 @@ function scrubEnv(): NodeJS.ProcessEnv {
   env.MANPAGER = 'cat';
   delete env.FORCE_COLOR;
   env.NO_COLOR = '1';
+  // Active-skill env (e.g. CLAUDE_SKILL_DIR / CLAUDE_PLUGIN_ROOT) so imported Claude-Code skills
+  // that shell out via $CLAUDE_SKILL_DIR work (issue #22). Applied last; never stripped.
+  if (extra) for (const [k, v] of Object.entries(extra)) env[k] = v;
   return env;
 }
 
@@ -684,7 +687,7 @@ export const bashTool: ToolDefinition = {
       const taskId = context.processManager.spawn(effectiveCommand, {
         cwd: context.cwd,
         description: desc,
-        env: scrubEnv(),
+        env: scrubEnv(context.skillEnv),
         timeoutMs: bgTimeoutMs,
       });
       const task = context.processManager.get(taskId);
@@ -698,7 +701,7 @@ export const bashTool: ToolDefinition = {
       cwd: context.cwd,
       timeout,
       abortSignal: context.abortSignal,
-      env: scrubEnv(),
+      env: scrubEnv(context.skillEnv),
       onData: context.onProgress ? (chunk) => context.onProgress!(chunk) : undefined,
     });
 
@@ -729,7 +732,7 @@ export const bashTool: ToolDefinition = {
         const taskId = context.processManager.spawn(effectiveCommand, {
           cwd: context.cwd,
           description: `[auto-bg] ${command.slice(0, 60)}`,
-          env: scrubEnv(),
+          env: scrubEnv(context.skillEnv),
         });
         return {
           output: sanitizeToolOutput(

@@ -11,7 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   COMPAT_VERSION,
-  resolveConfigDir, resolveReadDirs, projectSlug, journalPathFor, subagentJournalPathFor,
+  resolveConfigDir, resolveReadDirs, migrateLegacyDataDir, projectSlug, journalPathFor, subagentJournalPathFor,
   AMI_TO_CLAUDE_TOOL, toReferenceToolName, toReferenceModelId,
   buildUsageFields, buildAssistantEntry, buildUserEntry,
   appendEntry, dashboardConfigPath, registerDataDir, maybeRegisterDataDir,
@@ -251,5 +251,43 @@ describe('dashboard-config registration', () => {
     const ok = maybeRegisterDataDir({ SUPERINFERENCE_DATA_DIR: '/data', SUPERINFERENCE_DASHBOARD_CONFIG: cfg } as any);
     assert.equal(ok, true);
     assert.deepEqual(JSON.parse(fs.readFileSync(cfg, 'utf8')).claudeConfigDirs, ['/data']);
+  });
+});
+
+describe('migrateLegacyDataDir (issue #21 defect 1)', () => {
+  it('moves durable config from ~/.superinference to ~/.ami, leaves runtime orphaned, is idempotent', () => {
+    const home = mkTmp();
+    const legacy = path.join(home, '.superinference');
+    // durable config (should migrate) + transient runtime (should NOT)
+    fs.mkdirSync(path.join(legacy, 'plugins', 'impeccable'), { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'plugins', 'impeccable', 'marker'), 'x');
+    fs.mkdirSync(path.join(legacy, 'installed-skills'), { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'marketplaces.json'), '{}');
+    fs.mkdirSync(path.join(legacy, 'sessions'), { recursive: true }); // runtime → stays orphaned
+
+    const moved = migrateLegacyDataDir({} as any, home);
+    assert.ok(moved.includes('plugins') && moved.includes('installed-skills') && moved.includes('marketplaces.json'));
+    assert.ok(fs.existsSync(path.join(home, '.ami', 'plugins', 'impeccable', 'marker')), 'plugin migrated');
+    assert.ok(!fs.existsSync(path.join(legacy, 'plugins')), 'legacy plugins moved out');
+    assert.ok(!fs.existsSync(path.join(home, '.ami', 'sessions')), 'runtime NOT migrated (orphaned by design)');
+    // Idempotent: a second run finds nothing to move.
+    assert.deepEqual(migrateLegacyDataDir({} as any, home), []);
+  });
+  it('never clobbers an existing ~/.ami target subdir', () => {
+    const home = mkTmp();
+    fs.mkdirSync(path.join(home, '.superinference', 'plugins', 'old'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.ami', 'plugins', 'new'), { recursive: true });
+    const moved = migrateLegacyDataDir({} as any, home);
+    assert.ok(!moved.includes('plugins'), 'existing .ami/plugins is preserved, not overwritten');
+    assert.ok(fs.existsSync(path.join(home, '.ami', 'plugins', 'new')));
+  });
+  it('is a no-op under an explicit data-dir override', () => {
+    const home = mkTmp();
+    fs.mkdirSync(path.join(home, '.superinference', 'plugins'), { recursive: true });
+    assert.deepEqual(migrateLegacyDataDir({ SUPERINFERENCE_DATA_DIR: '/x' } as any, home), []);
+    assert.deepEqual(migrateLegacyDataDir({ CLAUDE_CONFIG_DIR: '/y' } as any, home), []);
+  });
+  it('is a no-op when there is no legacy dir', () => {
+    assert.deepEqual(migrateLegacyDataDir({} as any, mkTmp()), []);
   });
 });

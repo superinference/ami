@@ -41,6 +41,37 @@ export function resolveConfigDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * One-time, idempotent migration of durable config from the pre-rename `~/.superinference` into
+ * `~/.ami` (issue #21 defect 1): the .superinference→.ami rename moved every plugin/skill/
+ * marketplace ROOT but no on-disk data, orphaning plugins installed by a pre-rename binary. We
+ * MOVE each durable subdir only when the target is absent (never clobber newer `.ami` data), and
+ * only for the DEFAULT data dir (an explicit CLAUDE_CONFIG_DIR/SUPERINFERENCE_DATA_DIR opts out).
+ * Best-effort; returns the names migrated. `homeDir` is injectable for tests.
+ */
+export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeDir: string = os.homedir()): string[] {
+  if ((env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) ||
+      (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim())) return [];
+  const legacy = path.join(homeDir, '.superinference');
+  const target = path.join(homeDir, '.ami');
+  if (!fs.existsSync(legacy)) return [];
+  const migrated: string[] = [];
+  // Durable, user-installed config only — NOT transient runtime (sessions/analytics/etc.), which
+  // is regenerated and legitimately orphaned by the rename.
+  for (const sub of ['plugins', 'marketplaces', 'marketplaces.json', 'installed-skills', 'skills', 'agents']) {
+    try {
+      const src = path.join(legacy, sub);
+      const dst = path.join(target, sub);
+      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+        fs.mkdirSync(target, { recursive: true });
+        fs.renameSync(src, dst);
+        migrated.push(sub);
+      }
+    } catch { /* best-effort — a failed migration must never block startup */ }
+  }
+  return migrated;
+}
+
+/**
  * Every data dir the Usage/spend view should READ from — so it aggregates spend across ALL
  * agents, not just ours: our own journal, Claude Code's (~/.claude), and any dirs registered
  * in the dashboard config. An explicit CLAUDE_CONFIG_DIR / SUPERINFERENCE_DATA_DIR override is
