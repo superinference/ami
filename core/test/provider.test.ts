@@ -1065,8 +1065,9 @@ describe('buildThinkingOptions format matches SDK expectations', () => {
     // `effort` is the only knob — so this never needs per-model-version changes again, and
     // it is exactly what the installed @ai-sdk/anthropic thinking schema accepts
     // ({ type: 'adaptive' } + sibling `effort`). The legacy { type:'enabled', budget_tokens }
-    // shape 400s on Opus 4.7/4.8, so it must not be produced for any adaptive model.
-    const result = buildThinkingOptions('claude-opus-4', { enabled: true, level: 'max', budgetTokens: 128000 });
+    // shape 400s on Opus 4.7/4.8, so it must not be produced for any adaptive model. Use an
+    // adaptive-capable model (4.6+); pre-4.6 Claude 4.x uses the legacy budget shape instead (ui#24).
+    const result = buildThinkingOptions('claude-opus-4-8', { enabled: true, level: 'max', budgetTokens: 128000 });
     const po = result.providerOptions as Record<string, any>;
     assert.ok(po, 'must return providerOptions');
     assert.ok(po.anthropic, 'must have anthropic namespace');

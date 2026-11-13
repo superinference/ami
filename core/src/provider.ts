@@ -1343,6 +1343,23 @@ export function buildThinkingOptions(
     };
   }
 
+  // Anthropic Claude PRE-4.6 (opus 4/4.1/4.5, sonnet 4/4.5): adaptive thinking is REJECTED
+  // with an HTTP 400 ("adaptive thinking is not supported on this model"), so these reasoning
+  // models must use the legacy { type:'enabled', budget_tokens } shape instead — ui#24. The
+  // budget is clamped below a conservative output ceiling so budget_tokens stays < max_tokens
+  // (Anthropic requires budget_tokens < max_tokens, floor 1024).
+  if (caps?.reasoning && /claude-(?:opus|sonnet)/i.test(modelId)) {
+    const resolved = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level, modelId);
+    const budgetTokens = Math.max(1024, Math.min(resolved, 24000));
+    return {
+      providerOptions: {
+        anthropic: {
+          thinking: { type: 'enabled' as const, budgetTokens },
+        },
+      },
+    };
+  }
+
   // OpenAI o-series — reasoning_effort via providerOptions
   if (caps?.temperatureMustBeUnset) {
     const effortMap: Record<string, string> = { low: 'low', medium: 'medium', high: 'high', max: 'high' };

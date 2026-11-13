@@ -22,8 +22,40 @@ import {
   OUTPUT_FIT_SAFETY_TOKENS,
   MIN_FITTED_OUTPUT_TOKENS,
   MIN_THINKING_BUDGET,
+  parseClaudeVersion,
+  claudeReasoningCapabilities,
   type ThinkingLevel,
 } from '../src/model-capabilities';
+
+describe('parseClaudeVersion (ui#24 — minor-version-aware, date-safe)', () => {
+  it('parses family/major/minor and ignores trailing date snapshots', () => {
+    assert.deepEqual(parseClaudeVersion('claude-sonnet-4-5'), { family: 'sonnet', major: 4, minor: 5 });
+    assert.deepEqual(parseClaudeVersion('claude-sonnet-4-5-20251022'), { family: 'sonnet', major: 4, minor: 5 });
+    // A bare-4.0 dated id: the 8-digit date must NOT be read as the minor version.
+    assert.deepEqual(parseClaudeVersion('claude-sonnet-4-20250514'), { family: 'sonnet', major: 4, minor: 0 });
+    assert.deepEqual(parseClaudeVersion('claude-opus-4'), { family: 'opus', major: 4, minor: 0 });
+    assert.deepEqual(parseClaudeVersion('claude-opus-5-5'), { family: 'opus', major: 5, minor: 5 });
+    assert.deepEqual(parseClaudeVersion('claude-fable-5-2'), { family: 'fable', major: 5, minor: 2 });
+    // Unanchored (provider-prefixed) ids still parse.
+    assert.deepEqual(parseClaudeVersion('openrouter/anthropic/claude-sonnet-4-6'), { family: 'sonnet', major: 4, minor: 6 });
+  });
+  it('returns null for non-Claude or unparseable ids', () => {
+    assert.equal(parseClaudeVersion('gpt-4o'), null);
+    assert.equal(parseClaudeVersion('claude-3-5-haiku-20241022'), null); // family word not after claude-
+    assert.equal(parseClaudeVersion(undefined as any), null);
+  });
+});
+
+describe('claudeReasoningCapabilities (ui#24)', () => {
+  it('opus/sonnet 4.6+ and 5.x support adaptive; pre-4.6 do not; non-opus/sonnet → null', () => {
+    assert.equal(claudeReasoningCapabilities('claude-sonnet-4-6')!.supportsAdaptiveThinking, true);
+    assert.equal(claudeReasoningCapabilities('claude-opus-5')!.supportsAdaptiveThinking, true);
+    assert.equal(claudeReasoningCapabilities('claude-sonnet-4-5')!.supportsAdaptiveThinking, false);
+    assert.equal(claudeReasoningCapabilities('claude-sonnet-4-5')!.reasoning, true);
+    assert.equal(claudeReasoningCapabilities('claude-haiku-4-5'), null); // haiku stays non-reasoning
+    assert.equal(claudeReasoningCapabilities('gpt-4o'), null);
+  });
+});
 
 describe('modelSupportsVision', () => {
   afterEach(() => clearDynamicCapabilities());
@@ -147,23 +179,42 @@ describe('getContextWindow', () => {
 // getModelCapabilities
 // ---------------------------------------------------------------------------
 describe('getModelCapabilities', () => {
-  it('returns capabilities for claude-opus-4', () => {
+  it('returns capabilities for claude-opus-4 (bare 4.0 — pre-4.6 → legacy budget thinking, ui#24)', () => {
     const caps = getModelCapabilities('claude-opus-4');
     assert.notEqual(caps, null);
     assert.equal(caps!.reasoning, true);
-    assert.equal(caps!.supportsAdaptiveThinking, true);
+    // Opus 4.0 is pre-4.6: it does NOT support adaptive thinking (rejected with HTTP 400).
+    assert.equal(caps!.supportsAdaptiveThinking, false);
     assert.equal(caps!.requiresTemperatureOne, true);
     assert.equal(caps!.temperatureMustBeUnset, false);
     assert.equal(caps!.maxThinkingBudget, 128000);
     assert.equal(caps!.defaultThinkingLevel, 'medium');
   });
 
-  it('returns capabilities for claude-sonnet-4', () => {
+  it('returns capabilities for claude-sonnet-4 (bare 4.0 — pre-4.6 → legacy budget thinking, ui#24)', () => {
     const caps = getModelCapabilities('claude-sonnet-4');
     assert.notEqual(caps, null);
     assert.equal(caps!.reasoning, true);
-    assert.equal(caps!.supportsAdaptiveThinking, true);
+    assert.equal(caps!.supportsAdaptiveThinking, false);
     assert.equal(caps!.requiresTemperatureOne, true);
+  });
+
+  it('adaptive thinking is 4.6+/5.x only; pre-4.6 Claude 4.x uses legacy budget thinking (ui#24)', () => {
+    // Adaptive-capable (4.6+ and the 5.x family) — matches @ai-sdk/anthropic model metadata.
+    for (const id of ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
+                      'claude-opus-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-sonnet-5-5']) {
+      const caps = getModelCapabilities(id);
+      assert.equal(caps?.reasoning, true, `${id} should be a reasoning model`);
+      assert.equal(caps?.supportsAdaptiveThinking, true, `${id} should support adaptive thinking`);
+    }
+    // Pre-4.6 Claude 4.x — adaptive REJECTED on Vertex/Anthropic → must use budget_tokens.
+    for (const id of ['claude-sonnet-4-5', 'claude-opus-4-5', 'claude-opus-4-1',
+                      'claude-sonnet-4-5-20251022', 'claude-sonnet-4-20250514',
+                      'openrouter/anthropic/claude-sonnet-4-5']) {
+      const caps = getModelCapabilities(id);
+      assert.equal(caps?.reasoning, true, `${id} should still be a reasoning model`);
+      assert.equal(caps?.supportsAdaptiveThinking, false, `${id} must NOT use adaptive thinking`);
+    }
   });
 
   it('returns capabilities for o1 (OpenAI reasoning)', () => {

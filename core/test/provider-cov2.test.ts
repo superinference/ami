@@ -555,6 +555,37 @@ describe('buildThinkingOptions', () => {
     });
   }
 
+  // ui#24: pre-4.6 Claude 4.x (sonnet-4-5, opus-4-5, …) REJECT adaptive thinking on
+  // Vertex/Anthropic ("adaptive thinking is not supported on this model", HTTP 400). They
+  // must emit the legacy { type: 'enabled', budget_tokens } shape — the mirror image of ui#17.
+  // RED on the pre-fix code (which classified claude-sonnet-4-5 as adaptive → type:'adaptive').
+  for (const model of ['claude-sonnet-4-5', 'claude-opus-4-5', 'claude-sonnet-4-5-20251022', 'claude-opus-4-1']) {
+    it(`${model} emits legacy budget thinking, NOT adaptive (ui#24 reproducer — adaptive 400s here)`, () => {
+      const opts = buildThinkingOptions(model, { enabled: true, level: 'medium' }) as any;
+      assert.equal(opts.providerOptions.anthropic.thinking.type, 'enabled');
+      assert.notEqual(opts.providerOptions.anthropic.thinking.type, 'adaptive');
+      const budget = opts.providerOptions.anthropic.thinking.budgetTokens;
+      assert.equal(typeof budget, 'number');
+      assert.ok(budget >= 1024, 'budget_tokens must be >= Anthropic floor 1024');
+      // Must stay below the default output ceiling so budget_tokens < max_tokens.
+      assert.ok(budget <= 24000, 'budget_tokens must be clamped below the output ceiling');
+      // No adaptive-only field leaks onto the legacy shape.
+      assert.equal(opts.providerOptions.anthropic.effort, undefined);
+    });
+  }
+
+  it('ui#24: legacy budget thinking clamps a "max"-level budget below the output ceiling', () => {
+    // resolveThinkingBudget('max', …) is ~120k, which would exceed max_tokens and 400.
+    const opts = buildThinkingOptions('claude-sonnet-4-5', { enabled: true, level: 'max' }) as any;
+    assert.equal(opts.providerOptions.anthropic.thinking.type, 'enabled');
+    assert.ok(opts.providerOptions.anthropic.thinking.budgetTokens <= 24000);
+  });
+
+  it('ui#24: an explicit budgetTokens is honored (clamped) on the legacy shape', () => {
+    const opts = buildThinkingOptions('claude-sonnet-4-5', { enabled: true, level: 'low', budgetTokens: 2048 }) as any;
+    assert.equal(opts.providerOptions.anthropic.thinking.budgetTokens, 2048);
+  });
+
   it('Anthropic adaptive effort falls back to "high" for an unknown level', () => {
     const opts = buildThinkingOptions('claude-opus-4-8', { enabled: true, level: 'bogus' as any }) as any;
     assert.equal(opts.providerOptions.anthropic.effort, 'high');
