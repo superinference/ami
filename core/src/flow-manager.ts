@@ -6,6 +6,10 @@ export interface FlowInfo {
   agentIds: string[];
   status: 'active' | 'completed' | 'partial' | 'failed';
   createdAt: number;
+  /** Wall-clock time the flow reached a terminal status (completed/partial/failed).
+   *  Undefined while active. Drives duration display and terminal-flow eviction
+   *  order (evict by when work FINISHED, not when it started). */
+  completedAt?: number;
 }
 
 /**
@@ -90,6 +94,7 @@ export class FlowManager {
     const allFailed = statuses.every(isFail);
     const anyFailed = statuses.some(isFail);
     flow.status = allFailed ? 'failed' : anyFailed ? 'partial' : 'completed';
+    flow.completedAt = Date.now();
     // A terminal flow stops being the active target for every key that points at it.
     for (const [key, active] of this.activeByKey) {
       if (active.flowId === flowId) this.activeByKey.delete(key);
@@ -101,11 +106,13 @@ export class FlowManager {
     this.activeByKey.clear();
   }
 
-  /** Evict the oldest terminal (non-active) flows beyond the retention cap. */
+  /** Evict terminal (non-active) flows beyond the retention cap, oldest-FINISHED
+   *  first. Ordering by completion time (falling back to createdAt) keeps the
+   *  most recently finished flows visible longest. */
   private pruneTerminal(): void {
     const terminal = Array.from(this.flows.values())
       .filter(f => f.status !== 'active')
-      .sort((a, b) => a.createdAt - b.createdAt);
+      .sort((a, b) => (a.completedAt ?? a.createdAt) - (b.completedAt ?? b.createdAt));
     const excess = terminal.length - FlowManager.MAX_RETAINED_TERMINAL;
     for (let i = 0; i < excess; i++) {
       this.flows.delete(terminal[i].flowId);

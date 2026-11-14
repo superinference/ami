@@ -41,17 +41,49 @@ function notFoundMessage(names: string[], skills: SkillDefinition[]): string {
   return `${label} not found.\nTools: ${availableTools.join(', ')}\nSkills: ${availableSkills.length > 0 ? availableSkills.join(', ') : '(none)'}`;
 }
 
+/** Word-boundary match of a single term against text (so "read" matches
+ *  "read file" but not "already"). */
+function matchesTerm(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}`, 'i').test(text);
+}
+
+/** Graded score of ranking terms against a tool/skill name + text, using
+ *  part-based tokenization (exact part > partial part > full-name fallback). */
+function gradedScore(name: string, text: string, rankTerms: string[]): number {
+  const parts = name.toLowerCase().split(/[_\-/.]+/).filter(Boolean);
+  let score = 0;
+  for (const kw of rankTerms) {
+    const k = kw.toLowerCase();
+    if (parts.includes(k)) score += 3;            // exact name-part match
+    else if (parts.some(p => p.includes(k))) score += 2; // partial name-part
+    else if (name.toLowerCase().includes(k)) score += 1; // full-name fallback
+    if (matchesTerm(text, kw)) score += 1;        // word-boundary in text
+  }
+  return score;
+}
+
 export const toolSearchTool: ToolDefinition = {
   name: 'tool_search',
   description:
-    'Search for available tools and skills by keyword. Use when you need a tool or skill that is not in your current set. ' +
-    'Use "select:tool_name" to get the full schema for a specific tool, or "select:skill_name" for skill details.',
+    'Search for available tools and skills, or load a deferred tool. Query forms:\n' +
+    '  - "select:name" — load the full schema for a specific tool (or skill details). ' +
+    'Comma-separate names ("select:a,b,c") to load several at once.\n' +
+    '  - a bare exact tool/skill name — same as select: (fast path, resolves and loads it directly).\n' +
+    '  - keywords — ranked fuzzy search over names + descriptions; "+term" REQUIRES that term ' +
+    'to appear in the match NAME, other terms only affect ranking.\n' +
+    'Results are a ranked bullet list (top max_results). Use when you need a tool/skill not in your current set.',
   inputSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: 'Keywords describing the tool or skill you need, or "select:name" to load details for a specific tool or skill.',
+        description: 'Keywords, "+term" to require a term, a bare exact name, or "select:name[,name2]" to load specific tools/skills.',
+      },
+      max_results: {
+        type: 'number',
+        description: 'Maximum number of matches to return (default 5).',
+        default: 5,
       },
     },
     required: ['query'],
@@ -123,9 +155,27 @@ export const toolSearchTool: ToolDefinition = {
       };
     }
 
-    // Split terms into `+`-prefixed required-in-name terms and plain ranking
-    // terms. A required term MUST appear in the item's name; plain terms only
-    // affect ranking. With no `+` terms this reduces to the original behavior.
+    // Exact bare-name fast path: a single-token query that exactly matches a
+    // deferred TOOL name resolves and loads it directly, no "select:" prefix
+    // needed. (Skills are not fast-pathed — a keyword can legitimately equal a
+    // skill name, so skills go through ranked search.)
+    if (!/\s/.test(query) && !query.startsWith('+')) {
+      const exactTool = _allTools.find(t => t.name === query);
+      if (exactTool) {
+        context._loadDeferredTool?.(query);
+        return { output: JSON.stringify(toolPayload(exactTool), null, 2), isError: false };
+      }
+    }
+
+    const maxResults = (() => {
+      const raw = Number(input.max_results);
+      if (!Number.isFinite(raw) || raw <= 0) return 5;
+      return Math.min(Math.floor(raw), 50);
+    })();
+
+    // Split terms into `+`-prefixed required terms and plain ranking terms. A
+    // required term MUST appear in the item (name or description); plain terms
+    // only affect ranking. With no `+` terms this reduces to pure ranking.
     const rawTerms = query.toLowerCase().split(/\s+/).filter(Boolean);
     const requiredTerms: string[] = [];
     const rankTerms: string[] = [];
@@ -136,40 +186,39 @@ export const toolSearchTool: ToolDefinition = {
 
     const scoredTools = _allTools.map(tool => {
       const nameLower = tool.name.toLowerCase();
+      // A +term must appear in the NAME (deliberate: keeps the gate precise).
       if (!requiredTerms.every(rt => nameLower.includes(rt))) return { tool, score: 0 };
-      let score = requiredTerms.length * 2;
       const text = `${tool.name} ${tool.description}`.toLowerCase();
-      for (const kw of rankTerms) {
-        if (text.includes(kw)) score++;
-        if (tool.name.includes(kw)) score += 2;
-      }
+      const score = requiredTerms.length * 2 + gradedScore(tool.name, text, rankTerms);
       return { tool, score };
     })
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
+    .slice(0, maxResults);
 
     const scoredSkills = skills.map(skill => {
       const nameLower = skill.name.toLowerCase();
       if (!requiredTerms.every(rt => nameLower.includes(rt))) return { skill, score: 0 };
-      let score = requiredTerms.length * 2;
       const text = `${skill.name} ${skill.description || ''} ${skill.whenToUse || ''}`.toLowerCase();
-      for (const kw of rankTerms) {
-        if (text.includes(kw)) score++;
-        if (skill.name.includes(kw)) score += 2;
-      }
+      const score = requiredTerms.length * 2 + gradedScore(skill.name, text, rankTerms);
       return { skill, score };
     })
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
+    .slice(0, maxResults);
 
     if (scoredTools.length === 0 && scoredSkills.length === 0) {
       const availableTools = _allTools.map(t => t.name);
       const availableSkills = skills.map(s => s.name);
+      // MCP servers connect asynchronously — their tools may not be searchable
+      // yet, so a miss is not necessarily final.
+      const pendingHint = context._mcpManager
+        ? '\nMCP servers may still be connecting — their tools can appear shortly, so try again if you expected one.'
+        : '';
       return {
-        output: `No tools or skills matched "${query}".\nTools: ${availableTools.join(', ')}\nSkills: ${availableSkills.length > 0 ? availableSkills.join(', ') : '(none)'}`,
+        output: `No tools or skills matched "${query}".\nTools: ${availableTools.join(', ')}\nSkills: ${availableSkills.length > 0 ? availableSkills.join(', ') : '(none)'}${pendingHint}`,
         isError: false,
+        metadata: { query, matches: [], total_deferred_tools: _allTools.length },
       };
     }
 
@@ -197,6 +246,11 @@ export const toolSearchTool: ToolDefinition = {
     return {
       output: sections.join('\n\n'),
       isError: false,
+      metadata: {
+        query,
+        matches: [...scoredTools.map(s => s.tool.name), ...scoredSkills.map(s => s.skill.name)],
+        total_deferred_tools: _allTools.length,
+      },
     };
   },
 };

@@ -51,17 +51,41 @@ export function verifyRequestSignature(
   }
   const payload = `${method.toUpperCase()}\n${path}\n${sig.timestamp}\n${sig.nonce}\n${body}`;
   const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
-  const valid = crypto.timingSafeEqual(Buffer.from(sig.signature, 'hex'), Buffer.from(expected, 'hex'));
-  return valid ? { valid: true } : { valid: false, reason: 'signature mismatch' };
+  // The supplied signature is attacker-controlled: a forged/truncated/odd-length
+  // or non-hex value makes Buffer.from(...,'hex') silently truncate and
+  // crypto.timingSafeEqual throw a RangeError on a length mismatch. Reject such
+  // input up front (constant-length hex only) and defensively wrap the compare so
+  // a malformed signature returns {valid:false} instead of crashing the verifier.
+  if (typeof sig.signature !== 'string' || !/^[0-9a-f]+$/i.test(sig.signature) || sig.signature.length !== expected.length) {
+    return { valid: false, reason: 'signature malformed' };
+  }
+  try {
+    const valid = crypto.timingSafeEqual(Buffer.from(sig.signature, 'hex'), Buffer.from(expected, 'hex'));
+    return valid ? { valid: true } : { valid: false, reason: 'signature mismatch' };
+  } catch {
+    return { valid: false, reason: 'signature malformed' };
+  }
 }
 
+/**
+ * Replay guard with constant-memory, O(1) FIFO eviction.
+ *
+ * At capacity every new nonce evicts the oldest in O(1) via a fixed-size ring
+ * buffer (write index points at the slot to overwrite, which is always the
+ * oldest entry) plus a Set for O(1) membership. This replaces the previous
+ * Set + parallel timestamp Map whose evictOldest() did an O(n) linear scan on
+ * every record() once full — a degenerate boundary cost an attacker could
+ * sustain under a replay flood, exactly the scenario this guard defends.
+ */
 export class NonceTracker {
   private _seen = new Set<string>();
   private _maxSize: number;
-  private _timestamps = new Map<string, number>();
+  private _ring: Array<string | undefined>;
+  private _writeIdx = 0;
 
   constructor(maxSize: number = 10_000) {
-    this._maxSize = maxSize;
+    this._maxSize = Math.max(1, maxSize);
+    this._ring = new Array<string | undefined>(this._maxSize);
   }
 
   isReplay(nonce: string): boolean {
@@ -70,27 +94,16 @@ export class NonceTracker {
 
   record(nonce: string): boolean {
     if (this._seen.has(nonce)) return false;
-    if (this._seen.size >= this._maxSize) {
-      this.evictOldest();
+    // The slot at _writeIdx holds the oldest live nonce once the ring is full;
+    // overwriting it evicts that entry in O(1).
+    const evicted = this._ring[this._writeIdx];
+    if (evicted !== undefined) {
+      this._seen.delete(evicted);
     }
+    this._ring[this._writeIdx] = nonce;
+    this._writeIdx = (this._writeIdx + 1) % this._maxSize;
     this._seen.add(nonce);
-    this._timestamps.set(nonce, Date.now());
     return true;
-  }
-
-  private evictOldest(): void {
-    let oldest: string | null = null;
-    let oldestTs = Infinity;
-    for (const [nonce, ts] of this._timestamps) {
-      if (ts < oldestTs) {
-        oldestTs = ts;
-        oldest = nonce;
-      }
-    }
-    if (oldest) {
-      this._seen.delete(oldest);
-      this._timestamps.delete(oldest);
-    }
   }
 
   size(): number {
@@ -99,6 +112,7 @@ export class NonceTracker {
 
   clear(): void {
     this._seen.clear();
-    this._timestamps.clear();
+    this._ring = new Array<string | undefined>(this._maxSize);
+    this._writeIdx = 0;
   }
 }

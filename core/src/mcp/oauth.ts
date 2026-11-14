@@ -23,7 +23,117 @@ export type FetchLike = (url: string, init?: {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  signal?: AbortSignal;
 }) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown>; headers?: { get(name: string): string | null } }>;
+
+/** Default per-request timeout for OAuth HTTP calls (discovery / DCR / token). */
+export const OAUTH_HTTP_TIMEOUT_MS = 30_000;
+
+/**
+ * Transport-downgrade guard. OAuth carries bearer tokens, authorization codes
+ * and client secrets, so every issuer/discovery/authorization/token endpoint
+ * MUST be https. Plaintext http is tolerated ONLY for loopback (local dev auth
+ * servers). Throws otherwise.
+ */
+export function assertSecureUrl(url: string, label = 'OAuth endpoint'): void {
+  let u: URL;
+  try { u = new URL(url); } catch { throw new Error(`${label} is not a valid URL: ${url}`); }
+  if (u.protocol === 'https:') return;
+  const host = u.hostname.replace(/^\[/, '').replace(/\]$/, '');
+  const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  if (u.protocol === 'http:' && loopback) return;
+  throw new Error(`${label} must use https:// — refusing plaintext ${u.protocol}// (loopback-only exception) for ${url}`);
+}
+
+/** A structured OAuth/token error with the server-reported error code. */
+export class OAuthError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string, readonly description?: string) {
+    super(message);
+    this.name = 'OAuthError';
+  }
+}
+
+/** Non-standard error codes some servers return that mean the grant is dead. */
+const INVALID_GRANT_ALIASES = new Set(['invalid_grant', 'invalid_refresh_token', 'expired_token', 'token_expired']);
+
+/**
+ * Build an OAuthError from a token-endpoint response, normalising both the
+ * HTTP-200-with-error-body shape (some non-compliant servers) and non-standard
+ * `invalid_grant` aliases so callers can reason about one canonical code.
+ */
+export function normalizeTokenError(status: number, doc: Record<string, unknown>): OAuthError {
+  const rawCode = typeof doc.error === 'string' ? doc.error : undefined;
+  const code = rawCode && INVALID_GRANT_ALIASES.has(rawCode) ? 'invalid_grant' : rawCode;
+  const description = typeof doc.error_description === 'string' ? doc.error_description : undefined;
+  const suffix = code ? `: ${code}${description ? ` (${description})` : ''}` : '';
+  return new OAuthError(`token endpoint error (${status})${suffix}`, status, code, description);
+}
+
+/** Run `promise`, rejecting if it does not settle within `ms` (0 = no limit). */
+export function withTimeout<T>(factory: (signal: AbortSignal | undefined) => Promise<T>, ms: number, label: string): Promise<T> {
+  if (!ms || ms <= 0) return factory(undefined);
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => { controller.abort(); reject(new Error(`${label} timed out after ${ms}ms`)); }, ms);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
+    factory(controller.signal).then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+/** Wrap a fetch impl so every call is bounded by a per-request timeout. */
+export function wrapFetchWithTimeout(fetchImpl: FetchLike, ms: number): FetchLike {
+  return (url, init) => withTimeout((signal) => fetchImpl(url, { ...init, signal: init?.signal ?? signal }), ms, `OAuth request to ${url}`);
+}
+
+export interface RetryOptions {
+  retries?: number;
+  baseMs?: number;
+  isRetryable?: (error: unknown) => boolean;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Retry `fn` with exponential backoff on transient (retryable) failures. */
+export async function retryWithBackoff<T>(fn: () => Promise<T>, opts: RetryOptions = {}): Promise<T> {
+  const retries = opts.retries ?? 2;
+  const baseMs = opts.baseMs ?? 200;
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => { const t = setTimeout(r, ms); if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref(); }));
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) break;
+      if (opts.isRetryable && !opts.isRetryable(error)) break;
+      await sleep(baseMs * 2 ** attempt);
+    }
+  }
+  throw lastError;
+}
+
+/** A transient token-refresh failure worth retrying (network / 5xx), NOT a dead grant. */
+export function isTransientOAuthError(error: unknown): boolean {
+  if (error instanceof OAuthError) return error.status >= 500 || error.status === 429;
+  return true; // network-level throw (no HTTP status) — retry
+}
+
+/**
+ * RFC 9728 §3.3 mix-up protection: the `resource` a protected-resource metadata
+ * document advertises must identify the same server (origin) we requested it
+ * from. A mismatch means the PRM is for a different resource server — reject it.
+ */
+export function assertResourceMatch(advertisedResource: string, serverUrl: string): void {
+  let adv: URL;
+  let srv: URL;
+  try { adv = new URL(advertisedResource); } catch { return; /* non-absolute (fell back to metadata URL) — nothing to compare */ }
+  try { srv = new URL(serverUrl); } catch { return; }
+  if (adv.origin !== srv.origin) {
+    throw new Error(`PRM resource mismatch (RFC 9728 §3.3): metadata advertises ${adv.origin} but the server is ${srv.origin}`);
+  }
+}
 
 export interface PkcePair {
   verifier: string;
@@ -106,11 +216,18 @@ export function parseWwwAuthenticate(header: string | null | undefined): {
   return out;
 }
 
-/** Build a `.well-known` discovery URL for a base URL + suffix. */
+/**
+ * Build a `.well-known` discovery URL (RFC 8414 §3.1 / RFC 9728 §3.1). The
+ * `.well-known/<suffix>` segment is INSERTED between the host and any issuer
+ * path component rather than replacing the path, so an issuer with a path
+ * (`https://host/tenant1`) discovers at `https://host/.well-known/<suffix>/tenant1`.
+ * A pathless issuer is unchanged (`https://host/.well-known/<suffix>`).
+ */
 export function wellKnown(baseUrl: string, suffix: string): string {
   const u = new URL(baseUrl);
   const base = `${u.protocol}//${u.host}`;
-  return `${base}/.well-known/${suffix}`;
+  const path = u.pathname.replace(/\/+$/, '');
+  return path && path !== '/' ? `${base}/.well-known/${suffix}${path}` : `${base}/.well-known/${suffix}`;
 }
 
 async function getJson(fetchImpl: FetchLike, url: string): Promise<Record<string, unknown>> {
@@ -144,6 +261,10 @@ export async function discoverAuthServer(fetchImpl: FetchLike, issuer: string): 
   if (typeof authorizationEndpoint !== 'string' || typeof tokenEndpoint !== 'string') {
     throw new Error('authorization-server metadata missing endpoints');
   }
+  // Transport-downgrade guard: refuse plaintext endpoints discovered from
+  // metadata before we ever POST credentials or redirect for consent.
+  assertSecureUrl(authorizationEndpoint, 'authorization endpoint');
+  assertSecureUrl(tokenEndpoint, 'token endpoint');
   return {
     issuer: typeof doc.issuer === 'string' ? doc.issuer : issuer,
     authorizationEndpoint,
@@ -224,8 +345,12 @@ async function postForm(
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: new URLSearchParams(form).toString(),
   });
-  if (!res.ok) throw new Error(`token endpoint error (${res.status})`);
-  return toTokens((await res.json()) as Record<string, unknown>, now);
+  // Some non-compliant servers return HTTP 200 with an `error` body, so inspect
+  // the payload even on a 2xx and normalise the code before deciding.
+  let doc: Record<string, unknown> = {};
+  try { doc = (await res.json()) as Record<string, unknown>; } catch { doc = {}; }
+  if (!res.ok || typeof doc.error === 'string') throw normalizeTokenError(res.status, doc);
+  return toTokens(doc, now);
 }
 
 /** Exchange an authorization code for tokens (PKCE + resource indicator). */
@@ -306,6 +431,10 @@ export interface McpOAuthSessionOptions {
   /** Clock seam (epoch ms). Defaults to Date.now. */
   now?: () => number;
   store?: OAuthTokenStore;
+  /** Per-request HTTP timeout (ms). Defaults to OAUTH_HTTP_TIMEOUT_MS; 0 disables. */
+  timeoutMs?: number;
+  /** Retry policy for transient token-refresh failures. */
+  retry?: RetryOptions;
 }
 
 /**
@@ -317,6 +446,7 @@ export interface McpOAuthSessionOptions {
 export class McpOAuthSession implements McpOAuthProvider {
   private readonly store: OAuthTokenStore;
   private readonly now: () => number;
+  private readonly fetch: FetchLike;
   private resource: string;
   private authMeta: AuthServerMetadata | null = null;
   private effectiveClientId: string | undefined;
@@ -324,6 +454,11 @@ export class McpOAuthSession implements McpOAuthProvider {
   constructor(private readonly opts: McpOAuthSessionOptions) {
     this.store = opts.store ?? new OAuthTokenStore();
     this.now = opts.now ?? (() => Date.now());
+    // Every OAuth HTTP call (discovery, DCR, token, refresh) is bounded by a
+    // per-request timeout so a hung auth server cannot wedge the session. The
+    // underlying impl is read per call so it stays swappable after construction.
+    const timeoutMs = opts.timeoutMs ?? OAUTH_HTTP_TIMEOUT_MS;
+    this.fetch = wrapFetchWithTimeout((url, init) => this.opts.fetchImpl(url, init), timeoutMs);
     this.resource = opts.serverUrl;
     this.effectiveClientId = opts.clientId;
   }
@@ -333,16 +468,24 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (live) return live;
     // Token present but expired, and we can refresh without user interaction.
     if (this.store.hasRefreshToken() && this.authMeta && this.effectiveClientId) {
+      const authMeta = this.authMeta;
+      const clientId = this.effectiveClientId;
       try {
-        const refreshed = await refreshToken(this.opts.fetchImpl, {
-          tokenEndpoint: this.authMeta.tokenEndpoint,
-          refreshToken: this.store.get()!.refreshToken!,
-          clientId: this.effectiveClientId,
-          resource: this.resource,
-        }, this.now());
+        const refreshed = await retryWithBackoff(
+          () => refreshToken(this.fetch, {
+            tokenEndpoint: authMeta.tokenEndpoint,
+            refreshToken: this.store.get()!.refreshToken!,
+            clientId,
+            resource: this.resource,
+          }, this.now()),
+          { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
+        );
         this.store.set(refreshed);
         return this.store.authorizationHeader(this.now());
-      } catch {
+      } catch (error) {
+        // A dead grant (invalid_grant) can never recover by retry — clear the
+        // stored tokens so the next 401 drives a full interactive re-auth.
+        if (error instanceof OAuthError && error.code === 'invalid_grant') this.store.clear();
         return null; // fall through to a full re-auth on the next 401
       }
     }
@@ -353,13 +496,19 @@ export class McpOAuthSession implements McpOAuthProvider {
     try {
       const parsed = parseWwwAuthenticate(wwwAuthenticate);
       const metadataUrl = parsed.resourceMetadata ?? wellKnown(this.opts.serverUrl, 'oauth-protected-resource');
-      const prm = await discoverProtectedResource(this.opts.fetchImpl, metadataUrl);
+      const prm = await discoverProtectedResource(this.fetch, metadataUrl);
+      // RFC 9728 §3.3 mix-up protection: the resource the PRM describes must be
+      // the server we are actually talking to (same origin). Reject a PRM that
+      // points at a different host to avoid an authorization mix-up attack.
+      assertResourceMatch(prm.resource, this.opts.serverUrl);
       this.resource = prm.resource;
-      this.authMeta = await discoverAuthServer(this.opts.fetchImpl, prm.authorizationServers[0]);
+      const issuer = prm.authorizationServers[0];
+      assertSecureUrl(issuer, 'authorization server issuer');
+      this.authMeta = await discoverAuthServer(this.fetch, issuer);
 
       if (!this.effectiveClientId) {
         if (!this.authMeta.registrationEndpoint) throw new Error('no client_id and no registration endpoint');
-        const reg = await registerClient(this.opts.fetchImpl, this.authMeta.registrationEndpoint, [this.opts.redirectUri]);
+        const reg = await registerClient(this.fetch, this.authMeta.registrationEndpoint, [this.opts.redirectUri]);
         this.effectiveClientId = reg.clientId;
       }
 
@@ -375,7 +524,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         scope: this.opts.scope ?? prm.scopesSupported?.join(' '),
       });
       const { code } = await this.opts.authorize({ authorizationUrl, redirectUri: this.opts.redirectUri, state });
-      const tokens = await exchangeCode(this.opts.fetchImpl, {
+      const tokens = await exchangeCode(this.fetch, {
         tokenEndpoint: this.authMeta.tokenEndpoint,
         code,
         verifier: pkce.verifier,

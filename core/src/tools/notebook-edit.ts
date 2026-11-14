@@ -192,6 +192,17 @@ export const notebookEditTool: ToolDefinition = {
       }
     }
 
+    // Require an explicit cell selector for replace/delete. Without this, a missing
+    // cell_number AND cell_id falls through to effectiveIndex = 0 and silently
+    // replaces or DELETES cell 0 — a destructive, unintended edit. Insert has a
+    // well-defined default (append at end), so it is exempt.
+    if (editMode !== 'insert' && cellNumber === undefined && cellId === undefined) {
+      return {
+        output: `Error: cell_id or cell_number must be specified when edit_mode is "${editMode}" (not inserting a new cell).`,
+        isError: true,
+      };
+    }
+
     // --- Determine the target cell index ---
     const totalCells = notebook.cells.length;
 

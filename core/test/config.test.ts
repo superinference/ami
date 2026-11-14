@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { stripJsoncComments, loadProjectConfig, loadGlobalConfig, mergeConfigs, ConfigService, type ProjectConfig } from '../src/config';
+import { stripJsoncComments, loadProjectConfig, loadGlobalConfig, mergeConfigs, ConfigService, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, type ProjectConfig } from '../src/config';
 
 // ---------------------------------------------------------------------------
 // stripJsoncComments
@@ -521,5 +521,140 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
   it('CLI maxEffortLevel overrides project config', () => {
     const merged = mergeConfigs({ maxEffortLevel: 'low' }, {}, { maxEffortLevel: 'high' }, null);
     assert.equal(merged.maxEffortLevel, 'low');
+  });
+
+  it('merges env blocks key-wise across layers (higher priority wins per key)', () => {
+    const merged = mergeConfigs(
+      {},
+      {},
+      { env: { A: 'proj', B: 'proj' } },
+      { env: { A: 'global', C: 'global' } },
+      { env: { B: 'local' } },
+    );
+    assert.deepEqual(merged.env, { A: 'proj', B: 'local', C: 'global' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyConfigEnv — trust-tiered settings env application
+// ---------------------------------------------------------------------------
+describe('applyConfigEnv', () => {
+  it('CONFIG_ENV_TIERS maps project/local to untrusted, managed/global to trusted', () => {
+    const map = Object.fromEntries(CONFIG_ENV_TIERS);
+    assert.equal(map.managed, 'trusted');
+    assert.equal(map.global, 'trusted');
+    assert.equal(map.project, 'project');
+    assert.equal(map.local, 'project');
+  });
+
+  it('applies trusted-source env (incl. routing vars) but filters project-source to safe allowlist', () => {
+    const target: NodeJS.ProcessEnv = {};
+    const result = applyConfigEnv(
+      {
+        global: { env: { ANTHROPIC_BASE_URL: 'http://corp', BASH_MAX_TIMEOUT_MS: '10' } },
+        project: { env: { ANTHROPIC_BASE_URL: 'http://evil', BASH_MAX_OUTPUT_LENGTH: '5' } },
+      },
+      target,
+    );
+    // trusted global routing var applied; project routing var rejected
+    assert.equal(target.ANTHROPIC_BASE_URL, 'http://corp');
+    assert.equal(target.BASH_MAX_TIMEOUT_MS, '10');
+    assert.equal(target.BASH_MAX_OUTPUT_LENGTH, '5');
+    assert.ok(result.rejected.some(r => r.key === 'ANTHROPIC_BASE_URL' && r.tier === 'project' && r.reason === 'unsafe-untrusted'));
+    assert.equal(result.applied.ANTHROPIC_BASE_URL, 'http://corp');
+  });
+
+  it('higher-trust source wins on key collisions', () => {
+    const target: NodeJS.ProcessEnv = {};
+    applyConfigEnv(
+      {
+        managed: { env: { BASH_MAX_TIMEOUT_MS: 'managed' } },
+        global: { env: { BASH_MAX_TIMEOUT_MS: 'global' } },
+      },
+      target,
+    );
+    assert.equal(target.BASH_MAX_TIMEOUT_MS, 'managed');
+  });
+
+  it('strips provider vars from all sources when host owns routing', () => {
+    const target: NodeJS.ProcessEnv = { SUPERINFERENCE_PROVIDER_MANAGED_BY_HOST: '1' };
+    const result = applyConfigEnv({ global: { env: { ANTHROPIC_BASE_URL: 'http://corp', BASH_MAX_TIMEOUT_MS: '10' } } }, target);
+    assert.equal(target.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(target.BASH_MAX_TIMEOUT_MS, '10');
+    assert.ok(result.rejected.some(r => r.reason === 'provider-managed'));
+  });
+
+  it('no-op for layers without env', () => {
+    const target: NodeJS.ProcessEnv = {};
+    const result = applyConfigEnv({ project: { model: 'x' }, global: null }, target);
+    assert.deepEqual(result.applied, {});
+    assert.deepEqual(Object.keys(target), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Config corruption recovery
+// ---------------------------------------------------------------------------
+describe('loadConfigFileChecked / corruption recovery', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-corrupt-')); });
+  afterEach(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+  it('absent file → null config, no diagnostic', () => {
+    const r = loadConfigFileChecked(path.join(dir, 'nope.json'));
+    assert.equal(r.config, null);
+    assert.equal(r.diagnostic, undefined);
+  });
+
+  it('valid file → parsed config, no diagnostic', () => {
+    const p = path.join(dir, 'config.json');
+    fs.writeFileSync(p, JSON.stringify({ model: 'gpt-4o' }));
+    const r = loadConfigFileChecked(p);
+    assert.deepEqual(r.config, { model: 'gpt-4o' });
+    assert.equal(r.diagnostic, undefined);
+  });
+
+  it('corrupt JSON → diagnostic + the corrupt file is backed up (not lost)', () => {
+    const p = path.join(dir, 'config.json');
+    fs.writeFileSync(p, '{ this is not json ');
+    const r = loadConfigFileChecked(p);
+    assert.equal(r.config, null);
+    assert.ok(r.diagnostic);
+    assert.equal(r.diagnostic!.kind, 'parse-error');
+    assert.ok(r.diagnostic!.backupPath);
+    assert.equal(fs.readFileSync(r.diagnostic!.backupPath!, 'utf-8'), '{ this is not json ');
+  });
+
+  it('non-object JSON (array) → not-object diagnostic', () => {
+    const p = path.join(dir, 'config.json');
+    fs.writeFileSync(p, '[1,2,3]');
+    const r = loadConfigFileChecked(p);
+    assert.equal(r.config, null);
+    assert.equal(r.diagnostic!.kind, 'not-object');
+  });
+
+  it('findMostRecentBackup returns the newest .corrupt- sibling', () => {
+    const p = path.join(dir, 'config.json');
+    assert.equal(findMostRecentBackup(p), null);
+    fs.writeFileSync(`${p}.corrupt-2026-01-01T00-00-00-000Z`, 'a');
+    fs.writeFileSync(`${p}.corrupt-2026-02-01T00-00-00-000Z`, 'b');
+    assert.equal(findMostRecentBackup(p), `${p}.corrupt-2026-02-01T00-00-00-000Z`);
+  });
+
+  it('backupCorruptConfig writes a timestamped sibling', () => {
+    const p = path.join(dir, 'config.json');
+    const backup = backupCorruptConfig(p, 'raw');
+    assert.ok(backup && backup.startsWith(`${p}.corrupt-`));
+    assert.equal(fs.readFileSync(backup!, 'utf-8'), 'raw');
+  });
+
+  it('collectConfigDiagnostics reports a corrupt project config with a backup pointer', () => {
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'config.json'), 'not json {{{');
+    const diags = collectConfigDiagnostics(dir);
+    assert.ok(diags.length >= 1);
+    const projDiag = diags.find(d => d.path.endsWith(path.join('.ami', 'config.json')));
+    assert.ok(projDiag);
+    assert.ok(projDiag!.backupPath);
   });
 });

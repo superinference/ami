@@ -5,13 +5,21 @@ export const askUserQuestionTool: ToolDefinition = {
   description:
     'Ask the user a question when you need clarification, need them to choose between options, ' +
     'or need their input before proceeding. Use this instead of guessing. ' +
-    'Present 2-4 clear options per question. Users can also type a custom answer.',
+    'Ask 1-4 questions, each with 2-4 clear options. An "Other"/free-text choice is provided ' +
+    'automatically, so you do not need to add one — users can always type a custom answer. ' +
+    'Put the option you recommend FIRST and append "(Recommended)" to its label. ' +
+    'Keep each question header short (<=12 chars). ' +
+    'The optional per-option preview field (and a question\'s previewFormat) is for single-select ' +
+    'questions only — use it for side-by-side mockups/code/visual comparisons, NOT for simple ' +
+    'questions; HTML previews must be a safe fragment (no <script>/<style>).',
   inputSchema: {
     type: 'object',
     properties: {
       questions: {
         type: 'array',
         description: 'Array of 1-4 questions to ask the user.',
+        minItems: 1,
+        maxItems: 4,
         items: {
           type: 'object',
           properties: {
@@ -21,14 +29,21 @@ export const askUserQuestionTool: ToolDefinition = {
             },
             header: {
               type: 'string',
+              maxLength: 12,
               description: 'Short label displayed as a chip/tag (max 12 chars, e.g. "Auth method").',
             },
             options: {
               type: 'array',
-              description: 'Available answer options (2-4 choices).',
+              description: 'Available answer options (2-4 choices). Put the recommended option first and append "(Recommended)".',
+              minItems: 2,
+              maxItems: 4,
               items: {
                 type: 'object',
                 properties: {
+                  key: {
+                    type: 'string',
+                    description: 'Optional stable machine key for this option, distinct from the human label (the recorded answer value).',
+                  },
                   label: {
                     type: 'string',
                     description: 'Short display text for this option (1-5 words).',
@@ -39,15 +54,20 @@ export const askUserQuestionTool: ToolDefinition = {
                   },
                   preview: {
                     type: 'string',
-                    description: 'Optional preview content rendered when this option is focused. Use for mockups, code snippets, or visual comparisons. Rendered as markdown in a monospace box.',
+                    description: 'Optional preview content rendered when this option is focused. Single-select only. Use for mockups, code snippets, or visual comparisons.',
                   },
                 },
                 required: ['label', 'description'],
               },
             },
+            previewFormat: {
+              type: 'string',
+              enum: ['markdown', 'html'],
+              description: 'Format for option previews (single-select only). HTML must be a safe fragment (no <script>/<style>).',
+            },
             multiSelect: {
               type: 'boolean',
-              description: 'Allow multiple options to be selected. Default false.',
+              description: 'Allow multiple options to be selected. Use when the user may legitimately pick several (e.g. "which checks to run"). Default false; previews are not supported with multiSelect.',
               default: false,
             },
           },
@@ -60,10 +80,13 @@ export const askUserQuestionTool: ToolDefinition = {
       },
       options: {
         type: 'array',
-        description: 'Options for single-question shorthand.',
+        description: 'Options for single-question shorthand (2-4 choices; recommended option first).',
+        minItems: 2,
+        maxItems: 4,
         items: {
           type: 'object',
           properties: {
+            key: { type: 'string', description: 'Optional stable machine key distinct from the label.' },
             label: { type: 'string' },
             description: { type: 'string' },
           },

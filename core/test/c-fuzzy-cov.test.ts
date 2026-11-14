@@ -126,7 +126,8 @@ describe('grepTool – in-process fallback catch arms', () => {
         ctx(dir),
       );
       assert.equal(result.isError, true);
-      assert.match(result.output, /cannot read/);
+      // Self-correcting error now fires for a missing search path (cwd note + suggestion).
+      assert.match(result.output, /Path does not exist/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

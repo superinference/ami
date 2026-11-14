@@ -34,4 +34,27 @@ describe('briefTool', () => {
     const result = await briefTool.execute!({}, ctx);
     assert.equal(result.isError, undefined);
   });
+
+  it("proactive status changes the prompt wording", async () => {
+    const result = await briefTool.execute!({ topic: 'the deploy', status: 'proactive' }, ctx);
+    assert.ok(result.output.includes('Proactively surface'));
+    assert.ok(result.output.includes('the deploy'));
+  });
+
+  it('normal status yields the summarize wording', async () => {
+    const result = await briefTool.execute!({ topic: 't', status: 'normal' }, ctx);
+    assert.ok(result.output.includes('Summarize "t"'));
+  });
+
+  it('rejects an invalid status with the valid options', async () => {
+    const result = await briefTool.execute!({ status: 'loud' }, ctx);
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('normal, proactive'));
+  });
+
+  it('rejects unknown parameters', async () => {
+    const result = await briefTool.execute!({ topics: 'typo' }, ctx);
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('unknown parameter'));
+  });
 });

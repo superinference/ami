@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { sanitizeToolCallIds, buildConversationCachePoints, buildToolCacheBreakpoints, healOrphanedToolCalls, stripEmptyTextBlocks } from '../src/provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, buildToolCacheBreakpoints, healOrphanedToolCalls, dedupeToolCallIds, stripEmptyTextBlocks } from '../src/provider-transform';
 import type { Message, ToolDefinition } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -463,5 +463,69 @@ describe('stripEmptyTextBlocks', () => {
     stripEmptyTextBlocks(msgs);
     assert.deepEqual(msgs[1].content, [{ type: 'text', text: '(continued)' }]);
     assert.equal((msgs[2].content as any[])[0].text, 'ok');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dedupeToolCallIds — CC-1212 duplicate tool_use / tool_result repair
+// ---------------------------------------------------------------------------
+describe('dedupeToolCallIds', () => {
+  const asst = (id: string, text = 'x'): Message => ({
+    role: 'assistant', content: text,
+    tool_calls: [{ id, type: 'function', function: { name: 'f', arguments: '{}' } }],
+  });
+  const tr = (id: string): Message => ({ role: 'tool', tool_call_id: id, content: 'ok' });
+
+  it('empty + no-duplicate inputs pass through unchanged', () => {
+    assert.deepEqual(dedupeToolCallIds([]), []);
+    const clean: Message[] = [asst('X'), tr('X'), asst('Y'), tr('Y')];
+    assert.deepEqual(dedupeToolCallIds(clean), clean);
+  });
+
+  it('drops a repeated assistant tool_call id (keeps the first)', () => {
+    const msgs: Message[] = [asst('X'), tr('X'), asst('X'), tr('X')];
+    const out = dedupeToolCallIds(msgs);
+    const callIds = out.flatMap(m => m.role === 'assistant' && m.tool_calls ? m.tool_calls.map(t => t.id) : []);
+    assert.deepEqual(callIds, ['X']);
+    const resultIds = out.filter(m => m.role === 'tool').map(m => (m as { tool_call_id: string }).tool_call_id);
+    assert.deepEqual(resultIds, ['X']);
+  });
+
+  it('dedupes two tool_use ids within the SAME assistant message', () => {
+    const msg: Message = {
+      role: 'assistant', content: 'x',
+      tool_calls: [
+        { id: 'A', type: 'function', function: { name: 'f', arguments: '{}' } },
+        { id: 'A', type: 'function', function: { name: 'f', arguments: '{}' } },
+        { id: 'B', type: 'function', function: { name: 'f', arguments: '{}' } },
+      ],
+    };
+    const out = dedupeToolCallIds([msg]);
+    assert.deepEqual(out[0].role === 'assistant' ? out[0].tool_calls!.map(t => t.id) : [], ['A', 'B']);
+  });
+
+  it('drops a duplicate tool_result for the same tool_call_id', () => {
+    const msgs: Message[] = [asst('X'), tr('X'), tr('X')];
+    const out = dedupeToolCallIds(msgs);
+    assert.equal(out.filter(m => m.role === 'tool').length, 1);
+  });
+
+  it('removes tool_calls entirely when every one is a duplicate, keeping the message', () => {
+    const msgs: Message[] = [asst('X', 'first'), tr('X'), asst('X', 'dup turn')];
+    const out = dedupeToolCallIds(msgs);
+    const last = out[out.length - 1];
+    assert.equal(last.role, 'assistant');
+    assert.equal((last as { content: string }).content, 'dup turn');
+    assert.equal((last as { tool_calls?: unknown }).tool_calls, undefined);
+  });
+
+  it('healOrphanedToolCalls applies the dedup (no duplicate ids survive, no orphan synthetic for the dup)', () => {
+    const msgs: Message[] = [asst('X'), tr('X'), asst('X'), tr('X')];
+    const out = healOrphanedToolCalls(msgs);
+    const callIds = out.flatMap(m => m.role === 'assistant' && m.tool_calls ? m.tool_calls.map(t => t.id) : []);
+    assert.deepEqual(callIds, ['X']);
+    const results = out.filter(m => m.role === 'tool');
+    assert.equal(results.length, 1);
+    assert.ok(!results.some(r => (r as { content: string }).content.includes('interrupted')));
   });
 });

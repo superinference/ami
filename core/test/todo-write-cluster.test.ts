@@ -130,7 +130,19 @@ describe('todo-write cluster (T1-T8)', () => {
   });
 
   // --- T6: nudge gate --------------------------------------------------------
-  it('T6: nudges when ALL items completed on the main thread', async () => {
+  it('T6: nudges when a 3+ item list is fully completed on the main thread with no verify step', async () => {
+    const { context } = ctx({ sessionId: 's1' });
+    const r = await todoWriteTool.execute({
+      todos: [
+        { id: '1', content: 'a', status: 'completed' },
+        { id: '2', content: 'b', status: 'completed' },
+        { id: '3', content: 'c', status: 'completed' },
+      ],
+    }, context);
+    assert.match(r.output, /Verification suggested/);
+  });
+
+  it('T6: does NOT nudge for a 2-item completed list (below the 3-item threshold)', async () => {
     const { context } = ctx({ sessionId: 's1' });
     const r = await todoWriteTool.execute({
       todos: [
@@ -138,7 +150,19 @@ describe('todo-write cluster (T1-T8)', () => {
         { id: '2', content: 'b', status: 'completed' },
       ],
     }, context);
-    assert.match(r.output, /Verification suggested/);
+    assert.doesNotMatch(r.output, /Verification suggested/);
+  });
+
+  it('T6: does NOT nudge when the list already contains a verification step', async () => {
+    const { context } = ctx({ sessionId: 's1' });
+    const r = await todoWriteTool.execute({
+      todos: [
+        { id: '1', content: 'a', status: 'completed' },
+        { id: '2', content: 'b', status: 'completed' },
+        { id: '3', content: 'verify the results', status: 'completed' },
+      ],
+    }, context);
+    assert.doesNotMatch(r.output, /Verification suggested/);
   });
 
   it('T6: does NOT nudge when running inside a subagent (agentId set)', async () => {
@@ -147,6 +171,7 @@ describe('todo-write cluster (T1-T8)', () => {
       todos: [
         { id: '1', content: 'a', status: 'completed' },
         { id: '2', content: 'b', status: 'completed' },
+        { id: '3', content: 'c', status: 'completed' },
       ],
     }, context);
     assert.doesNotMatch(r.output, /Verification suggested/);
@@ -202,5 +227,61 @@ describe('todo-write cluster (T1-T8)', () => {
       ],
     }, context);
     assert.equal(getTodos('s1:').length, 2);
+  });
+
+  // --- strict validation -----------------------------------------------------
+  describe('strict input validation', () => {
+    it('rejects an unknown top-level key', async () => {
+      const r = await todoWriteTool.execute({ todos: [], extra: 1 } as any);
+      assert.equal(r.isError, true);
+      assert.match(r.output, /Unknown parameter "extra"/);
+    });
+    it('rejects when todos is not an array', async () => {
+      const r = await todoWriteTool.execute({ todos: 'nope' } as any);
+      assert.equal(r.isError, true);
+      assert.match(r.output, /must be an array/);
+    });
+    it('rejects a non-object item', async () => {
+      const r = await todoWriteTool.execute({ todos: ['x'] } as any);
+      assert.equal(r.isError, true);
+      assert.match(r.output, /must be an object/);
+    });
+    it('rejects an unknown per-item key', async () => {
+      const r = await todoWriteTool.execute({ todos: [{ content: 'a', status: 'pending', weird: 1 }] } as any);
+      assert.equal(r.isError, true);
+      assert.match(r.output, /unknown property "weird"/);
+    });
+    it('rejects empty content', async () => {
+      const r = await todoWriteTool.execute({ todos: [{ content: '  ', status: 'pending' }] });
+      assert.equal(r.isError, true);
+      assert.match(r.output, /content cannot be empty/);
+    });
+    it('rejects an invalid status', async () => {
+      const r = await todoWriteTool.execute({ todos: [{ content: 'a', status: 'done' }] } as any);
+      assert.equal(r.isError, true);
+      assert.match(r.output, /status must be one of/);
+    });
+    it('rejects a non-string id', async () => {
+      const r = await todoWriteTool.execute({ todos: [{ id: 5, content: 'a', status: 'pending' }] } as any);
+      assert.equal(r.isError, true);
+      assert.match(r.output, /id must be a string/);
+    });
+    it('rejects an empty activeForm when provided', async () => {
+      const r = await todoWriteTool.execute({ todos: [{ content: 'a', status: 'pending', activeForm: '' }] });
+      assert.equal(r.isError, true);
+      assert.match(r.output, /activeForm cannot be empty/);
+    });
+  });
+
+  it('result carries the forward-looking affordance', async () => {
+    const r = await todoWriteTool.execute({ todos: [{ content: 'a', status: 'pending' }] });
+    assert.match(r.output, /Continue to use the todo list/);
+  });
+
+  it('description documents completion discipline and proactivity', () => {
+    const d = todoWriteTool.description;
+    assert.match(d, /ONLY mark an item completed when it is FULLY accomplished/);
+    assert.match(d, /in_progress BEFORE/);
+    assert.match(d, /no longer relevant/);
   });
 });

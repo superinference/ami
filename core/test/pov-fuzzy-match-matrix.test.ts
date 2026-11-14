@@ -28,13 +28,14 @@ import { levenshteinDistance, suggestSimilarPaths } from '../src/tools/path-sugg
 // ===========================================================================
 
 describe('STRATEGY_NAMES ordering contract', () => {
-  it('is the exact strictness-ordered 5-tuple', () => {
+  it('is the exact strictness-ordered 6-tuple', () => {
     assert.deepEqual([...STRATEGY_NAMES], [
       'exact',
       'line_trimmed',
       'whitespace_normalized',
       'indentation_flexible',
       'escape_normalized',
+      'desanitize_normalized',
     ]);
   });
 

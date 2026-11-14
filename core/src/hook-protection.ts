@@ -44,6 +44,19 @@ export function canHookEvent(event: string, tier: HookTier): boolean {
   return tier !== 'user';
 }
 
+/**
+ * Defense-in-depth workspace-trust gate, orthogonal to the tier-based
+ * {@link canHookEvent} check. Mirrors Claude Code's shouldSkipHookDueToTrust:
+ * when the workspace trust dialog has NOT been accepted, EVERY hook of EVERY
+ * tier is skipped in an interactive session (a declined-trust workspace must
+ * not fire SessionEnd/SubagentStop/etc. hooks — a real CVE class). In
+ * non-interactive / SDK mode trust is implicit, so hooks are allowed through.
+ */
+export function shouldSkipHookDueToTrust(trusted: boolean, interactive: boolean): boolean {
+  if (!interactive) return false; // non-interactive / SDK → implicit trust
+  return !trusted;
+}
+
 export function sortHooksByTier(hooks: HookRegistration[]): HookRegistration[] {
   return [...hooks].sort((a, b) => {
     const tierDiff = TIER_PRIORITY[a.tier] - TIER_PRIORITY[b.tier];

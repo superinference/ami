@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from './logger';
+import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
 
 /**
  * Project-level configuration that can be stored in
@@ -54,6 +55,21 @@ export interface ProjectConfig {
   /** Bash commands exempted from the container sandbox (audit #4: settable + consumed,
    *  now also typed + merged across config layers). */
   sandboxExcludedCommands?: string[];
+  /**
+   * Environment variables to apply to the process from settings. Applied with
+   * trust tiering by {@link applyConfigEnv}: project-scoped sources only apply
+   * the SAFE_ENV_VARS allowlist, so a committed project file cannot inject a
+   * dangerous var (ANTHROPIC_BASE_URL, LD_PRELOAD, …) into the agent.
+   */
+  env?: Record<string, string>;
+  /** When false, the rotating discoverability tips are suppressed entirely. */
+  tipsEnabled?: boolean;
+  /** Override the discoverability-tip surface: inject custom tips / drop the built-ins. */
+  tipsOverride?: { tips?: string[]; excludeDefault?: boolean };
+  /** When false, the learn-once composer hints are suppressed entirely. */
+  composerHintsEnabled?: boolean;
+  /** Override the composer-hint surface: inject custom hints / drop the built-ins. */
+  composerHintsOverride?: { hints?: Array<{ key: string; label: string; learnedAfter: number }>; excludeDefault?: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -150,18 +166,106 @@ export function loadManagedConfig(): ProjectConfig | null {
   }
 }
 
-function loadConfigFile(configPath: string): ProjectConfig | null {
+/** A problem found while loading a config file (distinct from "file absent"). */
+export interface ConfigDiagnostic {
+  path: string;
+  kind: 'parse-error' | 'not-object';
+  message: string;
+  /** Where the corrupt file was backed up, or the most recent known-good backup. */
+  backupPath?: string;
+}
+
+/**
+ * Back up a corrupt config file so the user's content is never silently lost.
+ * Returns the backup path, or null if the backup itself failed.
+ */
+export function backupCorruptConfig(configPath: string, content: string): string | null {
   try {
-    if (!fs.existsSync(configPath)) return null;
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    const stripped = stripJsoncComments(raw);
-    const parsed = JSON.parse(stripped) as ProjectConfig;
-    coreLog('config', `loaded ${configPath}`);
-    return parsed;
-  } catch (err) {
-    coreLog('config', `failed to load ${configPath}: ${err}`);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${configPath}.corrupt-${stamp}`;
+    fsHooks.writeFileSync(backupPath, content, 'utf-8');
+    return backupPath;
+  } catch {
     return null;
   }
+}
+
+/**
+ * Find the most recent `<config>.corrupt-*` backup next to `configPath`, or null.
+ * Timestamps are ISO-8601 (`-`-escaped), so lexical sort is chronological.
+ */
+export function findMostRecentBackup(configPath: string): string | null {
+  try {
+    const dir = path.dirname(configPath);
+    const base = path.basename(configPath);
+    const backups = (fsHooks.readdirSync(dir) as string[])
+      .filter(e => e.startsWith(`${base}.corrupt-`))
+      .sort();
+    if (backups.length === 0) return null;
+    return path.join(dir, backups[backups.length - 1]!);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load a config file, distinguishing three outcomes:
+ *  - file absent / unreadable → `{ config: null }` (no diagnostic);
+ *  - present but corrupt (bad JSON / not an object) → `{ config: null, diagnostic }`,
+ *    and the corrupt file is backed up so it is not lost;
+ *  - valid → `{ config }`.
+ */
+export function loadConfigFileChecked(configPath: string): { config: ProjectConfig | null; diagnostic?: ConfigDiagnostic } {
+  let raw: string;
+  try {
+    if (!fsHooks.existsSync(configPath)) return { config: null };
+    raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
+  } catch {
+    // Unreadable (permissions, race) — treat as absent rather than corrupt.
+    return { config: null };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsoncComments(raw));
+  } catch (err) {
+    const backupPath = backupCorruptConfig(configPath, raw) ?? undefined;
+    const message = err instanceof Error ? err.message : String(err);
+    coreLog('config', `corrupt config at ${configPath}: ${message}${backupPath ? ` (backed up to ${backupPath})` : ''}`);
+    return { config: null, diagnostic: { path: configPath, kind: 'parse-error', message, backupPath } };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const message = `Expected a JSON object, got ${parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed}`;
+    coreLog('config', `invalid config at ${configPath}: ${message}`);
+    return { config: null, diagnostic: { path: configPath, kind: 'not-object', message } };
+  }
+  coreLog('config', `loaded ${configPath}`);
+  return { config: parsed as ProjectConfig };
+}
+
+function loadConfigFile(configPath: string): ProjectConfig | null {
+  return loadConfigFileChecked(configPath).config;
+}
+
+/**
+ * Collect config diagnostics across every config tier under `cwd` (project,
+ * local, global). A missing file is not a diagnostic; a corrupt one is, with a
+ * pointer to its backup (fresh or most-recent) so the user can recover it.
+ */
+export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const paths = [
+    path.join(cwd, '.ami', 'config.json'),
+    path.join(cwd, '.ami', 'config.local.json'),
+    ...(home ? [path.join(home, '.ami', 'config.json')] : []),
+  ];
+  const diagnostics: ConfigDiagnostic[] = [];
+  for (const p of paths) {
+    const { diagnostic } = loadConfigFileChecked(p);
+    if (diagnostic) {
+      diagnostics.push({ ...diagnostic, backupPath: diagnostic.backupPath ?? findMostRecentBackup(p) ?? undefined });
+    }
+  }
+  return diagnostics;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +421,13 @@ export function mergeConfigs(
     if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
     if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
     if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = layer.sandboxExcludedCommands;
+    // env merges key-wise across layers (higher-priority layers override single
+    // keys rather than replacing the whole block).
+    if (layer.env !== undefined) merged.env = { ...merged.env, ...layer.env };
+    if (layer.tipsEnabled !== undefined) merged.tipsEnabled = layer.tipsEnabled;
+    if (layer.tipsOverride !== undefined) merged.tipsOverride = layer.tipsOverride;
+    if (layer.composerHintsEnabled !== undefined) merged.composerHintsEnabled = layer.composerHintsEnabled;
+    if (layer.composerHintsOverride !== undefined) merged.composerHintsOverride = layer.composerHintsOverride;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -333,6 +444,64 @@ export function mergeConfigs(
   }
 
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Settings-sourced env application (trust-tiered)
+// ---------------------------------------------------------------------------
+
+/** The trust tier of each config source for env-application purposes. */
+export const CONFIG_ENV_TIERS: ReadonlyArray<readonly [keyof ConfigEnvLayers, EnvTrustTier]> = [
+  ['managed', 'trusted'],
+  ['global', 'trusted'],
+  ['project', 'project'],
+  ['local', 'project'],
+];
+
+export interface ConfigEnvLayers {
+  managed?: ProjectConfig | null;
+  global?: ProjectConfig | null;
+  project?: ProjectConfig | null;
+  local?: ProjectConfig | null;
+}
+
+export interface ApplyConfigEnvResult {
+  applied: Record<string, string>;
+  rejected: Array<{ key: string; reason: EnvRejectReason; tier: EnvTrustTier }>;
+}
+
+/**
+ * Apply the `env` block of each config source to `target` (process.env by
+ * default), honoring the trust model:
+ *  - managed/global are trusted → apply any non-pinned var;
+ *  - project/local are untrusted → apply only the SAFE_ENV_VARS allowlist;
+ *  - when the host owns inference routing, provider/credential vars are stripped
+ *    from every source.
+ *
+ * Applied in ascending-trust order (local → project → global → managed) so a
+ * trusted source wins on key collisions, mirroring {@link mergeConfigs} where
+ * managed is authoritative. Returns the applied/rejected vars for diagnostics.
+ */
+export function applyConfigEnv(
+  layers: ConfigEnvLayers,
+  target: NodeJS.ProcessEnv = process.env,
+): ApplyConfigEnvResult {
+  const hostManagedProvider = isHostManagedProvider(target);
+  const applied: Record<string, string> = {};
+  const rejected: Array<{ key: string; reason: EnvRejectReason; tier: EnvTrustTier }> = [];
+  // Reverse so higher-trust sources are applied last and win collisions.
+  for (const [source, tier] of [...CONFIG_ENV_TIERS].reverse()) {
+    const env = layers[source]?.env;
+    const result = filterSettingsEnv(env, { tier, hostManagedProvider });
+    for (const [key, value] of Object.entries(result.applied)) {
+      target[key] = value;
+      applied[key] = value;
+    }
+    for (const r of result.rejected) {
+      rejected.push({ key: r.key, reason: r.reason, tier });
+    }
+  }
+  return { applied, rejected };
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +524,7 @@ export const fsHooks = {
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
   mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
   watch: fs.watch as typeof fs.watch,
+  readdirSync: fs.readdirSync as typeof fs.readdirSync,
 };
 
 /**

@@ -37,10 +37,15 @@ test('TurnMetrics: fresh instance reports zeroed, guard-safe summary', () => {
     totalToolCalls: 0,
     totalTokens: 0,
     totalDurationMs: 0,
+    totalDurationMsWithoutRetries: 0,
     avgToolCallsPerTurn: 0,
     avgTokensPerTurn: 0,
     tokensPerSecond: 0,
+    tokensPerSecondWithoutRetries: 0,
     longestTurnMs: 0,
+    byModel: {},
+    activeTimeMs: 0,
+    budget: null,
   });
   // Getters agree with the summary.
   assert.equal(m.turnCount, 0);
@@ -136,6 +141,11 @@ test('ToolAnalytics: unknown tool returns zeroed stats keyed by name', () => {
     minDurationMs: 0,
     maxDurationMs: 0,
     errorRate: 0,
+    requestTokens: 0,
+    resultTokens: 0,
+    p50DurationMs: 0,
+    p95DurationMs: 0,
+    p99DurationMs: 0,
   });
 });
 

@@ -13,6 +13,9 @@ export const SENSITIVE_ENV_VARS = new Set([
   'PASSWORD',
   'CREDENTIAL',
   'AUTH_TOKEN',
+  // Covers AMI_CLIENT_KEY_PASSPHRASE (mTLS client-key passphrase) and any other
+  // *_PASSPHRASE secret.
+  'PASSPHRASE',
 ]);
 
 export function isSensitiveEnvVar(name: string): boolean {

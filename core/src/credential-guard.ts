@@ -8,7 +8,9 @@ const CREDENTIAL_PATTERNS = [
   /glpat-[a-zA-Z0-9_-]{20,}/g,
   /xoxb-[0-9]+-[a-zA-Z0-9]+/g,
   /xoxp-[0-9]+-[a-zA-Z0-9]+/g,
-  /AKIA[A-Z0-9]{16}/g,
+  // AWS access-key family: long-term (AKIA), temporary/STS session (ASIA),
+  // plus A3T*/ABIA/ACCA prefixes. Body is base32 (A-Z,2-7), 16 chars.
+  /(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}/g,
   /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g,
   /nvapi-[a-zA-Z0-9_-]{20,}/g,
   // PEM private-key blocks (RSA / EC / OPENSSH / DSA / PGP / unlabelled).
@@ -45,10 +47,27 @@ export function isHighEntropySecret(token: string): boolean {
   return token.length >= 16 && shannonEntropy(token) >= 3.5;
 }
 
-// Only flag high-entropy values when they are ASSIGNED to a secret-ish key, so
-// random hashes / UUIDs / git SHAs in normal output are not over-redacted.
-const ASSIGNED_SECRET_RE =
-  /(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|auth[_-]?token|client[_-]?secret)["']?\s*[:=]\s*["']?([A-Za-z0-9+/_.\-=]{16,})/gi;
+// A secret value ASSIGNED to a secret-ish key (`token: x`, `api_key="x"`, …).
+// Group 1 = key name, group 2 = separator (incl. opening quote), group 3 = value.
+// The lookbehind keeps `secret` from matching the tail of `client_secret`, and the
+// value class deliberately excludes quotes/whitespace so a trailing quote is left
+// intact. Unlike the old pattern this accepts short values (no `{16,}` floor) so
+// a short/opaque token under a secret-named key is caught (see redaction tiers).
+const SECRET_ASSIGN_RE =
+  /(?<![A-Za-z0-9_])(password|passwd|secret|token|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|credential|api[_-]?key|access[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9+/_.\-=]+)/gi;
+
+// Field names that are UNCONDITIONALLY secret: the assigned value is redacted
+// regardless of length or entropy (a short/opaque session token must not leak just
+// because it is low-entropy). The weaker `*_key` family (api_key/access_key) keeps
+// the entropy gate below, since those names also appear with non-secret values.
+const UNCONDITIONAL_SECRET_KEY =
+  /^(?:password|passwd|secret|token|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|credential)$/i;
+
+/** Whether the value assigned to a secret-ish key should be redacted. */
+function assignedSecretShouldRedact(key: string, value: string): boolean {
+  if (UNCONDITIONAL_SECRET_KEY.test(key)) return true;
+  return isHighEntropySecret(value);
+}
 
 export function containsCredential(text: string): boolean {
   if (!text || text.length < 10) return false;
@@ -56,11 +75,11 @@ export function containsCredential(text: string): boolean {
     pattern.lastIndex = 0;
     return pattern.test(text);
   })) return true;
-  // Contextual high-entropy secret.
-  ASSIGNED_SECRET_RE.lastIndex = 0;
+  // Secret value assigned to a secret-ish key.
+  SECRET_ASSIGN_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = ASSIGNED_SECRET_RE.exec(text)) !== null) {
-    if (isHighEntropySecret(m[1])) return true;
+  while ((m = SECRET_ASSIGN_RE.exec(text)) !== null) {
+    if (assignedSecretShouldRedact(m[1], m[3])) return true;
   }
   return false;
 }
@@ -72,10 +91,11 @@ export function redactCredentials(text: string): string {
     pattern.lastIndex = 0;
     result = result.replace(new RegExp(pattern.source, pattern.flags), REDACT_PLACEHOLDER);
   }
-  // Redact only the assigned secret value (keep the key for context), and only
-  // when it is actually high-entropy.
-  result = result.replace(new RegExp(ASSIGNED_SECRET_RE.source, ASSIGNED_SECRET_RE.flags), (full, secret) =>
-    isHighEntropySecret(secret) ? full.replace(secret, REDACT_PLACEHOLDER) : full,
+  // Redact the assigned secret value (keep the key + separator for context).
+  result = result.replace(
+    new RegExp(SECRET_ASSIGN_RE.source, SECRET_ASSIGN_RE.flags),
+    (full: string, key: string, sep: string, value: string) =>
+      assignedSecretShouldRedact(key, value) ? `${key}${sep}${REDACT_PLACEHOLDER}` : full,
   );
   return result;
 }
@@ -94,7 +114,7 @@ export function findCredentials(text: string): Array<{ type: string; start: numb
     [/glpat-[a-zA-Z0-9_-]{20,}/g, 'gitlab_pat'],
     [/xoxb-[0-9]+-[a-zA-Z0-9]+/g, 'slack_bot'],
     [/xoxp-[0-9]+-[a-zA-Z0-9]+/g, 'slack_user'],
-    [/AKIA[A-Z0-9]{16}/g, 'aws_access_key'],
+    [/(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}/g, 'aws_access_key'],
     [/eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g, 'jwt'],
     [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, 'private_key'],
     [/Bearer\s+[a-zA-Z0-9_\-.=+/]{20,}/g, 'bearer_token'],
@@ -108,13 +128,15 @@ export function findCredentials(text: string): Array<{ type: string; start: numb
     }
   }
 
-  // Contextual high-entropy secrets (value only).
-  ASSIGNED_SECRET_RE.lastIndex = 0;
+  // Secret values assigned to secret-ish keys (value only).
+  SECRET_ASSIGN_RE.lastIndex = 0;
   let em: RegExpExecArray | null;
-  while ((em = ASSIGNED_SECRET_RE.exec(text)) !== null) {
-    const secret = em[1];
-    if (!isHighEntropySecret(secret)) continue;
-    found.push({ type: 'generic_secret', start: em.index + em[0].lastIndexOf(secret), length: secret.length });
+  while ((em = SECRET_ASSIGN_RE.exec(text)) !== null) {
+    const key = em[1];
+    const value = em[3];
+    if (!assignedSecretShouldRedact(key, value)) continue;
+    const valueStart = em.index + em[1].length + em[2].length;
+    found.push({ type: 'generic_secret', start: valueStart, length: value.length });
   }
 
   return found.sort((a, b) => a.start - b.start);

@@ -333,16 +333,16 @@ describe('task_tracker — disk load/save branches', () => {
     assert.ok(!fs.existsSync(path.join(blocker, 'tasks.json')));
   });
 
-  it('renders the default icon for an unrecognized status', async () => {
+  it('renders the correct status icon for each valid status', async () => {
     resetTaskState();
-    await taskTrackerTool.execute({ action: 'create', subject: 'weird' }, ctx());
-    const t = getTaskState().get(1)!;
-    (t as any).status = 'archived'; // not present in STATUS_ICONS
-    const r = await taskTrackerTool.execute(
-      { action: 'get', task_id: '1' },
-      ctx(),
-    );
-    assert.ok(!r.isError);
-    assert.ok(r.output.includes('[ ]'));
+    await taskTrackerTool.execute({ action: 'create', subject: 'work' }, ctx());
+    const pending = await taskTrackerTool.execute({ action: 'get', task_id: '1' }, ctx());
+    assert.ok(pending.output.includes('[ ] Task #1'));
+    await taskTrackerTool.execute({ action: 'update', task_id: '1', status: 'in_progress' }, ctx());
+    const inProg = await taskTrackerTool.execute({ action: 'get', task_id: '1' }, ctx());
+    assert.ok(inProg.output.includes('[>] Task #1'));
+    await taskTrackerTool.execute({ action: 'update', task_id: '1', status: 'completed' }, ctx());
+    const done = await taskTrackerTool.execute({ action: 'get', task_id: '1' }, ctx());
+    assert.ok(done.output.includes('[x] Task #1'));
   });
 });

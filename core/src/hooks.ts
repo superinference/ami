@@ -6,8 +6,9 @@ import { spawn } from 'child_process';
 import type { Message, AssistantMessage } from './types';
 import { log as coreLog } from './logger';
 import { EventEmitter } from 'events';
-import { canHookEvent } from './hook-protection';
-import { verdictRank } from './permissions';
+import { canHookEvent, shouldSkipHookDueToTrust } from './hook-protection';
+import { verdictRank, wildcardMatch } from './permissions';
+import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 
 // ---------------------------------------------------------------------------
 // Hook output sanitization — strip system-reminder tags to prevent injection
@@ -81,6 +82,11 @@ export interface HookContext {
   lastAssistantMessage?: AssistantMessage;
   toolResults?: Array<{ toolName: string; output: string; isError: boolean }>;
   turnCount: number;
+  /** Parent cancellation signal (user Ctrl-C / turn abort). Threaded into
+   *  command/http/prompt/agent hook execution so a long-running hook is torn
+   *  down when the surrounding operation is cancelled, combined with the
+   *  per-hook timeout. */
+  abortSignal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +316,112 @@ export function validateHookTimeout(timeoutMs: number): number {
   return Math.max(100, Math.min(timeoutMs, MAX_HOOK_TIMEOUT_MS));
 }
 
+/**
+ * Claude Code's hook `timeout` field is in SECONDS for EVERY hook type
+ * (command/prompt/http/agent). This resolves a config value (seconds) to a
+ * validated millisecond deadline, falling back to a per-type default when unset.
+ * Single source of truth so prompt/http/agent no longer treat `timeout` as raw
+ * milliseconds (which turned a Claude-compatible `timeout: 30` into 30 ms).
+ */
+export function resolveHookTimeoutMs(timeoutSeconds: number | undefined, defaultMs: number): number {
+  return validateHookTimeout(timeoutSeconds != null ? timeoutSeconds * 1000 : defaultMs);
+}
+
+/**
+ * Combine an optional parent AbortSignal with a hard timeout into one signal.
+ * Mirrors Claude Code's createCombinedAbortSignal: the returned signal aborts
+ * when EITHER the parent aborts (user Ctrl-C / turn cancel) OR the timeout
+ * fires, so a stalled hook (command/http/model call) is actively torn down
+ * instead of relying on a cooperative between-events deadline. `timedOut()`
+ * distinguishes a deadline abort from a parent/user cancellation.
+ */
+export function combineHookAbort(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): { controller: AbortController; signal: AbortSignal; cleanup: () => void; timedOut: () => boolean; aborted: () => boolean } {
+  const ac = new AbortController();
+  let didTimeout = false;
+  const timer = setTimeout(() => { didTimeout = true; ac.abort(); }, timeoutMs);
+  const onParent = () => ac.abort();
+  if (parent) {
+    if (parent.aborted) ac.abort();
+    else parent.addEventListener('abort', onParent, { once: true });
+  }
+  return {
+    controller: ac,
+    signal: ac.signal,
+    cleanup: () => { clearTimeout(timer); if (parent) parent.removeEventListener('abort', onParent); },
+    timedOut: () => didTimeout,
+    aborted: () => ac.signal.aborted,
+  };
+}
+
+/**
+ * Tools a hook-spawned agent/prompt engine must NOT get — prevents a stop/
+ * verification hook agent from recursively spawning subagents or entering the
+ * interactive plan mode (Claude Code's ALL_AGENT_DISALLOWED_TOOLS). The engine
+ * factory filters these out of the hook engine's toolset.
+ */
+export const HOOK_AGENT_DISALLOWED_TOOLS: readonly string[] = ['task', 'plan_mode'];
+
+/**
+ * Three-state HTTP-hook URL allowlist check (Claude Code semantics):
+ *   undefined  → no restriction (allow)
+ *   []         → block everything
+ *   non-empty  → the URL must match at least one `*`-wildcard pattern
+ * Uses the canonical glob matcher shared with MCP/permission allowlists.
+ */
+export function isHttpHookUrlAllowed(url: string, allowed: string[] | undefined): boolean {
+  if (allowed === undefined) return true;
+  if (allowed.length === 0) return false;
+  return allowed.some(pattern => wildcardMatch(pattern, url));
+}
+
+/**
+ * Interpolate `$VAR` / `${VAR}` references in HTTP-hook header values from the
+ * process environment, gated by an allowlist (the hook's own `allowedEnvVars`
+ * intersected with the global `httpHookAllowedEnvVars` setting). Any var not on
+ * the allowlist resolves to the empty string so a malicious hooks.json cannot
+ * exfiltrate arbitrary secrets through a header.
+ */
+export function interpolateHookHeaderEnv(
+  value: string,
+  allowed: Set<string>,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_m, braced, bare) => {
+    const name = braced ?? bare;
+    if (!allowed.has(name)) return '';
+    return env[name] ?? '';
+  });
+}
+
+/**
+ * Claude Code's canonical hook output wraps event-specific fields in a
+ * `hookSpecificOutput` object discriminated by `hookEventName`
+ * (PreToolUse → permissionDecision/permissionDecisionReason/updatedInput/
+ * additionalContext; UserPromptSubmit/SessionStart/… each with their own keys).
+ * AMI's decision parse reads FLAT top-level fields, so a stock CC hook that only
+ * emits `{"hookSpecificOutput": {...}}` was ignored. This flattens the envelope
+ * onto the top level (top-level keys win if both present) so both shapes work.
+ */
+export function unwrapHookSpecificOutput(parsed: unknown): HookDecisionOutput {
+  if (!parsed || typeof parsed !== 'object') return {} as HookDecisionOutput;
+  const obj = parsed as Record<string, unknown>;
+  const inner = obj.hookSpecificOutput;
+  if (!inner || typeof inner !== 'object') return obj as HookDecisionOutput;
+  const nested = inner as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...obj };
+  delete merged.hookSpecificOutput;
+  for (const [k, v] of Object.entries(nested)) {
+    if (k === 'hookEventName') continue;
+    // permissionDecisionReason is CC's name for the human reason string
+    const key = k === 'permissionDecisionReason' ? 'reason' : k;
+    if (merged[key] === undefined) merged[key] = v;
+  }
+  return merged as HookDecisionOutput;
+}
+
 // ---------------------------------------------------------------------------
 // Hook event serialization (stdin payload for command hooks)
 // ---------------------------------------------------------------------------
@@ -384,10 +496,23 @@ export interface HttpHookConfig {
   timeout?: number;
   /** 'block' = a hook that times out or errors denies the action (fail-closed). */
   onFailure?: 'block' | 'allow';
+  /** Env vars this hook may interpolate into header values ($VAR/${VAR}),
+   *  intersected with the global httpHookAllowedEnvVars allowlist. */
+  allowedEnvVars?: string[];
   once?: boolean;
   if?: string;
   async?: boolean;
   asyncRewake?: boolean;
+}
+
+/**
+ * Admin/settings-level policy for HTTP hooks (merged from settings sources).
+ *   allowedHttpHookUrls   — undefined=no restriction, []=block all, non-empty=wildcard allowlist
+ *   httpHookAllowedEnvVars — env vars a hook may interpolate into headers
+ */
+export interface HttpHookPolicy {
+  allowedHttpHookUrls?: string[];
+  httpHookAllowedEnvVars?: string[];
 }
 
 export interface AgentHookConfig {
@@ -482,8 +607,10 @@ async function runCommandHookAsync(
   timeout: number,
   stdinData?: string,
   args?: string[],
+  signal?: AbortSignal,
 ): Promise<{ exitCode: number; stdout: string; stderr: string; output: string }> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Hook cancelled')); return; }
     const proc = args && args.length > 0
       ? spawn(args[0], args.slice(1), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
       : spawn('bash', ['-c', command], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -514,13 +641,25 @@ async function runCommandHookAsync(
       reject(new Error(`Hook timed out after ${timeout}ms`));
     }, timeout);
 
+    // Parent/user cancellation: kill the child and surface a distinct "cancelled"
+    // outcome (vs timeout) so callers can tell them apart.
+    const onAbort = () => {
+      proc.kill('SIGKILL');
+      clearTimeout(timer);
+      reject(new Error('Hook cancelled'));
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const detach = () => { if (signal) signal.removeEventListener('abort', onAbort); };
+
     proc.on('close', (code) => {
       clearTimeout(timer);
+      detach();
       resolve({ exitCode: code ?? 1, stdout, stderr, output: stdout + stderr });
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
+      detach();
       reject(err);
     });
   });
@@ -532,6 +671,12 @@ export class HookManager extends EventEmitter {
   private _cwd: string = process.cwd();
   private _sessionId: string = '';
   private _workspaceTrusted = false;
+  private _interactive = false;
+  private _httpHookPolicy: HttpHookPolicy = {};
+  /** SSRF validator seam (defaults to the shared web-utils validateUrlSafety).
+   *  Injectable so tests can exercise the HTTP-hook success/non-2xx paths against
+   *  a loopback mock server that the real validator would (correctly) block. */
+  private _validateUrlSafety: typeof validateUrlSafety = validateUrlSafety;
   private _callbackHooks: Map<string, HookCallback[]> = new Map();
 
   // Gap 1: Tier-aware verdict hold-over
@@ -558,6 +703,20 @@ export class HookManager extends EventEmitter {
   setEffortLevel(level: string): void { this._effortLevel = level; }
   getEffortLevel(): string { return this._effortLevel; }
   isWorkspaceTrusted(): boolean { return this._workspaceTrusted; }
+
+  /** Whether this is an interactive (TUI) session. Drives the workspace-trust
+   *  gate: in interactive mode untrusted workspaces skip ALL hooks; in
+   *  non-interactive/SDK mode trust is implicit (matches Claude Code). */
+  setInteractive(interactive: boolean): void { this._interactive = interactive; }
+  isInteractive(): boolean { return this._interactive; }
+
+  /** Install the merged HTTP-hook policy (URL allowlist + header env allowlist). */
+  setHttpHookPolicy(policy: HttpHookPolicy | undefined): void { this._httpHookPolicy = policy ?? {}; }
+  getHttpHookPolicy(): HttpHookPolicy { return this._httpHookPolicy; }
+
+  /** Override the HTTP-hook SSRF validator (tests only; defaults to the shared
+   *  web-utils validateUrlSafety). */
+  setUrlSafetyValidator(fn: typeof validateUrlSafety): void { this._validateUrlSafety = fn; }
 
   registerCallback(event: string, callback: HookCallback): () => void {
     const hooks = this._callbackHooks.get(event) || [];
@@ -639,6 +798,13 @@ export class HookManager extends EventEmitter {
    * Command hooks execute a shell command; exit code 0 = allow, non-zero = deny.
    */
   loadFromFile(cwd: string): void {
+    // Defense-in-depth: in an interactive session an untrusted workspace fires
+    // NO hooks of any tier (Claude Code's shouldSkipHookDueToTrust). Project
+    // entries are also gated below, but this blocks user/config-tier hooks too.
+    if (shouldSkipHookDueToTrust(this._workspaceTrusted, this._interactive)) {
+      coreLog('hooks', 'Skipping ALL hooks: workspace not trusted (interactive)');
+      return;
+    }
     const filePath = path.join(cwd, '.ami', 'hooks.json');
     const userHooksPath = path.join(os.homedir(), '.ami', 'hooks.json');
 
@@ -725,10 +891,10 @@ export class HookManager extends EventEmitter {
         switch (entry.event) {
         case 'preToolUse': {
           const fn: PreToolUseHookFn = async (ctx) => {
-            if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return { action: 'allow' };
+            if (hookConfig.if && !matchesHookIf(hookConfig.if, ctx.toolName, ctx.toolInput)) return { action: 'allow' };
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return { action: 'allow' };
             const eventData = serializeHookEvent({ event: 'preToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput });
-            const runner = () => this.runHookByType(hookConfig, cwd, eventData);
+            const runner = () => this.runHookByType(hookConfig, cwd, eventData, ctx.abortSignal);
             if (hookConfig.async) { runner().catch(() => {}); return { action: 'allow' }; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.preToolUseHooks, fn);
@@ -750,10 +916,10 @@ export class HookManager extends EventEmitter {
         }
         case 'postToolUse': {
           const fn: PostToolUseHookFn = async (ctx) => {
-            if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return;
+            if (hookConfig.if && !matchesHookIf(hookConfig.if, ctx.toolName, ctx.toolInput)) return;
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
             const eventData = serializeHookEvent({ event: 'postToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput, toolOutput: ctx.toolOutput, isError: ctx.isError, duration_ms: ctx.durationMs });
-            const runner = () => this.runHookByType(hookConfig, cwd, eventData);
+            const runner = () => this.runHookByType(hookConfig, cwd, eventData, ctx.abortSignal);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.postToolUseHooks, fn);
@@ -958,10 +1124,10 @@ export class HookManager extends EventEmitter {
         }
         case 'postToolUseFailure': {
           const fn: PostToolUseHookFn = async (ctx) => {
-            if (hookConfig.if && !matchesPattern(hookConfig.if, ctx.toolName)) return;
+            if (hookConfig.if && !matchesHookIf(hookConfig.if, ctx.toolName, ctx.toolInput)) return;
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
             const eventData = serializeHookEvent({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
-            const runner = () => this.runHookByType(hookConfig, cwd, eventData);
+            const runner = () => this.runHookByType(hookConfig, cwd, eventData, ctx.abortSignal);
             if (hookConfig.async) { runner().catch(() => {}); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.postToolUseFailureHooks, fn);
@@ -1548,18 +1714,19 @@ export class HookManager extends EventEmitter {
     config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
     cwd: string,
     eventData: string,
+    signal?: AbortSignal,
   ): Promise<string> {
     switch (config.type) {
       case 'command': {
         // Claude Code hook contract: config.timeout is in SECONDS. Route through
-        // validateHookTimeout so it is clamped to [100ms, MAX_HOOK_TIMEOUT_MS].
-        const timeout = validateHookTimeout(config.timeout != null ? config.timeout * 1000 : DEFAULT_HOOK_TIMEOUT_MS);
+        // resolveHookTimeoutMs so it is clamped to [100ms, MAX_HOOK_TIMEOUT_MS].
+        const timeout = resolveHookTimeoutMs(config.timeout, DEFAULT_HOOK_TIMEOUT_MS);
         const hookEnv = this.buildHookEnv(
           'command',
           eventData ? (() => { try { return JSON.parse(eventData).toolName; } catch { return undefined; } })() : undefined,
         );
         try {
-          const { exitCode, stdout, stderr } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args);
+          const { exitCode, stdout, stderr } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args, signal);
           // Claude Code exit-code contract:
           //   0           = success — parse stdout for a decision
           //   2           = BLOCKING error — reason from stderr → DENY
@@ -1576,7 +1743,7 @@ export class HookManager extends EventEmitter {
           }
           const trimmed = stdout.trim();
           try {
-            const parsed: HookDecisionOutput = JSON.parse(trimmed);
+            const parsed: HookDecisionOutput = unwrapHookSpecificOutput(JSON.parse(trimmed));
             if (parsed.decision === 'block' || parsed.decision === 'deny') return `DENY:${parsed.reason ?? 'Hook blocked'}`;
             if (parsed.decision === 'ask' || parsed.permissionDecision === 'ask') return `ASK:${parsed.reason ?? ''}`;
             if (parsed.continue === false) return `DENY:${parsed.stopReason ?? 'Hook requested stop'}`;
@@ -1598,110 +1765,154 @@ export class HookManager extends EventEmitter {
         }
       }
       case 'prompt':
-        return this.runPromptHook(config, eventData);
+        return this.runPromptHook(config, eventData, signal);
       case 'http':
-        return this.runHttpHook(config, eventData);
+        return this.runHttpHook(config, eventData, signal);
       case 'agent':
-        return this.runAgentHook(config, eventData);
+        return this.runAgentHook(config, eventData, signal);
       default:
         return '';
     }
   }
 
-  private async runPromptHook(config: PromptHookConfig, eventData: string): Promise<string> {
+  private async runPromptHook(config: PromptHookConfig, eventData: string, signal?: AbortSignal): Promise<string> {
+    const r = await this.runEngineHook('prompt', config.prompt, 'Event data', config.model, config.timeout, 30_000, eventData, signal);
+    if (config.asyncRewake && r.error) this.emit('hookRewake', { event: 'prompt', message: `Prompt hook error: ${r.error}` });
+    if (config.asyncRewake && r.output.startsWith('DENY:')) this.emit('hookRewake', { event: 'prompt', message: r.output });
+    return r.output;
+  }
+
+  /**
+   * Shared runner for engine-backed hooks (prompt + agent). Spins up a hook
+   * sub-engine with:
+   *  - `timeout` interpreted as SECONDS (resolveHookTimeoutMs), matching command/http;
+   *  - a HARD timeout + parent-signal AbortController passed to the engine so a
+   *    stalled model call is actively torn down (not a cooperative between-events
+   *    deadline that a pre-first-event hang never reaches);
+   *  - HOOK_AGENT_DISALLOWED_TOOLS filtered out so a hook agent cannot spawn
+   *    subagents or enter plan mode.
+   */
+  private async runEngineHook(
+    kind: 'prompt' | 'agent',
+    promptText: string,
+    dataLabel: string,
+    model: string | undefined,
+    timeoutSeconds: number | undefined,
+    defaultMs: number,
+    eventData: string,
+    signal?: AbortSignal,
+  ): Promise<{ output: string; error?: string }> {
     if (!this._engineFactory) {
-      coreLog('hooks', 'Prompt hook skipped: no engine factory available');
-      return '';
+      coreLog('hooks', `${kind} hook skipped: no engine factory available`);
+      return { output: '' };
     }
     const providerConfig = { ...(this._providerConfig || {}) };
-    if (config.model) providerConfig.model = config.model;
+    if (model) providerConfig.model = model;
+
+    const timeoutMs = resolveHookTimeoutMs(timeoutSeconds, defaultMs);
+    const abort = combineHookAbort(signal, timeoutMs);
 
     const engine = this._engineFactory({
       provider: providerConfig,
       cwd: this._cwd,
       permissionMode: 'auto-allow',
+      abortController: abort.controller,
+      disallowedTools: HOOK_AGENT_DISALLOWED_TOOLS,
     });
 
-    const fullPrompt = `${config.prompt}\n\nEvent data:\n${eventData}`;
+    const fullPrompt = `${promptText}\n\n${dataLabel}:\n${eventData}`;
     let result = '';
-    const timeout = config.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-
+    let error: string | undefined;
     try {
       for await (const event of engine.submit(fullPrompt)) {
-        if (Date.now() > deadline) break;
+        if (abort.aborted()) break;
         if (event.type === 'text_delta' && event.text) result += event.text;
         if (event.type === 'error') { result += event.error ?? ''; break; }
       }
     } catch (err) {
-      coreLog('hooks', `Prompt hook error: ${err}`);
-      if (config.asyncRewake) {
-        this.emit('hookRewake', { event: 'prompt', message: `Prompt hook error: ${err}` });
-      }
+      error = String(err);
+      coreLog('hooks', `${kind} hook error: ${err}`);
+    } finally {
+      abort.cleanup();
+      engine.shutdown?.();
     }
-    engine.shutdown?.();
-
-    if (config.asyncRewake && result.startsWith('DENY:')) {
-      this.emit('hookRewake', { event: 'prompt', message: result });
-    }
-    return sanitizeHookOutput(result);
+    if (abort.timedOut()) coreLog('hooks', `${kind} hook hard-timeout after ${timeoutMs}ms`);
+    return { output: sanitizeHookOutput(result), error };
   }
 
-  private async runHttpHook(config: HttpHookConfig, eventData: string): Promise<string> {
+  private async runHttpHook(config: HttpHookConfig, eventData: string, signal?: AbortSignal): Promise<string> {
     const http = require('http');
     const https = require('https');
-    const url = new URL(config.url);
-    const client = url.protocol === 'https:' ? https : http;
     // Fail-closed: an HTTP hook that times out or errors DENIES when onFailure:block.
     const onFail = () => config.onFailure === 'block' ? 'DENY:HTTP hook failed (fail-closed)' : '';
+
+    // (1) URL allowlist gate (three-state) — enforced BEFORE any I/O.
+    if (!isHttpHookUrlAllowed(config.url, this._httpHookPolicy.allowedHttpHookUrls)) {
+      coreLog('hooks', `HTTP hook blocked: ${config.url} not in allowedHttpHookUrls`);
+      return onFail();
+    }
+
+    // (2) SSRF guard — resolve + validate the hostname, reusing the shared
+    // web-utils validator (blocks private/link-local/metadata IPs) and pin the
+    // resolved IP to stop DNS-rebinding (TOCTOU). Loopback is allowed (local dev
+    // webhook servers), matching Claude Code's ssrfGuardedLookup. No separate impl.
+    const safety = await this._validateUrlSafety(config.url, undefined, { allowLoopback: true });
+    if ('error' in safety) {
+      coreLog('hooks', `HTTP hook blocked (SSRF): ${safety.error}`);
+      return onFail();
+    }
+
+    const url = new URL(config.url);
+    const client = url.protocol === 'https:' ? https : http;
+
+    // (3) Header env-var interpolation, gated by the hook's allowedEnvVars ∩ the
+    // global httpHookAllowedEnvVars setting.
+    const envAllow = new Set(
+      (config.allowedEnvVars ?? []).filter(v => (this._httpHookPolicy.httpHookAllowedEnvVars ?? []).includes(v)),
+    );
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    for (const [k, v] of Object.entries(config.headers ?? {})) {
+      headers[k] = interpolateHookHeaderEnv(v, envAllow);
+    }
+
+    // (5) Cancellation + hard timeout as ONE combined signal (the canonical
+    // combineHookAbort): the request is torn down on parent/user cancel OR the
+    // per-hook timeout, matching command/prompt/agent hooks.
+    const timeoutMs = resolveHookTimeoutMs(config.timeout, 10_000);
+    const abort = combineHookAbort(signal, timeoutMs);
     return new Promise((resolve) => {
+      let settled = false;
+      const done = (val: string) => { if (!settled) { settled = true; abort.cleanup(); resolve(val); } };
       const req = client.request(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...config.headers },
-        timeout: config.timeout ?? 10000,
+        headers,
+        signal: abort.signal,
+        maxRedirects: 0,                       // stop redirect-based SSRF bypass
+        lookup: pinnedDnsLookup(safety.resolvedIP),
       }, (res: any) => {
         let body = '';
         res.on('data', (d: Buffer) => body += d);
-        res.on('end', () => resolve(sanitizeHookOutput(body)));
-        res.on('error', () => resolve(onFail()));
+        res.on('end', () => {
+          // (4) Non-2xx is a failure — do NOT parse an error body as a decision.
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            coreLog('hooks', `HTTP hook non-2xx (${status})`);
+            done(onFail());
+            return;
+          }
+          done(sanitizeHookOutput(body));
+        });
+        res.on('error', () => done(onFail()));
       });
-      req.on('timeout', () => { req.destroy(); resolve(onFail()); });
-      req.on('error', () => resolve(onFail()));
+      req.on('error', () => done(onFail()));
       req.write(eventData);
       req.end();
     });
   }
 
-  private async runAgentHook(config: AgentHookConfig, eventData: string): Promise<string> {
-    if (!this._engineFactory) {
-      coreLog('hooks', 'Agent hook skipped: no engine factory available');
-      return '';
-    }
-    const providerConfig = { ...(this._providerConfig || {}) };
-    if (config.model) providerConfig.model = config.model;
-
-    const engine = this._engineFactory({
-      provider: providerConfig,
-      cwd: this._cwd,
-      permissionMode: 'auto-allow',
-    });
-
-    const fullPrompt = `${config.prompt}\n\nContext:\n${eventData}`;
-    let result = '';
-    const timeout = config.timeout ?? 60000;
-    const deadline = Date.now() + timeout;
-
-    try {
-      for await (const event of engine.submit(fullPrompt)) {
-        if (Date.now() > deadline) break;
-        if (event.type === 'text_delta' && event.text) result += event.text;
-        if (event.type === 'error') { result += event.error ?? ''; break; }
-      }
-    } catch (err) {
-      coreLog('hooks', `Agent hook error: ${err}`);
-    }
-    engine.shutdown?.();
-    return sanitizeHookOutput(result);
+  private async runAgentHook(config: AgentHookConfig, eventData: string, signal?: AbortSignal): Promise<string> {
+    const r = await this.runEngineHook('agent', config.prompt, 'Context', config.model, config.timeout, 60_000, eventData, signal);
+    return r.output;
   }
 
   private removeHookOnce<T>(hookArray: T[], hookFn: T): void {
@@ -1718,5 +1929,38 @@ function matchesPattern(pattern: string, value: string): boolean {
   if (!pattern || pattern === '*') return true;
   if (pattern.includes('|')) return pattern.split('|').some(p => matchesPattern(p, value));
   try { return new RegExp(pattern).test(value); } catch { return pattern === value; }
+}
+
+/** Pull the content string a `Tool(content)` matcher checks against the tool
+ *  input (the command for bash, the path for file tools, the url for web). */
+function hookInputContent(toolInput: Record<string, unknown>): string {
+  const candidate =
+    toolInput.command ?? toolInput.file_path ?? toolInput.path ?? toolInput.url ??
+    toolInput.pattern ?? toolInput.query;
+  if (typeof candidate === 'string') return candidate;
+  return Object.values(toolInput).filter(v => typeof v === 'string').join(' ');
+}
+
+const TOOL_IF_RE = /^([A-Za-z_][A-Za-z0-9_]*)\(([\s\S]*)\)$/;
+
+/**
+ * Evaluate a hook `if` condition. Beyond a bare tool-NAME regex, this supports
+ * Claude Code's `Tool(content)` rule syntax (e.g. `Bash(git *)`,
+ * `Edit(src/**)`) — it checks the tool name matches the rule's tool and then
+ * glob-matches the inner content against the tool's input, so a hook can be
+ * gated to e.g. only git commands or only certain paths rather than every Bash.
+ */
+export function matchesHookIf(
+  ifCond: string,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): boolean {
+  const m = TOOL_IF_RE.exec(ifCond.trim());
+  if (!m) return matchesPattern(ifCond, toolName);
+  const ruleTool = translateHookMatcher(m[1]);
+  const inner = m[2];
+  if (!matchesPattern(ruleTool, toolName)) return false;
+  if (inner === '' || inner === '*') return true;
+  return wildcardMatch(inner, hookInputContent(toolInput));
 }
 

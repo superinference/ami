@@ -124,11 +124,46 @@ export interface ToolResult {
   metadata?: Record<string, unknown>;
 }
 
+/** Per-host outbound-network allow/deny lists for the sandbox. `deniedHosts`
+ *  takes precedence over `allowedHosts`. Proxy ports route the container's
+ *  outbound traffic through a host proxy (parity: Claude's SandboxNetworkConfig). */
+export interface SandboxNetworkConfig {
+  /** Hostnames/domains permitted for outbound network (allowlist). */
+  allowedHosts?: string[];
+  /** Hostnames/domains blocked for outbound network (denylist; wins over allowedHosts). */
+  deniedHosts?: string[];
+  /** Unix-socket paths to allow (macOS only; ignored where the backend can't filter by path). */
+  allowUnixSockets?: string[];
+  /** Allow ALL Unix sockets (disables socket blocking entirely). */
+  allowAllUnixSockets?: boolean;
+  /** Allow the sandboxed process to bind local ports. */
+  allowLocalBinding?: boolean;
+  /** Host port the sandbox routes outbound HTTP(S) through. 1..65535. */
+  httpProxyPort?: number;
+  /** Host port the sandbox routes outbound traffic through (SOCKS). 1..65535. */
+  socksProxyPort?: number;
+}
+
+/** Granular filesystem carve-outs layered on top of the project-only writable
+ *  mount (parity: Claude's SandboxFilesystemConfig). Deny wins over allow, and
+ *  `allowRead` re-opens specific paths inside a `denyRead` region. */
+export interface SandboxFilesystemConfig {
+  /** Extra absolute paths writable inside the sandbox (merged with Edit allow rules). */
+  allowWrite?: string[];
+  /** Extra absolute paths denied for writing (merged with Edit deny rules; wins over allowWrite). */
+  denyWrite?: string[];
+  /** Extra absolute paths denied for reading (merged with Read deny rules). */
+  denyRead?: string[];
+  /** Paths re-allowed for reading within a denyRead region (precedence over denyRead). */
+  allowRead?: string[];
+}
+
 /** Policy controlling whether/how bash commands run inside an isolation backend.
  *  `mode: 'container'` forces every bash command through a container whose only
  *  writable mount is the project dir; the host filesystem is unreachable. When
  *  the backend is unavailable the bash tool fails closed (refuses to run on the
- *  host). `mode: 'off'` (or undefined) runs on the host as before. */
+ *  host) when `failIfUnavailable` is set, otherwise it warns and runs on the
+ *  host. `mode: 'off'` (or undefined) runs on the host as before. */
 export interface SandboxPolicy {
   mode: 'off' | 'container';
   /** Container image (must contain the project toolchain). Default: node:26. */
@@ -137,6 +172,24 @@ export interface SandboxPolicy {
   projectDir?: string;
   /** Allow network inside the container (needed for npm/git). Default: true. */
   allowNetwork?: boolean;
+  /** Per-host outbound network allow/deny lists + proxy ports. */
+  network?: SandboxNetworkConfig;
+  /** Granular filesystem read/write carve-outs. */
+  filesystem?: SandboxFilesystemConfig;
+  /** Auto-approve the bash tool (skip the permission prompt) when a command runs
+   *  sandboxed — the isolation is the safety boundary. Default: true. */
+  autoAllowBashIfSandboxed?: boolean;
+  /** Hard gate on the `dangerouslyDisableSandbox` escape hatch. When false, the
+   *  parameter is ignored entirely and EVERY command must run sandboxed. Default: true. */
+  allowUnsandboxedCommands?: boolean;
+  /** Fail closed at startup if the sandbox is enabled but cannot start (missing
+   *  backend / unsupported platform). When false (default) a warning is shown and
+   *  commands run unsandboxed. Managed-deployment hard gate. */
+  failIfUnavailable?: boolean;
+  /** Per-command map of sandbox-violation strings to suppress (command → allowlisted violations). */
+  ignoreViolations?: Record<string, string[]>;
+  /** Restrict sandboxing (and auto-allow) to specific platforms (e.g. ['linux']). */
+  enabledPlatforms?: string[];
 }
 
 export interface ToolContext {
@@ -442,6 +495,13 @@ export interface EngineConfig {
   /** MCP server names whose tools bypass the MCP schema-size deferral threshold. */
   alwaysLoadMcpServers?: string[];
   abortController?: AbortController;
+  /**
+   * Tool names to exclude from this engine's toolset. Used for hook-spawned
+   * sub-engines (prompt/agent hooks) so a verification hook cannot recursively
+   * spawn subagents (`task`) or enter the interactive `plan_mode`
+   * (Claude Code's ALL_AGENT_DISALLOWED_TOOLS).
+   */
+  disallowedTools?: string[];
   onPermissionRequest?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
   /** Centralized permission prompt handler. Both CLI and VSCode implement this interface. */
   permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
@@ -519,6 +579,10 @@ export interface EngineConfig {
   superinference?: SuperInferenceConfig;
   /** Lifecycle hooks for post-sampling, stop, and error events. */
   hooks?: import('./hooks').HookManager;
+  /** Admin/settings policy for HTTP hooks — URL allowlist + header env-var
+   *  allowlist. Undefined leaves HTTP hooks unrestricted (SSRF guard + non-2xx
+   *  handling always apply regardless). */
+  httpHookPolicy?: import('./hooks').HttpHookPolicy;
   /** Stance skill name (--skill) — a skill pinned to govern the whole session/run:
    *  its body becomes the system-prompt overlay, plus its tool-scoping, bash
    *  auto-allow, MCP servers, and thinking level. Replaces the old persona. */
@@ -714,17 +778,86 @@ export interface ContextFile {
 // EngineConfig validation & sanitization
 // ---------------------------------------------------------------------------
 
+/** Canonical bounded-integer/number knob validator. Pushes a warning and returns
+ *  `false` (invalid) when `value` is out of the hard [min,max] range or (when
+ *  `integer`) non-integer; pushes a soft advisory (still valid) past `softMax`.
+ *  Single source for every numeric EngineConfig/sandbox knob check so the range
+ *  logic is never re-implemented per site (dedup). */
+function validateNumericKnob(
+  value: number,
+  name: string,
+  opts: { min: number; max?: number; softMax?: number; integer?: boolean },
+  warnings: string[],
+): boolean {
+  if (opts.integer && !Number.isInteger(value)) {
+    warnings.push(`${name} must be an integer`);
+    return false;
+  }
+  if (!Number.isFinite(value) || value < opts.min) {
+    warnings.push(`${name} must be >= ${opts.min}`);
+    return false;
+  }
+  if (opts.max !== undefined && value > opts.max) {
+    warnings.push(`${name} must be <= ${opts.max}`);
+    return false;
+  }
+  if (opts.softMax !== undefined && value > opts.softMax) {
+    warnings.push(`${name} exceeds ${opts.softMax} — likely misconfigured`);
+  }
+  return true;
+}
+
+/** True when `n` is a usable TCP port (integer in 1..65535). */
+function isValidPort(n: number): boolean {
+  return Number.isInteger(n) && n >= 1 && n <= 65535;
+}
+
+/** Validate a {@link SandboxPolicy}: mode enum, proxy ports, host/path list
+ *  shapes, and cross-field sanity (fail-closed only meaningful when enabled).
+ *  Pushes warnings and returns `false` on a hard error. Reached by
+ *  {@link validateEngineConfig}. */
+function validateSandboxPolicy(sandbox: SandboxPolicy, warnings: string[]): boolean {
+  let valid = true;
+  if (sandbox.mode !== 'off' && sandbox.mode !== 'container') {
+    warnings.push(`sandbox.mode must be 'off' or 'container'`);
+    valid = false;
+  }
+  const net = sandbox.network;
+  if (net) {
+    for (const port of [['httpProxyPort', net.httpProxyPort], ['socksProxyPort', net.socksProxyPort]] as const) {
+      if (port[1] !== undefined && !isValidPort(port[1])) {
+        warnings.push(`sandbox.network.${port[0]} must be a port in 1-65535`);
+        valid = false;
+      }
+    }
+    for (const [field, list] of [['allowedHosts', net.allowedHosts], ['deniedHosts', net.deniedHosts]] as const) {
+      if (list && list.some((h) => typeof h !== 'string' || h.trim() === '')) {
+        warnings.push(`sandbox.network.${field} entries must be non-empty strings`);
+        valid = false;
+      }
+    }
+  }
+  const fs = sandbox.filesystem;
+  if (fs) {
+    for (const [field, list] of [['allowWrite', fs.allowWrite], ['denyWrite', fs.denyWrite], ['denyRead', fs.denyRead], ['allowRead', fs.allowRead]] as const) {
+      if (list && list.some((p) => typeof p !== 'string' || p.trim() === '')) {
+        warnings.push(`sandbox.filesystem.${field} entries must be non-empty paths`);
+        valid = false;
+      }
+    }
+  }
+  if (sandbox.failIfUnavailable && sandbox.mode === 'off') {
+    warnings.push('sandbox.failIfUnavailable has no effect when sandbox.mode is off');
+  }
+  return valid;
+}
+
 export function validateEngineConfig(config: Partial<EngineConfig>): { valid: boolean; warnings: string[] } {
   const warnings: string[] = [];
   let valid = true;
 
   if (config.maxTurns !== undefined) {
-    if (!Number.isInteger(config.maxTurns) || config.maxTurns < 1) {
-      warnings.push('maxTurns must be a positive integer');
-      valid = false;
-    } else if (config.maxTurns > 10000) {
-      warnings.push('maxTurns exceeds 10000 — likely misconfigured');
-    }
+    if (!validateNumericKnob(config.maxTurns, 'maxTurns', { min: 1, softMax: 10000, integer: true }, warnings)) valid = false;
   }
   if (config.maxSessionMs !== undefined) {
     if (config.maxSessionMs <= 0) { warnings.push('maxSessionMs must be positive'); valid = false; }
@@ -760,6 +893,9 @@ export function validateEngineConfig(config: Partial<EngineConfig>): { valid: bo
     warnings.push('tokenBudget must be positive');
     valid = false;
   }
+  if (config.sandbox !== undefined) {
+    if (!validateSandboxPolicy(config.sandbox, warnings)) valid = false;
+  }
 
   return { valid, warnings };
 }
@@ -773,5 +909,36 @@ export function sanitizeEngineConfig(config: Partial<EngineConfig>): Partial<Eng
   if (out.maxUsageLimitWaitMs !== undefined) out.maxUsageLimitWaitMs = Math.max(0, out.maxUsageLimitWaitMs);
   if (out.requestTimeoutMs !== undefined) out.requestTimeoutMs = Math.max(1000, Math.min(600_000, out.requestTimeoutMs));
   if (out.tokenBudget !== undefined) out.tokenBudget = Math.max(1, out.tokenBudget);
+  if (out.sandbox !== undefined) out.sandbox = sanitizeSandboxPolicy(out.sandbox);
+  return out;
+}
+
+/** Drop invalid proxy ports and normalize host/path lists (trim, drop empties,
+ *  dedupe). Returns a new policy; never mutates the input. */
+function sanitizeSandboxPolicy(sandbox: SandboxPolicy): SandboxPolicy {
+  const cleanList = (list?: string[]): string[] | undefined => {
+    if (!list) return undefined;
+    const cleaned = [...new Set(list.map((s) => (typeof s === 'string' ? s.trim() : '')).filter((s) => s !== ''))];
+    return cleaned.length ? cleaned : undefined;
+  };
+  const out: SandboxPolicy = { ...sandbox };
+  if (sandbox.network) {
+    const net = { ...sandbox.network };
+    if (net.httpProxyPort !== undefined && !isValidPort(net.httpProxyPort)) delete net.httpProxyPort;
+    if (net.socksProxyPort !== undefined && !isValidPort(net.socksProxyPort)) delete net.socksProxyPort;
+    net.allowedHosts = cleanList(net.allowedHosts);
+    net.deniedHosts = cleanList(net.deniedHosts);
+    net.allowUnixSockets = cleanList(net.allowUnixSockets);
+    out.network = net;
+  }
+  if (sandbox.filesystem) {
+    const fsc = { ...sandbox.filesystem };
+    fsc.allowWrite = cleanList(fsc.allowWrite);
+    fsc.denyWrite = cleanList(fsc.denyWrite);
+    fsc.denyRead = cleanList(fsc.denyRead);
+    fsc.allowRead = cleanList(fsc.allowRead);
+    out.filesystem = fsc;
+  }
+  if (sandbox.enabledPlatforms) out.enabledPlatforms = cleanList(sandbox.enabledPlatforms);
   return out;
 }

@@ -275,11 +275,88 @@ describe('private-key / bearer / entropy detection', () => {
     assert.equal(text.slice(gen[0].start, gen[0].start + gen[0].length), HIGH_ENTROPY);
   });
 
-  it('does NOT flag low-entropy or non-secret assignments (no false positives)', () => {
-    assert.equal(containsCredential('secret="aaaaaaaaaaaaaaaaaaaa"'), false); // zero entropy
-    assert.equal(containsCredential('commit=a1b2c3d4e5f6a7b8'), false);       // not a secret key name
-    const text = 'secret="aaaaaaaaaaaaaaaaaaaa"';
-    assert.equal(redactCredentials(text), text);                              // unchanged
+  it('does NOT flag non-secret key assignments or low-entropy *_key values (no false positives)', () => {
+    // A key that is not a secret-ish name is never flagged, regardless of value shape.
+    assert.equal(containsCredential('commit=a1b2c3d4e5f6a7b8'), false);
+    // The weaker *_key family keeps the entropy gate: a low-entropy api_key value
+    // (e.g. a placeholder) is not redacted.
+    assert.equal(containsCredential('api_key="aaaaaaaaaaaaaaaaaaaa"'), false);
+    const text = 'api_key="aaaaaaaaaaaaaaaaaaaa"';
+    assert.equal(redactCredentials(text), text);
     assert.equal(findCredentials(text).length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AWS temporary/STS + extra-prefix coverage (G12)
+// ---------------------------------------------------------------------------
+describe('AWS credential prefixes (long-term + STS/temporary + extra)', () => {
+  const body = 'ABCDEFGHIJKLMNOP'; // 16 base32 chars (A-Z,2-7)
+  for (const prefix of ['AKIA', 'ASIA', 'ABIA', 'ACCA']) {
+    it(`detects + redacts ${prefix}* keys`, () => {
+      const key = prefix + body;
+      assert.equal(containsCredential(`aws key ${key}`), true);
+      const red = redactCredentials(`aws key ${key}`);
+      assert.ok(!red.includes(key));
+      assert.ok(red.includes(REDACT_PLACEHOLDER));
+      assert.ok(findCredentials(key).some(f => f.type === 'aws_access_key'));
+    });
+  }
+
+  it('detects A3T* keys (A3T + alnum + 16 base32)', () => {
+    const key = 'A3TX' + body;
+    assert.equal(containsCredential(`aws key ${key}`), true);
+    assert.ok(findCredentials(key).some(f => f.type === 'aws_access_key'));
+  });
+
+  it('redacts an ASIA temporary session key that AKIA-only matching would miss', () => {
+    const sts = 'ASIA' + 'QWERTY234567ZXCV';
+    const red = redactCredentials(`AWS_SESSION token: ${sts}`);
+    assert.ok(!red.includes(sts));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Field-name-based redaction regardless of value entropy/length (G30)
+// ---------------------------------------------------------------------------
+describe('field-name-based secret redaction (unconditional for secret keys)', () => {
+  it('redacts a short, low-entropy value under a secret-named key (token)', () => {
+    const text = 'token="abc123short"';
+    assert.equal(containsCredential(text), true);
+    const red = redactCredentials(text);
+    assert.ok(!red.includes('abc123short'));
+    assert.equal(red, 'token="[REDACTED]"');
+    const found = findCredentials(text);
+    assert.equal(found.length, 1);
+    assert.equal(found[0].type, 'generic_secret');
+    assert.equal(text.slice(found[0].start, found[0].start + found[0].length), 'abc123short');
+  });
+
+  it('redacts a zero-entropy value under `secret` (previously leaked through the entropy gate)', () => {
+    const text = 'secret="aaaaaaaaaaaaaaaaaaaa"';
+    assert.equal(containsCredential(text), true);
+    assert.equal(redactCredentials(text), 'secret="[REDACTED]"');
+  });
+
+  it('redacts short values across the secret field-name family', () => {
+    for (const key of ['password', 'passwd', 'access_token', 'auth_token', 'client_secret', 'credential']) {
+      const text = `${key}=tiny`;
+      assert.equal(redactCredentials(text), `${key}=[REDACTED]`, `expected ${key} redacted`);
+    }
+  });
+
+  it('keeps the key + separator and only masks the value, preserving surrounding context', () => {
+    const text = 'config: { token: short1, port: 8080 }';
+    const red = redactCredentials(text);
+    assert.ok(red.includes('port: 8080'));
+    assert.ok(!red.includes('short1'));
+    assert.ok(red.includes('token: [REDACTED]'));
+  });
+
+  it('does not match `secret` inside `client_secret` as a separate entry', () => {
+    const text = 'client_secret=xyz987';
+    const found = findCredentials(text);
+    assert.equal(found.length, 1);
+    assert.equal(text.slice(found[0].start, found[0].start + found[0].length), 'xyz987');
   });
 });

@@ -5,14 +5,22 @@ const MAX_SLEEP_MS = 600_000; // 10 minutes
 export const sleepTool: ToolDefinition = {
   name: 'sleep',
   description:
-    'Wait for a specified duration before continuing. Useful for polling external state ' +
-    'or giving background processes time to complete. Maximum 600000ms (10 minutes).',
+    'Wait for a specified duration before continuing. Use this when the user tells you to rest, ' +
+    'when you have nothing to do right now, or to give background processes / external state time ' +
+    'to progress before polling again.\n' +
+    'Prefer this over Bash(sleep ...): it does not hold a shell process open while waiting. ' +
+    'You can call this concurrently with other tools. The user can interrupt the sleep at any time, ' +
+    'in which case the result reports how long you actually slept and that it was interrupted.\n' +
+    'Cost note: each wake-up costs an API call, but the prompt cache expires after ~5 minutes of ' +
+    'inactivity — balance the sleep duration against cache re-warming accordingly. ' +
+    'Maximum 600000ms (10 minutes).',
   inputSchema: {
     type: 'object',
     properties: {
       duration_ms: {
         type: 'number',
-        description: 'Duration to sleep in milliseconds (1–600000).',
+        description:
+          'Duration to sleep in milliseconds (1–600000). As a guide: 5s = 5000, 2m = 120000, 1h would exceed the 10-minute cap.',
       },
       reason: {
         type: 'string',
@@ -36,28 +44,39 @@ export const sleepTool: ToolDefinition = {
     }
 
     const duration = Math.min(Math.round(rawDuration), MAX_SLEEP_MS);
+    const start = Date.now();
 
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, duration);
+    const interrupted = await new Promise<boolean>((resolve) => {
+      const signal = context.abortSignal;
+      let onAbort: (() => void) | undefined;
 
-      if (context.abortSignal) {
-        if (context.abortSignal.aborted) {
+      const timer = setTimeout(() => {
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+        resolve(false);
+      }, duration);
+      // Do not keep the event loop alive solely for a pending sleep.
+      if (typeof timer.unref === 'function') timer.unref();
+
+      if (signal) {
+        if (signal.aborted) {
           clearTimeout(timer);
-          resolve();
+          resolve(true);
           return;
         }
-        context.abortSignal.addEventListener('abort', () => {
+        onAbort = () => {
           clearTimeout(timer);
-          resolve();
-        }, { once: true });
+          resolve(true);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
       }
     });
 
-    const sleptSec = (duration / 1000).toFixed(1);
-    const msg = reason
-      ? `Slept for ${sleptSec}s. Reason: ${reason}`
-      : `Slept for ${sleptSec}s.`;
+    const sleptSec = ((Date.now() - start) / 1000).toFixed(1);
+    const reasonSuffix = reason ? ` Reason: ${reason}` : '';
+    const msg = interrupted
+      ? `Sleep interrupted after ${sleptSec}s (requested ${(duration / 1000).toFixed(1)}s).${reasonSuffix}`
+      : `Slept for ${sleptSec}s.${reasonSuffix}`;
 
-    return { output: msg };
+    return { output: msg, metadata: { requestedMs: duration, sleptMs: Date.now() - start, interrupted } };
   },
 };

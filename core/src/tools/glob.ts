@@ -5,11 +5,26 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
+import { suggestSimilarPaths } from './path-suggest';
 
 const MAX_RESULTS = 100;
 // Cap the total joined output so a huge match set can't blow the context window.
 const MAX_OUTPUT_CHARS = 50_000;
+// Default glob timeout. The in-process tinyglobby walk is otherwise unbounded — a
+// pathological pattern over a huge tree could hang the turn forever. Env-configurable
+// (AMI_GLOB_TIMEOUT_SECONDS) to mirror Claude Code's CLAUDE_CODE_GLOB_TIMEOUT_SECONDS.
+const GLOB_TIMEOUT_ENV = 'AMI_GLOB_TIMEOUT_SECONDS';
+const DEFAULT_GLOB_TIMEOUT_MS = 20_000;
+
+/** Resolve the glob timeout in ms from the env flag (seconds), falling back to the default. */
+export function globTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number((env[GLOB_TIMEOUT_ENV] ?? '').trim());
+  return Number.isFinite(raw) && raw > 0 ? raw * 1000 : DEFAULT_GLOB_TIMEOUT_MS;
+}
+
+/** Sentinel the glob walk races against its timeout with. */
+const GLOB_TIMEOUT = Symbol('glob-timeout');
 
 /**
  * G5: opt-in env flag to route glob through `rg --files` (ripgrep's parallel walker,
@@ -33,11 +48,13 @@ export function isRipgrepGlobEnabled(env: NodeJS.ProcessEnv = process.env): bool
  * nothing, or `null` when rg is unavailable / errored (signal the caller to fall back).
  * Injectable via {@link globHooks.rgFiles} for tests (no real ripgrep needed).
  */
-function ripgrepFiles(pattern: string, cwd: string, ignore: string[]): Promise<string[] | null> {
+function ripgrepFiles(pattern: string, cwd: string, ignore: string[], signal?: AbortSignal): Promise<string[] | null> {
   return new Promise((resolve) => {
     const args = ['--files', '--no-ignore', '--hidden', '-g', pattern];
     for (const ig of ignore) { args.push('-g', `!${ig}`); }
-    globHooks.execFileImpl('rg', args, { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 15_000 }, (err, stdout) => {
+    // Forward the turn's AbortSignal so a cancelled turn (Esc / engine abort) actually
+    // kills the running rg child instead of letting it run to completion.
+    globHooks.execFileImpl('rg', args, { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 15_000, signal }, (err, stdout) => {
       if (err) {
         // rg exits 1 when it matched no files (valid empty result); any other error
         // (ENOENT = not installed, non-zero crash) means "can't use rg" → fall back.
@@ -61,9 +78,10 @@ function ripgrepFiles(pattern: string, cwd: string, ignore: string[]): Promise<s
  */
 export const globHooks: {
   glob: typeof glob;
-  rgFiles: (pattern: string, cwd: string, ignore: string[]) => Promise<string[] | null>;
+  rgFiles: (pattern: string, cwd: string, ignore: string[], signal?: AbortSignal) => Promise<string[] | null>;
   execFileImpl: typeof execFile;
-} = { glob, rgFiles: ripgrepFiles, execFileImpl: execFile };
+  timeoutMs: number;
+} = { glob, rgFiles: ripgrepFiles, execFileImpl: execFile, timeoutMs: globTimeoutMs() };
 
 export const globTool: ToolDefinition = {
   name: 'glob',
@@ -91,6 +109,14 @@ export const globTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
+    if (context.abortSignal?.aborted) {
+      return { output: 'Error: glob search was cancelled.', isError: true };
+    }
+    // UNC-path guard: short-circuit BEFORE any filesystem access to avoid an
+    // outbound SMB/NTLM credential leak on Windows.
+    if (typeof input.path === 'string' && isUNCPath(input.path)) {
+      return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${input.path}`, isError: true };
+    }
     const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd, context.allowedReadRoots);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
@@ -99,6 +125,13 @@ export const globTool: ToolDefinition = {
     // inside it. (grep's `pattern` is a REGEX, not a path, so this guard is glob-only.)
     const patternEscape = rejectEscapingPattern(pattern);
     if (patternEscape) return patternEscape;
+    // Self-correcting error when the given base directory does not exist: name the
+    // cwd and the closest sibling so the model can recover from a typo.
+    if (typeof input.path === 'string' && !fs.existsSync(resolved)) {
+      const suggestions = suggestSimilarPaths(resolved, context.cwd);
+      const hint = suggestions.length > 0 ? ` Did you mean ${suggestions[0]}?` : '';
+      return { output: `Error: Directory does not exist: ${resolved}. Your current working directory is ${context.cwd}.${hint}`, isError: true };
+    }
     const unreadable = assertReadableTarget(resolved);
     if (unreadable) return unreadable;
 
@@ -131,10 +164,17 @@ export const globTool: ToolDefinition = {
       // rg is unavailable/errors so results are always produced.
       let entries: string[] | null = null;
       if (isRipgrepGlobEnabled()) {
-        entries = await globHooks.rgFiles(pattern, resolved, ignore);
+        entries = await globHooks.rgFiles(pattern, resolved, ignore, context.abortSignal);
       }
       if (entries === null) {
-        entries = await globHooks.glob(pattern, {
+        // Bound the in-process tinyglobby walk: race it against a timeout and the
+        // turn's abort so a pathological pattern on a huge tree can never hang forever.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeoutMs = globHooks.timeoutMs;
+        const timeout = new Promise<typeof GLOB_TIMEOUT>((res) => {
+          timer = setTimeout(() => res(GLOB_TIMEOUT), timeoutMs);
+        });
+        const walked = globHooks.glob(pattern, {
           cwd: resolved,
           ignore,
           dot: true,
@@ -142,6 +182,12 @@ export const globTool: ToolDefinition = {
           absolute: false,
           expandDirectories: false,
         });
+        const raced = await Promise.race([walked, timeout]);
+        if (timer) clearTimeout(timer);
+        if (raced === GLOB_TIMEOUT) {
+          return { output: `Error: glob timed out after ${timeoutMs / 1000}s. Use a more specific pattern or a narrower path.`, isError: true };
+        }
+        entries = raced;
       }
 
       if (entries.length === 0) {

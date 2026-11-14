@@ -418,6 +418,34 @@ describe('bashTool – non-interactive env forcing', () => {
     assert.ok(result.output.includes('cat'));
   });
 
+  // Integration: header/token-adjacent credential vars must never reach the
+  // spawned shell — drives the real execCommand → scrubEnv → `bash -c` path.
+  it('does not leak header/bearer/OIDC credential vars to the spawned shell', async () => {
+    const secrets = {
+      OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer-otel-XYZ',
+      AWS_BEARER_TOKEN_BEDROCK: 'bedrock-XYZ',
+      ALL_INPUTS: 'allinputs-XYZ',
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc-XYZ',
+      INPUT_ANTHROPIC_API_KEY: 'sk-ant-input-XYZ',
+    };
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(secrets)) { saved[k] = process.env[k]; process.env[k] = v; }
+    try {
+      const result = await bashTool.execute(
+        { command: 'echo "H=${OTEL_EXPORTER_OTLP_HEADERS:-unset} B=${AWS_BEARER_TOKEN_BEDROCK:-unset} A=${ALL_INPUTS:-unset} U=${ACTIONS_ID_TOKEN_REQUEST_URL:-unset} I=${INPUT_ANTHROPIC_API_KEY:-unset}"' },
+        ctx(),
+      );
+      assert.ok(!/XYZ/.test(result.output), `credential value leaked to subprocess: ${result.output}`);
+      assert.ok(result.output.includes('H=unset'));
+      assert.ok(result.output.includes('B=unset'));
+      assert.ok(result.output.includes('A=unset'));
+      assert.ok(result.output.includes('U=unset'));
+      assert.ok(result.output.includes('I=unset'));
+    } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v !== undefined) process.env[k] = v; else delete process.env[k]; }
+    }
+  });
+
   it('sets PIP_PROGRESS_BAR=off and TQDM_DISABLE=1 for clean Python output', async () => {
     const result = await bashTool.execute({ command: 'echo $PIP_PROGRESS_BAR:$TQDM_DISABLE' }, ctx());
     assert.ok(result.output.includes('off:1'));

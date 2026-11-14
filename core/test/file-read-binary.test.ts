@@ -81,23 +81,28 @@ describe('checkBinaryContent — null-byte threshold', () => {
     assert.ok(!(await checkBinaryContent(fp)));
   });
 
-  it('file with exactly 1% null bytes is NOT binary', async () => {
+  it('ANY null byte makes a file binary (Claude parity)', async () => {
     const fp = path.join(tmpDir, 'edge.dat');
     const buf = Buffer.alloc(1000, 0x41); // all 'A'
-    buf[0] = 0; buf[100] = 0; buf[200] = 0; buf[300] = 0; buf[400] = 0;
-    buf[500] = 0; buf[600] = 0; buf[700] = 0; buf[800] = 0; buf[900] = 0;
-    // 10 / 1000 = 1.0% — not above 1%, so NOT binary
-    fs.writeFileSync(fp, buf);
-    assert.ok(!(await checkBinaryContent(fp)));
-  });
-
-  it('file with >1% null bytes IS binary', async () => {
-    const fp = path.join(tmpDir, 'over.dat');
-    const buf = Buffer.alloc(1000, 0x41);
-    for (let i = 0; i < 11; i++) buf[i * 90] = 0;
-    // 11 / 1000 = 1.1% → binary
+    buf[500] = 0; // a single NUL is enough
     fs.writeFileSync(fp, buf);
     assert.ok(await checkBinaryContent(fp));
+  });
+
+  it('control-character-dense content (>10%, no NUL) is binary', async () => {
+    const fp = path.join(tmpDir, 'ctrl.dat');
+    const buf = Buffer.alloc(1000, 0x41); // 'A'
+    // 150 non-whitespace control bytes (0x01) = 15% > 10% → binary. No NUL bytes.
+    for (let i = 0; i < 150; i++) buf[i * 6] = 0x01;
+    fs.writeFileSync(fp, buf);
+    assert.ok(await checkBinaryContent(fp));
+  });
+
+  it('tabs/newlines/CR do NOT count toward the control-char density', async () => {
+    const fp = path.join(tmpDir, 'ws.txt');
+    // All whitespace control chars — must stay text.
+    fs.writeFileSync(fp, Buffer.from('line\tone\nline\r\ntwo\n'.repeat(60)));
+    assert.ok(!(await checkBinaryContent(fp)));
   });
 });
 
@@ -142,21 +147,19 @@ describe('file_read tool rejects known binary extensions', () => {
     assert.ok(result.output.includes('Hello world'));
   });
 
-  // Red-green reproducer: single null byte in text should NOT trigger binary detection.
-  // checkBinary() returns true on ANY null byte, but the 1% threshold in
-  // checkBinaryContent() correctly allows files with sparse null bytes.
-  // The tool uses checkBinary() instead of checkBinaryContent(), causing
-  // text files with a single embedded NUL to be falsely classified as binary.
-  it('does NOT classify text file with single null byte as binary', async () => {
+  // Claude parity: a single embedded NUL byte classifies content as binary. A planted
+  // "text" file with a NUL is the classic binary-smuggling vector, so file_read reports
+  // it as a binary file rather than streaming raw bytes into the prompt.
+  it('classifies text-with-single-null-byte as binary (Claude parity)', async () => {
     const fp = path.join(tmpDir, 'sparse-null.txt');
     const buf = Buffer.alloc(1000, 0x41); // 1000 bytes of 'A'
-    buf[500] = 0; // single null byte — 0.1%, well below 1% threshold
+    buf[500] = 0; // one embedded NUL
     fs.writeFileSync(fp, buf);
     const result = await fileReadTool.execute({ file_path: fp }, ctx(tmpDir));
     assert.ok(!result.isError, 'should not be an error');
     assert.ok(
-      !result.output.includes('[Binary file]'),
-      `Expected text content but got "[Binary file]" — single null byte (0.1%) should not trigger binary detection`,
+      result.output.includes('Binary file'),
+      `Expected binary classification for a file containing an embedded NUL byte`,
     );
   });
 });

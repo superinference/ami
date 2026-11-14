@@ -85,12 +85,13 @@ describe('cron tick() loop (cov100)', () => {
     const job = sched.create({ cron: '* * * * *', prompt: 'contended', durable: true });
     job.nextRun = Date.now() - 10_000_000;
 
-    // A different, fresh (non-stale) session owns the lock -> acquireLock() fails.
+    // A different session whose owning process is ALIVE owns the lock, so
+    // acquireLock() must defer (PID-liveness never steals a live owner's lease).
     const lockDir = projectStateDir(cwd);
     fs.mkdirSync(lockDir, { recursive: true });
     fs.writeFileSync(
       path.join(lockDir, 'cron.lock'),
-      JSON.stringify({ sessionId: 'other-session', pid: 99999, timestamp: Date.now() }),
+      JSON.stringify({ sessionId: 'other-session', pid: process.pid, timestamp: Date.now() }),
     );
 
     const fired: unknown[] = [];
@@ -104,17 +105,31 @@ describe('cron tick() loop (cov100)', () => {
     assert.ok(after!.nextRun! < Date.now(), 'skipped job nextRun should be unchanged');
   });
 
-  it('expires a too-old recurring job during the tick before running due jobs', () => {
+  it('expires a too-old recurring job during the tick, firing it one final time', () => {
     const sched = new CronScheduler(cwd, 'sess-E');
     const job = sched.create({ cron: '* * * * *', prompt: 'ancient', recurring: true });
-    // Older than its max age so expireOld() deletes it at the top of tick().
+    // Older than its max age so expireOld() removes it at the top of tick().
     job.createdAt = Date.now() - (job.maxAgeDays ?? 7) * 86400000 - 86400000;
-    job.nextRun = Date.now() - 10_000_000; // would be due, but should be expired first
+    job.nextRun = Date.now() - 10_000_000; // due → fires once before deletion
 
     const fired: unknown[] = [];
     invokeTick(sched, (j) => fired.push(j));
 
-    assert.equal(fired.length, 0, 'expired job must not fire');
+    // An aged-but-due recurring job fires exactly once, then is removed.
+    assert.equal(fired.length, 1, 'aged recurring job should fire one final time');
     assert.equal(sched.get(job.id), undefined, 'expired job should be removed from the scheduler');
+  });
+
+  it('expires a too-old recurring job WITHOUT a final fire when it is not due', () => {
+    const sched = new CronScheduler(cwd, 'sess-E2');
+    const job = sched.create({ cron: '0 0 1 1 *', prompt: 'ancient-not-due', recurring: true });
+    job.createdAt = Date.now() - (job.maxAgeDays ?? 7) * 86400000 - 86400000;
+    job.nextRun = Date.now() + 10_000_000; // not due → no final fire
+
+    const fired: unknown[] = [];
+    invokeTick(sched, (j) => fired.push(j));
+
+    assert.equal(fired.length, 0, 'not-due expired job should not fire');
+    assert.equal(sched.get(job.id), undefined, 'expired job should be removed');
   });
 });

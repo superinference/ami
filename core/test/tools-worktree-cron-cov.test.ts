@@ -720,7 +720,7 @@ describe('cron tools', () => {
       ctx({ cwd: dir }),
     );
     assert.equal(r.isError, undefined);
-    assert.match(r.output, /Scheduled job cron_/);
+    assert.match(r.output, /Scheduled recurring job cron_/);
     assert.match(r.output, /Recurring: true/);
     assert.match(r.output, /Durable: true/);
     // Persisted to disk because durable.
@@ -926,7 +926,7 @@ describe('plan_mode tool', () => {
     // Remove the plan file so readFileSync throws inside exit.
     fs.rmSync(getPlanFilePath()!, { force: true });
     const r = await planModeTool.execute({ action: 'exit' }, ctx({ cwd: dir }));
-    assert.match(r.output, /No plan file found/);
+    assert.match(r.output, /empty plan/);
   });
 
   it('rejects an unknown action', async () => {

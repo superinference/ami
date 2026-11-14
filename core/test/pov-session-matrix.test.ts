@@ -79,14 +79,14 @@ describe('SessionManager — save/list/load round-trip', () => {
       { role: 'assistant', content: 'answer one' },
       { role: 'tool', tool_call_id: 'tc1', content: 'tool output' },
     ]);
-    s.title = 'My Session';
+    s.customTitle = 'My Session';
     s.settings = { skill: 'reviewer', thinkingLevel: 'high', outputStyle: 'terse', goal: 'ship' };
     sm.save(s);
 
     const loaded = sm.load('round-1');
     assert.ok(loaded);
     assert.equal(loaded!.id, 'round-1');
-    assert.equal(loaded!.title, 'My Session');
+    assert.equal(loaded!.customTitle, 'My Session');
     assert.deepEqual(loaded!.provider, { model: 'test-model', baseUrl: 'http://localhost' });
     assert.deepEqual(loaded!.settings, {
       skill: 'reviewer', thinkingLevel: 'high', outputStyle: 'terse', goal: 'ship',
@@ -104,9 +104,12 @@ describe('SessionManager — save/list/load round-trip', () => {
     assert.notEqual(loaded.updatedAt, '2026-01-01T00:00:00.000Z');
   });
 
-  it('list returns SessionListEntry {id,date,preview} for each saved session', () => {
+  it('list returns SessionListEntry metadata (id/date/preview/messageCount/fileSize) for each saved session', () => {
     sm.save(makeSession('l-1', [{ role: 'user', content: 'first message here' }]));
-    sm.save(makeSession('l-2', [{ role: 'user', content: 'second one' }]));
+    sm.save(makeSession('l-2', [
+      { role: 'user', content: 'second one' },
+      { role: 'assistant', content: 'reply' },
+    ]));
 
     const entries: SessionListEntry[] = sm.list();
     assert.equal(entries.length, 2);
@@ -114,10 +117,13 @@ describe('SessionManager — save/list/load round-trip', () => {
       assert.equal(typeof e.id, 'string');
       assert.equal(typeof e.date, 'string');
       assert.equal(typeof e.preview, 'string');
-      assert.deepEqual(Object.keys(e).sort(), ['date', 'id', 'preview']);
+      assert.equal(typeof e.messageCount, 'number');
+      assert.equal(typeof e.fileSize, 'number');
+      assert.ok(e.fileSize! > 0);
     }
-    const ids = entries.map(e => e.id).sort();
-    assert.deepEqual(ids, ['l-1', 'l-2']);
+    const byId = new Map(entries.map(e => [e.id, e]));
+    assert.equal(byId.get('l-1')!.messageCount, 1);
+    assert.equal(byId.get('l-2')!.messageCount, 2);
   });
 
   it('list preview is the first user message, flattened and trimmed', () => {

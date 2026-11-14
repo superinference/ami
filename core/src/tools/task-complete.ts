@@ -3,7 +3,8 @@ import { ToolDefinition, ToolResult } from '../types';
 export const taskCompleteTool: ToolDefinition = {
   name: 'task_complete',
   description:
-    'Signal that the task is complete. Call this when your fix is correct and all tests pass. ' +
+    'Signal that the task is complete. Call this ONLY when the work is actually done and verified — ' +
+    'do not self-certify: never call it to claim success on failing tests, an unproven fix, or incomplete work. ' +
     'After calling this tool, produce a final text summary of what you changed. Do not make any more tool calls.',
   inputSchema: {
     type: 'object',

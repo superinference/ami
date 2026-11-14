@@ -9,6 +9,7 @@ import {
   resolveTemperature,
   getProviderSamplingDefaults,
   fitOutputTokens,
+  getMaxOutputTokens,
   capThinkingBudget,
   maxToolOutputChars,
   registerModelCapabilities,
@@ -100,8 +101,12 @@ describe('getContextWindow', () => {
     assert.equal(getContextWindow('claude-opus-4'), 200000);
   });
 
-  it('returns 200000 for claude-sonnet-4', () => {
-    assert.equal(getContextWindow('claude-sonnet-4'), 200000);
+  it('returns 1M for claude-sonnet-4 (provider unconditionally sends the 1M beta → endpoint serves 1M)', () => {
+    assert.equal(getContextWindow('claude-sonnet-4'), 1_000_000);
+  });
+
+  it('keeps 200000 for claude-opus-4 (no 1M beta for the opus family)', () => {
+    assert.equal(getContextWindow('claude-opus-4'), 200000);
   });
 
   it('returns 200000 for claude-haiku-3.5', () => {
@@ -465,6 +470,74 @@ describe('resolveTemperature', () => {
     it('returns undefined for truly unknown model with thinking enabled and no config temp', () => {
       assert.equal(resolveTemperature('totally-unknown', undefined, { enabled: true }), undefined);
     });
+  });
+});
+
+describe('getMaxOutputTokens + per-model output clamp (G18)', () => {
+  afterEach(() => clearDynamicCapabilities());
+
+  it('returns the known output ceiling for small-output families', () => {
+    assert.equal(getMaxOutputTokens('claude-3-5-sonnet'), 8192);
+    assert.equal(getMaxOutputTokens('claude-3-5-sonnet-20241022'), 8192);
+    assert.equal(getMaxOutputTokens('claude-3-opus'), 4096);
+    assert.equal(getMaxOutputTokens('claude-3-opus-20240229'), 4096);
+    assert.equal(getMaxOutputTokens('gpt-4-turbo'), 4096);
+  });
+
+  it('returns undefined for an unknown model (no clamp applied)', () => {
+    assert.equal(getMaxOutputTokens('some-unknown-model'), undefined);
+    assert.equal(getMaxOutputTokens(''), undefined);
+  });
+
+  it('honors a dynamically-registered maxOutputTokens over the table', () => {
+    registerModelCapabilities('vendor-mini', {
+      reasoning: false, defaultThinkingLevel: 'off', supportsAdaptiveThinking: false,
+      requiresTemperatureOne: false, temperatureMustBeUnset: false, maxThinkingBudget: 0,
+      maxOutputTokens: 2_000,
+    });
+    assert.equal(getMaxOutputTokens('vendor-mini'), 2_000);
+  });
+
+  it('fitOutputTokens clamps the ask to the model output cap even when the window is huge', () => {
+    // 200k window easily fits 32768, but claude-3-5-sonnet caps output at 8192.
+    const out = fitOutputTokens(DEFAULT_MAX_OUTPUT_TOKENS, 200_000, 2_000, 'claude-3-5-sonnet');
+    assert.equal(out, 8192);
+  });
+
+  it('fitOutputTokens clamps claude-3-opus to 4096', () => {
+    assert.equal(fitOutputTokens(DEFAULT_MAX_OUTPUT_TOKENS, 200_000, 2_000, 'claude-3-opus'), 4096);
+  });
+
+  it('without a modelId fitOutputTokens does NOT clamp to any model cap (back-compat)', () => {
+    assert.equal(fitOutputTokens(DEFAULT_MAX_OUTPUT_TOKENS, 200_000, 2_000), 32_768);
+  });
+
+  it('the window clamp still wins when it is tighter than the model cap', () => {
+    // Window leaves 15000-9000-1024 = 4976 < the 8192 model cap, so the window wins.
+    const out = fitOutputTokens(DEFAULT_MAX_OUTPUT_TOKENS, 15_000, 9_000, 'claude-3-5-sonnet');
+    assert.equal(out, 15_000 - 9_000 - OUTPUT_FIT_SAFETY_TOKENS);
+    assert.ok(out < 8192);
+  });
+});
+
+describe('getContextWindow 1M-beta branch (G19)', () => {
+  it('grants 1M to Sonnet 4+ ids without a [1m] marker (beta is sent unconditionally)', () => {
+    assert.equal(getContextWindow('claude-sonnet-4'), 1_000_000);
+    assert.equal(getContextWindow('claude-sonnet-4-5'), 1_000_000);
+    assert.equal(getContextWindow('openrouter/anthropic/claude-sonnet-4-6'), 1_000_000);
+  });
+
+  it('does not grant 1M to non-beta families (opus-4, haiku, gpt-4o)', () => {
+    assert.equal(getContextWindow('claude-opus-4'), 200000);
+    assert.equal(getContextWindow('claude-haiku-4'), 200000);
+    assert.equal(getContextWindow('gpt-4o'), 128000);
+  });
+
+  it('agrees with supportsOneMillionContextBeta', () => {
+    for (const id of ['claude-sonnet-4', 'claude-sonnet-5']) {
+      assert.equal(supportsOneMillionContextBeta(id), true);
+      assert.ok(getContextWindow(id) >= 1_000_000);
+    }
   });
 });
 

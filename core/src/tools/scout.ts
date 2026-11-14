@@ -1,8 +1,25 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { projectStateDir } from '../reference-journal';
+import { GIT_NO_PROMPT_ENV, redactSecrets } from './tool-utils';
 import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+
+const DEFAULT_CLONE_TIMEOUT_MS = 60000;
+
+/** Strip `user:password@` userinfo from any URL so credentials in a repo URL never
+ *  leak into an error message or spawned-command echo. */
+export function stripUrlCredentials(text: string): string {
+  return text.replace(/\/\/[^/\s@]+@/g, '//');
+}
+
+/** Resolve the clone timeout from input (`timeout_ms`) or env, falling back to the default. */
+export function scoutCloneTimeoutMs(input: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env): number {
+  const fromInput = Number(input.timeout_ms);
+  if (Number.isFinite(fromInput) && fromInput > 0) return fromInput;
+  const fromEnv = Number((env.AMI_SCOUT_CLONE_TIMEOUT_MS ?? '').trim());
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_CLONE_TIMEOUT_MS;
+}
 
 /**
  * Indirection seam for process spawning and filesystem access. Tests swap these
@@ -16,6 +33,7 @@ export const scoutHooks = {
   existsSync: fs.existsSync,
   mkdirSync: fs.mkdirSync,
   readFileSync: fs.readFileSync,
+  rmSync: fs.rmSync,
 };
 
 export const scoutTool: ToolDefinition = {
@@ -26,6 +44,7 @@ export const scoutTool: ToolDefinition = {
     properties: {
       repo: { type: 'string', description: 'Repository URL or shorthand (e.g., "owner/repo" for GitHub).' },
       query: { type: 'string', description: 'What to look for in the repository.' },
+      timeout_ms: { type: 'number', description: 'Clone timeout in milliseconds (default 60000). Raise for a large repo on a slow link.' },
     },
     required: ['repo'],
   },
@@ -41,12 +60,52 @@ export const scoutTool: ToolDefinition = {
     const repoName = repo.replace(/[^a-zA-Z0-9_-]/g, '_');
     const localPath = path.join(cacheDir, repoName);
 
+    const abort = () => {
+      if (context.abortSignal?.aborted) {
+        return { output: `Scout of ${repo} was cancelled.`, isError: true } as ToolResult;
+      }
+      return undefined;
+    };
+
+    const cloneTimeout = scoutCloneTimeoutMs(input);
+
     try {
+      let aborted = abort();
+      if (aborted) return aborted;
+      // A prior clone killed mid-flight (timeout/abort) can leave a partial dir with
+      // no .git. Treat a dir without .git as invalid cache: purge it and re-clone,
+      // instead of trusting it and failing every subsequent find/grep.
+      if (scoutHooks.existsSync(localPath) && !scoutHooks.existsSync(path.join(localPath, '.git'))) {
+        scoutHooks.rmSync(localPath, { recursive: true, force: true });
+      }
       if (!scoutHooks.existsSync(localPath)) {
         scoutHooks.mkdirSync(cacheDir, { recursive: true });
-        scoutHooks.execFileSync('git', ['clone', '--depth', '1', repoUrl, localPath], { timeout: 60000, stdio: 'pipe' });
+        // Fail fast on auth prompts (private/unauthenticated repo) and honour cancellation
+        // instead of blocking up to the timeout on an interactive credential prompt.
+        try {
+          scoutHooks.execFileSync('git', ['clone', '--depth', '1', repoUrl, localPath], {
+            timeout: cloneTimeout,
+            stdio: 'pipe',
+            env: { ...process.env, ...GIT_NO_PROMPT_ENV },
+          });
+        } catch (cloneErr) {
+          // Clean up any partial clone so the next attempt starts fresh.
+          if (scoutHooks.existsSync(localPath)) {
+            try { scoutHooks.rmSync(localPath, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
+          const e = cloneErr as { signal?: string; code?: string | number; message?: string };
+          if (e?.signal === 'SIGTERM' || e?.code === 'ETIMEDOUT') {
+            return {
+              output: `Error scouting ${stripUrlCredentials(repo)}: clone timed out after ${cloneTimeout}ms. Retry with a higher timeout_ms (e.g. ${cloneTimeout * 2}) for a large repo or slow link.`,
+              isError: true,
+            };
+          }
+          throw cloneErr;
+        }
       }
 
+      aborted = abort();
+      if (aborted) return aborted;
       const files = scoutHooks.execSync('find . -type f -not -path "./.git/*" | head -50', {
         cwd: localPath, encoding: 'utf-8', timeout: 5000,
       }).trim();
@@ -59,6 +118,8 @@ export const scoutTool: ToolDefinition = {
 
       let searchResults = '';
       if (query) {
+        const abortedBeforeGrep = abort();
+        if (abortedBeforeGrep) return abortedBeforeGrep;
         try {
           const grepOut = scoutHooks.execFileSync(
             'grep', ['-rn', '--include=*.ts', '--include=*.js', '--include=*.py', '--include=*.go', '--include=*.rs', '--', query, '.'],
@@ -72,7 +133,11 @@ export const scoutTool: ToolDefinition = {
         output: `## Scout: ${repo}\n\n### Cache path:\n${localPath}\n\nRead files with file_read using this directory as the prefix.\n\n### Files:\n${files}\n\n### README:\n${readme}\n\n${searchResults ? `### Search results for "${query}":\n${searchResults}` : ''}`,
       };
     } catch (err) {
-      return { output: `Error scouting ${repo}: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      // Redact any credentials embedded in a repo URL (https://user:token@host/…)
+      // before surfacing git's failure message / command echo.
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const safeMsg = redactSecrets(stripUrlCredentials(rawMsg));
+      return { output: `Error scouting ${stripUrlCredentials(repo)}: ${safeMsg}`, isError: true };
     }
   },
 };

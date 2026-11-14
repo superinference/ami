@@ -207,6 +207,22 @@ describe('isNetworkError', () => {
     assert.equal(isNetworkError('string'), false);
     assert.equal(isNetworkError(null), false);
   });
+
+  // G11: the real code is often nested under `.cause` beneath a generic wrapper.
+  it('finds a nested ETIMEDOUT code through the .cause chain', () => {
+    const wrapped = Object.assign(new Error('Connection error.'), {
+      cause: Object.assign(new Error('fetch failed'), {
+        cause: Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      }),
+    });
+    assert.ok(isNetworkError(wrapped));
+  });
+
+  it('does not loop forever on a self-referential cause', () => {
+    const e = new Error('Connection error.') as Error & { cause?: unknown };
+    e.cause = e;
+    assert.equal(isNetworkError(e), false);
+  });
 });
 
 describe('isSslError', () => {
@@ -232,6 +248,14 @@ describe('isSslError', () => {
 
   it('returns false for "401 Unauthorized" (auth error, not SSL)', () => {
     assert.equal(isSslError(new Error('401 Unauthorized')), false);
+  });
+
+  // G11: nested TLS code under `.cause`.
+  it('finds a nested CERT_HAS_EXPIRED code through the .cause chain', () => {
+    const wrapped = Object.assign(new Error('Connection error.'), {
+      cause: Object.assign(new Error('tls handshake failed'), { code: 'CERT_HAS_EXPIRED' }),
+    });
+    assert.ok(isSslError(wrapped));
   });
 });
 

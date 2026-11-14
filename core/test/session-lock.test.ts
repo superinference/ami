@@ -48,13 +48,15 @@ describe('acquireSessionLock', () => {
     lock.release();
   });
 
-  it('creates the lock file with the current PID', () => {
+  it('creates the lock file with a JSON payload carrying the current PID', () => {
     const dir = tmpDir();
     after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
     const lock = acquireSessionLock(dir);
-    const content = fs.readFileSync(path.join(dir, SESSION_LOCK_FILE), 'utf-8');
-    assert.equal(content, String(process.pid));
+    const payload = JSON.parse(fs.readFileSync(path.join(dir, SESSION_LOCK_FILE), 'utf-8'));
+    assert.equal(payload.pid, process.pid);
+    assert.equal(typeof payload.startedAt, 'number');
+    assert.equal(typeof payload.execPath, 'string');
     lock.release();
   });
 
@@ -92,8 +94,8 @@ describe('acquireSessionLock', () => {
 
     const lock = acquireSessionLock(dir);
     assert.equal(lock.acquired, true);
-    const content = fs.readFileSync(path.join(dir, SESSION_LOCK_FILE), 'utf-8');
-    assert.equal(content, String(process.pid));
+    const payload = JSON.parse(fs.readFileSync(path.join(dir, SESSION_LOCK_FILE), 'utf-8'));
+    assert.equal(payload.pid, process.pid);
     lock.release();
   });
 

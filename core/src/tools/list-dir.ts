@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { isWithinWorkspaceRoots } from './tool-utils';
+import { suggestSimilarPaths } from './path-suggest';
 
 const MAX_ENTRIES = 1000;
 
@@ -58,8 +59,12 @@ export const listDirTool: ToolDefinition = {
     try {
       stat = await fs.promises.stat(resolved);
     } catch {
+      // Self-correcting error: name the cwd and offer the closest matching sibling
+      // so the model can recover from a typo without a second blind guess.
+      const suggestions = suggestSimilarPaths(resolved, context.cwd);
+      const hint = suggestions.length > 0 ? ` Did you mean ${suggestions[0]}?` : '';
       return {
-        output: `Error: Directory not found: ${resolved}`,
+        output: `Error: Directory not found: ${resolved}. Your current working directory is ${context.cwd}.${hint}`,
         isError: true,
       };
     }

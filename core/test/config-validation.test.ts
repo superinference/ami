@@ -198,3 +198,99 @@ describe('sanitizeEngineConfig', () => {
     assert.equal(input.maxTurns, -5);
   });
 });
+
+describe('validateEngineConfig — sandbox policy', () => {
+  it('accepts a minimal container sandbox with no warnings', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container' } });
+    assert.equal(r.valid, true);
+    assert.equal(r.warnings.length, 0);
+  });
+
+  it('rejects an invalid sandbox mode', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = validateEngineConfig({ sandbox: { mode: 'bogus' as any } });
+    assert.equal(r.valid, false);
+    assert.ok(r.warnings.some(w => w.includes('sandbox.mode')));
+  });
+
+  it('rejects an out-of-range httpProxyPort', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container', network: { httpProxyPort: 70000 } } });
+    assert.equal(r.valid, false);
+    assert.ok(r.warnings.some(w => w.includes('httpProxyPort')));
+  });
+
+  it('rejects a zero socksProxyPort', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container', network: { socksProxyPort: 0 } } });
+    assert.equal(r.valid, false);
+    assert.ok(r.warnings.some(w => w.includes('socksProxyPort')));
+  });
+
+  it('accepts valid proxy ports', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container', network: { httpProxyPort: 8080, socksProxyPort: 1080 } } });
+    assert.equal(r.valid, true);
+  });
+
+  it('rejects empty-string entries in allowedHosts', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container', network: { allowedHosts: ['example.com', '  '] } } });
+    assert.equal(r.valid, false);
+    assert.ok(r.warnings.some(w => w.includes('allowedHosts')));
+  });
+
+  it('rejects empty-string entries in filesystem.denyWrite', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container', filesystem: { denyWrite: [''] } } });
+    assert.equal(r.valid, false);
+    assert.ok(r.warnings.some(w => w.includes('denyWrite')));
+  });
+
+  it('warns (stays valid) when failIfUnavailable is set with mode off', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'off', failIfUnavailable: true } });
+    assert.equal(r.valid, true);
+    assert.ok(r.warnings.some(w => w.includes('failIfUnavailable')));
+  });
+
+  it('accepts the full rich sandbox config', () => {
+    const r = validateEngineConfig({
+      sandbox: {
+        mode: 'container',
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: false,
+        failIfUnavailable: true,
+        ignoreViolations: { 'npm install': ['network'] },
+        enabledPlatforms: ['linux'],
+        network: { allowedHosts: ['registry.npmjs.org'], deniedHosts: ['evil.test'], httpProxyPort: 3128, allowAllUnixSockets: true, allowLocalBinding: true },
+        filesystem: { allowWrite: ['/tmp/x'], denyWrite: ['/etc'], denyRead: ['/secret'], allowRead: ['/secret/ok'] },
+      },
+    });
+    assert.equal(r.valid, true);
+    assert.equal(r.warnings.length, 0);
+  });
+});
+
+describe('sanitizeEngineConfig — sandbox policy', () => {
+  it('drops an invalid httpProxyPort and keeps a valid one', () => {
+    const r = sanitizeEngineConfig({ sandbox: { mode: 'container', network: { httpProxyPort: 99999, socksProxyPort: 1080 } } });
+    assert.equal(r.sandbox!.network!.httpProxyPort, undefined);
+    assert.equal(r.sandbox!.network!.socksProxyPort, 1080);
+  });
+
+  it('trims, drops empties, and dedupes host lists', () => {
+    const r = sanitizeEngineConfig({ sandbox: { mode: 'container', network: { allowedHosts: [' a.com ', 'a.com', '', 'b.com'] } } });
+    assert.deepEqual(r.sandbox!.network!.allowedHosts, ['a.com', 'b.com']);
+  });
+
+  it('collapses an all-empty filesystem list to undefined', () => {
+    const r = sanitizeEngineConfig({ sandbox: { mode: 'container', filesystem: { denyWrite: ['', '  '] } } });
+    assert.equal(r.sandbox!.filesystem!.denyWrite, undefined);
+  });
+
+  it('does not mutate the input sandbox', () => {
+    const input = { sandbox: { mode: 'container' as const, network: { httpProxyPort: 99999 } } };
+    sanitizeEngineConfig(input);
+    assert.equal(input.sandbox.network.httpProxyPort, 99999);
+  });
+
+  it('normalizes enabledPlatforms', () => {
+    const r = sanitizeEngineConfig({ sandbox: { mode: 'container', enabledPlatforms: ['linux', 'linux', ' '] } });
+    assert.deepEqual(r.sandbox!.enabledPlatforms, ['linux']);
+  });
+});

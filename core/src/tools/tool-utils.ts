@@ -37,6 +37,17 @@ export function isBlockedPath(filePath: string): boolean {
 }
 
 /**
+ * A UNC path (`\\server\share` or `//server/share`). Merely touching one on
+ * Windows can open an outbound SMB connection that leaks NTLM credentials, so the
+ * file/search tools must short-circuit on it BEFORE any filesystem call. Shared by
+ * every tool that accepts a path. Note: a single leading `/` (ordinary absolute
+ * POSIX path) is NOT a UNC path — only a doubled separator is.
+ */
+export function isUNCPath(filePath: string): boolean {
+  return filePath.startsWith('\\\\') || filePath.startsWith('//');
+}
+
+/**
  * Reject file paths containing NUL bytes — prevents silent truncation
  * attacks that could bypass path checks or crash fs operations.
  */
@@ -614,6 +625,51 @@ export function validateFileWritePath(filePath: string): { valid: boolean; error
   }
 
   return { valid: true };
+}
+
+/**
+ * Environment overrides that make `git` fail fast instead of blocking on an
+ * interactive credential/askpass prompt. A non-TTY stdin alone is not enough:
+ * git can still try an askpass helper or a terminal prompt and hang until the
+ * caller's timeout. Spread this over `process.env` for any `git` subprocess
+ * (clone/fetch/etc.) spawned by a tool so a private/unauthenticated repo errors
+ * out immediately with a clear auth failure. Shared by every git-spawning tool.
+ */
+export const GIT_NO_PROMPT_ENV: Readonly<Record<string, string>> = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_ASKPASS: '',
+  SSH_ASKPASS: '',
+  GCM_INTERACTIVE: 'never',
+};
+
+/**
+ * Crash-safe, flushed, permission-preserving synchronous file write — the single
+ * canonical durable-write primitive for the file tools. It:
+ *  1. captures the existing file's mode (so the executable bit / permissions survive),
+ *  2. writes to a sibling `${target}.tmp.${pid}.${now}` temp file with `flush: true`
+ *     (fsync to disk — a crash/ENOSPC mid-write never leaves a truncated target),
+ *  3. chmods the temp back to the captured mode,
+ *  4. atomically `renameSync`s temp→target (the target is never partially written),
+ *  5. on ANY atomic-path failure, unlinks the temp and falls back to a direct
+ *     `writeFileSync` so the write still lands on filesystems where rename across
+ *     the same dir is unavailable.
+ * `data` may be a string or Buffer (callers that re-encode pass a Buffer).
+ */
+export function writeFileAtomicSync(target: string, data: string | Buffer): void {
+  let mode: number | undefined;
+  try { mode = fs.statSync(target).mode; } catch { /* new file — no mode to preserve */ }
+
+  const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    fs.writeFileSync(tmp, data, { flush: true });
+    if (mode !== undefined) {
+      try { fs.chmodSync(tmp, mode); } catch { /* best-effort permission preservation */ }
+    }
+    fs.renameSync(tmp, target);
+  } catch {
+    try { fs.unlinkSync(tmp); } catch { /* temp may not exist */ }
+    fs.writeFileSync(target, data);
+  }
 }
 
 export function normalizeToLf(text: string): string {

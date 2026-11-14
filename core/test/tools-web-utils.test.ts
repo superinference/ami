@@ -3,11 +3,25 @@ import * as assert from 'node:assert/strict';
 import {
   isPrivateIP,
   isBlockedRedirectTarget,
+  isLoopbackHost,
   validateUrlSafety,
   stripHtml,
   httpGet,
   BLOCKED_HOSTNAMES,
 } from '../src/tools/web-utils';
+
+describe('isLoopbackHost', () => {
+  it('is true for localhost, *.localhost, loopback IPs, ::1, 0.0.0.0', () => {
+    for (const h of ['localhost', 'LOCALHOST', 'app.localhost', '127.0.0.1', '127.5.6.7', '::1', '[::1]', '0.0.0.0']) {
+      assert.equal(isLoopbackHost(h), true, h);
+    }
+  });
+  it('is false for remote hosts and private (non-loopback) LAN IPs', () => {
+    for (const h of ['api.anthropic.com', 'example.com', '10.0.0.1', '192.168.1.5', '169.254.169.254']) {
+      assert.equal(isLoopbackHost(h), false, h);
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // BLOCKED_HOSTNAMES

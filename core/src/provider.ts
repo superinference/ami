@@ -21,7 +21,9 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
-import { isGatewayRejection } from './error-classifier';
+import { isGatewayRejection, findErrorCode } from './error-classifier';
+import { getMTLSConfig, getTLSConnectOptions } from './utils/mtls';
+import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 
 /**
  * Retry-After from response headers, in SECONDS. Delegates to the shared
@@ -778,13 +780,30 @@ export const ONE_MILLION_CONTEXT_BETA = 'context-1m-2025-08-07';
  * `extended-cache-ttl-2025-04-11` and a new `context-1m-2025-08-07` must both
  * survive as `extended-cache-ttl-2025-04-11,context-1m-2025-08-07`.
  */
-export function mergeBetaTokens(existing: string | null | undefined, token: string): string {
+export function mergeBetaTokens(existing: string | null | undefined, token: string | string[]): string {
   const tokens = (existing ?? '')
     .split(',')
     .map(t => t.trim())
     .filter(Boolean);
-  if (!tokens.includes(token)) tokens.push(token);
+  for (const t of Array.isArray(token) ? token : [token]) {
+    const trimmed = t.trim();
+    if (trimmed && !tokens.includes(trimmed)) tokens.push(trimmed);
+  }
   return tokens.join(',');
+}
+
+/**
+ * User escape-hatch beta tokens from the `ANTHROPIC_BETAS` env var: a
+ * comma-separated list appended to the `anthropic-beta` header regardless of
+ * model, so a user can opt into any API beta without a code change. Mirrors
+ * Claude Code's provider-neutral ANTHROPIC_BETAS knob (comma-split, trimmed,
+ * empties dropped).
+ */
+export function getExtraAnthropicBetas(): string[] {
+  return (process.env.ANTHROPIC_BETAS ?? '')
+    .split(',')
+    .map(t => t.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -795,7 +814,7 @@ export function mergeBetaTokens(existing: string | null | undefined, token: stri
  */
 export function withAnthropicBetaHeader(
   baseFetch: typeof globalThis.fetch,
-  betaToken: string,
+  betaToken: string | string[],
 ): typeof globalThis.fetch {
   return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
     const headers = new Headers(init?.headers as Record<string, string> | undefined);
@@ -842,23 +861,60 @@ export function resolveProxyForUrl(env: NodeJS.ProcessEnv, url: string): string 
 }
 
 const proxyAgentCache = new Map<string, unknown>();
-let proxyAgentCtorPromise: Promise<(new (url: string) => unknown) | null> | undefined;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let proxyAgentCtorPromise: Promise<(new (opts: any) => unknown) | null> | undefined;
 
 /** Load undici's ProxyAgent lazily; resolves to null when undici is absent. */
-function loadProxyAgentCtor(): Promise<(new (url: string) => unknown) | null> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadProxyAgentCtor(): Promise<(new (opts: any) => unknown) | null> {
   if (proxyAgentCtorPromise === undefined) {
     proxyAgentCtorPromise = import('undici')
-      .then(m => (typeof m.ProxyAgent === 'function' ? (m.ProxyAgent as unknown as new (url: string) => unknown) : null))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .then(m => (typeof m.ProxyAgent === 'function' ? (m.ProxyAgent as unknown as new (opts: any) => unknown) : null))
       .catch(() => null);
   }
   return proxyAgentCtorPromise;
 }
 
-async function getProxyAgent(proxyUrl: string): Promise<unknown | undefined> {
-  if (proxyAgentCache.has(proxyUrl)) return proxyAgentCache.get(proxyUrl) ?? undefined;
+let undiciAgentCtorPromise: Promise<(new (opts: unknown) => unknown) | null> | undefined;
+
+/** Load undici's base Agent lazily (for direct mTLS connections); null when absent. */
+function loadUndiciAgentCtor(): Promise<(new (opts: unknown) => unknown) | null> {
+  if (undiciAgentCtorPromise === undefined) {
+    undiciAgentCtorPromise = import('undici')
+      .then(m => (typeof m.Agent === 'function' ? (m.Agent as unknown as new (opts: unknown) => unknown) : null))
+      .catch(() => null);
+  }
+  return undiciAgentCtorPromise;
+}
+
+async function getProxyAgent(
+  proxyUrl: string,
+  tls?: { cert?: string; key?: string; passphrase?: string },
+): Promise<unknown | undefined> {
+  // Cache key folds in mTLS so a proxy agent with client-cert material is never
+  // confused with a plain one for the same URL.
+  const cacheKey = tls ? `${proxyUrl}\u0000mtls` : proxyUrl;
+  if (proxyAgentCache.has(cacheKey)) return proxyAgentCache.get(cacheKey) ?? undefined;
   const Ctor = await loadProxyAgentCtor();
-  const agent = Ctor ? new Ctor(proxyUrl) : null;
-  proxyAgentCache.set(proxyUrl, agent);
+  // Present the client certificate to the upstream (requestTls) and, for HTTPS
+  // proxies, to the proxy itself (connect).
+  const agent = Ctor
+    ? new Ctor(tls ? { uri: proxyUrl, requestTls: tls, connect: tls } : { uri: proxyUrl })
+    : null;
+  proxyAgentCache.set(cacheKey, agent);
+  return agent ?? undefined;
+}
+
+const mtlsAgentCache = new Map<string, unknown>();
+
+/** An undici Agent that presents the client certificate on direct TLS connections. */
+async function getMTLSAgent(tls: { cert?: string; key?: string; passphrase?: string }): Promise<unknown | undefined> {
+  const cacheKey = `${tls.cert ?? ''}\u0000${tls.key ?? ''}\u0000${tls.passphrase ?? ''}`;
+  if (mtlsAgentCache.has(cacheKey)) return mtlsAgentCache.get(cacheKey) ?? undefined;
+  const Ctor = await loadUndiciAgentCtor();
+  const agent = Ctor ? new Ctor({ connect: tls }) : null;
+  mtlsAgentCache.set(cacheKey, agent);
   return agent ?? undefined;
 }
 
@@ -870,17 +926,21 @@ function requestUrl(input: string | URL | { url?: unknown }): string | undefined
 }
 
 /**
- * Wrap a fetch so requests to proxied hosts are routed through an undici
- * ProxyAgent dispatcher. Returns `baseFetch` UNCHANGED (same reference, which
- * may be `undefined`) when no proxy env var is set — so default behavior is
- * byte-for-byte identical. When undici is unavailable the wrapper is a no-op.
+ * Wrap a fetch so requests are routed through an undici dispatcher when either a
+ * proxy env var is set (ProxyAgent) or a client certificate is configured
+ * (mutual TLS). Returns `baseFetch` UNCHANGED (same reference, which may be
+ * `undefined`) when NEITHER applies — so default behavior is byte-for-byte
+ * identical. When undici is unavailable the wrapper is a no-op. A proxied request
+ * carries the client cert to the upstream via the ProxyAgent's requestTls; a
+ * direct request uses an Agent configured with the client-cert connect options.
  */
 export function withProxyDispatcher(
   baseFetch: typeof globalThis.fetch | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): typeof globalThis.fetch | undefined {
   const hasProxyEnv = !!(env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy);
-  if (!hasProxyEnv) return baseFetch;
+  const mtls = getTLSConnectOptions(getMTLSConfig(env));
+  if (!hasProxyEnv && !mtls) return baseFetch;
   const base = baseFetch ?? globalThis.fetch;
   return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
     const callerDispatcher = init && typeof init === 'object' ? (init as { dispatcher?: unknown }).dispatcher : undefined;
@@ -888,7 +948,10 @@ export function withProxyDispatcher(
       const url = requestUrl(input as string | URL | { url?: unknown });
       const proxyUrl = url ? resolveProxyForUrl(env, url) : undefined;
       if (proxyUrl) {
-        const agent = await getProxyAgent(proxyUrl);
+        const agent = await getProxyAgent(proxyUrl, mtls);
+        if (agent) return base(input, { ...init, dispatcher: agent } as RequestInit);
+      } else if (mtls) {
+        const agent = await getMTLSAgent(mtls);
         if (agent) return base(input, { ...init, dispatcher: agent } as RequestInit);
       }
     }
@@ -975,12 +1038,16 @@ export function resolveModel(config: ProviderConfig) {
     // 1M-context beta header (R2-M31) must also ride on the vertex path, where
     // it cannot be passed to the SDK constructor — inject it at the fetch layer.
     const wantsOneM = supportsOneMillionContextBeta(model);
-    const vertexBase = wantsOneM
-      ? withAnthropicBetaHeader(headerFetch ?? proxyFetch, ONE_MILLION_CONTEXT_BETA)
+    // 1M-context beta (when applicable) plus any user ANTHROPIC_BETAS, injected at
+    // the fetch layer (the vertex SDK constructor can't carry the header).
+    const vertexBetas = [...(wantsOneM ? [ONE_MILLION_CONTEXT_BETA] : []), ...getExtraAnthropicBetas()];
+    const hasVertexBetas = vertexBetas.length > 0;
+    const vertexBase = hasVertexBetas
+      ? withAnthropicBetaHeader(headerFetch ?? proxyFetch, vertexBetas)
       : (headerFetch ?? proxyFetch);
     const vertexCacheFetch = process.env.AMI_VERTEX_PROMPT_CACHE === '1'
       ? withVertexAnthropicCache(vertexBase, config.cacheTtl)
-      : (wantsOneM ? vertexBase : (headerFetch ?? (proxyActive ? proxyFetch : undefined)));
+      : (hasVertexBetas ? vertexBase : (headerFetch ?? (proxyActive ? proxyFetch : undefined)));
     return createVertexAnthropic({
       project,
       location,
@@ -995,11 +1062,14 @@ export function resolveModel(config: ProviderConfig) {
     const anthropicBetas: string[] = [];
     if (config.cacheTtl === '1h') anthropicBetas.push('extended-cache-ttl-2025-04-11');
     if (supportsOneMillionContextBeta(model)) anthropicBetas.push(ONE_MILLION_CONTEXT_BETA);
+    // User escape-hatch betas (ANTHROPIC_BETAS) are appended regardless of model.
+    anthropicBetas.push(...getExtraAnthropicBetas());
+    const uniqueBetas = [...new Set(anthropicBetas)];
     return createAnthropic({
       apiKey,
       baseURL: baseUrl || undefined,
       fetch: withGzipCompression(headerFetch ?? proxyFetch),
-      ...(anthropicBetas.length > 0 ? { headers: { 'anthropic-beta': anthropicBetas.join(',') } } : {}),
+      ...(uniqueBetas.length > 0 ? { headers: { 'anthropic-beta': uniqueBetas.join(',') } } : {}),
     })(model);
   }
 
@@ -1014,9 +1084,12 @@ export function resolveModel(config: ProviderConfig) {
     return createOpenAI({ apiKey, baseURL: baseUrl, fetch })(model);
   }
 
-  // Amazon Bedrock — route through OpenAI-compatible if user provides a gateway URL
+  // Amazon Bedrock — route through OpenAI-compatible if user provides a gateway URL.
+  // Resolve the invoked id against the account's inference profiles so a
+  // region-scoped profile (e.g. eu.anthropic.<model>-v1:0) is used when provisioned.
   if (provider === 'amazon-bedrock') {
-    return createOpenAI({ apiKey, baseURL: baseUrl, fetch })(model);
+    const bedrockModel = resolveBedrockModelId(model, getBedrockInferenceProfiles());
+    return createOpenAI({ apiKey, baseURL: baseUrl, fetch })(bedrockModel);
   }
 
   // Native Vercel AI SDK providers — each has its own adapter with correct
@@ -1585,6 +1658,7 @@ export async function* streamChatCompletion(
         config.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
         config.contextWindow ?? getContextWindow(modelId),
         promptTokensForFit(systemPrompt, sanitized, tools),
+        modelId,
       ),
       ...(effectiveTemperature !== undefined ? { temperature: effectiveTemperature } : {}),
       ...(options?.repairToolCall ? { repairToolCall: options.repairToolCall } : {}),
@@ -1759,7 +1833,9 @@ const NETWORK_ERROR_CODES = new Set([
   'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH',
 ]);
 export function isNetworkError(err: unknown): boolean {
-  const code = (err as { code?: string })?.code;
+  // Walk the cause chain: undici/SDK errors wrap the real ETIMEDOUT/ECONNRESET
+  // under nested `.cause`, leaving a code-less "Connection error." at the top.
+  const code = findErrorCode(err);
   if (code && NETWORK_ERROR_CODES.has(code)) return true;
   const msg = err instanceof Error ? err.message : '';
   return /ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|socket hang up/i.test(msg);
@@ -1778,7 +1854,9 @@ const SSL_ERROR_CODES = new Set([
 ]);
 
 export function isSslError(err: unknown): boolean {
-  const code = (err as { code?: string })?.code;
+  // Walk the cause chain: TLS errors (CERT_HAS_EXPIRED, …) are nested under
+  // `.cause` beneath a generic top-level wrapper.
+  const code = findErrorCode(err);
   if (code && SSL_ERROR_CODES.has(code)) return true;
   const msg = err instanceof Error ? err.message : '';
   return /self signed certificate|certificate has expired|unable to get local issuer certificate/i.test(msg);

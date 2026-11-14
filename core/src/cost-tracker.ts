@@ -22,6 +22,25 @@ export interface ExtendedUsageStats extends UsageStats {
   /** Estimated dollar savings from prompt caching. */
   cachedCostSavings: number;
   byCategory?: Record<string, number>;
+  /** Per-model usage/cost breakdown — survives mid-session model switches. */
+  byModel: Record<string, ModelCostUsage>;
+  /** Total server-side web-search requests billed this session. */
+  webSearchRequests: number;
+  /** 'estimated' when any priced model wasn't in the pricing table (dollars are approximate). */
+  costAccuracy: 'exact' | 'estimated';
+  /** Models whose cost fell back to the generic default rate (unknown pricing). */
+  unknownModels: string[];
+}
+
+/** Per-model usage accumulation used by the running cost total. */
+export interface ModelCostUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cachedPromptTokens: number;
+  cacheCreationTokens: number;
+  totalTokens: number;
+  cost: number;
+  requestCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +82,13 @@ const CACHED_PRICE_RATIO = 0.1;
  * free and the session undercounts real spend.
  */
 const CACHE_WRITE_PRICE_RATIO = 1.25;
+
+/**
+ * Flat per-request charge for a server-side web_search tool use. Anthropic bills
+ * web search at $10 / 1000 requests = $0.01 each, independent of token usage; a
+ * session that web-searches undercounts spend without this component.
+ */
+export const WEB_SEARCH_COST_PER_REQUEST = 0.01;
 
 // ---------------------------------------------------------------------------
 // Live pricing from Vercel AI Gateway
@@ -194,7 +220,10 @@ export class CostTracker {
   private _uncachedPromptTokens = 0;
   private _cacheCreationTokens = 0;
   private _cachedCostSavings = 0;
+  private _webSearchRequests = 0;
   private _byCategory: Record<string, number> = {};
+  private _byModel = new Map<string, ModelCostUsage>();
+  private _unknownModels = new Set<string>();
   private model: string;
 
   constructor(model: string) {
@@ -202,15 +231,24 @@ export class CostTracker {
     ensurePricingFetch();
   }
 
+  /**
+   * Record one usage sample. `model` prices THIS request by its actual model and
+   * attributes it in the per-model map, so the running total survives a mid-session
+   * /model switch (defaults to the tracker's constructor model). `webSearchRequests`
+   * adds the flat per-request server-tool charge.
+   */
   trackUsage(usage: {
     promptTokens: number;
     completionTokens: number;
     reasoningTokens?: number;
     cachedPromptTokens?: number;
     cacheCreationTokens?: number;
-  }): void {
+    webSearchRequests?: number;
+  }, model?: string): void {
+    const activeModel = model ?? this.model;
     const cachedTokens = usage.cachedPromptTokens ?? 0;
     const cacheCreationTokens = usage.cacheCreationTokens ?? 0;
+    const webSearchRequests = Math.max(0, usage.webSearchRequests ?? 0);
     const uncachedTokens = usage.promptTokens - cachedTokens;
 
     this.stats.promptTokens += usage.promptTokens;
@@ -218,22 +256,40 @@ export class CostTracker {
     this.stats.reasoningTokens += usage.reasoningTokens ?? 0;
     this.stats.totalTokens += usage.promptTokens + usage.completionTokens;
 
-    const cost = this.estimateCostWithCache(
-      this.model,
-      uncachedTokens,
-      cachedTokens,
+    const cost = estimateUsageCost(activeModel, {
+      uncachedPromptTokens: uncachedTokens,
+      cachedPromptTokens: cachedTokens,
       cacheCreationTokens,
-      usage.completionTokens,
-    );
+      completionTokens: usage.completionTokens,
+      webSearchRequests,
+    });
     this.stats.totalCost += cost;
     this.stats.requestCount++;
 
     this._cachedPromptTokens += cachedTokens;
     this._uncachedPromptTokens += uncachedTokens;
     this._cacheCreationTokens += cacheCreationTokens;
+    this._webSearchRequests += webSearchRequests;
+
+    // Per-model attribution (cost survives model switches).
+    const m = this._byModel.get(activeModel) ?? {
+      promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0,
+      cacheCreationTokens: 0, totalTokens: 0, cost: 0, requestCount: 0,
+    };
+    m.promptTokens += usage.promptTokens;
+    m.completionTokens += usage.completionTokens;
+    m.cachedPromptTokens += cachedTokens;
+    m.cacheCreationTokens += cacheCreationTokens;
+    m.totalTokens += usage.promptTokens + usage.completionTokens;
+    m.cost += cost;
+    m.requestCount++;
+    this._byModel.set(activeModel, m);
+
+    // Flag models we couldn't price precisely so the live display can warn.
+    if (activeModel && !isPricedModel(activeModel)) this._unknownModels.add(activeModel);
 
     if (cachedTokens > 0) {
-      const [inputPPM, , cachedPPM] = matchPricing(this.model);
+      const [inputPPM, , cachedPPM] = matchPricing(activeModel);
       const fullPriceCost = (cachedTokens / 1_000_000) * inputPPM;
       const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
       const cachedCost = (cachedTokens / 1_000_000) * actualCachedPPM;
@@ -259,6 +315,9 @@ export class CostTracker {
       ? this._cachedPromptTokens / totalPromptTokens
       : 0;
 
+    const byModel: Record<string, ModelCostUsage> = {};
+    for (const [model, u] of this._byModel) byModel[model] = { ...u };
+
     return {
       ...this.stats,
       cachedPromptTokens: this._cachedPromptTokens,
@@ -267,6 +326,10 @@ export class CostTracker {
       cacheHitRate,
       cachedCostSavings: this._cachedCostSavings,
       byCategory: { ...this._byCategory },
+      byModel,
+      webSearchRequests: this._webSearchRequests,
+      costAccuracy: this._unknownModels.size > 0 ? 'estimated' : 'exact',
+      unknownModels: [...this._unknownModels],
     };
   }
 
@@ -285,22 +348,10 @@ export class CostTracker {
     this._uncachedPromptTokens = 0;
     this._cacheCreationTokens = 0;
     this._cachedCostSavings = 0;
+    this._webSearchRequests = 0;
     this._byCategory = {};
-  }
-
-  private estimateCostWithCache(
-    model: string,
-    uncachedPromptTokens: number,
-    cachedPromptTokens: number,
-    cacheCreationTokens: number,
-    completionTokens: number,
-  ): number {
-    return estimateUsageCost(model, {
-      uncachedPromptTokens,
-      cachedPromptTokens,
-      cacheCreationTokens,
-      completionTokens,
-    });
+    this._byModel.clear();
+    this._unknownModels.clear();
   }
 }
 
@@ -317,6 +368,8 @@ export function estimateUsageCost(
     cachedPromptTokens: number;
     cacheCreationTokens: number;
     completionTokens: number;
+    /** Count of server-side web_search requests in this usage record. */
+    webSearchRequests?: number;
   },
 ): number {
   const [inputPPM, outputPPM, cachedPPM] = matchPricing(model);
@@ -325,7 +378,8 @@ export function estimateUsageCost(
     (Math.max(0, u.uncachedPromptTokens) / 1_000_000) * inputPPM +
     (Math.max(0, u.cachedPromptTokens) / 1_000_000) * actualCachedPPM +
     (Math.max(0, u.cacheCreationTokens) / 1_000_000) * inputPPM * CACHE_WRITE_PRICE_RATIO +
-    (Math.max(0, u.completionTokens) / 1_000_000) * outputPPM
+    (Math.max(0, u.completionTokens) / 1_000_000) * outputPPM +
+    Math.max(0, u.webSearchRequests ?? 0) * WEB_SEARCH_COST_PER_REQUEST
   );
 }
 
@@ -341,9 +395,48 @@ export interface CacheDiagRequest {
   systemPromptHash: string;
   thinkingMode: string;
   model: string;
+  /**
+   * Optional per-tool schema hash map (tool name → hash of its full stripped
+   * schema). When present, a tool-definition cache break can name EXACTLY which
+   * tool's description/schema changed — ~77% of tool breaks are same-tool-set
+   * description changes a name-only hash can't see.
+   */
+  perToolHashes?: Record<string, string>;
+}
+
+/** Which tools were added/removed/changed between two per-tool hash maps. */
+export interface ToolSchemaDelta {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+
+/** Diff two per-tool hash maps into added/removed/changed tool-name lists. */
+export function diffToolHashes(
+  prev: Record<string, string> | undefined,
+  next: Record<string, string> | undefined,
+): ToolSchemaDelta {
+  const p = prev ?? {};
+  const n = next ?? {};
+  const added: string[] = [];
+  const removed: string[] = [];
+  const changed: string[] = [];
+  for (const name of Object.keys(n)) {
+    if (!(name in p)) added.push(name);
+    else if (p[name] !== n[name]) changed.push(name);
+  }
+  for (const name of Object.keys(p)) {
+    if (!(name in n)) removed.push(name);
+  }
+  return { added: added.sort(), removed: removed.sort(), changed: changed.sort() };
 }
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_CACHE_TTL_1H_MS = 60 * 60 * 1000; // 1 hour (extended TTL)
+/** Minimum absolute cache-read token drop to count a PARTIAL cache break (noise floor). */
+export const MIN_CACHE_MISS_TOKENS = 2000;
+/** A partial break also requires cache reads to drop below this fraction of the prior call. */
+export const PARTIAL_CACHE_BREAK_RATIO = 0.95;
 
 export function fingerprint(input: string): string {
   const len = input.length;
@@ -364,6 +457,9 @@ export class CacheMissDiagnostics {
   private lastRequestTime = 0;
   private cacheTtlMs: number;
   private isFirstRequest = true;
+  private _prevCacheReadTokens = 0;
+  private _partialBreaks = 0;
+  private _lastDelta: ToolSchemaDelta = { added: [], removed: [], changed: [] };
 
   constructor(cacheTtlMs?: number) {
     this.cacheTtlMs = cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
@@ -382,18 +478,41 @@ export class CacheMissDiagnostics {
     if (!req) return;
     this._pendingRequest = null;
 
-    const isMiss = cacheReadTokens === 0;
+    const fullMiss = cacheReadTokens === 0;
+    // Partial break: cache reads shrank well below the previous call (relative AND
+    // absolute thresholds) without dropping to zero — a shrunk-but-nonzero prefix.
+    const partialBreak = !fullMiss && !this.isFirstRequest && this._prevCacheReadTokens > 0 &&
+      cacheReadTokens < this._prevCacheReadTokens * PARTIAL_CACHE_BREAK_RATIO &&
+      (this._prevCacheReadTokens - cacheReadTokens) > MIN_CACHE_MISS_TOKENS;
 
-    if (isMiss) {
+    if (fullMiss || partialBreak) {
       const cause = this.diagnoseCause(req, this._pendingRequestTime);
       this.lastCause = cause;
       this.causes.set(cause, (this.causes.get(cause) ?? 0) + 1);
+      if (partialBreak) this._partialBreaks++;
+      this._lastDelta = diffToolHashes(this.prev?.perToolHashes, req.perToolHashes);
+    } else {
+      this._lastDelta = { added: [], removed: [], changed: [] };
     }
 
     this.prev = req;
+    this._prevCacheReadTokens = cacheReadTokens;
     this.lastRequestTime = this._pendingRequestTime;
     this.isFirstRequest = false;
   }
+
+  /** Number of PARTIAL cache breaks detected (nonzero-but-shrunk cache reads). */
+  getPartialBreakCount(): number {
+    return this._partialBreaks;
+  }
+
+  /** Which tools were added/removed/changed on the most recent cache break. */
+  getLastToolSchemaDelta(): ToolSchemaDelta {
+    return { added: [...this._lastDelta.added], removed: [...this._lastDelta.removed], changed: [...this._lastDelta.changed] };
+  }
+
+  /** The extended (1-hour) cache TTL threshold used for TTL classification. */
+  static readonly EXTENDED_TTL_MS = DEFAULT_CACHE_TTL_1H_MS;
 
   private diagnoseCause(req: CacheDiagRequest, requestTime: number): CacheMissCause {
     if (this.isFirstRequest || !this.prev) return 'first_request';
@@ -440,6 +559,9 @@ export class CacheMissDiagnostics {
     this.isFirstRequest = true;
     this._pendingRequest = null;
     this._pendingRequestTime = 0;
+    this._prevCacheReadTokens = 0;
+    this._partialBreaks = 0;
+    this._lastDelta = { added: [], removed: [], changed: [] };
   }
 }
 

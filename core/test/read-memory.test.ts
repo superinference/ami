@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { readMemoryTool } from '../src/tools/read-memory';
+import { readMemoryTool, memoryFreshnessNote } from '../src/tools/read-memory';
 import { MemoryManager } from '../src/memory';
 import type { ToolContext } from '../src/types';
 
@@ -44,5 +44,34 @@ describe('read_memory tool', () => {
   it('is read-only and concurrency-safe', () => {
     assert.equal(readMemoryTool.isReadOnly, true);
     assert.equal(readMemoryTool.isConcurrencySafe, true);
+  });
+
+  it('fresh memory (<=1 day) carries no staleness note', async () => {
+    new MemoryManager(tmpDir).saveMemory('recent', 'fresh fact', 'd', 'project');
+    const res = await readMemoryTool.execute({ name: 'recent' }, ctx(tmpDir));
+    assert.doesNotMatch(res.output, /Note: this memory was last updated/);
+  });
+
+  it('a stale memory (>1 day old) carries a freshness caveat', async () => {
+    const mm = new MemoryManager(tmpDir);
+    mm.saveMemory('old-fact', 'possibly outdated', 'd', 'project');
+    // Backdate the file mtime so it reads as stale.
+    const dir = mm.getMemoryDir();
+    const file = path.join(dir, 'old-fact.md');
+    const old = Date.now() - 5 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(file, new Date(old), new Date(old));
+    const res = await readMemoryTool.execute({ name: 'old-fact' }, ctx(tmpDir));
+    assert.match(res.output, /Note: this memory was last updated 5 days ago/);
+  });
+
+  describe('memoryFreshnessNote', () => {
+    it('returns empty for undefined, 0, or 1 day', () => {
+      assert.equal(memoryFreshnessNote(undefined), '');
+      assert.equal(memoryFreshnessNote(0), '');
+      assert.equal(memoryFreshnessNote(1), '');
+    });
+    it('returns a note for ages over a day', () => {
+      assert.match(memoryFreshnessNote(2), /2 days ago/);
+    });
   });
 });

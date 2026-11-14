@@ -6,8 +6,11 @@ import * as os from 'os';
 
 import { cronDeleteTool } from '../src/tools/cron-delete';
 import { cronListTool } from '../src/tools/cron-list';
-import { getScheduler } from '../src/cron';
+import { cronCreateTool } from '../src/tools/cron-create';
+import { getScheduler, resetScheduler } from '../src/cron';
 import type { ToolContext } from '../src/types';
+
+const resetSched = () => resetScheduler();
 
 describe('cronDeleteTool', () => {
   let tmpDir: string;
@@ -86,5 +89,104 @@ describe('cronListTool', () => {
     assert.ok(result.output.includes('1 scheduled job'));
     assert.ok(result.output.includes('check status'));
     assert.ok(result.output.includes('recurring'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parity enhancements for the cron tool wrappers
+// ---------------------------------------------------------------------------
+
+describe('cron tool wrappers — parity enhancements', () => {
+  let dir: string;
+  const ctxFor = (over: Partial<ToolContext> = {}) => ({ cwd: dir, ...over } as ToolContext);
+
+  before(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cron-parity-tools-')); });
+  after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('cron_create rejects unknown parameters', async () => {
+    resetSched();
+    const r = await cronCreateTool.execute!({ cron: '* * * * *', prompt: 'p', bogus: 1 }, ctxFor());
+    assert.equal(r.isError, true);
+    assert.match(r.output, /unknown parameter/);
+  });
+
+  it('cron_create coerces string boolean flags', async () => {
+    resetSched();
+    const r = await cronCreateTool.execute!(
+      { cron: '*/5 * * * *', prompt: 'p', recurring: 'false', durable: 'true' },
+      ctxFor(),
+    );
+    assert.equal(r.isError, undefined);
+    assert.match(r.output, /one-shot/);
+    assert.match(r.output, /Durable: true/);
+  });
+
+  it('cron_create rejects an impossible calendar cron', async () => {
+    resetSched();
+    const r = await cronCreateTool.execute!({ cron: '0 0 30 2 *', prompt: 'p' }, ctxFor());
+    assert.equal(r.isError, true);
+    assert.match(r.output, /never matches/);
+  });
+
+  it('cron_create is blocked by the kill-switch', async () => {
+    resetSched();
+    process.env.AMI_DISABLE_CRON = '1';
+    try {
+      const r = await cronCreateTool.execute!({ cron: '* * * * *', prompt: 'p' }, ctxFor());
+      assert.equal(r.isError, true);
+      assert.match(r.output, /disabled by operator/);
+    } finally {
+      delete process.env.AMI_DISABLE_CRON;
+    }
+  });
+
+  it('cron_create tags a job with the calling agentId', async () => {
+    resetSched();
+    await cronCreateTool.execute!({ cron: '0 9 * * *', prompt: 'mine-tag' }, ctxFor({ agentId: 'a1' }));
+    const job = getScheduler(dir).list().find(j => j.prompt === 'mine-tag')!;
+    assert.equal(job.agentId, 'a1');
+  });
+
+  it('cron_list scopes to the calling agent', async () => {
+    resetSched();
+    const s = getScheduler(dir);
+    s.create({ cron: '0 9 * * *', prompt: 'global' });
+    s.create({ cron: '0 9 * * *', prompt: 'a1', agentId: 'a1' });
+    s.create({ cron: '0 9 * * *', prompt: 'a2', agentId: 'a2' });
+    const r = await cronListTool.execute!({}, ctxFor({ agentId: 'a1' }));
+    assert.match(r.output, /Prompt: a1/);
+    assert.match(r.output, /Prompt: global/);
+    assert.doesNotMatch(r.output, /Prompt: a2/);
+  });
+
+  it('cron_list rejects unknown parameters', async () => {
+    resetSched();
+    const r = await cronListTool.execute!({ nope: 1 } as Record<string, unknown>, ctxFor());
+    assert.equal(r.isError, true);
+    assert.match(r.output, /takes no parameters/);
+  });
+
+  it('cron_delete refuses to delete another agent\'s job', async () => {
+    resetSched();
+    const s = getScheduler(dir);
+    const j = s.create({ cron: '0 9 * * *', prompt: 'a2', agentId: 'a2' });
+    const r = await cronDeleteTool.execute!({ id: j.id }, ctxFor({ agentId: 'a1' }));
+    assert.equal(r.isError, true);
+    assert.equal(r.metadata?.errorCode, 2);
+  });
+
+  it('cron_delete validates the id format', async () => {
+    resetSched();
+    const r = await cronDeleteTool.execute!({ id: 'bad id!' }, ctxFor());
+    assert.equal(r.isError, true);
+    assert.equal(r.metadata?.errorCode, 1);
+  });
+
+  it('cron_list truncates a multi-line prompt to a single line', async () => {
+    resetSched();
+    getScheduler(dir).create({ cron: '0 9 * * *', prompt: 'line one\nline two\nline three' });
+    const r = await cronListTool.execute!({}, ctxFor());
+    assert.match(r.output, /line one …/);
+    assert.doesNotMatch(r.output, /line two/);
   });
 });
