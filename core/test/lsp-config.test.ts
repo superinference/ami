@@ -1,0 +1,144 @@
+import { describe, it, afterEach } from 'node:test';
+import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import {
+  DEFAULT_LSP_SERVERS,
+  getAllLspServers,
+  registerLspServers,
+  resetLspServers,
+  resolveLanguageForExtension,
+  languageIdForExtension,
+  assertNoAutoFetch,
+  validateLspServerConfig,
+  loadLspServersFromFile,
+} from '../src/lsp/config';
+
+afterEach(() => resetLspServers());
+
+describe('lsp config registry', () => {
+  it('ships built-in defaults for the four seeded languages', () => {
+    assert.ok(DEFAULT_LSP_SERVERS.typescript);
+    assert.ok(DEFAULT_LSP_SERVERS.python);
+    assert.ok(DEFAULT_LSP_SERVERS.go);
+    assert.ok(DEFAULT_LSP_SERVERS.rust);
+  });
+
+  it('merges registered servers over defaults (later wins)', () => {
+    registerLspServers({ ruby: { command: 'solargraph', args: ['stdio'], extensionToLanguage: { '.rb': 'ruby' } } });
+    registerLspServers({ typescript: { command: 'my-ts-server', extensionToLanguage: { '.ts': 'typescript' } } });
+    const all = getAllLspServers();
+    assert.equal(all.ruby.command, 'solargraph');
+    assert.equal(all.typescript.command, 'my-ts-server'); // override wins
+  });
+
+  it('resets registered servers but keeps defaults', () => {
+    registerLspServers({ ruby: { command: 'solargraph' } });
+    resetLspServers();
+    assert.equal(getAllLspServers().ruby, undefined);
+    assert.ok(getAllLspServers().typescript);
+  });
+
+  it('resolves a language key by extension (case-insensitive, with dot)', () => {
+    assert.equal(resolveLanguageForExtension('.ts'), 'typescript');
+    assert.equal(resolveLanguageForExtension('.TSX'), 'typescript');
+    assert.equal(resolveLanguageForExtension('.rs'), 'rust');
+    assert.equal(resolveLanguageForExtension('.unknownext'), null);
+  });
+
+  it('maps extension to the LSP languageId', () => {
+    assert.equal(languageIdForExtension('.tsx'), 'typescriptreact');
+    assert.equal(languageIdForExtension('.js'), 'javascript');
+    assert.equal(languageIdForExtension('.py'), 'python');
+    assert.equal(languageIdForExtension('.nope'), 'plaintext');
+  });
+});
+
+describe('supply-chain guard (assertNoAutoFetch)', () => {
+  it('allows the default typescript server because it uses --no-install', () => {
+    assert.doesNotThrow(() => assertNoAutoFetch(DEFAULT_LSP_SERVERS.typescript));
+  });
+
+  it('allows non-npx commands', () => {
+    assert.doesNotThrow(() => assertNoAutoFetch({ command: 'gopls', args: ['serve'] }));
+  });
+
+  it('rejects a bare npx invocation that would auto-fetch', () => {
+    assert.throws(
+      () => assertNoAutoFetch({ command: 'npx', args: ['typescript-language-server', '--stdio'] }),
+      /auto-fetch/,
+    );
+  });
+
+  it('accepts --offline as an equivalent guard', () => {
+    assert.doesNotThrow(() => assertNoAutoFetch({ command: 'npx', args: ['--offline', 'foo'] }));
+  });
+
+  it('detects npx via an absolute path', () => {
+    assert.throws(() => assertNoAutoFetch({ command: '/usr/local/bin/npx', args: ['foo'] }), /auto-fetch/);
+  });
+});
+
+describe('validateLspServerConfig', () => {
+  it('accepts a full config', () => {
+    const c = validateLspServerConfig('x', {
+      command: 'srv',
+      args: ['--stdio'],
+      env: { A: '1' },
+      workspaceFolder: '/w',
+      initializationOptions: { k: 1 },
+      startupTimeout: 1000,
+      maxRestarts: 2,
+      extensionToLanguage: { '.X': 'x' },
+    });
+    assert.equal(c.command, 'srv');
+    assert.deepEqual(c.args, ['--stdio']);
+    assert.equal(c.extensionToLanguage!['.x'], 'x'); // key lowercased
+    assert.equal(c.startupTimeout, 1000);
+  });
+
+  it('rejects a non-object', () => {
+    assert.throws(() => validateLspServerConfig('x', 'nope'), /must be an object/);
+  });
+
+  it('rejects a missing command', () => {
+    assert.throws(() => validateLspServerConfig('x', {}), /command/);
+  });
+
+  it('rejects non-string args', () => {
+    assert.throws(() => validateLspServerConfig('x', { command: 'c', args: [1, 2] }), /array of strings/);
+  });
+});
+
+describe('loadLspServersFromFile', () => {
+  let dir: string;
+  afterEach(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('returns {} when the file is absent', () => {
+    assert.deepEqual(loadLspServersFromFile('/no/such/file.lsp.json'), {});
+  });
+
+  it('parses and validates a .lsp.json map', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lspcfg-'));
+    const f = path.join(dir, '.lsp.json');
+    fs.writeFileSync(f, JSON.stringify({ ruby: { command: 'solargraph', args: ['stdio'] } }));
+    const loaded = loadLspServersFromFile(f);
+    assert.equal(loaded.ruby.command, 'solargraph');
+  });
+
+  it('throws on malformed JSON', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lspcfg-'));
+    const f = path.join(dir, '.lsp.json');
+    fs.writeFileSync(f, '{ not json');
+    assert.throws(() => loadLspServersFromFile(f), /Invalid JSON/);
+  });
+
+  it('throws when the top level is not an object', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lspcfg-'));
+    const f = path.join(dir, '.lsp.json');
+    fs.writeFileSync(f, '[]');
+    assert.throws(() => loadLspServersFromFile(f), /must be an object/);
+  });
+});

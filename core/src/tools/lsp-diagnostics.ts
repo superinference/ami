@@ -1,4 +1,22 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import {
+  formatDiagnosticsDetail,
+  formatNewDiagnosticsSummary,
+  type DiagnosticFile,
+} from '../lsp/diagnostic-tracking';
+
+/**
+ * Minimal view of the LSP client the diagnostics tool relies on. The real
+ * client (core/core/src/lsp/client.ts) implements all of these.
+ */
+export interface LspDiagClient {
+  getDiagnostics(filePath: string): Promise<DiagnosticFile | null>;
+  getAllDiagnostics(): DiagnosticFile[];
+  diagnostics: {
+    hasBaseline(filePath: string): boolean;
+    getNewDiagnostics(filePaths?: string[]): Promise<DiagnosticFile[]>;
+  };
+}
 
 /**
  * Indirection seam for the lazily-required LSP + workspace-indexer dependencies.
@@ -11,8 +29,8 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
  * the original lazy-require behaviour exactly.
  */
 export const _lspDiagHooks = {
-  getLSPClient(): unknown {
-    const { getLSPClient } = require('../lsp') as { getLSPClient: () => unknown };
+  getLSPClient(): LspDiagClient {
+    const { getLSPClient } = require('../lsp') as { getLSPClient: () => LspDiagClient };
     return getLSPClient();
   },
   searchSymbols(
@@ -42,14 +60,45 @@ export const lspDiagnosticsTool: ToolDefinition = {
   },
   isReadOnly: true,
   isConcurrencySafe: true,
-  async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+  async execute(input: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
+    let client: LspDiagClient;
     try {
-      _lspDiagHooks.getLSPClient();
-      const filePath = input.file_path as string | undefined;
+      client = _lspDiagHooks.getLSPClient();
+    } catch {
+      return { output: 'LSP not available. Run the project linter/compiler manually.' };
+    }
+
+    const filePath = input.file_path as string | undefined;
+    try {
       if (filePath) {
-        return { output: `[Diagnostics for ${filePath}]: Check editor for live LSP diagnostics. Run the relevant linter/compiler to see issues.` };
+        // When a pre-edit baseline exists, surface ONLY the diagnostics this
+        // edit introduced (the new-vs-baseline delta); otherwise report the
+        // file's current diagnostics.
+        if (client.diagnostics.hasBaseline(filePath)) {
+          const fresh = await client.diagnostics.getNewDiagnostics([filePath]);
+          if (fresh.length === 0) {
+            return { output: `No new diagnostics introduced in ${filePath}.` };
+          }
+          return { output: `${formatNewDiagnosticsSummary(fresh)}\n${formatDiagnosticsDetail(fresh)}` };
+        }
+        const current = await client.getDiagnostics(filePath);
+        if (!current) {
+          return { output: `No LSP server available for ${filePath}. Run the relevant linter/compiler manually.` };
+        }
+        if (current.diagnostics.length === 0) {
+          return { output: `No diagnostics for ${filePath}.` };
+        }
+        return { output: formatDiagnosticsDetail([current]) };
       }
-      return { output: '[Workspace diagnostics]: Check editor for live LSP diagnostics. Run project build/lint command to see all issues.' };
+
+      const all = client.getAllDiagnostics();
+      if (all.length === 0) {
+        return { output: 'No diagnostics reported in the workspace.' };
+      }
+      const total = all.reduce((sum, f) => sum + f.diagnostics.length, 0);
+      return {
+        output: `${total} diagnostic issue(s) across ${all.length} file(s):\n${formatDiagnosticsDetail(all)}`,
+      };
     } catch {
       return { output: 'LSP not available. Run the project linter/compiler manually.' };
     }

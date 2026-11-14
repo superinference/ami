@@ -55,6 +55,20 @@ function notifyLsp(resolved: string, content: string, context: ToolContext): voi
   } catch {}
 }
 
+/**
+ * Snapshot the file's diagnostics into the LSP baseline BEFORE the edit is
+ * applied, so a post-edit `diagnostics` query can surface ONLY the issues this
+ * edit introduced (new-vs-baseline delta). Fire-and-forget and detached-aware,
+ * exactly like {@link notifyLsp}: it never blocks or fails the edit.
+ */
+export function captureLspBaseline(resolved: string, context: ToolContext): void {
+  if (context.detachedMode) return;
+  try {
+    const lsp = lspHooks.getClient();
+    lsp.diagnostics?.beforeFileEdited?.(resolved)?.catch?.(() => {});
+  } catch {}
+}
+
 export function verifyWriteTarget(resolved: string, cwd: string): string | undefined {
   const cwdAbs = path.resolve(cwd);
 
@@ -467,6 +481,9 @@ export const fileEditTool: ToolDefinition = {
         isError: true,
       };
     }
+
+    // Capture a pre-edit diagnostics baseline so the post-edit delta is accurate.
+    captureLspBaseline(resolved, context);
 
     if (editsInput !== undefined) {
       if (!Array.isArray(editsInput) || editsInput.length === 0) {
