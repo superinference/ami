@@ -51,6 +51,120 @@ export interface ClassifiedError {
   shouldCompact: boolean;
   shouldFallback: boolean;
   suggestedDelay?: number;
+  /**
+   * For context_overflow: how many tokens the prompt is over the limit, parsed
+   * from the server's authoritative "… N tokens > M maximum" message. Lets
+   * reactive compaction jump past multiple groups in one retry.
+   */
+  tokenGap?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Message normalization — HTML stripping + deserialized-error recovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip an HTML error-page body (e.g. a CloudFlare/proxy 5xx interstitial
+ * returned instead of JSON) down to its <title> text, or '' when there is no
+ * title. Plain text is returned unchanged. Mirrors Claude's sanitizeMessageHTML
+ * so the user never sees a multi-KB raw HTML dump.
+ */
+export function sanitizeMessageHTML(message: string): string {
+  if (typeof message !== 'string') return '';
+  if (message.includes('<!DOCTYPE html') || message.includes('<html')) {
+    const titleMatch = message.match(/<title>([^<]+)<\/title>/);
+    if (titleMatch && titleMatch[1]) return titleMatch[1].trim();
+    return '';
+  }
+  return message;
+}
+
+/**
+ * Recover a human-readable message from a deserialized API error that lost its
+ * top-level `.message` after JSONL round-tripping (session resume). The real
+ * text lives nested: `error.error.error.message` (standard Anthropic response
+ * body wrapping the API error) or `error.error.message` (Bedrock/proxy). Probes
+ * deepest-first, sanitizing HTML at each level. Returns null when neither holds
+ * a usable string. Mirrors Claude's extractNestedErrorMessage.
+ */
+export function extractNestedErrorMessage(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const outer = (error as { error?: unknown }).error;
+  if (typeof outer !== 'object' || outer === null) return null;
+  const deep = (outer as { error?: { message?: unknown } }).error?.message;
+  if (typeof deep === 'string' && deep.length > 0) {
+    const sanitized = sanitizeMessageHTML(deep);
+    if (sanitized.length > 0) return sanitized;
+  }
+  const mid = (outer as { message?: unknown }).message;
+  if (typeof mid === 'string' && mid.length > 0) {
+    const sanitized = sanitizeMessageHTML(mid);
+    if (sanitized.length > 0) return sanitized;
+  }
+  return null;
+}
+
+/**
+ * Best human-readable message for any error value: a plain string, an Error's
+ * `.message`, or a nested/deserialized API-error shape — always HTML-sanitized.
+ */
+export function normalizeErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return sanitizeMessageHTML(error);
+  if (error instanceof Error) {
+    const nested = extractNestedErrorMessage(error);
+    return nested ?? sanitizeMessageHTML(error.message);
+  }
+  const nested = extractNestedErrorMessage(error);
+  if (nested) return nested;
+  return String(error ?? '');
+}
+
+// ---------------------------------------------------------------------------
+// Token-count parsing — precise overflow recovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse actual/limit token counts from a raw "prompt is too long: 137500 tokens
+ * > 135000 maximum" error. Lenient: tolerant of SDK prefixes, JSON envelopes,
+ * and Vertex casing. Mirrors Claude's parsePromptTooLongTokenCounts.
+ */
+export function parsePromptTooLongTokenCounts(rawMessage: string): {
+  actualTokens: number | undefined;
+  limitTokens: number | undefined;
+} {
+  const match = typeof rawMessage === 'string'
+    ? rawMessage.match(/prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i)
+    : null;
+  return {
+    actualTokens: match ? parseInt(match[1], 10) : undefined,
+    limitTokens: match ? parseInt(match[2], 10) : undefined,
+  };
+}
+
+/** How many tokens over the limit a prompt-too-long error reports, or undefined. */
+export function getPromptTooLongTokenGap(rawMessage: string): number | undefined {
+  const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(rawMessage);
+  if (actualTokens === undefined || limitTokens === undefined) return undefined;
+  const gap = actualTokens - limitTokens;
+  return gap > 0 ? gap : undefined;
+}
+
+/**
+ * Parse the exact 400 "input length and `max_tokens` exceed context limit: A + B
+ * > C" message into its three counts, or null. Mirrors Claude's
+ * parseMaxTokensContextOverflowError — lets callers compute a precise reduced
+ * max_tokens for the next attempt instead of guessing.
+ */
+export function parseMaxTokensContextOverflow(rawMessage: string): {
+  inputTokens: number;
+  maxTokens: number;
+  contextLimit: number;
+} | null {
+  if (typeof rawMessage !== 'string') return null;
+  if (!rawMessage.includes('input length and `max_tokens` exceed context limit')) return null;
+  const m = rawMessage.match(/input length and `max_tokens` exceed context limit:\s*(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
+  if (!m) return null;
+  return { inputTokens: parseInt(m[1], 10), maxTokens: parseInt(m[2], 10), contextLimit: parseInt(m[3], 10) };
 }
 
 // ---------------------------------------------------------------------------
@@ -114,13 +228,29 @@ function classifySDKError(error: Error): ClassifiedError | null {
       case 401:
         return { category: 'auth_error', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
       case 403:
-        // 403 is a permanent permission denial — never retryable.
+        // A 403 whose body signals OAuth token revocation is recoverable by a
+        // token refresh + retry (Claude's also403Revoked path), so it is
+        // retryable — unlike an ordinary permanent permission denial.
+        if (lowerMsg.includes('oauth token has been revoked') || lowerMsg.includes('token has been revoked')) {
+          return { category: 'auth_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: false };
+        }
+        // 403 is otherwise a permanent permission denial — never retryable.
         // Covers: invalid API key, unauthorized, no model access, project restrictions.
         return { category: 'auth_error', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
+      case 404:
+        // Model does not exist / no access. Non-retryable, but a different model
+        // may work — surface actionable /model guidance (Claude's 404 branch).
+        return { category: 'model_unavailable', message: msg, retryable: false, shouldCompact: false, shouldFallback: true };
+      case 408:
+        // Request timeout — transient, retry (Claude shouldRetry 408).
+        return { category: 'network_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
+      case 409:
+        // Lock timeout / conflict — transient, retry (Claude shouldRetry 409).
+        return { category: 'server_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 3000 };
       case 429:
         return { category: 'rate_limited', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
       case 413:
-        return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false };
+        return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false, tokenGap: getPromptTooLongTokenGap(msg) };
       case 400:
         // 400 from gateway rejecting beta headers (e.g. anthropic-beta)
         if (isGatewayRejection(lowerMsg)) {
@@ -135,7 +265,7 @@ function classifySDKError(error: Error): ClassifiedError | null {
             lowerMsg.includes('token count') ||
             lowerMsg.includes('prompt_too_long') || lowerMsg.includes('prompt is too long') || lowerMsg.includes('input is too long') ||
             lowerMsg.includes('reduce the length')) {
-          return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false };
+          return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false, tokenGap: getPromptTooLongTokenGap(msg) };
         }
         return null; // fall through to regex
       case 500:
@@ -187,7 +317,7 @@ function classifySDKError(error: Error): ClassifiedError | null {
  * The regex checks are priority-ordered: more specific patterns (abort,
  * auth) are tested before broad ones (server_error, unknown).
  */
-export function classifyError(error: string | Error): ClassifiedError {
+export function classifyError(error: string | Error | unknown): ClassifiedError {
   // SDK fast path: classify by error type + status code
   if (error instanceof Error) {
     const sdkResult = classifySDKError(error);
@@ -195,7 +325,10 @@ export function classifyError(error: string | Error): ClassifiedError {
     // Fall through to regex matching on the message string
   }
 
-  const errorString = error instanceof Error ? error.message : error;
+  // Resolve the best message for any value: plain string, Error.message, or a
+  // nested/deserialized API-error shape — HTML-sanitized so a CloudFlare/proxy
+  // error page never reaches the user or the classifier's keyword matching.
+  const errorString = normalizeErrorMessage(error);
   // Fold the root `.cause` code (e.g. a nested ETIMEDOUT / CERT_HAS_EXPIRED that
   // the SDK hides under a generic "Connection error.") into the matched text, so
   // network/SSL classification works even when the top-level message has no code.
@@ -271,7 +404,7 @@ export function classifyError(error: string | Error): ClassifiedError {
     lower.includes('too many tokens') ||
     lower.includes('reduce the length')
   ) {
-    return { category: 'context_overflow', message: errorString, retryable: true, shouldCompact: true, shouldFallback: false };
+    return { category: 'context_overflow', message: errorString, retryable: true, shouldCompact: true, shouldFallback: false, tokenGap: getPromptTooLongTokenGap(errorString) };
   }
 
   // Output too large — retryable (the engine can request fewer output tokens)
@@ -378,7 +511,12 @@ export function networkErrorHint(lowerMsg: string): string {
     return 'Network error (DNS lookup failed) — check your proxy/gateway and DNS first, then VPN/firewall.';
   }
   if (lowerMsg.includes('etimedout') || lowerMsg.includes('timed out')) {
-    return 'Network error (connection timed out) — check your proxy/gateway first, then VPN/firewall.';
+    // Introspect the active timeout knob so the user can fix it directly.
+    const configured = process.env.SUPERINFERENCE_API_TIMEOUT_MS;
+    const knob = configured
+      ? ` (SUPERINFERENCE_API_TIMEOUT_MS=${configured}ms, try increasing it)`
+      : '';
+    return `Network error (connection timed out) — check your proxy/gateway first, then VPN/firewall.${knob}`;
   }
   return 'Network error — retrying connection. Check your proxy/gateway first, then VPN/firewall.';
 }
@@ -391,6 +529,11 @@ export function friendlyErrorMessage(classified: ClassifiedError): string {
   if (zdr.isZdr) return zdr.guidance!;
   if (classified.category === 'unknown' || classified.category === 'abort') {
     return classified.message;
+  }
+  // A non-retryable model_unavailable is a 404 model-not-found (vs a retryable
+  // 503/529 overload): tell the user how to recover instead of "retrying".
+  if (classified.category === 'model_unavailable' && !classified.retryable) {
+    return `Model not found or no access: ${classified.message}. Run /model to pick a different one.`;
   }
   if (classified.category === 'network_error') {
     return networkErrorHint(classified.message.toLowerCase());

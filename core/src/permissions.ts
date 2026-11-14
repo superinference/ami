@@ -272,6 +272,9 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
   which: { allowed: new Set(['-a', '--all', '-s', '--read-alias', '--read-functions', '--skip-alias', '--skip-dot', '--skip-tilde', '-i', '--tty-only', '--version', '-v', '-V']), blocked: new Set([]), strict: true },
   tput: { allowed: new Set(['cols', 'lines', 'colors', 'setaf', 'sgr0']), blocked: new Set([]) },
   ss: { allowed: new Set(['-t', '-u', '-l', '-n', '-p', '-a']), blocked: new Set([]) },
+  // sort is read-only EXCEPT `-o/--output FILE`, which writes the sorted result to
+  // a file. Block the output flags; other sort flags stay safe (S: strict off).
+  sort: { allowed: new Set([]), blocked: new Set(['-o', '--output']) },
 };
 
 /** Safe target commands for xargs — only these can follow xargs. */
@@ -310,16 +313,50 @@ function isJqDangerous(args: string[]): boolean {
   return false;
 }
 
+/** xargs short flags that CONSUME an argument (their value is either inline —
+ *  `-n1` — or the next token — `-I {}`). Getopt-accurate modeling of these is
+ *  what prevents a validator-vs-xargs parser differential: a naive scanner that
+ *  skips `-I` but then reads `-I`'s VALUE as the target command would validate the
+ *  wrong word and wave an unsafe real target (`xargs -I echo rm` → RCE) through. */
+const XARGS_ARG_TAKING = new Set(['I', 'i', 'd', 'E', 'e', 'L', 'l', 'n', 'P', 's', 'a']);
+
 /**
- * Check whether xargs is being used with a safe target command.
- * xargs is only safe when its target is a read-only command.
+ * Check whether xargs is being used with a safe (read-only) target command.
+ *
+ * Getopt-accurate: walks xargs' own options, correctly consuming each arg-taking
+ * flag's value (inline like `-n1`, bundled like `-rI {}`, or the next token like
+ * `-I {}`) and honoring a `--` end-of-options marker, so the REAL target command
+ * is identified — not a flag's value. Mirrors Claude Code's xargs read-only
+ * validation / bundled arg-taking-flag handling (readOnlyCommandValidation.ts).
  */
 function isXargsSafe(command: string): boolean {
-  // Extract the target command after xargs and its flags
-  // eslint-disable-next-line security/detect-unsafe-regex
-  const xargsMatch = command.match(/\bxargs\s+(?:-\S+\s+)*(\S+)/);
-  if (!xargsMatch) return false;
-  const target = xargsMatch[1];
+  const m = command.match(/\bxargs\b(.*)$/s);
+  if (!m) return false;
+  const tokens = m[1]!.trim().split(/\s+/).filter(Boolean);
+  let k = 0;
+  while (k < tokens.length) {
+    const t = tokens[k]!;
+    if (t === '--') { k++; break; } // end of options — next token is the target
+    if (t.startsWith('--')) { k++; continue; } // long opts (value is `=`-attached)
+    if (t.startsWith('-')) {
+      // Short-flag cluster: scan chars; an arg-taking flag consumes the rest of
+      // the token as an inline value, or (if it is the last char) the NEXT token.
+      const body = t.slice(1);
+      let consumedNext = false;
+      for (let c = 0; c < body.length; c++) {
+        const ch = body[c]!;
+        if (XARGS_ARG_TAKING.has(ch)) {
+          if (c === body.length - 1) consumedNext = true; // value is the next token
+          break; // rest of the cluster is this flag's inline value
+        }
+      }
+      k += consumedNext ? 2 : 1;
+      continue;
+    }
+    break; // first non-flag token is the target command
+  }
+  const target = tokens[k];
+  if (!target) return false;
   return XARGS_SAFE_TARGETS.has(target);
 }
 
@@ -626,6 +663,11 @@ const BUILD_CONFIG_BASENAMES = new Set([
   'package.json', 'package-lock.json',
   '.npmrc', '.yarnrc', '.yarnrc.yml',
   'pnpm-lock.yaml', 'yarn.lock',
+  // Git/tool config files that redirect fetches or run arbitrary commands:
+  // `.gitmodules` points submodules at attacker URLs, `.ripgreprc` can set a
+  // `--pre` preprocessor command (RCE), `.mailmap` rewrites identities. Mirrors
+  // Claude's DANGEROUS_FILES list.
+  '.gitmodules', '.ripgreprc', '.mailmap',
   // Env files
   '.env', '.env.local', '.env.production',
   // Shell startup / login files
@@ -1048,8 +1090,11 @@ export function isGitInvocationReadOnly(tokens: string[]): boolean {
       '--points-at', '--sort', '--format', '--color', '--column']);
     let hasList = false;
     let hasPositional = false;
+    let endOfOptions = false; // after a bare `--`, everything is a positional
     for (let k = 0; k < rest.length; k++) {
       const a = rest[k]!;
+      if (endOfOptions) { hasPositional = true; continue; } // post-`--` tokens are ref names
+      if (a === '--') { endOfOptions = true; continue; } // `git branch -- -l` → `-l` is a ref name
       if (a === '-l' || a === '--list') { hasList = true; continue; }
       if (writeFlags.has(a)) return false;
       if (a.startsWith('-')) {
@@ -1110,6 +1155,57 @@ export function isGitReadOnlyCommandSafe(command: string): boolean {
 }
 
 /**
+ * Detect a compound command that changes directory (`cd`/`pushd`/`chdir`/
+ * PowerShell `Set-Location`) AND then performs a file-writing output redirection
+ * (`>`/`>>` to a file, not an fd-dup like `2>&1`). The validator classifies the
+ * redirect target against the launch cwd, but at runtime it resolves against the
+ * NEW cwd — a path-resolution/TOCTOU desync that can write outside the workspace
+ * (`cd /outside && echo payload > config`). Claude requires manual approval for
+ * this shape (pathValidation.ts cd+write guard, PowerShell Set-Location desync).
+ */
+export function commandHasCdWriteDesync(command: string): boolean {
+  const unwrapped = unwrapShellControlStructures(command);
+  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
+  let hasCd = false;
+  let hasRedirect = false;
+  for (const seg of segments) {
+    const tokens = seg.trim().split(/\s+/);
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+    const cmd = tokens[i];
+    if (cmd === 'cd' || cmd === 'pushd' || cmd === 'chdir' ||
+        (cmd && cmd.toLowerCase() === 'set-location')) hasCd = true;
+    // A file redirect: optional leading fd, `>`/`>>`, then a target that is not
+    // an fd-dup (`&1`). Quoted sections are stripped so `echo "a > b"` is ignored.
+    const unquoted = stripQuotedSections(seg);
+    if (/\d*>>?\s*(?![&\s])\S/.test(unquoted)) hasRedirect = true;
+  }
+  return hasCd && hasRedirect;
+}
+
+/**
+ * Count the directory-change segments (`cd`/`pushd`/`chdir`/PowerShell
+ * `Set-Location`) in a (possibly compound) command. More than one directory
+ * change in a single command is an unusual navigation pattern that defeats
+ * cwd-relative path validation and must require approval (Claude's multi-cd
+ * guard, bashCommandHelpers.ts).
+ */
+export function countDirectoryChanges(command: string): number {
+  const unwrapped = unwrapShellControlStructures(command);
+  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
+  let count = 0;
+  for (const seg of segments) {
+    const tokens = seg.trim().split(/\s+/);
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+    const cmd = tokens[i];
+    if (cmd === 'cd' || cmd === 'pushd' || cmd === 'chdir' ||
+        (cmd && cmd.toLowerCase() === 'set-location')) count++;
+  }
+  return count;
+}
+
+/**
  * Match a simple glob-like pattern against a string.
  * Supports '*' as a wildcard for any sequence of characters.
  */
@@ -1134,7 +1230,10 @@ function matchPattern(pattern: string, value: string): boolean {
     const escaped = pattern
       .replace(/[.+^${}()|[\]\\?]/g, '\\$&')
       .replace(/\*/g, '.*');
-    regex = new RegExp(`^${escaped}$`);
+    // dotAll (`s`): `*` must also match across embedded newlines, so a rule like
+    // `*rm -rf*` still matches a multi-line command and a deny cannot be bypassed
+    // by splitting the command across lines (Claude's dotAll wildcard matching).
+    regex = new RegExp(`^${escaped}$`, 's');
     _patternCache.set(pattern, regex);
   }
   return regex.test(value);
@@ -1227,17 +1326,49 @@ function extractCommandSubstitutions(command: string): string[] {
  *    - allow rules: ALL sub-commands must match (prevents "git status && rm -rf /")
  *    - deny rules: ANY sub-command matching triggers deny
  */
-export function stripEnvVarPrefix(cmd: string): string {
-  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint alternation
-  let stripped = cmd.replace(/^(\s*[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
-  const tokens = stripped.split(/\s+/);
-  let i = 0;
-  while (i < tokens.length && SHELL_WRAPPERS.has(tokens[i]!)) {
-    i++;
-    while (i < tokens.length && tokens[i]!.startsWith('-')) i++;
-    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+export function stripEnvVarPrefix(cmd: string, safeEnvOnly = false): string {
+  // Allow-rule matching passes safeEnvOnly=true: only provably-harmless env vars
+  // (SAFE_ENV_VARS) are stripped, so an escalation prefix like `PATH=/evil` or
+  // `LD_PRELOAD=x` STAYS in the command and breaks the match — forcing a prompt
+  // instead of silently auto-approving. Deny/ask matching strips ALL assignments
+  // aggressively so a denied command cannot hide behind any env-var prefix.
+  // Mirrors Claude's split (allow = safe-list strip, deny = strip-all).
+  let stripped: string;
+  if (safeEnvOnly) {
+    // Drop leading assignments one at a time, but STOP at the first non-safe var
+    // (it stays, breaking any allow match). The command tail is preserved exactly.
+    let s = cmd;
+    for (;;) {
+      const m = s.match(/^\s*([A-Za-z_]\w*)=(?:"[^"]*"|'[^']*'|\S+)\s+/);
+      if (!m || !SAFE_ENV_VARS.has(m[1]!)) break;
+      s = s.slice(m[0].length);
+    }
+    stripped = s;
+  } else {
+    // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint alternation
+    stripped = cmd.replace(/^(\s*[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
   }
-  if (i > 0 && i < tokens.length) stripped = tokens.slice(i).join(' ');
+  // Privilege/shell wrappers (sudo, env, bash -c, eval, …) are stripped ONLY for
+  // deny/ask matching — so a deny rule still catches `sudo python evil.py`. They
+  // are NEVER stripped for allow matching (safeEnvOnly): auto-approving the inner
+  // command would silently grant the escalated/wrapped form (`sudo git status`
+  // must not match an allow rule for `git status`). Mirrors Claude's wrapper
+  // handling (strip-for-deny, keep-for-allow).
+  if (!safeEnvOnly) {
+    const tokens = stripped.split(/\s+/);
+    let i = 0;
+    while (i < tokens.length && SHELL_WRAPPERS.has(tokens[i]!)) {
+      i++;
+      while (i < tokens.length && tokens[i]!.startsWith('-')) i++;
+      while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+      // A numeric operand belongs to the wrapper, not the wrapped command:
+      // `timeout 5 CMD` / `timeout 1m CMD` (duration), `nice 10 CMD` /
+      // `ionice 2 CMD` (priority). Skip it so the deny/ask match reaches the real
+      // command (`timeout 5 rm -rf /` must still hit a `rm` deny rule).
+      while (i < tokens.length && /^\d+[smhd]?$/.test(tokens[i]!)) i++;
+    }
+    if (i > 0 && i < tokens.length) stripped = tokens.slice(i).join(' ');
+  }
   return stripped;
 }
 
@@ -1508,7 +1639,10 @@ export function validatePermissionRule(rule: string): {
  * never *broaden* an allow into auto-approving an obfuscated command.
  */
 function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
-  const strippedRaw = stripEnvVarPrefix(sub);
+  // Allow rules strip only SAFE_ENV_VARS (an unsafe env prefix must break the
+  // match → prompt); deny/ask rules strip ALL env vars so no prefix can hide a
+  // denied command.
+  const strippedRaw = stripEnvVarPrefix(sub, /* safeEnvOnly */ ruleAction === 'allow');
   if (matchPattern(pattern, strippedRaw)) return true;
   if (ruleAction === 'allow') return false;
   // Strip env prefix FIRST (handles quoted values like FOO="a b"), THEN collapse
@@ -1683,6 +1817,10 @@ export class PermissionManager {
       // user's hard stop is never silently overridden (Claude orders deny/safety
       // checks before the bypass allow, permissions.ts L1169-1281).
       if (this.anyDenyMatches(toolName, input)) return 'deny';
+      // User-configured content-specific `ask` rules are ALSO bypass-immune: a
+      // `{tool, action:'ask'}` rule still prompts, before the blanket allow, so an
+      // explicit "always confirm this" is never silently overridden by bypass mode.
+      if (this.anyAskMatches(toolName, input)) return 'ask';
       const safetyPaths = [
         '.git/', '.ami/', '.bashrc', '.zshrc', '.profile', '.gitconfig',
         '.vscode/', '.ssh/', '.gnupg/', '.aws/', '.config/',
@@ -1945,6 +2083,22 @@ export class PermissionManager {
     if (/\bgit\s+reset\s+--merge\b/.test(trimmed)) return 'destructive';
     if (/\bgit\s+reset\s+--keep\b/.test(trimmed)) return 'destructive';
 
+    // A `cd`/`Set-Location` followed by a file-writing redirection resolves the
+    // target against the NEW cwd at runtime — a path-desync the validator can't see.
+    // Require manual approval (Claude's cd+write guard).
+    if (commandHasCdWriteDesync(trimmed)) return 'unsafe';
+
+    // More than one directory change in a single command defeats cwd-relative path
+    // validation (the validator can't track which cwd each later statement runs in).
+    // Require approval (Claude's multi-cd guard).
+    if (countDirectoryChanges(trimmed) > 1) return 'unsafe';
+
+    // xargs anywhere in the command (even behind a pipe like `ls | xargs …`) must
+    // target a read-only command. Validate it up-front so a safe leading command
+    // can't short-circuit the classifier to 'safe' before the xargs target is
+    // checked (parser-differential RCE: `ls | xargs -I echo ./evil.sh`).
+    if (bases.includes('xargs') && !isXargsSafe(unwrapped)) return 'unsafe';
+
     // Flag-aware checks for commands that are safe/destructive depending on flags
     if (/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'unsafe'; // sed -i modifies files in place
     if (/\bfind\s+.*-delete\b/.test(trimmed)) return 'destructive';
@@ -1988,10 +2142,14 @@ export class PermissionManager {
         // sandbox escape (`cd /attacker && git ...` runs planted .git/hooks).
         // Validate the full command before auto-allowing.
         if (cmd.startsWith('git ') && !isGitReadOnlyCommandSafe(unwrapped)) return 'unsafe';
-        // Reject `$`-substitution in an auto-allowed git read command — the
-        // validator sees `$VAR` literally but the shell expands it at runtime
-        // (parser differential / secret-leak-via-error). Mirrors Claude's isGitSafe.
-        if (cmd.startsWith('git ') && containsShellSubstitution(unwrapped)) return 'unsafe';
+        // Reject `$`-substitution in ANY auto-allowed compound/external read
+        // command (git, gh, npm, go, cargo, make, …) — the validator sees the
+        // literal `$VAR`/`$(cmd)` text but the shell expands it at runtime, a
+        // parser differential that can smuggle a non-read subcommand or leak a
+        // secret via an error message past this check. Mirrors Claude's blanket
+        // `$`-rejection on auto-allowed external commands (isGitSafe/isDockerSafe
+        // and the PowerShell readOnlyValidation variable-expansion guard).
+        if (containsShellSubstitution(unwrapped)) return 'unsafe';
         if (allSegmentsKnown(unwrapped)) return 'safe';
         break;
       }
@@ -2022,6 +2180,37 @@ export class PermissionManager {
 
         // jq/yq: additional dangerous-construct check
         if ((cmd === 'jq' || cmd === 'yq') && isJqDangerous(args)) return 'unsafe';
+
+        // `hostname`: a bare positional SETS the system hostname (`hostname newname`).
+        // Only flag-driven reads (`hostname -f`, `-i`, …) are safe. Mirrors Claude's
+        // hostname positional-argument guard.
+        if (cmd === 'hostname') {
+          for (const a of args) {
+            if (!a.startsWith('-')) return 'unsafe'; // a positional sets the hostname
+          }
+        }
+
+        // `tput`: capability names are positionals. Only read-only capabilities are
+        // safe; the dangerous ones (reset/init/clear/mc5/pfloc/… and the `-S` stdin
+        // batch flag) alter terminal state or run arbitrary sequences. Strict: any
+        // capability not on the allowlist prompts. Mirrors Claude's tput guard.
+        if (cmd === 'tput') {
+          const allowedCaps = SAFE_COMMAND_FLAGS['tput']!.allowed;
+          for (const a of args) {
+            if (a === '-S') return 'unsafe'; // batch-from-stdin: unbounded capabilities
+            if (a.startsWith('-')) continue; // `-T<term>` etc. handled by flag validation
+            if (!allowedCaps.has(a)) return 'unsafe'; // unlisted capability
+          }
+        }
+
+        // `lsof`: `+` options write/augment state — notably `+m`/`+m<path>` emits a
+        // mount-supplement file. Only `-` read flags are safe. Mirrors Claude's lsof
+        // `+`-option rejection.
+        if (cmd === 'lsof') {
+          for (const a of args) {
+            if (a.startsWith('+')) return 'unsafe';
+          }
+        }
 
         // xargs: must target a safe command
         if (cmd === 'xargs' && !isXargsSafe(unwrapped)) return 'unsafe';
@@ -2360,6 +2549,32 @@ export class PermissionManager {
         const inputStr = this.inputToString(toolName, input);
         const matched = toolName === 'bash' && typeof input.command === 'string'
           ? matchBashPattern(rule.pattern, inputStr, 'deny')
+          : matchPattern(rule.pattern, inputStr);
+        if (matched) return true;
+      } else {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Does any user-configured `ask` rule match this tool+input? Mirrors
+   * {@link anyDenyMatches} but for content-specific `ask` rules. Used to keep
+   * explicit `ask` rules BYPASS-IMMUNE: a user's `{tool, action:'ask'}` rule must
+   * still prompt in bypassPermissions mode, before the blanket auto-allow (Claude
+   * evaluates ask/safety-check rules BEFORE the bypass allow, permissions.ts
+   * L1169-1281).
+   */
+  private anyAskMatches(toolName: string, input: Record<string, unknown>): boolean {
+    for (const rule of this.rules) {
+      if (rule.action !== 'ask') continue;
+      if (!this.toolNameMatches(rule.tool, toolName)) continue;
+      if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
+      if (rule.pattern) {
+        const inputStr = this.inputToString(toolName, input);
+        const matched = toolName === 'bash' && typeof input.command === 'string'
+          ? matchBashPattern(rule.pattern, inputStr, 'ask')
           : matchPattern(rule.pattern, inputStr);
         if (matched) return true;
       } else {

@@ -6,6 +6,7 @@ import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout } from '../tools/mcp-tool';
 import { EventEmitter } from 'events';
+import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
@@ -87,11 +88,29 @@ export function isTransientConnectError(err: unknown): boolean {
   return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|connect ENOENT/i.test(msg);
 }
 
+/**
+ * A fatal MCP config diagnostic: a config file that exists but could not be parsed.
+ * `severity` is always `'fatal'` for now (parse failures); the shape mirrors the
+ * per-scope diagnostics a UI panel renders ("Failed to parse <path>: <message>").
+ */
+export interface McpConfigError {
+  path: string;
+  message: string;
+  severity: 'fatal';
+}
+
 export interface McpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
   headers?: Record<string, string>;
+  /**
+   * A shell command run at connect time (http/sse) that prints a JSON object of
+   * dynamic request headers on stdout — git-credential-helper style, for rotating
+   * / short-lived auth tokens. Merged over the static `headers` (dynamic wins). A
+   * failing or malformed helper is logged and ignored so it never blocks connect.
+   */
+  headersHelper?: string;
   requestTimeout?: number;
   connectTimeout?: number;
   autoConnect?: boolean;
@@ -135,6 +154,63 @@ export interface PendingServerInfo {
 /** Expand env-var references in header values. Delegates to the single canonical
  *  {@link expandEnvVars} so headers get the same `${VAR}` / `${VAR:-default}` /
  *  bare-`$VAR` semantics as command/args/url (no second expansion dialect). */
+/** Max time a `headersHelper` script may run before it is aborted (ms). */
+const HEADERS_HELPER_TIMEOUT_MS = 10_000;
+
+/** Runs a `headersHelper` shell command and resolves with its stdout. Injectable so
+ *  tests exercise the parse/merge logic without spawning a real process. */
+export type HeadersHelperRunner = (command: string, env: NodeJS.ProcessEnv) => Promise<string>;
+
+const defaultHeadersHelperRunner: HeadersHelperRunner = (command, env) =>
+  new Promise<string>((resolve, reject) => {
+    execFile(
+      command,
+      [],
+      { shell: true, timeout: HEADERS_HELPER_TIMEOUT_MS, maxBuffer: 1024 * 1024, env },
+      (err, stdout) => (err ? reject(err) : resolve(String(stdout))),
+    );
+  });
+
+/**
+ * Resolve the effective request headers for a server: its static `headers` (with
+ * `${VAR}` expansion) merged with the dynamic headers produced by running its
+ * `headersHelper` (dynamic overrides static). The helper runs with the server name
+ * and URL in the environment (git-credential-helper style) so one script can serve
+ * many servers. A failing / non-object / non-string-valued helper output is logged
+ * and ignored — the static headers are still returned so a bad helper never blocks
+ * the connection.
+ */
+export async function resolveMcpServerHeaders(
+  serverName: string,
+  config: McpServerConfig,
+  run: HeadersHelperRunner = defaultHeadersHelperRunner,
+): Promise<Record<string, string>> {
+  const staticHeaders = config.headers ? resolveEnvVars(config.headers) : {};
+  if (!config.headersHelper) return staticHeaders;
+  try {
+    const stdout = await run(config.headersHelper, {
+      ...process.env,
+      AMI_MCP_SERVER_NAME: serverName,
+      ...(config.url ? { AMI_MCP_SERVER_URL: config.url } : {}),
+    });
+    const trimmed = stdout.trim();
+    if (!trimmed) throw new Error('headersHelper produced no output');
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('headersHelper must return a JSON object of string header values');
+    }
+    const dynamic: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v !== 'string') throw new Error(`headersHelper returned a non-string value for "${k}"`);
+      dynamic[k] = v;
+    }
+    return { ...staticHeaders, ...dynamic };
+  } catch (err) {
+    coreLog('mcp', `headersHelper for "${serverName}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    return staticHeaders;
+  }
+}
+
 function resolveEnvVars(headers: Record<string, string>): Record<string, string> {
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
@@ -164,6 +240,13 @@ export class McpManager extends EventEmitter {
   private serverErrors = new Map<string, string>();
   /** Per-server non-fatal config diagnostics (e.g. unset referenced env vars) — H35. */
   private _configWarnings = new Map<string, string[]>();
+  /**
+   * Per-file FATAL config diagnostics — a config file that exists but could not be
+   * parsed (invalid JSON). Keyed by the config file path. A MISSING file is NOT an
+   * error (expected), but a malformed one is surfaced rather than silently swallowed
+   * so the user learns their `.mcp.json` is broken instead of just losing its servers.
+   */
+  private _configErrors = new Map<string, McpConfigError>();
   /**
    * M14 — names of PROJECT-tier MCP servers the user has approved. Seeded from a
    * persisted store by the integrator ({@link setApprovedServers}) and extended by
@@ -296,6 +379,16 @@ export class McpManager extends EventEmitter {
   /** All per-server config diagnostics as a map (for a /mcp diagnostics view). */
   getAllConfigWarnings(): Record<string, string[]> {
     return Object.fromEntries(this._configWarnings);
+  }
+
+  /**
+   * Fatal per-file config diagnostics: config files that exist but failed to parse.
+   * Surfaced in the /mcp diagnostics view so a broken `.mcp.json` is visible instead
+   * of silently dropping every server it declared (distinguishes malformed from
+   * missing — a missing file is expected and produces no error).
+   */
+  getConfigErrors(): McpConfigError[] {
+    return [...this._configErrors.values()];
   }
 
   /** True when a server should be blocked by the denylist (by name or URL). */
@@ -703,6 +796,11 @@ export class McpManager extends EventEmitter {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        // For http/sse servers with a headersHelper, refresh dynamic auth headers
+        // right before the handshake so rotating/short-lived tokens are current.
+        if (config?.headersHelper && (config.transport === 'http' || config.transport === 'sse')) {
+          client.setHeaders(await resolveMcpServerHeaders(name, config));
+        }
         if (config?.transport === 'http' && config.url) {
           await client.connectHTTP(config.url);
         } else if (config?.transport === 'sse' && config.url) {
@@ -984,6 +1082,7 @@ export class McpManager extends EventEmitter {
     this.reconnectTimers.clear();
     this.reconnectAttempts.clear();
     this._configWarnings.clear();
+    this._configErrors.clear();
     for (const client of this.clients.values()) {
       client.disconnect();
     }
@@ -1005,11 +1104,18 @@ export class McpManager extends EventEmitter {
    * For user/global-tier configs (the default), every server is added as before.
    */
   loadFromConfig(configPath: string, opts?: { projectScoped?: boolean }): void {
-    if (!fs.existsSync(configPath)) return;
+    // A missing config file is expected (silent); only a file that EXISTS but is
+    // malformed is a diagnosable error (surfaced below).
+    if (!fs.existsSync(configPath)) {
+      this._configErrors.delete(configPath);
+      return;
+    }
     try {
       const raw = fs.readFileSync(configPath, 'utf-8');
       const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
       const config = JSON.parse(stripped);
+      // Parsed cleanly — clear any stale parse error for this path.
+      this._configErrors.delete(configPath);
       const servers = config.mcpServers ?? config;
       if (typeof servers !== 'object') return;
 
@@ -1041,8 +1147,16 @@ export class McpManager extends EventEmitter {
         }
         this.addServer(name, expanded);
       }
-    } catch {
-      // Invalid config — skip silently
+    } catch (err) {
+      // The file exists but is malformed (invalid JSON). Surface it as a fatal
+      // diagnostic + event instead of silently dropping every server it declared,
+      // so the user can see and fix their broken config (vs. a missing file, which
+      // is expected and handled above).
+      const message = err instanceof Error ? err.message : String(err);
+      const diag: McpConfigError = { path: configPath, message, severity: 'fatal' };
+      this._configErrors.set(configPath, diag);
+      coreLog('mcp', `Failed to parse MCP config "${configPath}": ${message}`);
+      this.emit('config-error', diag);
     }
   }
 

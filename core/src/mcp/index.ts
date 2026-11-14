@@ -6,7 +6,7 @@ export type {
   McpLogLevel, McpLogMessage, McpCompletionRef, McpCompletionResult,
 } from './client';
 export { McpManager, findMcpConfigPaths } from './manager';
-export type { McpServerConfig, McpServerStatus } from './manager';
+export type { McpServerConfig, McpServerStatus, McpConfigError } from './manager';
 export {
   generatePkce, generateState, parseWwwAuthenticate, wellKnown,
   discoverProtectedResource, discoverAuthServer, registerClient,

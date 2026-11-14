@@ -125,17 +125,19 @@ describe('encodeImageFile – BMP transcoded to PNG', () => {
 describe('fileReadTool – base64 size boundary', () => {
   it('rejects an image whose base64 payload exceeds the API ceiling', async () => {
     const p = path.join(tmpDir, 'huge.png');
-    fs.writeFileSync(p, PNG);
     const original = imageHooks.loadSharp;
-    // Force encodeImageFile to produce an oversized payload by returning a giant
-    // buffer from the compression path.
+    // A giant payload whose base64 still exceeds the 5 MB API ceiling after every
+    // compression attempt, so execute() rejects it with an actionable error.
     const giant = Buffer.alloc(Math.ceil(API_IMAGE_MAX_BASE64_SIZE * 0.76));
     imageHooks.loadSharp = () => (_input: Buffer) => ({
-      resize: () => ({ jpeg: () => ({ toBuffer: async () => giant }) }),
-      png: () => ({ toBuffer: async () => giant }),
+      async metadata() { return { width: 1000, height: 1000, format: 'jpeg' }; },
+      resize() { return this; },
+      png() { return this; },
+      jpeg() { return this; },
+      async toBuffer() { return giant; },
     });
-    // Make the file big enough to enter the >512KB compression branch.
-    fs.writeFileSync(p, Buffer.concat([PNG, Buffer.alloc(600 * 1024)]));
+    // The on-disk file must exceed the raw target so compression actually runs.
+    fs.writeFileSync(p, Buffer.alloc(Math.ceil(API_IMAGE_MAX_BASE64_SIZE * 0.8)));
     try {
       const result = await fileReadTool.execute({ file_path: p }, ctx());
       assert.equal(result.isError, true);

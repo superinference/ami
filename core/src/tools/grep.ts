@@ -1,12 +1,34 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
+/** On WSL, filesystem I/O over the /mnt bridge is far slower — bump the default. */
+const WSL_RG_TIMEOUT = 60_000;
+/** Env override for the search timeout, in seconds. Mirrors Claude Code's CLAUDE_CODE_*. */
+const GREP_TIMEOUT_ENV = 'AMI_GREP_TIMEOUT_SECONDS';
+
+/** True when running under WSL (slow /mnt bridge), via distro env or kernel release. */
+export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
+  try { return /microsoft|wsl/i.test(os.release()); } catch { return false; }
+}
+
+/**
+ * Resolve the search timeout in ms: an explicit AMI_GREP_TIMEOUT_SECONDS override
+ * wins, else 60s on WSL (slow /mnt), else the 20s default. Mirrors Claude Code's
+ * platform-aware, env-overridable ripgrep timeout.
+ */
+export function grepTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number((env[GREP_TIMEOUT_ENV] ?? '').trim());
+  if (Number.isFinite(raw) && raw > 0) return raw * 1000;
+  return isWSL(env) ? WSL_RG_TIMEOUT : RG_TIMEOUT;
+}
 // Hard ceiling on bytes accumulated from a spawned searcher's stdout. A pattern
 // matching an enormous tree could otherwise stream gigabytes into memory before
 // the result is ever truncated to MAX_LINES (OOM / DoS). Once exceeded we stop
@@ -30,7 +52,7 @@ export const grepHooks: {
   searchFilesForPattern: typeof searchFilesForPattern;
 } = {
   spawn,
-  timeoutMs: RG_TIMEOUT,
+  timeoutMs: grepTimeoutMs(),
   killGraceMs: KILL_GRACE_MS,
   // Hoisted function declaration (defined later in this module).
   searchFilesForPattern,
@@ -235,7 +257,9 @@ export const grepTool: ToolDefinition = {
     }
 
     if (rgOutcome.timedOut) {
-      return { output: `Error: Search timed out after ${RG_TIMEOUT / 1000}s. Try a more specific pattern or path.`, isError: true };
+      const partial = partialOnTimeout(rgOutcome.output, resolved, pattern, headLimit, offset, outputMode);
+      if (partial) return partial;
+      return { output: `Error: Search timed out after ${grepHooks.timeoutMs / 1000}s. Try a more specific pattern or path.`, isError: true };
     }
 
     if (rgOutcome.output !== null) {
@@ -263,7 +287,9 @@ export const grepTool: ToolDefinition = {
     );
 
     if (grepOutcome.timedOut) {
-      return { output: `Error: Search timed out after ${RG_TIMEOUT / 1000}s. Try a more specific pattern or path.`, isError: true };
+      const partial = partialOnTimeout(grepOutcome.output, resolved, pattern, headLimit, offset, outputMode);
+      if (partial) return partial;
+      return { output: `Error: Search timed out after ${grepHooks.timeoutMs / 1000}s. Try a more specific pattern or path.`, isError: true };
     }
 
     if (grepOutcome.output !== null) {
@@ -407,7 +433,10 @@ function buildRgArgs(
   lineNumbers?: boolean,
   fixedStrings?: boolean,
 ): string[] {
-  const args = ['--color', 'never', '--max-columns', '500'];
+  // `--no-config` neutralizes ripgrep config injection: a planted RIPGREP_CONFIG_PATH
+  // (or ~/.ripgreprc) could otherwise inject flags (e.g. extra include globs) into
+  // every search. The child env also drops RIPGREP_CONFIG_PATH (see runSearch).
+  const args = ['--no-config', '--color', 'never', '--max-columns', '500'];
   // Literal search: match the query as a fixed string, not a regex.
   if (fixedStrings) args.push('-F');
 
@@ -502,9 +531,14 @@ export function runSearch(
 
     let child: ReturnType<typeof spawn>;
     try {
+      // Strip RIPGREP_CONFIG_PATH from the child env so a planted config file can't
+      // inject flags into the search (paired with the `--no-config` rg arg).
+      const childEnv = { ...process.env };
+      delete childEnv.RIPGREP_CONFIG_PATH;
       child = grepHooks.spawn(command, args, {
         cwd: context.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: childEnv,
       });
     } catch {
       resolve({ output: null });
@@ -611,6 +645,33 @@ export function runSearch(
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * On timeout, salvage any already-collected matches instead of discarding them:
+ * drop the last (possibly truncated) line, format the rest, and append a timeout
+ * note. Returns null when nothing usable was collected (caller errors out instead).
+ * Mirrors Claude Code's return-partial-results-on-timeout behavior.
+ */
+function partialOnTimeout(
+  output: string | null,
+  resolved: string,
+  pattern: string,
+  headLimit: number,
+  offset: number,
+  outputMode: string,
+): ToolResult | null {
+  if (!output) return null;
+  // Drop the last line (the process was killed mid-write, so it may be incomplete).
+  const lastNl = output.lastIndexOf('\n');
+  const complete = lastNl >= 0 ? output.slice(0, lastNl) : '';
+  if (!complete.trim()) return null;
+  const cleaned = complete.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
+  const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
+  if (!result.isError) {
+    result.output += `\n\n[Warning: search timed out after ${grepHooks.timeoutMs / 1000}s — partial results shown. Narrow the pattern or path for complete results.]`;
+  }
+  return result;
 }
 
 function isSuiteLogLine(line: string): boolean {

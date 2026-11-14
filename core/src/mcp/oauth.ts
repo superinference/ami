@@ -178,6 +178,15 @@ export interface OAuthTokens {
 export interface McpOAuthProvider {
   authorizationHeader(): Promise<string | null>;
   onUnauthorized(wwwAuthenticate: string | null): Promise<boolean>;
+  /**
+   * Step-up handler for a 403 `WWW-Authenticate: Bearer error="insufficient_scope",
+   * scope="…"`: the current token authenticated fine but lacks a scope the resource
+   * now requires. Drops the stale token (so a silent refresh can't re-mint the same
+   * insufficient scope) and drives a full re-consent requesting the union of the
+   * original and the newly-required scopes. Returns whether the request should be
+   * retried. A 403 that is NOT an insufficient_scope challenge returns false.
+   */
+  onForbidden(wwwAuthenticate: string | null): Promise<boolean>;
 }
 
 const base64url = (buf: Buffer): string =>
@@ -203,19 +212,41 @@ export function parseWwwAuthenticate(header: string | null | undefined): {
   resourceMetadata?: string;
   realm?: string;
   error?: string;
+  /** Space-delimited `scope` auth-param (RFC 6750 §3) — the scope the resource
+   *  requires, surfaced on a 403 `insufficient_scope` for step-up re-consent. */
+  scope?: string;
 } {
   if (!header) return {};
-  const out: { resourceMetadata?: string; realm?: string; error?: string } = {};
-  // Match key="value" pairs (RFC 7235 auth-param list).
-  const re = /(\w[\w-]*)\s*=\s*"([^"]*)"/g;
+  const out: { resourceMetadata?: string; realm?: string; error?: string; scope?: string } = {};
+  // Match key="value" (quoted) OR key=token (unquoted) pairs — RFC 7235 auth-param
+  // list; RFC 6750 permits an unquoted `scope` token.
+  const re = /(\w[\w-]*)\s*=\s*(?:"([^"]*)"|([^\s,]+))/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(header)) !== null) {
     const key = m[1].toLowerCase();
-    if (key === 'resource_metadata') out.resourceMetadata = m[2];
-    else if (key === 'realm') out.realm = m[2];
-    else if (key === 'error') out.error = m[2];
+    const value = m[2] ?? m[3] ?? '';
+    if (key === 'resource_metadata') out.resourceMetadata = value;
+    else if (key === 'realm') out.realm = value;
+    else if (key === 'error') out.error = value;
+    else if (key === 'scope') out.scope = value;
   }
   return out;
+}
+
+/**
+ * Union two space-delimited OAuth scope strings, preserving declared order and
+ * dropping duplicates/blanks. Used for 403 step-up: the newly-required scope is
+ * merged into the originally-requested scope so re-consent covers both. Returns
+ * undefined when the union is empty (so no `scope` param is sent).
+ */
+export function unionScopes(...scopes: Array<string | undefined>): string | undefined {
+  const seen = new Set<string>();
+  for (const s of scopes) {
+    for (const tok of (s ?? '').split(/\s+/)) {
+      if (tok) seen.add(tok);
+    }
+  }
+  return seen.size ? [...seen].join(' ') : undefined;
 }
 
 /**
@@ -568,6 +599,29 @@ export class McpOAuthSession implements McpOAuthProvider {
   }
 
   async onUnauthorized(wwwAuthenticate: string | null): Promise<boolean> {
+    return this.performAuthorization(wwwAuthenticate);
+  }
+
+  async onForbidden(wwwAuthenticate: string | null): Promise<boolean> {
+    const parsed = parseWwwAuthenticate(wwwAuthenticate);
+    // Only a genuine insufficient_scope challenge warrants a step-up re-consent.
+    // Any other 403 is a real authorization denial the user cannot resolve by
+    // re-consenting, so do not loop them through the browser.
+    if (parsed.error !== 'insufficient_scope') return false;
+    // Drop the stale token so authorizationHeader() cannot silently refresh the
+    // SAME insufficient scope and mask the step-up; force full interactive consent.
+    this.store.clear();
+    return this.performAuthorization(wwwAuthenticate, parsed.scope);
+  }
+
+  /**
+   * Shared consent flow for 401 (re)authorization and 403 step-up: discover the
+   * auth server, (dynamically register if needed), run interactive consent + PKCE
+   * code exchange, and cache the resulting tokens. `requiredScope` (from a 403
+   * challenge) is unioned with the configured/advertised scope so the new grant
+   * covers what the resource demanded.
+   */
+  private async performAuthorization(wwwAuthenticate: string | null, requiredScope?: string): Promise<boolean> {
     try {
       const parsed = parseWwwAuthenticate(wwwAuthenticate);
       const metadataUrl = parsed.resourceMetadata ?? wellKnown(this.opts.serverUrl, 'oauth-protected-resource');
@@ -592,6 +646,7 @@ export class McpOAuthSession implements McpOAuthProvider {
 
       const pkce = generatePkce();
       const state = generateState();
+      const scope = unionScopes(this.opts.scope ?? prm.scopesSupported?.join(' '), requiredScope);
       const authorizationUrl = buildAuthorizationUrl({
         authorizationEndpoint: this.authMeta.authorizationEndpoint,
         clientId: this.effectiveClientId,
@@ -599,7 +654,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         resource: this.resource,
         codeChallenge: pkce.challenge,
         state,
-        scope: this.opts.scope ?? prm.scopesSupported?.join(' '),
+        scope,
       });
       const { code } = await this.opts.authorize({ authorizationUrl, redirectUri, state });
       const tokens = await exchangeCode(this.fetch, {

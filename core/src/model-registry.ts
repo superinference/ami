@@ -242,26 +242,62 @@ async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {
   }));
 }
 
+// Models that have already validated (provider+baseUrl+id) are never re-probed.
+// Mirrors Claude's module-level validModelCache.
+const validModelCache = new Set<string>();
+
+export interface ValidateModelResult {
+  valid: boolean;
+  available: string[];
+  suggestion?: string;
+  /** Why validation could not confirm the model (when valid is false, or a
+   *  soft/transient failure that was allowed through). */
+  reason?: string;
+  /** Classified failure kind for context-specific messaging. */
+  errorKind?: 'auth' | 'network' | 'api' | 'none';
+}
+
+/** Classify a diagnoseModelDiscovery message into a failure kind. */
+function classifyDiscoveryDiagnostic(diagnostic: string | null): 'auth' | 'network' | 'api' | 'none' {
+  if (!diagnostic) return 'none';
+  if (/^Authentication failed/.test(diagnostic)) return 'auth';
+  if (/^Timed out reaching|^Could not reach/.test(diagnostic)) return 'network';
+  if (/endpoint not found|returned HTTP|non-JSON response/.test(diagnostic)) return 'api';
+  return 'none';
+}
+
 export async function validateModel(
   config: ProviderConfig,
   modelId: string,
-): Promise<{ valid: boolean; available: string[]; suggestion?: string }> {
-  const models = await listModels(config);
+): Promise<ValidateModelResult> {
+  const cacheKey = `${detectProvider(config)}:::${config.baseUrl ?? ''}:::${modelId}`;
+  if (validModelCache.has(cacheKey)) return { valid: true, available: [] };
+
+  const { models, diagnostic } = await listModelsDiagnostic(config);
 
   if (models.length === 0) {
-    // Can't validate — provider doesn't support listing or network error
-    return { valid: true, available: [] };
+    const errorKind = classifyDiscoveryDiagnostic(diagnostic);
+    // Authentication failure is definitive — the model cannot be used with these
+    // credentials, so do NOT fail open. A transient network/API error is soft:
+    // keep valid=true so a blip doesn't block a switch, but surface the reason.
+    if (errorKind === 'auth') {
+      return { valid: false, available: [], reason: diagnostic ?? undefined, errorKind };
+    }
+    return { valid: true, available: [], reason: diagnostic ?? undefined, errorKind };
   }
 
   const ids = models.map(m => m.id);
   const exact = ids.find(id => id === modelId);
-  if (exact) return { valid: true, available: ids };
+  if (exact) {
+    validModelCache.add(cacheKey);
+    return { valid: true, available: ids, errorKind: 'none' };
+  }
 
   // Try substring match
   const partial = ids.filter(id => id.includes(modelId) || modelId.includes(id));
   const suggestion = partial.length > 0 ? partial[0] : undefined;
 
-  return { valid: false, available: ids, suggestion };
+  return { valid: false, available: ids, suggestion, errorKind: 'none' };
 }
 
 export function formatModelList(models: string[], provider: string): string {

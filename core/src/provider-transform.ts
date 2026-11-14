@@ -177,5 +177,21 @@ export function healOrphanedToolCalls(messages: Message[]): Message[] {
     }
   }
 
+  // Resume safety: when the transcript began with an orphaned tool_result (whose
+  // assistant tool_call was removed by earlier compaction) and dropping it leaves
+  // the payload starting with an assistant turn — which the Anthropic API rejects
+  // (it must lead with a user message) — substitute a placeholder user turn to
+  // preserve role alternation. Mirrors Claude's "Orphaned tool result removed"
+  // repair. Scoped to that specific case so a slice that legitimately starts with
+  // an assistant turn is left untouched.
+  const first = messages[0];
+  const droppedLeadingOrphan = !!first && first.role === 'tool' && !issuedCallIds.has(first.tool_call_id);
+  if (droppedLeadingOrphan && result.length > 0 && result[0].role === 'assistant') {
+    result.unshift({
+      role: 'user',
+      content: '[Orphaned tool result removed due to conversation resume]',
+    });
+  }
+
   return result;
 }

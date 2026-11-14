@@ -13,6 +13,15 @@ describe('SuperInferenceConfig.criticModel', () => {
     const cfg: SuperInferenceConfig = { enabled: true, criticModel: 'cheap-reviewer' };
     assert.equal(cfg.criticModel, 'cheap-reviewer');
   });
+
+  it('DEFAULT_CONFIG makes the critic model user-configurable by default', () => {
+    assert.equal(DEFAULT_CONFIG.canUserConfigureCriticModel, true);
+  });
+
+  it('allows pinning the critic model (experiment-fixed) via canUserConfigureCriticModel=false', () => {
+    const cfg: SuperInferenceConfig = { enabled: true, criticModel: 'pinned', canUserConfigureCriticModel: false };
+    assert.equal(cfg.canUserConfigureCriticModel, false);
+  });
 });
 
 describe('CriticDecision unavailability discriminant', () => {
@@ -28,5 +37,15 @@ describe('CriticDecision unavailability discriminant', () => {
     // soften the belief floor instead of treating it as a substantive "no".
     assert.equal(unavailable.unavailable, true);
     assert.equal(unavailable.errorCode, 'ETIMEDOUT');
+  });
+
+  it('carries model attribution and a redacted-but-complete review state', () => {
+    // A redacted review is COMPLETE (score/approval stand) — distinct from unavailable.
+    const redacted: CriticDecision = {
+      approved: true, score: 0.82, model: 'reviewer-pro', redacted: true,
+    };
+    assert.equal(redacted.model, 'reviewer-pro');
+    assert.equal(redacted.redacted, true);
+    assert.equal(redacted.unavailable, undefined);
   });
 });

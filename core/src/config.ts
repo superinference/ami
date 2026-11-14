@@ -366,6 +366,44 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
 }
 
 // ---------------------------------------------------------------------------
+// Internal-write suppression (parity: Claude's changeDetector.ts
+// markInternalWrite / consumeInternalWrite). When AMI writes a config file
+// itself (a `/config` change, an atomic-write helper), the directory watcher
+// observes that write and would otherwise reload + fire a config-change
+// notification/hook — a self-triggered feedback loop. Every AMI-originated write
+// records its path+timestamp; a watcher that fires within INTERNAL_WRITE_WINDOW_MS
+// consumes the mark and swallows the event, so AMI's own writes never re-trigger.
+// ---------------------------------------------------------------------------
+
+/** Window (ms) during which a watcher event is attributed to AMI's own write. */
+export const INTERNAL_WRITE_WINDOW_MS = 5000;
+
+/** path.resolve(file) → timestamp of the last AMI-originated write. */
+const internalWrites = new Map<string, number>();
+
+/** Record that AMI itself is about to write `filePath` (suppresses the echo). */
+export function markInternalWrite(filePath: string, now: number = Date.now()): void {
+  internalWrites.set(path.resolve(filePath), now);
+}
+
+/**
+ * True when `filePath` has a pending internal-write mark within `windowMs`,
+ * consuming it so the watcher event that triggered it is swallowed exactly once.
+ * Stale marks (older than the window) are dropped and return false.
+ */
+export function consumeInternalWrite(
+  filePath: string,
+  windowMs: number = INTERNAL_WRITE_WINDOW_MS,
+  now: number = Date.now(),
+): boolean {
+  const key = path.resolve(filePath);
+  const marked = internalWrites.get(key);
+  if (marked === undefined) return false;
+  internalWrites.delete(key);
+  return now - marked <= windowMs;
+}
+
+// ---------------------------------------------------------------------------
 // Merge
 // ---------------------------------------------------------------------------
 
@@ -412,6 +450,10 @@ export class ConfigService {
 
       this.watcher = fsHooks.watch(dir, (eventType, filename) => {
         if (filename !== 'config.json') return;
+
+        // Swallow the echo of AMI's own write so it never self-triggers a reload
+        // + config-change notification (parity: changeDetector consumeInternalWrite).
+        if (consumeInternalWrite(this.configPath)) return;
 
         if (this.debounceTimer) clearTimeout(this.debounceTimer);
         this.debounceTimer = setTimeout(() => {
@@ -539,6 +581,14 @@ export function mergeConfigs(
   if (managedConfig?.managedMcpServers) {
     merged.managedMcpServers = managedConfig.managedMcpServers;
   }
+  // Sandbox exemptions weaken the container sandbox, so when managed policy owns
+  // them a lower (project/local) layer must not be able to add its own — parity:
+  // Claude's areSandboxSettingsLockedByPolicy refuses local sandbox changes once a
+  // higher-priority config owns the setting. (When managed does NOT set it, a
+  // project may still exempt commands, so this only overrides when present.)
+  if (managedConfig?.sandboxExcludedCommands) {
+    merged.sandboxExcludedCommands = managedConfig.sandboxExcludedCommands;
+  }
 
   return merged;
 }
@@ -646,6 +696,9 @@ export function validateConfigJson(content: string): { valid: boolean; error?: s
 export function safeWriteConfig(filePath: string, data: Record<string, unknown>): void {
   const tmpPath = filePath + '.tmp';
   const json = JSON.stringify(data, null, 2) + '\n';
+  // Attribute the imminent write to AMI so the config watcher does not reload +
+  // re-notify on its own echo (parity: changeDetector markInternalWrite).
+  markInternalWrite(filePath);
   try {
     const dir = path.dirname(filePath);
     if (!fsHooks.existsSync(dir)) {

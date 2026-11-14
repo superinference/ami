@@ -7,6 +7,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
+import { isEagainStderr } from './grep';
 
 const MAX_RESULTS = 100;
 // Cap the total joined output so a huge match set can't blow the context window.
@@ -56,25 +57,59 @@ export function isRipgrepGlobEnabled(env: NodeJS.ProcessEnv = process.env): bool
  * nothing, or `null` when rg is unavailable / errored (signal the caller to fall back).
  * Injectable via {@link globHooks.rgFiles} for tests (no real ripgrep needed).
  */
-function ripgrepFiles(pattern: string, cwd: string, ignore: string[], signal?: AbortSignal): Promise<string[] | null> {
+/** One `rg --files` run; resolves {result, eagain}. result is null on any non-empty error. */
+function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal): Promise<{ result: string[] | null; eagain: boolean }> {
   return new Promise((resolve) => {
-    const args = ['--files', '--no-ignore', '--hidden', '-g', pattern];
-    for (const ig of ignore) { args.push('-g', `!${ig}`); }
-    // Forward the turn's AbortSignal so a cancelled turn (Esc / engine abort) actually
-    // kills the running rg child instead of letting it run to completion.
-    globHooks.execFileImpl('rg', args, { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 15_000, signal }, (err, stdout) => {
-      if (err) {
-        // rg exits 1 when it matched no files (valid empty result); any other error
-        // (ENOENT = not installed, non-zero crash) means "can't use rg" → fall back.
-        // execFile sets `code` to the numeric exit code on non-zero exit, or a string
-        // like 'ENOENT' when the binary is missing.
-        const code = (err as { code?: number | string }).code;
-        resolve(code === 1 ? [] : null);
-        return;
-      }
-      resolve(stdout.split('\n').map(l => l.trim()).filter(Boolean));
-    });
+    const timeoutMs = globHooks.timeoutMs;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let done = false;
+    const finish = (result: string[] | null, eagain: boolean) => {
+      if (done) return;
+      done = true;
+      if (killTimer) clearTimeout(killTimer);
+      resolve({ result, eagain });
+    };
+    // Env-configurable timeout (AMI_GLOB_TIMEOUT_SECONDS via globHooks.timeoutMs): on
+    // expiry execFile sends SIGTERM (killSignal). Forward the turn's AbortSignal too so
+    // a cancelled turn (Esc / engine abort) kills the running rg child.
+    const child = globHooks.execFileImpl(
+      'rg',
+      args,
+      { cwd, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGTERM', signal },
+      (err, stdout, stderr) => {
+        if (err) {
+          // rg exits 1 when it matched no files (valid empty result); any other error
+          // (ENOENT = not installed, non-zero crash, SIGTERM/SIGKILL on timeout) means
+          // "can't use rg" → fall back. execFile sets `code` to the numeric exit code,
+          // or a string like 'ENOENT' when the binary is missing. A thread-spawn EAGAIN
+          // (os error 11, common in constrained Docker/CI) is retried single-threaded.
+          const code = (err as { code?: number | string }).code;
+          finish(code === 1 ? [] : null, isEagainStderr(String(stderr ?? '')));
+          return;
+        }
+        finish(stdout.split('\n').map(l => l.trim()).filter(Boolean), false);
+      },
+    );
+    // Escalate SIGTERM → SIGKILL: a wedged rg can ignore SIGTERM, so force-kill after a
+    // short grace period past the timeout to guarantee the child dies (mirrors grep.ts).
+    if (!done && timeoutMs > 0 && child && typeof child.kill === 'function') {
+      killTimer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      }, timeoutMs + globHooks.sigkillGraceMs);
+      if (typeof killTimer.unref === 'function') killTimer.unref();
+    }
   });
+}
+
+async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], signal?: AbortSignal): Promise<string[] | null> {
+  const args = ['--files', '--no-ignore', '--hidden', '-g', pattern];
+  for (const ig of ignore) { args.push('-g', `!${ig}`); }
+  let r = await runRipgrepFiles(args, cwd, signal);
+  // Thread-spawn exhaustion (EAGAIN): retry once single-threaded before giving up.
+  if (r.result === null && r.eagain) {
+    r = await runRipgrepFiles([...args, '-j', '1'], cwd, signal);
+  }
+  return r.result;
 }
 
 /**
@@ -89,7 +124,9 @@ export const globHooks: {
   rgFiles: (pattern: string, cwd: string, ignore: string[], signal?: AbortSignal) => Promise<string[] | null>;
   execFileImpl: typeof execFile;
   timeoutMs: number;
-} = { glob, rgFiles: ripgrepFiles, execFileImpl: execFile, timeoutMs: globTimeoutMs() };
+  /** Grace period after the SIGTERM timeout before escalating to SIGKILL on the rg child. */
+  sigkillGraceMs: number;
+} = { glob, rgFiles: ripgrepFiles, execFileImpl: execFile, timeoutMs: globTimeoutMs(), sigkillGraceMs: 2_000 };
 
 export const globTool: ToolDefinition = {
   name: 'glob',

@@ -5,6 +5,7 @@ import type {
   EngineConfig, SessionId, AgentId, NotificationChannel, ToolDefinition, ToolValidationResult,
   ToolAccessClassification, AutoModeConfig, UserMessage, AssistantMessage, SystemMessage,
   MessageOrigin, ToolResult, DiffHunk, EngineSubmitOptions, UserQuestionOption,
+  UsageStats, StreamChunk, EngineEvent, TaskUsageSnapshot, TaskTerminalStatus, ServiceTier,
 } from '../src/types';
 
 function cfg(overrides: Partial<EngineConfig> = {}): EngineConfig {
@@ -281,6 +282,89 @@ describe('ToolResult structured patch + partial-read tracking', () => {
     const hunk: DiffHunk = { oldStart: 1, oldLines: 2, newStart: 1, newLines: 3, lines: ['-a', '+a', '+b'] };
     const r: ToolResult = { output: 'edited', structuredPatch: [hunk] };
     assert.equal(r.structuredPatch?.[0].newLines, 3);
+  });
+});
+
+describe('UsageStats service-tier + server-tool-use parity fields', () => {
+  it('carries service_tier and per-web-tool server request counters', () => {
+    const tier: ServiceTier = 'priority';
+    const u: UsageStats = {
+      promptTokens: 10, completionTokens: 5, reasoningTokens: 0, totalTokens: 15,
+      totalCost: 0.01, requestCount: 1, toolCallCount: 0, turnCount: 1,
+      serviceTier: tier, webSearchRequests: 3, webFetchRequests: 2,
+    };
+    assert.equal(u.serviceTier, 'priority');
+    assert.equal(u.webSearchRequests, 3);
+    assert.equal(u.webFetchRequests, 2);
+    // Parity fields are optional — a bare usage record still type-checks.
+    const bare: UsageStats = {
+      promptTokens: 0, completionTokens: 0, reasoningTokens: 0, totalTokens: 0,
+      totalCost: 0, requestCount: 0, toolCallCount: 0, turnCount: 0,
+    };
+    assert.equal(bare.serviceTier, undefined);
+  });
+
+  it('StreamChunk.usage surfaces the same provider-mapped service-tier/server-tool counters', () => {
+    const chunk: StreamChunk = {
+      type: 'done',
+      usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+        serviceTier: 'batch', webSearchRequests: 1, webFetchRequests: 0,
+      },
+    };
+    assert.equal(chunk.usage?.serviceTier, 'batch');
+    assert.equal(chunk.usage?.webSearchRequests, 1);
+  });
+});
+
+describe('Message visibility + paste-id parity fields', () => {
+  it('UserMessage carries isVisibleInTranscriptOnly (distinct from isMeta) and imagePasteIds', () => {
+    const m: UserMessage = {
+      role: 'user', content: 'see [Image #1]',
+      isVisibleInTranscriptOnly: true, imagePasteIds: [1, 2],
+    };
+    // Transcript-only is a THIRD visibility state — it is not isMeta.
+    assert.equal(m.isVisibleInTranscriptOnly, true);
+    assert.equal(m.isMeta, undefined);
+    assert.deepEqual(m.imagePasteIds, [1, 2]);
+    // "synthetic" = isMeta || isVisibleInTranscriptOnly (Claude's mapper rule).
+    const synthetic = Boolean(m.isMeta || m.isVisibleInTranscriptOnly);
+    assert.equal(synthetic, true);
+  });
+
+  it('SystemMessage inherits the transcript-only visibility flag via TranscriptMeta', () => {
+    const s: SystemMessage = { role: 'system', content: 'note', isVisibleInTranscriptOnly: true };
+    assert.equal(s.isVisibleInTranscriptOnly, true);
+  });
+});
+
+describe('subagent EngineEvent task-usage/terminal-status parity fields', () => {
+  it('subagent_result carries a three-state terminal status + tool_uses/duration_ms', () => {
+    const status: TaskTerminalStatus = 'stopped';
+    const ev: EngineEvent = {
+      type: 'subagent_result', nodeId: 'n1', depth: 1, success: false,
+      summary: 'aborted by user', tokens: 1234, status, toolUses: 7, durationMs: 4200,
+    };
+    assert.equal(ev.type, 'subagent_result');
+    if (ev.type === 'subagent_result') {
+      // status discriminates abort ('stopped') from a genuine failure ('failed').
+      assert.equal(ev.status, 'stopped');
+      assert.equal(ev.toolUses, 7);
+      assert.equal(ev.durationMs, 4200);
+    }
+  });
+
+  it('subagent_progress carries a live usage snapshot + lastToolName', () => {
+    const usage: TaskUsageSnapshot = { totalTokens: 500, toolUses: 2, durationMs: 1500 };
+    const ev: EngineEvent = {
+      type: 'subagent_progress', nodeId: 'n1', depth: 1, activity: 'tool',
+      detail: 'running bash', usage, lastToolName: 'bash',
+    };
+    if (ev.type === 'subagent_progress') {
+      assert.equal(ev.usage?.totalTokens, 500);
+      assert.equal(ev.usage?.toolUses, 2);
+      assert.equal(ev.lastToolName, 'bash');
+    }
   });
 });
 

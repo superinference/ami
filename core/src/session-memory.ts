@@ -16,6 +16,37 @@ export interface SessionFact {
 export const MAX_MEMORY_ENTRIES = 100;
 export const MAX_MEMORY_ENTRY_CHARS = 2000;
 
+/** The incremental window of messages to run a memory-extraction pass over, plus
+ *  the cursor the caller should persist AFTER a successful extraction (parity:
+ *  Claude's UUID-cursor extractMemories). Advancing only on success means a failed
+ *  pass is retried over the same window next turn rather than silently skipped. */
+export interface IncrementalWindow {
+  window: Message[];
+  /** uuid of the newest message carrying one — the cursor to persist on success. */
+  nextCursor?: string;
+}
+
+/**
+ * Compute the incremental extraction window: every message AFTER the one whose
+ * `uuid` equals `cursorUuid`. When the cursor is absent, or no longer present in
+ * the transcript (compaction dropped it), fall back to the FULL transcript so no
+ * context is silently skipped. `nextCursor` is the uuid of the last message that
+ * has one, so a uuid-less trailing message does not reset the cursor. The caller
+ * persists `nextCursor` only after the extraction succeeds (advance-only-on-success).
+ */
+export function selectIncrementalWindow(messages: Message[], cursorUuid?: string): IncrementalWindow {
+  let lastUuid: string | undefined;
+  for (const m of messages) if (m.uuid) lastUuid = m.uuid;
+
+  let window = messages;
+  if (cursorUuid !== undefined) {
+    const idx = messages.findIndex(m => m.uuid === cursorUuid);
+    // idx === -1 → cursor compacted away: fall back to the full transcript.
+    if (idx !== -1) window = messages.slice(idx + 1);
+  }
+  return { window, nextCursor: lastUuid };
+}
+
 const SUSPICIOUS_PATTERNS = [
   /<script/i,
   /javascript:/i,

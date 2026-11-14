@@ -215,6 +215,32 @@ describe('CronScheduler.isDisabled kill-switch', () => {
   });
 });
 
+describe('CronScheduler.isDurableEnabled kill-switch', () => {
+  afterEach(() => { delete process.env.AMI_DISABLE_DURABLE_CRON; delete process.env.CLAUDE_CODE_DISABLE_DURABLE_CRON; });
+  it('allows durable persistence by default', () => {
+    assert.equal(CronScheduler.isDurableEnabled(), true);
+  });
+  it('is gated off by AMI_DISABLE_DURABLE_CRON', () => {
+    process.env.AMI_DISABLE_DURABLE_CRON = '1';
+    assert.equal(CronScheduler.isDurableEnabled(), false);
+  });
+  it('is gated off by CLAUDE_CODE_DISABLE_DURABLE_CRON', () => {
+    process.env.CLAUDE_CODE_DISABLE_DURABLE_CRON = 'true';
+    assert.equal(CronScheduler.isDurableEnabled(), false);
+  });
+  it('degrades a requested durable job to session-only when gated off', () => {
+    process.env.AMI_DISABLE_DURABLE_CRON = '1';
+    const s = new CronScheduler(dir, 's');
+    const j = s.create({ cron: '0 9 * * *', prompt: 'p', durable: true });
+    assert.equal(j.durable, false);
+  });
+  it('honors a durable job when the gate is enabled', () => {
+    const s = new CronScheduler(dir, 's');
+    const j = s.create({ cron: '0 9 * * *', prompt: 'p', durable: true });
+    assert.equal(j.durable, true);
+  });
+});
+
 describe('CronScheduler — safeComputeNextRun', () => {
   it('returns null instead of throwing on a structurally invalid cron', () => {
     const s = new CronScheduler(dir, 's');

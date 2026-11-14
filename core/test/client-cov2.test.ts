@@ -1262,4 +1262,44 @@ describe('OAuth 2.1 HTTP integration', () => {
     await assert.rejects(() => (c as unknown as { sendHttpRequest: (m: string, p: object) => Promise<unknown> }).sendHttpRequest('tools/list', {}));
     assert.equal(calls, 2); // original + one retry, then no further re-auth
   });
+
+  it('steps up on a 403 insufficient_scope and retries once on success (H23)', async () => {
+    let calls = 0; let sawWww: string | null = null;
+    const { url } = await initServer((msg, _req, res) => {
+      calls++;
+      if (calls === 1) {
+        res.statusCode = 403;
+        res.setHeader('WWW-Authenticate', 'Bearer error="insufficient_scope", scope="admin"');
+        res.end(JSON.stringify({ error: 'forbidden' }));
+      } else {
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { ok: true } }));
+      }
+    });
+    const oauth = {
+      authorizationHeader: async () => null,
+      onUnauthorized: async () => false,
+      onForbidden: async (www: string | null) => { sawWww = www; return true; },
+    };
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000, oauth }));
+    await c.connectHTTP(url);
+    const result = await (c as unknown as { sendHttpRequest: (m: string, p: object) => Promise<unknown> }).sendHttpRequest('tools/list', {});
+    assert.deepEqual(result, { ok: true });
+    assert.match(sawWww!, /insufficient_scope/);
+    assert.equal(calls, 2);
+  });
+
+  it('rejects when a 403 step-up is declined (non-insufficient_scope denial) (H23)', async () => {
+    const { url } = await initServer((_msg, _req, res) => { res.statusCode = 403; res.end(JSON.stringify({ error: 'denied' })); });
+    const oauth = {
+      authorizationHeader: async () => null,
+      onUnauthorized: async () => false,
+      onForbidden: async () => false,
+    };
+    const c = track(new McpClient({ command: 'x', args: [], connectTimeout: 3000, requestTimeout: 3000, oauth }));
+    await c.connectHTTP(url);
+    await assert.rejects(
+      () => (c as unknown as { sendHttpRequest: (m: string, p: object) => Promise<unknown> }).sendHttpRequest('tools/list', {}),
+      /403 Forbidden/,
+    );
+  });
 });

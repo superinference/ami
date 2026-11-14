@@ -112,8 +112,23 @@ function hasOneMillionMarker(modelId: string): boolean {
  * reject it. The id may carry a gateway prefix (e.g.
  * `openrouter/anthropic/claude-sonnet-4-5`), so the match is unanchored.
  */
+/**
+ * Operator kill-switch to force-disable the Anthropic 1M-context window
+ * (compliance / cost control), independent of model detection. When set, the
+ * `context-1m-2025-08-07` beta is never requested AND the local context budget
+ * falls back to the model's base (200k) window, so compaction timing matches
+ * what the endpoint will actually serve. Read at call time so it can be toggled
+ * per-process/test. Mirrors Claude's is1mContextDisabled env gate.
+ */
+export function is1mContextDisabled(): boolean {
+  const v = process.env.SUPERINFERENCE_DISABLE_1M_CONTEXT;
+  if (!v) return false;
+  return /^(1|true|yes)$/i.test(v.trim());
+}
+
 export function supportsOneMillionContextBeta(modelId: string): boolean {
   if (typeof modelId !== 'string' || !modelId) return false;
+  if (is1mContextDisabled()) return false;
   return /claude-sonnet-(?:[4-9]|\d{2,})/i.test(modelId);
 }
 
@@ -124,7 +139,7 @@ export function getContextWindow(modelId: string): number {
   // `context-1m-2025-08-07` beta (Sonnet 4+). In the latter case the endpoint
   // actually serves a 1M window with no id marker, so the local budget must match
   // or compaction fires far too early. Mirrors Claude's betas+modelSupports1M path.
-  const oneMillion = hasOneMillionMarker(modelId) || supportsOneMillionContextBeta(modelId);
+  const oneMillion = !is1mContextDisabled() && (hasOneMillionMarker(modelId) || supportsOneMillionContextBeta(modelId));
   for (const [key, tokens] of Object.entries(CONTEXT_WINDOWS)) {
     const keyLower = key.toLowerCase();
     const idx = lower.indexOf(keyLower);

@@ -20,6 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { execSync } from 'child_process';
 import { assertPathWithin } from './path-safety';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
@@ -107,6 +108,91 @@ export function resolveReadDirs(env: NodeJS.ProcessEnv = process.env): string[] 
  * short deterministic hash of the raw cwd. (Mirrors the reference's slug cap.)
  */
 export const MAX_SLUG_LENGTH = 200;
+
+/**
+ * Canonicalize a filesystem path before it is used to derive a stable project
+ * identity (parity: Claude's canonicalizePath). Two things make the RAW cwd an
+ * unstable key: symlinks (two paths that are the same directory) and Unicode
+ * normalization (the same name encoded NFC vs NFD slugs differently). We resolve
+ * the deepest existing ancestor via `realpathSync` (re-joining any not-yet-existing
+ * tail) and NFC-normalize the result. A path that cannot be resolved at all
+ * (never existed) falls back to its NFC form so the function is total and pure for
+ * non-existent inputs (keeps `projectSlug` deterministic for fabricated paths).
+ */
+export function canonicalizePath(p: string): string {
+  let dir = p;
+  const tail: string[] = [];
+  // Walk up to the deepest ancestor that exists on disk, then realpath it.
+  for (let i = 0; i < 4096; i++) {
+    try {
+      const real = fs.realpathSync(dir);
+      return (tail.length ? path.join(real, ...tail.reverse()) : real).normalize('NFC');
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) break; // reached the root without an existing ancestor
+      tail.push(path.basename(dir));
+      dir = parent;
+    }
+  }
+  return p.normalize('NFC');
+}
+
+/** Memoize the expensive git-root resolution per input cwd — `projectStateDir`
+ *  and friends are called many times per turn and must not re-spawn `git`. */
+const _gitRootCache = new Map<string, string>();
+
+/** Hard ceiling so a wedged git invocation can never hang project-path resolution. */
+const GIT_ROOT_TIMEOUT_MS = 2_000;
+
+/**
+ * Resolve `cwd` to the canonical MAIN git-worktree root so EVERY worktree (and
+ * every subdirectory) of one repository shares a single project identity —
+ * memory, sessions and checkpoints follow the repo, not the exact directory you
+ * happened to `cd` into (parity: Claude's findCanonicalGitRoot, fixing
+ * per-worktree / per-subdir state fragmentation).
+ *
+ * `git rev-parse --git-common-dir` returns the SHARED .git directory even from a
+ * linked worktree, so its parent is the main worktree root; we fall back to
+ * `--show-toplevel` (current worktree root) and finally to {@link canonicalizePath}
+ * of the cwd when `cwd` is not inside a git repo. Result is canonicalized and
+ * cached. Never throws.
+ */
+export function canonicalGitRoot(cwd: string): string {
+  const cached = _gitRootCache.get(cwd);
+  if (cached !== undefined) return cached;
+  const resolved = resolveGitRootUncached(cwd);
+  _gitRootCache.set(cwd, resolved);
+  return resolved;
+}
+
+function runGit(args: string, cwd: string): string | null {
+  try {
+    const out = execSync(`git ${args}`, {
+      cwd,
+      encoding: 'utf-8',
+      timeout: GIT_ROOT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveGitRootUncached(cwd: string): string {
+  const commonDir = runGit('rev-parse --path-format=absolute --git-common-dir', cwd);
+  if (commonDir) {
+    // `<root>/.git` for the main worktree (and the SHARED path for linked
+    // worktrees) → the repo root is its parent. A bare repo (git-common-dir is
+    // the repo dir itself, not ending in `.git`) keeps the dir as its identity.
+    const root = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : commonDir;
+    return canonicalizePath(root);
+  }
+  const top = runGit('rev-parse --show-toplevel', cwd);
+  if (top) return canonicalizePath(top);
+  return canonicalizePath(cwd);
+}
 
 /** Project slug: the dashboard derives a per-cwd folder by replacing non-alphanumerics with '-'.
  *  A slug over {@link MAX_SLUG_LENGTH} is truncated and suffixed with an 8-hex-char
