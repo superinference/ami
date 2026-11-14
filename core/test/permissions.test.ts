@@ -1243,11 +1243,19 @@ describe('PermissionManager — env var prefix stripping (Gap #8)', () => {
     assert.equal(await pm.check('bash', { command: 'A=1 B=2 C=3 python evil.py' }), 'deny');
   });
 
-  it('allow rule matches command behind env var prefix', async () => {
+  it('allow rule matches command behind a SAFE env var prefix only', async () => {
     const pm = new PermissionManager('ask', [
       { tool: 'bash', pattern: 'git *', action: 'allow' },
     ]);
-    assert.equal(await pm.check('bash', { command: 'GIT_DIR=/foo git status' }), 'allow');
+    // A provably-harmless env var (SAFE_ENV_VARS) is stripped, so the allow matches.
+    assert.equal(await pm.check('bash', { command: 'NODE_ENV=prod git status' }), 'allow');
+    // An escalation-vector env var (GIT_DIR redirects git to an arbitrary repo and
+    // runs its hooks/config; PATH/LD_PRELOAD hijack lookup) is NOT in the safe list,
+    // so it stays in the command and breaks the allow match → prompt. Deny/ask rules
+    // still strip ALL env vars (see deny tests above). Mirrors Claude's safe-list
+    // allow stripping vs strip-all deny.
+    assert.equal(await pm.check('bash', { command: 'GIT_DIR=/foo git status' }), 'ask');
+    assert.equal(await pm.check('bash', { command: 'PATH=/evil git status' }), 'ask');
   });
 
   it('allow rule rejects compound command with env prefix when second part does not match', async () => {
@@ -1314,11 +1322,17 @@ describe('PermissionManager — shell wrapper stripping (Gap #66)', () => {
     assert.equal(await pm.check('bash', { command: 'nice sudo python script.py' }), 'deny');
   });
 
-  it('allow rule matches command behind env wrapper', async () => {
+  it('allow rule does NOT match command behind a privilege/shell wrapper', async () => {
     const pm = new PermissionManager('ask', [
       { tool: 'bash', pattern: 'git *', action: 'allow' },
     ]);
-    assert.equal(await pm.check('bash', { command: 'env git status' }), 'allow');
+    // Wrappers (env/sudo/bash/eval) are stripped for DENY matching (see deny tests
+    // above) but NEVER for allow — auto-approving `env git status` under `git *`
+    // would silently grant the wrapped/escalated form. It must prompt instead.
+    assert.equal(await pm.check('bash', { command: 'env git status' }), 'ask');
+    assert.equal(await pm.check('bash', { command: 'sudo git status' }), 'ask');
+    // the bare inner command still matches the allow rule
+    assert.equal(await pm.check('bash', { command: 'git status' }), 'allow');
   });
 
   it('allow rule rejects when inner command does not match', async () => {

@@ -523,6 +523,22 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
     assert.equal(merged.maxEffortLevel, 'low');
   });
 
+  it('makes managed sandboxExcludedCommands authoritative over project/local/cli', () => {
+    const merged = mergeConfigs(
+      { sandboxExcludedCommands: ['cli-cmd'] },     // cliArgs (should NOT win)
+      {},
+      { sandboxExcludedCommands: ['project-cmd'] }, // projectConfig (should NOT win)
+      null,
+      { sandboxExcludedCommands: ['local-cmd'] },   // localConfig (should NOT win)
+      { sandboxExcludedCommands: ['managed-only'] },// managedConfig (authoritative)
+    );
+    assert.deepEqual(merged.sandboxExcludedCommands, ['managed-only']);
+  });
+  it('lets project set sandboxExcludedCommands when managed does NOT own it', () => {
+    const merged = mergeConfigs({}, {}, { sandboxExcludedCommands: ['project-cmd'] }, null, null, { model: 'x' });
+    assert.deepEqual(merged.sandboxExcludedCommands, ['project-cmd']);
+  });
+
   it('merges env blocks key-wise across layers (higher priority wins per key)', () => {
     const merged = mergeConfigs(
       {},

@@ -140,6 +140,21 @@ describe('cron tool wrappers — parity enhancements', () => {
     }
   });
 
+  it('cron_create degrades a durable request to session-only when durable persistence is gated off', async () => {
+    resetSched();
+    process.env.AMI_DISABLE_DURABLE_CRON = '1';
+    try {
+      const r = await cronCreateTool.execute!({ cron: '0 9 * * *', prompt: 'durable-degrade-test', durable: true }, ctxFor());
+      assert.equal(r.isError, undefined);
+      assert.match(r.output, /Durable: false/);
+      assert.match(r.output, /disabled by operator policy/);
+      const job = getScheduler(dir).list().find(j => j.prompt === 'durable-degrade-test')!;
+      assert.equal(job.durable, false);
+    } finally {
+      delete process.env.AMI_DISABLE_DURABLE_CRON;
+    }
+  });
+
   it('cron_create tags a job with the calling agentId', async () => {
     resetSched();
     await cronCreateTool.execute!({ cron: '0 9 * * *', prompt: 'mine-tag' }, ctxFor({ agentId: 'a1' }));

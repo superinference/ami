@@ -1796,7 +1796,9 @@ function jitteredDelay(delayMs: number): number {
 // Retry logic with exponential backoff
 // ---------------------------------------------------------------------------
 
-const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 529]);
+// 408 (request timeout) and 409 (lock timeout/conflict) are transient and worth
+// a retry, matching Claude's shouldRetry (parity gap).
+const RETRYABLE_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 529]);
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 1000;
 
@@ -1845,12 +1847,34 @@ export function isNetworkError(err: unknown): boolean {
 // SSL/TLS certificate error detection — fail fast with actionable hints
 // ---------------------------------------------------------------------------
 
+// OpenSSL/TLS failure codes treated as (non-retryable) certificate/handshake
+// errors. Mirrors Claude's SSL_ERROR_CODES breadth so a wrong-version /
+// handshake-timeout / revoked-cert failure is classified as SSL rather than a
+// generic network error.
 const SSL_ERROR_CODES = new Set([
+  // Certificate verification
   'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_SIGNATURE_FAILURE',
+  'CERT_NOT_YET_VALID',
   'CERT_HAS_EXPIRED',
+  'CERT_REVOKED',
+  'CERT_REJECTED',
+  'CERT_UNTRUSTED',
+  // Self-signed
   'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'ERR_TLS_CERT_ALTNAME_INVALID',
   'SELF_SIGNED_CERT_IN_CHAIN',
+  // Chain
+  'CERT_CHAIN_TOO_LONG',
+  'PATH_LENGTH_EXCEEDED',
+  // Hostname / altname
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'HOSTNAME_MISMATCH',
+  // TLS handshake
+  'ERR_TLS_HANDSHAKE_TIMEOUT',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
 ]);
 
 export function isSslError(err: unknown): boolean {

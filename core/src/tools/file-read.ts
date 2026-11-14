@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { execFile } from 'child_process';
 import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
@@ -12,8 +14,95 @@ import { suggestSimilarPaths } from './path-suggest';
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
 const MAX_FILE_READ_TOKENS = 25_000;
+/**
+ * Per-cell combined-output size (chars of text + image base64) above which a
+ * notebook cell's outputs are replaced with a `jq` escape-hatch hint instead of
+ * being inlined — a DoS / context-budget guard. Mirrors Claude Code's
+ * LARGE_OUTPUT_THRESHOLD (utils/notebook.ts).
+ */
+const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
 /** Raw-size cap for PDFs, read into memory whole for text extraction (DoS guard). */
 const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024; // 20 MB
+/** Max PDF pages to render to images when falling back to pdftoppm (context guard). */
+const MAX_PDF_RENDER_PAGES = 10;
+
+/**
+ * Process-lifetime cache of whether the `pdftoppm` binary (poppler-utils) is
+ * available, so the image-fallback probe runs at most once per process. Mirrors
+ * Claude Code's pdftoppmAvailable cache.
+ */
+let pdftoppmAvailable: boolean | undefined;
+
+/** Reset the pdftoppm availability cache (tests only). */
+export function resetPdftoppmCache(): void {
+  pdftoppmAvailable = undefined;
+}
+
+/**
+ * Indirection seam for the pdftoppm child process (poppler-utils). Tests swap
+ * `execFile` to exercise the availability probe + page-render branches without a
+ * real poppler install. Production spawns the real binary.
+ */
+export const pdfHooks: {
+  execFile: (cmd: string, args: string[], opts: { timeout: number }) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+} = {
+  execFile: (cmd, args, opts) => new Promise((resolve) => {
+    execFile(cmd, args, { timeout: opts.timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const code = err
+        ? (typeof (err as { code?: number }).code === 'number' ? (err as { code: number }).code : 1)
+        : 0;
+      resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+    });
+  }),
+};
+
+/**
+ * Whether `pdftoppm` is available (cached for the process lifetime). pdftoppm
+ * prints its version to stderr and exits 0 (or a nonzero on older builds), so a
+ * nonempty stderr also counts as available. Mirrors Claude Code's isPdftoppmAvailable.
+ */
+export async function isPdftoppmAvailable(): Promise<boolean> {
+  if (pdftoppmAvailable !== undefined) return pdftoppmAvailable;
+  try {
+    const { code, stderr } = await pdfHooks.execFile('pdftoppm', ['-v'], { timeout: 5000 });
+    pdftoppmAvailable = code === 0 || stderr.length > 0;
+  } catch {
+    pdftoppmAvailable = false;
+  }
+  return pdftoppmAvailable;
+}
+
+/**
+ * Render PDF pages to JPEG images via pdftoppm (poppler-utils), returning them as
+ * base64 image blocks. Used as a fallback for scanned/image-only PDFs that yield no
+ * extractable text. Returns [] when pdftoppm is unavailable or produced nothing.
+ * Mirrors Claude Code's extractPDFPages (pdftoppm -jpeg -r 100 -f/-l).
+ */
+export async function renderPdfPagesToImages(
+  filePath: string,
+  opts?: { firstPage?: number; lastPage?: number },
+): Promise<ImageContent[]> {
+  if (!(await isPdftoppmAvailable())) return [];
+  const outputDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ami-pdf-'));
+  try {
+    const prefix = path.join(outputDir, 'page');
+    const args = ['-jpeg', '-r', '100'];
+    if (opts?.firstPage) args.push('-f', String(opts.firstPage));
+    if (opts?.lastPage && Number.isFinite(opts.lastPage)) args.push('-l', String(opts.lastPage));
+    args.push(filePath, prefix);
+    const { code } = await pdfHooks.execFile('pdftoppm', args, { timeout: 120_000 });
+    if (code !== 0) return [];
+    const entries = (await fs.promises.readdir(outputDir)).filter(f => f.endsWith('.jpg')).sort();
+    const images: ImageContent[] = [];
+    for (const f of entries) {
+      const buf = await fs.promises.readFile(path.join(outputDir, f));
+      images.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: buf.toString('base64') } });
+    }
+    return images;
+  } finally {
+    await fs.promises.rm(outputDir, { recursive: true, force: true }).catch(() => { /* best-effort cleanup */ });
+  }
+}
 
 /**
  * Security control that travels WITH untrusted file content: a planted file must
@@ -206,53 +295,246 @@ export const imageHooks: { loadSharp: () => any } = {
 };
 
 /**
+ * Max pixel dimensions the provider accepts for an image. Larger images are
+ * downscaled (aspect-preserving) before encoding. Mirrors Claude Code's
+ * IMAGE_MAX_WIDTH / IMAGE_MAX_HEIGHT.
+ */
+export const IMAGE_MAX_WIDTH = 2000;
+export const IMAGE_MAX_HEIGHT = 2000;
+/**
+ * Target raw (pre-base64) byte size for an encoded image: base64 inflates by 4/3,
+ * so the raw budget is 3/4 of the 5 MB base64 API ceiling. Mirrors Claude Code's
+ * IMAGE_TARGET_RAW_SIZE.
+ */
+export const IMAGE_TARGET_RAW_SIZE = Math.floor((API_IMAGE_MAX_BASE64_SIZE * 3) / 4);
+
+/** Original vs. displayed pixel dimensions, used for coordinate mapping. */
+export interface ImageDimensions {
+  originalWidth?: number;
+  originalHeight?: number;
+  displayWidth?: number;
+  displayHeight?: number;
+}
+
+/** Result of compressing/encoding an image buffer. */
+export interface CompressedImage {
+  /** Base64-encoded payload. */
+  base64: string;
+  /** Canonical `image/*` media type of the returned payload. */
+  mediaType: string;
+  /** Raw byte length of the returned (possibly compressed) buffer. */
+  originalSize: number;
+  /** Pixel dimensions (original + displayed), when sharp could read them. */
+  dimensions?: ImageDimensions;
+}
+
+/**
+ * Thrown when an image cannot be reduced below the provider's size/pixel limits
+ * and compression itself failed — the caller surfaces this as an actionable error
+ * instead of emitting an unusable image block. Mirrors Claude Code's ImageResizeError.
+ */
+export class ImageResizeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ImageResizeError';
+  }
+}
+
+/** Read a big-endian PNG's IHDR width/height without decoding the image. */
+function readPngDimensions(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length >= 24
+      && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+  return null;
+}
+
+/**
+ * Compress an image buffer to fit within `maxBytes`, preserving the original
+ * format where possible: for PNGs, try a PNG-first re-encode (compressionLevel 9
+ * + palette) to keep transparency before falling back to progressively lower
+ * JPEG quality; downscale to the pixel cap when size alone is not enough. On any
+ * sharp failure, allow the original through only when it is within BOTH the base64
+ * API ceiling AND the pixel-dimension cap, otherwise throw ImageResizeError.
+ * Mirrors Claude Code's compressImageBuffer (utils/imageResizer.ts).
+ */
+export async function compressImageBuffer(
+  imageBuffer: Buffer,
+  maxBytes: number = IMAGE_TARGET_RAW_SIZE,
+  originalMediaType?: string,
+): Promise<CompressedImage> {
+  const sniffedType = detectImageFormatFromBuffer(imageBuffer)
+    || originalMediaType
+    || 'application/octet-stream';
+  try {
+    const sharp = imageHooks.loadSharp();
+    const metadata = await sharp(imageBuffer).metadata();
+    const format: string = metadata.format || sniffedType.split('/')[1] || 'jpeg';
+    const isPng = format === 'png';
+    const originalWidth: number | undefined = metadata.width;
+    const originalHeight: number | undefined = metadata.height;
+    let width = originalWidth ?? 0;
+    let height = originalHeight ?? 0;
+    const needsDimensionResize = width > IMAGE_MAX_WIDTH || height > IMAGE_MAX_HEIGHT;
+
+    const dims = (dw: number, dh: number): ImageDimensions => ({
+      originalWidth, originalHeight, displayWidth: dw, displayHeight: dh,
+    });
+    const done = (buf: Buffer, mt: string, dw: number, dh: number): CompressedImage => ({
+      base64: buf.toString('base64'),
+      mediaType: mt.startsWith('image/') ? mt : `image/${mt === 'jpg' ? 'jpeg' : mt}`,
+      originalSize: buf.length,
+      dimensions: dims(dw, dh),
+    });
+
+    // Already small enough and within the pixel cap: send as-is.
+    if (imageBuffer.length <= maxBytes && !needsDimensionResize) {
+      return done(imageBuffer, format, width, height);
+    }
+
+    // Within pixel limits but too large: try compression first (full resolution).
+    if (!needsDimensionResize) {
+      if (isPng) {
+        const png = await sharp(imageBuffer).png({ compressionLevel: 9, palette: true }).toBuffer();
+        if (png.length <= maxBytes) return done(png, 'png', width, height);
+      }
+      for (const quality of [80, 60, 40, 20]) {
+        const jpeg = await sharp(imageBuffer).jpeg({ quality }).toBuffer();
+        if (jpeg.length <= maxBytes) return done(jpeg, 'jpeg', width, height);
+      }
+    }
+
+    // Constrain pixel dimensions (aspect-preserving) to the cap.
+    if (width > IMAGE_MAX_WIDTH) {
+      height = Math.round((height * IMAGE_MAX_WIDTH) / Math.max(width, 1));
+      width = IMAGE_MAX_WIDTH;
+    }
+    if (height > IMAGE_MAX_HEIGHT) {
+      width = Math.round((width * IMAGE_MAX_HEIGHT) / Math.max(height, 1));
+      height = IMAGE_MAX_HEIGHT;
+    }
+    const resizeOpts = { fit: 'inside' as const, withoutEnlargement: true };
+    const resized = await sharp(imageBuffer).resize(width, height, resizeOpts).toBuffer();
+    if (resized.length <= maxBytes) return done(resized, format, width, height);
+
+    // Still too large after resize: PNG-first (transparency) then JPEG ladder.
+    if (isPng) {
+      const png = await sharp(imageBuffer).resize(width, height, resizeOpts)
+        .png({ compressionLevel: 9, palette: true }).toBuffer();
+      if (png.length <= maxBytes) return done(png, 'png', width, height);
+    }
+    for (const quality of [80, 60, 40, 20]) {
+      const jpeg = await sharp(imageBuffer).resize(width, height, resizeOpts).jpeg({ quality }).toBuffer();
+      if (jpeg.length <= maxBytes) return done(jpeg, 'jpeg', width, height);
+    }
+
+    // Last resort: shrink harder and compress aggressively.
+    const smallerWidth = Math.min(width, 1000);
+    const smallerHeight = Math.round((height * smallerWidth) / Math.max(width, 1));
+    const ultra = await sharp(imageBuffer)
+      .resize(smallerWidth, smallerHeight, resizeOpts).jpeg({ quality: 20 }).toBuffer();
+    return done(ultra, 'jpeg', smallerWidth, smallerHeight);
+  } catch (err) {
+    if (err instanceof ImageResizeError) throw err;
+    // Compression failed. Only allow the raw image through when it is within BOTH
+    // the base64 API ceiling AND the pixel-dimension cap — a sub-5MB file can still
+    // have out-of-range pixel dimensions the provider rejects.
+    const base64Size = Math.ceil((imageBuffer.length * 4) / 3);
+    const png = readPngDimensions(imageBuffer);
+    const overDim = png !== null && (png.width > IMAGE_MAX_WIDTH || png.height > IMAGE_MAX_HEIGHT);
+    if (base64Size <= API_IMAGE_MAX_BASE64_SIZE && !overDim) {
+      return {
+        base64: imageBuffer.toString('base64'),
+        mediaType: sniffedType,
+        originalSize: imageBuffer.length,
+        dimensions: png ? { originalWidth: png.width, originalHeight: png.height, displayWidth: png.width, displayHeight: png.height } : undefined,
+      };
+    }
+    throw new ImageResizeError(
+      overDim
+        ? `Unable to resize image — dimensions exceed the ${IMAGE_MAX_WIDTH}x${IMAGE_MAX_HEIGHT}px limit and image processing failed. Resize the image to reduce its pixel dimensions.`
+        : `Unable to compress image (${(imageBuffer.length / 1024 / 1024).toFixed(1)} MB raw, ${(base64Size / 1024 / 1024).toFixed(1)} MB base64) below the 5 MB API limit. Use a smaller image.`,
+    );
+  }
+}
+
+/**
+ * Compress an image buffer to fit within a token budget. Converts the token limit
+ * to a byte limit (base64 ≈ 0.125 tokens/char; raw ≈ 0.75·base64) and defers to
+ * compressImageBuffer. Mirrors Claude Code's compressImageBufferWithTokenLimit.
+ */
+export async function compressImageBufferWithTokenLimit(
+  imageBuffer: Buffer,
+  maxTokens: number,
+  originalMediaType?: string,
+): Promise<CompressedImage> {
+  const maxBase64Chars = Math.floor(maxTokens / 0.125);
+  const maxBytes = Math.floor(maxBase64Chars * 0.75);
+  return compressImageBuffer(imageBuffer, maxBytes, originalMediaType);
+}
+
+/**
+ * Build a short metadata note describing an image's source and (when it was
+ * downscaled) the coordinate scale factor from displayed → original pixels, so a
+ * model reasoning about pixel coordinates can map them back. Returns null when no
+ * useful metadata is available. Mirrors Claude Code's createImageMetadataText.
+ */
+export function createImageMetadataText(dims: ImageDimensions, sourcePath?: string): string | null {
+  const { originalWidth, originalHeight, displayWidth, displayHeight } = dims;
+  if (!originalWidth || !originalHeight || !displayWidth || !displayHeight
+      || displayWidth <= 0 || displayHeight <= 0) {
+    return sourcePath ? `[Image source: ${sourcePath}]` : null;
+  }
+  const wasResized = originalWidth !== displayWidth || originalHeight !== displayHeight;
+  if (!wasResized && !sourcePath) return null;
+  const parts: string[] = [];
+  if (sourcePath) parts.push(`source: ${sourcePath}`);
+  if (wasResized) {
+    const scaleFactor = originalWidth / displayWidth;
+    parts.push(`original ${originalWidth}x${originalHeight}, displayed at ${displayWidth}x${displayHeight}. Multiply coordinates by ${scaleFactor.toFixed(2)} to map to original image.`);
+  }
+  return `[Image: ${parts.join(', ')}]`;
+}
+
+/**
  * Read an image file and return a base64 payload, downscaling/compressing large
  * images with sharp when available (same policy file_read uses). Shared so the
  * TUI/detached attach path encodes images identically to the file_read tool.
+ * Returns the displayed/original dimensions when sharp could read them, so callers
+ * can emit coordinate-mapping metadata.
  */
-export async function encodeImageFile(absPath: string): Promise<{ media_type: string; data: string }> {
+export async function encodeImageFile(
+  absPath: string,
+): Promise<{ media_type: string; data: string; dimensions?: ImageDimensions }> {
   const ext = path.extname(absPath).toLowerCase();
   const imageBuffer = await fs.promises.readFile(absPath);
-  let finalBuffer = imageBuffer;
   // Trust the file's actual magic bytes over its extension (a mislabeled or
   // untrusted file can lie about its format); fall back to the extension map only
   // when the content matches no known signature.
   const sniffed = detectImageFormatFromBuffer(imageBuffer);
-  let finalMediaType = sniffed || MEDIA_TYPES[ext] || 'application/octet-stream';
+  let mediaType = sniffed || MEDIA_TYPES[ext] || 'application/octet-stream';
+  let buffer = imageBuffer;
   // Providers reject BMP — transcode it to PNG (lossless, preserves alpha) when
-  // sharp is available. Mirrors Claude Code's WSL2/Windows clipboard BMP handling.
-  if (finalMediaType === 'image/bmp') {
+  // sharp is available before the generic compression pass. Mirrors Claude Code's
+  // WSL2/Windows clipboard BMP handling; left untouched when sharp is unavailable.
+  if (mediaType === 'image/bmp') {
     try {
       const sharp = imageHooks.loadSharp();
-      finalBuffer = await sharp(imageBuffer).png().toBuffer();
-      finalMediaType = 'image/png';
+      buffer = await sharp(imageBuffer).png().toBuffer();
+      mediaType = 'image/png';
     } catch {
-      // sharp unavailable — leave the BMP bytes; the caller's size/format guard
-      // will surface an actionable error rather than silently sending it.
+      // sharp unavailable — leave the BMP bytes; the size guard below surfaces them.
     }
   }
-  if (finalBuffer.length > 512 * 1024) {
-    try {
-      const sharp = imageHooks.loadSharp();
-      finalBuffer = await sharp(finalBuffer)
-        .resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 80 })
-        .toBuffer();
-      finalMediaType = 'image/jpeg';
-      const base64Length = finalBuffer.toString('base64').length;
-      if (Math.ceil(base64Length * 0.125) > 5000) {
-        try {
-          finalBuffer = await sharp(finalBuffer)
-            .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 40 })
-            .toBuffer();
-        } catch {}
-      }
-    } catch {
-      // sharp not available — use original bytes
-    }
+  try {
+    const compressed = await compressImageBuffer(buffer, IMAGE_TARGET_RAW_SIZE, mediaType);
+    return { media_type: compressed.mediaType, data: compressed.base64, dimensions: compressed.dimensions };
+  } catch (err) {
+    if (err instanceof ImageResizeError) throw err;
+    // compressImageBuffer already returns raw bytes for the within-limits fallback;
+    // any other failure re-surfaces the raw bytes so a missing sharp never blocks a read.
+    return { media_type: mediaType, data: buffer.toString('base64') };
   }
-  return { media_type: finalMediaType, data: finalBuffer.toString('base64') };
 }
 
 /**
@@ -277,6 +559,63 @@ export function parseImageToolOutput(output: string): ImageContent[] | null {
         parsed.source.media_type = sniffed;
       }
       return [parsed as ImageContent];
+    }
+  } catch {}
+  return null;
+}
+
+/** Kind of file whose read carried extracted images (drives the engine's note). */
+export type FileImagesKind = 'notebook' | 'pdf';
+
+/**
+ * Build a file_read output that carries extracted images (notebook cell outputs,
+ * rendered PDF pages) alongside the text. The engine renders `text` as the tool
+ * result and queues `images` as multimodal blocks. Single canonical shape so each
+ * image-bearing reader (notebook, PDF) reuses the same protocol.
+ */
+export function buildFileImagesOutput(kind: FileImagesKind, text: string, images: ImageContent[]): string {
+  return JSON.stringify({ type: 'file_images', kind, text, images });
+}
+
+/**
+ * Parse a file_read output that carries extracted images, returning the kind, the
+ * text, and the image blocks. Returns null for any other output. Mirrors Claude
+ * Code's notebook/PDF image-output extraction.
+ */
+export function parseFileImagesOutput(output: string): { kind: FileImagesKind; text: string; images: ImageContent[] } | null {
+  if (typeof output !== 'string') return null;
+  const t = output.trimStart();
+  if (!t.startsWith('{') || !t.includes('"type":"file_images"')) return null;
+  try {
+    const parsed = JSON.parse(output);
+    if (parsed && parsed.type === 'file_images' && (parsed.kind === 'notebook' || parsed.kind === 'pdf')
+        && typeof parsed.text === 'string' && Array.isArray(parsed.images)) {
+      const images = (parsed.images as unknown[]).filter((i): i is ImageContent =>
+        !!i && typeof i === 'object'
+        && (i as ImageContent).type === 'image'
+        && !!(i as ImageContent).source
+        && (i as ImageContent).source.type === 'base64'
+        && typeof (i as ImageContent).source.media_type === 'string'
+        && typeof (i as ImageContent).source.data === 'string');
+      if (images.length > 0) return { kind: parsed.kind, text: parsed.text, images };
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Extract the coordinate-mapping metadata note from a file_read image output, if
+ * present, so the engine can surface it to the model alongside the image block.
+ * Returns null for non-image outputs or images with no metadata.
+ */
+export function parseImageToolMetadata(output: string): string | null {
+  if (typeof output !== 'string') return null;
+  const t = output.trimStart();
+  if (!t.startsWith('{') || !t.includes('"metadata"')) return null;
+  try {
+    const parsed = JSON.parse(output);
+    if (parsed && parsed.type === 'image' && typeof parsed.metadata === 'string') {
+      return parsed.metadata;
     }
   } catch {}
   return null;
@@ -469,7 +808,15 @@ export const fileReadTool: ToolDefinition = {
       if (stat.size > MAX_IMAGE_BYTES) {
         return { output: `Error: image exceeds the 128 MiB limit (${(stat.size / 1024 / 1024).toFixed(0)} MiB).`, isError: true };
       }
-      const { media_type, data } = await encodeImageFile(resolved);
+      let media_type: string, data: string, dimensions: ImageDimensions | undefined;
+      try {
+        ({ media_type, data, dimensions } = await encodeImageFile(resolved));
+      } catch (err) {
+        if (err instanceof ImageResizeError) {
+          return { output: `Error: ${err.message}`, isError: true };
+        }
+        throw err;
+      }
       // Enforce the provider's hard base64 ceiling: an image that is still too
       // large after compression would be bounced by the API, so reject it here
       // with an actionable error instead of emitting an unusable block.
@@ -480,6 +827,10 @@ export const fileReadTool: ToolDefinition = {
         };
       }
       context.filesRead?.add(resolved);
+      // Coordinate-mapping metadata: when the image was downscaled, tell the model
+      // the scale factor so pixel coordinates it reasons about map back to the
+      // original. Mirrors Claude Code's createImageMetadataText injection.
+      const metadata = dimensions ? createImageMetadataText(dimensions, resolved) : null;
       return {
         output: JSON.stringify({
           type: 'image',
@@ -488,6 +839,7 @@ export const fileReadTool: ToolDefinition = {
             media_type,
             data,
           },
+          ...(metadata ? { metadata } : {}),
         }),
       };
     }
@@ -536,6 +888,20 @@ export const fileReadTool: ToolDefinition = {
         await parser.destroy();
         const text = (pdf.text || '').trim();
         const rangeNote = pageRange ? ` (pages ${pageRange.start}-${pageRange.end})` : '';
+        // Scanned/image-only PDFs yield no extractable text. Fall back to rendering the
+        // pages to images via pdftoppm (when installed) so a vision model can still read
+        // them. Mirrors Claude Code's pdftoppm page-to-image fallback.
+        if (!text) {
+          const pageImages = await renderPdfPagesToImages(resolved, {
+            firstPage: pageRange ? pageRange.start : 1,
+            lastPage: pageRange ? pageRange.end : MAX_PDF_RENDER_PAGES,
+          });
+          if (pageImages.length > 0) {
+            context.filesRead?.add(resolved);
+            const header = `File: ${resolved} (PDF, ${pdf.total} pages, no extractable text — rendered ${pageImages.length} page image${pageImages.length === 1 ? '' : 's'})${rangeNote}`;
+            return { output: buildFileImagesOutput('pdf', header, pageImages) };
+          }
+        }
         context.filesRead?.add(resolved);
         return {
           output: `File: ${resolved} (PDF, ${pdf.total} pages)${rangeNote}\n\n${spillToolText(context.cwd, 'pdf', text, 100_000)}`,
@@ -574,6 +940,10 @@ export const fileReadTool: ToolDefinition = {
         }
         parts.push('');
 
+        // Image outputs (image/png, image/jpeg) rendered by a cell are returned as
+        // real multimodal blocks alongside the text so a vision model can see plots/
+        // figures. Mirrors Claude Code's notebook image-output extraction.
+        const notebookImages: ImageContent[] = [];
         for (let idx = startCell; idx < endCell; idx++) {
           const cell = cells[idx];
           const cellId = cell.id || `cell-${idx}`;
@@ -581,17 +951,47 @@ export const fileReadTool: ToolDefinition = {
           parts.push(`--- Cell ${idx} [${cell.cell_type}] (id: ${cellId}) ---`);
           parts.push(src);
           if (cell.outputs && cell.outputs.length > 0) {
+            // Per-cell large-output guard: sum text + image payload sizes; when a cell's
+            // combined outputs exceed the threshold, replace them with a jq escape-hatch
+            // hint rather than inlining a huge blob. Mirrors Claude Code's isLargeOutputs.
+            let outSize = 0;
             for (const out of cell.outputs) {
-              if (out.text) {
-                const text = Array.isArray(out.text) ? out.text.join('') : out.text;
-                parts.push(`[output] ${text.trimEnd()}`);
-              } else if (out.data?.['text/plain']) {
-                const text = Array.isArray(out.data['text/plain'])
-                  ? out.data['text/plain'].join('')
-                  : out.data['text/plain'];
-                parts.push(`[output] ${text.trimEnd()}`);
-              } else if (out.ename) {
-                parts.push(`[error] ${out.ename}: ${out.evalue || ''}`);
+              const t = Array.isArray(out.text) ? out.text.join('') : (out.text || '');
+              const tp = out.data?.['text/plain'];
+              const tpStr = Array.isArray(tp) ? tp.join('') : (tp || '');
+              const img = out.data?.['image/png'] ?? out.data?.['image/jpeg'];
+              const imgStr = Array.isArray(img) ? img.join('') : (img ? String(img) : '');
+              outSize += t.length + tpStr.length + imgStr.length;
+            }
+            if (outSize > NOTEBOOK_LARGE_OUTPUT_THRESHOLD) {
+              parts.push(`[output] Outputs are too large to include. Use bash with: cat <notebook_path> | jq '.cells[${idx}].outputs'`);
+            } else {
+              for (const out of cell.outputs) {
+                if (out.text) {
+                  const text = Array.isArray(out.text) ? out.text.join('') : out.text;
+                  parts.push(`[output] ${text.trimEnd()}`);
+                } else if (out.data?.['text/plain']) {
+                  const text = Array.isArray(out.data['text/plain'])
+                    ? out.data['text/plain'].join('')
+                    : out.data['text/plain'];
+                  parts.push(`[output] ${text.trimEnd()}`);
+                } else if (out.ename) {
+                  // Include the full Python traceback, not just the exception summary.
+                  const tb = Array.isArray(out.traceback) ? out.traceback.join('\n') : '';
+                  parts.push(`[error] ${out.ename}: ${out.evalue || ''}${tb ? `\n${tb}` : ''}`);
+                }
+                for (const mt of ['image/png', 'image/jpeg'] as const) {
+                  const raw = out.data?.[mt];
+                  if (raw) {
+                    // Jupyter stores base64 as a string or an array of lines; strip all
+                    // whitespace so the payload is a clean base64 string.
+                    const data = (Array.isArray(raw) ? raw.join('') : String(raw)).replace(/\s+/g, '');
+                    if (data) {
+                      notebookImages.push({ type: 'image', source: { type: 'base64', media_type: mt, data } });
+                      parts.push(`[output image: ${mt} (attached)]`);
+                    }
+                  }
+                }
               }
             }
           }
@@ -605,6 +1005,11 @@ export const fileReadTool: ToolDefinition = {
           content = content.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${MAX_FILE_READ_TOKENS} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
         }
         context.filesRead?.add(resolved);
+        if (notebookImages.length > 0) {
+          // Carry both the cell text and the extracted images; the engine renders the
+          // text as the tool result and queues the images as multimodal blocks.
+          return { output: buildFileImagesOutput('notebook', content, notebookImages) };
+        }
         return { output: content };
       } catch (err) {
         return { output: `Error reading notebook: ${err instanceof Error ? err.message : String(err)}`, isError: true };

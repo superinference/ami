@@ -767,6 +767,7 @@ export const taskTool: ToolDefinition = {
 
     let toolUseCount = 0;
     let totalTokens = 0;
+    const startedAt = Date.now();
     const recentActivities: string[] = [];
 
     const stallTimeoutMs = parseInt(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS ?? '', 10) || SUBAGENT_STALL_TIMEOUT_MS;
@@ -862,6 +863,7 @@ export const taskTool: ToolDefinition = {
       type: 'subagent_result', nodeId: taskId, depth: relayDepth,
       success: true, summary: (resultText.trim().split('\n')[0] || 'done').slice(0, 120), tokens: totalTokens,
     });
-    return { output: `${cappedResult}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens]` };
+    const durationS = ((Date.now() - startedAt) / 1000).toFixed(1);
+    return { output: `${cappedResult}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens, ${durationS}s]` };
   },
 };

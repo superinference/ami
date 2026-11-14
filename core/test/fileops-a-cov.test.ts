@@ -12,6 +12,7 @@ import {
   validateImageFile,
   MAX_IMAGE_FILE_BYTES,
   imageHooks,
+  IMAGE_TARGET_RAW_SIZE,
   fsHooks as fileReadFsHooks,
 } from '../src/tools/file-read';
 import { globTool, globHooks } from '../src/tools/glob';
@@ -1427,49 +1428,64 @@ describe('fileReadTool – binary & range-header & suite logs', () => {
 });
 
 describe('encodeImageFile – sharp compression via seam', () => {
-  function fakeSharp(firstLen: number, opts?: { secondThrows?: boolean }) {
-    let call = 0;
-    return (_input: Buffer) => ({
-      resize() { return this; },
-      jpeg() { return this; },
-      async toBuffer() {
-        call++;
-        if (call === 1) return Buffer.alloc(firstLen);
-        if (opts?.secondThrows) throw new Error('second resize failed');
-        return Buffer.alloc(100);
-      },
-    });
+  // Fake sharp exposing the new chainable API: metadata(), resize(), png(), jpeg(),
+  // toBuffer(). `sizes` maps each encoder ('png'|'jpeg'|'raw') to the byte length it
+  // returns, so a test can steer which compression branch succeeds.
+  function fakeSharp(
+    meta: { width: number; height: number; format: string },
+    sizes: { raw?: number; png?: number; jpeg?: number },
+  ) {
+    return (_input: Buffer) => {
+      const inst: any = {
+        _enc: 'raw',
+        async metadata() { return meta; },
+        resize() { return inst; },
+        png() { inst._enc = 'png'; return inst; },
+        jpeg() { inst._enc = 'jpeg'; return inst; },
+        async toBuffer() {
+          const len = inst._enc === 'png' ? (sizes.png ?? 10)
+            : inst._enc === 'jpeg' ? (sizes.jpeg ?? 10)
+            : (sizes.raw ?? 10);
+          return Buffer.alloc(len);
+        },
+      };
+      return inst;
+    };
   }
 
-  it('compresses a large image and re-compresses when still too big', async () => {
+  const OVER = IMAGE_TARGET_RAW_SIZE + 1;
+
+  it('PNG-first: an over-size PNG within the pixel cap re-encodes as PNG', async () => {
     const fp = path.join(tmpDir, 'large.png');
-    fs.writeFileSync(fp, Buffer.alloc(600 * 1024, 0x89));
-    // 50000 bytes -> base64*0.125 > 5000 -> triggers the second downscale.
-    mock.method(imageHooks, 'loadSharp', (() => fakeSharp(50000)) as any);
+    fs.writeFileSync(fp, Buffer.alloc(OVER, 0x89));
+    mock.method(imageHooks, 'loadSharp', (() => fakeSharp({ width: 1000, height: 1000, format: 'png' }, { png: 100 })) as any);
     const out = await encodeImageFile(fp);
-    assert.equal(out.media_type, 'image/jpeg');
+    assert.equal(out.media_type, 'image/png');
     assert.ok(out.data.length > 0);
   });
 
-  it('keeps the first compression when the second downscale throws', async () => {
+  it('falls back to JPEG when the PNG re-encode is still too big', async () => {
     const fp = path.join(tmpDir, 'large2.png');
-    fs.writeFileSync(fp, Buffer.alloc(600 * 1024, 0x89));
-    mock.method(imageHooks, 'loadSharp', (() => fakeSharp(50000, { secondThrows: true })) as any);
+    fs.writeFileSync(fp, Buffer.alloc(OVER, 0x89));
+    mock.method(imageHooks, 'loadSharp', (() => fakeSharp({ width: 1000, height: 1000, format: 'png' }, { png: OVER, jpeg: 100 })) as any);
     const out = await encodeImageFile(fp);
     assert.equal(out.media_type, 'image/jpeg');
   });
 
-  it('compresses without a second pass when already small enough', async () => {
-    const fp = path.join(tmpDir, 'large3.png');
-    fs.writeFileSync(fp, Buffer.alloc(600 * 1024, 0x89));
-    mock.method(imageHooks, 'loadSharp', (() => fakeSharp(1000)) as any);
+  it('downscales when dimensions exceed the pixel cap and reports resized dimensions', async () => {
+    const fp = path.join(tmpDir, 'large3.jpg');
+    fs.writeFileSync(fp, Buffer.alloc(OVER, 0x89));
+    mock.method(imageHooks, 'loadSharp', (() => fakeSharp({ width: 4000, height: 2000, format: 'jpeg' }, { raw: 100 })) as any);
     const out = await encodeImageFile(fp);
     assert.equal(out.media_type, 'image/jpeg');
+    assert.equal(out.dimensions?.originalWidth, 4000);
+    assert.equal(out.dimensions?.displayWidth, 2000);
   });
 
-  it('uses octet-stream for an image extension without a known media type', async () => {
+  it('uses octet-stream for an image extension whose bytes match no signature and sharp is unavailable', async () => {
     const fp = path.join(tmpDir, 'vector.svg');
-    fs.writeFileSync(fp, '<svg/>'); // small -> no sharp path
+    fs.writeFileSync(fp, '<svg/>'); // small, not a known signature
+    mock.method(imageHooks, 'loadSharp', (() => { throw new Error('no sharp'); }) as any);
     const out = await encodeImageFile(fp);
     assert.equal(out.media_type, 'application/octet-stream');
   });

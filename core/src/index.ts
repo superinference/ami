@@ -1,5 +1,5 @@
-export { SessionManager, MAX_SESSION_READ_BYTES, isSessionPersistenceDisabled } from './session';
-export type { Session, SessionListEntry } from './session';
+export { SessionManager, MAX_SESSION_READ_BYTES, isSessionPersistenceDisabled, detectTurnInterruption } from './session';
+export type { Session, SessionListEntry, TurnInterruption } from './session';
 export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall, describeProviders } from './provider';
 export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
@@ -19,6 +19,7 @@ export { diffStringLists } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta, CacheBreakCause } from './cost-tracker';
 export {
   resolveConfigDir, migrateLegacyDataDir, projectStateDir, projectSlug, MAX_SLUG_LENGTH, journalPathFor, subagentJournalPathFor,
+  canonicalizePath, canonicalGitRoot,
   toReferenceToolName, toReferenceModelId, buildUsageFields,
   buildAssistantEntry, buildUserEntry, appendEntry, ndjsonSafeStringify,
   dashboardConfigPath, registerDataDir, maybeRegisterDataDir,
@@ -35,15 +36,15 @@ export type { McpTransport } from './mcp/client';
 export { MCP_SERVER_STATES, matchMcpAutoAllow } from './mcp/manager';
 export type { McpServerState } from './mcp/manager';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
-export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES } from './error-classifier';
+export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow } from './error-classifier';
 export type { ClassifiedError, ErrorCategory } from './error-classifier';
 export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES, resolveHookTimeoutMs, combineHookAbort, HOOK_AGENT_DISALLOWED_TOOLS, isHttpHookUrlAllowed, interpolateHookHeaderEnv, unwrapHookSpecificOutput, matchesHookIf } from './hooks';
 export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy } from './hooks';
 export { shouldSkipHookDueToTrust } from './hook-protection';
 export { wildcardMatch } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
-export { SessionMemoryExtractor } from './session-memory';
-export type { SessionFact } from './session-memory';
+export { SessionMemoryExtractor, selectIncrementalWindow } from './session-memory';
+export type { SessionFact, IncrementalWindow } from './session-memory';
 export { AnalyticsTracker, generateToolSummary } from './analytics';
 export type { AnalyticsEvent, AnalyticsTrackerOpts } from './analytics';
 export {
@@ -93,10 +94,11 @@ export type {
 } from './types';
 export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType } from './types';
 export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES } from './types';
-export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, THINKING_LEVELS, REVIEW_EFFORT_LEVELS } from './model-capabilities';
+export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, is1mContextDisabled, supportsOneMillionContextBeta, THINKING_LEVELS, REVIEW_EFFORT_LEVELS } from './model-capabilities';
 export { PERMISSION_MODES, BASH_CLASSIFICATIONS } from './permissions';
 export { detectProvider, listModels, validateModel } from './model-registry';
-export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues } from './config';
+export type { ValidateModelResult } from './model-registry';
+export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS } from './config';
 export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue } from './config';
 export { STRATEGY_NAMES } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
@@ -153,7 +155,7 @@ export { isModAllowed, parseModId, normalizeModName, modNamesMatch, validateModI
 export type { ModInfo, ManagedModsPolicy } from './managed-mods';
 export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance, PROVENANCE_TIERS } from './provenance';
 export type { ProvenanceTier, ProvenanceRecord, ProvenanceSummary } from './provenance';
-export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
+export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, suggestedWaitMs, formatResetTime, formatRateLimitReset } from './rate-limit-parser';
 export type { RateLimitInfo } from './rate-limit-parser';
 export { canOverride, getEffectiveTier, filterManagedKeys, SettingsGuard, SETTINGS_TIERS } from './settings-guard';
 export type { SettingsTier, SettingsSource } from './settings-guard';
@@ -180,7 +182,8 @@ export { MAX_WORKTREES, validateWorktreeGitFile, findStaleWorktrees } from './wo
 export { isSensitiveEnvVar, canAccessEnv, EnvAccessGuard, ENV_ACCESS_TIERS, ENV_OPERATIONS } from './env-access-guard';
 export type { EnvAccessTier, EnvOperation, EnvAccessEvent } from './env-access-guard';
 export { SENSITIVE_ENV_VARS } from './env-access-guard';
-export { containsCredential, redactCredentials, findCredentials, CredentialGuard, REDACT_PLACEHOLDER } from './credential-guard';
+export { containsCredential, redactCredentials, findCredentials, getCredentialLabel, CredentialGuard, REDACT_PLACEHOLDER } from './credential-guard';
+export type { CredentialMatch } from './credential-guard';
 export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, SafeModeGuard, BLOCKED_RESOURCES } from './safe-mode';
 export type { SafeModeConfig, BlockedResource } from './safe-mode';
 export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker } from './request-signature';

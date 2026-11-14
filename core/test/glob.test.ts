@@ -171,5 +171,86 @@ describe('globTool — G5 ripgrep route', () => {
       assert.equal(globCalled, true, 'ENOENT must fall back to tinyglobby');
       assert.ok(result.output.includes('a.ts'));
     });
+
+    it('retries single-threaded (-j 1) on a ripgrep EAGAIN and then succeeds', async () => {
+      let call = 0;
+      const seenArgs: string[][] = [];
+      globHooks.execFileImpl = ((_f: string, args: string[], _o: unknown, cb: (e: unknown, out: string, errOut: string) => void) => {
+        call++;
+        seenArgs.push(args);
+        if (call === 1) {
+          // Thread-spawn exhaustion: nonzero exit with EAGAIN on stderr.
+          cb({ code: 2 }, '', 'rg: error: ... (os error 11)');
+        } else {
+          cb(null, 'a.ts\n', '');
+        }
+        return { kill() {} } as any;
+      }) as typeof globHooks.execFileImpl;
+      const result = await globTool.execute!({ pattern: '**/*.ts' }, ctx);
+      assert.equal(call, 2, 'must retry exactly once');
+      assert.ok(seenArgs[1].includes('-j') && seenArgs[1].includes('1'), 'retry runs single-threaded');
+      assert.ok(result.output.includes('a.ts'));
+    });
+
+    it('does not retry on a non-EAGAIN error (falls back to tinyglobby)', async () => {
+      let call = 0;
+      let globCalled = false;
+      globHooks.glob = (async () => { globCalled = true; return ['x.ts']; }) as typeof globHooks.glob;
+      globHooks.execFileImpl = ((_f: string, _a: string[], _o: unknown, cb: (e: unknown, out: string, errOut: string) => void) => {
+        call++;
+        cb({ code: 2 }, '', 'some other failure');
+        return { kill() {} } as any;
+      }) as typeof globHooks.execFileImpl;
+      const result = await globTool.execute!({ pattern: '**/*.ts' }, ctx);
+      assert.equal(call, 1, 'no retry without EAGAIN');
+      assert.equal(globCalled, true);
+      assert.ok(result.output.includes('x.ts'));
+    });
+
+    it('passes the env-configured timeout to execFile', async () => {
+      const origTimeout = globHooks.timeoutMs;
+      globHooks.timeoutMs = 4321;
+      let seenTimeout: number | undefined;
+      globHooks.execFileImpl = ((_f: string, _a: string[], o: { timeout?: number }, cb: (e: unknown, out: string) => void) => {
+        seenTimeout = o.timeout;
+        cb(null, 'a.ts\n');
+        return { kill() {} } as any;
+      }) as typeof globHooks.execFileImpl;
+      try {
+        await globTool.execute!({ pattern: '**/*.ts' }, ctx);
+        assert.equal(seenTimeout, 4321);
+      } finally {
+        globHooks.timeoutMs = origTimeout;
+      }
+    });
+
+    it('escalates SIGTERM → SIGKILL when a wedged rg child ignores the timeout', async () => {
+      const origTimeout = globHooks.timeoutMs;
+      const origGrace = globHooks.sigkillGraceMs;
+      globHooks.timeoutMs = 5;
+      globHooks.sigkillGraceMs = 5;
+      const signals: string[] = [];
+      let globCalled = false;
+      globHooks.glob = (async () => { globCalled = true; return ['a.ts']; }) as typeof globHooks.glob;
+      // A fake child that never completes on its own; only the SIGKILL escalation
+      // triggers the callback, which then falls back to tinyglobby (code undefined).
+      globHooks.execFileImpl = ((_f: string, _a: string[], _o: unknown, cb: (e: unknown, out: string) => void) => {
+        return {
+          kill(sig: string) {
+            signals.push(sig);
+            if (sig === 'SIGKILL') cb(new Error('killed'), '');
+          },
+        } as any;
+      }) as typeof globHooks.execFileImpl;
+      try {
+        const result = await globTool.execute!({ pattern: '**/*.ts' }, ctx);
+        assert.ok(signals.includes('SIGKILL'), 'must force-kill a wedged rg child');
+        assert.equal(globCalled, true, 'after kill it falls back to tinyglobby');
+        assert.ok(result.output.includes('a.ts'));
+      } finally {
+        globHooks.timeoutMs = origTimeout;
+        globHooks.sigkillGraceMs = origGrace;
+      }
+    });
   });
 });

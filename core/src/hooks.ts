@@ -283,6 +283,30 @@ export type StopHookFn = (context: HookContext) => Promise<{ blockingError?: str
 
 export const MAX_CONCURRENT_PER_EVENT = 12;
 
+/**
+ * Default per-callback timeout for in-process ('function') hook callbacks —
+ * matches Claude Code's addFunctionHook default. A slow/stuck in-process
+ * callback cannot stall the turn indefinitely; after this deadline the callback
+ * is abandoned (JS callbacks are not forcibly cancellable) and logged.
+ */
+export const DEFAULT_CALLBACK_HOOK_TIMEOUT_MS = 5_000;
+
+/**
+ * Canonical timeout wrapper for in-process (function) hook callbacks: race the
+ * work against a deadline and reject with a labelled timeout Error if it fires.
+ * The underlying JS callback cannot be forcibly cancelled, but the caller stops
+ * awaiting it. Shared so no call site re-implements Promise.race timeouts.
+ */
+export function runWithTimeout<T>(work: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    work.then(
+      v => { clearTimeout(timer); resolve(v); },
+      e => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 export class EventConcurrencyLimiter {
   private active = new Map<string, number>();
   private waiters = new Map<string, Array<() => void>>();
@@ -373,6 +397,45 @@ export function validateHookCommand(command: string): { valid: boolean; reason?:
 
 export function validateHookTimeout(timeoutMs: number): number {
   return Math.max(100, Math.min(timeoutMs, MAX_HOOK_TIMEOUT_MS));
+}
+
+/**
+ * Default interpreter for command hooks when none is configured — matches
+ * Claude Code's DEFAULT_HOOK_SHELL. A hook may override it per-entry via the
+ * `shell` config field (bash | sh | powershell | pwsh).
+ */
+export const DEFAULT_HOOK_SHELL = 'bash';
+
+/**
+ * Resolve a command hook's `shell` selector to a concrete spawn descriptor
+ * (Claude Code's per-hook shell selection: `hook.shell ?? DEFAULT_HOOK_SHELL`).
+ * PowerShell hooks spawn `pwsh -NoProfile -NonInteractive -Command <command>`
+ * (non-interactive, no profile — matching the reference), every POSIX shell
+ * uses `<shell> -c <command>`. Single source of truth so command execution
+ * never hard-codes `bash`.
+ */
+export function resolveHookShell(command: string, shell: string | undefined): { file: string; args: string[] } {
+  const sel = (shell ?? DEFAULT_HOOK_SHELL).toLowerCase();
+  if (sel === 'powershell' || sel === 'pwsh') {
+    return { file: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', command] };
+  }
+  const file = sel === 'sh' ? 'sh' : 'bash';
+  return { file, args: ['-c', command] };
+}
+
+/**
+ * Validate a hook's working directory before spawning. A stale/removed cwd
+ * (e.g. a deleted worktree the session was launched from) makes `spawn` throw
+ * ENOENT, which for a guardrail hook is indistinguishable from a real failure.
+ * Claude Code pre-checks the hook cwd and falls back; this mirrors that by
+ * returning the home directory when the configured cwd no longer exists.
+ * Single source so every spawn path validates once.
+ */
+export function resolveHookCwd(cwd: string): string {
+  try {
+    if (cwd && fs.statSync(cwd).isDirectory()) return cwd;
+  } catch { /* missing / inaccessible — fall back below */ }
+  return os.homedir();
 }
 
 /**
@@ -479,6 +542,35 @@ export function unwrapHookSpecificOutput(parsed: unknown): HookDecisionOutput {
     if (merged[key] === undefined) merged[key] = v;
   }
   return merged as HookDecisionOutput;
+}
+
+/**
+ * Expected command-hook JSON output shape, surfaced as an affordance when a
+ * hook emits malformed JSON (Claude Code's parseHookOutput error hint).
+ */
+export const HOOK_JSON_SCHEMA_HINT = JSON.stringify({
+  continue: 'boolean (optional)',
+  suppressOutput: 'boolean (optional)',
+  stopReason: 'string (optional)',
+  decision: '"approve" | "block" (optional)',
+  reason: 'string (optional)',
+  systemMessage: 'string (optional)',
+  permissionDecision: '"allow" | "deny" | "ask" (optional)',
+  additionalContext: 'string (optional)',
+  updatedInput: 'object (optional)',
+  hookSpecificOutput: 'object (optional)',
+}, null, 2);
+
+/**
+ * Build a user-facing validation message for a command hook that emitted text
+ * starting with `{` (i.e. intended to be JSON) which failed to parse. Mirrors
+ * Claude Code's parseHookOutput `validationError` + schema affordance so a
+ * malformed hook output is reported to the user instead of being silently
+ * swallowed / treated as opaque plain text.
+ */
+export function formatHookValidationError(raw: string, err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return `Hook JSON output validation failed: ${msg}\n\nThe hook's output was: ${raw}\n\nExpected schema:\n${HOOK_JSON_SCHEMA_HINT}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -698,6 +790,10 @@ export interface CommandHookConfig {
   command: string;
   /** Exec form: spawn command directly without a shell, avoiding quoting issues. */
   args?: string[];
+  /** Interpreter for the command (Claude Code's per-hook shell selection):
+   *  'bash' (default) | 'sh' | 'powershell' | 'pwsh'. Ignored when `args` is set
+   *  (exec form bypasses the shell). */
+  shell?: string;
   timeout?: number;
   once?: boolean;
   if?: string;
@@ -838,12 +934,17 @@ async function runCommandHookAsync(
   stdinData?: string,
   args?: string[],
   signal?: AbortSignal,
+  shell?: string,
 ): Promise<{ exitCode: number; stdout: string; stderr: string; output: string }> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Hook cancelled')); return; }
-    const proc = args && args.length > 0
-      ? spawn(args[0], args.slice(1), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
-      : spawn('bash', ['-c', command], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Validate the working directory first — a stale/removed cwd would make
+    // spawn throw ENOENT, masquerading as a hook failure (resolveHookCwd).
+    const safeCwd = resolveHookCwd(cwd);
+    const spawnDesc = args && args.length > 0
+      ? { file: args[0], args: args.slice(1) }       // exec form — bypass the shell
+      : resolveHookShell(command, shell);            // shell form — per-hook interpreter
+    const proc = spawn(spawnDesc.file, spawnDesc.args, { cwd: safeCwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
     // Capture stdout and stderr SEPARATELY (Claude Code contract): a command hook's
     // decision JSON is read from stdout, while the human-facing reason comes from
@@ -908,6 +1009,9 @@ export class HookManager extends EventEmitter {
    *  a loopback mock server that the real validator would (correctly) block. */
   private _validateUrlSafety: typeof validateUrlSafety = validateUrlSafety;
   private _callbackHooks: Map<string, HookCallback[]> = new Map();
+  /** Per-callback timeout (ms) for in-process ('function') hooks, keyed by the
+   *  callback. Unset callbacks use DEFAULT_CALLBACK_HOOK_TIMEOUT_MS. */
+  private _callbackTimeouts = new WeakMap<HookCallback, number>();
 
   // Gap 1: Tier-aware verdict hold-over
   private _hookTiers = new WeakMap<Function, string>();
@@ -961,18 +1065,41 @@ export class HookManager extends EventEmitter {
   setAllowManagedHooksOnly(on: boolean): void { this._allowManagedHooksOnly = on; }
   isAllowManagedHooksOnly(): boolean { return this._allowManagedHooksOnly; }
 
+  /** Managed-policy kill-switch (Claude Code's disableAllHooks). When set via a
+   *  managed source it skips ALL hooks, including managed ones. */
+  private _disableAllHooks = false;
+
+  /**
+   * Set the disableAllHooks kill-switch with Claude Code's managed > non-managed
+   * precedence: a MANAGED `disableAllHooks` disables ALL hooks (including
+   * managed); a NON-managed `disableAllHooks` can only disable non-managed hooks
+   * (i.e. it collapses to allowManagedHooksOnly — managed hooks still run) and can
+   * never re-enable a managed disable. Consulted by loadFromFile before any hook
+   * is registered.
+   */
+  setDisableAllHooks(disabled: boolean, managed = true): void {
+    if (managed) this._disableAllHooks = disabled;
+    else if (disabled) this._allowManagedHooksOnly = true;
+  }
+  /** True when the managed kill-switch has disabled every hook. */
+  isAllHooksDisabled(): boolean { return this._disableAllHooks; }
+
   /** Override the HTTP-hook SSRF validator (tests only; defaults to the shared
    *  web-utils validateUrlSafety). */
   setUrlSafetyValidator(fn: typeof validateUrlSafety): void { this._validateUrlSafety = fn; }
 
-  registerCallback(event: string, callback: HookCallback): () => void {
+  registerCallback(event: string, callback: HookCallback, timeoutMs?: number): () => void {
     const hooks = this._callbackHooks.get(event) || [];
     hooks.push(callback);
     this._callbackHooks.set(event, hooks);
+    // Per-callback timeout (Claude Code addFunctionHook `timeout`): bound a
+    // slow/stuck in-process callback so it cannot stall the turn.
+    if (timeoutMs !== undefined) this._callbackTimeouts.set(callback, timeoutMs);
     return () => {
       const current = this._callbackHooks.get(event) || [];
       const index = current.indexOf(callback);
       if (index >= 0) current.splice(index, 1);
+      this._callbackTimeouts.delete(callback);
     };
   }
 
@@ -986,7 +1113,12 @@ export class HookManager extends EventEmitter {
     return this.withConcurrencyGate(`cb:${event}`, async () => {
       for (const cb of hooks) {
         try {
-          const result = await cb(event, data);
+          // Bound each in-process callback by its per-callback timeout (or the
+          // default) so a stuck function hook cannot hang the event.
+          const timeoutMs = this._callbackTimeouts.get(cb) ?? DEFAULT_CALLBACK_HOOK_TIMEOUT_MS;
+          const result = await runWithTimeout(
+            Promise.resolve(cb(event, data)), timeoutMs, `Callback hook "${event}"`,
+          );
           if (result && typeof result === 'object') return result as HookDecisionOutput;
         } catch (err) {
           coreLog('hooks', `Callback hook error for event "${event}": ${err}`);
@@ -1129,6 +1261,12 @@ export class HookManager extends EventEmitter {
     // entries are also gated below, but this blocks user/config-tier hooks too.
     if (shouldSkipHookDueToTrust(this._workspaceTrusted, this._interactive)) {
       coreLog('hooks', 'Skipping ALL hooks: workspace not trusted (interactive)');
+      return;
+    }
+    // Managed-policy kill-switch: a managed `disableAllHooks` skips EVERY hook,
+    // including managed ones (Claude Code's shouldDisableAllHooksIncludingManaged).
+    if (this._disableAllHooks) {
+      coreLog('hooks', "Skipping ALL hooks: 'disableAllHooks' managed policy is set");
       return;
     }
     const filePath = path.join(cwd, '.ami', 'hooks.json');
@@ -2238,7 +2376,7 @@ export class HookManager extends EventEmitter {
           eventData ? (() => { try { return JSON.parse(eventData).toolName; } catch { return undefined; } })() : undefined,
         );
         try {
-          const { exitCode, stdout, stderr } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args, signal);
+          const { exitCode, stdout, stderr } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args, signal, config.shell);
           // Claude Code exit-code contract:
           //   0           = success — parse stdout for a decision
           //   2           = BLOCKING error — reason from stderr → DENY
@@ -2262,8 +2400,15 @@ export class HookManager extends EventEmitter {
             if (parsed.updatedInput) return `MODIFY:${JSON.stringify(parsed.updatedInput)}`;
             if (parsed.additionalContext) return `MODIFY:${JSON.stringify({ additionalContext: parsed.additionalContext })}`;
             if (parsed.systemMessage) return `SYSTEM:${parsed.systemMessage}`;
-          } catch {
-            // Not JSON — fall back to prefix detection
+          } catch (parseErr) {
+            // A hook that emitted text starting with `{` intended to return a
+            // JSON decision; a parse failure is malformed output surfaced to the
+            // user as a validation error (Claude Code parseHookOutput), NOT
+            // silently treated as opaque plain text. Non-`{` output (plain text /
+            // DENY:/SYSTEM: prefixes) still falls through below.
+            if (trimmed.startsWith('{')) {
+              return `SYSTEM:${sanitizeHookOutput(formatHookValidationError(trimmed, parseErr))}`;
+            }
           }
           return sanitizeHookOutput(trimmed);
         } catch (err: unknown) {

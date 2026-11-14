@@ -282,7 +282,8 @@ export class McpClient extends EventEmitter {
   private readonly requestTimeout: number;
   private readonly connectTimeout: number;
   private readonly rootPaths: string[];
-  private readonly headers: Record<string, string>;
+  /** Static + dynamically-resolved request headers, refreshable via {@link setHeaders}. */
+  private headers: Record<string, string>;
   /** Optional OAuth 2.1 layer for the HTTP transport (bearer token + 401 re-auth). */
   private readonly oauth?: McpOAuthProvider;
 
@@ -330,6 +331,15 @@ export class McpClient extends EventEmitter {
     this.connectTimeout = options.connectTimeout ?? 10000;
     this.rootPaths = options.rootPaths ?? [];
     this.oauth = options.oauth;
+  }
+
+  /**
+   * Replace the client's request headers (static + dynamically-resolved). The
+   * manager calls this at connect time for servers with a `headersHelper` so
+   * rotating/short-lived auth headers are refreshed before the HTTP/SSE handshake.
+   */
+  setHeaders(headers: Record<string, string>): void {
+    this.headers = { ...headers };
   }
 
   get state(): McpClientState { return this._state; }
@@ -897,6 +907,20 @@ export class McpClient extends EventEmitter {
                 this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
               } else {
                 reject(new Error('MCP HTTP 401 Unauthorized (authorization failed)'));
+              }
+            }).catch(reject);
+            return;
+          }
+          // OAuth 2.1 step-up: a 403 insufficient_scope means the token is valid
+          // but lacks a required scope — drive a full re-consent for the wider
+          // scope and retry once on success (a non-step-up 403 is a real denial).
+          if (statusCode === 403 && this.oauth && !retried) {
+            const www = (res.headers?.['www-authenticate'] as string | undefined) ?? null;
+            this.oauth.onForbidden(www).then((ok: boolean) => {
+              if (ok) {
+                this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
+              } else {
+                reject(new Error('MCP HTTP 403 Forbidden (insufficient scope — authorization failed)'));
               }
             }).catch(reject);
             return;

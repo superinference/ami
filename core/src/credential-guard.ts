@@ -1,25 +1,88 @@
-const CREDENTIAL_PATTERNS = [
-  /sk-ant-[a-zA-Z0-9-]{20,}/g,
-  /sk-[a-zA-Z0-9]{20,}/g,
-  /AIza[a-zA-Z0-9_-]{35}/g,
-  /ghp_[a-zA-Z0-9]{36}/g,
-  /gho_[a-zA-Z0-9]{36}/g,
-  /github_pat_[a-zA-Z0-9_]{22,}/g,
-  /glpat-[a-zA-Z0-9_-]{20,}/g,
-  /xoxb-[0-9]+-[a-zA-Z0-9]+/g,
-  /xoxp-[0-9]+-[a-zA-Z0-9]+/g,
+/**
+ * Canonical secret-detection catalog. Each rule pairs a stable snake_case type
+ * (used by findCredentials and getCredentialLabel) with its matcher, so the
+ * detect / redact / enumerate paths all derive from ONE source and cannot drift
+ * (previously CREDENTIAL_PATTERNS and the findCredentials typeMap were two
+ * hand-synced lists). Prefixes are high-confidence, gitleaks-derived, so a wide
+ * range of provider credentials are caught before text leaves the process.
+ */
+interface SecretRule {
+  type: string;
+  pattern: RegExp;
+}
+
+const SECRET_RULES: SecretRule[] = [
+  // Anthropic must precede the generic openai `sk-` rule.
+  { type: 'anthropic_key', pattern: /sk-ant-[a-zA-Z0-9-]{20,}/g },
+  { type: 'openai_key', pattern: /sk-[a-zA-Z0-9]{20,}/g },
+  { type: 'google_key', pattern: /AIza[a-zA-Z0-9_-]{35}/g },
+  // GCP / Vertex AI service-account identity (low-entropy structured text the
+  // entropy-gated assigned-secret rule cannot catch).
+  { type: 'gcp_service_account', pattern: /[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com/g },
+  // GitHub token family: classic PAT, OAuth, fine-grained PAT, app (ghu/ghs),
+  // refresh (ghr).
+  { type: 'github_pat', pattern: /ghp_[a-zA-Z0-9]{36}/g },
+  { type: 'github_oauth', pattern: /gho_[a-zA-Z0-9]{36}/g },
+  { type: 'github_fine_pat', pattern: /github_pat_[a-zA-Z0-9_]{22,}/g },
+  { type: 'github_app_token', pattern: /gh[us]_[a-zA-Z0-9]{36}/g },
+  { type: 'github_refresh_token', pattern: /ghr_[a-zA-Z0-9]{36}/g },
+  { type: 'gitlab_pat', pattern: /glpat-[a-zA-Z0-9_-]{20,}/g },
+  { type: 'gitlab_deploy_token', pattern: /gldt-[a-zA-Z0-9_-]{20}/g },
+  { type: 'slack_bot', pattern: /xoxb-[0-9]+-[a-zA-Z0-9]+/g },
+  { type: 'slack_user', pattern: /xoxp-[0-9]+-[a-zA-Z0-9]+/g },
+  { type: 'slack_app', pattern: /xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+/gi },
   // AWS access-key family: long-term (AKIA), temporary/STS session (ASIA),
   // plus A3T*/ABIA/ACCA prefixes. Body is base32 (A-Z,2-7), 16 chars.
-  /(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}/g,
-  /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g,
-  /nvapi-[a-zA-Z0-9_-]{20,}/g,
+  { type: 'aws_access_key', pattern: /(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}/g },
+  { type: 'jwt', pattern: /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g },
+  { type: 'nvidia_key', pattern: /nvapi-[a-zA-Z0-9_-]{20,}/g },
+  // Stripe (restricted + secret, test/live/prod); Stripe uses `sk_`/`rk_` with
+  // an underscore so it never collides with the openai `sk-` rule above.
+  { type: 'stripe_key', pattern: /(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}/g },
+  { type: 'npm_token', pattern: /npm_[a-zA-Z0-9]{36}/g },
+  { type: 'shopify_token', pattern: /shp(?:at|ss)_[a-fA-F0-9]{32}/g },
+  { type: 'digitalocean_token', pattern: /d(?:op|oo)_v1_[a-f0-9]{64}/g },
+  { type: 'huggingface_token', pattern: /hf_[a-zA-Z]{34}/g },
+  { type: 'sentry_token', pattern: /sntryu_[a-f0-9]{64}/g },
+  { type: 'grafana_token', pattern: /glc_[A-Za-z0-9+/]{32,400}={0,3}|glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}/g },
+  { type: 'databricks_token', pattern: /dapi[a-f0-9]{32}(?:-\d)?/g },
+  { type: 'pulumi_token', pattern: /pul-[a-f0-9]{40}/g },
+  { type: 'postman_token', pattern: /PMAK-[a-fA-F0-9]{24}-[a-fA-F0-9]{34}/g },
+  { type: 'twilio_key', pattern: /SK[0-9a-fA-F]{32}/g },
   // PEM private-key blocks (RSA / EC / OPENSSH / DSA / PGP / unlabelled).
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+  { type: 'private_key', pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g },
   // Bearer tokens in Authorization headers / curl examples.
-  /Bearer\s+[a-zA-Z0-9_\-.=+/]{20,}/g,
+  { type: 'bearer_token', pattern: /Bearer\s+[a-zA-Z0-9_\-.=+/]{20,}/g },
 ];
 
+const CREDENTIAL_PATTERNS = SECRET_RULES.map(r => r.pattern);
+
 export const REDACT_PLACEHOLDER = '[REDACTED]';
+
+// Words whose canonical capitalization differs from naive Title Case, mirroring
+// Claude's ruleIdToLabel special-case table so brand/acronym casing renders
+// correctly in UI/introspection surfaces.
+const LABEL_SPECIAL_CASE: Record<string, string> = {
+  aws: 'AWS', gcp: 'GCP', api: 'API', pat: 'PAT', ad: 'AD', tf: 'TF',
+  oauth: 'OAuth', npm: 'NPM', pypi: 'PyPI', jwt: 'JWT', github: 'GitHub',
+  gitlab: 'GitLab', openai: 'OpenAI', digitalocean: 'DigitalOcean',
+  huggingface: 'HuggingFace', hashicorp: 'HashiCorp', sendgrid: 'SendGrid',
+  nvidia: 'NVIDIA',
+};
+
+/**
+ * Human-readable, brand-correct label for a snake_case credential type (e.g.
+ * `github_pat` → "GitHub PAT", `aws_access_key` → "AWS Access Key"). Unknown
+ * types fall back to Title Case. Exported so CLI/introspection surfaces can show
+ * what KIND of secret was detected without ever revealing the value.
+ */
+export function getCredentialLabel(type: string): string {
+  return type
+    .split('_')
+    .filter(Boolean)
+    .map(part => LABEL_SPECIAL_CASE[part] ?? (part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(' ');
+}
 
 // ---------------------------------------------------------------------------
 // Entropy-based detection for generic assigned secrets
@@ -100,31 +163,23 @@ export function redactCredentials(text: string): string {
   return result;
 }
 
-export function findCredentials(text: string): Array<{ type: string; start: number; length: number }> {
+export interface CredentialMatch {
+  type: string;
+  /** Brand-correct, human-readable label for the type. */
+  label: string;
+  start: number;
+  length: number;
+}
+
+export function findCredentials(text: string): CredentialMatch[] {
   if (!text || text.length < 10) return [];
-  const found: Array<{ type: string; start: number; length: number }> = [];
+  const found: CredentialMatch[] = [];
 
-  const typeMap: Array<[RegExp, string]> = [
-    [/sk-ant-[a-zA-Z0-9-]{20,}/g, 'anthropic_key'],
-    [/sk-[a-zA-Z0-9]{20,}/g, 'openai_key'],
-    [/AIza[a-zA-Z0-9_-]{35}/g, 'google_key'],
-    [/ghp_[a-zA-Z0-9]{36}/g, 'github_pat'],
-    [/gho_[a-zA-Z0-9]{36}/g, 'github_oauth'],
-    [/github_pat_[a-zA-Z0-9_]{22,}/g, 'github_fine_pat'],
-    [/glpat-[a-zA-Z0-9_-]{20,}/g, 'gitlab_pat'],
-    [/xoxb-[0-9]+-[a-zA-Z0-9]+/g, 'slack_bot'],
-    [/xoxp-[0-9]+-[a-zA-Z0-9]+/g, 'slack_user'],
-    [/(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}/g, 'aws_access_key'],
-    [/eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g, 'jwt'],
-    [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, 'private_key'],
-    [/Bearer\s+[a-zA-Z0-9_\-.=+/]{20,}/g, 'bearer_token'],
-  ];
-
-  for (const [pattern, type] of typeMap) {
+  for (const { pattern, type } of SECRET_RULES) {
     pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      found.push({ type, start: match.index, length: match[0].length });
+      found.push({ type, label: getCredentialLabel(type), start: match.index, length: match[0].length });
     }
   }
 
@@ -136,7 +191,7 @@ export function findCredentials(text: string): Array<{ type: string; start: numb
     const value = em[3];
     if (!assignedSecretShouldRedact(key, value)) continue;
     const valueStart = em.index + em[1].length + em[2].length;
-    found.push({ type: 'generic_secret', start: valueStart, length: value.length });
+    found.push({ type: 'generic_secret', label: getCredentialLabel('generic_secret'), start: valueStart, length: value.length });
   }
 
   return found.sort((a, b) => a.start - b.start);

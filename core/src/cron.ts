@@ -162,6 +162,21 @@ export class CronScheduler {
     );
   }
 
+  /** Narrower kill-switch than isDisabled(): when durable crons are gated off,
+   *  new jobs are silently degraded to session-only (in-memory) rather than
+   *  persisted to disk — the whole scheduler keeps working, but the model-chosen
+   *  prompt is never written to scheduled_tasks.json. Returns true when disk
+   *  persistence is allowed (the default). Mirrors Claude's isDurableCronEnabled()
+   *  gate and reuses the same truthy-env convention as isDisabled(). */
+  static isDurableEnabled(): boolean {
+    return !(
+      process.env.AMI_DISABLE_DURABLE_CRON === '1' ||
+      process.env.AMI_DISABLE_DURABLE_CRON === 'true' ||
+      process.env.CLAUDE_CODE_DISABLE_DURABLE_CRON === '1' ||
+      process.env.CLAUDE_CODE_DISABLE_DURABLE_CRON === 'true'
+    );
+  }
+
   /** Register a predicate; while it returns true the ticker defers firing jobs
    *  (e.g. the session is loading / mid-turn) so a fire never interrupts work. */
   setBusyCheck(fn: (() => boolean) | null): void {
@@ -195,7 +210,10 @@ export class CronScheduler {
       cron: opts.cron,
       prompt: opts.prompt,
       recurring,
-      durable: opts.durable ?? false,
+      // Durable kill-switch: a requested durable job is silently degraded to
+      // session-only when disk persistence is gated off (no schema change, so
+      // the model never sees a validation error if the gate flips mid-session).
+      durable: (opts.durable ?? false) && CronScheduler.isDurableEnabled(),
       createdAt: Date.now(),
       nextRun: nextRun ?? undefined,
       ...(opts.agentId ? { agentId: opts.agentId } : {}),

@@ -104,6 +104,30 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
 const mailboxes = new Map<string, AgentMessage[]>();
 
 /**
+ * Hard upper bound on how many undelivered messages a single agent's mailbox may
+ * retain. Without a cap a never-draining (crashed/evicted) recipient that keeps
+ * being written to grows the buffer without limit — a memory-exhaustion DoS.
+ * Mirrors Claude Code's appendCappedMessage (InProcessTeammateTask/types.ts):
+ * append is bounded by dropping the OLDEST entries, keeping the newest MAX. The
+ * cap is generous (a real drain happens every tool round) so legitimate traffic
+ * is never lost in practice; it only engages on a pathological backlog.
+ */
+export const MAX_MAILBOX = 1000;
+
+/**
+ * Append to an agent's mailbox, capping retention at MAX_MAILBOX by dropping the
+ * oldest entries (drop-oldest, newest-wins) so the buffer cannot grow without
+ * bound. The single canonical mailbox-append site — every enqueue path routes
+ * through here so the cap is impossible to bypass.
+ */
+function appendCapped(box: AgentMessage[], msg: AgentMessage): void {
+  box.push(msg);
+  if (box.length > MAX_MAILBOX) {
+    box.splice(0, box.length - MAX_MAILBOX);
+  }
+}
+
+/**
  * Eager-delivery notifiers (F3). A running agent registers a callback keyed by
  * its name; send_message fires it synchronously after queueing a message so the
  * agent can react right away (e.g. background its current command and poll its
@@ -149,7 +173,7 @@ export function pollMailbox(agentName: string): AgentMessage[] {
 
 function enqueue(to: string, msg: AgentMessage): void {
   const box = mailboxes.get(to) ?? [];
-  box.push(msg);
+  appendCapped(box, msg);
   mailboxes.set(to, box);
   notifyMailbox(to);
 }
@@ -332,7 +356,7 @@ export const sendMessageTool: ToolDefinition = {
     if (toRaw === '*') {
       let sent = 0;
       for (const [name, box] of mailboxes) {
-        if (name !== from) { box.push(msg); notifyMailbox(name); sent++; }
+        if (name !== from) { appendCapped(box, msg); notifyMailbox(name); sent++; }
       }
       return { output: `Broadcast sent to ${sent} agents.` };
     }

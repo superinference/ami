@@ -214,9 +214,12 @@ describe('validateModel — behavioral (driven off the static anthropic list)', 
     assert.ok(res.suggestion);
     assert.ok(res.suggestion!.includes('claude-sonnet'));
   });
-  it('when the list cannot be retrieved it declines to invalidate', async () => {
+  it('when the list cannot be retrieved it declines to invalidate (soft, with reason)', async () => {
     const res = await validateModel(cfg({ provider: 'ollama', baseUrl: '' }), 'anything');
-    assert.deepEqual(res, { valid: true, available: [] });
+    assert.equal(res.valid, true);
+    assert.deepEqual(res.available, []);
+    // Soft failure: not an auth error, so it is allowed through but the reason is surfaced.
+    assert.notEqual(res.errorKind, 'auth');
   });
 });
 

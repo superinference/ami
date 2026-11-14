@@ -8,6 +8,9 @@ import {
   cleanupStaleConfigTmp,
   validateConfigJson,
   CONFIG_WRITE_TIMEOUT_MS,
+  markInternalWrite,
+  consumeInternalWrite,
+  INTERNAL_WRITE_WINDOW_MS,
 } from '../src/config';
 
 describe('CONFIG_WRITE_TIMEOUT_MS', () => {
@@ -181,5 +184,58 @@ describe('cleanupStaleConfigTmp', () => {
     cleanupStaleConfigTmp(fp);
     const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8'));
     assert.equal(parsed.new, true);
+  });
+});
+
+describe('internal-write suppression', () => {
+  const tmpDirs: string[] = [];
+  function makeTmp(): string {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-iw-'));
+    tmpDirs.push(d);
+    return d;
+  }
+  after(() => {
+    for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('INTERNAL_WRITE_WINDOW_MS is 5000', () => {
+    assert.equal(INTERNAL_WRITE_WINDOW_MS, 5000);
+  });
+
+  it('consumes a fresh mark exactly once', () => {
+    const fp = path.join(makeTmp(), 'config.json');
+    markInternalWrite(fp);
+    assert.equal(consumeInternalWrite(fp), true);
+    // second consume: mark already spent
+    assert.equal(consumeInternalWrite(fp), false);
+  });
+
+  it('returns false when no mark exists', () => {
+    const fp = path.join(makeTmp(), 'config.json');
+    assert.equal(consumeInternalWrite(fp), false);
+  });
+
+  it('drops a stale mark outside the window and returns false', () => {
+    const fp = path.join(makeTmp(), 'config.json');
+    const t0 = 1_000_000;
+    markInternalWrite(fp, t0);
+    // fire well after the window: mark is consumed (deleted) but suppress=false
+    assert.equal(consumeInternalWrite(fp, INTERNAL_WRITE_WINDOW_MS, t0 + INTERNAL_WRITE_WINDOW_MS + 1), false);
+    // mark was dropped, so a subsequent in-window consume also returns false
+    assert.equal(consumeInternalWrite(fp, INTERNAL_WRITE_WINDOW_MS, t0 + 1), false);
+  });
+
+  it('matches regardless of path form (resolve-normalized key)', () => {
+    const dir = makeTmp();
+    const fp = path.join(dir, 'config.json');
+    markInternalWrite(fp);
+    assert.equal(consumeInternalWrite(path.join(dir, '.', 'config.json')), true);
+  });
+
+  it('safeWriteConfig marks the written path so the watcher echo is swallowed', () => {
+    const fp = path.join(makeTmp(), 'config.json');
+    safeWriteConfig(fp, { a: 1 });
+    // the write recorded an internal-write mark for fp
+    assert.equal(consumeInternalWrite(fp), true);
   });
 });

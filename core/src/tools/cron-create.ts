@@ -22,8 +22,9 @@ export const cronCreateTool: ToolDefinition = {
     'for a one-shot, pin the date fields and pass recurring:false (e.g. "30 14 25 12 *" = 2:30pm on Dec 25). ' +
     'Prefer OFF-MINUTE times (avoid :00 and :30) to dodge the thundering-herd of everyone\'s round-number schedules. ' +
     'Recurring jobs auto-expire after 7 days unless permanent:true — tell the user about this limit. ' +
-    'Pass durable:true only when the schedule must survive a restart (it is persisted to disk); ' +
-    'session-only (default) is cheaper. Cancel a job with cron_delete.',
+    'Durability: use durable:true ONLY when the user explicitly asks for a schedule that survives a restart ' +
+    '(it is persisted to disk). Most "remind me in 5 minutes" / "check back in an hour" requests should stay ' +
+    'session-only (the default) — it is cheaper and avoids leaving stray jobs on disk. Cancel a job with cron_delete.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -103,13 +104,22 @@ export const cronCreateTool: ToolDefinition = {
     const schedule = sched.formatSchedule(cron);
     const nextRun = job.nextRun ? new Date(job.nextRun).toLocaleString() : 'unknown';
     const expiry = recurring && !permanent ? '\n  Auto-expires in 7 days (pass permanent:true to keep it).' : '';
-    const durabilityNote = durable ? '\n  Persisted to disk (survives restarts).' : '\n  Session-only (lost on restart).';
+    // Report the EFFECTIVE durability (job.durable), which the scheduler may have
+    // degraded to session-only when the durable kill-switch is active. If the
+    // model requested durable:true but it was gated off, say so explicitly.
+    const effectiveDurable = job.durable;
+    const degraded = durable && !effectiveDurable;
+    const durabilityNote = effectiveDurable
+      ? '\n  Persisted to disk (survives restarts).'
+      : degraded
+        ? '\n  Durable persistence is disabled by operator policy — this job is session-only (lost on restart).'
+        : '\n  Session-only (lost on restart).';
 
     return {
       output:
         `Scheduled ${recurring ? 'recurring' : 'one-shot'} job ${job.id}\n` +
         `  Schedule: ${schedule} (local time)\n  Next run: ${nextRun}\n` +
-        `  Recurring: ${recurring}\n  Durable: ${durable}${expiry}${durabilityNote}\n` +
+        `  Recurring: ${recurring}\n  Durable: ${effectiveDurable}${expiry}${durabilityNote}\n` +
         '  Cancel with cron_delete.',
     };
   },

@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { projectStateDir } from './reference-journal';
+import { projectStateDir, canonicalGitRoot } from './reference-journal';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -881,9 +881,11 @@ export class MemoryManager {
    * Returns the absolute path to the memory directory.
    */
   getMemoryDir(): string {
-    // Auto-memory lives GLOBALLY under ~/.ami/projects/<cwd-slug>/memory (like Claude Code's
-    // ~/.claude/projects/<slug>/memory), keyed by cwd slug.
-    return projectStateDir(this.cwd, 'memory');
+    // Auto-memory lives GLOBALLY under ~/.ami/projects/<slug>/memory (like Claude Code's
+    // ~/.claude/projects/<slug>/memory). The slug is keyed on the CANONICAL git root,
+    // not the raw cwd, so every worktree and subdirectory of one repo shares a single
+    // auto-memory directory instead of fragmenting it per `cd`/per worktree.
+    return projectStateDir(canonicalGitRoot(this.cwd), 'memory');
   }
 
   /**

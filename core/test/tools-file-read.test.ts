@@ -1,9 +1,9 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { fileReadTool, isImagePath, parseImageToolOutput, encodeImageFile, isImageExtension, validateImageFile, isBinaryByExtension, checkBinaryContent } from '../src/tools/file-read';
+import { fileReadTool, isImagePath, parseImageToolOutput, parseFileImagesOutput, buildFileImagesOutput, isPdftoppmAvailable, renderPdfPagesToImages, resetPdftoppmCache, pdfHooks, encodeImageFile, isImageExtension, validateImageFile, isBinaryByExtension, checkBinaryContent } from '../src/tools/file-read';
 import { getFileCache } from '../src/file-cache';
 import type { ToolContext } from '../src/types';
 
@@ -902,5 +902,141 @@ describe('fileReadTool – notebook cell pagination', () => {
     for (let i = 0; i < 4; i++) {
       assert.ok(!result.output.includes(`CELL_BODY_${i}`), `cell ${i} must not appear`);
     }
+  });
+
+  it('extracts image/png and image/jpeg cell outputs as attached image blocks', async () => {
+    const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const nb = {
+      cells: [
+        {
+          cell_type: 'code',
+          source: ['plot()'],
+          id: 'c0',
+          outputs: [
+            { output_type: 'stream', text: ['rendering\n'] },
+            // base64 stored as an array of whitespace-padded lines (Jupyter form).
+            { output_type: 'display_data', data: { 'image/png': [PNG_B64.slice(0, 40) + '\n', PNG_B64.slice(40) + '\n'] } },
+            { output_type: 'execute_result', data: { 'image/jpeg': '  ' + PNG_B64 + '  ' } },
+          ],
+        },
+      ],
+      metadata: { kernelspec: { display_name: 'Python 3', name: 'python3' } },
+      nbformat: 4, nbformat_minor: 5,
+    };
+    const fp = path.join(tmpDir, 'img.ipynb');
+    fs.writeFileSync(fp, JSON.stringify(nb));
+    const result = await fileReadTool.execute({ file_path: fp }, ctx());
+    assert.ok(!result.isError);
+    const parsed = parseFileImagesOutput(result.output);
+    assert.ok(parsed, 'notebook output carries extracted images');
+    assert.equal(parsed!.kind, 'notebook');
+    assert.equal(parsed!.images.length, 2);
+    assert.deepEqual(parsed!.images.map(i => i.source.media_type), ['image/png', 'image/jpeg']);
+    // Whitespace stripped from the array/padded forms.
+    assert.equal(parsed!.images[0].source.data, PNG_B64);
+    assert.equal(parsed!.images[1].source.data, PNG_B64);
+    // The cell text is preserved alongside the images.
+    assert.ok(parsed!.text.includes('plot()'));
+    assert.ok(parsed!.text.includes('[output image: image/png (attached)]'));
+  });
+
+  it('includes the full Python traceback in error-output cells', async () => {
+    const nb = {
+      cells: [{
+        cell_type: 'code', source: ['boom()'], id: 'c0',
+        outputs: [{ output_type: 'error', ename: 'ValueError', evalue: 'bad', traceback: ['Traceback:', '  line 1', 'ValueError: bad'] }],
+      }],
+      metadata: { kernelspec: { display_name: 'Python 3', name: 'python3' } }, nbformat: 4, nbformat_minor: 5,
+    };
+    const fp = path.join(tmpDir, 'err.ipynb');
+    fs.writeFileSync(fp, JSON.stringify(nb));
+    const result = await fileReadTool.execute({ file_path: fp }, ctx());
+    assert.ok(result.output.includes('[error] ValueError: bad'));
+    assert.ok(result.output.includes('  line 1'), 'full traceback lines included');
+  });
+
+  it('replaces oversized cell outputs with a jq escape-hatch hint', async () => {
+    const big = 'x'.repeat(11_000);
+    const nb = {
+      cells: [{
+        cell_type: 'code', source: ['print(data)'], id: 'c0',
+        outputs: [{ output_type: 'stream', text: [big] }],
+      }],
+      metadata: { kernelspec: { display_name: 'Python 3', name: 'python3' } }, nbformat: 4, nbformat_minor: 5,
+    };
+    const fp = path.join(tmpDir, 'huge.ipynb');
+    fs.writeFileSync(fp, JSON.stringify(nb));
+    const result = await fileReadTool.execute({ file_path: fp }, ctx());
+    assert.ok(result.output.includes("jq '.cells[0].outputs'"), 'jq hint present');
+    assert.ok(!result.output.includes(big), 'oversized output not inlined');
+  });
+
+  it('returns plain text output for a notebook with no image outputs', async () => {
+    const fp = writeNotebook(3);
+    const result = await fileReadTool.execute({ file_path: fp }, ctx());
+    assert.equal(parseFileImagesOutput(result.output), null);
+    assert.ok(result.output.includes('CELL_BODY_0'));
+  });
+
+  it('parseFileImagesOutput returns null for non-image-bearing outputs', () => {
+    assert.equal(parseFileImagesOutput('plain text'), null);
+    assert.equal(parseFileImagesOutput(JSON.stringify({ type: 'file_images', kind: 'notebook', text: 't', images: [] })), null);
+    assert.equal(parseFileImagesOutput('{"type":"file_images" bad json'), null);
+    assert.equal(parseFileImagesOutput(JSON.stringify({ type: 'file_images', kind: 'bogus', text: 't', images: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA' } }] })), null);
+  });
+
+  it('buildFileImagesOutput round-trips through parseFileImagesOutput', () => {
+    const img = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg', data: 'QUJD' } };
+    const out = buildFileImagesOutput('pdf', 'hello', [img]);
+    const parsed = parseFileImagesOutput(out);
+    assert.equal(parsed!.kind, 'pdf');
+    assert.equal(parsed!.text, 'hello');
+    assert.equal(parsed!.images.length, 1);
+  });
+});
+
+describe('PDF pdftoppm image fallback', () => {
+  let pdfTmp: string;
+  beforeEach(() => { pdfTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-img-')); resetPdftoppmCache(); });
+  afterEach(() => { resetPdftoppmCache(); fs.rmSync(pdfTmp, { recursive: true, force: true }); });
+
+  it('isPdftoppmAvailable caches a positive probe (version on stderr)', async () => {
+    let calls = 0;
+    mock.method(pdfHooks, 'execFile', async () => { calls++; return { code: 0, stdout: '', stderr: 'pdftoppm version 22.0' }; });
+    assert.equal(await isPdftoppmAvailable(), true);
+    assert.equal(await isPdftoppmAvailable(), true);
+    assert.equal(calls, 1, 'availability probe is cached');
+  });
+
+  it('isPdftoppmAvailable returns false when the binary is missing', async () => {
+    mock.method(pdfHooks, 'execFile', async () => { throw new Error('ENOENT'); });
+    assert.equal(await isPdftoppmAvailable(), false);
+  });
+
+  it('renderPdfPagesToImages returns [] when pdftoppm is unavailable', async () => {
+    mock.method(pdfHooks, 'execFile', async () => ({ code: 127, stdout: '', stderr: '' }));
+    assert.equal((await renderPdfPagesToImages('/tmp/whatever.pdf')).length, 0);
+  });
+
+  it('renderPdfPagesToImages renders pages to base64 jpeg blocks', async () => {
+    const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    mock.method(pdfHooks, 'execFile', async (_cmd: string, args: string[]) => {
+      if (args.includes('-v')) return { code: 0, stdout: '', stderr: 'v' };
+      // The render invocation ends with <pdf> <prefix>; write fake jpgs at the prefix.
+      const prefix = args[args.length - 1];
+      fs.writeFileSync(`${prefix}-02.jpg`, JPEG);
+      fs.writeFileSync(`${prefix}-01.jpg`, JPEG);
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const imgs = await renderPdfPagesToImages('/tmp/scan.pdf', { firstPage: 1, lastPage: 2 });
+    assert.equal(imgs.length, 2);
+    assert.equal(imgs[0].source.media_type, 'image/jpeg');
+    assert.equal(imgs[0].source.data, JPEG.toString('base64'));
+  });
+
+  it('renderPdfPagesToImages returns [] when pdftoppm exits nonzero', async () => {
+    mock.method(pdfHooks, 'execFile', async (_c: string, args: string[]) =>
+      args.includes('-v') ? { code: 0, stdout: '', stderr: 'v' } : { code: 1, stdout: '', stderr: 'boom' });
+    assert.equal((await renderPdfPagesToImages('/tmp/x.pdf')).length, 0);
   });
 });

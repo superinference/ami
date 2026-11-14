@@ -137,6 +137,12 @@ export interface TranscriptMeta {
   teamName?: string;
   /** Swarm agent name — present on the first message of a resumed teammate session. */
   agentName?: string;
+  /** Render this message ONLY in verbose/transcript mode while STILL sending it to
+   *  the model — a third visibility state distinct from {@link UserMessage.isMeta}
+   *  (which hides it from the model entirely). Consumers treat
+   *  `isMeta || isVisibleInTranscriptOnly` as "synthetic" for display. Parity:
+   *  Claude's `createUserMessage({ isVisibleInTranscriptOnly })` + `shouldShowUserMessage`. */
+  isVisibleInTranscriptOnly?: boolean;
 }
 
 export interface UserMessage extends TranscriptMeta {
@@ -151,6 +157,11 @@ export interface UserMessage extends TranscriptMeta {
   /** Permission mode active when this prompt was submitted, preserved per turn for
    *  audit/replay. Parity: Claude's per-message `permissionMode`. */
   permissionMode?: string;
+  /** Ids of inline pasted-image placeholders (e.g. `[Image #1]`) in this message's
+   *  text, correlating each placeholder with the image content block appended to the
+   *  message. Set only when non-empty (else omitted). Parity: Claude's
+   *  `processTextPrompt({ imagePasteIds })` user-message field. */
+  imagePasteIds?: number[];
 }
 
 export interface AssistantMessage extends TranscriptMeta {
@@ -520,6 +531,14 @@ export interface StreamChunk {
     reasoningTokens?: number;
     cachedPromptTokens?: number;
     cacheCreationTokens?: number;
+    /** API service tier reported for this request (parity: `service_tier`). */
+    serviceTier?: ServiceTier;
+    /** Server-side web-search requests reported in this chunk's usage
+     *  (parity: `server_tool_use.web_search_requests`). */
+    webSearchRequests?: number;
+    /** Server-side web-fetch requests reported in this chunk's usage
+     *  (parity: `server_tool_use.web_fetch_requests`). */
+    webFetchRequests?: number;
   };
   error?: string;
   /** The original Error object from the SDK or provider, preserved for structured classification. */
@@ -529,6 +548,11 @@ export interface StreamChunk {
   /** Response headers from the API call (available on 'done' and 'error' chunks). */
   responseHeaders?: Record<string, string>;
 }
+
+/** Per-request API service tier the model call ran under (parity: Claude's usage
+ *  `service_tier`, default 'standard'). A throughput/latency class reflected per
+ *  request for cost/latency attribution. */
+export type ServiceTier = 'standard' | 'priority' | 'batch';
 
 export interface UsageStats {
   promptTokens: number;
@@ -547,6 +571,15 @@ export interface UsageStats {
   cacheHitRate?: number;
   /** Estimated dollar savings from prompt caching. */
   cachedCostSavings?: number;
+  /** API service tier the request(s) ran under (parity: Claude usage `service_tier`,
+   *  default 'standard'). Carried for cost/latency attribution. */
+  serviceTier?: ServiceTier;
+  /** Count of server-side web-search requests folded into this usage record
+   *  (parity: Claude `server_tool_use.web_search_requests`). */
+  webSearchRequests?: number;
+  /** Count of server-side web-fetch requests folded into this usage record
+   *  (parity: Claude `server_tool_use.web_fetch_requests`). */
+  webFetchRequests?: number;
 }
 
 import type { ThinkingLevel } from './model-capabilities';
@@ -623,6 +656,23 @@ export interface UserQuestionOption {
   disabled?: boolean;
 }
 
+/** Three-state terminal outcome of a (sub)agent/task, distinguishing a clean finish
+ *  from an error from a user/abort stop (parity: Claude's task_notification `status`:
+ *  'completed' | 'failed' | 'stopped'). Richer than a bare success boolean. */
+export type TaskTerminalStatus = 'completed' | 'failed' | 'stopped';
+
+/** Live machine-readable usage snapshot for a running (sub)agent, carried on progress
+ *  and terminal events (parity: Claude's task_progress usage `{ total_tokens, tool_uses,
+ *  duration_ms }`). */
+export interface TaskUsageSnapshot {
+  /** Total tokens consumed by the (sub)agent so far. */
+  totalTokens: number;
+  /** Number of tool calls the (sub)agent has made so far. */
+  toolUses: number;
+  /** Wall-clock milliseconds elapsed since the (sub)agent started. */
+  durationMs: number;
+}
+
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -647,8 +697,8 @@ export type EngineEvent =
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
   | { type: 'skill_activated'; skill: string; description: string; hasMcpServers: boolean; source: 'model' | 'user' }
   | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string }
-  | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string }
-  | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number }
+  | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string }
+  | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number; status?: TaskTerminalStatus; toolUses?: number; durationMs?: number }
   | { type: 'todo_update'; todos: TodoItemView[] }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 

@@ -18,6 +18,10 @@ export interface SuperInferenceConfig {
    *  model. Lets the critic run on a cheaper/stronger model than the agent loop
    *  (parity: Claude's advisor `advisorModel`/`baseModel`). */
   criticModel?: string;
+  /** Whether the user may override {@link criticModel} (true) or it is pinned by an
+   *  experiment/managed policy (false). When false, UI/config surfaces must treat the
+   *  critic model as fixed. Default true. Parity: Claude's advisor `canUserConfigure`. */
+  canUserConfigureCriticModel?: boolean;
 }
 
 export interface CriticDecision {
@@ -31,6 +35,15 @@ export interface CriticDecision {
   unavailable?: boolean;
   /** Machine-readable error code when {@link unavailable} is set. */
   errorCode?: string;
+  /** Model that produced this critic/advisor verdict (the resolved critic model, which
+   *  may differ from the main-loop model), for review attribution in the transcript.
+   *  Parity: Claude's advisor-message model attribution. */
+  model?: string;
+  /** True when the advisor's reasoning came back encrypted/redacted yet the verdict is
+   *  still a COMPLETE review (not an {@link unavailable} failure) — the score/approval
+   *  stand; only the rationale was withheld. Parity: Claude's redacted-review completion
+   *  state (a redacted advisor output is still a finished review). */
+  redacted?: boolean;
 }
 
 export interface BeliefState {
@@ -61,4 +74,5 @@ export const DEFAULT_CONFIG: Required<SuperInferenceConfig> = {
   useLLMCritic: false,
   enforcing: false,
   criticModel: '',
+  canUserConfigureCriticModel: true,
 };

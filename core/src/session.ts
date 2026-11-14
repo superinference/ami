@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { execSync as childExecSync } from 'child_process';
 import type { Message, ProviderConfig, SessionId } from './types';
 import { asSessionId } from './types';
-import { projectStateDir, ndjsonSafeStringify } from './reference-journal';
+import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot } from './reference-journal';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, fsHooks, OWNER_ONLY_FILE_MODE, OWNER_ONLY_DIR_MODE } from './utils/fs-atomic';
 import { getGitBranch } from './utils/git';
@@ -142,10 +142,12 @@ export class SessionManager {
   private static _idCounter = 0;
 
   constructor(cwd: string, sessionDirOverride?: string) {
-    // Resume blobs live GLOBALLY under ~/.ami/projects/<cwd-slug>/sessions (like Claude Code's
-    // ~/.claude/projects/<slug>/), not inside the repo — keyed by cwd slug.
+    // Resume blobs live GLOBALLY under ~/.ami/projects/<slug>/sessions (like Claude Code's
+    // ~/.claude/projects/<slug>/), not inside the repo. The slug is keyed on the CANONICAL
+    // git root so every worktree/subdirectory of one repo shares a single session store
+    // (resume a session started in any worktree of the repo), not a fragment per directory.
     this.cwd = cwd;
-    this.sessionDir = sessionDirOverride ?? projectStateDir(cwd, 'sessions');
+    this.sessionDir = sessionDirOverride ?? projectStateDir(canonicalGitRoot(cwd), 'sessions');
   }
 
   /** Git branch for the session's cwd, resolved once per manager and memoized —
@@ -353,6 +355,54 @@ export class SessionManager {
   }
 
   /**
+   * Branch a conversation into a NEW session (parity: Claude's forkSession).
+   *
+   * Every message uuid is remapped to a fresh id while the `parentUuid` threading
+   * chain is preserved under the remap, so the fork is an independent transcript
+   * tree that shares no ids with its source (editing one never corrupts the
+   * other). `upToMessageId` cuts the branch at a specific message (matched by its
+   * source uuid, inclusive) — the classic "rewind and try a different path"
+   * operation. A `parentUuid` that pointed outside the kept prefix is dropped so
+   * the first retained message becomes a root. The forked session is persisted and
+   * returned.
+   */
+  fork(source: Session, opts: { upToMessageId?: string } = {}): Session {
+    let msgs = source.messages;
+    if (opts.upToMessageId !== undefined) {
+      const cut = msgs.findIndex(m => m.uuid === opts.upToMessageId);
+      if (cut === -1) {
+        throw new Error(`fork: upToMessageId '${opts.upToMessageId}' not found in source session`);
+      }
+      msgs = msgs.slice(0, cut + 1);
+    }
+    // Pre-assign a fresh uuid for every message that carries one, so parentUuid
+    // references within the kept prefix can be rewritten to the new ids.
+    const idMap = new Map<string, string>();
+    for (const m of msgs) {
+      if (m.uuid) idMap.set(m.uuid, crypto.randomUUID());
+    }
+    const remapped: Message[] = msgs.map(m => {
+      const next = { ...m } as Message;
+      if (m.uuid) next.uuid = idMap.get(m.uuid);
+      if (m.parentUuid !== undefined) {
+        // Rewrite to the remapped parent, or drop it if the parent was truncated.
+        next.parentUuid = idMap.get(m.parentUuid);
+      }
+      return next;
+    });
+    const now = new Date().toISOString();
+    const forked: Session = {
+      ...source,
+      id: SessionManager.newId(),
+      messages: remapped,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.save(forked);
+    return forked;
+  }
+
+  /**
    * Generate a timestamp-based session ID.
    */
   static newId(): SessionId {
@@ -421,6 +471,45 @@ export class SessionManager {
     if (!flat) return '(no messages)';
     return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Resume-time turn-interruption recovery
+// ---------------------------------------------------------------------------
+
+/** Result of scanning a loaded transcript for a turn that was cut off mid-flight
+ *  (parity: Claude's conversationRecovery). `interrupted` is true when the model
+ *  requested tool calls that were never answered — i.e. the process died between
+ *  the assistant's tool_use and the tool_result — so the resume path can inject a
+ *  synthetic continuation instead of resuming into an inconsistent state. */
+export interface TurnInterruption {
+  interrupted: boolean;
+  /** tool_call ids that were requested but have no matching tool result. */
+  pendingToolCallIds: string[];
+}
+
+/**
+ * Detect a mid-turn interruption over a loaded message list: any assistant
+ * `tool_calls` id that is not satisfied by a later `tool` message (`tool_call_id`)
+ * means the turn was cut off before the tool result was recorded. Pure + order-
+ * preserving (pending ids are returned in request order), so the --resume path can
+ * decide to synthesize a continuation prompt.
+ */
+export function detectTurnInterruption(messages: Message[]): TurnInterruption {
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'tool' && typeof m.tool_call_id === 'string') answered.add(m.tool_call_id);
+  }
+  const pendingToolCallIds: string[] = [];
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue;
+    for (const tc of m.tool_calls) {
+      if (tc && typeof tc.id === 'string' && !answered.has(tc.id)) {
+        pendingToolCallIds.push(tc.id);
+      }
+    }
+  }
+  return { interrupted: pendingToolCallIds.length > 0, pendingToolCallIds };
 }
 
 // ---------------------------------------------------------------------------
