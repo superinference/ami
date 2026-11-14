@@ -1,6 +1,8 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { spillToolText } from './spill-output';
 import { boundMcpResponse } from '../mcp/client';
+import type { McpToolAnnotations } from '../mcp/client';
+import { stripInvisibleUnicode, recursivelySanitizeUnicode } from './input-sanitizer';
 
 /** Default MCP tool call timeout: 5 minutes (300 000 ms). */
 export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000;
@@ -41,12 +43,42 @@ export function qualifiedMcpToolName(serverName: string, toolName: string): stri
   return full.slice(0, MAX_MCP_TOOL_NAME_LEN - suffix.length) + suffix;
 }
 
-export function createMcpTool(serverName: string, toolName: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
+/** Extract a human-readable error string from an MCP tool result flagged
+ *  `isError: true`: the first text content part, else a legacy `.error` field,
+ *  else a generic message. Mirrors Claude Code's isError extraction. */
+export function extractMcpErrorText(result: unknown): string {
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const obj = result as Record<string, unknown>;
+    if (Array.isArray(obj.content) && obj.content.length > 0) {
+      const first = obj.content[0] as Record<string, unknown> | undefined;
+      if (first && typeof first === 'object' && typeof first.text === 'string') return first.text;
+    }
+    if ('error' in obj && obj.error !== undefined) return String(obj.error);
+  }
+  return 'MCP tool returned an error';
+}
+
+export function createMcpTool(
+  serverName: string,
+  toolName: string,
+  description: string,
+  inputSchema: Record<string, unknown>,
+  annotations?: McpToolAnnotations,
+): ToolDefinition {
+  // Untrusted server-supplied metadata is advertised to the model; strip hidden
+  // Unicode from the name/description and every string in the input schema so a
+  // server cannot smuggle invisible prompt-injection instructions (H28).
+  const safeDescription = stripInvisibleUnicode(description);
+  const safeInputSchema = recursivelySanitizeUnicode(inputSchema);
+  // MCP annotations declare read-only/concurrency semantics (H29).
+  const readOnly = annotations?.readOnlyHint ?? false;
   return {
-    name: qualifiedMcpToolName(serverName, toolName),
-    description: `[MCP:${serverName}] ${description}`,
-    inputSchema: inputSchema as any,
-    isReadOnly: false,
+    name: qualifiedMcpToolName(serverName, stripInvisibleUnicode(toolName)),
+    description: `[MCP:${serverName}] ${safeDescription}`,
+    inputSchema: safeInputSchema as any,
+    isReadOnly: readOnly,
+    isConcurrencySafe: readOnly,
+    isMcp: true,
     async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
       const mcpManager = context._mcpManager;
       if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
@@ -80,13 +112,33 @@ export function createMcpTool(serverName: string, toolName: string, description:
         )), timeoutMs);
         timer.unref();
       });
+      // Resolve as soon as the engine/user aborts so an in-flight MCP request is
+      // cancelled (signal forwarded to the transport) instead of leaking until
+      // the long tool-call timeout fires (H27).
+      const abortSignal = context.abortSignal;
+      let onAbort: (() => void) | undefined;
+      const abortPromise = new Promise<never>((_, reject) => {
+        if (!abortSignal) return;
+        if (abortSignal.aborted) { reject(new Error('MCP tool call aborted')); return; }
+        onAbort = () => reject(new Error('MCP tool call aborted'));
+        abortSignal.addEventListener('abort', onAbort, { once: true });
+      });
       try {
         const result = await Promise.race([
-          mcpManager.callTool(serverName + ':' + toolName, input),
+          mcpManager.callTool(serverName + ':' + toolName, input, { signal: abortSignal }),
           timeoutPromise,
+          abortPromise,
         ]);
         clearTimeout(timer!);
+        if (onAbort && abortSignal) abortSignal.removeEventListener('abort', onAbort);
         mcpManager.removeListener?.('notification', elicitListener);
+
+        // A result flagged isError:true is a tool-level failure — surface it as
+        // an error (with the server's own message) rather than a success (H33).
+        if (result && typeof result === 'object' && !Array.isArray(result) &&
+            (result as Record<string, unknown>).isError === true) {
+          return { output: extractMcpErrorText(result), isError: true };
+        }
 
         // Try structured content processing before falling back to JSON
         const processed = processMcpContent(result);
@@ -99,6 +151,7 @@ export function createMcpTool(serverName: string, toolName: string, description:
         return { output: spillToolText(context.cwd, 'mcp', bounded.content, spillCap), metadata: mergedMeta };
       } catch (err) {
         clearTimeout(timer!);
+        if (onAbort && abortSignal) abortSignal.removeEventListener('abort', onAbort);
         mcpManager.removeListener?.('notification', elicitListener);
         if (gotElicitation && context.detachedMode) {
           return { output: 'MCP tool call timed out because the server requested user input (elicitation), but no user was available to answer in non-interactive mode. Do not retry this tool call.', isError: true };

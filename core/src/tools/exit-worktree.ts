@@ -4,14 +4,34 @@ import * as child_process from 'child_process';
 import { ToolDefinition, ToolResult } from '../types';
 
 /**
- * Dependency seam for tests (mirrors `_enterWorktreeHooks`). All git subprocess
- * calls route through this object so tests can inject a `git worktree remove`
- * failure to exercise the fs.rmSync + prune fallback deterministically, without
- * depending on the host git version's removal behaviour. The defaults are the
- * real child_process.execSync / fs ops, so production behaviour is unchanged.
+ * Run git with NO SHELL (execFile with an argv array) so a worktree path or
+ * branch name can never be interpreted as a shell metacharacter
+ * (command-injection immune — parity with worktree-manager's gitExec and
+ * Claude's execFileNoThrowWithCwd). Returns trimmed stdout.
+ */
+function runGit(
+  args: string[],
+  opts: { cwd: string; stdio?: 'ignore' | 'pipe' } = { cwd: process.cwd() },
+): string {
+  const out = child_process.execFileSync('git', args, {
+    cwd: opts.cwd,
+    encoding: 'utf-8',
+    stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
+  });
+  return typeof out === 'string' ? out.trim() : '';
+}
+
+/**
+ * Dependency seam for tests (mirrors `_enterWorktreeHooks`). The destructive
+ * teardown git calls (worktree remove / prune / branch -D) route through this
+ * object so tests can inject a `git worktree remove` failure to exercise the
+ * fs.rmSync + prune fallback deterministically, without depending on the host
+ * git version's removal behaviour. `exec` takes an argv array (no shell). The
+ * defaults are the real no-shell git / fs ops, so production behaviour is
+ * unchanged.
  */
 export const _exitWorktreeHooks = {
-  execSync: child_process.execSync as typeof child_process.execSync,
+  exec: runGit,
   existsSync: fs.existsSync as typeof fs.existsSync,
   rmSync: fs.rmSync as typeof fs.rmSync,
 };
@@ -71,7 +91,7 @@ export const exitWorktreeTool: ToolDefinition = {
     }
 
     try {
-      child_process.execSync('git rev-parse --is-inside-work-tree', { cwd: context.cwd, stdio: 'ignore' });
+      runGit(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
     } catch {
       return {
         output: 'Error: not inside a git repository. For non-git VCS, configure WorktreeCreate/WorktreeRemove hooks.',
@@ -81,7 +101,7 @@ export const exitWorktreeTool: ToolDefinition = {
 
     let worktreePath: string;
     try {
-      worktreePath = child_process.execSync('git rev-parse --show-toplevel', { cwd: context.cwd, encoding: 'utf-8' }).trim().normalize('NFC');
+      worktreePath = runGit(['rev-parse', '--show-toplevel'], { cwd: context.cwd }).normalize('NFC');
     } catch {
       return { output: 'Error: could not determine worktree path.', isError: true };
     }
@@ -105,7 +125,7 @@ export const exitWorktreeTool: ToolDefinition = {
     // Resolve the worktree's branch now (used for keep messaging + remove teardown).
     let branch: string | undefined = existing?.worktreeBranch;
     if (!branch) {
-      try { branch = child_process.execSync('git rev-parse --abbrev-ref HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim(); } catch { /* detached */ }
+      try { branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath }); } catch { /* detached */ }
     }
     const branchLabel = branch ? ` (branch ${branch})` : '';
 
@@ -137,7 +157,7 @@ export const exitWorktreeTool: ToolDefinition = {
       }
       if (changes.uncommitted > 0) {
         let status = '';
-        try { status = child_process.execSync('git status --porcelain', { cwd: worktreePath, encoding: 'utf-8' }).trim(); } catch { /* best effort */ }
+        try { status = runGit(['status', '--porcelain'], { cwd: worktreePath }); } catch { /* best effort */ }
         const files = status ? status.split('\n') : [];
         const preview = files.length > FILE_PREVIEW_THRESHOLD
           ? `${files.slice(0, FILE_PREVIEW_THRESHOLD).join('\n')}\n… and ${files.length - FILE_PREVIEW_THRESHOLD} more`
@@ -161,13 +181,13 @@ export const exitWorktreeTool: ToolDefinition = {
 
     const repoRoot = worktreePath.split('.ami/worktrees/')[0];
     try {
-      _exitWorktreeHooks.execSync(`git worktree remove --force "${worktreePath}"`, { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' });
+      _exitWorktreeHooks.exec(['worktree', 'remove', '--force', worktreePath], { cwd: worktreePath, stdio: 'pipe' });
     } catch (e) {
       try {
         if (_exitWorktreeHooks.existsSync(worktreePath)) {
           _exitWorktreeHooks.rmSync(worktreePath, { recursive: true, force: true });
         }
-        _exitWorktreeHooks.execSync('git worktree prune', { cwd: repoRoot, stdio: 'ignore' });
+        _exitWorktreeHooks.exec(['worktree', 'prune'], { cwd: repoRoot, stdio: 'ignore' });
       } catch {
         return { output: `Error removing worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
@@ -175,7 +195,7 @@ export const exitWorktreeTool: ToolDefinition = {
 
     // Delete the (now-unused) worktree branch as part of teardown.
     if (branch) {
-      try { _exitWorktreeHooks.execSync(`git branch -D "${branch}"`, { cwd: repoRoot, stdio: 'ignore' }); } catch { /* branch may be checked out elsewhere / gone */ }
+      try { _exitWorktreeHooks.exec(['branch', '-D', branch], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* branch may be checked out elsewhere / gone */ }
     }
 
     const activeSession = getCurrentWorktreeSession();

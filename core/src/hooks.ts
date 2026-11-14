@@ -121,7 +121,20 @@ export type HookDecision =
 // ---------------------------------------------------------------------------
 
 export type PreToolUseHookFn = (context: PreToolUseContext) => Promise<HookDecision>;
-export type PostToolUseHookFn = (context: PostToolUseContext) => Promise<{ additionalContext?: string; updatedToolOutput?: string } | void>;
+/**
+ * PostToolUse hook result. Beyond context/output mutation, a PostToolUse hook
+ * can BLOCK (feed a blocking error back to the model) or PREVENT CONTINUATION
+ * (halt the agent loop after the tool ran), matching Claude Code's
+ * toolHooks `{ blockingError, preventContinuation, stopReason }`.
+ */
+export interface PostToolUseHookResult {
+  additionalContext?: string;
+  updatedToolOutput?: string;
+  blockingError?: string;
+  preventContinuation?: boolean;
+  stopReason?: string;
+}
+export type PostToolUseHookFn = (context: PostToolUseContext) => Promise<PostToolUseHookResult | void>;
 export type PreSamplingHookFn = (context: PreSamplingContext) => Promise<HookDecision>;
 
 export interface SessionContext {
@@ -139,6 +152,12 @@ export interface SubagentContext {
 export interface CompactContext {
   messageCount: number;
   tokenEstimate: number;
+  /** Whether compaction was auto-triggered (token pressure) or user-requested
+   *  (`/compact`). Surfaced to PreCompact hooks (Claude Code parity). */
+  trigger?: 'auto' | 'manual';
+  /** The user-supplied custom compaction instructions a PreCompact hook may
+   *  read and extend/override via `newCustomInstructions`. */
+  customInstructions?: string | null;
 }
 
 export interface PermissionContext {
@@ -203,20 +222,60 @@ export interface ElicitationContext {
   mode?: string;
 }
 
-export type SessionHookFn = (context: SessionContext) => Promise<{ initialUserMessage?: string } | void>;
+export type SessionHookFn = (context: SessionContext) => Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void>;
 export type SubagentHookFn = (context: SubagentContext) => Promise<void>;
+/** SubagentStart hook: may contribute additionalContexts prepended to the
+ *  subagent's initial messages (Claude Code parity). */
+export type SubagentStartHookFn = (context: SubagentContext) => Promise<{ additionalContexts?: string[] } | void>;
 export type CompactHookFn = (context: CompactContext) => Promise<void>;
+/** PreCompact hook: may inject/override compaction instructions and surface a
+ *  user-facing display message (Claude Code parity). */
+export type PreCompactHookFn = (context: CompactContext) => Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void>;
 export type PermissionHookFn = (context: PermissionContext) => Promise<{ action?: 'allow' | 'deny'; reason?: string } | void>;
 export type TaskEventHookFn = (context: TaskEventContext) => Promise<void>;
-export type UserPromptHookFn = (context: UserPromptContext) => Promise<{ additionalContext?: string } | void>;
+/** TaskCompleted hook: a blocking hook can veto a status→completed transition
+ *  by returning a blockingError (Claude Code parity). */
+export type TaskCompletedHookFn = (context: TaskEventContext) => Promise<{ blockingError?: string } | void>;
+/** UserPromptSubmit hook result: may inject context, or BLOCK/deny the prompt
+ *  (blockingError) / prevent continuation, matching Claude Code. */
+export interface UserPromptSubmitHookResult {
+  additionalContext?: string;
+  blockingError?: string;
+  preventContinuation?: boolean;
+  stopReason?: string;
+}
+export type UserPromptHookFn = (context: UserPromptContext) => Promise<UserPromptSubmitHookResult | void>;
 export type NotificationHookFn = (context: NotificationContext) => Promise<void>;
-export type ConfigChangeHookFn = (context: ConfigChangeContext) => Promise<void>;
+/** ConfigChange hook: a blocking hook can VETO a config change before it is
+ *  applied (Claude Code's hasBlockingResult). */
+export type ConfigChangeHookFn = (context: ConfigChangeContext) => Promise<{ blockingError?: string } | void>;
 export type InstructionsHookFn = (context: InstructionsContext) => Promise<void>;
 export type WorktreeHookFn = (context: WorktreeContext) => Promise<void>;
-export type FileChangeHookFn = (context: FileChangeContext) => Promise<void>;
-export type CwdChangedHookFn = (context: CwdChangedContext) => Promise<void>;
-export type ElicitationHookFn = (context: ElicitationContext) => Promise<void>;
+export type FileChangeHookFn = (context: FileChangeContext) => Promise<{ watchPaths?: string[] } | void>;
+export type CwdChangedHookFn = (context: CwdChangedContext) => Promise<{ watchPaths?: string[] } | void>;
+/** Elicitation action a hook may return to short-circuit the user prompt. */
+export type ElicitationAction = 'accept' | 'decline' | 'cancel';
+export interface ElicitationHookResult {
+  /** Programmatic response that short-circuits / overrides the user prompt. */
+  action?: ElicitationAction;
+  content?: Record<string, unknown>;
+  /** Blocking error → decline the elicitation. */
+  blockingError?: string;
+}
+export type ElicitationHookFn = (context: ElicitationContext) => Promise<ElicitationHookResult | void>;
 export type StopFailureHookFn = (context: StopFailureContext) => Promise<void>;
+
+/** Aggregated result of running Stop hooks (Claude Code's StopHookResult). */
+export interface StopHookResult {
+  /** Blocking reasons fed back into the turn as user messages. */
+  blockingErrors: string[];
+  /** A hook asked to prevent the turn from ending (continue the loop). */
+  preventContinuation: boolean;
+  /** Reason surfaced when preventContinuation is set. */
+  stopReason?: string;
+}
+/** Stop hook: may block turn-end (blockingError) or prevent continuation. */
+export type StopHookFn = (context: HookContext) => Promise<{ blockingError?: string; preventContinuation?: boolean; stopReason?: string } | void>;
 
 // ---------------------------------------------------------------------------
 // Hook concurrency limiter — at most N of one event execute at a time
@@ -456,6 +515,177 @@ export function serializeHookEvent(obj: Record<string, unknown>): string {
 }
 
 // ---------------------------------------------------------------------------
+// Shared hook-output decoders (canonical — reused by every execute* method
+// that consumes runHookByType's flattened result; never re-implement per site).
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical extractor for a blocking reason from a flattened hook result.
+ * runHookByType maps exit-2 / `decision:block` / `continue:false` to the
+ * `DENY:<reason>` sentinel; this returns the reason when a hook blocked, else
+ * undefined. Used by Stop / PostToolUse / TaskCompleted blocking consumers.
+ */
+export function extractHookBlockingError(result: string): string | undefined {
+  if (typeof result === 'string' && result.startsWith('DENY:')) {
+    return result.slice(5).trim();
+  }
+  return undefined;
+}
+
+/**
+ * Canonical best-effort JSON decode of a hook's raw stdout. Returns the parsed
+ * object (for reading structured fields like watchPaths / additionalContexts /
+ * newCustomInstructions / elicitation action) or undefined when the output is
+ * not a JSON object.
+ */
+export function tryParseHookJson(result: string): Record<string, unknown> | undefined {
+  if (typeof result !== 'string') return undefined;
+  const trimmed = result.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch { /* not JSON */ }
+  return undefined;
+}
+
+/**
+ * Canonical merge of user-supplied compaction instructions with hook-injected
+ * ones (mirrors Claude Code's mergeHookInstructions): hook text is appended,
+ * blank-line separated; either side may be empty.
+ */
+export function mergeHookInstructions(
+  userInstructions: string | undefined | null,
+  hookInstructions: string | undefined | null,
+): string | undefined {
+  if (!hookInstructions) return userInstructions || undefined;
+  if (!userInstructions) return hookInstructions;
+  return `${userInstructions}\n\n${hookInstructions}`;
+}
+
+/** Collect additional-context strings a hook contributed, from any of:
+ *  `additionalContexts: string[]`, `additionalContext: string`,
+ *  `systemMessage: string`, or the flattened `SYSTEM:<text>` sentinel. Shared by
+ *  SubagentStart / other context-injecting consumers. */
+export function extractAdditionalContexts(result: string): string[] {
+  const out: string[] = [];
+  const obj = tryParseHookJson(result);
+  if (obj) {
+    if (Array.isArray(obj.additionalContexts)) {
+      for (const c of obj.additionalContexts) if (typeof c === 'string' && c) out.push(c);
+    }
+    if (typeof obj.additionalContext === 'string' && obj.additionalContext) out.push(obj.additionalContext);
+    if (typeof obj.systemMessage === 'string' && obj.systemMessage) out.push(obj.systemMessage);
+  } else if (typeof result === 'string' && result.startsWith('SYSTEM:')) {
+    const text = result.slice(7).trim();
+    if (text) out.push(text);
+  }
+  return out;
+}
+
+/** Decode an elicitation hook's output into a structured result: a programmatic
+ *  `action`/`content` response (short-circuits the user prompt) or a
+ *  `blockingError` (→ decline). A DENY sentinel maps to a blockingError. */
+export function parseElicitationResult(result: string): ElicitationHookResult | undefined {
+  const blockingError = extractHookBlockingError(result);
+  if (blockingError) return { blockingError };
+  const obj = tryParseHookJson(result);
+  if (!obj) return undefined;
+  const out: ElicitationHookResult = {};
+  if (obj.action === 'accept' || obj.action === 'decline' || obj.action === 'cancel') out.action = obj.action;
+  if (obj.content && typeof obj.content === 'object' && !Array.isArray(obj.content)) out.content = obj.content as Record<string, unknown>;
+  if (typeof obj.blockingError === 'string' && obj.blockingError) out.blockingError = obj.blockingError;
+  if (out.action || out.content || out.blockingError) return out;
+  return undefined;
+}
+
+/**
+ * System-prompt contract appended to prompt/agent (AI-driven) hooks so the model
+ * knows exactly what to return: a single JSON object {"ok": boolean, "reason"?:
+ * string}. Mirrors Claude Code's hookResponseSchema / createStructuredOutputTool.
+ */
+export const HOOK_VERIFICATION_CONTRACT =
+  'You are a verification hook. Evaluate the condition described below against the ' +
+  'event data. Respond with EXACTLY one JSON object and nothing else: ' +
+  '{"ok": true} if the condition is met, or {"ok": false, "reason": "<why>"} if it is not.';
+
+/**
+ * Parse an AI-driven hook's output against the {ok, reason} verification schema.
+ * Returns the structured result when the output is a valid verification object,
+ * or undefined when it is free-form (callers fall back to raw-text handling).
+ */
+export function parseHookVerification(output: string): { ok: boolean; reason?: string } | undefined {
+  const obj = tryParseHookJson(output);
+  if (!obj || typeof obj.ok !== 'boolean') return undefined;
+  const reason = typeof obj.reason === 'string' ? obj.reason : undefined;
+  return { ok: obj.ok, reason };
+}
+
+/** Pull an array of absolute watch paths from a hook's JSON output (watchPaths),
+ *  filtering to non-empty strings. Shared by sessionStart / cwdChanged /
+ *  fileChanged which can register dynamic FileChanged watches. */
+export function parseWatchPaths(result: string): string[] {
+  const obj = tryParseHookJson(result);
+  const raw = obj?.watchPaths;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((p): p is string => typeof p === 'string' && p.length > 0);
+}
+
+/**
+ * Per-event matcher field (Claude Code's hooksConfigManager fieldToMatch): for
+ * non-tool events the `matcher` is applied against this context field instead of
+ * the tool name, so a hook can be scoped to e.g. a specific MCP server, compact
+ * trigger, config source, or subagent type. Events absent from this map (and the
+ * tool events, handled inline against toolName) treat a matcher as a no-op.
+ */
+export const HOOK_MATCHER_FIELD: Record<string, string> = {
+  notification: 'notificationType',
+  subagentStart: 'mode',
+  subagentStop: 'mode',
+  preCompact: 'trigger',
+  postCompact: 'trigger',
+  elicitation: 'mcpServerName',
+  elicitationResult: 'mcpServerName',
+  configChange: 'source',
+  instructionsLoaded: 'loadReason',
+  permissionRequest: 'toolName',
+  permissionDenied: 'toolName',
+};
+
+/** True when a hook's `matcher` applies to the given non-tool event context
+ *  (matches the event's fieldToMatch value), or when there is no matcher / no
+ *  matchable field. Shared by every non-tool event registration. */
+export function matcherAppliesToCtx(event: string, matcher: string | undefined, ctx: Record<string, unknown>): boolean {
+  if (!matcher) return true;
+  const field = HOOK_MATCHER_FIELD[event];
+  if (field === undefined) return true;
+  return matchesPattern(matcher, String(ctx[field] ?? ''));
+}
+
+/**
+ * Content-identity equality for hook configs (Claude Code's isHookEqual): two
+ * hooks are the same when their type + content (command/prompt/url) + `if`
+ * condition match; timeout is ignored. Used to de-duplicate hook entries loaded
+ * from overlapping sources.
+ */
+export function isHookEqual(
+  a: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
+  b: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
+): boolean {
+  if (a.type !== b.type) return false;
+  const sameIf = (a.if ?? '') === (b.if ?? '');
+  switch (a.type) {
+    case 'command': return b.type === 'command' && a.command === b.command && sameIf;
+    case 'prompt': return b.type === 'prompt' && a.prompt === b.prompt && sameIf;
+    case 'agent': return b.type === 'agent' && a.prompt === b.prompt && sameIf;
+    case 'http': return b.type === 'http' && a.url === b.url && sameIf;
+    default: return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HookManager
 // ---------------------------------------------------------------------------
 
@@ -684,6 +914,10 @@ export class HookManager extends EventEmitter {
   private _denyRulesHold = false;
   private _concurrency = new EventConcurrencyLimiter();
   private _effortLevel: string = 'high';
+  /** Absolute paths hooks have asked to watch for FileChanged (via watchPaths
+   *  in sessionStart/cwdChanged/fileChanged output). Exposed for a file-watcher
+   *  consumer and surfaced via the 'watchPaths' event. */
+  private _watchedPaths = new Set<string>();
 
   /**
    * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
@@ -713,6 +947,19 @@ export class HookManager extends EventEmitter {
   /** Install the merged HTTP-hook policy (URL allowlist + header env allowlist). */
   setHttpHookPolicy(policy: HttpHookPolicy | undefined): void { this._httpHookPolicy = policy ?? {}; }
   getHttpHookPolicy(): HttpHookPolicy { return this._httpHookPolicy; }
+
+  /** Permission mode for engine-backed (prompt/agent) hooks. Defaults to
+   *  'auto-allow' but the session can set its real permission mode so a hook's
+   *  sub-engine runs under the session's permission context, not blanket allow. */
+  private _hookEnginePermissionMode: string = 'auto-allow';
+  setHookEnginePermissionMode(mode: string): void { this._hookEnginePermissionMode = mode; }
+  getHookEnginePermissionMode(): string { return this._hookEnginePermissionMode; }
+
+  /** When true (org policy), ONLY admin/managed-settings hooks execute — project,
+   *  user, and plugin hooks are not loaded (Claude Code's allowManagedHooksOnly). */
+  private _allowManagedHooksOnly = false;
+  setAllowManagedHooksOnly(on: boolean): void { this._allowManagedHooksOnly = on; }
+  isAllowManagedHooksOnly(): boolean { return this._allowManagedHooksOnly; }
 
   /** Override the HTTP-hook SSRF validator (tests only; defaults to the shared
    *  web-utils validateUrlSafety). */
@@ -749,6 +996,82 @@ export class HookManager extends EventEmitter {
     });
   }
 
+  // ---- Async ('background') hook registry ----
+  /** In-flight async hook promises, tracked so they can be awaited (finalize)
+   *  or cancelled (kill) at shutdown instead of leaking as fire-and-forget. */
+  private _pendingAsync = new Set<Promise<unknown>>();
+  /** Shutdown signal shared by all async hooks; aborting it tears down every
+   *  in-flight async hook (command child killed / HTTP request aborted / engine
+   *  hook query aborted). Reset after cancelAll so later hooks are not born
+   *  pre-aborted. */
+  private _asyncAbort = new AbortController();
+
+  /** Number of async hooks still running (introspection surface). */
+  getPendingAsyncCount(): number { return this._pendingAsync.size; }
+
+  /**
+   * Fire an async ('background') hook: run it under a shutdown-cancellable signal
+   * (combined with any parent/turn signal), track the promise so it can be
+   * finalized/cancelled at shutdown, and swallow its errors. Replaces the old
+   * untracked fire-and-forget firing of async hooks.
+   */
+  private fireAsyncHook(
+    config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
+    cwd: string,
+    eventData: string,
+    parentSignal?: AbortSignal,
+  ): void {
+    const ac = new AbortController();
+    const onAbort = () => ac.abort();
+    if (this._asyncAbort.signal.aborted || parentSignal?.aborted) {
+      ac.abort();
+    } else {
+      this._asyncAbort.signal.addEventListener('abort', onAbort, { once: true });
+      parentSignal?.addEventListener('abort', onAbort, { once: true });
+    }
+    const p: Promise<unknown> = this.runHookByType(config, cwd, eventData, ac.signal)
+      .catch(() => { /* async hooks never surface errors to the turn */ })
+      .finally(() => {
+        this._asyncAbort.signal.removeEventListener('abort', onAbort);
+        parentSignal?.removeEventListener('abort', onAbort);
+        this._pendingAsync.delete(p);
+      });
+    this._pendingAsync.add(p);
+  }
+
+  /** Await every in-flight async hook to settle (graceful shutdown). */
+  async finalizePendingAsyncHooks(): Promise<void> {
+    await Promise.all(Array.from(this._pendingAsync));
+  }
+
+  /** Cancel every in-flight async hook (hard shutdown) and reset the signal so
+   *  subsequently-fired hooks are not born aborted. Returns the count cancelled. */
+  cancelAllAsyncHooks(): number {
+    const count = this._pendingAsync.size;
+    this._asyncAbort.abort();
+    this._asyncAbort = new AbortController();
+    return count;
+  }
+
+  /** Dynamically-registered FileChanged watch paths contributed by hook output. */
+  getWatchedPaths(): string[] { return Array.from(this._watchedPaths); }
+
+  /**
+   * Parse `watchPaths` from a hook's output, register any new absolute paths,
+   * and emit a 'watchPaths' event so a file-watcher consumer can start watching
+   * them. Returns the parsed paths (empty when none). Idempotent per path.
+   */
+  private registerWatchPaths(event: string, result: string): string[] {
+    const paths = parseWatchPaths(result);
+    if (paths.length === 0) return [];
+    const added: string[] = [];
+    for (const p of paths) {
+      if (!this._watchedPaths.has(p)) { this._watchedPaths.add(p); added.push(p); }
+    }
+    if (added.length > 0) this.emit('watchPaths', { event, paths: added });
+    return paths;
+  }
+
   private buildHookEnv(event: string, toolName?: string): Record<string, string> {
     return {
       ...sanitizeHookEnv(process.env as Record<string, string | undefined>),
@@ -764,22 +1087,25 @@ export class HookManager extends EventEmitter {
   }
 
   private postSamplingHooks: HookFn[] = [];
-  private stopHooks: HookFn[] = [];
+  private stopHooks: StopHookFn[] = [];
+  /** Re-entrancy guard: a Stop hook (or its blocking-error re-entry) must not
+   *  recursively trigger Stop hooks again (Claude Code's stopHookActive). */
+  private _stopHookActive = false;
   private errorHooks: HookFn[] = [];
   private preToolUseHooks: PreToolUseHookFn[] = [];
   private postToolUseHooks: PostToolUseHookFn[] = [];
   private preSamplingHooks: PreSamplingHookFn[] = [];
   private sessionStartHooks: SessionHookFn[] = [];
   private sessionEndHooks: SessionHookFn[] = [];
-  private subagentStartHooks: SubagentHookFn[] = [];
+  private subagentStartHooks: SubagentStartHookFn[] = [];
   private subagentStopHooks: SubagentHookFn[] = [];
-  private preCompactHooks: CompactHookFn[] = [];
+  private preCompactHooks: PreCompactHookFn[] = [];
   private postCompactHooks: CompactHookFn[] = [];
   private permissionRequestHooks: PermissionHookFn[] = [];
   private permissionDeniedHooks: PermissionHookFn[] = [];
   private userPromptSubmitHooks: UserPromptHookFn[] = [];
   private taskCreatedHooks: TaskEventHookFn[] = [];
-  private taskCompletedHooks: TaskEventHookFn[] = [];
+  private taskCompletedHooks: TaskCompletedHookFn[] = [];
   private postToolUseFailureHooks: PostToolUseHookFn[] = [];
   private notificationHooks: NotificationHookFn[] = [];
   private setupHooks: SessionHookFn[] = [];
@@ -808,7 +1134,12 @@ export class HookManager extends EventEmitter {
     const filePath = path.join(cwd, '.ami', 'hooks.json');
     const userHooksPath = path.join(os.homedir(), '.ami', 'hooks.json');
 
-    const sources: Array<{ path: string; source: 'project' | 'user' }> = [
+    const sources: Array<{ path: string; source: 'project' | 'user'; managed?: boolean }> = [];
+    // Admin/managed settings (highest authority) — the ONLY source honored when
+    // allowManagedHooksOnly is set.
+    const managedPath = process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH;
+    if (managedPath) sources.push({ path: managedPath, source: 'user', managed: true });
+    sources.push(
       { path: filePath, source: 'project' },
       { path: userHooksPath, source: 'user' },
       // Claude Code compatibility: load hooks from .claude/settings.json
@@ -817,10 +1148,11 @@ export class HookManager extends EventEmitter {
       // project-scoped entries are gated by workspace trust. (R2-M8)
       { path: path.join(cwd, '.claude', 'settings.json'), source: 'project' },
       { path: path.join(os.homedir(), '.claude', 'settings.json'), source: 'user' },
-    ];
+    );
 
     // Plugin bundles contribute hooks.json (project-scoped ones gated by trust).
-    try {
+    // Skipped entirely under allowManagedHooksOnly (only managed hooks run).
+    if (!this._allowManagedHooksOnly) try {
       const { discoverPlugins } = require('./plugins');
       const pluginDirs: Array<[string, 'user' | 'project']> = [
         [path.join(resolveConfigDir(), 'plugins'), 'user'],
@@ -828,12 +1160,28 @@ export class HookManager extends EventEmitter {
       ];
       for (const [dir, src] of pluginDirs) {
         for (const bundle of discoverPlugins(dir)) {
+          // A disabled plugin must NOT contribute executable hooks: skip bundles
+          // whose root carries a `.disabled` marker (mirrors skill-manager gating).
+          if (fs.existsSync(path.join(bundle.root, '.disabled'))) {
+            coreLog('hooks', `Skipping hooks from disabled plugin: ${bundle.root}`);
+            continue;
+          }
           if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src });
         }
       }
     } catch { /* plugins module optional */ }
 
-    for (const { path: p, source } of sources) {
+    // Org policy: when allowManagedHooksOnly is set, drop every non-managed source
+    // so only admin/managed-settings hooks execute.
+    const effectiveSources = this._allowManagedHooksOnly ? sources.filter(s => s.managed) : sources;
+
+    // Content-identity de-dup across overlapping sources: the same hook defined
+    // in two places (e.g. .ami/hooks.json and .claude/settings.json) registers once.
+    const accepted: Array<{ event: string; hook: HookConfigEntry['hook'] }> = [];
+    const alreadyAccepted = (entry: HookConfigEntry): boolean =>
+      accepted.some(a => a.event === entry.event && entry.hook && isHookEqual(a.hook, entry.hook));
+
+    for (const { path: p, source } of effectiveSources) {
       let raw: string;
       try {
         raw = fs.readFileSync(p, 'utf-8');
@@ -854,6 +1202,11 @@ export class HookManager extends EventEmitter {
             coreLog('hooks', `Skipping project hook (workspace not trusted): ${entry.event}`);
             continue;
           }
+          if (alreadyAccepted(entry)) {
+            coreLog('hooks', `Skipping duplicate hook for event "${entry.event}"`);
+            continue;
+          }
+          if (entry.hook) accepted.push({ event: entry.event, hook: entry.hook });
           this.processHookEntry(entry, cwd);
         }
       } catch (err) {
@@ -861,7 +1214,7 @@ export class HookManager extends EventEmitter {
       }
     }
 
-    try {
+    if (!this._allowManagedHooksOnly) try {
       const configPath = path.join(cwd, '.ami', 'config.json');
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf-8');
@@ -895,7 +1248,7 @@ export class HookManager extends EventEmitter {
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return { action: 'allow' };
             const eventData = serializeHookEvent({ event: 'preToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData, ctx.abortSignal);
-            if (hookConfig.async) { runner().catch(() => {}); return { action: 'allow' }; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData, ctx.abortSignal); return { action: 'allow' }; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.preToolUseHooks, fn);
             if (result.startsWith('DENY:')) return { action: 'deny', reason: result.slice(5).trim() };
@@ -920,26 +1273,32 @@ export class HookManager extends EventEmitter {
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
             const eventData = serializeHookEvent({ event: 'postToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput, toolOutput: ctx.toolOutput, isError: ctx.isError, duration_ms: ctx.durationMs });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData, ctx.abortSignal);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData, ctx.abortSignal); return; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.postToolUseHooks, fn);
-            try {
-              const parsed = JSON.parse(result);
-              const out: { additionalContext?: string; updatedToolOutput?: string } = {};
-              if (parsed.additionalContext) out.additionalContext = parsed.additionalContext;
-              if (parsed.updatedToolOutput) out.updatedToolOutput = parsed.updatedToolOutput;
-              if (out.additionalContext || out.updatedToolOutput) return out;
-            } catch {}
+            // A PostToolUse hook may block (DENY / exit-2) or request a stop
+            // (continue:false) — both surface via the DENY sentinel; feed the
+            // reason back to the model as a blocking error (Claude Code parity).
+            const blockingError = extractHookBlockingError(result);
+            if (blockingError) return { blockingError };
+            const parsed = tryParseHookJson(result);
+            if (parsed) {
+              const out: PostToolUseHookResult = {};
+              if (typeof parsed.additionalContext === 'string') out.additionalContext = parsed.additionalContext;
+              if (typeof parsed.updatedToolOutput === 'string') out.updatedToolOutput = parsed.updatedToolOutput;
+              if (parsed.continue === false) { out.preventContinuation = true; if (typeof parsed.stopReason === 'string') out.stopReason = parsed.stopReason; }
+              if (out.additionalContext || out.updatedToolOutput || out.preventContinuation) return out;
+            }
             return undefined;
           };
           this.onPostToolUse(fn);
           break;
         }
         case 'preSampling': {
-          const fn: PreSamplingHookFn = async (_ctx) => {
+          const fn: PreSamplingHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'preSampling' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return { action: 'allow' }; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData, ctx.abortSignal); return { action: 'allow' }; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.preSamplingHooks, fn);
             if (result.startsWith('DENY:')) return { action: 'deny', reason: result.slice(5).trim() };
@@ -952,7 +1311,7 @@ export class HookManager extends EventEmitter {
           const fn: HookFn = async () => {
             const eventData = serializeHookEvent({ event: 'postSampling' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.postSamplingHooks, fn);
           };
@@ -960,12 +1319,15 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'stop': {
-          const fn: HookFn = async () => {
+          const fn: StopHookFn = async () => {
             const eventData = serializeHookEvent({ event: 'stop' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.stopHooks, fn);
+            const blockingError = extractHookBlockingError(result);
+            if (blockingError) return { blockingError };
+            return undefined;
           };
           this.onStop(fn);
           break;
@@ -974,7 +1336,7 @@ export class HookManager extends EventEmitter {
           const fn: HookFn = async () => {
             const eventData = serializeHookEvent({ event: 'error' });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.errorHooks, fn);
           };
@@ -985,15 +1347,17 @@ export class HookManager extends EventEmitter {
           const fn: SessionHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.sessionStartHooks, fn);
+            const watchPaths = this.registerWatchPaths('sessionStart', result);
             try {
               const parsed = JSON.parse(result);
-              if (parsed.initialUserMessage) return { initialUserMessage: parsed.initialUserMessage };
-              if (parsed.systemMessage) return { initialUserMessage: parsed.systemMessage };
+              if (parsed.initialUserMessage) return { initialUserMessage: parsed.initialUserMessage, watchPaths };
+              if (parsed.systemMessage) return { initialUserMessage: parsed.systemMessage, watchPaths };
             } catch {}
-            if (result.startsWith('SYSTEM:')) return { initialUserMessage: result.slice(7).trim() };
+            if (result.startsWith('SYSTEM:')) return { initialUserMessage: result.slice(7).trim(), watchPaths };
+            if (watchPaths.length > 0) return { watchPaths };
             return undefined;
           };
           this.onSessionStart(fn);
@@ -1003,7 +1367,7 @@ export class HookManager extends EventEmitter {
           const fn: SessionHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'sessionEnd', sessionId: ctx.sessionId });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.sessionEndHooks, fn);
           };
@@ -1011,21 +1375,26 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'subagentStart': {
-          const fn: SubagentHookFn = async (ctx) => {
+          const fn: SubagentStartHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('subagentStart', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'subagentStart', prompt: ctx.prompt });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.subagentStartHooks, fn);
+            const contexts = extractAdditionalContexts(result);
+            if (contexts.length > 0) return { additionalContexts: contexts };
+            return undefined;
           };
           this.onSubagentStart(fn);
           break;
         }
         case 'subagentStop': {
           const fn: SubagentHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('subagentStop', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'subagentStop', subagentSessionId: ctx.subagentSessionId });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.subagentStopHooks, fn);
           };
@@ -1033,21 +1402,31 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'preCompact': {
-          const fn: CompactHookFn = async (ctx) => {
-            const eventData = serializeHookEvent({ event: 'preCompact', messageCount: ctx.messageCount });
+          const fn: PreCompactHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('preCompact', matcher, ctx as unknown as Record<string, unknown>)) return;
+            const eventData = serializeHookEvent({ event: 'preCompact', messageCount: ctx.messageCount, trigger: ctx.trigger, customInstructions: ctx.customInstructions ?? undefined });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.preCompactHooks, fn);
+            const parsed = tryParseHookJson(result);
+            if (parsed) {
+              const out: { newCustomInstructions?: string; userDisplayMessage?: string } = {};
+              if (typeof parsed.newCustomInstructions === 'string') out.newCustomInstructions = parsed.newCustomInstructions;
+              if (typeof parsed.userDisplayMessage === 'string') out.userDisplayMessage = parsed.userDisplayMessage;
+              if (out.newCustomInstructions || out.userDisplayMessage) return out;
+            }
+            return undefined;
           };
           this.onPreCompact(fn);
           break;
         }
         case 'postCompact': {
           const fn: CompactHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('postCompact', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'postCompact', messageCount: ctx.messageCount });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.postCompactHooks, fn);
           };
@@ -1056,9 +1435,10 @@ export class HookManager extends EventEmitter {
         }
         case 'permissionRequest': {
           const fn: PermissionHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('permissionRequest', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.permissionRequestHooks, fn);
             if (result.startsWith('DENY:')) return { action: 'deny' as const, reason: result.slice(5).trim() };
@@ -1075,9 +1455,10 @@ export class HookManager extends EventEmitter {
         }
         case 'permissionDenied': {
           const fn: PermissionHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('permissionDenied', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'permissionDenied', toolName: ctx.toolName });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.permissionDeniedHooks, fn);
           };
@@ -1088,13 +1469,20 @@ export class HookManager extends EventEmitter {
           const fn: UserPromptHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'userPromptSubmit', turnCount: ctx.turnCount, prompt: ctx.prompt });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.userPromptSubmitHooks, fn);
-            try {
-              const parsed = JSON.parse(result);
-              if (parsed.additionalContext) return { additionalContext: parsed.additionalContext };
-            } catch {}
+            // A UserPromptSubmit hook can BLOCK the prompt (DENY / exit-2) or
+            // request a stop (continue:false) — feed the reason back (Claude parity).
+            const blockingError = extractHookBlockingError(result);
+            if (blockingError) return { blockingError };
+            const parsed = tryParseHookJson(result);
+            if (parsed) {
+              const out: UserPromptSubmitHookResult = {};
+              if (typeof parsed.additionalContext === 'string') out.additionalContext = parsed.additionalContext;
+              if (parsed.continue === false) { out.preventContinuation = true; if (typeof parsed.stopReason === 'string') out.stopReason = parsed.stopReason; }
+              if (out.additionalContext || out.preventContinuation) return out;
+            }
             return undefined;
           };
           this.onUserPromptSubmit(fn);
@@ -1104,7 +1492,7 @@ export class HookManager extends EventEmitter {
           const fn: TaskEventHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'taskCreated', taskId: ctx.taskId, subject: ctx.subject });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.taskCreatedHooks, fn);
           };
@@ -1112,12 +1500,16 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'taskCompleted': {
-          const fn: TaskEventHookFn = async (ctx) => {
-            const eventData = serializeHookEvent({ event: 'taskCompleted', taskId: ctx.taskId, subject: ctx.subject });
+          const fn: TaskCompletedHookFn = async (ctx) => {
+            const eventData = serializeHookEvent({ event: 'taskCompleted', taskId: ctx.taskId, subject: ctx.subject, status: ctx.status });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.taskCompletedHooks, fn);
+            // A blocking TaskCompleted hook vetoes the status→completed transition.
+            const blockingError = extractHookBlockingError(result);
+            if (blockingError) return { blockingError };
+            return undefined;
           };
           this.onTaskCompleted(fn);
           break;
@@ -1128,7 +1520,7 @@ export class HookManager extends EventEmitter {
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
             const eventData = serializeHookEvent({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData, ctx.abortSignal);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData, ctx.abortSignal); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.postToolUseFailureHooks, fn);
           };
@@ -1137,9 +1529,10 @@ export class HookManager extends EventEmitter {
         }
         case 'notification': {
           const fn: NotificationHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('notification', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'notification', message: ctx.message, title: ctx.title });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.notificationHooks, fn);
           };
@@ -1150,7 +1543,7 @@ export class HookManager extends EventEmitter {
           const fn: SessionHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'setup', sessionId: ctx.sessionId, cwd: ctx.cwd });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.setupHooks, fn);
           };
@@ -1159,20 +1552,25 @@ export class HookManager extends EventEmitter {
         }
         case 'configChange': {
           const fn: ConfigChangeHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('configChange', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'configChange', source: ctx.source, filePath: ctx.filePath });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.configChangeHooks, fn);
+            const blockingError = extractHookBlockingError(result);
+            if (blockingError) return { blockingError };
+            return undefined;
           };
           this.onConfigChange(fn);
           break;
         }
         case 'instructionsLoaded': {
           const fn: InstructionsHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('instructionsLoaded', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'instructionsLoaded', filePath: ctx.filePath, loadReason: ctx.loadReason });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.instructionsLoadedHooks, fn);
           };
@@ -1183,7 +1581,7 @@ export class HookManager extends EventEmitter {
           const fn: WorktreeHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'worktreeCreate', name: ctx.name, worktreePath: ctx.worktreePath });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.worktreeCreateHooks, fn);
           };
@@ -1194,7 +1592,7 @@ export class HookManager extends EventEmitter {
           const fn: WorktreeHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'worktreeRemove', name: ctx.name, worktreePath: ctx.worktreePath });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.worktreeRemoveHooks, fn);
           };
@@ -1205,9 +1603,12 @@ export class HookManager extends EventEmitter {
           const fn: CwdChangedHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'cwdChanged', oldCwd: ctx.oldCwd, newCwd: ctx.newCwd });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.cwdChangedHooks, fn);
+            const watchPaths = this.registerWatchPaths('cwdChanged', result);
+            if (watchPaths.length > 0) return { watchPaths };
+            return undefined;
           };
           this.onCwdChanged(fn);
           break;
@@ -1218,31 +1619,38 @@ export class HookManager extends EventEmitter {
             if (matcher && !matchesPattern(matcher, ctx.filePath)) return;
             const eventData = serializeHookEvent({ event: 'fileChanged', filePath: ctx.filePath, fileEvent: ctx.event });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.fileChangedHooks, fn);
+            const watchPaths = this.registerWatchPaths('fileChanged', result);
+            if (watchPaths.length > 0) return { watchPaths };
+            return undefined;
           };
           this.onFileChanged(fn);
           break;
         }
         case 'elicitation': {
           const fn: ElicitationHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('elicitation', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'elicitation', mcpServerName: ctx.mcpServerName, message: ctx.message });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.elicitationHooks, fn);
+            return parseElicitationResult(result);
           };
           this.onElicitation(fn);
           break;
         }
         case 'elicitationResult': {
           const fn: ElicitationHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('elicitationResult', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'elicitationResult', mcpServerName: ctx.mcpServerName, message: ctx.message });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
-            await runner();
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
+            const result = await runner();
             if (hookConfig.once) this.removeHookOnce(this.elicitationResultHooks, fn);
+            return parseElicitationResult(result);
           };
           this.onElicitationResult(fn);
           break;
@@ -1251,7 +1659,7 @@ export class HookManager extends EventEmitter {
           const fn: StopFailureHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'stopFailure', error: ctx.error, hookIndex: ctx.hookIndex });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
-            if (hookConfig.async) { runner().catch(() => {}); return; }
+            if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.stopFailureHooks, fn);
           };
@@ -1269,7 +1677,7 @@ export class HookManager extends EventEmitter {
     this.postSamplingHooks.push(fn);
   }
 
-  onStop(fn: HookFn): void {
+  onStop(fn: StopHookFn): void {
     this.stopHooks.push(fn);
   }
 
@@ -1295,15 +1703,15 @@ export class HookManager extends EventEmitter {
 
   onSessionStart(fn: SessionHookFn): void { this.sessionStartHooks.push(fn); }
   onSessionEnd(fn: SessionHookFn): void { this.sessionEndHooks.push(fn); }
-  onSubagentStart(fn: SubagentHookFn): void { this.subagentStartHooks.push(fn); }
+  onSubagentStart(fn: SubagentStartHookFn): void { this.subagentStartHooks.push(fn); }
   onSubagentStop(fn: SubagentHookFn): void { this.subagentStopHooks.push(fn); }
-  onPreCompact(fn: CompactHookFn): void { this.preCompactHooks.push(fn); }
+  onPreCompact(fn: PreCompactHookFn): void { this.preCompactHooks.push(fn); }
   onPostCompact(fn: CompactHookFn): void { this.postCompactHooks.push(fn); }
   onPermissionRequest(fn: PermissionHookFn): void { this.permissionRequestHooks.push(fn); }
   onPermissionDenied(fn: PermissionHookFn): void { this.permissionDeniedHooks.push(fn); }
   onUserPromptSubmit(fn: UserPromptHookFn): void { this.userPromptSubmitHooks.push(fn); }
   onTaskCreated(fn: TaskEventHookFn): void { this.taskCreatedHooks.push(fn); }
-  onTaskCompleted(fn: TaskEventHookFn): void { this.taskCompletedHooks.push(fn); }
+  onTaskCompleted(fn: TaskCompletedHookFn): void { this.taskCompletedHooks.push(fn); }
   onPostToolUseFailure(fn: PostToolUseHookFn): void { this.postToolUseFailureHooks.push(fn); }
   onNotification(fn: NotificationHookFn): void { this.notificationHooks.push(fn); }
   onSetup(fn: SessionHookFn): void { this.setupHooks.push(fn); }
@@ -1342,16 +1750,39 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeStop(ctx: HookContext): Promise<void> {
-    return this.withConcurrencyGate('stop', async () => {
-      for (let i = 0; i < this.stopHooks.length; i++) {
-        try {
-          await this.stopHooks[i](ctx);
-        } catch (err) {
-          coreLog('hooks', 'Hook error', { error: String(err) });
-          await this.executeStopFailure({ error: String(err), hookIndex: i });
+  /**
+   * Execute Stop hooks. A Stop hook can BLOCK turn-end (blockingError, fed back
+   * into the loop as a user message) or PREVENT CONTINUATION (continue the turn
+   * instead of ending). Returns the aggregated {blockingErrors, preventContinuation,
+   * stopReason} so the engine can re-enter the loop (Claude Code parity).
+   * Re-entrant calls (while Stop hooks are already running) short-circuit to a
+   * neutral result via the stopHookActive guard — a Stop hook cannot recursively
+   * fire Stop hooks.
+   */
+  async executeStop(ctx: HookContext): Promise<StopHookResult> {
+    if (this._stopHookActive) return { blockingErrors: [], preventContinuation: false };
+    return this.withConcurrencyGate('stop', async (): Promise<StopHookResult> => {
+      this._stopHookActive = true;
+      const blockingErrors: string[] = [];
+      let preventContinuation = false;
+      let stopReason: string | undefined;
+      try {
+        for (let i = 0; i < this.stopHooks.length; i++) {
+          try {
+            const r = await this.stopHooks[i](ctx);
+            if (r) {
+              if (r.blockingError) blockingErrors.push(r.blockingError);
+              if (r.preventContinuation) { preventContinuation = true; if (r.stopReason) stopReason = r.stopReason; }
+            }
+          } catch (err) {
+            coreLog('hooks', 'Hook error', { error: String(err) });
+            await this.executeStopFailure({ error: String(err), hookIndex: i });
+          }
         }
+      } finally {
+        this._stopHookActive = false;
       }
+      return { blockingErrors, preventContinuation, stopReason };
     });
   }
 
@@ -1381,20 +1812,27 @@ export class HookManager extends EventEmitter {
   /**
    * Execute post-tool-use hooks. Returns the last additionalContext/updatedToolOutput if any hook provides one.
    */
-  async executePostToolUse(ctx: PostToolUseContext): Promise<{ additionalContext?: string; updatedToolOutput?: string } | void> {
-    return this.withConcurrencyGate('postToolUse', async (): Promise<{ additionalContext?: string; updatedToolOutput?: string } | void> => {
+  async executePostToolUse(ctx: PostToolUseContext): Promise<PostToolUseHookResult | void> {
+    return this.withConcurrencyGate('postToolUse', async (): Promise<PostToolUseHookResult | void> => {
       let additionalContext: string | undefined;
       let updatedToolOutput: string | undefined;
+      let blockingError: string | undefined;
+      let preventContinuation = false;
+      let stopReason: string | undefined;
       for (const hook of this.postToolUseHooks) {
         try {
           const result = await hook(ctx);
           if (result?.additionalContext) additionalContext = result.additionalContext;
           if (result?.updatedToolOutput) updatedToolOutput = result.updatedToolOutput;
+          if (result?.blockingError) blockingError = result.blockingError;
+          if (result?.preventContinuation) { preventContinuation = true; if (result.stopReason) stopReason = result.stopReason; }
         } catch (err) {
           coreLog('hooks', 'Hook error', { error: String(err) });
         }
       }
-      if (additionalContext || updatedToolOutput) return { additionalContext, updatedToolOutput };
+      if (additionalContext || updatedToolOutput || blockingError || preventContinuation) {
+        return { additionalContext, updatedToolOutput, blockingError, preventContinuation: preventContinuation || undefined, stopReason };
+      }
     });
   }
 
@@ -1407,16 +1845,18 @@ export class HookManager extends EventEmitter {
       this.executeDecisionHooks(this.preSamplingHooks, ctx));
   }
 
-  async executeSessionStart(ctx: SessionContext): Promise<{ initialUserMessage?: string } | void> {
-    return this.withConcurrencyGate('sessionStart', async (): Promise<{ initialUserMessage?: string } | void> => {
+  async executeSessionStart(ctx: SessionContext): Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void> {
+    return this.withConcurrencyGate('sessionStart', async (): Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void> => {
       let initialUserMessage: string | undefined;
+      const watchPaths: string[] = [];
       for (const hook of this.sessionStartHooks) {
         try {
           const result = await hook(ctx);
           if (result && result.initialUserMessage) initialUserMessage = result.initialUserMessage;
+          if (result && result.watchPaths?.length) watchPaths.push(...result.watchPaths);
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
-      if (initialUserMessage) return { initialUserMessage };
+      if (initialUserMessage || watchPaths.length > 0) return { initialUserMessage, watchPaths: watchPaths.length > 0 ? watchPaths : undefined };
     });
   }
 
@@ -1428,11 +1868,21 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeSubagentStart(ctx: SubagentContext): Promise<void> {
-    return this.withConcurrencyGate('subagentStart', async () => {
+  /**
+   * Execute SubagentStart hooks and aggregate the additionalContexts they
+   * contribute, which the Task tool prepends to the subagent's initial messages
+   * (Claude Code parity).
+   */
+  async executeSubagentStart(ctx: SubagentContext): Promise<{ additionalContexts: string[] } | void> {
+    return this.withConcurrencyGate('subagentStart', async (): Promise<{ additionalContexts: string[] } | void> => {
+      const additionalContexts: string[] = [];
       for (const hook of this.subagentStartHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r?.additionalContexts?.length) additionalContexts.push(...r.additionalContexts);
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      if (additionalContexts.length > 0) return { additionalContexts };
     });
   }
 
@@ -1444,12 +1894,25 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executePreCompact(ctx: CompactContext): Promise<void> {
-    return this.withConcurrencyGate('preCompact', async () => {
+  /**
+   * Execute PreCompact hooks. A hook can inject/override the compaction
+   * instructions (newCustomInstructions, merged into the user's via
+   * mergeHookInstructions) and surface a user-facing display message
+   * (Claude Code parity). Returns the merged instructions + last display message.
+   */
+  async executePreCompact(ctx: CompactContext): Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void> {
+    return this.withConcurrencyGate('preCompact', async (): Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void> => {
       coreLog('hooks', `[compact] Pre-compact triggered: ${ctx.messageCount} messages, ~${ctx.tokenEstimate} tokens`);
+      let newCustomInstructions: string | undefined;
+      let userDisplayMessage: string | undefined;
       for (const hook of this.preCompactHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r?.newCustomInstructions) newCustomInstructions = mergeHookInstructions(newCustomInstructions, r.newCustomInstructions);
+          if (r?.userDisplayMessage) userDisplayMessage = r.userDisplayMessage;
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      if (newCustomInstructions || userDisplayMessage) return { newCustomInstructions, userDisplayMessage };
     });
   }
 
@@ -1486,16 +1949,28 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeUserPromptSubmit(ctx: UserPromptContext): Promise<{ additionalContext?: string } | void> {
-    return this.withConcurrencyGate('userPromptSubmit', async (): Promise<{ additionalContext?: string } | void> => {
+  /**
+   * Execute UserPromptSubmit hooks. A hook may inject additionalContext, or BLOCK
+   * the prompt (blockingError, surfaced to the user) / prevent continuation —
+   * Claude Code parity. Returns the aggregated result.
+   */
+  async executeUserPromptSubmit(ctx: UserPromptContext): Promise<UserPromptSubmitHookResult | void> {
+    return this.withConcurrencyGate('userPromptSubmit', async (): Promise<UserPromptSubmitHookResult | void> => {
       let additionalContext: string | undefined;
+      let blockingError: string | undefined;
+      let preventContinuation = false;
+      let stopReason: string | undefined;
       for (const hook of this.userPromptSubmitHooks) {
         try {
           const result = await hook(ctx);
-          if (result && result.additionalContext) additionalContext = result.additionalContext;
+          if (result?.additionalContext) additionalContext = result.additionalContext;
+          if (result?.blockingError) blockingError = result.blockingError;
+          if (result?.preventContinuation) { preventContinuation = true; if (result.stopReason) stopReason = result.stopReason; }
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
-      if (additionalContext) return { additionalContext };
+      if (additionalContext || blockingError || preventContinuation) {
+        return { additionalContext, blockingError, preventContinuation: preventContinuation || undefined, stopReason };
+      }
     });
   }
 
@@ -1507,11 +1982,21 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeTaskCompleted(ctx: TaskEventContext): Promise<void> {
-    return this.withConcurrencyGate('taskCompleted', async () => {
+  /**
+   * Execute TaskCompleted hooks. A blocking hook can veto a status→completed
+   * transition; the aggregated blockingErrors are returned so the task tool can
+   * refuse to mutate the status and surface the reason (Claude Code parity).
+   */
+  async executeTaskCompleted(ctx: TaskEventContext): Promise<{ blockingErrors: string[] } | void> {
+    return this.withConcurrencyGate('taskCompleted', async (): Promise<{ blockingErrors: string[] } | void> => {
+      const blockingErrors: string[] = [];
       for (const hook of this.taskCompletedHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r?.blockingError) blockingErrors.push(r.blockingError);
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      if (blockingErrors.length > 0) return { blockingErrors };
     });
   }
 
@@ -1539,11 +2024,21 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeConfigChange(ctx: ConfigChangeContext): Promise<void> {
-    return this.withConcurrencyGate('configChange', async () => {
+  /**
+   * Execute ConfigChange hooks. A blocking hook can VETO the change before it is
+   * applied; the aggregated blockingErrors are returned so the config loader can
+   * refuse to commit and surface the reason (Claude Code's hasBlockingResult).
+   */
+  async executeConfigChange(ctx: ConfigChangeContext): Promise<{ blockingErrors: string[] } | void> {
+    return this.withConcurrencyGate('configChange', async (): Promise<{ blockingErrors: string[] } | void> => {
+      const blockingErrors: string[] = [];
       for (const hook of this.configChangeHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r?.blockingError) blockingErrors.push(r.blockingError);
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      if (blockingErrors.length > 0) return { blockingErrors };
     });
   }
 
@@ -1587,18 +2082,35 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeElicitation(ctx: ElicitationContext): Promise<void> {
-    return this.withConcurrencyGate('elicitation', async () => {
+  /**
+   * Execute pre-response Elicitation hooks. The FIRST hook that returns an
+   * action (programmatic response) or a blockingError short-circuits the user
+   * prompt (Claude Code parity: a hook response resolves the elicitation
+   * directly; a blockingError declines it).
+   */
+  async executeElicitation(ctx: ElicitationContext): Promise<ElicitationHookResult | void> {
+    return this.withConcurrencyGate('elicitation', async (): Promise<ElicitationHookResult | void> => {
       for (const hook of this.elicitationHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r && (r.action || r.content || r.blockingError)) return r;
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
     });
   }
 
-  async executeElicitationResult(ctx: ElicitationContext): Promise<void> {
-    return this.withConcurrencyGate('elicitationResult', async () => {
+  /**
+   * Execute post-response ElicitationResult hooks. A hook can override the
+   * action/content the user supplied, or block the reply (blockingError →
+   * decline). The first hook that returns an override/block wins.
+   */
+  async executeElicitationResult(ctx: ElicitationContext): Promise<ElicitationHookResult | void> {
+    return this.withConcurrencyGate('elicitationResult', async (): Promise<ElicitationHookResult | void> => {
       for (const hook of this.elicitationResultHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r && (r.action || r.content || r.blockingError)) return r;
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
     });
   }
@@ -1815,12 +2327,16 @@ export class HookManager extends EventEmitter {
     const engine = this._engineFactory({
       provider: providerConfig,
       cwd: this._cwd,
-      permissionMode: 'auto-allow',
+      // Run under the session's permission context (not blanket auto-allow unless
+      // that is the session's mode), so a hook agent cannot exceed the user's grant.
+      permissionMode: this._hookEnginePermissionMode,
       abortController: abort.controller,
       disallowedTools: HOOK_AGENT_DISALLOWED_TOOLS,
     });
 
-    const fullPrompt = `${promptText}\n\n${dataLabel}:\n${eventData}`;
+    // Prepend the {ok, reason} verification contract so an AI-driven hook returns
+    // a parseable decision rather than free prose (Claude Code's hookResponseSchema).
+    const fullPrompt = `${HOOK_VERIFICATION_CONTRACT}\n\n${promptText}\n\n${dataLabel}:\n${eventData}`;
     let result = '';
     let error: string | undefined;
     try {
@@ -1837,6 +2353,14 @@ export class HookManager extends EventEmitter {
       engine.shutdown?.();
     }
     if (abort.timedOut()) coreLog('hooks', `${kind} hook hard-timeout after ${timeoutMs}ms`);
+    // Structured verification result → block (ok:false) or allow (ok:true).
+    const verification = parseHookVerification(result);
+    if (verification) {
+      return {
+        output: verification.ok ? '' : `DENY:Hook condition not met: ${verification.reason ?? 'condition not met'}`,
+        error,
+      };
+    }
     return { output: sanitizeHookOutput(result), error };
   }
 

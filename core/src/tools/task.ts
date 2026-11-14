@@ -83,14 +83,26 @@ export const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
 
 /**
  * Universal baseline denylist applied to EVERY sub-agent regardless of its mode
- * or explicit tool allowlist (mirrors Claude Code's ALL_AGENT_DISALLOWED_TOOLS):
+ * or explicit tool allowlist (mirrors Claude Code's ALL_AGENT_DISALLOWED_TOOLS /
+ * CUSTOM_AGENT_DISALLOWED_TOOLS — the one source-of-truth set unioned into every
+ * agent's denylist):
  *  - plan_mode is interactive-only — its "exit" awaits a user approval that never
  *    comes in a sub-agent, and its state is module-global (would corrupt the
  *    parent's plan state).
  *  - workflow would let a sub-agent launch another workflow run recursively.
+ *  - AskUserQuestion is interactive-only: a sub-agent has no user to answer it, so
+ *    it would hang forever waiting for input that never arrives.
+ *  - task_output / task_kill are lead-only coordination tools that read/terminate
+ *    background tasks tracked in the PARENT's process manager — a sub-agent calling
+ *    them would collect or kill the lead's tasks, not its own.
  * An explicit agent-def `tools` list (even `['*']`) cannot reintroduce these.
  */
-export const ALL_AGENT_DISALLOWED_TOOLS = new Set(['plan_mode', 'workflow']);
+export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
+  'plan_mode', 'workflow', 'AskUserQuestion', 'task_output', 'task_kill',
+]);
+
+/** The sentinel a sub-agent model request uses to mean "inherit the parent's model". */
+export const INHERIT_MODEL_SENTINEL = 'inherit';
 
 /** Bare family aliases → a concrete default model string. */
 export const MODEL_ALIASES: Record<string, string> = {
@@ -110,6 +122,11 @@ export const MODEL_ALIASES: Record<string, string> = {
  */
 export function resolveSubagentModel(requested: string | undefined, parentModel: string | undefined): string | undefined {
   if (!requested) return undefined;
+  // 'inherit' is an explicit sentinel meaning "run on the SAME model as the main
+  // conversation" (Claude's default subagent model). Resolve it to the parent's
+  // exact model string — never to a generic alias default — so a parent on
+  // claude-opus-4-8 that spawns task({ model: 'inherit' }) keeps the child there.
+  if (requested === INHERIT_MODEL_SENTINEL) return parentModel;
   const isFamilyAlias = Object.prototype.hasOwnProperty.call(MODEL_ALIASES, requested);
   if (isFamilyAlias && parentModel && parentModel.toLowerCase().includes(requested.toLowerCase())) {
     return parentModel;
@@ -177,6 +194,53 @@ export function shouldAllowNestedTask(currentDepth: number, maxDepth: number): b
   return currentDepth < maxDepth;
 }
 
+/**
+ * Notice prepended to a subagent that runs in an isolated git worktree (mirrors
+ * Claude Code's buildWorktreeNotice). It tells the child three concrete things:
+ * (1) paths in any inherited/parent context refer to the PARENT's cwd and must be
+ * translated to the worktree root, (2) re-read files before editing since the
+ * parent may have modified them, and (3) its changes are isolated to the worktree.
+ */
+export function buildWorktreeNotice(parentCwd: string, worktreeCwd: string): string {
+  return `You are operating in an isolated git worktree at ${worktreeCwd} — same repository, same relative file structure, separate working copy from the parent agent working in ${parentCwd}. Paths in any inherited context refer to the parent's working directory; translate them to your worktree root. Re-read files before editing if the parent may have modified them. Your changes stay in this worktree and will not affect the parent's files.`;
+}
+
+/**
+ * Validate a model-requested subagent `cwd` override against the parent's trusted
+ * permission boundary (mirrors Claude deriving the agent's working-dir set from the
+ * PARENT's toolPermissionContext rather than a model-chosen path). The override is
+ * accepted only when it is an absolute, existing directory that resolves within the
+ * parent cwd OR one of the already-approved additional working directories. Returns
+ * null when allowed, or an error string describing the violation.
+ */
+export function validateSubagentCwd(
+  requestedCwd: string,
+  parentCwd: string,
+  additionalRoots: string[] = [],
+): string | null {
+  if (!path.isAbsolute(requestedCwd)) {
+    return `cwd must be an absolute path (got "${requestedCwd}").`;
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(requestedCwd);
+  } catch {
+    return `cwd "${requestedCwd}" does not exist.`;
+  }
+  if (!stat.isDirectory()) {
+    return `cwd "${requestedCwd}" is not a directory.`;
+  }
+  const resolved = fs.realpathSync(requestedCwd);
+  const roots = [parentCwd, ...additionalRoots]
+    .filter(Boolean)
+    .map(r => { try { return fs.realpathSync(r); } catch { return path.resolve(r); } });
+  const within = roots.some(root => resolved === root || resolved.startsWith(root + path.sep));
+  if (!within) {
+    return `cwd "${requestedCwd}" is outside the parent working directory and approved directories.`;
+  }
+  return null;
+}
+
 export function getSubagentDepthContext(currentDepth: number, maxDepth: number): { _agentDepth: number; _maxAgentDepth: number } {
   return { _agentDepth: currentDepth + 1, _maxAgentDepth: maxDepth };
 }
@@ -216,7 +280,25 @@ export function filterToolsForAgent(
 export const taskTool: ToolDefinition = {
   name: 'task',
   description:
-    'Spawn a subagent to perform a specific task. The subagent runs in an isolated context with its own conversation. Use for parallel codebase exploration, research, or delegating independent subtasks. The subagent\'s final text response is returned as the result.',
+    'Spawn a subagent to perform a specific task in an isolated context with its own conversation. ' +
+    'Use for parallel codebase exploration, research, or delegating independent subtasks. The subagent\'s ' +
+    'final text response is returned as the result.\n' +
+    '\n' +
+    'Writing the prompt: brief the agent like a smart colleague who just walked into the room — it has not ' +
+    'seen this conversation. Explain what you are trying to accomplish and why, what you have already ruled ' +
+    'out, and enough surrounding context that it can make judgment calls. Include concrete file paths and ' +
+    'line numbers. For lookups hand over the exact command; for investigations hand over the question. Do ' +
+    'not delegate understanding ("based on your findings, fix the bug") — terse command-style prompts produce ' +
+    'shallow work. If you need a short answer, say so ("report in under 200 words").\n' +
+    '\n' +
+    'When NOT to use: to read a specific file, use file_read; to find a symbol/class, use search_symbols or ' +
+    'grep; to look in 2-3 known files, read them directly — a subagent is slower for those.\n' +
+    '\n' +
+    'Usage notes: always pass a short description (3-5 words). Launch multiple agents concurrently by issuing ' +
+    'several task calls in one turn. The result is not shown to the user automatically — summarize it back. ' +
+    'With run_in_background:true the agent runs detached and you collect it with task_output. Set ' +
+    'isolation:"worktree" to give the agent an isolated copy of the repo (auto-removed if it makes no changes). ' +
+    'Use resume with an agent id/name to continue a prior agent with its context preserved.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -240,7 +322,7 @@ export const taskTool: ToolDefinition = {
       },
       model: {
         type: 'string',
-        description: 'Model override. Accepts full names or aliases: "sonnet", "opus", "haiku", "gpt-4o", "gemini-pro".',
+        description: 'Model override. Accepts full names or aliases: "sonnet", "opus", "haiku", "gpt-4o", "gemini-pro". The special value "inherit" runs the subagent on the same model as the main conversation.',
       },
       cwd: {
         type: 'string',
@@ -420,7 +502,16 @@ export const taskTool: ToolDefinition = {
     }
 
     const isolation = input.isolation as string | undefined;
-    let effectiveCwd = (input.cwd as string) || context.cwd;
+    const requestedCwd = input.cwd as string | undefined;
+    if (requestedCwd) {
+      // The subagent's working directory is bounded by the PARENT's trusted
+      // permission context — a model-chosen cwd cannot escape it.
+      const cwdError = validateSubagentCwd(requestedCwd, context.cwd, context.allowedReadRoots ?? []);
+      if (cwdError) {
+        return { output: `Error: ${cwdError}`, isError: true };
+      }
+    }
+    let effectiveCwd = requestedCwd || context.cwd;
     if (isolation === 'worktree') {
       try {
         const { createWorktreeSession, symlinkLargeDirectories, copyWorktreeIncludes } = require('../worktree-manager');
@@ -500,10 +591,16 @@ export const taskTool: ToolDefinition = {
     // Only `fork` (no agentSystemPrompt, no lean prompt — it inherits the full stance as
     // a clone) still needs the user-message directive to bound it. A named subagent_type
     // keeps its own authoritative identity (no directive).
-    const effectivePrompt = (agentSystemPrompt || modeOnlySystemPrompt)
+    let effectivePrompt = (agentSystemPrompt || modeOnlySystemPrompt)
       ? prompt
       : `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
 
+    // When the subagent runs in an isolated worktree, prepend a notice so it
+    // translates inherited paths to the worktree root, re-reads stale files, and
+    // knows its changes are isolated (mirrors Claude's buildWorktreeNotice).
+    if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
+      effectivePrompt = `${buildWorktreeNotice(context.cwd, effectiveCwd)}\n\n---\n\n${effectivePrompt}`;
+    }
 
     const agentName = input.name as string | undefined;
 

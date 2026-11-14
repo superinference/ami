@@ -33,19 +33,34 @@ export function extractFilesModified(messages: Message[]): Set<string> {
 
 export interface ConversationMeta {
   userTurnCount: number;
+  /** User turns that represent a REAL human prompt — excludes engine-injected
+   *  ephemeral control messages (`isMeta`). Tool results are a separate `tool`
+   *  role and were never counted here. Use this for "how many times did the human
+   *  actually speak" metrics. */
+  humanTurnCount: number;
   assistantTurnCount: number;
   totalToolCalls: number;
   toolUseCounts: Map<string, number>;
   filesModified: Set<string>;
 }
 
+/** A message counts as a human turn when it is a user message that is NOT an
+ *  engine-injected meta/control message. */
+export function isHumanTurn(msg: Message): boolean {
+  return msg.role === 'user' && !(msg as { isMeta?: boolean }).isMeta;
+}
+
 export function extractConversationMeta(messages: Message[]): ConversationMeta {
   let userTurnCount = 0;
+  let humanTurnCount = 0;
   let assistantTurnCount = 0;
   let totalToolCalls = 0;
 
   for (const msg of messages) {
-    if (msg.role === 'user') userTurnCount++;
+    if (msg.role === 'user') {
+      userTurnCount++;
+      if (isHumanTurn(msg)) humanTurnCount++;
+    }
     if (msg.role === 'assistant') {
       assistantTurnCount++;
       if ((msg as AssistantMessage).tool_calls) {
@@ -56,6 +71,7 @@ export function extractConversationMeta(messages: Message[]): ConversationMeta {
 
   return {
     userTurnCount,
+    humanTurnCount,
     assistantTurnCount,
     totalToolCalls,
     toolUseCounts: countToolUses(messages),

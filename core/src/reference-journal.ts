@@ -19,6 +19,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { assertPathWithin } from './path-safety';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
@@ -99,9 +100,22 @@ export function resolveReadDirs(env: NodeJS.ProcessEnv = process.env): string[] 
   return dirs.filter((d, i) => dirs.indexOf(d) === i); // dedup, preserve order
 }
 
-/** Project slug: the dashboard derives a per-cwd folder by replacing non-alphanumerics with '-'. */
+/**
+ * Longest project-slug we emit before switching to a truncated-plus-hash form.
+ * A deep cwd can produce a slug that blows past the filesystem's path/segment
+ * limit (ENAMETOOLONG), so a very long slug is capped and disambiguated with a
+ * short deterministic hash of the raw cwd. (Mirrors the reference's slug cap.)
+ */
+export const MAX_SLUG_LENGTH = 200;
+
+/** Project slug: the dashboard derives a per-cwd folder by replacing non-alphanumerics with '-'.
+ *  A slug over {@link MAX_SLUG_LENGTH} is truncated and suffixed with an 8-hex-char
+ *  sha256 of the raw cwd, so deep paths stay collision-resistant and within fs limits. */
 export function projectSlug(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  const slug = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (slug.length <= MAX_SLUG_LENGTH) return slug;
+  const hash = crypto.createHash('sha256').update(cwd).digest('hex').slice(0, 8);
+  return slug.slice(0, MAX_SLUG_LENGTH - 9) + '-' + hash;
 }
 
 /** Sanitize a session id for use as a filename (no separators / traversal). */
@@ -374,10 +388,24 @@ export function buildUserEntry(a: UserEntryArgs): UserEntry {
 export function appendEntry(filePath: string, entry: object): void {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.appendFileSync(filePath, JSON.stringify(entry) + '\n');
+    fs.appendFileSync(filePath, ndjsonSafeStringify(entry) + '\n');
   } catch {
     /* telemetry is best-effort — a disk/permission error must not break the turn */
   }
+}
+
+/**
+ * JSON.stringify that ALSO escapes U+2028 / U+2029. Both are valid inside JSON
+ * strings but are line terminators in ECMAScript and split lines for many
+ * NDJSON / line-based readers — an unescaped one in message content would tear a
+ * single JSONL record in two. Use this for every persisted session / transcript /
+ * journal line so a record can never be silently split. `space` matches
+ * JSON.stringify's indent argument (omit for compact one-line output).
+ */
+export function ndjsonSafeStringify(value: unknown, space?: number): string {
+  return JSON.stringify(value, null, space)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 // ---------------------------------------------------------------------------

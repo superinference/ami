@@ -70,7 +70,7 @@ describe('searchSessions', () => {
     assert.ok(results.length > 0);
   });
 
-  it('handles messages with non-string content', () => {
+  it('flattens structured (block-array) content so it is searchable (H33)', () => {
     const sessDir = projectStateDir(tmpDir, 'sessions');
     fs.writeFileSync(path.join(sessDir, 'array-content.json'), JSON.stringify({
       id: 'array-content',
@@ -80,7 +80,33 @@ describe('searchSessions', () => {
     }));
     const results = searchSessions(tmpDir, 'hello');
     const arrayHit = results.find(r => r.sessionId === 'array-content');
-    assert.equal(arrayHit, undefined);
+    assert.ok(arrayHit, 'text inside a block-array message must be searchable');
+  });
+
+  it('flattens tool_use inputs and tool_call arguments (H33)', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'tooluse.json'), JSON.stringify({
+      id: 'tooluse',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', name: 'bash', input: { command: 'uniqgrepneedle' } }] },
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_edit', arguments: '{"file_path":"zzzargtoken"}' } }] },
+      ],
+    }));
+    const byInput = searchSessions(tmpDir, 'uniqgrepneedle').find(r => r.sessionId === 'tooluse');
+    assert.ok(byInput, 'tool_use input must be searchable');
+    const byArgs = searchSessions(tmpDir, 'zzzargtoken').find(r => r.sessionId === 'tooluse');
+    assert.ok(byArgs, 'tool_call arguments must be searchable');
+  });
+
+  it('matches a session by its git branch metadata (H13)', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'branchy.json'), JSON.stringify({
+      id: 'branchy',
+      gitBranch: 'feature-xyzbranch',
+      messages: [{ role: 'user', content: 'nothing relevant' }],
+    }));
+    const results = searchSessions(tmpDir, 'xyzbranch');
+    assert.ok(results.find(r => r.sessionId === 'branchy'), 'branch name must be searchable');
   });
 
   it('handles session without id', () => {

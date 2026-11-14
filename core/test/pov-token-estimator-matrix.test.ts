@@ -6,6 +6,7 @@ import {
   estimateToolCallTokens,
   estimateMessageTokens,
   estimateConversationTokens,
+  estimateTokensForFileType,
   IMAGE_DOCUMENT_TOKEN_ESTIMATE,
 } from '../src/token-estimator';
 import {
@@ -222,22 +223,21 @@ describe('pov/token-estimator matrix: estimateConversationTokens', () => {
 });
 
 describe('pov/token-estimator matrix: estimateToolCallTokens', () => {
-  it('= tokens(name) + tokens(JSON(input)) + framing(10)', () => {
+  it('= tokens(name) + json-tokens(JSON(input)) + framing(10)', () => {
     const name = 'bash';
     const input = { command: 'ls -la', timeout: 5000 };
     const expected =
-      estimateTokens(name) + estimateTokens(JSON.stringify(input)) + 10;
+      estimateTokens(name) + estimateTokensForFileType(JSON.stringify(input), 'json') + 10;
     assert.equal(estimateToolCallTokens(name, input), expected);
   });
 
-  it('empty input object still charges name + "{}" + framing', () => {
-    const expected = estimateTokens('x') + estimateTokens('{}') + 10;
+  it('empty input object still charges name + json-tokens("{}") + framing', () => {
+    const expected = estimateTokens('x') + estimateTokensForFileType('{}', 'json') + 10;
     assert.equal(estimateToolCallTokens('x', {}), expected);
   });
 
   it('empty name + empty input is exactly the framing constant', () => {
-    // estimateTokens('')=0, estimateTokens('{}')=1 -> 11
-    assert.equal(estimateToolCallTokens('', {}), 0 + estimateTokens('{}') + 10);
+    assert.equal(estimateToolCallTokens('', {}), 0 + estimateTokensForFileType('{}', 'json') + 10);
   });
 
   it('larger inputs produce strictly more tokens (monotone in payload)', () => {
@@ -254,7 +254,7 @@ describe('pov/token-estimator matrix: estimateToolCallTokens', () => {
     const input = { nested: { deep: ['😀', 'café'] } };
     assert.equal(
       estimateToolCallTokens('t', input),
-      estimateTokens('t') + estimateTokens(JSON.stringify(input)) + 10,
+      estimateTokens('t') + estimateTokensForFileType(JSON.stringify(input), 'json') + 10,
     );
   });
 });

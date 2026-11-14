@@ -303,19 +303,53 @@ describe('TelemetryBatchSender', () => {
     assert.deepEqual(s.drain().filter(Boolean), s.drain().filter(Boolean));
   });
 
-  it('drain() splits into multiple batches by maxBatchSize', () => {
-    // Fill a queue larger than maxBatchSize without auto-flushing by enqueuing
-    // under a big batch size, then drain with small batch size is impossible on
-    // one instance; instead verify multi-batch via a sender whose queue grows
-    // because maxBatchSize equals maxQueueSize boundary is not hit.
+  it('drain() returns auto-flushed (ready) batches plus the tail — no event loss', () => {
+    // A boundary auto-flush with no onBatch consumer must RETAIN the batch (never
+    // discard it): enqueue a,b trips the size-2 boundary into the ready buffer,
+    // then c stays in the queue; drain() yields both.
     const s = new TelemetryBatchSender({ sessionId: 's', maxBatchSize: 2, maxQueueSize: 100 });
-    // size reaches 2 -> auto flush empties; so queue never exceeds 2.
     s.enqueue('a', {});
-    s.enqueue('b', {}); // flush fired, totalSent 2
+    s.enqueue('b', {}); // boundary -> ready buffer holds [a,b]
+    assert.equal(s.readyCount, 1);
     s.enqueue('c', {}); // queue now 1
     const batches = s.drain();
+    assert.equal(batches.length, 2);
+    assert.deepEqual(batches[0].events.map(e => e.type), ['a', 'b']);
+    assert.equal(batches[1].events[0].type, 'c');
+  });
+
+  it('onBatch consumer receives boundary batches instead of the ready buffer', () => {
+    const got: string[][] = [];
+    const s = new TelemetryBatchSender({ sessionId: 's', maxBatchSize: 2, onBatch: (b) => got.push(b.events.map(e => e.type)) });
+    s.enqueue('a', {});
+    s.enqueue('b', {}); // boundary -> onBatch, not ready
+    assert.equal(s.readyCount, 0);
+    assert.deepEqual(got, [['a', 'b']]);
+  });
+
+  it('maxBatchBytes caps a batch by serialized size (first item always included)', () => {
+    // Tiny byte cap: each event serializes well over the cap, so every batch holds
+    // exactly one event (first-item-always), and nothing is lost.
+    const s = new TelemetryBatchSender({ sessionId: 's', maxBatchSize: 100, maxBatchBytes: 10 });
+    s.enqueue('a', { v: 'xxxxxxxxxxxxxxxxxxxx' });
+    s.enqueue('b', { v: 'yyyyyyyyyyyyyyyyyyyy' });
+    const batches = s.drain();
+    assert.equal(batches.length, 2);
+    assert.equal(batches[0].events.length, 1);
+    assert.equal(batches[1].events.length, 1);
+  });
+
+  it('drops a single un-serializable (poison) event without sinking the batch', () => {
+    const s = new TelemetryBatchSender({ sessionId: 's', maxBatchSize: 100 });
+    s.enqueue('ok1', { v: 1 });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    s.enqueue('poison', circular); // JSON.stringify throws on this
+    s.enqueue('ok2', { v: 2 });
+    const batches = s.drain();
     assert.equal(batches.length, 1);
-    assert.equal(batches[0].events[0].type, 'c');
+    assert.deepEqual(batches[0].events.map(e => e.type), ['ok1', 'ok2']);
+    assert.equal(s.totalDropped, 1);
   });
 
   it('startAutoFlush is idempotent and stopAutoFlush is safe to call twice', () => {

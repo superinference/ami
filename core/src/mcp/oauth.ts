@@ -18,6 +18,8 @@
  * module gives the frontend everything needed to drive it.
  */
 import { createHash, randomBytes } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export type FetchLike = (url: string, init?: {
   method?: string;
@@ -353,34 +355,40 @@ async function postForm(
   return toTokens(doc, now);
 }
 
-/** Exchange an authorization code for tokens (PKCE + resource indicator). */
+/** Exchange an authorization code for tokens (PKCE + resource indicator).
+ *  A `clientSecret` is included for confidential clients (RFC 6749 §4.1.3). */
 export function exchangeCode(
   fetchImpl: FetchLike,
-  params: { tokenEndpoint: string; code: string; verifier: string; clientId: string; redirectUri: string; resource: string },
+  params: { tokenEndpoint: string; code: string; verifier: string; clientId: string; redirectUri: string; resource: string; clientSecret?: string },
   now: number,
 ): Promise<OAuthTokens> {
-  return postForm(fetchImpl, params.tokenEndpoint, {
+  const form: Record<string, string> = {
     grant_type: 'authorization_code',
     code: params.code,
     code_verifier: params.verifier,
     client_id: params.clientId,
     redirect_uri: params.redirectUri,
     resource: params.resource,
-  }, now);
+  };
+  if (params.clientSecret) form.client_secret = params.clientSecret;
+  return postForm(fetchImpl, params.tokenEndpoint, form, now);
 }
 
-/** Exchange a refresh token for fresh tokens. */
+/** Exchange a refresh token for fresh tokens.
+ *  A `clientSecret` is included for confidential clients. */
 export function refreshToken(
   fetchImpl: FetchLike,
-  params: { tokenEndpoint: string; refreshToken: string; clientId: string; resource: string },
+  params: { tokenEndpoint: string; refreshToken: string; clientId: string; resource: string; clientSecret?: string },
   now: number,
 ): Promise<OAuthTokens> {
-  return postForm(fetchImpl, params.tokenEndpoint, {
+  const form: Record<string, string> = {
     grant_type: 'refresh_token',
     refresh_token: params.refreshToken,
     client_id: params.clientId,
     resource: params.resource,
-  }, now);
+  };
+  if (params.clientSecret) form.client_secret = params.clientSecret;
+  return postForm(fetchImpl, params.tokenEndpoint, form, now);
 }
 
 /** Holds the current tokens and answers "is the access token still usable?". */
@@ -412,6 +420,49 @@ export class OAuthTokenStore {
 }
 
 /**
+ * An {@link OAuthTokenStore} that persists its tokens to a JSON file so an MCP
+ * server stays authenticated across process restarts (H22/H45). Tokens are
+ * loaded on construction and rewritten on every set/clear with 0600 permissions
+ * (owner-only — they are bearer credentials). All disk I/O is best-effort: a
+ * failed read/write degrades to in-memory behavior rather than throwing.
+ */
+export class FileOAuthTokenStore extends OAuthTokenStore {
+  constructor(private readonly filePath: string, skewMs = 30_000) {
+    super(skewMs);
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as OAuthTokens;
+      if (parsed && typeof parsed.accessToken === 'string' && typeof parsed.tokenType === 'string') {
+        super.set(parsed);
+      }
+    } catch {
+      /* no cached tokens (or unreadable) — start empty */
+    }
+  }
+
+  set(tokens: OAuthTokens): void {
+    super.set(tokens);
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.filePath, JSON.stringify(tokens), { mode: 0o600 });
+    } catch {
+      /* best-effort persistence — the in-memory token is still live */
+    }
+  }
+
+  clear(): void {
+    super.clear();
+    try { fs.rmSync(this.filePath, { force: true }); } catch { /* ignore */ }
+  }
+}
+
+/** Filesystem-safe token filename for a server (bearer creds live under 0700 dir). */
+export function mcpTokenFileName(serverName: string): string {
+  const safe = serverName.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const hash = createHash('sha256').update(serverName).digest('hex').slice(0, 8);
+  return `${safe}.${hash}.json`;
+}
+
+/**
  * Interactive consent leg, injected by the frontend. Given the authorization URL
  * it must drive the user through login (open a browser, capture the redirect) and
  * return the authorization `code`. In headless/detached runs the frontend passes
@@ -424,9 +475,19 @@ export interface McpOAuthSessionOptions {
   serverUrl: string;
   fetchImpl: FetchLike;
   authorize: AuthorizeFn;
+  /** Static loopback redirect URI. Ignored when `resolveRedirectUri` is set. */
   redirectUri: string;
+  /**
+   * Lazily resolve the redirect URI (e.g. via dynamic available-port discovery).
+   * Resolved once on the first auth leg and cached, so the registered redirect
+   * URI, the authorization request, and the token exchange all agree. Takes
+   * precedence over the static `redirectUri`.
+   */
+  resolveRedirectUri?: () => Promise<string>;
   /** Pre-registered client id; when absent the session uses Dynamic Client Registration. */
   clientId?: string;
+  /** Confidential-client secret (RFC 6749). Sent on token/refresh exchanges when set. */
+  clientSecret?: string;
   scope?: string;
   /** Clock seam (epoch ms). Defaults to Date.now. */
   now?: () => number;
@@ -450,6 +511,17 @@ export class McpOAuthSession implements McpOAuthProvider {
   private resource: string;
   private authMeta: AuthServerMetadata | null = null;
   private effectiveClientId: string | undefined;
+  private effectiveClientSecret: string | undefined;
+  private resolvedRedirectUri: string | undefined;
+
+  /** Resolve the redirect URI once (dynamic port discovery when configured), then cache it. */
+  private async getRedirectUri(): Promise<string> {
+    if (this.resolvedRedirectUri !== undefined) return this.resolvedRedirectUri;
+    this.resolvedRedirectUri = this.opts.resolveRedirectUri
+      ? await this.opts.resolveRedirectUri()
+      : this.opts.redirectUri;
+    return this.resolvedRedirectUri;
+  }
 
   constructor(private readonly opts: McpOAuthSessionOptions) {
     this.store = opts.store ?? new OAuthTokenStore();
@@ -461,6 +533,7 @@ export class McpOAuthSession implements McpOAuthProvider {
     this.fetch = wrapFetchWithTimeout((url, init) => this.opts.fetchImpl(url, init), timeoutMs);
     this.resource = opts.serverUrl;
     this.effectiveClientId = opts.clientId;
+    this.effectiveClientSecret = opts.clientSecret;
   }
 
   async authorizationHeader(): Promise<string | null> {
@@ -470,12 +543,14 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (this.store.hasRefreshToken() && this.authMeta && this.effectiveClientId) {
       const authMeta = this.authMeta;
       const clientId = this.effectiveClientId;
+      const clientSecret = this.effectiveClientSecret;
       try {
         const refreshed = await retryWithBackoff(
           () => refreshToken(this.fetch, {
             tokenEndpoint: authMeta.tokenEndpoint,
             refreshToken: this.store.get()!.refreshToken!,
             clientId,
+            clientSecret,
             resource: this.resource,
           }, this.now()),
           { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
@@ -506,10 +581,13 @@ export class McpOAuthSession implements McpOAuthProvider {
       assertSecureUrl(issuer, 'authorization server issuer');
       this.authMeta = await discoverAuthServer(this.fetch, issuer);
 
+      const redirectUri = await this.getRedirectUri();
       if (!this.effectiveClientId) {
         if (!this.authMeta.registrationEndpoint) throw new Error('no client_id and no registration endpoint');
-        const reg = await registerClient(this.fetch, this.authMeta.registrationEndpoint, [this.opts.redirectUri]);
+        const reg = await registerClient(this.fetch, this.authMeta.registrationEndpoint, [redirectUri]);
         this.effectiveClientId = reg.clientId;
+        // A confidential client registered dynamically returns its secret once.
+        if (reg.clientSecret) this.effectiveClientSecret = reg.clientSecret;
       }
 
       const pkce = generatePkce();
@@ -517,19 +595,20 @@ export class McpOAuthSession implements McpOAuthProvider {
       const authorizationUrl = buildAuthorizationUrl({
         authorizationEndpoint: this.authMeta.authorizationEndpoint,
         clientId: this.effectiveClientId,
-        redirectUri: this.opts.redirectUri,
+        redirectUri,
         resource: this.resource,
         codeChallenge: pkce.challenge,
         state,
         scope: this.opts.scope ?? prm.scopesSupported?.join(' '),
       });
-      const { code } = await this.opts.authorize({ authorizationUrl, redirectUri: this.opts.redirectUri, state });
+      const { code } = await this.opts.authorize({ authorizationUrl, redirectUri, state });
       const tokens = await exchangeCode(this.fetch, {
         tokenEndpoint: this.authMeta.tokenEndpoint,
         code,
         verifier: pkce.verifier,
         clientId: this.effectiveClientId,
-        redirectUri: this.opts.redirectUri,
+        clientSecret: this.effectiveClientSecret,
+        redirectUri,
         resource: this.resource,
       }, this.now());
       this.store.set(tokens);

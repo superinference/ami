@@ -96,6 +96,16 @@ export const KNOWN_BINARY_EXTENSIONS = new Set([
   '.heic', '.heif',
   // E-books
   '.epub', '.mobi',
+  // Fonts
+  '.ttf', '.otf', '.woff', '.woff2', '.eot',
+  // Design & 3D assets
+  '.psd', '.ai', '.sketch', '.fig', '.xd', '.blend', '.fbx', '.3ds', '.stl', '.glb',
+  // Flash
+  '.swf', '.fla',
+  // OS installers & packages
+  '.msi', '.deb', '.rpm', '.apk', '.pkg', '.cab', '.appimage',
+  // Native addons
+  '.node',
 ]);
 
 
@@ -110,7 +120,7 @@ function normalizeMacScreenshotPath(filePath: string): string {
 }
 
 /** Image extensions that should be returned as base64 content. */
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
 
 const MEDIA_TYPES: Record<string, string> = {
   '.png': 'image/png',
@@ -118,11 +128,71 @@ const MEDIA_TYPES: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
   '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
 };
 
 /** Whether a path points to a supported image file (by extension). */
 export function isImagePath(p: string): boolean {
   return IMAGE_EXTENSIONS.has(path.extname(p).toLowerCase());
+}
+
+/**
+ * Hard ceiling on the base64 size of a single image the model-provider API will
+ * accept (~5 MB base64). Mirrors Claude Code's API_IMAGE_MAX_BASE64_SIZE. An
+ * image whose encoded payload exceeds this is rejected with an actionable error
+ * rather than silently sent and bounced by the provider.
+ */
+export const API_IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024;
+
+/**
+ * Detect an image's real media type from its leading magic bytes, independent of
+ * the file extension (which an untrusted/mislabeled file can lie about). Returns
+ * the canonical `image/*` media type, or null when the bytes match no known
+ * image signature. This is the single source of truth for content-based image
+ * format detection (file reads, pasted images, attachment normalization) so the
+ * logic is never re-implemented per call site. Mirrors Claude Code's
+ * detectImageFormatFromBuffer / detectImageFormatFromBase64.
+ */
+export function detectImageFormatFromBuffer(buf: Buffer): string | null {
+  if (buf.length >= 8
+      && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47
+      && buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) {
+    return 'image/png';
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  // "GIF87a" / "GIF89a"
+  if (buf.length >= 6
+      && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38
+      && (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61) {
+    return 'image/gif';
+  }
+  // "RIFF"...."WEBP"
+  if (buf.length >= 12
+      && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+    return 'image/webp';
+  }
+  // "BM" — Windows bitmap (WSL2/Windows clipboard emits these; the API rejects BMP).
+  if (buf.length >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) {
+    return 'image/bmp';
+  }
+  return null;
+}
+
+/** Detect an image's media type from a base64 payload via its decoded magic bytes. */
+export function detectImageFormatFromBase64(data: string): string | null {
+  // Only the leading bytes are needed; decode a short prefix to avoid materializing
+  // a large buffer just to read a signature.
+  const prefix = data.slice(0, 24);
+  let head: Buffer;
+  try {
+    head = Buffer.from(prefix, 'base64');
+  } catch {
+    return null;
+  }
+  return detectImageFormatFromBuffer(head);
 }
 
 /**
@@ -144,11 +214,27 @@ export async function encodeImageFile(absPath: string): Promise<{ media_type: st
   const ext = path.extname(absPath).toLowerCase();
   const imageBuffer = await fs.promises.readFile(absPath);
   let finalBuffer = imageBuffer;
-  let finalMediaType = MEDIA_TYPES[ext] || 'application/octet-stream';
-  if (imageBuffer.length > 512 * 1024) {
+  // Trust the file's actual magic bytes over its extension (a mislabeled or
+  // untrusted file can lie about its format); fall back to the extension map only
+  // when the content matches no known signature.
+  const sniffed = detectImageFormatFromBuffer(imageBuffer);
+  let finalMediaType = sniffed || MEDIA_TYPES[ext] || 'application/octet-stream';
+  // Providers reject BMP — transcode it to PNG (lossless, preserves alpha) when
+  // sharp is available. Mirrors Claude Code's WSL2/Windows clipboard BMP handling.
+  if (finalMediaType === 'image/bmp') {
     try {
       const sharp = imageHooks.loadSharp();
-      finalBuffer = await sharp(imageBuffer)
+      finalBuffer = await sharp(imageBuffer).png().toBuffer();
+      finalMediaType = 'image/png';
+    } catch {
+      // sharp unavailable — leave the BMP bytes; the caller's size/format guard
+      // will surface an actionable error rather than silently sending it.
+    }
+  }
+  if (finalBuffer.length > 512 * 1024) {
+    try {
+      const sharp = imageHooks.loadSharp();
+      finalBuffer = await sharp(finalBuffer)
         .resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 80 })
         .toBuffer();
@@ -183,6 +269,13 @@ export function parseImageToolOutput(output: string): ImageContent[] | null {
     const parsed = JSON.parse(output);
     if (parsed && parsed.type === 'image' && parsed.source && parsed.source.type === 'base64'
         && typeof parsed.source.media_type === 'string' && typeof parsed.source.data === 'string') {
+      // Normalize an untrusted image block: trust the actual magic bytes over the
+      // declared media_type so a mislabeled block (e.g. JPEG tagged image/png) is
+      // corrected before it reaches the provider, which would otherwise reject it.
+      const sniffed = detectImageFormatFromBase64(parsed.source.data);
+      if (sniffed && sniffed !== parsed.source.media_type) {
+        parsed.source.media_type = sniffed;
+      }
       return [parsed as ImageContent];
     }
   } catch {}
@@ -377,6 +470,15 @@ export const fileReadTool: ToolDefinition = {
         return { output: `Error: image exceeds the 128 MiB limit (${(stat.size / 1024 / 1024).toFixed(0)} MiB).`, isError: true };
       }
       const { media_type, data } = await encodeImageFile(resolved);
+      // Enforce the provider's hard base64 ceiling: an image that is still too
+      // large after compression would be bounced by the API, so reject it here
+      // with an actionable error instead of emitting an unusable block.
+      if (data.length > API_IMAGE_MAX_BASE64_SIZE) {
+        return {
+          output: `Error: image is too large to send even after compression (${(data.length / 1024 / 1024).toFixed(1)} MB base64, limit ${(API_IMAGE_MAX_BASE64_SIZE / 1024 / 1024).toFixed(0)} MB). Resize or crop it, or inspect it with bash.`,
+          isError: true,
+        };
+      }
       context.filesRead?.add(resolved);
       return {
         output: JSON.stringify({
@@ -409,6 +511,12 @@ export const fileReadTool: ToolDefinition = {
         const cwdRequire = createRequire(path.join(process.cwd(), '_'));
         const { PDFParse } = cwdRequire('pdf-parse');
         const pdfBuffer = await fs.promises.readFile(resolved);
+        // Validate the %PDF- magic header before handing the bytes to the parser:
+        // a file renamed to .pdf (or a corrupt/truncated download) otherwise fails
+        // deep inside the parser with an opaque error. Mirrors Claude Code's pre-ingest check.
+        if (pdfBuffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
+          return { output: `Error: ${resolved} is not a valid PDF (missing %PDF- header).`, isError: true };
+        }
         let pageRange: { start: number; end: number } | null = null;
         const parseOpts: Record<string, unknown> = {};
 

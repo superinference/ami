@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { SessionFact } from './session-memory';
 import { log as coreLog } from './logger';
+import { redactCredentials } from './credential-guard';
 
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.tif',
@@ -86,6 +87,96 @@ const MAX_PARENT_SCAN_DEPTH = 3;
 
 /** Maximum size for instruction files — reject oversized files to prevent context stuffing. */
 const MAX_INSTRUCTION_FILE_SIZE = 10_240;
+
+/**
+ * Hard caps on the MEMORY.md entrypoint index (mirrors Claude Code's
+ * MAX_ENTRYPOINT_LINES / MAX_ENTRYPOINT_BYTES). The entrypoint is injected into
+ * the system prompt on every turn, so an unbounded index is a context-stuffing /
+ * cost vector. {@link truncateEntrypointContent} enforces both, naming the cap it
+ * hit so the overflow is never silent.
+ */
+export const MAX_ENTRYPOINT_LINES = 200;
+export const MAX_ENTRYPOINT_BYTES = 25_000;
+
+/**
+ * Truncate MEMORY.md entrypoint content to the line/byte caps, appending a
+ * visible warning that names which cap was hit (so the model knows the index is
+ * partial and the overflow is never silent). Returns the input unchanged when it
+ * is already within both caps.
+ */
+export function truncateEntrypointContent(content: string): string {
+  const lines = content.split('\n');
+  let truncatedBy: 'lines' | 'bytes' | null = null;
+  let out = content;
+  if (lines.length > MAX_ENTRYPOINT_LINES) {
+    out = lines.slice(0, MAX_ENTRYPOINT_LINES).join('\n');
+    truncatedBy = 'lines';
+  }
+  if (Buffer.byteLength(out, 'utf-8') > MAX_ENTRYPOINT_BYTES) {
+    // Byte-accurate cut (never splits a multi-byte char mid-sequence).
+    const buf = Buffer.from(out, 'utf-8').subarray(0, MAX_ENTRYPOINT_BYTES);
+    out = buf.toString('utf-8').replace(/�+$/, '');
+    truncatedBy = 'bytes';
+  }
+  if (!truncatedBy) return content;
+  const cap = truncatedBy === 'lines'
+    ? `${MAX_ENTRYPOINT_LINES}-line`
+    : `${MAX_ENTRYPOINT_BYTES}-byte`;
+  return `${out}\n\n[MEMORY.md truncated to the ${cap} entrypoint cap — some index entries are omitted]`;
+}
+
+/**
+ * realpathSync on the deepest existing ancestor of `p`, re-joining any
+ * not-yet-existing tail. A file that does not exist yet still canonicalizes its
+ * real (symlink-resolved) parent. Returns null when nothing in the chain
+ * resolves. Shared by every workspace-confinement check below so symlink-escape
+ * handling is identical across @-imports, @includes, and team-memory loading.
+ */
+function realpathDeepest(p: string): string | null {
+  let dir = path.resolve(p);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = fs.realpathSync(dir);
+      return tail.length ? path.join(real, ...tail.slice().reverse()) : real;
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      tail.push(path.basename(dir));
+      dir = parent;
+    }
+  }
+}
+
+/**
+ * Canonical (symlink-resolved) workspace-containment check. Resolves symlinks on
+ * both `root` and `target` before comparing, so a link that sits INSIDE the
+ * workspace but points OUT of it is caught — a purely lexical prefix check
+ * (path.normalize) misses that. Returns the resolved real path when contained,
+ * else null.
+ */
+function realpathWithin(target: string, root: string): string | null {
+  const realRoot = realpathDeepest(root);
+  const realTarget = realpathDeepest(target);
+  if (realRoot === null || realTarget === null) return null;
+  if (realTarget === realRoot || realTarget.startsWith(realRoot + path.sep)) return realTarget;
+  return null;
+}
+
+/**
+ * A directory is a git repository root if it contains `.git` as EITHER a
+ * directory (normal clone) OR a file (linked worktree / submodule, where `.git`
+ * is a `gitdir:` pointer file). The parent-walk must stop at both, or it leaks
+ * instruction files from an enclosing project into a worktree/submodule.
+ */
+function isGitRoot(dir: string): boolean {
+  try {
+    const st = fs.statSync(path.join(dir, '.git'));
+    return st.isDirectory() || st.isFile();
+  } catch {
+    return false;
+  }
+}
 
 const INJECTION_PATTERNS = [
   /ignore .{0,10}previous instructions/i,
@@ -240,7 +331,25 @@ function parseMemoryType(raw: unknown): MemoryType | undefined {
 }
 
 /**
- * Generate frontmatter markdown for a memory file.
+ * Collapse a value destined for a single-line YAML frontmatter field so it cannot
+ * inject new keys or close the block early. Newlines (the only way to add a YAML
+ * line) are flattened to spaces, and a leading char that YAML reads specially is
+ * neutralized — so a crafted name/description cannot smuggle `type:`/`---` lines
+ * into the serialized metadata. (YAML frontmatter injection defense)
+ */
+function sanitizeFrontmatterValue(value: string): string {
+  let v = value.replace(/\s+/g, ' ').trim();
+  // A value opening with a YAML structural/indicator char is quoted so it is read
+  // as a plain scalar (not a block/alias/anchor/tag/flow collection).
+  if (/^[-?:,[\]{}#&*!|>'"%@`]/.test(v)) {
+    v = `"${v.replace(/"/g, '\\"')}"`;
+  }
+  return v;
+}
+
+/**
+ * Generate frontmatter markdown for a memory file. Name/description are
+ * injection-sanitized so a hostile value cannot forge extra YAML keys.
  */
 function buildFrontmatter(
   name: string,
@@ -248,8 +357,16 @@ function buildFrontmatter(
   memoryType: MemoryType,
 ): string {
   const modified = new Date().toISOString();
-  return `---\nname: ${name}\ndescription: ${description}\ntype: ${memoryType}\nmodified: ${modified}\n---\n`;
+  return `---\nname: ${sanitizeFrontmatterValue(name)}\ndescription: ${sanitizeFrontmatterValue(description)}\ntype: ${memoryType}\nmodified: ${modified}\n---\n`;
 }
+
+/** The MEMORY.md index is a table of contents, not a memory body — it is loaded
+ *  separately (readMemoryIndex) and must be excluded from the memory-body scan. */
+const MEMORY_INDEX_FILENAME = 'MEMORY.md';
+
+/** Per-file upper bound when scanning the memory dir: a single runaway file must
+ *  not be slurped whole into the context/scan. */
+const MAX_MEMORY_FILE_BYTES = 256 * 1024;
 
 function tokenize(text: string): string[] {
   return text.toLowerCase()
@@ -333,21 +450,24 @@ export class MemoryManager {
         } catch { return full; }
         // WORKSPACE CONFINEMENT: never inline a file outside the launch cwd. A crafted
         // CLAUDE.md/AGENTS.md could otherwise exfiltrate arbitrary files into the system
-        // prompt via `@~/.ssh/id_rsa`, `@/etc/passwd`, or `@../../other/secret`. Block it,
-        // leave a visible marker (so it is never silent), and notify via the hook.
-        const nres = path.normalize(resolved);
-        const ncwd = path.normalize(this.cwd);
-        if (nres !== ncwd && !nres.startsWith(ncwd + path.sep)) {
+        // prompt via `@~/.ssh/id_rsa`, `@/etc/passwd`, or `@../../other/secret`. Resolve
+        // symlinks FIRST (realpath) so a link that sits inside the workspace but points
+        // out of it is also caught — a lexical prefix check misses that. Block it, leave a
+        // visible marker (so it is never silent), and notify via the hook.
+        const real = realpathWithin(resolved, this.cwd);
+        if (real === null) {
           if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: resolved, loadReason: 'import-blocked-outside-workspace' });
           return `${pre}[import blocked — outside workspace: ${path.basename(resolved)}]`;
         }
-        if (seen.has(resolved)) return `${pre}[circular import: ${path.basename(resolved)}]`;
+        // Cycle detection keys on the REAL path so two aliases of one file (one via
+        // a symlink) can't slip past `seen` and re-enter the recursion.
+        if (seen.has(real)) return `${pre}[circular import: ${path.basename(resolved)}]`;
         try {
-          if (!fs.statSync(resolved).isFile()) return full;
-          seen.add(resolved);
-          let imported = sanitizeContent(fs.readFileSync(resolved, 'utf-8').trim(), resolved);
-          imported = this.resolveAtImports(imported, resolved, depth + 1, seen);
-          seen.delete(resolved);
+          if (!fs.statSync(real).isFile()) return full;
+          seen.add(real);
+          let imported = sanitizeContent(fs.readFileSync(real, 'utf-8').trim(), real);
+          imported = this.resolveAtImports(imported, real, depth + 1, seen);
+          seen.delete(real);
           return `${pre}${imported}`;
         } catch {
           return full;
@@ -401,14 +521,10 @@ export class MemoryManager {
       if (parentDir === currentDir || currentDir === root) {
         break;
       }
-      // Stop at git repository root to avoid loading instruction files from parent projects
-      try {
-        if (fs.statSync(path.join(currentDir, '.git')).isDirectory()) {
-          break;
-        }
-      } catch {
-        // No .git directory — continue walking
-      }
+      // Stop at the git repository root to avoid loading instruction files from
+      // parent projects. `.git` is a DIRECTORY in a normal clone but a FILE in a
+      // linked worktree / submodule — stop at either.
+      if (isGitRoot(currentDir)) break;
       currentDir = parentDir;
       depth++;
     }
@@ -475,7 +591,10 @@ export class MemoryManager {
     let files: string[];
 
     try {
-      files = fs.readdirSync(memoryDir).filter(f => f.endsWith('.md'));
+      // Exclude the MEMORY.md index — it is a table of contents loaded via
+      // readMemoryIndex, not a memory body — so it isn't double-counted as a memory.
+      files = fs.readdirSync(memoryDir)
+        .filter(f => f.endsWith('.md') && f !== MEMORY_INDEX_FILENAME);
     } catch {
       // Directory doesn't exist yet — no memories
       return [];
@@ -488,8 +607,10 @@ export class MemoryManager {
     for (const file of files) {
       const filePath = path.join(memoryDir, file);
       try {
-        const raw = fs.readFileSync(filePath, 'utf-8');
         const stat = this._statSync(filePath);
+        // Bounded read: skip a runaway memory file rather than slurping it whole.
+        if (stat.size > MAX_MEMORY_FILE_BYTES) continue;
+        const raw = fs.readFileSync(filePath, 'utf-8');
         const { frontmatter, body } = parseFrontmatter(raw);
         const sanitizedBody = sanitizeContent(body.trim(), filePath);
         const ageDays = memoryAgeDays(stat.mtimeMs);
@@ -556,7 +677,9 @@ export class MemoryManager {
     const type = memoryType ?? 'project';
     const desc = description ?? name;
     const frontmatter = buildFrontmatter(name, desc, type);
-    const fileContent = `${frontmatter}\n${content}\n`;
+    // Credential/secret boundary: never persist an API key / token that slipped
+    // into a memory body to a long-lived .md on disk.
+    const fileContent = `${frontmatter}\n${redactCredentials(content)}\n`;
 
     fs.writeFileSync(filePath, fileContent, 'utf-8');
   }
@@ -733,14 +856,22 @@ export class MemoryManager {
 
   private loadMemoriesFromDir(dir: string): string[] {
     try {
-      return fs.readdirSync(dir)
-        .filter(f => f.endsWith('.md'))
-        .map(f => {
-          const raw = fs.readFileSync(path.join(dir, f), 'utf-8');
-          const { body } = parseFrontmatter(raw);
-          return sanitizeContent(body.trim(), path.join(dir, f));
-        })
-        .filter(c => c.length > 0);
+      const out: string[] = [];
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.md')) continue;
+        const candidate = path.join(dir, f);
+        // SYMLINK-ESCAPE CONTAINMENT: a `.md` entry in the (version-controlled,
+        // shared) team-memory dir may be a symlink pointing OUT of it — e.g. to
+        // `~/.ssh/config` — which would exfiltrate an arbitrary file into the
+        // system prompt. Verify the realpath is still contained within the team
+        // dir before reading; skip anything that escapes.
+        if (realpathWithin(candidate, dir) === null) continue;
+        const raw = fs.readFileSync(candidate, 'utf-8');
+        const { body } = parseFrontmatter(raw);
+        const content = sanitizeContent(body.trim(), candidate);
+        if (content.length > 0) out.push(content);
+      }
+      return out;
     } catch {
       return [];
     }
@@ -791,7 +922,9 @@ export class MemoryManager {
     for (const [category, categoryFacts] of grouped) {
       lines.push(`### ${category}`);
       for (const f of categoryFacts) {
-        lines.push(`- ${f.fact} (confidence: ${f.confidence})`);
+        // Credential boundary: a secret captured in an extracted fact must not be
+        // written to the persisted session-memory file.
+        lines.push(`- ${redactCredentials(f.fact)} (confidence: ${f.confidence})`);
       }
       lines.push('');
     }
@@ -970,6 +1103,16 @@ export class MemoryManager {
       const pos = result.indexOf(fullMatch, searchFrom);
       if (pos === -1) continue;
 
+      // WORKSPACE CONFINEMENT: `@include ../../etc/passwd` (or a symlink inside the
+      // workspace pointing out) must not inline an arbitrary file into instructions.
+      // Resolve symlinks and verify containment before touching the file.
+      if (realpathWithin(includePath, this.cwd) === null) {
+        const replacement = `[include blocked — outside workspace: ${path.basename(includePath)}]`;
+        result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
+        searchFrom = pos + replacement.length;
+        continue;
+      }
+
       if (seen.has(includePath)) {
         const replacement = `[circular reference: ${path.basename(includePath)}]`;
         result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
@@ -1019,7 +1162,9 @@ export class MemoryManager {
     const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
     try {
       const content = await fsp.readFile(indexPath, 'utf-8');
-      return content.split('\n').filter(l => l.startsWith('- ['));
+      // The entrypoint is injected every turn — cap it (lines + bytes) so a
+      // runaway index can't stuff the context / inflate cost.
+      return truncateEntrypointContent(content).split('\n').filter(l => l.startsWith('- ['));
     } catch {
       return [];
     }
@@ -1116,9 +1261,8 @@ export class MemoryManager {
 
       const parentDir = path.dirname(currentDir);
       if (parentDir === currentDir || currentDir === root) break;
-      try {
-        if (fs.statSync(path.join(currentDir, '.git')).isDirectory()) break;
-      } catch { /* no .git — continue */ }
+      // Stop at the git root — `.git` is a dir (clone) or a file (worktree/submodule).
+      if (isGitRoot(currentDir)) break;
       currentDir = parentDir;
       depth++;
     }

@@ -681,3 +681,75 @@ export function convertToLineEnding(text: string, ending: '\r\n' | '\n'): string
   if (ending === '\r\n') return normalized.replace(/\n/g, '\r\n');
   return normalized;
 }
+
+/**
+ * Extract a Node.js errno string (e.g. 'ENOENT', 'EACCES', 'ELOOP', 'EIO') from
+ * an unknown thrown value, or undefined when none is present. Single source for
+ * classifying filesystem errors so call sites can distinguish "absent" (ENOENT)
+ * from "could-not-be-checked" without re-implementing the `err.code` cast.
+ */
+export function getErrnoCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown })?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/** Lines of unchanged context shown around a changed region in a unified diff. */
+export const DIFF_CONTEXT_LINES = 3;
+
+/**
+ * Build a minimal unified diff between two text blobs: a common prefix/suffix scan
+ * isolates the single changed region and emits only that hunk plus surrounding
+ * context, instead of marking the whole file -/+. Single source of truth for
+ * tool diff previews (full-file writes, replace edits, notebook cell edits) so the
+ * diff format is never re-implemented per tool. `label` is the path/identifier
+ * shown on the ---/+++ header.
+ */
+export function buildUnifiedDiff(oldContent: string, newContent: string, label: string): string {
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+
+  let firstDiff = 0;
+  while (firstDiff < oldLines.length && firstDiff < newLines.length && oldLines[firstDiff] === newLines[firstDiff]) {
+    firstDiff++;
+  }
+
+  let oldEnd = oldLines.length - 1;
+  let newEnd = newLines.length - 1;
+  while (oldEnd > firstDiff && newEnd > firstDiff && oldLines[oldEnd] === newLines[newEnd]) {
+    oldEnd--;
+    newEnd--;
+  }
+
+  if (firstDiff > oldEnd && firstDiff > newEnd) {
+    return '(no changes detected)';
+  }
+
+  const ctxStart = Math.max(0, firstDiff - DIFF_CONTEXT_LINES);
+  const ctxOldEnd = Math.min(oldLines.length - 1, oldEnd + DIFF_CONTEXT_LINES);
+  const ctxNewEnd = Math.min(newLines.length - 1, newEnd + DIFF_CONTEXT_LINES);
+
+  const result: string[] = [];
+  result.push(`--- ${label}`);
+  result.push(`+++ ${label}`);
+  result.push(`@@ -${ctxStart + 1},${ctxOldEnd - ctxStart + 1} +${ctxStart + 1},${ctxNewEnd - ctxStart + 1} @@`);
+
+  for (let i = ctxStart; i < firstDiff; i++) {
+    result.push(` ${oldLines[i]}`);
+  }
+
+  for (let i = firstDiff; i <= oldEnd; i++) {
+    result.push(`-${oldLines[i]}`);
+  }
+
+  for (let i = firstDiff; i <= newEnd; i++) {
+    result.push(`+${newLines[i]}`);
+  }
+
+  const afterStart = oldEnd + 1;
+  const afterEnd = Math.min(oldLines.length - 1, oldEnd + DIFF_CONTEXT_LINES);
+  for (let i = afterStart; i <= afterEnd; i++) {
+    result.push(` ${oldLines[i]}`);
+  }
+
+  return result.join('\n');
+}

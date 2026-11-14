@@ -10,7 +10,40 @@ import {
   sanitizeSubagentOutput,
   recoverJsonStringFields,
   repairJsonArguments,
+  recursivelySanitizeUnicode,
 } from '../src/tools/input-sanitizer';
+
+describe('recursivelySanitizeUnicode', () => {
+  const ZW = '​';
+  it('strips invisible unicode from a bare string', () => {
+    assert.equal(recursivelySanitizeUnicode(`a${ZW}b`), 'ab');
+  });
+  it('sanitizes strings nested in arrays and objects, leaving keys intact', () => {
+    const out = recursivelySanitizeUnicode({ [`k${ZW}`]: [`x${ZW}`, { d: `y${ZW}` }] }) as any;
+    // Keys are preserved verbatim; only values are scrubbed.
+    assert.deepEqual(Object.keys(out), [`k${ZW}`]);
+    assert.deepEqual(out[`k${ZW}`], ['x', { d: 'y' }]);
+  });
+  it('passes non-string primitives through unchanged', () => {
+    assert.equal(recursivelySanitizeUnicode(42), 42);
+    assert.equal(recursivelySanitizeUnicode(true), true);
+    assert.equal(recursivelySanitizeUnicode(null), null);
+    assert.equal(recursivelySanitizeUnicode(undefined), undefined);
+  });
+  it('drops prototype-poisoning keys', () => {
+    const out = recursivelySanitizeUnicode(JSON.parse('{"__proto__":{"x":1},"ok":"v"}')) as any;
+    assert.equal(out.ok, 'v');
+    assert.ok(!Object.prototype.hasOwnProperty.call(out, '__proto__'));
+  });
+  it('stops recursing at the depth cap (returns the deep value as-is)', () => {
+    // Build a structure deeper than the cap (20); the deepest string is left unscrubbed.
+    let node: any = `deep${ZW}`;
+    for (let i = 0; i < 25; i++) node = { n: node };
+    const out = recursivelySanitizeUnicode(node);
+    // Shallow levels are objects; it does not throw and returns a structure.
+    assert.equal(typeof out, 'object');
+  });
+});
 
 describe('sanitizeToolInput', () => {
   it('strips null bytes from string fields', () => {

@@ -7,6 +7,11 @@ import { suggestSimilarPaths } from './path-suggest';
 
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
+// Hard ceiling on bytes accumulated from a spawned searcher's stdout. A pattern
+// matching an enormous tree could otherwise stream gigabytes into memory before
+// the result is ever truncated to MAX_LINES (OOM / DoS). Once exceeded we stop
+// buffering, kill the child, and flag the output truncated.
+export const MAX_SEARCH_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 // After SIGKILL on timeout/abort, a wedged process may never emit 'close' (seen on
 // Windows and for uninterruptible I/O). Resolve anyway after this grace period so
 // the tool can never hang forever.
@@ -43,6 +48,8 @@ interface SearchOutcome {
   output: string | null;
   timedOut?: boolean;
   eagain?: boolean;
+  /** True when stdout hit MAX_SEARCH_OUTPUT_BYTES and buffering was cut short. */
+  outputTruncated?: boolean;
   /** Non-null when the search process exited with an error (code > 1) or was killed by a signal. */
   searchError?: string;
 }
@@ -234,6 +241,9 @@ export const grepTool: ToolDefinition = {
     if (rgOutcome.output !== null) {
       const cleaned = rgOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
       const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
+      if (rgOutcome.outputTruncated && !result.isError) {
+        result.output += `\n\n[Warning: search output exceeded ${MAX_SEARCH_OUTPUT_BYTES / 1024 / 1024}MB and was cut short — narrow the pattern or path for complete results.]`;
+      }
       if (rgOutcome.searchError && !result.isError) {
         result.output += `\n\n[Warning: search exited with error: ${rgOutcome.searchError}]`;
       }
@@ -259,6 +269,9 @@ export const grepTool: ToolDefinition = {
     if (grepOutcome.output !== null) {
       const cleaned = grepOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
       const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
+      if (grepOutcome.outputTruncated && !result.isError) {
+        result.output += `\n\n[Warning: search output exceeded ${MAX_SEARCH_OUTPUT_BYTES / 1024 / 1024}MB and was cut short — narrow the pattern or path for complete results.]`;
+      }
       if (grepOutcome.searchError && !result.isError) {
         result.output += `\n\n[Warning: search exited with error: ${grepOutcome.searchError}]`;
       }
@@ -535,8 +548,15 @@ export function runSearch(
       context.abortSignal.addEventListener('abort', onAbort, { once: true });
     }
 
+    let outputTruncated = false;
     child.stdout!.on('data', (data: Buffer) => {
+      if (outputTruncated) return;
       stdout += data.toString();
+      if (Buffer.byteLength(stdout) > MAX_SEARCH_OUTPUT_BYTES) {
+        // Stop buffering and kill the child so it can't keep streaming into memory.
+        outputTruncated = true;
+        killThenSettle({ output: stdout, outputTruncated: true });
+      }
     });
 
     child.stderr!.on('data', (data: Buffer) => {
@@ -636,7 +656,13 @@ function formatResult(output: string, pattern: string, limit: number = MAX_LINES
   const fileCount = fileSet.size;
   const matchCount = totalLines;
   const truncated = sliced.length < totalLines;
-  const summary = `[${matchCount} matches in ${fileCount} files${truncated ? ' (truncated)' : ''}]`;
+  const truncNote = truncated ? ' (truncated)' : '';
+  // files_with_matches lists one file per line (no per-match lines), so the count
+  // IS the file count — word it accordingly with singular/plural grammar. Content
+  // mode counts matches across files.
+  const summary = outputMode === 'files_with_matches'
+    ? `[Found ${fileCount} ${fileCount === 1 ? 'file' : 'files'}${truncNote}]`
+    : `[${matchCount} ${matchCount === 1 ? 'match' : 'matches'} in ${fileCount} ${fileCount === 1 ? 'file' : 'files'}${truncNote}]`;
 
   if (offset > 0 || truncated) {
     return {

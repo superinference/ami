@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { stripJsoncComments, loadProjectConfig, loadGlobalConfig, mergeConfigs, ConfigService, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, type ProjectConfig } from '../src/config';
+import { stripJsoncComments, loadProjectConfig, loadGlobalConfig, mergeConfigs, ConfigService, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, type ProjectConfig } from '../src/config';
 
 // ---------------------------------------------------------------------------
 // stripJsoncComments
@@ -656,5 +656,64 @@ describe('loadConfigFileChecked / corruption recovery', () => {
     const projDiag = diags.find(d => d.path.endsWith(path.join('.ami', 'config.json')));
     assert.ok(projDiag);
     assert.ok(projDiag!.backupPath);
+  });
+
+  it('valid JSON object with a bad VALUE → config still loads + invalid-value diagnostic', () => {
+    const p = path.join(dir, 'config.json');
+    fs.writeFileSync(p, JSON.stringify({ model: 'gpt-4o', permissionMode: 'wide-open', maxTurns: -3 }));
+    const r = loadConfigFileChecked(p);
+    // The valid parts still load — validation is advisory, not fatal.
+    assert.equal(r.config!.model, 'gpt-4o');
+    assert.ok(r.diagnostic);
+    assert.equal(r.diagnostic!.kind, 'invalid-value');
+    const fields = (r.diagnostic!.issues ?? []).map(i => i.field).sort();
+    assert.deepEqual(fields, ['maxTurns', 'permissionMode']);
+    assert.match(r.diagnostic!.message, /permissionMode/);
+  });
+
+  it('collectConfigDiagnostics surfaces invalid-value diagnostics across tiers', () => {
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'config.json'), JSON.stringify({ cacheTtl: '2h' }));
+    const diags = collectConfigDiagnostics(dir);
+    const d = diags.find(x => x.path.endsWith(path.join('.ami', 'config.json')));
+    assert.ok(d);
+    assert.equal(d!.kind, 'invalid-value');
+    assert.equal(d!.issues![0]!.field, 'cacheTtl');
+  });
+});
+
+describe('validateProjectConfigValues', () => {
+  it('returns no issues for a valid config', () => {
+    assert.deepEqual(
+      validateProjectConfigValues({ permissionMode: 'ask', cacheTtl: '1h', maxTurns: 10, tokenBudget: 1000, maxBudgetUsd: 5 }),
+      [],
+    );
+  });
+
+  it('returns no issues for an empty config', () => {
+    assert.deepEqual(validateProjectConfigValues({}), []);
+  });
+
+  it('flags an invalid permissionMode enum', () => {
+    const issues = validateProjectConfigValues({ permissionMode: 'nope' as ProjectConfig['permissionMode'] });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'permissionMode');
+    assert.match(issues[0]!.message, /ask, auto-allow, deny-all/);
+  });
+
+  it('flags an invalid cacheTtl enum', () => {
+    const issues = validateProjectConfigValues({ cacheTtl: '10m' as ProjectConfig['cacheTtl'] });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'cacheTtl');
+  });
+
+  it('flags out-of-range numeric knobs via the canonical validateEngineConfig', () => {
+    const issues = validateProjectConfigValues({ maxTurns: -1, tokenBudget: 0, maxBudgetUsd: -5 });
+    const fields = issues.map(i => i.field).sort();
+    assert.deepEqual(fields, ['maxBudgetUsd', 'maxTurns', 'tokenBudget']);
+  });
+
+  it('does not flag valid numeric knobs', () => {
+    assert.deepEqual(validateProjectConfigValues({ maxTurns: 50, tokenBudget: 200000, maxBudgetUsd: 10 }), []);
   });
 });

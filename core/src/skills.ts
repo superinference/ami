@@ -63,12 +63,20 @@ export function isStanceSkill(skill: SkillDefinition): boolean {
   );
 }
 
+/**
+ * Where an agent definition was loaded from, in ascending priority order. A
+ * higher-priority same-named agent SHADOWS a lower one (project > user > plugin >
+ * built-in). Mirrors Claude Code's agent source groups so `/agents` can group and
+ * flag shadowed entries instead of silently dropping the loser.
+ */
+export type AgentSource = 'built-in' | 'plugin' | 'user' | 'project';
+
 export interface AgentDefinition {
   name: string;
   description: string;
   systemPrompt: string;   // The agent's system prompt (markdown body)
   filePath: string;
-  model?: string;
+  model?: string;         // Model override; the literal 'inherit' means "use the parent's model"
   maxTurns?: number;
   tools?: string[];       // Allowed tool names (empty = all)
   disallowedTools?: string[];
@@ -76,6 +84,11 @@ export interface AgentDefinition {
   permissionMode?: 'auto-allow' | 'ask' | 'deny-all';
   /** Token budget for auto-compaction inside this subagent's context window. */
   autoCompactWindow?: number;
+  /** Which tier this agent was loaded from (built-in | plugin | user | project). */
+  source?: AgentSource;
+  /** When a higher-priority same-named agent shadows this one, the winner's
+   *  source. Undefined on the active (winning) agent. */
+  overriddenBy?: AgentSource;
 }
 
 /**

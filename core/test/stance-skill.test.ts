@@ -78,3 +78,20 @@ describe('skill tool — stance skills are never run as one-shot', () => {
     assert.match(res.output, /disableModelInvocation/);
   });
 });
+
+describe('skill tool — invocation guidance in the description', () => {
+  it('maps slash commands to skills and excludes built-in CLI commands', () => {
+    assert.match(skillTool.description, /slash command/i);
+    assert.match(skillTool.description, /built-in CLI commands/i);
+  });
+  it('states the blocking invoke-before-responding rule', () => {
+    assert.match(skillTool.description, /before (writing|you (respond|answer))/i);
+  });
+  it('forbids mentioning a skill without actually calling it', () => {
+    assert.match(skillTool.description, /never|not/i);
+    assert.match(skillTool.description, /mention/i);
+  });
+  it('forbids re-invoking an already-active skill', () => {
+    assert.match(skillTool.description, /re-invoke|already active|already\/loaded|already loaded/i);
+  });
+});

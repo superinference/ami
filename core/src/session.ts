@@ -4,12 +4,32 @@ import * as crypto from 'crypto';
 import { execSync as childExecSync } from 'child_process';
 import type { Message, ProviderConfig, SessionId } from './types';
 import { asSessionId } from './types';
-import { projectStateDir } from './reference-journal';
+import { projectStateDir, ndjsonSafeStringify } from './reference-journal';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, fsHooks, OWNER_ONLY_FILE_MODE, OWNER_ONLY_DIR_MODE } from './utils/fs-atomic';
 import { getGitBranch } from './utils/git';
 import { AMI_VERSION } from './version';
+import { isEnvTruthy } from './analytics';
 export { assertPathWithin } from './path-safety';
+
+/**
+ * Upper bound on a session/transcript file we will read back into memory. A
+ * corrupt or maliciously huge file must never OOM the process on --resume; a file
+ * over this size is treated as unreadable (skipped) rather than loaded. Mirrors
+ * the reference's size boundary on session reads.
+ */
+export const MAX_SESSION_READ_BYTES = 100 * 1024 * 1024; // 100 MiB
+
+/**
+ * Session/transcript persistence is disabled when the user opts out: the
+ * reference honours CLAUDE_CODE_SKIP_PROMPT_HISTORY; we add AMI_SKIP_SESSION_HISTORY.
+ * When disabled, save() is a no-op so no transcript is written to disk (privacy /
+ * ephemeral-run support). Callers (CLI flag, cleanupPeriodDays===0) can also pass
+ * an explicit override.
+ */
+export function isSessionPersistenceDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env.AMI_SKIP_SESSION_HISTORY) || isEnvTruthy(env.CLAUDE_CODE_SKIP_PROMPT_HISTORY);
+}
 
 /**
  * Content longer than this is offloaded to a content-addressed blob sidecar
@@ -152,6 +172,9 @@ export class SessionManager {
    * --resume restores the complete conversation (H14).
    */
   save(session: Session): void {
+    // Honour an opt-out of transcript persistence (privacy / ephemeral runs):
+    // write nothing to disk when disabled. Checked first so no dir is created.
+    if (isSessionPersistenceDisabled()) return;
     this.ensureDir();
     const safeId = sanitizeSessionId(session.id);
     const blobDir = this.blobDirFor(safeId);
@@ -175,7 +198,8 @@ export class SessionManager {
     };
     // Crash-safe + owner-only: a truncated/corrupt newest session can never
     // result from an interrupted write, and transcripts stay 0o600 on shared hosts.
-    atomicWriteFileSync(filePath, JSON.stringify(data, null, 2));
+    // NDJSON-safe serialization escapes U+2028/U+2029 so content can't tear a line.
+    atomicWriteFileSync(filePath, ndjsonSafeStringify(data, 2));
   }
 
   /** Directory holding a session's content-addressed blobs. */
@@ -370,6 +394,9 @@ export class SessionManager {
 
   private readSessionFile(filePath: string, rehydrate = true): Session | null {
     try {
+      // OOM boundary: never read a pathologically large session file into memory
+      // (a corrupt/hostile file must not crash --resume). Skip it as unreadable.
+      if (fs.statSync(filePath).size > MAX_SESSION_READ_BYTES) return null;
       const raw = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(raw) as Session;
       if (rehydrate && Array.isArray(parsed.messages)) {
@@ -716,6 +743,12 @@ export function repairTranscriptFile(
     return { repairedLines: 0, droppedLines: 0 };
   }
 
+  // OOM boundary: a transcript larger than the read cap is not slurped into
+  // memory for repair (it would risk crashing the process); leave it untouched.
+  if (fs.statSync(filePath).size > MAX_SESSION_READ_BYTES) {
+    return { repairedLines: 0, droppedLines: 0 };
+  }
+
   const raw = fs.readFileSync(filePath, 'utf-8');
   if (!raw.trim()) {
     return { repairedLines: 0, droppedLines: 0 };
@@ -800,7 +833,8 @@ export function safeAppendTranscript(
 ): void {
   try {
     secureMkdirSync(path.dirname(filePath));
-    const line = JSON.stringify(entry) + '\n';
+    // NDJSON-safe: escape U+2028/U+2029 so an entry can never be split into two lines.
+    const line = ndjsonSafeStringify(entry) + '\n';
     const release = acquireAppendLock(filePath + '.lock');
     try {
       const fd = fs.openSync(filePath, 'a', OWNER_ONLY_FILE_MODE);

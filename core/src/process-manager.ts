@@ -79,12 +79,27 @@ export function validateBackgroundCommand(command: string): { allowed: boolean; 
   return { allowed: true };
 }
 
+/** The lifecycle states of a background task/agent. */
+export type TaskStatus = 'running' | 'completed' | 'failed' | 'killed';
+
+/** Terminal states — a task in one of these will never run again. */
+const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(['completed', 'failed', 'killed']);
+
+/**
+ * Whether a task status is terminal (completed/failed/killed). Guards against
+ * injecting messages into dead teammates, evicting finished tasks, and orphan
+ * cleanup (mirrors Claude Code's isTerminalTaskStatus).
+ */
+export function isTerminalTaskStatus(status: string | undefined): boolean {
+  return !!status && TERMINAL_TASK_STATUSES.has(status as TaskStatus);
+}
+
 export interface BackgroundProcess {
   taskId: string;
   pid: number;
   command: string;
   description: string;
-  status: 'running' | 'completed' | 'failed' | 'killed';
+  status: TaskStatus;
   exitCode: number | null;
   outputPath: string;
   startTime: number;
@@ -300,6 +315,11 @@ export class ProcessManager extends EventEmitter {
         try { stream.destroy(); } catch { /* EBADF is expected here */ }
       }
     }
+  }
+
+  /** The lifecycle status of a tracked task, or undefined if it isn't tracked. */
+  getStatus(taskId: string): TaskStatus | undefined {
+    return this.processes.get(taskId)?.status;
   }
 
   getOutput(taskId: string, tailLines = 50): { status: string; exitCode: number | null; output: string; elapsedMs: number } | null {

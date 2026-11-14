@@ -135,6 +135,46 @@ describe('stale cleanup skips the active session worktree', () => {
   });
 });
 
+describe('stale cleanup is gated on a valid project config', () => {
+  let repo: string;
+  beforeEach(() => { repo = makeRepo(); });
+  afterEach(() => { fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
+
+  // A detached worktree pinned at the repo's committed HEAD has no uncommitted
+  // files and no unpushed commits (HEAD is reachable from a branch), so it is a
+  // reapable, registered worktree once backdated past the age threshold.
+  function makeReapableWorktree(name: string): string {
+    const wtBase = path.join(repo, '.ami', 'worktrees');
+    fs.mkdirSync(wtBase, { recursive: true });
+    const wtPath = path.join(wtBase, name);
+    git(repo, 'worktree', 'add', '--detach', wtPath, 'HEAD');
+    const old = new Date(Date.now() - 999 * 86400000);
+    fs.utimesSync(wtPath, old, old);
+    return wtPath;
+  }
+
+  it('skips ALL destructive removal when .ami/config.json is corrupt', () => {
+    const wtPath = makeReapableWorktree('stale-corrupt');
+    fs.writeFileSync(path.join(repo, '.ami', 'config.json'), '{ this is not: valid json ');
+    const cleaned = cleanupStaleWorktrees(repo, 1);
+    assert.deepEqual(cleaned, [], 'corrupt config must abort cleanup');
+    assert.ok(fs.existsSync(wtPath), 'worktree must survive when config is untrusted');
+  });
+
+  it('proceeds with cleanup when the config is valid', () => {
+    makeReapableWorktree('stale-ok');
+    fs.writeFileSync(path.join(repo, '.ami', 'config.json'), JSON.stringify({ model: 'x' }));
+    const cleaned = cleanupStaleWorktrees(repo, 1);
+    assert.ok(cleaned.includes('stale-ok'), 'a valid config must not block reaping');
+  });
+
+  it('proceeds with cleanup when no config file exists (defaults)', () => {
+    makeReapableWorktree('stale-nocfg');
+    const cleaned = cleanupStaleWorktrees(repo, 1);
+    assert.ok(cleaned.includes('stale-nocfg'), 'absent config uses defaults, not a block');
+  });
+});
+
 describe('bumpWorktreeMtime', () => {
   it('advances the directory mtime', () => {
     const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-mtime-'));

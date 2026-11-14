@@ -9,21 +9,53 @@ import { extractQuery } from './tool-utils';
 
 let _indexer: WorkspaceIndexer | null = null;
 let _buildPromise: Promise<void> | null = null;
+/** Set when the last background index build rejected, so the next call retries
+ *  instead of permanently serving an empty index (a transient fs/git error at
+ *  startup would otherwise never recover). Mirrors Claude Code's tracked
+ *  backend-failure state. */
+let _buildFailed = false;
+
+/** Default cap on how long a tool call waits for the background index build. */
+const DEFAULT_INDEX_TIMEOUT_MS = 10_000;
+
+/** Resolve the index-build wait timeout (ms) from the env flag, with a default. */
+export function indexBuildTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AMI_SYMBOL_INDEX_TIMEOUT_MS;
+  const n = raw !== undefined ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_INDEX_TIMEOUT_MS;
+}
+
+/** Construction seam so tests can inject an indexer whose build hangs or rejects. */
+export const indexerHooks: { create: (cwd: string) => WorkspaceIndexer } = {
+  create: (cwd: string) => new WorkspaceIndexer(cwd),
+};
 
 export function getWorkspaceIndexer(cwd: string): WorkspaceIndexer {
-  if (!_indexer || _indexer.cwd !== cwd) {
-    _indexer = new WorkspaceIndexer(cwd);
-    // Fire-and-forget: start building the index in the background
-    _buildPromise = _indexer.buildIndex().then(() => { _buildPromise = null; }).catch(() => { _buildPromise = null; });
+  if (!_indexer || _indexer.cwd !== cwd || _buildFailed) {
+    _indexer = indexerHooks.create(cwd);
+    _buildFailed = false;
+    // Fire-and-forget: start building the index in the background. A rejected
+    // build records the failure so the next call rebuilds rather than hanging on
+    // (or silently serving) a never-completed index.
+    _buildPromise = _indexer.buildIndex()
+      .then(() => { _buildPromise = null; })
+      .catch(() => { _buildPromise = null; _buildFailed = true; });
   }
   return _indexer;
 }
 
-/** Wait for the current build to finish (used internally by the tool). */
+/** Wait for the current build to finish (used internally by the tool), bounded by
+ *  a timeout so a slow/stuck index build degrades to a partial-index search
+ *  instead of blocking the tool call forever. */
 async function ensureBuilt(cwd: string): Promise<WorkspaceIndexer> {
   const indexer = getWorkspaceIndexer(cwd);
   if (_buildPromise) {
-    await _buildPromise;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      _buildPromise,
+      new Promise<void>(resolve => { timer = setTimeout(resolve, indexBuildTimeoutMs()); }),
+    ]);
+    if (timer) clearTimeout(timer);
   }
   return indexer;
 }
@@ -32,6 +64,7 @@ async function ensureBuilt(cwd: string): Promise<WorkspaceIndexer> {
 export function _resetIndexer(): void {
   _indexer = null;
   _buildPromise = null;
+  _buildFailed = false;
 }
 
 // ---------------------------------------------------------------------------

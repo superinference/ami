@@ -261,13 +261,13 @@ describe('enterWorktreeTool.execute', () => {
   it('ignores unparseable "git remote show origin" output and falls through to main', async () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
-    const real = child_process.execSync;
-    mock.method(_enterWorktreeHooks, 'execSync', (cmd: string, opts: unknown) => {
-      if (typeof cmd === 'string' && cmd.includes('git remote show origin')) {
-        // Output that does NOT contain a "HEAD branch:" line → regex match is null.
-        return 'unrelated output\n' as unknown as ReturnType<typeof child_process.execSync>;
+    const realExec = _enterWorktreeHooks.exec;
+    mock.method(_enterWorktreeHooks, 'exec', (args: string[], opts: Parameters<typeof _enterWorktreeHooks.exec>[1]) => {
+      if (args.join(' ').includes('symbolic-ref')) {
+        // Output that does NOT contain an "origin/<branch>" match → falls through.
+        return 'unrelated output';
       }
-      return (real as any)(cmd, opts);
+      return realExec(args, opts);
     });
     try {
       const r = await enterWorktreeTool.execute({ name: 'nomatch' }, ctx({ cwd: repo }));
@@ -299,12 +299,12 @@ describe('enterWorktreeTool.execute', () => {
     initRepoWithCommit(repo);
     const plain = path.join(repo, 'plain2');
     fs.mkdirSync(plain);
-    const real = child_process.execSync;
-    mock.method(_enterWorktreeHooks, 'execSync', (cmd: string, opts: unknown) => {
-      if (typeof cmd === 'string' && cmd.includes('worktree list')) {
+    const realExec = _enterWorktreeHooks.exec;
+    mock.method(_enterWorktreeHooks, 'exec', (args: string[], opts: Parameters<typeof _enterWorktreeHooks.exec>[1]) => {
+      if (args.join(' ').includes('worktree list')) {
         throw new Error('simulated worktree list failure');
       }
-      return (real as any)(cmd, opts);
+      return realExec(args, opts);
     });
     try {
       const r = await enterWorktreeTool.execute({ path: plain }, ctx({ cwd: repo }));
@@ -318,12 +318,12 @@ describe('enterWorktreeTool.execute', () => {
   it('falls back to "unknown" when the base commit cannot be resolved', async () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
-    const real = child_process.execSync;
-    mock.method(_enterWorktreeHooks, 'execSync', (cmd: string, opts: unknown) => {
-      if (cmd === 'git rev-parse --short HEAD') {
+    const realExec = _enterWorktreeHooks.exec;
+    mock.method(_enterWorktreeHooks, 'exec', (args: string[], opts: Parameters<typeof _enterWorktreeHooks.exec>[1]) => {
+      if (args.join(' ') === 'rev-parse --short HEAD') {
         throw new Error('simulated rev-parse failure');
       }
-      return (real as any)(cmd, opts);
+      return realExec(args, opts);
     });
     try {
       const r = await enterWorktreeTool.execute({ name: 'unkbase' }, ctx({ cwd: repo }));

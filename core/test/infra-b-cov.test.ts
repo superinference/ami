@@ -564,7 +564,8 @@ describe('hooks — command/http closures produce structured results', () => {
       const res = await hm.executePostToolUse({
         messages: [], turnCount: 1, toolName: 'bash', toolInput: {}, toolOutput: 'orig', isError: false,
       } as any);
-      assert.deepEqual(res, { additionalContext: undefined, updatedToolOutput: 'rewritten' });
+      assert.equal(res.updatedToolOutput, 'rewritten');
+      assert.equal(res.additionalContext, undefined);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -584,7 +585,7 @@ describe('hooks — command/http closures produce structured results', () => {
         { event: 'sessionStart', hook: { type: 'http', url: `http://127.0.0.1:${port}/` } },
       ]));
       const res = await hm.executeSessionStart({ sessionId: 's', cwd: '.' } as any);
-      assert.deepEqual(res, { initialUserMessage: 'from-http' });
+      assert.equal(res.initialUserMessage, 'from-http');
     } finally {
       server.close();
     }
@@ -827,25 +828,26 @@ describe('hooks — command/http decision return shapes', () => {
   it('sessionStart: JSON initialUserMessage (http) wins', async () => {
     const hm = load([{ event: 'sessionStart', hook: { type: 'http', url: `http://127.0.0.1:${port}/initial` } }]);
     const r = await hm.executeSessionStart({ sessionId: 's', cwd: '.' } as any);
-    assert.deepEqual(r, { initialUserMessage: 'start here' });
+    assert.equal(r.initialUserMessage, 'start here');
   });
 
   it('sessionStart: command SYSTEM: prefix becomes initialUserMessage', async () => {
     const hm = load([{ event: 'sessionStart', hook: { type: 'command', command: `echo '{"systemMessage":"sys hi"}'` } }]);
     const r = await hm.executeSessionStart({ sessionId: 's', cwd: '.' } as any);
-    assert.deepEqual(r, { initialUserMessage: 'sys hi' });
+    assert.equal(r.initialUserMessage, 'sys hi');
   });
 
   it('postToolUse: JSON additionalContext (http) is surfaced', async () => {
     const hm = load([{ event: 'postToolUse', hook: { type: 'http', url: `http://127.0.0.1:${port}/ctx` } }]);
     const r = await hm.executePostToolUse({ messages: [], turnCount: 1, toolName: 'bash', toolInput: {}, toolOutput: 'o', isError: false } as any);
-    assert.deepEqual(r, { additionalContext: 'extra context', updatedToolOutput: undefined });
+    assert.equal(r.additionalContext, 'extra context');
+    assert.equal(r.updatedToolOutput, undefined);
   });
 
   it('userPromptSubmit: JSON additionalContext (http) is surfaced', async () => {
     const hm = load([{ event: 'userPromptSubmit', hook: { type: 'http', url: `http://127.0.0.1:${port}/ctx` } }]);
     const r = await hm.executeUserPromptSubmit({ prompt: 'x', turnCount: 1 } as any);
-    assert.deepEqual(r, { additionalContext: 'extra context' });
+    assert.equal(r.additionalContext, 'extra context');
   });
 
   it('preToolUse command JSON: block without reason, ask, and updatedInput', async () => {

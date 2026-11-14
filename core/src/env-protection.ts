@@ -16,7 +16,11 @@ export const POLICY_VARIABLES = new Set([
   'SUPERINFERENCE_LOCAL_OAUTH_API_BASE',
 ]);
 
-// Code-loading variables — can inject arbitrary code into child processes
+// Code-loading variables — can inject arbitrary code into child processes.
+// Besides the explicit members, the whole LD_*/DYLD_* families are caught by
+// CODE_LOADING_PREFIXES below (matching Claude's BINARY_HIJACK_VARS
+// /^(LD_|DYLD_|PATH$)/), so a novel loader var (e.g. LD_AUDIT variants,
+// DYLD_VERSIONED_LIBRARY_PATH) can't slip through by not being enumerated.
 export const CODE_LOADING_VARIABLES = new Set([
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
@@ -30,7 +34,29 @@ export const CODE_LOADING_VARIABLES = new Set([
   'NODE_OPTIONS',
   'PROMPT_COMMAND',
   'PATH',
+  // Per-language module/code-loading vectors — each lets an untrusted dir inject
+  // code into a spawned interpreter/toolchain (parity: bashPermissions.ts SECURITY
+  // note — PYTHONPATH/NODE_PATH/CLASSPATH/RUBYLIB/GOFLAGS/RUSTFLAGS are NEVER safe).
+  'PYTHONPATH',
+  'NODE_PATH',
+  'CLASSPATH',
+  'RUBYLIB',
+  'GOFLAGS',
+  'RUSTFLAGS',
+  'PERL5LIB',
+  'PERLLIB',
 ]);
+
+/**
+ * Env-var name prefixes whose entire family loads code into a child process.
+ * The dynamic-linker families (LD_*, DYLD_*) grow across platforms/versions, so
+ * they are prefix-matched rather than enumerated (parity: BINARY_HIJACK_VARS).
+ */
+export const CODE_LOADING_PREFIXES = ['LD_', 'DYLD_'] as const;
+
+function matchesCodeLoadingPrefix(upper: string): boolean {
+  return CODE_LOADING_PREFIXES.some(p => upper.startsWith(p));
+}
 
 // Telemetry control variables
 export const TELEMETRY_VARIABLES = new Set([
@@ -44,7 +70,12 @@ export type PinCategory = (typeof PIN_CATEGORIES)[number];
 
 export function isPinnedVariable(name: string): boolean {
   const upper = name.toUpperCase();
-  return POLICY_VARIABLES.has(upper) || CODE_LOADING_VARIABLES.has(upper) || TELEMETRY_VARIABLES.has(upper);
+  return (
+    POLICY_VARIABLES.has(upper) ||
+    CODE_LOADING_VARIABLES.has(upper) ||
+    TELEMETRY_VARIABLES.has(upper) ||
+    matchesCodeLoadingPrefix(upper)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -135,9 +166,66 @@ export function isProviderManagedEnvVar(name: string): boolean {
   return PROVIDER_MANAGED_ENV_SUFFIXES.some(s => upper.endsWith(s));
 }
 
+/**
+ * Network-trust / routing-redirect env vars. Unlike {@link PROVIDER_MANAGED_ENV_VARS}
+ * (provider base URLs, API keys, auth tokens — dangerous only when the host owns
+ * routing), these subvert transport security or exfiltrate traffic REGARDLESS of
+ * host mode, so an untrusted (project-scoped) source must never set them:
+ *  - NODE_TLS_REJECT_UNAUTHORIZED — disables TLS certificate verification;
+ *  - NODE_EXTRA_CA_CERTS — trusts an attacker-supplied CA (only user-controlled
+ *    files may set it — parity: caCertsConfig.ts);
+ *  - HTTP(S)_PROXY / NO_PROXY / ALL_PROXY — reroute every request through a proxy;
+ *  - OTEL_EXPORTER_OTLP_*_ENDPOINT — exfiltrate telemetry to an attacker endpoint.
+ *
+ * (parity: managedEnvConstants.ts SAFE_ENV_VARS "REDIRECT/TRUST ATTACKER" notes.)
+ */
+export const NETWORK_TRUST_VARS = new Set([
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NODE_EXTRA_CA_CERTS',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+]);
+
+const NETWORK_TRUST_PREFIXES = ['OTEL_EXPORTER_OTLP_'];
+
+/**
+ * True when `name` controls transport trust / request routing in a way that is
+ * dangerous from ANY untrusted source (independent of provider-managed mode).
+ */
+export function isNetworkTrustEnvVar(name: string): boolean {
+  const upper = name.toUpperCase();
+  if (NETWORK_TRUST_VARS.has(upper)) return true;
+  return NETWORK_TRUST_PREFIXES.some(p => upper.startsWith(p)) && upper.endsWith('_ENDPOINT');
+}
+
 /** Why a settings-sourced env var was not applied to the process env. */
-export const ENV_REJECT_REASONS = ['pinned', 'provider-managed', 'unsafe-untrusted'] as const;
+export const ENV_REJECT_REASONS = ['pinned', 'provider-managed', 'network-trust', 'unsafe-untrusted'] as const;
 export type EnvRejectReason = (typeof ENV_REJECT_REASONS)[number];
+
+/**
+ * Classify an env var's danger when it originates from an untrusted file (a
+ * project-scoped `.env` / settings). Returns the rejection reason, or null when
+ * the var is safe to apply from an untrusted source.
+ *
+ * This is the SINGLE canonical "dangerous env var" classifier — every untrusted
+ * env-application site (the `.env` loader, managed-settings gates) composes it
+ * rather than re-deriving which vars are dangerous:
+ *  1. `pinned`           — code-loading / policy / telemetry vars (never settable);
+ *  2. `network-trust`    — TLS/proxy/OTEL redirect-or-trust vars (always dangerous);
+ *  3. `provider-managed` — routing/credential vars, dangerous only when the host
+ *                          owns inference routing (`hostManagedProvider`).
+ */
+export function classifyUntrustedEnvVar(
+  name: string,
+  opts: { hostManagedProvider?: boolean } = {},
+): EnvRejectReason | null {
+  if (isPinnedVariable(name)) return 'pinned';
+  if (isNetworkTrustEnvVar(name)) return 'network-trust';
+  if (opts.hostManagedProvider && isProviderManagedEnvVar(name)) return 'provider-managed';
+  return null;
+}
 
 /** Trust tier of the settings source supplying an `env` block. */
 export const ENV_TRUST_TIERS = ['trusted', 'project'] as const;
@@ -200,7 +288,7 @@ export function isHostManagedProvider(envSource: NodeJS.ProcessEnv = process.env
 export function getPinCategory(name: string): PinCategory | null {
   const upper = name.toUpperCase();
   if (POLICY_VARIABLES.has(upper)) return 'policy';
-  if (CODE_LOADING_VARIABLES.has(upper)) return 'code_loading';
+  if (CODE_LOADING_VARIABLES.has(upper) || matchesCodeLoadingPrefix(upper)) return 'code_loading';
   if (TELEMETRY_VARIABLES.has(upper)) return 'telemetry';
   return null;
 }

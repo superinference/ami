@@ -45,6 +45,18 @@ describe('estimateToolCallTokens', () => {
     const large = estimateToolCallTokens('bash', { command: 'find . -name "*.ts" -type f -not -path "*/node_modules/*" | head -100' });
     assert.ok(large > small);
   });
+
+  it('serialized JSON input is charged at the dense (~2 char/token) ratio, not 4', () => {
+    const input = { a: 'x'.repeat(400) };
+    const serialized = JSON.stringify(input);
+    const got = estimateToolCallTokens('t', input);
+    // JSON ratio (2/token) must exceed what the generic 4/token estimate would give.
+    const genericBody = estimateTokens(serialized);
+    assert.ok(got - estimateTokens('t') - 10 > genericBody,
+      'dense-JSON estimate must exceed the generic 4-char/token estimate');
+    // And it matches the JSON-aware helper exactly.
+    assert.equal(got, estimateTokens('t') + estimateTokensForFileType(serialized, 'json') + 10);
+  });
 });
 
 describe('estimateMessageTokens', () => {

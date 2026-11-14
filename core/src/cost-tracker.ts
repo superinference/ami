@@ -7,6 +7,7 @@
  */
 
 import type { UsageStats } from './types';
+import { isEssentialTrafficOnly } from './analytics';
 
 /**
  * Extended stats that include prompt caching information.
@@ -114,6 +115,10 @@ interface GatewayModel {
 }
 
 async function fetchLivePricing(): Promise<void> {
+  // Live pricing is a NONESSENTIAL outbound request — honor the privacy/offline
+  // kill-switch (SUPERINFERENCE_/CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) and skip
+  // the gateway fetch entirely, falling back to the hardcoded table.
+  if (isEssentialTrafficOnly()) return;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -190,6 +195,33 @@ export function isPricedModel(model: string): boolean {
   const table = livePricing ?? FALLBACK_PRICING;
   if (table[model]) return true;
   return Object.keys(table).some(key => model.includes(key));
+}
+
+// ---------------------------------------------------------------------------
+// Pricing display (model-picker affordance)
+// ---------------------------------------------------------------------------
+
+/** Format a per-million price: integers without decimals ("$3"), else 2dp ("$0.80", "$22.50"). */
+export function formatPrice(perMillion: number): string {
+  if (!Number.isFinite(perMillion) || perMillion < 0) return '$?';
+  return Number.isInteger(perMillion) ? `$${perMillion}` : `$${perMillion.toFixed(2)}`;
+}
+
+/** Format an input/output per-million pair as "$3/$15 per Mtok". */
+export function formatModelPricing(inputPerMillion: number, outputPerMillion: number): string {
+  return `${formatPrice(inputPerMillion)}/${formatPrice(outputPerMillion)} per Mtok`;
+}
+
+/**
+ * Human-readable pricing string for a model ("$3/$15 per Mtok"), resolved via the
+ * same live/fallback table as the cost estimator — a cost-aware affordance for the
+ * model picker. Returns '' when the model only resolves to the generic default tier
+ * (so the picker doesn't present a guessed price as if it were real).
+ */
+export function getModelPricingString(model: string): string {
+  if (!isPricedModel(model)) return '';
+  const [inputPPM, outputPPM] = matchPricing(model);
+  return formatModelPricing(inputPPM, outputPPM);
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +419,12 @@ export function estimateUsageCost(
 // Cache miss diagnostics
 // ---------------------------------------------------------------------------
 
-export const CACHE_MISS_CAUSES = ['tool_definitions_changed', 'system_prompt_changed', 'idle_past_ttl', 'thinking_mode_changed', 'model_switched', 'first_request', 'unknown'] as const;
+export const CACHE_MISS_CAUSES = [
+  'tool_definitions_changed', 'system_prompt_changed', 'idle_past_ttl', 'idle_past_1h_ttl',
+  'thinking_mode_changed', 'model_switched', 'betas_changed', 'cache_control_changed',
+  'extra_body_changed', 'effort_changed', 'fast_mode_changed', 'global_cache_strategy_changed',
+  'first_request', 'unknown',
+] as const;
 export type CacheMissCause = (typeof CACHE_MISS_CAUSES)[number];
 
 export interface CacheDiagRequest {
@@ -402,6 +439,26 @@ export interface CacheDiagRequest {
    * description changes a name-only hash can't see.
    */
   perToolHashes?: Record<string, string>;
+  /** Length (chars) of the joined system prompt — used for the "+N chars" delta. */
+  systemPromptChars?: number;
+  /** Sorted anthropic-beta header list (diffed added/removed between calls). */
+  betas?: string[];
+  /** Hash of the cache_control scope/TTL config (global↔org, 1h↔5m flips a stripped hash misses). */
+  cacheControlHash?: string;
+  /** Hash of CLAUDE_CODE_EXTRA_BODY / anthropic_internal extra request body. */
+  extraBodyHash?: string;
+  /** Reasoning-effort value (e.g. default / high). */
+  effortValue?: string;
+  /** Fast-mode flag. */
+  fastMode?: boolean;
+  /** Global cache strategy label (e.g. none / tool_based). */
+  globalCacheStrategy?: string;
+}
+
+/** One concurrent cache-break cause with a human-readable magnitude/detail. */
+export interface CacheBreakCause {
+  cause: CacheMissCause;
+  detail: string;
 }
 
 /** Which tools were added/removed/changed between two per-tool hash maps. */
@@ -438,6 +495,19 @@ export const MIN_CACHE_MISS_TOKENS = 2000;
 /** A partial break also requires cache reads to drop below this fraction of the prior call. */
 export const PARTIAL_CACHE_BREAK_RATIO = 0.95;
 
+/** Diff two string lists into sorted added/removed name arrays (betas, etc.). */
+export function diffStringLists(
+  prev: readonly string[] | undefined,
+  next: readonly string[] | undefined,
+): { added: string[]; removed: string[] } {
+  const p = new Set(prev ?? []);
+  const n = new Set(next ?? []);
+  return {
+    added: [...n].filter(x => !p.has(x)).sort(),
+    removed: [...p].filter(x => !n.has(x)).sort(),
+  };
+}
+
 export function fingerprint(input: string): string {
   const len = input.length;
   const head = input.slice(0, 100);
@@ -460,6 +530,11 @@ export class CacheMissDiagnostics {
   private _prevCacheReadTokens = 0;
   private _partialBreaks = 0;
   private _lastDelta: ToolSchemaDelta = { added: [], removed: [], changed: [] };
+  /** All concurrent causes (with magnitudes) of the most recent cache break. */
+  private _lastCauses: CacheBreakCause[] = [];
+  /** When true, the NEXT cache-read drop is EXPECTED (compaction/cache-deletion) and not flagged. */
+  private _expectNextDrop = false;
+  private _expectedDrops = 0;
 
   constructor(cacheTtlMs?: number) {
     this.cacheTtlMs = cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
@@ -478,6 +553,17 @@ export class CacheMissDiagnostics {
     if (!req) return;
     this._pendingRequest = null;
 
+    // An EXPECTED drop (after a compaction / cache-deletion) is a legitimate cache
+    // shrink, not a break — swallow it and re-baseline so it isn't mis-attributed.
+    if (this._expectNextDrop) {
+      this._expectNextDrop = false;
+      this._expectedDrops++;
+      this._lastDelta = { added: [], removed: [], changed: [] };
+      this._lastCauses = [];
+      this._advanceBaseline(req, cacheReadTokens);
+      return;
+    }
+
     const fullMiss = cacheReadTokens === 0;
     // Partial break: cache reads shrank well below the previous call (relative AND
     // absolute thresholds) without dropping to zero — a shrunk-but-nonzero prefix.
@@ -486,19 +572,45 @@ export class CacheMissDiagnostics {
       (this._prevCacheReadTokens - cacheReadTokens) > MIN_CACHE_MISS_TOKENS;
 
     if (fullMiss || partialBreak) {
-      const cause = this.diagnoseCause(req, this._pendingRequestTime);
+      const causes = this.diagnoseCauses(req, this._pendingRequestTime);
+      this._lastCauses = causes;
+      const cause = causes[0].cause;
       this.lastCause = cause;
       this.causes.set(cause, (this.causes.get(cause) ?? 0) + 1);
       if (partialBreak) this._partialBreaks++;
       this._lastDelta = diffToolHashes(this.prev?.perToolHashes, req.perToolHashes);
     } else {
       this._lastDelta = { added: [], removed: [], changed: [] };
+      this._lastCauses = [];
     }
 
+    this._advanceBaseline(req, cacheReadTokens);
+  }
+
+  /** Advance the prev-request / prev-cache-read / timestamp baseline after a response. */
+  private _advanceBaseline(req: CacheDiagRequest, cacheReadTokens: number): void {
     this.prev = req;
     this._prevCacheReadTokens = cacheReadTokens;
     this.lastRequestTime = this._pendingRequestTime;
     this.isFirstRequest = false;
+  }
+
+  /**
+   * Signal that a compaction happened: the conversation legitimately shrank, so the
+   * next request's smaller cached prefix must NOT be scored as a cache break.
+   */
+  notifyCompaction(): void {
+    this._expectNextDrop = true;
+  }
+
+  /** Signal an expected cache deletion (cached-microcompact cache_edits) — same suppression. */
+  notifyCacheDeletion(): void {
+    this._expectNextDrop = true;
+  }
+
+  /** Count of cache-read drops suppressed as expected (compaction / cache-deletion). */
+  getExpectedDropCount(): number {
+    return this._expectedDrops;
   }
 
   /** Number of PARTIAL cache breaks detected (nonzero-but-shrunk cache reads). */
@@ -515,21 +627,91 @@ export class CacheMissDiagnostics {
   static readonly EXTENDED_TTL_MS = DEFAULT_CACHE_TTL_1H_MS;
 
   private diagnoseCause(req: CacheDiagRequest, requestTime: number): CacheMissCause {
-    if (this.isFirstRequest || !this.prev) return 'first_request';
+    return this.diagnoseCauses(req, requestTime)[0].cause;
+  }
 
-    // Priority order: model > idle > tool defs > system prompt > thinking > unknown
-    if (req.model !== this.prev.model) return 'model_switched';
+  /**
+   * Diagnose ALL concurrent causes of a cache break (priority-ordered, each with a
+   * human-readable magnitude), mirroring Claude's multi-cause explanation: model
+   * switch, idle-past-TTL (5min vs 1h bucket), tool-def changes (which tool's
+   * schema), system-prompt char delta, thinking mode, betas added/removed,
+   * cache-control / extra-body / effort / fast-mode / global-cache-strategy flips.
+   */
+  diagnoseCauses(req: CacheDiagRequest, requestTime: number): CacheBreakCause[] {
+    if (this.isFirstRequest || !this.prev) return [{ cause: 'first_request', detail: 'first request' }];
+    const prev = this.prev;
+    const out: CacheBreakCause[] = [];
+
+    if (req.model !== prev.model) out.push({ cause: 'model_switched', detail: `model changed (${prev.model} → ${req.model})` });
 
     if (this.lastRequestTime > 0) {
       const elapsed = requestTime - this.lastRequestTime;
-      if (elapsed > this.cacheTtlMs) return 'idle_past_ttl';
+      if (elapsed > DEFAULT_CACHE_TTL_1H_MS) {
+        out.push({ cause: 'idle_past_1h_ttl', detail: `idle ${Math.round(elapsed / 60_000)}min (past 1h TTL)` });
+      } else if (elapsed > this.cacheTtlMs) {
+        out.push({ cause: 'idle_past_ttl', detail: `idle ${Math.round(elapsed / 1000)}s (past ${Math.round(this.cacheTtlMs / 1000)}s TTL)` });
+      }
     }
 
-    if (req.toolDefHash !== this.prev.toolDefHash) return 'tool_definitions_changed';
-    if (req.systemPromptHash !== this.prev.systemPromptHash) return 'system_prompt_changed';
-    if (req.thinkingMode !== this.prev.thinkingMode) return 'thinking_mode_changed';
+    if (req.toolDefHash !== prev.toolDefHash) {
+      const d = diffToolHashes(prev.perToolHashes, req.perToolHashes);
+      let detail: string;
+      if (d.added.length || d.removed.length) {
+        detail = `tools changed (+${d.added.length}/-${d.removed.length} tools)` +
+          (d.changed.length ? `, schema changed: ${d.changed.join(', ')}` : '');
+      } else if (d.changed.length) {
+        detail = `tool prompt/schema changed (same tool set): ${d.changed.join(', ')}`;
+      } else {
+        detail = 'tool definitions changed';
+      }
+      out.push({ cause: 'tool_definitions_changed', detail });
+    }
 
-    return 'unknown';
+    if (req.systemPromptHash !== prev.systemPromptHash) {
+      let delta = '';
+      if (req.systemPromptChars !== undefined && prev.systemPromptChars !== undefined) {
+        const diff = req.systemPromptChars - prev.systemPromptChars;
+        delta = ` (${diff >= 0 ? '+' : ''}${diff} chars)`;
+      }
+      out.push({ cause: 'system_prompt_changed', detail: `system prompt changed${delta}` });
+    }
+
+    if (req.thinkingMode !== prev.thinkingMode) {
+      out.push({ cause: 'thinking_mode_changed', detail: `thinking mode changed (${prev.thinkingMode} → ${req.thinkingMode})` });
+    }
+
+    const betaDelta = diffStringLists(prev.betas, req.betas);
+    if (betaDelta.added.length || betaDelta.removed.length) {
+      out.push({ cause: 'betas_changed', detail: `betas changed (+${betaDelta.added.join(',') || 'none'} / -${betaDelta.removed.join(',') || 'none'})` });
+    }
+    if ((req.cacheControlHash ?? '') !== (prev.cacheControlHash ?? '')) {
+      out.push({ cause: 'cache_control_changed', detail: 'cache control scope/TTL changed' });
+    }
+    if ((req.extraBodyHash ?? '') !== (prev.extraBodyHash ?? '')) {
+      out.push({ cause: 'extra_body_changed', detail: 'extra request body changed' });
+    }
+    if ((req.effortValue ?? '') !== (prev.effortValue ?? '')) {
+      out.push({ cause: 'effort_changed', detail: `effort changed (${prev.effortValue ?? 'default'} → ${req.effortValue ?? 'default'})` });
+    }
+    if ((req.fastMode ?? false) !== (prev.fastMode ?? false)) {
+      out.push({ cause: 'fast_mode_changed', detail: `fast mode ${req.fastMode ? 'enabled' : 'disabled'}` });
+    }
+    if ((req.globalCacheStrategy ?? '') !== (prev.globalCacheStrategy ?? '')) {
+      out.push({ cause: 'global_cache_strategy_changed', detail: `global cache strategy changed (${prev.globalCacheStrategy ?? 'none'} → ${req.globalCacheStrategy ?? 'none'})` });
+    }
+
+    if (out.length === 0) out.push({ cause: 'unknown', detail: 'cache break with no detected input change (likely server-side)' });
+    return out;
+  }
+
+  /** All concurrent causes (with magnitudes) of the most recent cache break. */
+  getLastCauses(): CacheBreakCause[] {
+    return this._lastCauses.map(c => ({ ...c }));
+  }
+
+  /** One-line quantified explanation of the most recent cache break ('' if none). */
+  getLastExplanation(): string {
+    return this._lastCauses.map(c => c.detail).join('; ');
   }
 
   getLastMissCause(): CacheMissCause | null {
@@ -562,6 +744,9 @@ export class CacheMissDiagnostics {
     this._prevCacheReadTokens = 0;
     this._partialBreaks = 0;
     this._lastDelta = { added: [], removed: [], changed: [] };
+    this._lastCauses = [];
+    this._expectNextDrop = false;
+    this._expectedDrops = 0;
   }
 }
 

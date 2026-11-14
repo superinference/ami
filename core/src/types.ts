@@ -5,14 +5,30 @@ import type { SuperInferenceConfig } from './superinference/types';
  * passed where a persisted session id is expected. It stays assignable TO `string`
  * (reads / pass-through / Map keys need no cast); only MINTING one from a raw string goes
  * through {@link asSessionId}. The brand symbol is unexported, so the type is truly
- * nominal. (round-2 "type-branded ids".) Agent ids are intentionally NOT branded yet —
- * the subagent/process subsystem has no single id-mint boundary, so a brand there would
- * be a dead, speculative export; brand it when that boundary exists.
+ * nominal. (round-2 "type-branded ids".)
  */
 declare const SESSION_ID_BRAND: unique symbol;
 export type SessionId = string & { readonly [SESSION_ID_BRAND]: true };
 /** Mint a {@link SessionId} from a raw string (the single branding boundary). */
 export function asSessionId(id: string): SessionId { return id as SessionId; }
+
+/**
+ * Type-branded agent id — a nominal `string` subtype so a free-text teammate name
+ * cannot be silently passed where a real agent id is expected (parity: Claude's
+ * `AgentId` in types/ids.ts). {@link asAgentId} mints one unconditionally (the
+ * pass-through boundary); {@link toAgentId} VALIDATES the format first and returns
+ * `null` for a non-conforming string, which is what discriminates a genuine agent id
+ * from an arbitrary name at the mint boundary.
+ */
+declare const AGENT_ID_BRAND: unique symbol;
+export type AgentId = string & { readonly [AGENT_ID_BRAND]: true };
+/** Mint an {@link AgentId} from a raw string without validation (pass-through boundary). */
+export function asAgentId(id: string): AgentId { return id as AgentId; }
+/** Validate and brand an agent id; returns `null` when `id` is not a well-formed
+ *  agent id (empty, or containing whitespace / disallowed characters). */
+export function toAgentId(id: string): AgentId | null {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) ? (id as AgentId) : null;
+}
 
 export const OUTPUT_FORMATS = ['json', 'jsonl', 'text'] as const;
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
@@ -25,6 +41,24 @@ export type ChatMode = (typeof CHAT_MODES)[number];
 
 export const THEMES = ['default', 'dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
+
+/**
+ * Terminal notification channels for turn-completion alerts, selectable per
+ * terminal family (parity: Claude's NOTIFICATION_CHANNELS). `auto` picks the best
+ * mechanism for the detected terminal; `notifications_disabled` turns alerts off.
+ * The runtime array is the single source of truth — {@link NotificationChannel}
+ * is derived from it so the enum and the type can never drift.
+ */
+export const NOTIFICATION_CHANNELS = [
+  'auto',
+  'iterm2',
+  'iterm2_with_bell',
+  'terminal_bell',
+  'kitty',
+  'ghostty',
+  'notifications_disabled',
+] as const;
+export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
 
 // The built-in output-style NAMES (the string overlays live in common's
 // output-style-manager BUILTIN_OUTPUT_STYLES). `learning` is a first-class built-in —
@@ -68,34 +102,83 @@ export interface ToolCallContent {
   function: ToolCallFunction;
 }
 
-export interface UserMessage {
+/**
+ * Provenance of an inbound user/queued message (parity: Claude's `MessageOrigin`),
+ * which drives per-origin framing — e.g. a `task-notification`/`coordinator`/`channel`
+ * message gets an untrusted-source warning that a plain `user` message does not.
+ */
+export type MessageOrigin =
+  | { kind: 'user' }
+  | { kind: 'task-notification' }
+  | { kind: 'coordinator' }
+  | { kind: 'teammate'; name?: string }
+  | { kind: 'channel'; source: string; user?: string; chatId?: string };
+
+/**
+ * Optional transcript-tree / provenance metadata persisted on a message so subagent
+ * sidechains form a resumable tree and each message records its origin (parity:
+ * Claude's TranscriptMessage `parentUuid`/`logicalParentUuid`/`isSidechain`/`agentId`/
+ * `promptId` plus swarm `teamName`/`agentName` identity used to detect a resumed teammate).
+ */
+export interface TranscriptMeta {
+  /** Stable id of this message. */
+  uuid?: string;
+  /** Parent message id (threading within a session). */
+  parentUuid?: string;
+  /** Logical parent, preserved across session breaks/resumes. */
+  logicalParentUuid?: string;
+  /** True when this message belongs to a subagent sidechain. */
+  isSidechain?: boolean;
+  /** Owning agent id, for per-agent transcript records. */
+  agentId?: string;
+  /** Correlates to the OTel `prompt.id` for this turn. */
+  promptId?: string;
+  /** Swarm team name — present on the first message of a resumed teammate session. */
+  teamName?: string;
+  /** Swarm agent name — present on the first message of a resumed teammate session. */
+  agentName?: string;
+}
+
+export interface UserMessage extends TranscriptMeta {
   role: 'user';
   content: string | Array<TextContent | ImageContent>;
   /** Engine-injected ephemeral control message (turn-local nudge). Excluded from
    *  the persisted session transcript so --resume is not polluted; still sent to
    *  the model during the live turn. */
   isMeta?: boolean;
+  /** Provenance of this message, driving per-origin framing. Parity: `MessageOrigin`. */
+  origin?: MessageOrigin;
+  /** Permission mode active when this prompt was submitted, preserved per turn for
+   *  audit/replay. Parity: Claude's per-message `permissionMode`. */
+  permissionMode?: string;
 }
 
-export interface AssistantMessage {
+export interface AssistantMessage extends TranscriptMeta {
   role: 'assistant';
   content: string | null;
   tool_calls?: ToolCallContent[];
+  /** Model that produced this assistant message (stamped per turn, incl. architect/
+   *  fallback/provider switches), for the transcript model-attribution label.
+   *  Parity: Claude's MessageModel. */
+  model?: string;
 }
 
-export interface ToolMessage {
+export interface ToolMessage extends TranscriptMeta {
   role: 'tool';
   tool_call_id: string;
   content: string;
 }
 
-export interface SystemMessage {
+export interface SystemMessage extends TranscriptMeta {
   role: 'system';
   content: string;
   /** Engine-injected ephemeral control message (turn-local nudge). Excluded from
    *  the persisted session transcript so --resume is not polluted; still sent to
    *  the model during the live turn. */
   isMeta?: boolean;
+  /** Severity level: 'info' messages are suppressed unless verbose; 'warning'/'error'
+   *  change the styling (color/dot). Parity: Claude's SystemMessage `level`. */
+  level?: 'info' | 'warning' | 'error';
 }
 
 export type Message = UserMessage | AssistantMessage | ToolMessage | SystemMessage;
@@ -118,10 +201,23 @@ export interface ToolInputSchema {
   required?: string[];
 }
 
+/** One hunk of a structured diff (parity: Claude's FileEdit `structuredPatch`),
+ *  so a frontend can render a file mutation per-hunk instead of parsing text. */
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
 export interface ToolResult {
   output: string;
   isError?: boolean;
   metadata?: Record<string, unknown>;
+  /** Structured per-hunk diff for a file-mutating result, carried alongside the
+   *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */
+  structuredPatch?: DiffHunk[];
 }
 
 /** Per-host outbound-network allow/deny lists for the sandbox. `deniedHosts`
@@ -213,6 +309,11 @@ export interface ToolContext {
   /** Tracks file paths that have been read during this session.
    *  Used by file_edit to enforce read-before-write. */
   filesRead?: Set<string>;
+  /** Subset of {@link filesRead} read only as a PARTIAL view (offset/limit or a
+   *  size-truncated read). A partial read does NOT satisfy the read-before-OVERWRITE
+   *  guard — overwriting the whole file after seeing only part silently clobbers the
+   *  unseen remainder. Parity: Claude's `readTimestamp.isPartialView`. */
+  filesReadPartial?: Set<string>;
   /** Session id for session/agent-scoped tool state (e.g. todo_write store, T2).
    *  Populated by the engine; absent in bare/test contexts (falls back to global). */
   sessionId?: string;
@@ -276,6 +377,23 @@ export interface ToolContext {
   subagentLimiter?: import('./subagent-limiter').SubagentLimiter;
 }
 
+/** Result of a tool's structured pre-execution {@link ToolDefinition.validateInput}
+ *  (parity: Claude's `ValidationResult`): either success, or a machine-readable
+ *  `errorCode` plus a model-facing `message`, produced BEFORE the permission check
+ *  and before the tool body runs. */
+export type ToolValidationResult =
+  | { result: true }
+  | { result: false; message: string; errorCode: number };
+
+/** Fine-grained read/search/list classification of a single tool invocation
+ *  (parity: Claude's `isSearchOrReadCommand(input)`), used to drive concise,
+ *  action-specific transcript summaries. */
+export interface ToolAccessClassification {
+  isSearch: boolean;
+  isRead: boolean;
+  isList: boolean;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -284,6 +402,56 @@ export interface ToolDefinition {
   isConcurrencySafe?: boolean;
   /** True for tools originating from MCP servers — used for auto-deferral when schema tokens exceed the context budget. */
   isMcp?: boolean;
+  /** Extra capability keywords (3-10 words) weighted by `tool_search`, using terms
+   *  NOT already in the name/description (e.g. 'jupyter' for notebook_edit) so a
+   *  deferred tool is findable by synonym. Parity: Claude's `Tool.searchHint`. */
+  searchHint?: string;
+  /** When true, keep this (native) tool OUT of the default advertised set and surface
+   *  it on demand via `tool_search` — the per-tool opt-in equivalent of MCP schema-size
+   *  auto-deferral. Parity: Claude's `Tool.shouldDefer`. */
+  shouldDefer?: boolean;
+  /** Input-aware irreversible-operation predicate (delete / overwrite / send). Absent
+   *  or `false` = not destructive. Lets the permission layer add an extra guard for ANY
+   *  tool, not just bash. Parity: Claude's `Tool.isDestructive(input)`. */
+  isDestructive?: (input: Record<string, unknown>) => boolean;
+  /** Runtime availability gate — when it returns false the tool is dropped from the
+   *  advertised set (feature flag / env condition). Parity: Claude's `Tool.isEnabled()`. */
+  isEnabled?: (context?: ToolContext) => boolean;
+  /** Per-tool cap (chars) on result size before spill-to-disk, overriding the
+   *  engine-global default; `Infinity` = never spill. Parity: `maxResultSizeChars`. */
+  maxResultSizeChars?: number;
+  /** Alternate names this tool also answers to, for legacy/compat dispatch
+   *  (e.g. `KillShell` → task_stop). Parity: Claude's tool `aliases`. */
+  aliases?: string[];
+  /** Force the provider to constrain generated arguments to exactly match
+   *  {@link inputSchema} (OpenAI/Anthropic strict/structured tool mode). Parity: strict. */
+  strict?: boolean;
+  /** JSON Schema describing the tool's structured result — used to validate a
+   *  persisted/resumed tool result before rendering it. Parity: Claude's `Tool.outputSchema`. */
+  outputSchema?: ToolInputSchema;
+  /** What happens to an in-flight call when the user submits a new message:
+   *  `'cancel'` aborts and discards the result; `'block'` (default) runs to completion
+   *  while the message waits. Parity: Claude's `Tool.interruptBehavior()`. */
+  interruptBehavior?: 'cancel' | 'block';
+  /** Structured pre-execution validation run BEFORE the permission check; returns a
+   *  machine-readable {@link ToolValidationResult} so the model gets a clean, schema-derived
+   *  correction without entering the tool body. Parity: Claude's `Tool.validateInput`. */
+  validateInput?: (input: Record<string, unknown>, context: ToolContext) => Promise<ToolValidationResult>;
+  /** Compact human-readable activity phrase for progress UIs (e.g. "Reading src/foo.ts")
+   *  computed from the input. Parity: Claude's `Tool.getActivityDescription(input)`. */
+  getActivityDescription?: (input: Record<string, unknown>) => string;
+  /** Fine-grained per-invocation read/search/list classification driving transcript
+   *  summaries. Parity: Claude's `Tool.isSearchOrReadCommand(input)`. */
+  isSearchOrReadCommand?: (input: Record<string, unknown>) => ToolAccessClassification;
+  /** Compact representation of this tool use fed to an auto-mode security classifier
+   *  (`''` = skip). Parity: Claude's `Tool.toAutoClassifierInput(input)`. */
+  toAutoClassifierInput?: (input: Record<string, unknown>) => string;
+  /** Long-form proactive-use / when-to-use (and when-NOT-to-use) guidance carried
+   *  alongside the terse `description` and surfaced to the model. Parity: TodoWrite prompt. */
+  prompt?: string;
+  /** Tool-authored concise transcript label for a call, preferred by renderers over the
+   *  generic field-sniffer/JSON fallback. Parity: Claude's `renderToolUseMessage`. */
+  renderUseMessage?: (input: Record<string, unknown>) => string;
   execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 }
 
@@ -438,6 +606,23 @@ export interface TodoItemView {
   activeForm?: string;
 }
 
+/**
+ * One selectable option in an AskUserQuestion prompt (parity: Claude's
+ * `QuestionOption`). Single source of truth for the option shape, shared by the
+ * `user_question` {@link EngineEvent} and the {@link EngineConfig.onUserQuestion}
+ * callback so the carried fields can never drift between emit and handler.
+ */
+export interface UserQuestionOption {
+  label: string;
+  description: string;
+  /** Markdown preview rendered in a bordered box when this option is focused
+   *  (side-by-side preview panel). Parity: Claude's `option.preview`. */
+  preview?: string;
+  /** When true the option is shown but not selectable (dimmed; Enter/number/space
+   *  refuse to act on it). Parity: Claude's `option.disabled`. */
+  disabled?: boolean;
+}
+
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -455,7 +640,7 @@ export type EngineEvent =
   | { type: 'analytics_summary'; summary: Record<string, number> }
   | { type: 'superinference_state'; state: { value: number; entropy: number; eig: number; step: number; ppv: number }; stopReason: { type: string; detail: string } }
   | { type: 'suggest_file_save'; content: string; suggestedPath: string; lineCount: number }
-  | { type: 'user_question'; toolCallId: string; question: string; options: Array<{ label: string; description: string }>; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, unknown> }
+  | { type: 'user_question'; toolCallId: string; question: string; options: UserQuestionOption[]; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, unknown>; defaultIndex?: number }
   | { type: 'session_title'; title: string }
   | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
@@ -466,6 +651,26 @@ export type EngineEvent =
   | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number }
   | { type: 'todo_update'; todos: TodoItemView[] }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
+
+/**
+ * Natural-language auto-mode (YOLO) rule configuration (parity: Claude's
+ * `settings.autoMode` / `AutoModeConfig`): plain-English allow / soft-deny rules
+ * plus an environment description that are substituted into the security-classifier
+ * prompt, an optional dedicated classifier model, and a two-stage strategy selector.
+ */
+export interface AutoModeConfig {
+  /** Plain-English descriptions of autonomous actions to permit. */
+  allow?: string[];
+  /** Plain-English descriptions of actions to soft-block (ask instead of run). */
+  soft_deny?: string[];
+  /** Plain-English description of the runtime environment, for the classifier. */
+  environment?: string[];
+  /** Dedicated model for the security classifier (falls back to the main-loop model). */
+  model?: string;
+  /** Classifier strategy: tool_use (false/undefined), both stages (true), stage-1-only
+   *  ('fast'), or stage-2-only ('thinking'). Parity: `twoStageClassifier`. */
+  twoStageClassifier?: boolean | 'fast' | 'thinking';
+}
 
 export interface EngineConfig {
   provider: ProviderConfig;
@@ -602,8 +807,10 @@ export interface EngineConfig {
    *  search, and describe its plan. */
   planMode?: boolean;
   /** Handler for AskUserQuestion tool. The UI implements this to show
-   *  the question and return the user's answer. */
-  onUserQuestion?: (question: string, options: Array<{ label: string; description: string }>, allowFreeText: boolean, multiSelect?: boolean) => Promise<string>;
+   *  the question and return the user's answer. Options carry optional per-option
+   *  `preview`/`disabled` and an optional `defaultIndex` to preselect/focus a
+   *  recommended option. */
+  onUserQuestion?: (question: string, options: UserQuestionOption[], allowFreeText: boolean, multiSelect?: boolean, defaultIndex?: number) => Promise<string>;
   /** When true, the engine generates a session title via LLM after the first turn. */
   enableTitleGeneration?: boolean;
   /** When true, the engine is running in non-interactive (detached / --prompt) mode. */
@@ -687,6 +894,97 @@ export interface EngineConfig {
    *  Typed as `unknown` (cast at the common/engine.ts call site) to avoid a
    *  types.ts -> provider.ts import cycle. */
   _streamChatImpl?: unknown;
+
+  // -------------------------------------------------------------------------
+  // Parity config knobs (Claude Code settings.json / CLI flags). All optional;
+  // each is consumed by its owning subsystem (prompt assembly, permissions,
+  // memory, MCP, sandbox, UI). Added here as the single config surface so the
+  // CLI resolver and `ami --introspect` thread them to the engine.
+  // -------------------------------------------------------------------------
+  /** Append text to the END of the assembled system prompt instead of replacing it
+   *  (keeps the full default prompt). Parity: `--append-system-prompt`. */
+  appendSystemPrompt?: string;
+  /** Suppress writing the session transcript/state to disk for the whole run
+   *  (ephemeral session). Parity: `sessionPersistenceDisabled` / `--no-save`. */
+  sessionPersistenceDisabled?: boolean;
+  /** Composer editing mode: modal 'vim' (Esc toggles normal/insert) or 'normal'
+   *  (default). Parity: `editorMode`. */
+  editorMode?: 'vim' | 'normal';
+  /** Render full (untruncated) long API-error text + extra diagnostics. Parity: `verbose`. */
+  verbose?: boolean;
+  /** Separate, typically-stronger reviewer/advisor model that reviews the conversation
+   *  mid-session. Parity: `advisorModel`. */
+  advisorModel?: string;
+  /** Natural-language auto-mode (YOLO) rule configuration. Parity: `settings.autoMode`. */
+  autoMode?: AutoModeConfig;
+  /** Default install/update channel. Parity: `autoUpdatesChannel`. */
+  autoUpdatesChannel?: 'latest' | 'stable';
+  /** Remembered responses for env-detected API keys (truncated), so a detected key is
+   *  prompted once then trusted/rejected. Parity: `customApiKeyResponses`. */
+  customApiKeyResponses?: { approved: string[]; rejected: string[] };
+  /** Minutes-away threshold after which an idle-return prompt is shown. Parity: IdleReturnDialog. */
+  idleReturnPromptMinutes?: number;
+  /** Enable automatic session-memory extraction/consolidation (default true). Parity:
+   *  `isAutoMemoryEnabled` / `autoDreamEnabled`. */
+  autoMemoryEnabled?: boolean;
+  /** Run session-memory extraction only every N eligible turns. Parity: extraction throttle. */
+  sessionMemoryInterval?: number;
+  /** Master switch for time-based idle microcompact (default off). Parity: timeBasedMCConfig.enabled. */
+  idleMicrocompactEnabled?: boolean;
+  /** Idle-gap threshold (minutes) before microcompact fires, tuned against the server
+   *  prompt-cache TTL. Parity: `gapThresholdMinutes`. */
+  idleMicrocompactThresholdMinutes?: number;
+  /** Enable file checkpointing/history (default true); false disables snapshots.
+   *  Parity: `fileCheckpointingEnabled`. */
+  fileCheckpointingEnabled?: boolean;
+  /** Ignore all on-disk/discovered MCP configs and use ONLY explicitly-passed servers.
+   *  Parity: `--strict-mcp-config`. */
+  strictMcpConfig?: boolean;
+  /** Persisted per-server disable list (opt-out without removing). Parity: `disabledMcpServers`. */
+  disabledMcpServers?: string[];
+  /** Persisted per-server enable list for default-disabled servers. Parity: `enabledMcpServers`. */
+  enabledMcpServers?: string[];
+  /** Cap on output tokens for this run/fork (sizes the request `max_tokens`). Parity:
+   *  `maxOutputTokens`. */
+  maxOutputTokens?: number;
+  /** Show rotating capability tips (default true). Parity: `spinnerTipsEnabled`. */
+  spinnerTipsEnabled?: boolean;
+  /** Disable fenced-code syntax highlighting while keeping UI color. Parity:
+   *  `syntaxHighlightingDisabled`. */
+  syntaxHighlightingDisabled?: boolean;
+  /** Reduce/disable animations for accessibility (persistent, vs env-only). Parity:
+   *  `prefersReducedMotion`. */
+  prefersReducedMotion?: boolean;
+  /** Enable AI-generated inline prompt suggestions. Parity: `promptSuggestionEnabled`. */
+  promptSuggestionEnabled?: boolean;
+  /** Retention window (days) for stale worktrees/files cleanup. Parity: `cleanupPeriodDays`. */
+  cleanupPeriodDays?: number;
+  /** Enable the LLM-generated permission explainer (default true). Parity:
+   *  `permissionExplainerEnabled`. */
+  permissionExplainerEnabled?: boolean;
+  /** Directory (relative to project root) where plan .md files are written. Parity:
+   *  `plansDirectory`. */
+  plansDirectory?: string;
+  /** Capture a heap dump when the RSS memory-warning threshold is crossed (not just a
+   *  warning). Parity: heapDumpService `auto-1.5GB`. */
+  heapDumpOnMemoryWarning?: boolean;
+  /** Apply /model, /thinking, /fast immediately to an in-flight turn rather than
+   *  deferring to turn end. Parity: `shouldInferenceConfigCommandBeImmediate`. */
+  immediateInferenceConfig?: boolean;
+  /** Backend that runs teammates/subagents; 'auto' resolves against the live
+   *  environment. Parity: `teammateMode`. */
+  teammateMode?: 'auto' | 'tmux' | 'in-process';
+  /** Persisted default model for spawned teammates/subagents. Parity: `teammateDefaultModel`. */
+  subagentDefaultModel?: string;
+  /** Map of canonical model id → provider-specific model string (e.g. a Bedrock
+   *  inference-profile ARN), layered on top of the resolved model. Parity: `modelOverrides`. */
+  modelOverrides?: Record<string, string>;
+  /** Terminal notification channel for turn-completion alerts. Parity: NOTIFICATION_CHANNELS. */
+  notificationChannel?: NotificationChannel;
+  /** Plugin ids never suggested for LSP recommendations. Parity: `lspRecommendationNeverPlugins`. */
+  lspRecommendationNeverPlugins?: string[];
+  /** Hard off-switch for LSP-plugin recommendations. Parity: `lspRecommendationDisabled`. */
+  lspRecommendationDisabled?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -755,6 +1053,10 @@ export function buildSubsystems(config: EngineConfig): {
 
 export interface EngineSubmitOptions {
   systemPromptOverride?: string;
+  /** Text appended to the END of the active system prompt (default / override / agent)
+   *  for this turn, preserving the full prompt rather than replacing it. Parity:
+   *  Claude's per-call `appendSystemPrompt`. */
+  appendSystemPrompt?: string;
   contextFiles?: ContextFile[];
   /** JSON Schema for structured output. When provided, the model output is validated against this schema. */
   outputSchema?: Record<string, unknown>;

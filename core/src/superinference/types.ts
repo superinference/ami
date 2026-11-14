@@ -14,12 +14,23 @@ export interface SuperInferenceConfig {
   useLLMCritic?: boolean;        // use real LLM-based critic evaluation (default false)
   /** When true, the engine may end the session on shouldStop(). Default false. shouldStop() itself does not read this. */
   enforcing?: boolean;
+  /** Dedicated model for the LLM critic/reviewer; '' (default) inherits the main-loop
+   *  model. Lets the critic run on a cheaper/stronger model than the agent loop
+   *  (parity: Claude's advisor `advisorModel`/`baseModel`). */
+  criticModel?: string;
 }
 
 export interface CriticDecision {
   approved: boolean;
   score: number;      // s ∈ [0, 1] — critic's confidence score
   reason?: string;
+  /** Set when the critic could not render a genuine verdict (network error, timeout,
+   *  aborted stream, or unparseable output) — DISTINCT from a substantive rejection, so
+   *  the engine can soften the belief floor instead of treating it as a real "no".
+   *  Parity: Claude's AdvisorMessage "Advisor unavailable (code)" error branch. */
+  unavailable?: boolean;
+  /** Machine-readable error code when {@link unavailable} is set. */
+  errorCode?: string;
 }
 
 export interface BeliefState {
@@ -49,4 +60,5 @@ export const DEFAULT_CONFIG: Required<SuperInferenceConfig> = {
   errorScore: 0.3,
   useLLMCritic: false,
   enforcing: false,
+  criticModel: '',
 };

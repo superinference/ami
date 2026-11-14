@@ -1069,7 +1069,27 @@ describe('fileEditTool – deeper error paths', () => {
     assert.ok(res.output.includes('non-UTF encoding'));
   });
 
-  it('returns a write error when the parent path is a file (commitWrite failure)', async () => {
+  it('returns a write error when the target directory is read-only (commitWrite failure)', async () => {
+    // A brand-new file (ENOENT pre-read → treated as new) whose atomic write fails
+    // because the parent directory is not writable exercises commitWrite's outer catch.
+    const roDir = path.join(tmpDir, 'ro-dir');
+    fs.mkdirSync(roDir, { recursive: true });
+    fs.chmodSync(roDir, 0o555); // read+exec, not writable → atomic temp-write fails
+    try {
+      const res = await fileEditTool.execute(
+        { file_path: path.join(roDir, 'child.txt'), new_string: 'x\n' },
+        ctx(),
+      );
+      assert.equal(res.isError, true);
+      assert.ok(res.output.includes('Error writing file'));
+    } finally {
+      fs.chmodSync(roDir, 0o755);
+    }
+  });
+
+  it('refuses to overwrite a parent-is-a-file target (errno-classified pre-read)', async () => {
+    // Writing under a path whose parent is a regular file yields ENOTDIR on the
+    // pre-overwrite read; the tool fails closed instead of blindly writing.
     const blocker = path.join(tmpDir, 'blocker');
     fs.writeFileSync(blocker, 'i am a file');
     const res = await fileEditTool.execute(
@@ -1077,7 +1097,7 @@ describe('fileEditTool – deeper error paths', () => {
       ctx(),
     );
     assert.equal(res.isError, true);
-    assert.ok(res.output.includes('Error writing file'));
+    assert.ok(res.output.includes('cannot read existing file'));
   });
 
   it('rejects editing a file larger than the 1 GiB limit', async () => {
@@ -1144,19 +1164,18 @@ describe('fileEditTool – deeper error paths', () => {
     assert.ok(res.output.includes('non-UTF encoding'));
   });
 
-  it('inner encoding-detect failure still writes (readFileSync on unreadable existing file)', async () => {
+  it('fails closed when an existing file cannot be read before overwrite (unreadable file)', async () => {
     const dir = path.join(tmpDir, 'noperm-dir');
     fs.mkdirSync(dir, { recursive: true });
     const fp = path.join(dir, 'noperm.txt');
     fs.writeFileSync(fp, 'existing\n');
-    fs.chmodSync(fp, 0o000);   // inner encoding-detect readFileSync throws (caught)
-    fs.chmodSync(dir, 0o555);  // atomic temp-write in a read-only dir fails → outer catch
+    fs.chmodSync(fp, 0o000);   // existing file unreadable → pre-read fails closed (EACCES)
     try {
       const res = await fileEditTool.execute({ file_path: fp, new_string: 'fresh\n' }, ctx());
       assert.equal(res.isError, true);
-      assert.ok(res.output.includes('Error writing file'));
+      // Fail-closed: an unreadable existing file is NOT silently clobbered.
+      assert.ok(res.output.includes('cannot read existing file'));
     } finally {
-      fs.chmodSync(dir, 0o755);
       fs.chmodSync(fp, 0o644);
     }
   });

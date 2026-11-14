@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock } from '../utils/file-lock';
 import { TEAM_LEAD_NAME } from './send-message';
+import { PERMISSION_MODES, normalizePermissionMode, PermissionMode } from '../permissions';
 
 /** Max length of a user-supplied team name (mirrors Claude's identifier bounds). */
 const MAX_TEAM_NAME_LEN = 64;
@@ -78,10 +79,23 @@ function persistTeam(): void {
 export const teamCreateTool: ToolDefinition = {
   name: 'team_create',
   description:
-    'Create a team of agents for collaborative work. The team shares a task list and memory directory, ' +
-    'and a team file records each member (name, agentId, agentType, model) plus the lead. ' +
-    'Spawn teammates with the task tool using a matching name to add them to the team; ' +
-    'delete the team with team_delete only once all teammates have shut down.',
+    'Create a team of agents for collaborative work. A team has a 1:1 correspondence with a task list and ' +
+    'shares a memory directory; a team file records each member (name, agentId, agentType, model, per-member ' +
+    'permission mode) plus the lead.\n' +
+    '\n' +
+    'When to use: the user asks for a team/swarm/collaboration, or a task is complex enough to benefit from ' +
+    'parallel work by multiple agents (e.g. frontend + backend, refactor while keeping tests green). When in ' +
+    'doubt, prefer a team.\n' +
+    '\n' +
+    'Choosing teammate types: spawn teammates with the task tool using a matching name and a subagent_type ' +
+    'that matches the work — read-only agents (explore) only for research/search/planning, full-capability ' +
+    'agents for work that edits files.\n' +
+    '\n' +
+    'Workflow: (1) create the team; (2) create tasks with task_tracker — they use the team task list; (3) spawn ' +
+    'teammates via task({ name }); (4) assign tasks by owner; (5) teammates complete tasks and go idle between ' +
+    'turns (idle is normal — an idle teammate still receives messages and wakes on one; be patient); (6) ' +
+    'coordinate via send_message (teammate messages arrive automatically — do not poll); (7) gracefully shut ' +
+    'teammates down with a shutdown_request via send_message, then team_delete once all have exited.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -212,4 +226,46 @@ export function setTeamMemberActive(nameOrId: string, active: boolean): void {
   if (!m) return;
   m.isActive = active;
   persistTeam();
+}
+
+/**
+ * The next permission mode in a fixed cycle (mirrors Claude Code's
+ * getNextPermissionMode, used to toggle a single teammate's mode). An unknown
+ * current value starts the cycle at the first mode.
+ */
+export function getNextPermissionMode(current: string | undefined): PermissionMode {
+  const normalized = current ? normalizePermissionMode(current) : null;
+  const idx = normalized ? PERMISSION_MODES.indexOf(normalized) : -1;
+  return PERMISSION_MODES[(idx + 1) % PERMISSION_MODES.length];
+}
+
+/**
+ * Set a single teammate's permission mode (by name or agentId), persisting the
+ * change to the team file (mirrors Claude Code's setMemberMode). Returns the
+ * applied mode, or null when there is no active team, no such member, or the mode
+ * string is invalid.
+ */
+export function setMemberMode(nameOrId: string, mode: string): PermissionMode | null {
+  if (!currentTeam) return null;
+  const valid = normalizePermissionMode(mode);
+  if (!valid) return null;
+  const m = currentTeam.members.find(x => x.name === nameOrId || x.agentId === nameOrId);
+  if (!m) return null;
+  m.permissionMode = valid;
+  persistTeam();
+  return valid;
+}
+
+/**
+ * Advance a single teammate's permission mode to the next in the cycle and
+ * persist. Returns the new mode, or null when there is no active team / member.
+ */
+export function cycleMemberMode(nameOrId: string): PermissionMode | null {
+  if (!currentTeam) return null;
+  const m = currentTeam.members.find(x => x.name === nameOrId || x.agentId === nameOrId);
+  if (!m) return null;
+  const next = getNextPermissionMode(m.permissionMode);
+  m.permissionMode = next;
+  persistTeam();
+  return next;
 }

@@ -13,6 +13,31 @@ export function stripUrlCredentials(text: string): string {
   return text.replace(/\/\/[^/\s@]+@/g, '//');
 }
 
+/** Normalize a git URL for identity comparison: drop embedded credentials, a
+ *  trailing `.git`, and trailing slashes so equivalent URLs compare equal. */
+export function normalizeRepoUrl(url: string): string {
+  return stripUrlCredentials(url.trim()).replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+}
+
+/**
+ * Confirm the cached clone at `localPath` is the SAME repository we were asked
+ * for by comparing its `origin` remote to `repoUrl`. The cache directory name is
+ * a sanitized slug, so distinct URLs can collide onto one path — a present `.git`
+ * alone is NOT proof the cache holds the requested repo. Returns false (→ re-clone)
+ * when the remote cannot be read or does not match. Mirrors Claude Code's
+ * validate-repo-at-path check before trusting a cached clone.
+ */
+export function cachedCloneMatches(localPath: string, repoUrl: string): boolean {
+  try {
+    const origin = (scoutHooks.execFileSync('git', ['-C', localPath, 'remote', 'get-url', 'origin'], {
+      encoding: 'utf-8', timeout: 5000, stdio: 'pipe',
+    }) as string).trim();
+    return normalizeRepoUrl(origin) === normalizeRepoUrl(repoUrl);
+  } catch {
+    return false;
+  }
+}
+
 /** Resolve the clone timeout from input (`timeout_ms`) or env, falling back to the default. */
 export function scoutCloneTimeoutMs(input: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env): number {
   const fromInput = Number(input.timeout_ms);
@@ -74,8 +99,12 @@ export const scoutTool: ToolDefinition = {
       if (aborted) return aborted;
       // A prior clone killed mid-flight (timeout/abort) can leave a partial dir with
       // no .git. Treat a dir without .git as invalid cache: purge it and re-clone,
-      // instead of trusting it and failing every subsequent find/grep.
-      if (scoutHooks.existsSync(localPath) && !scoutHooks.existsSync(path.join(localPath, '.git'))) {
+      // instead of trusting it and failing every subsequent find/grep. Also purge a
+      // cache whose origin remote does not match the requested repo — the sanitized
+      // cache slug can collide across distinct URLs, so a present .git is not proof
+      // the cache holds the repo we were asked for.
+      if (scoutHooks.existsSync(localPath)
+          && (!scoutHooks.existsSync(path.join(localPath, '.git')) || !cachedCloneMatches(localPath, repoUrl))) {
         scoutHooks.rmSync(localPath, { recursive: true, force: true });
       }
       if (!scoutHooks.existsSync(localPath)) {

@@ -41,6 +41,9 @@ export const skillTool: ToolDefinition = {
     'A user-typed slash command (e.g. /commit) IS a skill invocation — pass the bare name ("commit"). ' +
     'A leading slash is tolerated and stripped. Do NOT use this tool for built-in CLI commands ' +
     '(/help, /clear, /model, etc.) — those are handled by the CLI, not skills. ' +
+    'When a skill applies, you MUST invoke it with this tool BEFORE writing your answer — do the invocation first, then respond using what it returns. ' +
+    'NEVER merely mention or describe a skill (or tell the user to run it) without actually calling this tool. ' +
+    'Do NOT re-invoke a skill that is already active/loaded in this conversation — invoke each applicable skill once. ' +
     'With no skill name it reports the available skills.',
   inputSchema: {
     type: 'object',

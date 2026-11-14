@@ -1,7 +1,7 @@
 import type { Message } from './types';
 // Single source of truth for the ~4-chars/token heuristic (dedup: audit #16). Re-export
 // it here too so existing importers of estimateTokens from this module keep working.
-import { estimateTokens } from './utils/tokens';
+import { estimateTokens, estimateTokensForFileType } from './utils/tokens';
 export { estimateTokens, estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
 
 const OVERHEAD_PER_MESSAGE = 4; // role header, delimiters
@@ -22,7 +22,9 @@ export function estimateToolCallTokens(
   input: Record<string, unknown>,
 ): number {
   const serialized = JSON.stringify(input);
-  return estimateTokens(toolName) + estimateTokens(serialized) + 10; // tool call framing
+  // Serialized tool input is dense JSON (~2 chars/token) — the generic 4/token
+  // ratio under-counts it and can let an oversized input slip past a budget.
+  return estimateTokens(toolName) + estimateTokensForFileType(serialized, 'json') + 10; // tool call framing
 }
 
 /**
@@ -45,7 +47,8 @@ export function estimateBlockTokens(block: unknown): number {
     case 'text':
       return typeof b.text === 'string' ? estimateTokens(b.text) : 0;
     case 'tool_use':
-      return estimateTokens((typeof b.name === 'string' ? b.name : '') + JSON.stringify(b.input ?? {}));
+      return estimateTokens(typeof b.name === 'string' ? b.name : '') +
+        estimateTokensForFileType(JSON.stringify(b.input ?? {}), 'json');
     case 'thinking':
       return typeof b.thinking === 'string' ? estimateTokens(b.thinking) : 0;
     case 'redacted_thinking':

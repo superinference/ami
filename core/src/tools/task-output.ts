@@ -67,6 +67,11 @@ export const taskOutputTool: ToolDefinition = {
       const deadline = Date.now() + waitTimeoutMs;
       while (result && result.status === 'running' && Date.now() < deadline) {
         if (context.abortSignal?.aborted) break;
+        // Live progress while blocking so the TUI shows the wait isn't a hang
+        // (mirrors Claude's "waiting for task" progress line). Emitted each poll
+        // with the task id, status, and elapsed time.
+        const secs = (result.elapsedMs / 1000).toFixed(0);
+        context.onProgress?.(`waiting for task ${taskId} (${result.status}, ${secs}s elapsed)`);
         await new Promise(r => setTimeout(r, WAIT_POLL_INTERVAL_MS));
         result = context.processManager.getOutput(taskId, tail);
       }
