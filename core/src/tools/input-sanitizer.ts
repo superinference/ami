@@ -17,6 +17,37 @@ export function normalizeCommandForDisplay(command: string): string {
   return stripInvisibleUnicode(command).replace(/\t/g, '    ');
 }
 
+/** Depth cap for the recursive unicode sanitizer (mirrors sanitizeToolInput). */
+const MAX_UNICODE_SANITIZE_DEPTH = 20;
+
+/**
+ * Recursively strip invisible/smuggling Unicode from every string reachable in
+ * an arbitrary JSON-ish value (strings, arrays, plain objects). This is the ONE
+ * canonical deep sanitizer for UNTRUSTED MCP server payloads — tool metadata
+ * (names/descriptions/schema strings) advertised to the model and tool/resource/
+ * prompt results returned from a server — mirroring Claude Code's
+ * `recursivelySanitizeUnicode` over `result.tools`. Non-string leaves are
+ * returned unchanged; object keys are preserved verbatim (only values are
+ * sanitized) so schema property names stay stable. Prototype-poisoning keys are
+ * dropped, matching `sanitizeToolInput`.
+ */
+export function recursivelySanitizeUnicode<T>(value: T, depth = 0): T {
+  if (typeof value === 'string') return stripInvisibleUnicode(value) as unknown as T;
+  if (depth >= MAX_UNICODE_SANITIZE_DEPTH) return value;
+  if (Array.isArray(value)) {
+    return value.map((v) => recursivelySanitizeUnicode(v, depth + 1)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (POISONED_KEYS.has(key)) continue;
+      out[key] = recursivelySanitizeUnicode(v, depth + 1);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 
 const POISONED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);

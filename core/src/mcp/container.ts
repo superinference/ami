@@ -1,4 +1,4 @@
-import { execSync, spawn } from 'child_process';
+import { execSync, execFileSync, spawn } from 'child_process';
 
 export interface ContainerConfig {
   image: string;
@@ -46,7 +46,9 @@ export interface ImageInfo {
 
 export function isImageAvailable(runtime: string, image: string): boolean {
   try {
-    execSync(`${runtime} image inspect ${image}`, { stdio: 'pipe' });
+    // execFileSync (no shell) so an attacker-controlled image name cannot inject
+    // shell metacharacters (H66).
+    execFileSync(runtime, ['image', 'inspect', image], { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -80,8 +82,10 @@ export function pullImage(
 
 export function getImageInfo(runtime: string, image: string): ImageInfo {
   try {
-    const out = execSync(
-      `${runtime} image inspect --format '{{.Id}}|||{{.Size}}|||{{.Created}}' ${image}`,
+    // execFileSync (no shell) — the image name is never passed through a shell (H66).
+    const out = execFileSync(
+      runtime,
+      ['image', 'inspect', '--format', '{{.Id}}|||{{.Size}}|||{{.Created}}', image],
       { stdio: 'pipe', encoding: 'utf-8' },
     );
     const [id, size, created] = out.trim().split('|||');

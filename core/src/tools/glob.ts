@@ -23,6 +23,14 @@ export function globTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(raw) && raw > 0 ? raw * 1000 : DEFAULT_GLOB_TIMEOUT_MS;
 }
 
+/** Env knob for the glob result-count cap (per page), mirroring Claude Code's
+ *  globLimits.maxResults. Falls back to the built-in default. */
+export const GLOB_MAX_RESULTS_ENV = 'AMI_GLOB_MAX_RESULTS';
+export function globMaxResults(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number((env[GLOB_MAX_RESULTS_ENV] ?? '').trim());
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : MAX_RESULTS;
+}
+
 /** Sentinel the glob walk races against its timeout with. */
 const GLOB_TIMEOUT = Symbol('glob-timeout');
 
@@ -98,6 +106,14 @@ export const globTool: ToolDefinition = {
         type: 'string',
         description:
           'Base directory to search in. Defaults to the current working directory.',
+      },
+      offset: {
+        type: 'number',
+        description: 'Skip this many matches (0-based) before listing. Use with limit to page through a large match set.',
+      },
+      limit: {
+        type: 'number',
+        description: 'Maximum number of matches to return in this page (capped at the result-count limit).',
       },
     },
     required: ['pattern'],
@@ -211,10 +227,23 @@ export const globTool: ToolDefinition = {
       });
 
       const total = entries.length;
-      // First apply the count cap, then shrink further if the joined list would
+      // Pagination: skip `offset` matches, then take up to `limit` (capped by the
+      // configurable result-count knob). Defaults (offset 0, limit = maxResults)
+      // preserve the original single-page behavior.
+      const maxResults = globMaxResults();
+      const offsetRaw = Number(input.offset);
+      const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+      const limitRaw = Number(input.limit);
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), maxResults) : maxResults;
+
+      if (offset >= total && total > 0) {
+        return { output: `No files in range (offset ${offset}, ${total} total matches).` };
+      }
+
+      // First apply the page window, then shrink further if the joined list would
       // exceed the character cap.
-      const shown = entries.slice(0, MAX_RESULTS);
-      let truncated = total > MAX_RESULTS;
+      const shown = entries.slice(offset, offset + limit);
+      let truncated = total > offset + shown.length;
       while (shown.length > 0 && shown.join('\n').length > MAX_OUTPUT_CHARS) {
         shown.pop();
         truncated = true;
@@ -222,7 +251,9 @@ export const globTool: ToolDefinition = {
 
       const summary = `[${total} files${truncated ? ' (truncated)' : ''}]`;
       let output = `${summary}\n${shown.join('\n')}`;
-      if (truncated) {
+      if (offset > 0) {
+        output += `\n\n... showing ${offset + 1}-${offset + shown.length} of ${total} matches`;
+      } else if (truncated) {
         output += `\n\n... truncated (showing ${shown.length} of ${total} matches)`;
       }
 

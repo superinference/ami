@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { isTerminalTaskStatus } from '../process-manager';
 
 interface AgentMessage {
   from: string;
@@ -170,11 +171,21 @@ function isReachable(name: string): boolean {
 export const sendMessageTool: ToolDefinition = {
   name: 'send_message',
   description:
-    'Send a message to a named teammate agent, or "*" to broadcast to all. Plain text coordinates work; ' +
-    'structured control messages (shutdown_request/shutdown_response, plan_approval_response, ' +
-    'permission_request/permission_response) drive the swarm protocol. Messages queue in the recipient\'s ' +
-    'mailbox and are delivered when it next checks — address teammates by their bare name (no "@"). ' +
-    'Your sender identity is taken from your agent context, not from the "from" field.',
+    'Send a message to a named teammate agent, or "*" to broadcast to all (expensive — linear in team size, ' +
+    'use only when everyone genuinely needs it).\n' +
+    '\n' +
+    'Your plain text output is NOT visible to other agents — to communicate with a teammate you MUST call this ' +
+    'tool. Messages from teammates are delivered to you automatically; you do not poll an inbox. Refer to ' +
+    'teammates by their bare name (no "@", never a UUID). When relaying a teammate message to the user, do not ' +
+    'quote the original — it is already rendered.\n' +
+    '\n' +
+    'Your sender identity is taken from your trusted agent context, not from the "from" field. Messages queue ' +
+    'in the recipient\'s mailbox and drain at its next tool round.\n' +
+    '\n' +
+    'Protocol responses: if you receive a JSON message with type "shutdown_request" or "plan_approval_request", ' +
+    'reply with the matching "_response" type, echoing the request_id and setting approve true/false (a ' +
+    'rejection requires a reason/feedback). Approving a shutdown terminates you. The protocol also carries ' +
+    'permission_request/permission_response for forwarding a worker\'s permission prompt to the lead.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -236,6 +247,22 @@ export const sendMessageTool: ToolDefinition = {
       try { return require('./task'); } catch { return { getAgentByName: () => undefined }; }
     })();
     const to = getAgentByName(toRaw) || toRaw;
+
+    // Terminal-status guard: never inject a message into a dead teammate. When the
+    // target resolves to a tracked task (by name or taskId) that has already
+    // completed/failed/been killed, refuse rather than queue into a mailbox no
+    // running engine will ever drain. An untracked name is left to the
+    // unreachable-warning path below (it may still be coming online).
+    if (toRaw !== '*' && context.processManager) {
+      const targetTaskId = getAgentByName(toRaw) || toRaw;
+      const status = context.processManager.getStatus(targetTaskId);
+      if (isTerminalTaskStatus(status)) {
+        return {
+          output: `Error: cannot send to "${toRaw}" — that agent has ${status} and is no longer running.`,
+          isError: true,
+        };
+      }
+    }
 
     // --- Structured control messages -------------------------------------
     const structured = parseStructuredMessage(content);

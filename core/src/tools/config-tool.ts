@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { safeWriteConfig, validateConfigJson, stripJsoncComments } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
+import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
 
 /**
  * Metadata describing a single supported config setting. This registry is the
@@ -145,6 +146,26 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
 
 export function isSupported(key: string): boolean {
   return Object.prototype.hasOwnProperty.call(SUPPORTED_SETTINGS, key);
+}
+
+/**
+ * Security guard against self-escalation via the model-facing config tool. The
+ * config tool mutates `.ami/config.json` — i.e. it writes at the **project**
+ * tier. Keys that are managed-only or tier-locked (permissionMode, maxTurns,
+ * maxBudgetUsd, maxSessionMs) must not be writable from this path, or the model
+ * could lift its own permission mode / budget caps. Reuses the shared
+ * settings-guard tier rules (no duplicate policy). Returns a rejection reason
+ * when the project tier may not set the key, else null.
+ */
+export function configToolWriteBlockReason(key: string): string | null {
+  // canOverride(project, managed) is false for both MANAGED_ONLY and TIER_LOCKED
+  // keys, which is exactly the self-escalation set we must refuse here.
+  if (canOverride(key, 'project', 'managed')) return null;
+  if (MANAGED_ONLY_KEYS.has(key)) {
+    return `"${key}" is a managed-only setting and cannot be changed by the config tool. It is set by your administrator's managed config.`;
+  }
+  // TIER_LOCKED (security-sensitive) — e.g. permissionMode self-escalation.
+  return `"${key}" is a security-sensitive, tier-locked setting and cannot be changed by the config tool (it would let the session escalate its own ${key === 'permissionMode' ? 'permissions' : 'limits'}). Change it at launch (CLI flag / trusted config) instead.`;
 }
 
 export function getSettingConfig(key: string): SettingConfig | undefined {
@@ -312,6 +333,14 @@ function handleSet(configPath: string, input: Record<string, unknown>): ToolResu
   }
   if (!isSupported(key)) {
     return { output: `Unknown setting: "${key}". Supported keys: ${getAllSettingKeys().join(', ')}`, isError: true };
+  }
+
+  // Self-escalation guard: refuse managed-only / tier-locked (security-sensitive)
+  // keys before touching the file, so the model cannot raise its own permission
+  // mode or budget caps via the config tool.
+  const blockReason = configToolWriteBlockReason(key);
+  if (blockReason) {
+    return { output: `Refusing to write: ${blockReason}`, isError: true };
   }
 
   // Load existing config; refuse to clobber a corrupt file (don't wipe user config).

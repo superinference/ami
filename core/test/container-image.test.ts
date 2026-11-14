@@ -71,8 +71,9 @@ describe('isImageAvailable', () => {
     assert.equal(result, false);
   });
 
-  it('uses image inspect command', () => {
-    assert.ok(SRC.includes('image inspect'));
+  it('invokes image inspect without a shell (execFileSync + arg array)', () => {
+    assert.ok(SRC.includes('execFileSync'));
+    assert.ok(SRC.includes("'image', 'inspect'"));
   });
 
   it('catches errors and returns false', () => {
@@ -102,8 +103,8 @@ describe('getImageInfo', () => {
     assert.equal(info.available, false);
   });
 
-  it('uses image inspect --format for structured output', () => {
-    assert.ok(SRC.includes('image inspect --format'));
+  it('uses image inspect --format for structured output (shell-free arg array)', () => {
+    assert.ok(SRC.includes("'image', 'inspect', '--format'"));
   });
 
   it('parses output with ||| separator', () => {

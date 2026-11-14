@@ -61,7 +61,7 @@ test('discoverPluginsDetailed reports structured failures for broken JSON', () =
   const { bundles, failures } = discoverPluginsDetailed(tmp);
   assert.deepEqual(bundles.map((b) => b.name), ['good']);
   assert.equal(failures.length, 2);
-  assert.ok(failures.some((f) => f.root === bad && /Invalid plugin.json/.test(f.reason)));
+  assert.ok(failures.some((f) => f.root === bad && /Corrupt plugin.json/.test(f.reason)));
   assert.ok(failures.some((f) => f.root === arr && /must be a JSON object/.test(f.reason)));
 });
 

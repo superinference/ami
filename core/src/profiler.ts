@@ -1,4 +1,4 @@
-import { percentile as linearPercentile } from './utils/reservoir';
+import { percentile as linearPercentile, Reservoir, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 
 export interface TimingStatistics {
   count: number;
@@ -70,6 +70,61 @@ export interface TurnTiming {
   tokensConsumed: number;
   ttftMs: number;
   outputTokensPerSec: number;
+  /** Prompt tokens served from cache this turn (0 when not reported). */
+  cacheReadTokens: number;
+  /** Cache-write (cache_creation) tokens this turn (0 when not reported). */
+  cacheCreationTokens: number;
+  /** Fraction of prompt tokens served from cache (0..1). */
+  cacheHitRate: number;
+  /** Input (prompt) tokens per second over the API latency window. */
+  inputTokensPerSec: number;
+}
+
+/**
+ * Bounded-memory timing aggregate: keeps count/sum/min/max (and sum-of-squares for
+ * stddev) EXACT while retaining at most `size` raw samples via Algorithm R, so
+ * percentiles are estimated without memory growing with the number of observations.
+ * Mirrors Claude's RESERVOIR_SIZE histogram store.
+ */
+class TimingAggregate {
+  private _count = 0;
+  private _sum = 0;
+  private _sumSq = 0;
+  private _min = Infinity;
+  private _max = -Infinity;
+  private _res: Reservoir;
+
+  constructor(size: number, rand: () => number) {
+    this._res = new Reservoir(size, rand);
+  }
+
+  add(value: number): void {
+    this._count++;
+    this._sum += value;
+    this._sumSq += value * value;
+    if (value < this._min) this._min = value;
+    if (value > this._max) this._max = value;
+    this._res.add(value);
+  }
+
+  get count(): number { return this._count; }
+  get sum(): number { return this._sum; }
+  samples(): number[] { return this._res.values(); }
+
+  statistics(): TimingStatistics {
+    const base = computeStatistics(this._res.values()); // percentiles over the bounded sample
+    const avg = this._count > 0 ? this._sum / this._count : 0;
+    const variance = this._count > 0 ? Math.max(0, this._sumSq / this._count - avg * avg) : 0;
+    return {
+      ...base,
+      count: this._count,
+      avgMs: Math.round(avg * 100) / 100,
+      totalMs: this._sum,
+      minMs: this._count > 0 ? this._min : 0,
+      maxMs: this._count > 0 ? this._max : 0,
+      stddevMs: Math.round(Math.sqrt(variance) * 100) / 100,
+    };
+  }
 }
 
 /**
@@ -94,13 +149,22 @@ export interface ProfilerOpts {
   maxSlowOps?: number;
   /** Injectable memory snapshot (testability). */
   memSnapshot?: MemSnapshot;
+  /** Bounded-memory reservoir size per timing label (default 1024). */
+  maxSamples?: number;
+  /** Max retained per-turn records; oldest are evicted past this (default 10000). */
+  maxTurns?: number;
+  /** RNG injection for deterministic reservoir sampling (testability). */
+  rand?: () => number;
 }
 
 export class Profiler {
-  private timings: Map<string, number[]> = new Map();
-  private ttftTimings: Map<string, number[]> = new Map();
+  private timings: Map<string, TimingAggregate> = new Map();
+  private ttftTimings: Map<string, TimingAggregate> = new Map();
   private turns: Map<number, TurnTiming> = new Map();
   private turnStartTimes: Map<number, number> = new Map();
+  private _maxSamples: number;
+  private _maxTurns: number;
+  private _rand: () => number;
 
   // --- memory-annotated timeline checkpoints ---
   private _checkpoints: ProfilerCheckpoint[] = [];
@@ -121,6 +185,9 @@ export class Profiler {
     this._slowThresholdMs = opts?.slowThresholdMs ?? 1000;
     this._maxSlowOps = Math.max(1, opts?.maxSlowOps ?? 50);
     this._mem = opts?.memSnapshot ?? defaultMem;
+    this._maxSamples = Math.max(1, opts?.maxSamples ?? DEFAULT_RESERVOIR_SIZE);
+    this._maxTurns = Math.max(1, opts?.maxTurns ?? 10_000);
+    this._rand = opts?.rand ?? Math.random;
   }
 
   /**
@@ -134,11 +201,11 @@ export class Profiler {
     };
   }
 
-  /** Record a pre-measured duration for a labelled operation. */
+  /** Record a pre-measured duration for a labelled operation (bounded reservoir). */
   record(label: string, durationMs: number): void {
-    const existing = this.timings.get(label) || [];
-    existing.push(durationMs);
-    this.timings.set(label, existing);
+    let agg = this.timings.get(label);
+    if (!agg) { agg = new TimingAggregate(this._maxSamples, this._rand); this.timings.set(label, agg); }
+    agg.add(durationMs);
     this._maybeFlagSlow(label, durationMs);
   }
 
@@ -218,6 +285,26 @@ export class Profiler {
       .join('\n');
   }
 
+  /**
+   * Derive per-phase durations by pairing `<phase>_start` / `<phase>_end` checkpoints
+   * (mirrors Claude's getPhaseSummary). A phase with a start but no matching end is
+   * omitted. Returns phase → elapsed ms.
+   */
+  getPhaseSummary(): Record<string, number> {
+    const starts = new Map<string, number>();
+    const out: Record<string, number> = {};
+    for (const cp of this._checkpoints) {
+      if (cp.label.endsWith('_start')) {
+        starts.set(cp.label.slice(0, -'_start'.length), cp.time);
+      } else if (cp.label.endsWith('_end')) {
+        const phase = cp.label.slice(0, -'_end'.length);
+        const s = starts.get(phase);
+        if (s !== undefined) out[phase] = cp.time - s;
+      }
+    }
+    return out;
+  }
+
   // --- generic metrics ------------------------------------------------------
 
   incrementCounter(name: string, by = 1): void {
@@ -244,11 +331,11 @@ export class Profiler {
     return { counters, gauges, sets };
   }
 
-  /** Record a time-to-first-token measurement for a labelled operation. */
+  /** Record a time-to-first-token measurement for a labelled operation (bounded reservoir). */
   recordTtft(label: string, ttftMs: number): void {
-    const existing = this.ttftTimings.get(label) || [];
-    existing.push(ttftMs);
-    this.ttftTimings.set(label, existing);
+    let agg = this.ttftTimings.get(label);
+    if (!agg) { agg = new TimingAggregate(this._maxSamples, this._rand); this.ttftTimings.set(label, agg); }
+    agg.add(ttftMs);
   }
 
   /** Mark the beginning of a turn for per-turn profiling. */
@@ -264,6 +351,10 @@ export class Profiler {
     tokensProduced: number;
     tokensConsumed: number;
     ttftMs: number;
+    /** Prompt tokens served from cache (optional; defaults to 0). */
+    cacheReadTokens?: number;
+    /** Cache-write tokens (optional; defaults to 0). */
+    cacheCreationTokens?: number;
   }): void {
     const startTime = this.turnStartTimes.get(turnIndex) || Date.now();
     const endTime = Date.now();
@@ -271,6 +362,13 @@ export class Profiler {
     const streamingDuration = metrics.apiLatency - metrics.ttftMs;
     const outputTokensPerSec = streamingDuration > 0
       ? (metrics.tokensProduced / (streamingDuration / 1000))
+      : 0;
+    const cacheReadTokens = Math.max(0, metrics.cacheReadTokens ?? 0);
+    const cacheCreationTokens = Math.max(0, metrics.cacheCreationTokens ?? 0);
+    const promptTokens = metrics.tokensConsumed + cacheReadTokens;
+    const cacheHitRate = promptTokens > 0 ? cacheReadTokens / promptTokens : 0;
+    const inputTokensPerSec = metrics.apiLatency > 0
+      ? (metrics.tokensConsumed / (metrics.apiLatency / 1000))
       : 0;
 
     this.turns.set(turnIndex, {
@@ -285,18 +383,27 @@ export class Profiler {
       tokensConsumed: metrics.tokensConsumed,
       ttftMs: metrics.ttftMs,
       outputTokensPerSec,
+      cacheReadTokens,
+      cacheCreationTokens,
+      cacheHitRate,
+      inputTokensPerSec,
     });
+    // Bound retained turns for long-running (cron) sessions: evict the oldest.
+    while (this.turns.size > this._maxTurns) {
+      const oldest = this.turns.keys().next().value;
+      if (oldest === undefined) break;
+      this.turns.delete(oldest);
+    }
   }
 
   /** Get a summary of all recorded timings. */
   getSummary(): Record<string, { count: number; avgMs: number; totalMs: number }> {
     const summary: Record<string, { count: number; avgMs: number; totalMs: number }> = {};
-    for (const [label, durations] of this.timings) {
-      const total = durations.reduce((a, b) => a + b, 0);
+    for (const [label, agg] of this.timings) {
       summary[label] = {
-        count: durations.length,
-        avgMs: Math.round(total / durations.length),
-        totalMs: total,
+        count: agg.count,
+        avgMs: Math.round(agg.sum / agg.count),
+        totalMs: agg.sum,
       };
     }
     return summary;
@@ -304,46 +411,40 @@ export class Profiler {
 
   /** Get full statistics for a specific label. */
   getStatistics(label: string): TimingStatistics | null {
-    const durations = this.timings.get(label);
-    if (!durations || durations.length === 0) return null;
-    return computeStatistics(durations);
+    const agg = this.timings.get(label);
+    if (!agg || agg.count === 0) return null;
+    return agg.statistics();
   }
 
   /** Get full statistics for all labels. */
   getAllStatistics(): Record<string, TimingStatistics> {
     const result: Record<string, TimingStatistics> = {};
-    for (const [label, durations] of this.timings) {
-      if (durations.length > 0) {
-        result[label] = computeStatistics(durations);
-      }
+    for (const [label, agg] of this.timings) {
+      if (agg.count > 0) result[label] = agg.statistics();
     }
     return result;
   }
 
-  /** Get raw duration arrays for all labels. */
+  /** Get the (bounded) retained duration samples for all labels. */
   getRawTimings(): Map<string, number[]> {
-    return new Map(
-      Array.from(this.timings.entries()).map(([k, v]) => [k, [...v]])
-    );
+    return new Map(Array.from(this.timings.entries()).map(([k, v]) => [k, v.samples()]));
   }
 
-  /** Get raw durations for a single label. */
+  /** Get the (bounded) retained duration samples for a single label. */
   getRawDurations(label: string): number[] {
-    return [...(this.timings.get(label) || [])];
+    return this.timings.get(label)?.samples() ?? [];
   }
 
   /** Get TTFT statistics for a label. */
   getTtftStatistics(label: string): TimingStatistics | null {
-    const durations = this.ttftTimings.get(label);
-    if (!durations || durations.length === 0) return null;
-    return computeStatistics(durations);
+    const agg = this.ttftTimings.get(label);
+    if (!agg || agg.count === 0) return null;
+    return agg.statistics();
   }
 
-  /** Get all TTFT raw timings. */
+  /** Get all (bounded) TTFT retained samples. */
   getRawTtft(): Map<string, number[]> {
-    return new Map(
-      Array.from(this.ttftTimings.entries()).map(([k, v]) => [k, [...v]])
-    );
+    return new Map(Array.from(this.ttftTimings.entries()).map(([k, v]) => [k, v.samples()]));
   }
 
   /** Get all recorded turn timings sorted by index. */

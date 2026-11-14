@@ -224,6 +224,37 @@ function busyTasksFor(owner: string): number[] {
   return out;
 }
 
+/**
+ * Select the NEXT available task to work on — the lowest-id pending task that is
+ * unblocked and either unowned or owned by `owner` — mirroring Claude Code's
+ * findAvailableTask used by the pull-based teammate self-claim loop. Returns null
+ * when there is nothing claimable.
+ */
+export function findAvailableTask(owner?: string): Task | null {
+  const candidates = [...tasks.values()]
+    .filter(t =>
+      t.status === 'pending' &&
+      (!t.owner || t.owner === owner) &&
+      unresolvedBlockers(t).length === 0)
+    .sort((a, b) => a.id - b.id);
+  return candidates[0] ?? null;
+}
+
+/**
+ * Per-owner idle/busy introspection derived from task ownership — an owner is
+ * "busy" if it holds an unresolved (pending/in_progress) task, else "idle".
+ * Mirrors Claude Code's getAgentStatuses. Returns one row per owner that appears
+ * on any task.
+ */
+export function getAgentStatuses(): Array<{ owner: string; status: 'busy' | 'idle'; tasks: number[] }> {
+  const owners = new Set<string>();
+  for (const t of tasks.values()) if (t.owner) owners.add(t.owner);
+  return [...owners].sort().map(owner => {
+    const busy = busyTasksFor(owner);
+    return { owner, status: busy.length > 0 ? 'busy' : 'idle', tasks: busy };
+  });
+}
+
 // Keys the schema accepts; anything else is a malformed call and is rejected so
 // typos (e.g. `taskId` vs `task_id`) surface instead of silently no-op'ing.
 const ALLOWED_INPUT_KEYS = new Set([
@@ -235,16 +266,17 @@ export const taskTrackerTool: ToolDefinition = {
   name: 'task_tracker',
   description:
     'Create and manage tasks to track progress on complex work. ' +
-    'Actions: "create" (new task), "update" (change status/details), "list" (show all), "get" (single task), "delete" (remove), "claim" (atomically assign and start). ' +
+    'Actions: "create" (new task), "update" (change status/details), "list" (show all), "get" (single task), "delete" (remove), "claim" (atomically assign and start), "next" (find the next available task to work on), "status" (per-owner idle/busy introspection). ' +
     'Supports task dependencies via addBlocks/addBlockedBy to express ordering constraints. ' +
     'Prefer tasks in id order (lowest id first). Check the list first to avoid creating duplicate tasks. ' +
-    'Never mark a task completed on failure or error — leave it in_progress and fix the root cause first.',
+    'Pull-based teammates: call "next" (optionally with owner) to get the next pending/unowned/unblocked task, then "claim" it, work it, mark it completed, and repeat. ' +
+    'Never mark a task completed on failure or error — leave it in_progress and fix the root cause first; if blocked, create a blocker task instead of closing.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['create', 'update', 'list', 'get', 'delete', 'claim'],
+        enum: ['create', 'update', 'list', 'get', 'delete', 'claim', 'next', 'status'],
         description: 'The action to perform.',
       },
       subject: {
@@ -497,8 +529,32 @@ export const taskTrackerTool: ToolDefinition = {
         return { output: capOutput(out), isError: false };
       }
 
+      case 'next': {
+        reloadForRead();
+        const owner = input.owner as string | undefined;
+        const task = findAvailableTask(owner);
+        if (!task) {
+          return { output: owner
+            ? `No available tasks for "${owner}" (nothing pending, unowned, and unblocked).`
+            : 'No available tasks (nothing pending, unowned, and unblocked).', isError: false };
+        }
+        return { output: capOutput(`Next available task:\n${formatTask(task)}\n\nClaim it with action "claim", task_id "${task.id}".`), isError: false };
+      }
+
+      case 'status': {
+        reloadForRead();
+        const rows = getAgentStatuses();
+        if (rows.length === 0) {
+          return { output: 'No owned tasks — all agents idle.', isError: false };
+        }
+        const body = rows
+          .map(r => `${r.owner}: ${r.status}${r.tasks.length ? ` (${r.tasks.map(id => `#${id}`).join(', ')})` : ''}`)
+          .join('\n');
+        return { output: capOutput(body), isError: false };
+      }
+
       default:
-        return { output: `Error: unknown action "${action}". Must be one of: create, update, list, get, delete, claim.`, isError: true };
+        return { output: `Error: unknown action "${action}". Must be one of: create, update, list, get, delete, claim, next, status.`, isError: true };
     }
   },
 };

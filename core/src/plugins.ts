@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isSafeSegment } from './skill-catalog';
+import { parseFrontmatter } from './memory';
 
 // ---------------------------------------------------------------------------
 // Git source safety — SHARED validators reused by the plugin installer AND the
@@ -93,6 +94,19 @@ export function validateGitSource(source: string): GitSourceValidation {
 }
 
 /**
+ * Redact embedded credentials from any URL(s) inside a string so a clone source
+ * or a git error message can be logged/surfaced without leaking a token or
+ * password. Rewrites the `user:pass@` (and bare `user@`) userinfo of every
+ * `scheme://…` URL to `***`. The SINGLE canonical redactor for the installer and
+ * the marketplace manager (no per-site re-implementation).
+ */
+export function redactUrlCredentials(text: string): string {
+  if (typeof text !== 'string' || text === '') return text;
+  // Match scheme://userinfo@host — replace only the userinfo portion.
+  return text.replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/@\s]+)@/g, '$1***@');
+}
+
+/**
  * Split a `url#ref` source into its clone URL and optional branch/tag ref so a
  * source can be pinned to a specific ref (e.g. `owner/repo#v1.2.0`). A leading
  * `#` or empty fragment yields no ref.
@@ -166,12 +180,30 @@ export interface PluginBundle {
 
 /**
  * A slash-command definition loaded from a TOML file in a plugin's commands/ dir.
+ * Beyond the required name/description/prompt, a command may declare the same
+ * behavioral knobs as a Claude Code command (all optional).
  */
 export interface CommandDefinition {
   name: string;
   description: string;
   prompt: string;
   filePath: string;
+  /** Hint text for the argument string (e.g. "<file-path>"). */
+  argumentHint?: string;
+  /** Tool allowlist this command's prompt may use. */
+  allowedTools?: string[];
+  /** Model override for running the command. */
+  model?: string;
+  /** Thinking effort level for the command. */
+  effort?: string;
+  /** Trigger hint for auto/model invocation. */
+  whenToUse?: string;
+  /** Command version string. */
+  version?: string;
+  /** If true, the model may not invoke this command via the skill/command tool. */
+  disableModelInvocation?: boolean;
+  /** If false, the user may not invoke it via /name (default true). */
+  userInvocable?: boolean;
 }
 
 /**
@@ -256,7 +288,25 @@ export function loadCommands(dir: string): CommandDefinition[] {
       const desc = parseTomlString(content, 'description');
       const prompt = parseTomlString(content, 'prompt');
       if (desc && prompt) {
-        commands.push({ name, description: desc, prompt, filePath });
+        const cmd: CommandDefinition = { name, description: desc, prompt, filePath };
+        // Optional behavioral knobs (Claude-parity). Each is omitted when absent.
+        const argumentHint = parseTomlString(content, 'argument-hint');
+        if (argumentHint) cmd.argumentHint = argumentHint;
+        const model = parseTomlString(content, 'model');
+        if (model) cmd.model = model;
+        const effort = parseTomlString(content, 'effort');
+        if (effort) cmd.effort = effort;
+        const whenToUse = parseTomlString(content, 'when-to-use') ?? parseTomlString(content, 'when_to_use');
+        if (whenToUse) cmd.whenToUse = whenToUse;
+        const version = parseTomlString(content, 'version');
+        if (version) cmd.version = version;
+        const allowedTools = parseTomlStringArray(content, 'allowed-tools');
+        if (allowedTools) cmd.allowedTools = allowedTools;
+        const disableModelInvocation = parseTomlBool(content, 'disable-model-invocation');
+        if (disableModelInvocation !== undefined) cmd.disableModelInvocation = disableModelInvocation;
+        const userInvocable = parseTomlBool(content, 'user-invocable');
+        if (userInvocable !== undefined) cmd.userInvocable = userInvocable;
+        commands.push(cmd);
       }
     } catch {
       // Skip malformed command files
@@ -265,12 +315,44 @@ export function loadCommands(dir: string): CommandDefinition[] {
   return commands;
 }
 
+/** Parse a TOML `key = true|false` boolean, or undefined when absent/other. */
+function parseTomlBool(content: string, key: string): boolean | undefined {
+  const m = content.match(new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=\\s*(true|false)\\b`, 'm'));
+  return m ? m[1] === 'true' : undefined;
+}
+
+/** Parse a TOML `key = ["a", "b"]` string array, or undefined when absent. */
+function parseTomlStringArray(content: string, key: string): string[] | undefined {
+  const m = content.match(new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=\\s*\\[([^\\]]*)\\]`, 'm'));
+  if (!m) return undefined;
+  const inner = m[1]!.trim();
+  if (!inner) return [];
+  return inner
+    .split(',')
+    .map(s => s.trim().replace(/^["']|["']$/g, ''))
+    .filter(s => s.length > 0);
+}
+
 // ---------------------------------------------------------------------------
 // Plugin manifest validation — a dependency-free validator for a plugin.json
 // (and the component paths it may declare). Surfaces structured errors (hard
 // failures) + warnings (author foot-guns) with actionable guidance, including
 // path-traversal flagging for any `..` in a declared component path.
 // ---------------------------------------------------------------------------
+
+/**
+ * Installable plugin scopes, in Claude-Code order. `user` installs into the
+ * cross-project global plugins dir; `project` into the project's committed
+ * `.ami/plugins`; `local` into the project dir but intended to stay un-committed
+ * (local-only). Default is `user`.
+ */
+export const VALID_INSTALL_SCOPES = ['user', 'project', 'local'] as const;
+export type InstallScope = (typeof VALID_INSTALL_SCOPES)[number];
+
+/** Whether `scope` is a valid install scope (for arg validation at the CLI edge). */
+export function isInstallScope(scope: string): scope is InstallScope {
+  return (VALID_INSTALL_SCOPES as readonly string[]).includes(scope);
+}
 
 export interface PluginValidationIssue {
   path: string;
@@ -332,6 +414,143 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   return { valid: errors.length === 0, errors, warnings };
 }
 
+/**
+ * Validate a plugin's CONTENT files (skills/, agents/, commands/, hooks.json)
+ * under `pluginDir`, complementing {@link validatePluginManifest} (which only
+ * checks plugin.json). Mirrors Claude Code's `validatePluginContents`: every
+ * declared component is structurally checked and any component path that escapes
+ * the plugin root (via `..` or a symlink) is flagged. Returns aggregated
+ * errors/warnings labelled by the offending relative path. Missing component dirs
+ * are fine (a plugin need not ship every kind).
+ */
+export function validatePluginContents(pluginDir: string): PluginValidationResult {
+  const errors: PluginValidationIssue[] = [];
+  const warnings: PluginValidationIssue[] = [];
+
+  // skills/ — subdir form needs a SKILL.md with a name; flat *.md needs a body.
+  const skillsDir = hardenedResolve(pluginDir, 'skills');
+  if (skillsDir === undefined && fs.existsSync(path.join(pluginDir, 'skills'))) {
+    errors.push({ path: 'skills', message: 'skills/ path escapes the plugin directory (symlink or ..).' });
+  } else if (skillsDir) {
+    for (const entry of safeReaddir(skillsDir)) {
+      const entryPath = path.join(skillsDir, entry);
+      let isDir = false;
+      try { isDir = fs.statSync(entryPath).isDirectory(); } catch { continue; }
+      if (isDir) {
+        const skillMd = path.join(entryPath, 'SKILL.md');
+        if (!fs.existsSync(skillMd)) {
+          warnings.push({ path: `skills/${entry}`, message: 'skill subdirectory has no SKILL.md and will be ignored.' });
+          continue;
+        }
+        validateMarkdownComponent(skillMd, `skills/${entry}/SKILL.md`, true, errors, warnings);
+      } else if (entry.endsWith('.md')) {
+        validateMarkdownComponent(entryPath, `skills/${entry}`, true, errors, warnings);
+      }
+    }
+  }
+
+  // agents/ — each *.md needs a non-empty description + body.
+  const agentsDir = hardenedResolve(pluginDir, 'agents');
+  if (agentsDir === undefined && fs.existsSync(path.join(pluginDir, 'agents'))) {
+    errors.push({ path: 'agents', message: 'agents/ path escapes the plugin directory (symlink or ..).' });
+  } else if (agentsDir) {
+    for (const entry of safeReaddir(agentsDir)) {
+      if (!entry.endsWith('.md')) continue;
+      validateMarkdownComponent(path.join(agentsDir, entry), `agents/${entry}`, false, errors, warnings);
+    }
+  }
+
+  // commands/ — each *.toml must define description + prompt.
+  const commandsDir = hardenedResolve(pluginDir, 'commands');
+  if (commandsDir === undefined && fs.existsSync(path.join(pluginDir, 'commands'))) {
+    errors.push({ path: 'commands', message: 'commands/ path escapes the plugin directory (symlink or ..).' });
+  } else if (commandsDir) {
+    for (const entry of safeReaddir(commandsDir)) {
+      if (!entry.endsWith('.toml')) continue;
+      const file = path.join(commandsDir, entry);
+      let content: string;
+      try { content = fs.readFileSync(file, 'utf-8'); } catch (err) {
+        errors.push({ path: `commands/${entry}`, message: `Failed to read: ${err instanceof Error ? err.message : String(err)}` });
+        continue;
+      }
+      if (!parseTomlString(content, 'description') || !parseTomlString(content, 'prompt')) {
+        errors.push({ path: `commands/${entry}`, message: 'command TOML must define both "description" and "prompt".' });
+      }
+    }
+  }
+
+  // hooks.json (root) OR hooks/hooks.json (Claude Code) — must be valid JSON.
+  const hooksFile = resolvePluginHooksFile(pluginDir);
+  if (hooksFile) {
+    try {
+      JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
+    } catch (err) {
+      errors.push({ path: path.relative(pluginDir, hooksFile), message: `Invalid hooks JSON: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
+}
+
+/** readdir that returns [] instead of throwing on a missing/unreadable dir. */
+function safeReaddir(dir: string): string[] {
+  try { return fs.readdirSync(dir); } catch { return []; }
+}
+
+/** Validate a markdown component file has YAML frontmatter with a name (skills)
+ *  or description (agents) and a non-empty body. */
+function validateMarkdownComponent(
+  file: string,
+  label: string,
+  isSkill: boolean,
+  errors: PluginValidationIssue[],
+  warnings: PluginValidationIssue[],
+): void {
+  let raw: string;
+  try { raw = fs.readFileSync(file, 'utf-8'); } catch (err) {
+    errors.push({ path: label, message: `Failed to read: ${err instanceof Error ? err.message : String(err)}` });
+    return;
+  }
+  const { frontmatter, body } = parseFrontmatter(raw);
+  if (!body.trim()) {
+    errors.push({ path: label, message: 'component body is empty.' });
+  }
+  if (isSkill) {
+    // A subdir SKILL.md can fall back to the dir name, so a missing name is only a warning.
+    if (!frontmatter.name && path.basename(file) !== 'SKILL.md') {
+      warnings.push({ path: label, message: 'skill has no "name" frontmatter; the file name will be used.' });
+    }
+  } else if (!frontmatter.description?.trim()) {
+    warnings.push({ path: label, message: 'agent has no "description" frontmatter.' });
+  }
+}
+
+/**
+ * Full plugin validation: manifest + content files. Reads `plugin.json` from the
+ * `.ami-plugin`/`.claude-plugin` dir under `pluginDir`, runs
+ * {@link validatePluginManifest} and {@link validatePluginContents}, and merges
+ * the results. A missing manifest is a hard error.
+ */
+export function validatePlugin(pluginDir: string): PluginValidationResult {
+  for (const marker of ['.ami-plugin', '.claude-plugin']) {
+    const manifestPath = path.join(pluginDir, marker, 'plugin.json');
+    if (!fs.existsSync(manifestPath)) continue;
+    let manifestResult: PluginValidationResult;
+    try {
+      manifestResult = validatePluginManifest(JSON.parse(fs.readFileSync(manifestPath, 'utf-8')));
+    } catch (err) {
+      manifestResult = { valid: false, errors: [{ path: manifestPath, message: `Invalid plugin.json: ${err instanceof Error ? err.message : String(err)}` }], warnings: [] };
+    }
+    const contentResult = validatePluginContents(pluginDir);
+    return {
+      valid: manifestResult.valid && contentResult.valid,
+      errors: [...manifestResult.errors, ...contentResult.errors],
+      warnings: [...manifestResult.warnings, ...contentResult.warnings],
+    };
+  }
+  return { valid: false, errors: [{ path: pluginDir, message: 'No plugin manifest (.ami-plugin/plugin.json or .claude-plugin/plugin.json).' }], warnings: [] };
+}
+
 /** A plugin directory that failed to load, with an actionable reason. */
 export interface PluginLoadFailure {
   root: string;
@@ -377,7 +596,19 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       }
       manifest = parsed as Record<string, unknown>;
     } catch (err) {
-      failures.push({ root, reason: `Invalid plugin.json: ${err instanceof Error ? err.message : String(err)}. Fix the JSON syntax in ${manifestPath}.` });
+      // CORRUPT (unparseable JSON) is reported distinctly from INVALID (parses but
+      // fails the schema) so a front-end can guide the author appropriately.
+      failures.push({ root, reason: `Corrupt plugin.json (JSON parse failed): ${err instanceof Error ? err.message : String(err)}. Fix the JSON syntax in ${manifestPath}.` });
+      continue;
+    }
+    // Security-relevant manifest errors (unsafe name, '..'/absolute component path)
+    // turn a discovered dir into a structured failure rather than a silently-loaded
+    // bundle. Lenient fields (missing name/version) still fall back below.
+    const hardErrors = validatePluginManifest(manifest).errors.filter(e =>
+      /Unsafe plugin name|contains "\.\."|must be relative/.test(e.message),
+    );
+    if (hardErrors.length > 0) {
+      failures.push({ root, reason: `Invalid plugin.json: ${hardErrors.map(e => `${e.path}: ${e.message}`).join('; ')}` });
       continue;
     }
     // Discovery is lenient on optional fields (name/version fall back below); the

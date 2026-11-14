@@ -347,11 +347,12 @@ describe('exitWorktreeTool — remove fallback + rejected hook (seam-driven)', (
   it('falls back to rmSync + prune when `git worktree remove` throws', async () => {
     let pruned = false;
     let rmCalled = false;
-    mock.method(_exitWorktreeHooks, 'execSync', ((cmd: string) => {
+    mock.method(_exitWorktreeHooks, 'exec', ((args: string[]) => {
+      const cmd = args.join(' ');
       if (/worktree remove/.test(cmd)) throw new Error('remove refused');
       if (/worktree prune/.test(cmd)) { pruned = true; return ''; }
       return '';
-    }) as typeof child_process.execSync);
+    }) as typeof _exitWorktreeHooks.exec);
     mock.method(_exitWorktreeHooks, 'existsSync', (() => true) as typeof fs.existsSync);
     mock.method(_exitWorktreeHooks, 'rmSync', (() => { rmCalled = true; }) as typeof fs.rmSync);
 
@@ -367,10 +368,10 @@ describe('exitWorktreeTool — remove fallback + rejected hook (seam-driven)', (
   });
 
   it('returns the original error when the fallback itself fails', async () => {
-    mock.method(_exitWorktreeHooks, 'execSync', ((cmd: string) => {
-      if (/worktree remove/.test(cmd)) throw new Error('remove refused');
+    mock.method(_exitWorktreeHooks, 'exec', ((args: string[]) => {
+      if (/worktree remove/.test(args.join(' '))) throw new Error('remove refused');
       throw new Error('prune also failed');
-    }) as typeof child_process.execSync);
+    }) as typeof _exitWorktreeHooks.exec);
     mock.method(_exitWorktreeHooks, 'existsSync', (() => false) as typeof fs.existsSync);
 
     const result = await exitWorktreeTool.execute(
@@ -385,7 +386,7 @@ describe('exitWorktreeTool — remove fallback + rejected hook (seam-driven)', (
   it('swallows a rejected executeWorktreeRemove hook', async () => {
     // remove succeeds (seam no-op) so we reach the hook; the hook rejects and
     // the .catch(() => {}) arm must swallow it without failing the tool.
-    mock.method(_exitWorktreeHooks, 'execSync', (() => '') as typeof child_process.execSync);
+    mock.method(_exitWorktreeHooks, 'exec', (() => '') as typeof _exitWorktreeHooks.exec);
 
     const result = await exitWorktreeTool.execute(
       { action: 'remove', discard_changes: true },
@@ -401,5 +402,29 @@ describe('exitWorktreeTool — remove fallback + rejected hook (seam-driven)', (
     assert.match(result.output, /Worktree removed/);
     // Flush the rejected-hook microtask so its .catch runs before teardown.
     await new Promise(r => setImmediate(r));
+  });
+
+  it('invokes git teardown with an argv ARRAY (no shell string) so paths/branches cannot be shell-interpolated', async () => {
+    const calls: string[][] = [];
+    mock.method(_exitWorktreeHooks, 'exec', ((args: string[]) => {
+      calls.push(args);
+      return '';
+    }) as typeof _exitWorktreeHooks.exec);
+
+    const result = await exitWorktreeTool.execute(
+      { action: 'remove', discard_changes: true },
+      ctx({ cwd: worktreePath }),
+    );
+    assert.ok(!result.isError, result.output);
+    // Every destructive git call is an argv array, never a single shell string.
+    for (const args of calls) {
+      assert.ok(Array.isArray(args), 'git teardown must receive an argv array');
+    }
+    // The worktree path is passed as a single discrete argument (not concatenated
+    // into a `git worktree remove --force "<path>"` shell string).
+    const removeCall = calls.find(a => a[0] === 'worktree' && a[1] === 'remove');
+    assert.ok(removeCall, 'expected a worktree-remove argv call');
+    assert.deepEqual(removeCall!.slice(0, 3), ['worktree', 'remove', '--force']);
+    assert.equal(removeCall![3], worktreePath);
   });
 });

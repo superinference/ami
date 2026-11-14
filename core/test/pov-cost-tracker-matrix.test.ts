@@ -331,8 +331,15 @@ describe('CACHE_MISS_CAUSES', () => {
       'tool_definitions_changed',
       'system_prompt_changed',
       'idle_past_ttl',
+      'idle_past_1h_ttl',
       'thinking_mode_changed',
       'model_switched',
+      'betas_changed',
+      'cache_control_changed',
+      'extra_body_changed',
+      'effort_changed',
+      'fast_mode_changed',
+      'global_cache_strategy_changed',
       'first_request',
       'unknown',
     ];
@@ -386,7 +393,7 @@ describe('CacheMissDiagnostics — cause classification', () => {
   it('idle past TTL (same model) -> idle_past_ttl, beating tool/prompt/thinking diffs', () => {
     const d = new CacheMissDiagnostics(1_000); // 1s TTL
     primeHit(d);
-    d._setLastRequestTime(1); // pretend the prior request was long ago
+    d._setLastRequestTime(Date.now() - 5_000); // ~5s ago: past the 1s TTL, under the 1h bucket
     d.recordRequest({ ...baseReq(), toolDefHash: 'tools-v2' }); // pending time = now (huge elapsed)
     d.recordResponse(0, 0);
     assert.equal(d.getLastMissCause(), 'idle_past_ttl');

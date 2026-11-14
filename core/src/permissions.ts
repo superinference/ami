@@ -30,6 +30,20 @@ export function normalizePermissionMode(raw: string): PermissionMode | null {
   return (PERMISSION_MODES as readonly string[]).includes(m) ? (m as PermissionMode) : null;
 }
 
+/**
+ * Where a permission rule/update is persisted, in precedence order (later wins at
+ * runtime; earlier is broader scope). Mirrors Claude's PermissionUpdateDestination:
+ * - `userSettings`   — global (~/.ami), applies everywhere;
+ * - `projectSettings`— shared per-project, committed (cwd/.ami);
+ * - `localSettings`  — per-project but gitignored (cwd/.ami, *.local.json);
+ * - `session`        — in-memory only, this run;
+ * - `cliArg`         — supplied via a command-line flag.
+ */
+export const PERMISSION_UPDATE_DESTINATIONS = [
+  'userSettings', 'projectSettings', 'localSettings', 'session', 'cliArg',
+] as const;
+export type PermissionUpdateDestination = (typeof PERMISSION_UPDATE_DESTINATIONS)[number];
+
 export interface PermissionRule {
   tool: string;       // tool name or '*'
   pattern?: string;   // glob pattern for args (e.g., "git *")
@@ -37,14 +51,55 @@ export interface PermissionRule {
   paramPattern?: Record<string, string>;
   action: 'allow' | 'deny' | 'ask';
   reason?: string;    // optional reason for deny rules
+  /** Tier this rule originated from (set when loaded from a destination file). */
+  source?: PermissionUpdateDestination;
+}
+
+/**
+ * Resolve the on-disk file a permission destination maps to, or null for the
+ * in-memory tiers (`session`, `cliArg`). `userSettings` is global (~/.ami);
+ * `projectSettings`/`localSettings` are per-project under `cwd/.ami` (local is
+ * the gitignored `.local.json` variant). Mirrors Claude's per-destination
+ * settings-file resolution.
+ */
+export function permissionDestinationPath(
+  cwd: string,
+  destination: PermissionUpdateDestination,
+): string | null {
+  switch (destination) {
+    case 'userSettings':
+      return path.join(os.homedir(), '.ami', 'permissions.json');
+    case 'projectSettings':
+      return path.join(cwd, '.ami', 'permissions.json');
+    case 'localSettings':
+      return path.join(cwd, '.ami', 'permissions.local.json');
+    case 'session':
+    case 'cliArg':
+      return null; // in-memory only — never persisted
+  }
 }
 
 export const BASH_CLASSIFICATIONS = ['safe', 'unsafe', 'destructive'] as const;
 export type BashClassification = (typeof BASH_CLASSIFICATIONS)[number];
 
+/** Scope for an `allow_session` grant on the agent's own config folder. */
+export type SessionGrantScope = 'config-folder' | 'global-config-folder';
+
 export interface PermissionPromptResult {
-  action: 'allow_once' | 'allow_pattern' | 'deny';
+  action: 'allow_once' | 'allow_pattern' | 'allow_session' | 'deny' | 'cancelled';
   pattern?: string;
+  /** Session-grant scope (for `allow_session` self-config edits). */
+  scope?: SessionGrantScope;
+  /**
+   * Free-text the user attached when DENYING ("tell the model what to do
+   * differently") — routed back to the model so it can steer the next turn.
+   */
+  feedback?: string;
+  /**
+   * Free-text the user attached when APPROVING ("tell the model what to do
+   * next") — extra guidance delivered alongside the allowed result.
+   */
+  acceptFeedback?: string;
 }
 
 export interface PermissionPromptHandler {
@@ -52,12 +107,66 @@ export interface PermissionPromptHandler {
     toolName: string,
     inputSummary: string,
     classification?: BashClassification,
+    /**
+     * Optional request abort signal. When it fires while the prompt is pending
+     * the handler should resolve `{ action: 'cancelled' }` so a cancelled turn
+     * doesn't leave a permission dialog hanging.
+     */
+    abortSignal?: AbortSignal,
   ): Promise<PermissionPromptResult>;
+}
+
+/**
+ * Structured reason a permission decision needs confirmation/was denied. The
+ * `type` discriminator lets the UI explain WHY approval is required instead of a
+ * bare "needs approval". Mirrors Claude's permissionResult.decisionReason union.
+ */
+export type PermissionDecisionReason =
+  | { type: 'hardline'; description: string }
+  | { type: 'rule'; action: 'allow' | 'deny' | 'ask'; ruleValue?: string; source?: string }
+  | { type: 'mode'; mode: PermissionMode }
+  | { type: 'safetyCheck'; check: SafetyCheckKind; message: string }
+  | { type: 'classifier'; name?: string; reason?: string }
+  | { type: 'other'; message?: string };
+
+export type SafetyCheckKind =
+  | 'credential' | 'systemDir' | 'suspiciousPath' | 'agentConfig' | 'buildConfig' | 'destructive';
+
+/** Build a human-readable explanation from a structured decision reason. */
+export function createPermissionRequestMessage(reason: PermissionDecisionReason): string {
+  switch (reason.type) {
+    case 'hardline':
+      return `Blocked: ${reason.description}`;
+    case 'rule': {
+      const from = reason.source ? ` from ${reason.source}` : '';
+      const which = reason.ruleValue ? ` "${reason.ruleValue}"` : '';
+      return `Permission rule${which}${from} requires ${reason.action === 'deny' ? 'denial' : 'approval'} for this command`;
+    }
+    case 'mode':
+      return `Current permission mode (${reason.mode}) requires approval for this action`;
+    case 'safetyCheck':
+      return reason.message;
+    case 'classifier':
+      return `The safety classifier${reason.name ? ` (${reason.name})` : ''} flagged this action${reason.reason ? `: ${reason.reason}` : ''}`;
+    case 'other':
+      return reason.message ?? 'This action requires approval';
+  }
 }
 
 export interface DenyCheckResult {
   denied: boolean;
   reason?: string;
+}
+
+/** A recency-ordered record of a denied action, for user review (`/permissions`). */
+export interface RecentDenial {
+  /** Human-readable command / summary of the denied action. */
+  display: string;
+  /** What produced the denial. */
+  source: 'rule' | 'hardline' | 'classifier' | 'mode';
+  /** Optional explanation. */
+  reason?: string;
+  timestamp: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +439,14 @@ const DESTRUCTIVE_SQL_PATTERNS = [
   /\bTRUNCATE\b/i,
 ];
 
-const SAFE_ENV_VARS = new Set([
+/**
+ * Env vars that are safe to pass through / strip before allow-rule matching. The
+ * allowlist deliberately EXCLUDES PATH, LD_*, DYLD_*, PYTHONPATH, NODE_OPTIONS,
+ * HOME, BASH_ENV and endpoint/daemon vars (DOCKER_HOST/KUBECONFIG) — those are an
+ * escalation vector. Exported so the trust/safe-mode config scanner reuses the
+ * SAME allowlist (one canonical source, no duplication).
+ */
+export const SAFE_ENV_VARS = new Set([
   'NODE_ENV', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM',
   'NO_COLOR', 'FORCE_COLOR', 'RUST_LOG', 'RUST_BACKTRACE',
   'GOOS', 'GOARCH', 'GOPATH', 'GOBIN', 'GOROOT',
@@ -381,6 +497,11 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /\bkillall\b.*\btsx\b/, description: 'killall tsx would kill AMI — use kill <pid> to target a specific process' },
   { pattern: /\bpkill\b.*\bsuperinference\b/i, description: 'would kill AMI — use kill <pid> to target a specific process' },
   { pattern: /\b(curl|wget|fetch|nc|ncat|http|https)\b[^\n]*(?:\b(?:169\.254\.169\.254|metadata\.google\.internal|metadata\.google\.com|100\.100\.100\.200|instance-data)\b|fd00:ec2::254)/i, description: 'cloud instance-metadata credential fetch (SSRF/credential-exfil vector)' },
+  // PowerShell power-control / disk-format cmdlets — the Windows equivalents of
+  // the POSIX shutdown/reboot/mkfs hardlines above (AMI runs PowerShell on Windows).
+  { pattern: /\b(Stop-Computer|Restart-Computer)\b/i, description: 'PowerShell power control' },
+  { pattern: /\bClear-RecycleBin\b/i, description: 'PowerShell empties the recycle bin (irreversible)' },
+  { pattern: /\b(Format-Volume|Clear-Disk)\b/i, description: 'PowerShell disk format / wipe' },
 ];
 
 /**
@@ -555,6 +676,122 @@ export function isBuildConfigFile(filePath: string): boolean {
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Agent-own-config guard — edits to the agent's own settings/config dirs need
+// explicit approval even in acceptEdits (prompt-injection / self-reconfig vector)
+// ---------------------------------------------------------------------------
+
+/**
+ * Config/IDE directory segments that must never be silently auto-edited: the
+ * agent's own settings (`.ami`, `.ami-plugin`, `.claude`), IDE config (`.vscode`,
+ * `.idea`) and the git metadata dir (`.git`). Writing into these can reconfigure
+ * the agent, add hooks/commands/skills, or weaponize IDE tasks. Mirrors Claude's
+ * DANGEROUS_DIRECTORIES + isClaudeConfigFilePath guards.
+ */
+const AGENT_CONFIG_DIR_SEGMENTS = ['.ami', '.ami-plugin', '.claude', '.vscode', '.idea', '.git'];
+
+/** Settings/config basenames that are sensitive wherever they live. */
+const AGENT_CONFIG_BASENAMES = new Set([
+  'settings.json', 'settings.local.json', 'permissions.json', 'hooks.json',
+  'plugin.json', 'config.json', 'mcp.json', '.mcp.json',
+]);
+
+/**
+ * Return true if `filePath` targets the agent's own config/settings/IDE/git
+ * directories or a sensitive settings file — such edits require explicit approval
+ * even in acceptEdits mode, mirroring Claude's isInClaudeFolder / isAgentSettingsFile.
+ */
+export function isAgentConfigPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  const segments = normalized.split('/');
+  for (const seg of segments) {
+    if (AGENT_CONFIG_DIR_SEGMENTS.includes(seg)) return true;
+  }
+  if (AGENT_CONFIG_BASENAMES.has(path.basename(normalized))) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Suspicious path-pattern detection (canonicalization-bypass vectors)
+// ---------------------------------------------------------------------------
+
+/** UNC path (`\\server\share` or `//server/share`) — remote-resource / creds vector. */
+function isUncPath(p: string): boolean {
+  if (/^\\\\[^\\]/.test(p)) return true;      // \\server
+  if (/^\/\/[^/]/.test(p)) return true;       // //server
+  return false;
+}
+
+/**
+ * Detect path-canonicalization bypass vectors that string-based blocklists miss,
+ * applied on ALL platforms (NTFS can be mounted on Linux/macOS via ntfs-3g):
+ * - NTFS Alternate Data Streams (`file.txt::$DATA`, `.bashrc:$DATA`);
+ * - 8.3 short names (`GIT~1`, `SETTIN~1.JSON`);
+ * - long-path prefixes (`\\?\`, `\\.\`, `//?/`, `//./`);
+ * - trailing dots/spaces Windows strips (`.git.`, `settings.json `);
+ * - DOS device-name suffixes (`.git.CON`, `settings.json.PRN`);
+ * - triple-dot path components (`/.../`);
+ * - UNC paths.
+ *
+ * The ADS colon check is restricted to the explicit `:$`/`::` stream markers so
+ * legitimate colons in POSIX filenames are not false-positived (a deliberate
+ * tightening of Claude's platform-gated "any colon after the drive letter" rule).
+ * Mirrors Claude's hasSuspiciousWindowsPathPattern.
+ */
+export function hasSuspiciousPathPattern(p: string): boolean {
+  if (!p) return false;
+  // NTFS ADS stream markers (explicit, to stay cross-platform safe).
+  if (/::|:\$/.test(p)) return true;
+  // 8.3 short names.
+  if (/~\d/.test(p)) return true;
+  // Long-path prefixes.
+  if (p.startsWith('\\\\?\\') || p.startsWith('\\\\.\\') || p.startsWith('//?/') || p.startsWith('//./')) {
+    return true;
+  }
+  // Trailing dots / spaces.
+  if (/[.\s]+$/.test(p)) return true;
+  // DOS device-name suffixes.
+  if (/\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(p)) return true;
+  // Triple-dot path component.
+  if (/(^|[/\\])\.{3,}([/\\]|$)/.test(p)) return true;
+  // UNC path.
+  if (isUncPath(p)) return true;
+  return false;
+}
+
+/**
+ * Walk the FULL symlink chain for `filePath` hop-by-hop and return the original
+ * path, every intermediate symlink target, AND the final resolved path — so a
+ * deny/boundary check matches at ANY hop (e.g. `test.txt → /etc/passwd` yields
+ * both, closing the symlink-escape vector where only the final realpath is
+ * checked). Bounded by `maxDepth` (SYMLOOP_MAX=40) with a visited-set loop guard.
+ * Mirrors Claude's getPathsForPermissionCheck. Non-existent / unreadable hops stop
+ * the walk gracefully and still return what was collected.
+ */
+export function getPathsForPermissionCheck(filePath: string, maxDepth = 40): string[] {
+  const results: string[] = [];
+  const visited = new Set<string>();
+  let current = filePath;
+  for (let depth = 0; depth < maxDepth; depth++) {
+    const abs = path.isAbsolute(current) ? current : path.resolve(current);
+    const norm = path.normalize(abs);
+    if (visited.has(norm)) break; // circular symlink loop
+    visited.add(norm);
+    if (!results.includes(norm)) results.push(norm);
+    let target: string;
+    try {
+      const stat = fs.lstatSync(norm);
+      if (!stat.isSymbolicLink()) break;
+      target = fs.readlinkSync(norm);
+    } catch {
+      break; // non-existent or unreadable — stop, keep what we have
+    }
+    // Resolve a relative link target against the link's own directory.
+    current = path.isAbsolute(target) ? target : path.resolve(path.dirname(norm), target);
+  }
+  return results;
 }
 
 /** System directories that should never be written to. */
@@ -910,7 +1147,29 @@ function matchPattern(pattern: string, value: string): boolean {
  * multi-line splitting.
  */
 export function normalizeLineContinuations(cmd: string): string {
-  return cmd.replace(/\\\n/g, '');
+  // A `\<newline>` is a true line-continuation ONLY when the backslash run
+  // immediately before the newline is ODD (the last backslash escapes the
+  // newline). With an EVEN run the backslashes pair up as literal escapes and
+  // the newline is a REAL command separator that must be KEPT — otherwise
+  // `echo \\<newline>rm -rf /` would be mis-joined into one command and the
+  // second statement could slip past an end-anchored pattern. Mirrors Claude's
+  // odd/even backslash-count discrimination (utils/bash/commands.ts L96-139).
+  let out = '';
+  for (let i = 0; i < cmd.length; i++) {
+    if (cmd[i] === '\n') {
+      let bs = 0;
+      let j = out.length - 1;
+      while (j >= 0 && out[j] === '\\') { bs++; j--; }
+      if (bs % 2 === 1) {
+        out = out.slice(0, out.length - 1); // drop the escaping backslash, join lines
+        continue; // and drop the newline
+      }
+      out += '\n'; // even run (or none) — real separator, keep it
+      continue;
+    }
+    out += cmd[i];
+  }
+  return out;
 }
 
 const COMPOUND_SPLIT_RE = /\s*(?:\|\||&&|[;|])\s*/;
@@ -980,6 +1239,263 @@ export function stripEnvVarPrefix(cmd: string): string {
   }
   if (i > 0 && i < tokens.length) stripped = tokens.slice(i).join(' ');
   return stripped;
+}
+
+// ---------------------------------------------------------------------------
+// Scoped command-prefix derivation for "allow always" permission rules
+// ---------------------------------------------------------------------------
+
+const ENV_VAR_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+// Subcommand shape: lowercase alnum, hyphen-separated (e.g. `commit`, `rev-parse`).
+// The `[a-z0-9]*` run and the `-[a-z0-9]+` groups start with disjoint chars
+// (alnum vs `-`), so there is no ambiguous overlap / ReDoS backtracking.
+// eslint-disable-next-line security/detect-unsafe-regex
+const SUBCOMMAND_SHAPE_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+
+/**
+ * Bare single-word prefixes that must NEVER be offered as an "allow always"
+ * scope: shells and arg-executing wrappers (a `bash:*` / `env:*` / `sudo:*` rule
+ * auto-approves arbitrary code via `-c` or by wrapping any command) plus
+ * cross-platform code interpreters (a `node:*` / `python:*` rule would
+ * auto-allow arbitrary code execution). Mirrors Claude's BARE_SHELL_PREFIXES +
+ * NEVER_SUGGEST / CROSS_PLATFORM_CODE_EXEC denylists.
+ */
+export const BARE_SHELL_PREFIXES = new Set([
+  'sh', 'bash', 'zsh', 'fish', 'csh', 'tcsh', 'ksh', 'dash', 'cmd', 'powershell', 'pwsh',
+  // wrappers that exec their args as a command
+  'env', 'xargs', 'nice', 'stdbuf', 'nohup', 'timeout', 'time',
+  // privilege escalation
+  'sudo', 'doas', 'pkexec',
+  // cross-platform code-exec interpreters
+  'node', 'deno', 'bun', 'python', 'python3', 'ruby', 'perl', 'php', 'osascript', 'iex',
+]);
+
+/**
+ * Commands that take subcommands or depth-scoped flags: a bare single-word
+ * `git:*` / `docker:*` rule would auto-allow dangerous subcommands forever
+ * (`git push --force`, `docker run`). For these we refuse a bare-root suggestion
+ * and require the two-word `command subcommand` form (or fall back to the exact
+ * command). Mirrors Claude's DEPTH_RULES + "fig-spec declares subcommands"
+ * bare-root guard (staticPrefix.ts L142-156).
+ */
+export const SUBCOMMAND_AWARE_ROOTS = new Set([
+  'git', 'gh', 'docker', 'kubectl', 'az', 'aws', 'gcloud', 'npm', 'pnpm', 'yarn',
+  'cargo', 'go', 'pip', 'pip3', 'brew', 'apt', 'apt-get', 'dnf', 'yum', 'pacman',
+  'systemctl', 'terraform', 'helm', 'make',
+]);
+
+/**
+ * Two-word scoped prefix ("command subcommand", e.g. `git commit`, `npm run`).
+ * Skips leading SAFE_ENV_VARS assignments; returns null if an unsafe env var is
+ * seen (so matching falls back to the exact command), if there is no second
+ * token, or if the second token is not subcommand-shaped (a flag, path, number
+ * or filename). Mirrors Claude's getSimpleCommandPrefix.
+ */
+export function getSimpleCommandPrefix(command: string): string | null {
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+  let i = 0;
+  while (i < tokens.length && ENV_VAR_ASSIGN_RE.test(tokens[i]!)) {
+    if (!SAFE_ENV_VARS.has(tokens[i]!.split('=')[0]!)) return null;
+    i++;
+  }
+  const remaining = tokens.slice(i);
+  if (remaining.length < 2) return null;
+  if (!SUBCOMMAND_SHAPE_RE.test(remaining[1]!)) return null;
+  return remaining.slice(0, 2).join(' ');
+}
+
+/**
+ * First-word fallback prefix (e.g. `npm`, `cargo`). Skips safe env vars, rejects
+ * paths/flags/numbers/filenames and anything in BARE_SHELL_PREFIXES. Mirrors
+ * Claude's getFirstWordPrefix.
+ */
+export function getFirstWordPrefix(command: string): string | null {
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && ENV_VAR_ASSIGN_RE.test(tokens[i]!)) {
+    if (!SAFE_ENV_VARS.has(tokens[i]!.split('=')[0]!)) return null;
+    i++;
+  }
+  const cmd = tokens[i];
+  if (!cmd) return null;
+  if (!SUBCOMMAND_SHAPE_RE.test(cmd)) return null;
+  if (BARE_SHELL_PREFIXES.has(cmd)) return null;
+  return cmd;
+}
+
+/**
+ * Derive a narrow, scoped "allow always" prefix for a bash command, or null if
+ * none is safe to suggest (the caller then falls back to the exact command).
+ * Prefers the two-word `command subcommand` form; falls back to the first word
+ * ONLY when that root is neither subcommand-aware nor a shell/interpreter/
+ * wrapper. This is the single canonical prefix-derivation helper — it replaces
+ * ad-hoc "first N words" heuristics and enforces the bare-root + NEVER_SUGGEST
+ * guards in one place.
+ */
+export function suggestAllowPrefix(command: string): string | null {
+  const two = getSimpleCommandPrefix(command);
+  if (two) return two;
+  const one = getFirstWordPrefix(command);
+  if (one && !SUBCOMMAND_AWARE_ROOTS.has(one)) return one;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Permission-rule string format — `Tool` / `Tool(specifier)`
+// ---------------------------------------------------------------------------
+
+/** Parsed form of a canonical permission-rule string. */
+export interface PermissionRuleValue {
+  toolName: string;
+  ruleContent?: string;
+}
+
+/**
+ * Legacy / cross-framework tool-name aliases → AMI canonical tool names. A
+ * permission rule written with a Claude-Code capitalized name (`Bash`, `Edit`)
+ * or an AMI legacy name resolves to the same canonical AMI tool, so rules keep
+ * matching after a rename or when imported from a Claude settings file.
+ */
+const PERMISSION_TOOL_ALIASES: Record<string, string> = {
+  Bash: 'bash', Read: 'file_read', Edit: 'file_edit', Write: 'file_write',
+  MultiEdit: 'file_edit', Glob: 'glob', Grep: 'grep', LS: 'list_dir',
+  WebFetch: 'web_fetch', WebSearch: 'web_search', NotebookEdit: 'notebook_edit',
+  Task: 'task', TodoWrite: 'todo_write',
+  // AMI legacy aliases
+  KillShell: 'task_stop', BashOutputTool: 'task_output', AgentOutputTool: 'task_output',
+};
+
+/** Canonicalize a tool name used in a permission rule (legacy/alias → current). */
+export function normalizeToolName(name: string): string {
+  return PERMISSION_TOOL_ALIASES[name] ?? name;
+}
+
+/** True if `str[index]` is escaped (preceded by an odd number of backslashes). */
+function isEscapedAt(str: string, index: number): boolean {
+  let backslashCount = 0;
+  let j = index - 1;
+  while (j >= 0 && str[j] === '\\') { backslashCount++; j--; }
+  return backslashCount % 2 !== 0;
+}
+
+function findFirstUnescapedChar(str: string, char: string): number {
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === char && !isEscapedAt(str, i)) return i;
+  }
+  return -1;
+}
+
+function findLastUnescapedChar(str: string, char: string): number {
+  for (let i = str.length - 1; i >= 0; i--) {
+    if (str[i] === char && !isEscapedAt(str, i)) return i;
+  }
+  return -1;
+}
+
+/** Escape backslashes then parentheses so rule content survives round-tripping. */
+export function escapeRuleContent(content: string): string {
+  return content.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+/** Inverse of {@link escapeRuleContent} (parens first, then backslashes). */
+export function unescapeRuleContent(content: string): string {
+  return content.replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\\\/g, '\\');
+}
+
+/**
+ * Parse a canonical permission-rule string into `{ toolName, ruleContent? }`,
+ * honouring escaped parentheses and canonicalizing the tool name. `Tool()` and
+ * `Tool(*)` collapse to a tool-wide rule (no ruleContent). Mirrors Claude's
+ * permissionRuleValueFromString.
+ */
+export function permissionRuleValueFromString(ruleString: string): PermissionRuleValue {
+  const openParenIndex = findFirstUnescapedChar(ruleString, '(');
+  if (openParenIndex === -1) return { toolName: normalizeToolName(ruleString) };
+  const closeParenIndex = findLastUnescapedChar(ruleString, ')');
+  if (closeParenIndex === -1 || closeParenIndex <= openParenIndex) {
+    return { toolName: normalizeToolName(ruleString) };
+  }
+  if (closeParenIndex !== ruleString.length - 1) {
+    return { toolName: normalizeToolName(ruleString) };
+  }
+  const toolName = ruleString.substring(0, openParenIndex);
+  const rawContent = ruleString.substring(openParenIndex + 1, closeParenIndex);
+  if (!toolName) return { toolName: normalizeToolName(ruleString) };
+  if (rawContent === '' || rawContent === '*') return { toolName: normalizeToolName(toolName) };
+  return { toolName: normalizeToolName(toolName), ruleContent: unescapeRuleContent(rawContent) };
+}
+
+/** Serialize a {@link PermissionRuleValue} back to its canonical string form. */
+export function permissionRuleValueToString(ruleValue: PermissionRuleValue): string {
+  if (!ruleValue.ruleContent) return ruleValue.toolName;
+  return `${ruleValue.toolName}(${escapeRuleContent(ruleValue.ruleContent)})`;
+}
+
+/**
+ * Validate a user-supplied permission-rule string, returning an actionable
+ * diagnostic. Catches empty rules, mismatched / empty parentheses, empty tool
+ * names, and bash/file pattern mistakes (`:*` placement, `:*` in file patterns).
+ * Mirrors Claude's validatePermissionRule, minus the Claude-specific
+ * uppercase-first convention (AMI canonical tool names are lowercase).
+ */
+export function validatePermissionRule(rule: string): {
+  valid: boolean; error?: string; suggestion?: string; examples?: string[];
+} {
+  if (!rule || rule.trim() === '') {
+    return { valid: false, error: 'Permission rule cannot be empty' };
+  }
+  let openCount = 0, closeCount = 0;
+  for (let i = 0; i < rule.length; i++) {
+    if (rule[i] === '(' && !isEscapedAt(rule, i)) openCount++;
+    if (rule[i] === ')' && !isEscapedAt(rule, i)) closeCount++;
+  }
+  if (openCount !== closeCount) {
+    return {
+      valid: false, error: 'Mismatched parentheses',
+      suggestion: 'Ensure all opening parentheses have matching closing parentheses',
+    };
+  }
+  // Empty parentheses (escape-aware).
+  for (let i = 0; i < rule.length - 1; i++) {
+    if (rule[i] === '(' && rule[i + 1] === ')' && !isEscapedAt(rule, i)) {
+      const toolName = rule.substring(0, rule.indexOf('('));
+      if (!toolName) {
+        return {
+          valid: false, error: 'Empty parentheses with no tool name',
+          suggestion: 'Specify a tool name before the parentheses',
+        };
+      }
+      return {
+        valid: false, error: 'Empty parentheses',
+        suggestion: `Either specify a pattern or use just "${toolName}" without parentheses`,
+        examples: [`${toolName}`, `${toolName}(some-pattern)`],
+      };
+    }
+  }
+  const parsed = permissionRuleValueFromString(rule);
+  if (!parsed.toolName || parsed.toolName.length === 0) {
+    return { valid: false, error: 'Tool name cannot be empty' };
+  }
+  // Bash prefix-rule mistakes: `:*` must be at the end and non-empty.
+  if ((parsed.toolName === 'bash' || parsed.toolName === 'Bash') && parsed.ruleContent !== undefined) {
+    const content = parsed.ruleContent;
+    if (content === ':*') {
+      return {
+        valid: false, error: 'Prefix cannot be empty before :*',
+        suggestion: 'Specify a command prefix before :*',
+        examples: ['bash(npm:*)', 'bash(git:*)'],
+      };
+    }
+    if (content.includes(':*') && !content.endsWith(':*')) {
+      return {
+        valid: false, error: 'The :* pattern must be at the end',
+        suggestion: 'Move :* to the end for prefix matching, or use * for wildcard matching',
+        examples: ['bash(npm run:*) - prefix matching', 'bash(npm run *) - wildcard matching'],
+      };
+    }
+  }
+  return { valid: true };
 }
 
 /**
@@ -1088,9 +1604,43 @@ export class PermissionManager {
     } catch { /* non-fatal: a bad path just isn't granted */ }
   }
 
+  /**
+   * Revoke a previously-granted read root (inverse of {@link registerAllowedRoot}).
+   * Normalizes `p` the same way so a path granted via `/add-dir` can be dropped by
+   * `/remove-dir`, letting the workspace boundary SHRINK, not just widen. Returns
+   * true if a matching root was removed. The launch cwd is granted per-call and is
+   * never in this set, so it can never be revoked here.
+   */
+  removeAllowedRoot(p: string): boolean {
+    if (!p || typeof p !== 'string') return false;
+    try {
+      const abs = path.isAbsolute(p) ? p : path.resolve(p);
+      return this.allowedReadRoots.delete(path.normalize(abs));
+    } catch {
+      return false;
+    }
+  }
+
   /** The user-granted read roots (absolute, normalized). For inspection/tests. */
   getAllowedReadRoots(): string[] {
     return [...this.allowedReadRoots];
+  }
+
+  // -------------------------------------------------------------------------
+  // Auto-mode / classifier denial store (recency-ordered, bounded, displayable)
+  // -------------------------------------------------------------------------
+
+  private _recentDenials: RecentDenial[] = [];
+  private readonly MAX_RECENT_DENIALS = 100;
+
+  /** Recency-ordered (newest-first) snapshot of recorded denials. */
+  getRecentDenials(): readonly RecentDenial[] {
+    return this._recentDenials;
+  }
+
+  /** Clear the recorded-denial log (but not the circuit-breaker counters). */
+  clearRecentDenials(): void {
+    this._recentDenials = [];
   }
 
   // -------------------------------------------------------------------------
@@ -1128,6 +1678,11 @@ export class PermissionManager {
     if (this.mode === 'deny-all') return 'deny';
 
     if (this.mode === 'bypassPermissions') {
+      // Explicit user deny rules are BYPASS-IMMUNE: a `{tool, action:'deny'}` rule
+      // fires even in bypassPermissions mode, before the blanket auto-allow — so a
+      // user's hard stop is never silently overridden (Claude orders deny/safety
+      // checks before the bypass allow, permissions.ts L1169-1281).
+      if (this.anyDenyMatches(toolName, input)) return 'deny';
       const safetyPaths = [
         '.git/', '.ami/', '.bashrc', '.zshrc', '.profile', '.gitconfig',
         '.vscode/', '.ssh/', '.gnupg/', '.aws/', '.config/',
@@ -1155,6 +1710,12 @@ export class PermissionManager {
         // require explicit approval even in acceptEdits mode.
         const filePath = (input.file_path || input.path || '') as string;
         if (filePath && isBuildConfigFile(filePath)) return 'ask';
+        // The agent's OWN config/settings/IDE/git dirs are a self-reconfig /
+        // prompt-injection vector — never silently auto-edit them.
+        if (filePath && isAgentConfigPath(filePath)) return 'ask';
+        // A path-canonicalization bypass (ADS, 8.3 short name, trailing dot,
+        // UNC, triple-dot, DOS device) could sneak past the basename guards above.
+        if (filePath && hasSuspiciousPathPattern(filePath)) return 'ask';
         return 'allow';
       }
       if (toolName === 'bash' && typeof input.command === 'string') {
@@ -1236,6 +1797,69 @@ export class PermissionManager {
     return 'ask';
   }
 
+  /**
+   * Like {@link check} but also returns a STRUCTURED reason explaining the verdict,
+   * so a UI can tell the user WHY approval is required (or why it was denied)
+   * instead of a bare "needs approval". Reuses check() for the decision (single
+   * source of truth — no parallel decision path) and derives the reason from the
+   * same guard predicates. `reason`/`message` are undefined for an `allow`.
+   */
+  async checkWithReason(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<{ decision: 'allow' | 'deny' | 'ask'; reason?: PermissionDecisionReason; message?: string }> {
+    const decision = await this.check(toolName, input);
+    if (decision === 'allow') return { decision };
+    const reason = this.deriveDecisionReason(toolName, input, decision);
+    return { decision, reason, message: createPermissionRequestMessage(reason) };
+  }
+
+  /** Best-effort attribution of a deny/ask verdict to a structured reason. */
+  private deriveDecisionReason(
+    toolName: string,
+    input: Record<string, unknown>,
+    decision: 'deny' | 'ask',
+  ): PermissionDecisionReason {
+    const command = typeof input.command === 'string' ? input.command : undefined;
+    if (toolName === 'bash' && command) {
+      const hardline = detectHardlineCommand(command);
+      if (hardline.blocked) return { type: 'hardline', description: hardline.description ?? 'blocked command' };
+    }
+    // An explicit matching rule.
+    for (const rule of this.rules) {
+      if (!this.toolNameMatches(rule.tool, toolName)) continue;
+      if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
+      const matches = rule.pattern
+        ? (toolName === 'bash' && command
+            ? matchBashPattern(rule.pattern, command, rule.action)
+            : matchPattern(rule.pattern, this.inputToString(toolName, input)))
+        : true;
+      if (matches && (rule.action === decision)) {
+        return { type: 'rule', action: rule.action, ruleValue: rule.pattern ? `${rule.tool}(${rule.pattern})` : rule.tool, source: rule.reason };
+      }
+    }
+    // Safety checks (credential / system-dir / suspicious-path / config files).
+    if (toolName === 'bash' && command) {
+      if (commandTargetsCredentialPath(command)) {
+        return { type: 'safetyCheck', check: 'credential', message: 'Command accesses a credential/secret path and requires approval' };
+      }
+      if (commandTargetsSystemDir(command)) {
+        return { type: 'safetyCheck', check: 'systemDir', message: 'Command writes to a system directory and requires approval' };
+      }
+      if (this.classifyBashCommand(command) === 'destructive') {
+        return { type: 'safetyCheck', check: 'destructive', message: 'Command is destructive and requires approval' };
+      }
+    }
+    const filePath = (input.file_path || input.path) as string | undefined;
+    if (filePath) {
+      if (isBuildConfigFile(filePath)) return { type: 'safetyCheck', check: 'buildConfig', message: 'Edit targets a build/CI config file and requires approval' };
+      if (isAgentConfigPath(filePath)) return { type: 'safetyCheck', check: 'agentConfig', message: "Edit targets the agent's own config and requires approval" };
+      if (hasSuspiciousPathPattern(filePath)) return { type: 'safetyCheck', check: 'suspiciousPath', message: 'Path uses a canonicalization-bypass pattern and requires approval' };
+    }
+    // Fall back to the mode.
+    return { type: 'mode', mode: this.mode };
+  }
+
   // -------------------------------------------------------------------------
   // Per-tool deny rules
   // -------------------------------------------------------------------------
@@ -1307,6 +1931,12 @@ export class PermissionManager {
       return 'destructive';
     }
 
+    // PowerShell destructive cmdlets (AMI runs PowerShell on Windows). Power-control
+    // / disk-format variants are blocked unconditionally by HARDLINE above; these
+    // are the recursive/forced deletions that need an explicit-approval prompt.
+    if (/\bRemove-Item\b[^\n]*-(Recurse|Force)\b/i.test(trimmed)) return 'destructive';
+    if (/\bClear-Content\b/i.test(trimmed)) return 'destructive';
+
     // Destructive git operations — discard local changes irreversibly
     if (/\bgit\s+(checkout|restore)\s+.*--\s*\./.test(trimmed)) return 'destructive';
     if (/\bgit\s+restore\s+\./.test(trimmed)) return 'destructive';
@@ -1337,8 +1967,12 @@ export class PermissionManager {
       if (UNSAFE_COMMANDS.has(cmd)) return 'unsafe';
     }
 
-    // Docker: only read-only subcommands are safe
+    // Docker: only read-only subcommands are safe. Reject ANY `$`-substitution
+    // first — the validator sees the literal `$VAR`/`$(cmd)` text but the shell
+    // expands it at runtime, a parser differential that can smuggle a non-read
+    // subcommand or secret past this check (Claude's isDockerSafe `$` rejection).
     if (/\bdocker\s+/.test(trimmed)) {
+      if (containsShellSubstitution(unwrapped)) return 'unsafe';
       const dockerMatch = trimmed.match(/\bdocker\s+(\S+)/);
       if (dockerMatch && DOCKER_SAFE_SUBCOMMANDS.has(dockerMatch[1])) {
         return 'safe';
@@ -1354,6 +1988,10 @@ export class PermissionManager {
         // sandbox escape (`cd /attacker && git ...` runs planted .git/hooks).
         // Validate the full command before auto-allowing.
         if (cmd.startsWith('git ') && !isGitReadOnlyCommandSafe(unwrapped)) return 'unsafe';
+        // Reject `$`-substitution in an auto-allowed git read command — the
+        // validator sees `$VAR` literally but the shell expands it at runtime
+        // (parser differential / secret-leak-via-error). Mirrors Claude's isGitSafe.
+        if (cmd.startsWith('git ') && containsShellSubstitution(unwrapped)) return 'unsafe';
         if (allSegmentsKnown(unwrapped)) return 'safe';
         break;
       }
@@ -1367,6 +2005,20 @@ export class PermissionManager {
         const args = cmdIdx >= 0 ? tokens.slice(cmdIdx + 1) : [];
 
         if (!validateCommandFlags(cmd, args)) return 'unsafe';
+
+        // `date`: a bare positional like `010203042024` SETS the system clock.
+        // Only a format string (leading '+') is read-only — any other positional
+        // (or -s/--set/-f) must prompt. Mirrors Claude's date dangerous-callback.
+        if (cmd === 'date') {
+          for (const a of args) {
+            if (a.startsWith('-')) {
+              if (/^(-s|--set|-f)$/.test(a)) return 'unsafe';
+              continue;
+            }
+            const bare = a.replace(/^["']/, ''); // tolerate a quoted "+..." format
+            if (!bare.startsWith('+')) return 'unsafe'; // clock-setting positional
+          }
+        }
 
         // jq/yq: additional dangerous-construct check
         if ((cmd === 'jq' || cmd === 'yq') && isJqDangerous(args)) return 'unsafe';
@@ -1537,12 +2189,22 @@ export class PermissionManager {
   }
 
   /**
-   * Record a denial for the circuit breaker.
-   * Call this when a permission check results in a denial.
+   * Record a denial. Always advances the circuit-breaker counters; when a
+   * `display` string is supplied it is ALSO appended (newest-first, bounded) to
+   * the recency-ordered denial log so the user can later review exactly what was
+   * blocked (mirrors Claude's getAutoModeDenials / AutoModeDenial store). This is
+   * the single canonical denial recorder — do not add a parallel one. `source`
+   * distinguishes a model/classifier block from a rule/hardline/mode deny.
    */
-  recordDenial(): void {
+  recordDenial(display?: string, source: RecentDenial['source'] = 'rule', reason?: string): void {
     this.consecutiveDenials++;
     this.totalDenials++;
+    if (display !== undefined) {
+      this._recentDenials.unshift({ display, source, reason, timestamp: Date.now() });
+      if (this._recentDenials.length > this.MAX_RECENT_DENIALS) {
+        this._recentDenials.length = this.MAX_RECENT_DENIALS;
+      }
+    }
   }
 
   /**
@@ -1640,8 +2302,11 @@ export class PermissionManager {
    * over-broad `{tool:'*'}` grant.
    */
   private toolNameMatches(ruleTool: string, toolName: string): boolean {
-    return ruleTool === '*' || ruleTool === toolName
-      || (ruleTool.includes('*') && matchPattern(ruleTool, toolName));
+    // Canonicalize legacy/cross-framework names (e.g. a `Bash`/`Edit` rule
+    // imported from a Claude settings file matches AMI's `bash`/`file_edit`).
+    const rt = normalizeToolName(ruleTool);
+    return rt === '*' || rt === toolName
+      || (rt.includes('*') && matchPattern(rt, toolName));
   }
 
   /** Coerce a persisted paramPattern into a validated Record<string,string>,
@@ -1736,15 +2401,27 @@ export class PermissionManager {
   detectShadowedRules(): Array<{ rule: PermissionRule; shadowedBy: PermissionRule }> {
     const shadows: Array<{ rule: PermissionRule; shadowedBy: PermissionRule }> = [];
     for (let i = 0; i < this.rules.length; i++) {
-      for (let j = 0; j < i; j++) {
-        if (this.rules[i].tool === this.rules[j].tool &&
-            this.rules[i].action === 'allow' &&
-            (this.rules[j].action === 'ask' || this.rules[j].action === 'deny') &&
-            // A paramPattern rule is narrow (matches only specific named params),
-            // so it never blanket-shadows a later allow.
-            !this.rules[j].paramPattern &&
-            (!this.rules[j].pattern || this.rules[j].pattern === '*')) {
-          shadows.push({ rule: this.rules[i], shadowedBy: this.rules[j] });
+      const allow = this.rules[i];
+      if (allow.action !== 'allow') continue;
+      for (let j = 0; j < this.rules.length; j++) {
+        if (i === j) continue;
+        const shadower = this.rules[j];
+        if (shadower.tool !== allow.tool) continue;
+        // A paramPattern rule is narrow (matches only specific named params),
+        // so it never blanket-shadows a later allow.
+        if (shadower.paramPattern) continue;
+        const blanket = !shadower.pattern || shadower.pattern === '*';
+        if (!blanket) continue;
+        // ASK shadowers only count when they precede the allow (order matters:
+        // an ask AFTER the allow never fires because the allow wins first). DENY
+        // shadowers are ORDER-INDEPENDENT — a matching deny UNCONDITIONALLY wins
+        // over any allow regardless of position (check()'s anyDenyMatches), so an
+        // allow shadowed by ANY tool-wide deny is unreachable wherever the deny
+        // sits. Mirrors Claude's isAllowRuleShadowedByDenyRule full-list scan.
+        if (shadower.action === 'deny') {
+          shadows.push({ rule: allow, shadowedBy: shadower });
+        } else if (shadower.action === 'ask' && j < i) {
+          shadows.push({ rule: allow, shadowedBy: shadower });
         }
       }
     }
@@ -1759,9 +2436,10 @@ export class PermissionManager {
    * Load permission rules from `.ami/permissions.json` relative
    * to the given working directory.
    */
-  loadRules(cwd: string): void {
+  loadRules(cwd: string): string[] {
+    const warnings: string[] = [];
     const filePath = path.join(cwd, '.ami', 'permissions.json');
-    if (!fs.existsSync(filePath)) return;
+    if (!fs.existsSync(filePath)) return warnings;
 
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
@@ -1770,53 +2448,124 @@ export class PermissionManager {
       if (data.mode && typeof data.mode === 'string') {
         if ((PERMISSION_MODES as readonly string[]).includes(data.mode)) {
           this.mode = data.mode as PermissionMode;
+        } else {
+          warnings.push(`Invalid permission mode "${data.mode}" was ignored`);
         }
       }
 
       if (Array.isArray(data.rules)) {
         for (const rule of data.rules) {
-          if (
-            rule &&
-            typeof rule.tool === 'string' &&
-            typeof rule.action === 'string' &&
-            ['allow', 'deny', 'ask'].includes(rule.action)
-          ) {
-            const paramPattern = this.sanitizeParamPattern(rule.paramPattern);
-            // A rule that specified a paramPattern but whose values were all
-            // invalid is malformed — skip it rather than load it as a broad
-            // (pattern-less) rule that would match far more than intended.
-            if (rule.paramPattern !== undefined && paramPattern === undefined) continue;
-            this.rules.push({
-              tool: rule.tool,
-              pattern: typeof rule.pattern === 'string' ? rule.pattern : undefined,
-              action: rule.action,
-              reason: typeof rule.reason === 'string' ? rule.reason : undefined,
-              paramPattern,
-            });
-          }
+          const { rule: coerced, warning } = this._coerceRule(rule, 'projectSettings');
+          if (coerced) this.rules.push(coerced);
+          else if (warning) warnings.push(warning);
         }
       }
     } catch {
-      // Silently ignore malformed files
+      warnings.push('permissions.json could not be parsed and was ignored');
+    }
+    return warnings;
+  }
+
+  /**
+   * Coerce+validate one raw rule object (shared by loadRules and loadTieredRules
+   * — one canonical validator, no per-loader duplication). Returns the typed rule
+   * tagged with its `source` tier, or a human-readable warning for a dropped rule.
+   */
+  private _coerceRule(rule: unknown, source: PermissionUpdateDestination): { rule?: PermissionRule; warning?: string } {
+    const r = rule as Record<string, unknown> | null;
+    if (r && typeof r.tool === 'string' && typeof r.action === 'string' &&
+        ['allow', 'deny', 'ask'].includes(r.action)) {
+      const paramPattern = this.sanitizeParamPattern(r.paramPattern);
+      // A rule that specified a paramPattern but whose values were all invalid is
+      // malformed — drop it rather than load it as a broad (pattern-less) rule.
+      if (r.paramPattern !== undefined && paramPattern === undefined) {
+        return { warning: `Invalid permission rule for "${r.tool}" was skipped: malformed paramPattern` };
+      }
+      return {
+        rule: {
+          tool: r.tool,
+          pattern: typeof r.pattern === 'string' ? r.pattern : undefined,
+          action: r.action as PermissionRule['action'],
+          reason: typeof r.reason === 'string' ? r.reason : undefined,
+          paramPattern,
+          source,
+        },
+      };
+    }
+    // A user who typos a rule gets told WHICH rule was dropped, not a silent no-op.
+    return { warning: `Invalid permission rule ${JSON.stringify(rule)} was skipped` };
+  }
+
+  /**
+   * Load permission rules from ALL persisted tiers and merge them with documented
+   * precedence: most-specific first so check()'s first-match allow/ask wins for
+   * localSettings over projectSettings over userSettings (deny stays
+   * order-independent). Each loaded rule is tagged with its `source` tier. Returns
+   * collected warnings. Mirrors Claude's destination-tiered rule merge.
+   */
+  loadTieredRules(cwd: string): string[] {
+    const warnings: string[] = [];
+    // Precedence (highest first): local → project → user. Push highest first so
+    // first-match evaluation prefers the more-specific tier.
+    const tiers: PermissionUpdateDestination[] = ['localSettings', 'projectSettings', 'userSettings'];
+    for (const tier of tiers) {
+      const filePath = permissionDestinationPath(cwd, tier);
+      if (!filePath || !fs.existsSync(filePath)) continue;
+      try {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        if (Array.isArray(data.rules)) {
+          for (const rule of data.rules) {
+            const { rule: coerced, warning } = this._coerceRule(rule, tier);
+            if (coerced) this.rules.push(coerced);
+            else if (warning) warnings.push(`${tier}: ${warning}`);
+          }
+        }
+      } catch {
+        warnings.push(`${tier}: settings file could not be parsed and was ignored`);
+      }
+    }
+    return warnings;
+  }
+
+  /**
+   * Persist the rules whose `source` matches `destination` to that tier's file
+   * (in-memory tiers session/cliArg are a no-op). Returns {ok,error}; a persist
+   * failure is surfaced, never silently lost (see {@link saveRules}).
+   */
+  saveRulesToDestination(cwd: string, destination: PermissionUpdateDestination): { ok: boolean; error?: string } {
+    const filePath = permissionDestinationPath(cwd, destination);
+    if (!filePath) return { ok: true }; // session / cliArg are in-memory only
+    try {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const rules = this.rules.filter(r => r.source === destination);
+      fs.writeFileSync(filePath, JSON.stringify({ rules }, null, 2) + '\n', 'utf-8');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }
 
   /**
-   * Persist the current rules to `.ami/permissions.json`.
+   * Persist the current rules to `.ami/permissions.json`. Returns a success/error
+   * signal so callers can surface a write failure instead of silently losing a
+   * "don't ask again" rule (a read-only `.ami/`, a full disk, or a permission
+   * error must not look like success). Mirrors Claude's addPermissionRulesToSettings
+   * try/catch + boolean-return behavior (permissionsLoader.ts L258-295).
    */
-  saveRules(cwd: string): void {
-    const dirPath = path.join(cwd, '.ami');
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
+  saveRules(cwd: string): { ok: boolean; error?: string } {
+    try {
+      const dirPath = path.join(cwd, '.ami');
+      if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
+      }
+      const filePath = path.join(dirPath, 'permissions.json');
+      const data = { mode: this.mode, rules: this.rules };
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
-
-    const filePath = path.join(dirPath, 'permissions.json');
-    const data = {
-      mode: this.mode,
-      rules: this.rules,
-    };
-
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
   }
 
   // -------------------------------------------------------------------------

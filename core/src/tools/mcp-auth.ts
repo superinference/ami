@@ -51,6 +51,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
         reconnect?: (name: string) => Promise<void>;
         getServerConfig?: (name: string) => McpAuthServerConfig | undefined;
         getServerStatus?: (name: string) => { state: string } | null;
+        getPendingAuthUrl?: (name: string) => string | undefined;
       } })._mcpManager;
       if (!mcpManager) return { output: 'Error: MCP is not initialized.', isError: true, metadata: { status: 'error' satisfies McpAuthStatus } };
 
@@ -70,11 +71,17 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
         await mcpManager.reconnect?.(serverName);
       } catch (err) {
         const reason = redactSecrets(err instanceof Error ? err.message : String(err));
+        // Surface the authorization URL (if the flow reached the consent leg) so a
+        // detached/headless agent can relay it to the user to complete auth out of
+        // band, instead of only reporting failure (H46/H48/H49).
+        const authUrl = mcpManager.getPendingAuthUrl?.(serverName);
+        const urlLine = authUrl
+          ? ` To authorize, open this URL in a browser and complete consent, then re-run authenticate:\n${authUrl}`
+          : ` If a browser did not open, re-run and paste the callback URL when prompted, or check the server's OAuth config in .ami/mcp.json.`;
         return {
-          output: `Authentication failed for "${serverName}": ${reason}. ` +
-            `If a browser did not open, re-run and paste the callback URL when prompted, or check the server's OAuth config in .ami/mcp.json.`,
+          output: `Authentication failed for "${serverName}": ${reason}.${urlLine}`,
           isError: true,
-          metadata: { status: 'error' satisfies McpAuthStatus, transport },
+          metadata: { status: 'error' satisfies McpAuthStatus, transport, ...(authUrl ? { auth_url: authUrl } : {}) },
         };
       }
       const after = mcpManager.getServerStatus?.(serverName)?.state;

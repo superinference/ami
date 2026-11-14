@@ -11,6 +11,8 @@ import {
   loadGlobalConfig,
   loadManagedConfig,
   ManagedConfigError,
+  getManagedDropInDir,
+  getManagedConfigPath,
   ConfigService,
   mergeConfigs,
   validateConfigJson,
@@ -209,6 +211,55 @@ describe('config: loadManagedConfig', () => {
       assert.throws(() => loadManagedConfig(), (e: unknown) =>
         e instanceof ManagedConfigError && /raw string failure/.test(e.message));
     } finally { m.mock.restore(); }
+  });
+
+  it('getManagedDropInDir is config.d next to the managed base path', () => {
+    const p = path.join(dir, 'managed.json');
+    process.env.SUPERINFERENCE_MANAGED_CONFIG = p;
+    assert.equal(getManagedConfigPath(), p);
+    assert.equal(getManagedDropInDir(), path.join(dir, 'config.d'));
+  });
+
+  it('merges config.d/*.json drop-ins alphabetically (last wins) over the base', () => {
+    const p = path.join(dir, 'managed.json');
+    fs.writeFileSync(p, JSON.stringify({ model: 'base-model', maxTurns: 5, env: { A: '1' } }));
+    process.env.SUPERINFERENCE_MANAGED_CONFIG = p;
+    const dd = path.join(dir, 'config.d');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, '10-a.json'), JSON.stringify({ model: 'a-model', env: { B: '2' } }));
+    fs.writeFileSync(path.join(dd, '20-b.json'), JSON.stringify({ model: 'b-model', env: { A: 'override' } }));
+    // Not JSON — ignored.
+    fs.writeFileSync(path.join(dd, 'notes.txt'), 'ignore me');
+
+    const cfg = loadManagedConfig()!;
+    // Later drop-in (20-b) wins on model; maxTurns survives from base; env key-merges.
+    assert.equal(cfg.model, 'b-model');
+    assert.equal(cfg.maxTurns, 5);
+    assert.deepEqual(cfg.env, { A: 'override', B: '2' });
+  });
+
+  it('loads drop-ins even when the base managed file is absent', () => {
+    process.env.SUPERINFERENCE_MANAGED_CONFIG = path.join(dir, 'nope.json');
+    const dd = path.join(dir, 'config.d');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, '01.json'), JSON.stringify({ permissionMode: 'deny-all' }));
+    const cfg = loadManagedConfig();
+    assert.deepEqual(cfg, { permissionMode: 'deny-all' });
+  });
+
+  it('a broken drop-in fails closed (ManagedConfigError), like the base', () => {
+    const p = path.join(dir, 'managed.json');
+    fs.writeFileSync(p, JSON.stringify({ model: 'base' }));
+    process.env.SUPERINFERENCE_MANAGED_CONFIG = p;
+    const dd = path.join(dir, 'config.d');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'bad.json'), '{broken');
+    assert.throws(() => loadManagedConfig(), ManagedConfigError);
+  });
+
+  it('returns null when neither base nor any drop-in exists', () => {
+    process.env.SUPERINFERENCE_MANAGED_CONFIG = path.join(dir, 'nope.json');
+    assert.equal(loadManagedConfig(), null);
   });
 });
 

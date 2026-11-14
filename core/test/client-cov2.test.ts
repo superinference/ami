@@ -350,10 +350,11 @@ describe('handleNotification branches', () => {
     feed(c, { jsonrpc: '2.0', method: 'elicitation/create', params: { message: 'm', requestedSchema: { type: 'object' } } });
     feed(c, { jsonrpc: '2.0', method: 'notifications/elicitation', params: { message: 'n', requestedSchema: {} } });
     await new Promise((r) => setTimeout(r, 20));
-    assert.deepEqual(got, [
-      { message: 'm', requestedSchema: { type: 'object' } },
-      { message: 'n', requestedSchema: {} },
-    ]);
+    assert.equal(got.length, 2);
+    assert.equal((got[0] as any).message, 'm');
+    assert.deepEqual((got[0] as any).requestedSchema, { type: 'object' });
+    assert.equal((got[1] as any).message, 'n');
+    assert.deepEqual((got[1] as any).requestedSchema, {});
   });
 
   it('resets caches and emits *-changed for list_changed notifications', async () => {
@@ -1000,7 +1001,9 @@ describe('elicitation request/response', () => {
     const spy = writeSpy(c);
     feed(c, { jsonrpc: '2.0', method: 'notifications/elicitation', params: { message: 5, requestedSchema: 'nope' } });
     await new Promise((r) => setTimeout(r, 20));
-    assert.deepEqual(seen, [{ message: '', requestedSchema: {} }]);
+    assert.equal(seen.length, 1);
+    assert.equal((seen[0] as any).message, '');
+    assert.deepEqual((seen[0] as any).requestedSchema, {});
     assert.equal(lastResponses(spy).length, 0); // no id → no response written
   });
 });

@@ -11,6 +11,7 @@ import {
   getOptionsForSetting,
   getSettingPath,
   getAllSettingKeys,
+  configToolWriteBlockReason,
 } from '../src/tools/config-tool';
 import type { ToolContext } from '../src/types';
 
@@ -139,15 +140,17 @@ describe('configTool', () => {
   describe('options/enum validation', () => {
     it('rejects an invalid enum value and lists the options', async () => {
       const c = freshCtx();
-      const result = await configTool.execute!({ action: 'set', key: 'permissionMode', value: 'wideopen' }, c);
+      // provider is an enum setting that is not tier-locked (so it reaches the
+      // options check rather than the self-escalation guard).
+      const result = await configTool.execute!({ action: 'set', key: 'provider', value: 'nope' }, c);
       assert.ok(result.isError);
-      assert.ok(result.output.includes('Options: ask, auto-allow, deny-all'));
+      assert.ok(result.output.includes('Options: anthropic, openai, google, openrouter, vertex, bedrock'));
     });
     it('accepts a valid enum value', async () => {
       const c = freshCtx();
-      const result = await configTool.execute!({ action: 'set', key: 'permissionMode', value: 'auto-allow' }, c);
+      const result = await configTool.execute!({ action: 'set', key: 'provider', value: 'openai' }, c);
       assert.equal(result.isError, undefined);
-      assert.equal(result.metadata?.newValue, 'auto-allow');
+      assert.equal(result.metadata?.newValue, 'openai');
     });
   });
 
@@ -172,9 +175,9 @@ describe('configTool', () => {
     });
     it('coerces a numeric string to a number', async () => {
       const c = freshCtx();
-      await configTool.execute!({ action: 'set', key: 'maxTurns', value: '42' }, c);
+      await configTool.execute!({ action: 'set', key: 'tokenBudget', value: '42' }, c);
       const cfg = JSON.parse(fs.readFileSync(path.join(c.cwd, '.ami', 'config.json'), 'utf-8'));
-      assert.equal(cfg.maxTurns, 42);
+      assert.equal(cfg.tokenBudget, 42);
     });
     it('accepts a native number value', async () => {
       const c = freshCtx();
@@ -184,7 +187,7 @@ describe('configTool', () => {
     });
     it('rejects a non-numeric value for a number setting', async () => {
       const c = freshCtx();
-      const result = await configTool.execute!({ action: 'set', key: 'maxTurns', value: 'lots' }, c);
+      const result = await configTool.execute!({ action: 'set', key: 'tokenBudget', value: 'lots' }, c);
       assert.ok(result.isError);
       assert.ok(result.output.includes('requires a number'));
     });
@@ -211,7 +214,9 @@ describe('configTool', () => {
     });
     it('rejects a non-positive number', async () => {
       const c = freshCtx();
-      const result = await configTool.execute!({ action: 'set', key: 'maxTurns', value: '0' }, c);
+      // tokenBudget is a positive-number setting that is NOT tier-locked, so the
+      // per-setting validator (not the self-escalation guard) handles it.
+      const result = await configTool.execute!({ action: 'set', key: 'tokenBudget', value: '0' }, c);
       assert.ok(result.isError);
       assert.ok(result.output.includes('positive'));
     });
@@ -269,6 +274,34 @@ describe('configTool', () => {
       await configTool.execute!({ action: 'set', key: 'model', value: 'm' }, c);
       const result = await configTool.execute!({ action: 'set', key: 'model', value: 'm' }, c);
       assert.ok(result.output.includes('no change'));
+    });
+  });
+
+  describe('self-escalation guard (tier-locked / managed-only keys)', () => {
+    it('refuses to set the security-sensitive permissionMode and never writes the file', async () => {
+      const c = freshCtx();
+      const result = await configTool.execute!({ action: 'set', key: 'permissionMode', value: 'auto-allow' }, c);
+      assert.equal(result.isError, true);
+      assert.ok(/security-sensitive|tier-locked|escalate/i.test(result.output));
+      // The file must not be created by a blocked write.
+      assert.equal(fs.existsSync(path.join(c.cwd, '.ami', 'config.json')), false);
+    });
+
+    it('configToolWriteBlockReason flags tier-locked and managed-only keys but allows ordinary keys', () => {
+      assert.equal(configToolWriteBlockReason('model'), null);
+      assert.equal(configToolWriteBlockReason('thinkingLevel'), null);
+      assert.ok(configToolWriteBlockReason('permissionMode'));
+      assert.ok(configToolWriteBlockReason('maxTurns'));
+      assert.ok(configToolWriteBlockReason('maxBudgetUsd'));
+      assert.ok(/managed-only/i.test(configToolWriteBlockReason('allowedMcpServers')!));
+    });
+
+    it('still allows ordinary keys to be written', async () => {
+      const c = freshCtx();
+      const result = await configTool.execute!({ action: 'set', key: 'model', value: 'gpt-4o' }, c);
+      assert.notEqual(result.isError, true);
+      const cfg = JSON.parse(fs.readFileSync(path.join(c.cwd, '.ami', 'config.json'), 'utf-8'));
+      assert.equal(cfg.model, 'gpt-4o');
     });
   });
 });

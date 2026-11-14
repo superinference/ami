@@ -1674,6 +1674,9 @@ describe('taskTool — cwd override', () => {
       await taskTool.execute(
         { prompt: 'cwd test', cwd: tmpDir },
         ctx({
+          // The model-chosen cwd must resolve within the parent's approved roots
+          // (validateSubagentCwd); approve tmpDir so the override is honored.
+          allowedReadRoots: [tmpDir],
           _providerConfig: { baseUrl: 'http://test', apiKey: 'k', model: 'm' },
           _engineFactory: (cfg: any) => {
             capturedConfig = cfg;
@@ -2868,5 +2871,35 @@ describe('createMcpAuthTool — coverage', () => {
     }));
     assert.ok(r.isError);
     assert.ok(r.output.includes('string error'));
+  });
+
+  it('surfaces the captured authorization URL to the model on headless auth failure (H46/H48/H49)', async () => {
+    const tool = createMcpAuthTool('url-server', { transport: 'http' });
+    const authUrl = 'https://as.example.com/authorize?client_id=x&state=y';
+    const r = await tool.execute({}, ctx({
+      _mcpManager: {
+        getServerStatus: () => ({ state: 'disconnected' }),
+        reconnect: async () => { throw new Error('OAuth consent requires an interactive frontend'); },
+        getPendingAuthUrl: () => authUrl,
+      },
+    }));
+    assert.ok(r.isError);
+    assert.equal(r.metadata?.auth_url, authUrl);
+    assert.ok(r.output.includes(authUrl), 'authorization URL is relayed in the output');
+    assert.ok(r.output.includes('open this URL') || r.output.includes('To authorize'));
+  });
+
+  it('falls back to generic guidance when no authorization URL was captured', async () => {
+    const tool = createMcpAuthTool('nourl-server', { transport: 'http' });
+    const r = await tool.execute({}, ctx({
+      _mcpManager: {
+        getServerStatus: () => ({ state: 'disconnected' }),
+        reconnect: async () => { throw new Error('boom'); },
+        getPendingAuthUrl: () => undefined,
+      },
+    }));
+    assert.ok(r.isError);
+    assert.equal(r.metadata?.auth_url, undefined);
+    assert.ok(r.output.includes('callback URL'));
   });
 });

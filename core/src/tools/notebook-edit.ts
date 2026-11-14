@@ -2,7 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
-import { validateFilePath, validateFileWritePath } from './tool-utils';
+import { validateFilePath, validateFileWritePath, buildUnifiedDiff } from './tool-utils';
+
+/** Normalize a notebook cell source (string or string[]) to a single string. */
+function cellSourceToString(source: string | string[] | undefined): string {
+  if (Array.isArray(source)) return source.join('');
+  return source ?? '';
+}
 
 interface NotebookCell {
   cell_type: string;
@@ -205,6 +211,8 @@ export const notebookEditTool: ToolDefinition = {
 
     // --- Determine the target cell index ---
     const totalCells = notebook.cells.length;
+    // Unified diff of the replaced cell's source, appended to the output below.
+    let replaceDiff: string | undefined;
 
     // For insert mode with cell_id match, insert AFTER the matched cell (Claude behavior)
     let effectiveIndex: number;
@@ -288,6 +296,14 @@ export const notebookEditTool: ToolDefinition = {
         notebook.cells.splice(effectiveIndex, 0, newCell);
       } else {
         const target = notebook.cells[effectiveIndex];
+        // Capture the old source BEFORE overwriting so the confirmation can show a
+        // minimal unified diff of what changed in the cell (parity with Claude
+        // Code's notebook-edit diff preview).
+        replaceDiff = buildUnifiedDiff(
+          cellSourceToString(target.source),
+          newSource,
+          `cell ${effectiveIndex}`,
+        );
         target.source = newSource;
 
         // Reset execution state for code cells
@@ -335,8 +351,11 @@ export const notebookEditTool: ToolDefinition = {
           ? `Inserted new ${cellType ?? 'code'} cell at index ${effectiveIndex}`
           : `Replaced cell ${effectiveIndex}`;
 
+    const diffBlock = replaceDiff && replaceDiff !== '(no changes detected)'
+      ? `\n\n${replaceDiff}`
+      : '';
     return {
-      output: `${modeLabel} in ${resolved}. Notebook now has ${newTotal} cell(s).`,
+      output: `${modeLabel} in ${resolved}. Notebook now has ${newTotal} cell(s).${diffBlock}`,
     };
   },
 };

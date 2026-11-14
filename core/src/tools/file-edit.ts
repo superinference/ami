@@ -2,11 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff } from './tool-utils';
 import { coerceBool } from '../utils/coerce';
 import { getFileCache } from '../file-cache';
 
-const CONTEXT_LINES = 3;
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 
 interface SequentialEdit {
@@ -72,7 +71,7 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
         // populates the target OUTSIDE the workspace. Resolve the link's DECLARED
         // destination and block it when it escapes, instead of silently falling
         // through to the "nonexistent, nothing to escape" path.
-        if ((realErr as { code?: string })?.code === 'ENOENT') {
+        if (getErrnoCode(realErr) === 'ENOENT') {
           const linkDest = path.resolve(path.dirname(resolved), fs.readlinkSync(resolved));
           if (!linkDest.startsWith(cwdAbs + path.sep) && linkDest !== cwdAbs) {
             return `Error: "${resolved}" is a dangling symlink pointing to "${linkDest}" outside the workspace — write blocked (symlink-escape).`;
@@ -92,7 +91,7 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
     // A thrown error from the dangling-symlink branch above must propagate as a block,
     // not be swallowed as "nonexistent". Only a genuinely-absent path (lstat ENOENT)
     // means there is no symlink to escape through.
-    if ((err as { code?: string })?.code !== 'ENOENT') {
+    if (getErrnoCode(err) !== 'ENOENT') {
       return `Error: cannot verify write target "${resolved}": ${err instanceof Error ? err.message : String(err)}`;
     }
   }
@@ -110,7 +109,9 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
         }
       }
     } catch {
-      // Directory doesn't exist yet — will be created by mkdirSync
+      // Directory doesn't exist yet — will be created by mkdirSync. (A non-ENOENT
+      // problem in an ancestor makes the write-target lstat above throw first,
+      // where it already fails closed, so this path only sees genuine absence.)
     }
     dir = path.dirname(dir);
   }
@@ -159,11 +160,11 @@ export async function writeEntireFile(
 
   let oldContent = '';
   let fileExists = false;
-  let nonUtfResult: ToolResult | null = null;
+  let readErrResult: ToolResult | null = null;
   try {
     const rawBuf = await fs.promises.readFile(resolved);
     if (isNonUtfEncoding(rawBuf)) {
-      nonUtfResult = {
+      readErrResult = {
         output: `Error: "${resolved}" appears to use a non-UTF encoding (Shift-JIS, GBK, Windows-1252, or similar). Editing it as UTF-8 would silently corrupt the file. Use a dedicated encoding-aware editor instead.`,
         isError: true,
       };
@@ -171,8 +172,20 @@ export async function writeEntireFile(
       oldContent = decodeBuffer(rawBuf).text;
       fileExists = true;
     }
-  } catch {}
-  if (nonUtfResult) return nonUtfResult;
+  } catch (err) {
+    // Only a genuinely-absent file (ENOENT) means "new file, nothing to lose".
+    // Any OTHER errno (EACCES/EIO/ELOOP/ENOTDIR…) means the file may exist but
+    // could not be read — silently treating it as new and overwriting would
+    // clobber unreadable content, so surface an actionable error instead.
+    const code = getErrnoCode(err);
+    if (code && code !== 'ENOENT') {
+      readErrResult = {
+        output: `Error: cannot read existing file "${resolved}" to prepare the overwrite (${code}): ${err instanceof Error ? err.message : String(err)}. Resolve the access/IO problem before writing.`,
+        isError: true,
+      };
+    }
+  }
+  if (readErrResult) return readErrResult;
   const isNew = !fileExists || oldContent.length === 0;
 
   // H10: read-before-overwrite. Overwriting an existing non-empty file without
@@ -516,7 +529,7 @@ export const fileEditTool: ToolDefinition = {
       }
       rawContent = decodeBuffer(rawBuf).text;
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code === 'ENOENT') {
+      if (getErrnoCode(err) === 'ENOENT') {
         const dir = path.dirname(resolved);
         const base = path.basename(resolved);
         let suggestions = '';
@@ -620,52 +633,3 @@ export const fileEditTool: ToolDefinition = {
   },
 };
 
-function buildUnifiedDiff(oldContent: string, newContent: string, filePath: string): string {
-  const oldLines = oldContent.split('\n');
-  const newLines = newContent.split('\n');
-
-  let firstDiff = 0;
-  while (firstDiff < oldLines.length && firstDiff < newLines.length && oldLines[firstDiff] === newLines[firstDiff]) {
-    firstDiff++;
-  }
-
-  let oldEnd = oldLines.length - 1;
-  let newEnd = newLines.length - 1;
-  while (oldEnd > firstDiff && newEnd > firstDiff && oldLines[oldEnd] === newLines[newEnd]) {
-    oldEnd--;
-    newEnd--;
-  }
-
-  if (firstDiff > oldEnd && firstDiff > newEnd) {
-    return '(no changes detected)';
-  }
-
-  const ctxStart = Math.max(0, firstDiff - CONTEXT_LINES);
-  const ctxOldEnd = Math.min(oldLines.length - 1, oldEnd + CONTEXT_LINES);
-  const ctxNewEnd = Math.min(newLines.length - 1, newEnd + CONTEXT_LINES);
-
-  const result: string[] = [];
-  result.push(`--- ${filePath}`);
-  result.push(`+++ ${filePath}`);
-  result.push(`@@ -${ctxStart + 1},${ctxOldEnd - ctxStart + 1} +${ctxStart + 1},${ctxNewEnd - ctxStart + 1} @@`);
-
-  for (let i = ctxStart; i < firstDiff; i++) {
-    result.push(` ${oldLines[i]}`);
-  }
-
-  for (let i = firstDiff; i <= oldEnd; i++) {
-    result.push(`-${oldLines[i]}`);
-  }
-
-  for (let i = firstDiff; i <= newEnd; i++) {
-    result.push(`+${newLines[i]}`);
-  }
-
-  const afterStart = oldEnd + 1;
-  const afterEnd = Math.min(oldLines.length - 1, oldEnd + CONTEXT_LINES);
-  for (let i = afterStart; i <= afterEnd; i++) {
-    result.push(` ${oldLines[i]}`);
-  }
-
-  return result.join('\n');
-}

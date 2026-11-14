@@ -116,8 +116,8 @@ describe('constant sets', () => {
     assert.equal(POLICY_VARIABLES.size, 9);
   });
 
-  it('CODE_LOADING_VARIABLES contains 12 entries', () => {
-    assert.equal(CODE_LOADING_VARIABLES.size, 12);
+  it('CODE_LOADING_VARIABLES contains 20 entries', () => {
+    assert.equal(CODE_LOADING_VARIABLES.size, 20);
     assert.ok(CODE_LOADING_VARIABLES.has('LD_PRELOAD'));
     assert.ok(CODE_LOADING_VARIABLES.has('LD_LIBRARY_PATH'));
     assert.ok(CODE_LOADING_VARIABLES.has('LD_AUDIT'));
@@ -248,7 +248,7 @@ describe('isProviderManagedEnvVar', () => {
 
 describe('ENV_REJECT_REASONS / ENV_TRUST_TIERS', () => {
   it('enumerate the expected values', () => {
-    assert.deepEqual([...ENV_REJECT_REASONS], ['pinned', 'provider-managed', 'unsafe-untrusted']);
+    assert.deepEqual([...ENV_REJECT_REASONS], ['pinned', 'provider-managed', 'network-trust', 'unsafe-untrusted']);
     assert.deepEqual([...ENV_TRUST_TIERS], ['trusted', 'project']);
   });
 });

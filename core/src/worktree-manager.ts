@@ -1,6 +1,25 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import { validateConfigJson, stripJsoncComments } from './config';
+
+/**
+ * True when the project config at `cwd` exists but fails JSON validation. A
+ * corrupt config means its retention/cleanup settings (maxAgeDays etc.) cannot
+ * be trusted, so destructive worktree cleanup must be skipped — mirroring
+ * Claude's settings-error short-circuit before a reap (utils/cleanup.ts). When
+ * no config exists, cleanup proceeds with the built-in defaults.
+ */
+function isProjectConfigInvalid(cwd: string): boolean {
+  const configPath = path.join(cwd, '.ami', 'config.json');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(configPath, 'utf-8');
+  } catch {
+    return false; // absent config → use defaults, not an error
+  }
+  return !validateConfigJson(stripJsoncComments(raw)).valid;
+}
 
 export const GIT_NO_PROMPT_ENV = {
   GIT_TERMINAL_PROMPT: '0',
@@ -216,6 +235,11 @@ export function countWorktreeChanges(
 export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): string[] {
   const worktreeDir = path.join(cwd, '.ami', 'worktrees');
   if (!fs.existsSync(worktreeDir)) return [];
+
+  // Config-validity gate: never reap worktrees based on a config we cannot parse.
+  // A corrupt .ami/config.json could mean the retention window is wrong, so we
+  // fail safe and skip all destructive removal until the config is fixed.
+  if (isProjectConfigInvalid(cwd)) return [];
 
   const cleaned: string[] = [];
   const now = Date.now();

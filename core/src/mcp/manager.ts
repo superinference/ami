@@ -1,7 +1,10 @@
 import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError, MCP_PROTOCOL_VERSION } from './client';
 import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
-import { McpOAuthSession } from './oauth';
+import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName } from './oauth';
 import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
+import { resolveConfigDir } from '../reference-journal';
+import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
+import { getMcpToolTimeout } from '../tools/mcp-tool';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -96,7 +99,7 @@ export interface McpServerConfig {
   url?: string;
   containerConfig?: ContainerConfig;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
-  oauth?: { redirectUri?: string; clientId?: string; scope?: string };
+  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; scope?: string };
 }
 
 export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled'] as const;
@@ -129,10 +132,13 @@ export interface PendingServerInfo {
   needsApproval?: boolean;
 }
 
+/** Expand env-var references in header values. Delegates to the single canonical
+ *  {@link expandEnvVars} so headers get the same `${VAR}` / `${VAR:-default}` /
+ *  bare-`$VAR` semantics as command/args/url (no second expansion dialect). */
 function resolveEnvVars(headers: Record<string, string>): Record<string, string> {
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
-    resolved[key] = value.replace(/\$\{(\w+)\}/g, (_, v) => process.env[v] || '');
+    resolved[key] = expandEnvVars(value);
   }
   return resolved;
 }
@@ -152,8 +158,12 @@ export class McpManager extends EventEmitter {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private rootPaths: string[] = [];
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per-server count of consecutive failed reconnect attempts (for backoff). */
+  private reconnectAttempts = new Map<string, number>();
   private pendingServers = new Map<string, PendingServerInfo>();
   private serverErrors = new Map<string, string>();
+  /** Per-server non-fatal config diagnostics (e.g. unset referenced env vars) — H35. */
+  private _configWarnings = new Map<string, string[]>();
   /**
    * M14 — names of PROJECT-tier MCP servers the user has approved. Seeded from a
    * persisted store by the integrator ({@link setApprovedServers}) and extended by
@@ -210,9 +220,22 @@ export class McpManager extends EventEmitter {
     throw new Error('OAuth consent requires an interactive frontend; none is wired (headless/detached run)');
   };
 
+  /** Last OAuth authorization URL presented per server (for relaying to the model). */
+  private _lastAuthUrls = new Map<string, string>();
+
   /** Wire the interactive OAuth consent leg (browser open + redirect capture). */
   setOAuthAuthorizer(fn: AuthorizeFn): void {
     this._oauthAuthorizer = fn;
+  }
+
+  /**
+   * The authorization URL most recently generated for `name`'s OAuth flow, if any.
+   * Captured whenever the consent leg is invoked (even when a headless authorizer
+   * then refuses), so the `authenticate` tool can relay the URL to the model/user
+   * in a detached run instead of only failing (H46/H48/H49).
+   */
+  getPendingAuthUrl(name: string): string | undefined {
+    return this._lastAuthUrls.get(name);
   }
 
   setRootPaths(paths: string[]): void {
@@ -261,6 +284,20 @@ export class McpManager extends EventEmitter {
     }
   }
 
+  /**
+   * Per-server config diagnostics collected at load time — currently the names of
+   * environment variables a server config references but that are unset. Surfaced
+   * so a misconfigured server is diagnosable rather than silently blanked (H35).
+   */
+  getConfigWarnings(name: string): string[] {
+    return this._configWarnings.get(name) ?? [];
+  }
+
+  /** All per-server config diagnostics as a map (for a /mcp diagnostics view). */
+  getAllConfigWarnings(): Record<string, string[]> {
+    return Object.fromEntries(this._configWarnings);
+  }
+
   /** True when a server should be blocked by the denylist (by name or URL). */
   isServerDenied(name: string, config?: { url?: string }): boolean {
     if (this._deniedServerNames.has(name.trim().toLowerCase())) return true;
@@ -301,12 +338,30 @@ export class McpManager extends EventEmitter {
     // tokens. The interactive consent leg comes from the manager-level authorizer.
     let oauth: McpOAuthProvider | undefined;
     if (config.oauth && (config.transport === 'http' || config.transport === 'sse') && config.url) {
+      const configuredRedirect = config.oauth.redirectUri;
+      // Persist tokens per server so authentication survives restarts (H22/H45).
+      const tokenStore = new FileOAuthTokenStore(
+        path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(name)),
+      );
       oauth = new McpOAuthSession({
         serverUrl: config.url,
         fetchImpl: this._fetch,
-        authorize: (params) => this._oauthAuthorizer(params),
-        redirectUri: config.oauth.redirectUri ?? 'http://127.0.0.1:33418/oauth/callback',
+        store: tokenStore,
+        authorize: (params) => {
+          // Record the URL before delegating so even a headless authorizer that
+          // refuses still leaves the URL available to relay to the model (H46/H48/H49).
+          this._lastAuthUrls.set(name, params.authorizationUrl);
+          this.emit('oauth-authorization-url', name, params.authorizationUrl);
+          return this._oauthAuthorizer(params);
+        },
+        // Static fallback; when no redirect URI is configured we discover an
+        // available loopback port at consent time so a busy port never wedges auth.
+        redirectUri: configuredRedirect ?? buildRedirectUri(DEFAULT_OAUTH_CALLBACK_PORT),
+        resolveRedirectUri: configuredRedirect
+          ? undefined
+          : async () => buildRedirectUri(await findAvailablePort()),
         clientId: config.oauth.clientId,
+        clientSecret: config.oauth.clientSecret,
         scope: config.oauth.scope,
       });
     }
@@ -697,7 +752,11 @@ export class McpManager extends EventEmitter {
     return results;
   }
 
-  async callTool(qualifiedName: string, args: Record<string, unknown> = {}, options?: { signal?: AbortSignal }): Promise<unknown> {
+  async callTool(qualifiedName: string, args: Record<string, unknown> = {}, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown> {
+    // Tool calls get the long tool-call timeout at the TRANSPORT layer (not just a
+    // higher-level race), so a slow tool is not killed by the short request/connect
+    // timeout (H25/H30). Callers may override.
+    const callOptions = { signal: options?.signal, timeoutMs: options?.timeoutMs ?? getMcpToolTimeout() };
     const colonIdx = qualifiedName.indexOf(':');
     if (colonIdx === -1) {
       const entry = this.findToolByName(qualifiedName);
@@ -705,7 +764,7 @@ export class McpManager extends EventEmitter {
       this._lastUsedAt.set(entry.serverName, Date.now());
       const client = this.clients.get(entry.serverName);
       if (!client) throw new Error(`MCP server '${entry.serverName}' not connected`);
-      return client.callTool(qualifiedName, args, options);
+      return client.callTool(qualifiedName, args, callOptions);
     }
 
     const serverName = qualifiedName.slice(0, colonIdx);
@@ -713,7 +772,7 @@ export class McpManager extends EventEmitter {
     this._lastUsedAt.set(serverName, Date.now());
     const client = this.clients.get(serverName);
     if (!client) throw new Error(`MCP server '${serverName}' not found`);
-    return client.callTool(toolName, args, options);
+    return client.callTool(toolName, args, callOptions);
   }
 
   async listResources(serverFilter?: string): Promise<Array<McpResource & { server: string }>> {
@@ -772,6 +831,26 @@ export class McpManager extends EventEmitter {
 
   getAllTools(): Array<{ serverName: string; schema: McpToolSchema }> {
     return Array.from(this._allTools.values());
+  }
+
+  /**
+   * Server-authored usage instructions (InitializeResult.instructions) for every
+   * connected server that supplied them, capped per server at the MCP description
+   * length (overlong instructions are truncated with `… [truncated]`). The engine
+   * renders these as `## <server>` blocks into the model's context so a server can
+   * teach the model how to use its tools (H32/H62/H63/H64).
+   */
+  getServerInstructions(): Array<{ name: string; instructions: string }> {
+    const cap = getMcpMaxDescriptionLength();
+    const out: Array<{ name: string; instructions: string }> = [];
+    for (const [name, client] of this.clients) {
+      if (client.state !== 'ready') continue;
+      const raw = client.instructions;
+      if (!raw) continue;
+      const instructions = raw.length > cap ? raw.slice(0, cap) + '… [truncated]' : raw;
+      out.push({ name, instructions });
+    }
+    return out;
   }
 
   getToolConflicts(): Array<{ toolName: string; servers: string[] }> {
@@ -903,6 +982,8 @@ export class McpManager extends EventEmitter {
       clearTimeout(timer);
     }
     this.reconnectTimers.clear();
+    this.reconnectAttempts.clear();
+    this._configWarnings.clear();
     for (const client of this.clients.values()) {
       client.disconnect();
     }
@@ -935,7 +1016,18 @@ export class McpManager extends EventEmitter {
       for (const [name, serverConfig] of Object.entries(servers)) {
         const cfg = serverConfig as McpServerConfig;
         if (!cfg.command && !cfg.url) continue;
-        const expanded = this.expandConfigEnv(cfg);
+        const missing = new Set<string>();
+        const expanded = this.expandConfigEnv(cfg, missing);
+        // Surface (don't silently blank) env vars a server config references but
+        // that are unset — a common cause of a server failing to start (H35).
+        if (missing.size > 0) {
+          const list = [...missing];
+          this._configWarnings.set(name, list);
+          coreLog('mcp', `MCP server "${name}" references unset env var(s): ${list.join(', ')}`);
+          this.emit('config-warning', name, list);
+        } else {
+          this._configWarnings.delete(name);
+        }
         // Skip denylisted servers without aborting the rest of the load (S9).
         if (this.isServerDenied(name, expanded)) {
           coreLog('mcp', `skipping denied MCP server "${name}"`);
@@ -954,22 +1046,27 @@ export class McpManager extends EventEmitter {
     }
   }
 
-  private expandConfigEnv(config: McpServerConfig): McpServerConfig {
+  private expandConfigEnv(config: McpServerConfig, missingOut?: Set<string>): McpServerConfig {
     const result = { ...config };
+    const expand = (v: string): string => {
+      const { expanded, missingVars } = expandEnvVarsTracked(v);
+      if (missingOut) for (const m of missingVars) missingOut.add(m);
+      return expanded;
+    };
 
     if (result.command) {
-      result.command = expandEnvVars(result.command);
+      result.command = expand(result.command);
     }
     if (result.args) {
-      result.args = result.args.map(a => expandEnvVars(a));
+      result.args = result.args.map(expand);
     }
     if (result.url) {
-      result.url = expandEnvVars(result.url);
+      result.url = expand(result.url);
     }
     if (result.env) {
       const expanded: Record<string, string> = {};
       for (const [k, v] of Object.entries(result.env)) {
-        expanded[k] = expandEnvVars(v);
+        expanded[k] = expand(v);
       }
       result.env = expanded;
     }
@@ -1013,16 +1110,33 @@ export class McpManager extends EventEmitter {
     const client = this.clients.get(name);
     if (!client) return;
 
+    const attempt = this.reconnectAttempts.get(name) ?? 0;
+    // Give up after MAX_MCP_RECONNECT_ATTEMPTS so a permanently-down server does
+    // not reconnect-loop forever; surface a terminal 'reconnect-failed' event.
+    if (attempt >= MAX_MCP_RECONNECT_ATTEMPTS) {
+      this.reconnectAttempts.delete(name);
+      coreLog('mcp', `Giving up reconnecting to ${name} after ${attempt} attempts`);
+      this.emit('reconnect-failed', name, attempt);
+      return;
+    }
+
+    // Exponential backoff, capped: 1s, 2s, 4s, 8s, 16s (≤ MAX_MCP_RECONNECT_DELAY_MS).
+    const delay = Math.min(MCP_RECONNECT_BASE_DELAY_MS * 2 ** attempt, MAX_MCP_RECONNECT_DELAY_MS);
     const timer = setTimeout(async () => {
       this.reconnectTimers.delete(name);
+      // A server disabled while the timer was pending must not be revived.
+      if (this.isDisabled(name)) { this.reconnectAttempts.delete(name); return; }
       try {
         await client.reconnect();
         coreLog('mcp', `Reconnected to ${name}`);
+        this.reconnectAttempts.delete(name);
         await this.refreshToolsForServer(name);
       } catch (err) {
-        coreLog('mcp', `Reconnect failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+        coreLog('mcp', `Reconnect failed for ${name} (attempt ${attempt + 1}): ${err instanceof Error ? err.message : String(err)}`);
+        this.reconnectAttempts.set(name, attempt + 1);
+        this.scheduleReconnect(name);
       }
-    }, 1000);
+    }, delay);
     timer.unref();
 
     this.reconnectTimers.set(name, timer);
@@ -1039,6 +1153,11 @@ export class McpManager extends EventEmitter {
 
 export const MAX_MCP_TOOLS_PER_SERVER = 200;
 export const MAX_MCP_TOOL_NAME_LENGTH = 128;
+
+/** Reconnect backoff bounds for a dropped MCP server (H44). */
+export const MAX_MCP_RECONNECT_ATTEMPTS = 5;
+export const MCP_RECONNECT_BASE_DELAY_MS = 1000;
+export const MAX_MCP_RECONNECT_DELAY_MS = 30_000;
 
 const ALLOWED_SCHEMA_KEYS = new Set([
   'type', 'properties', 'required', 'additionalProperties',
@@ -1099,11 +1218,39 @@ export function sanitizeMcpToolSchema(schema: unknown): object {
   return cleaned;
 }
 
-export function expandEnvVars(value: string): string {
-  return value.replace(/\$\{([^}]+)\}|\$([A-Z_][A-Z0-9_]*)/gi, (_, braced, bare) => {
-    const name = braced || bare;
-    return process.env[name] ?? '';
+/**
+ * Expand `${VAR}`, `${VAR:-default}`, and bare `$VAR` references in a string.
+ * Returns the expanded string plus the names of referenced variables that were
+ * both undefined AND had no `:-default` (so callers can surface missing-var
+ * diagnostics). A missing variable still expands to '' (established behavior);
+ * a `${VAR:-default}` with VAR undefined expands to the default and is NOT
+ * reported missing.
+ */
+export function expandEnvVarsTracked(value: string): { expanded: string; missingVars: string[] } {
+  const missingVars: string[] = [];
+  const expanded = value.replace(/\$\{([^}]+)\}|\$([A-Z_][A-Z0-9_]*)/gi, (_, braced, bare) => {
+    if (bare !== undefined) {
+      const v = process.env[bare];
+      if (v !== undefined) return v;
+      missingVars.push(bare);
+      return '';
+    }
+    // Braced form may carry a `:-default`. Split on the FIRST `:-` so a default
+    // value may itself contain `:-`.
+    const sep = braced.indexOf(':-');
+    const name = sep >= 0 ? braced.slice(0, sep) : braced;
+    const def = sep >= 0 ? braced.slice(sep + 2) : undefined;
+    const v = process.env[name];
+    if (v !== undefined) return v;
+    if (def !== undefined) return def;
+    missingVars.push(name);
+    return '';
   });
+  return { expanded, missingVars };
+}
+
+export function expandEnvVars(value: string): string {
+  return expandEnvVarsTracked(value).expanded;
 }
 
 export function findMcpConfigPaths(cwd: string): string[] {

@@ -2,6 +2,8 @@ import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import { AMI_CLIENT_INFO } from '../version';
 import type { McpOAuthProvider } from './oauth';
+import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
+import { sanitizeEnvForSubprocess } from '../tools/bash';
 
 export const MCP_TRANSPORTS = ['stdio', 'sse', 'http'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
@@ -126,6 +128,12 @@ export interface McpElicitationRequest {
   message: string;
   /** Flat JSON Schema of primitive fields the server is requesting. */
   requestedSchema: Record<string, unknown>;
+  /**
+   * Aborts when the SERVER cancels this elicitation (inbound
+   * `notifications/cancelled`). A frontend prompt should observe it and resolve
+   * as a cancel so a request the server abandoned does not hang the UI (H08).
+   */
+  signal?: AbortSignal;
 }
 
 export interface McpElicitationResult {
@@ -258,6 +266,9 @@ export class McpClient extends EventEmitter {
   private buffer = '';
   private _state: McpClientState = 'disconnected';
   private _serverInfo: { name: string; version: string } | null = null;
+  private _instructions: string | null = null;
+  /** In-flight server→client requests (by their id) that a 'notifications/cancelled' can abort. */
+  private _inboundAborts = new Map<number | string, AbortController>();
   private _serverCapabilities: Record<string, unknown> = {};
   private _protocolVersion: string | null = null;
   private _tools: McpToolSchema[] = [];
@@ -323,6 +334,8 @@ export class McpClient extends EventEmitter {
 
   get state(): McpClientState { return this._state; }
   get serverInfo() { return this._serverInfo; }
+  /** Server-authored usage instructions from InitializeResult (raw, untrimmed), or null. */
+  get instructions(): string | null { return this._instructions; }
   get serverCapabilities(): Record<string, unknown> { return { ...this._serverCapabilities }; }
   /** The protocol version negotiated with the server (null until connected). */
   get protocolVersion(): string | null { return this._protocolVersion; }
@@ -338,9 +351,12 @@ export class McpClient extends EventEmitter {
     this._state = 'connecting';
     this.hasTriggeredClose = false;
 
+    // Scrub secrets (API keys, tokens, …) from the INHERITED environment before
+    // handing it to an untrusted MCP server process; the server's own explicitly
+    // configured env is intentional and layered on top (H31).
     this.process = spawn(this.command, this.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...this.env },
+      env: { ...sanitizeEnvForSubprocess(process.env), ...this.env },
     });
     this.processPid = this.process.pid ?? null;
 
@@ -413,11 +429,12 @@ export class McpClient extends EventEmitter {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: this.buildClientCapabilities(),
       clientInfo: AMI_CLIENT_INFO,
-    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string };
+    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string; instructions?: string };
 
     this._serverInfo = initResult.serverInfo ?? { name: 'unknown', version: '0.0.0' };
     this._serverCapabilities = initResult.capabilities ?? {};
     this._protocolVersion = initResult.protocolVersion ?? MCP_PROTOCOL_VERSION;
+    this._instructions = typeof initResult.instructions === 'string' ? initResult.instructions : null;
 
     await this.sendNotification('notifications/initialized', {});
 
@@ -489,6 +506,7 @@ export class McpClient extends EventEmitter {
             this._serverInfo = result.result?.serverInfo ?? { name: 'unknown', version: '0.0.0' };
             this._serverCapabilities = result.result?.capabilities ?? {};
             this._protocolVersion = result.result?.protocolVersion ?? MCP_PROTOCOL_VERSION;
+            this._instructions = typeof result.result?.instructions === 'string' ? result.result.instructions : null;
             this.connectionStartTime = Date.now();
             this._state = 'ready';
             this.emit('ready');
@@ -522,11 +540,12 @@ export class McpClient extends EventEmitter {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: this.buildClientCapabilities(),
       clientInfo: AMI_CLIENT_INFO,
-    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string };
+    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string; instructions?: string };
 
     this._serverInfo = initResult?.serverInfo ?? { name: 'unknown', version: '0.0.0' };
     this._serverCapabilities = initResult?.capabilities ?? {};
     this._protocolVersion = initResult?.protocolVersion ?? MCP_PROTOCOL_VERSION;
+    this._instructions = typeof initResult?.instructions === 'string' ? initResult.instructions : null;
 
     await this.sendHttpRequest('notifications/initialized', {});
 
@@ -583,29 +602,33 @@ export class McpClient extends EventEmitter {
 
   async listTools(): Promise<McpToolSchema[]> {
     this.assertReady();
-    this._tools = await this.collectPaginated<McpToolSchema>('tools/list', 'tools');
+    // Sanitize untrusted server-supplied tool metadata (H26).
+    this._tools = recursivelySanitizeUnicode(await this.collectPaginated<McpToolSchema>('tools/list', 'tools'));
     return this._tools;
   }
 
-  async callTool(name: string, args: Record<string, unknown> = {}, options?: { signal?: AbortSignal }): Promise<unknown> {
+  async callTool(name: string, args: Record<string, unknown> = {}, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown> {
     this.assertReady();
     if (options?.signal?.aborted) {
       throw new Error('MCP tool call aborted');
     }
-    const result = await this.sendRequestAuto('tools/call', { name, arguments: args }, options?.signal);
-    return result;
+    // Tool calls use a separate (long) timeout so a slow tool is not killed by the
+    // short connect/request timeout (H25/H30).
+    const result = await this.sendRequestAuto('tools/call', { name, arguments: args }, options?.signal, options?.timeoutMs);
+    // Sanitize untrusted tool result content before it reaches the model (H26).
+    return recursivelySanitizeUnicode(result);
   }
 
   async listResources(): Promise<McpResource[]> {
     this.assertReady();
-    this._resources = await this.collectPaginated<McpResource>('resources/list', 'resources');
+    this._resources = recursivelySanitizeUnicode(await this.collectPaginated<McpResource>('resources/list', 'resources'));
     return this._resources;
   }
 
   /** resources/templates/list — parameterized resource URIs (2025-06-18). */
   async listResourceTemplates(): Promise<McpResourceTemplate[]> {
     this.assertReady();
-    return this.collectPaginated<McpResourceTemplate>('resources/templates/list', 'resourceTemplates');
+    return recursivelySanitizeUnicode(await this.collectPaginated<McpResourceTemplate>('resources/templates/list', 'resourceTemplates'));
   }
 
   async readResource(uri: string, signal?: AbortSignal): Promise<unknown> {
@@ -613,7 +636,7 @@ export class McpClient extends EventEmitter {
     if (signal?.aborted) {
       throw new Error('MCP request aborted');
     }
-    return await this.sendRequestAuto('resources/read', { uri }, signal);
+    return recursivelySanitizeUnicode(await this.sendRequestAuto('resources/read', { uri }, signal));
   }
 
   /** resources/subscribe — ask the server to emit notifications/resources/updated for a URI. */
@@ -631,7 +654,7 @@ export class McpClient extends EventEmitter {
 
   async listPrompts(): Promise<McpPrompt[]> {
     this.assertReady();
-    this._prompts = await this.collectPaginated<McpPrompt>('prompts/list', 'prompts');
+    this._prompts = recursivelySanitizeUnicode(await this.collectPaginated<McpPrompt>('prompts/list', 'prompts'));
     return this._prompts;
   }
 
@@ -641,7 +664,7 @@ export class McpClient extends EventEmitter {
       description?: string;
       messages: McpPromptMessage[];
     };
-    return result;
+    return recursivelySanitizeUnicode(result);
   }
 
   /** logging/setLevel — set the minimum severity the server should emit. */
@@ -727,6 +750,9 @@ export class McpClient extends EventEmitter {
 
     this._state = 'disconnected';
     this.rejectAllPending(new Error('Client disconnected'));
+    // Abort any in-flight server→client prompts so their handlers unblock.
+    for (const controller of this._inboundAborts.values()) controller.abort();
+    this._inboundAborts.clear();
 
     if (wasConnected) {
       this.emit('close', null, uptimeMs);
@@ -806,14 +832,14 @@ export class McpClient extends EventEmitter {
     }
   }
 
-  private async sendRequestAuto(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  private async sendRequestAuto(method: string, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs?: number): Promise<unknown> {
     if ((this.transport === 'sse' || this.transport === 'http') && this.sseUrl) {
-      return this.sendHttpRequest(method, params, signal);
+      return this.sendHttpRequest(method, params, signal, false, timeoutMs);
     }
-    return this.sendRequest(method, params, signal);
+    return this.sendRequest(method, params, signal, timeoutMs);
   }
 
-  private async sendHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, retried = false): Promise<unknown> {
+  private async sendHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, retried = false, timeoutMs?: number): Promise<unknown> {
     const isNotification = method.startsWith('notifications/');
     const msg: Record<string, unknown> = { jsonrpc: '2.0', method, params };
     if (!isNotification) {
@@ -849,7 +875,7 @@ export class McpClient extends EventEmitter {
       const req = http.request(new URL(this.sseUrl!), {
         method: 'POST',
         headers,
-        timeout: this.requestTimeout,
+        timeout: timeoutMs ?? this.requestTimeout,
       }, (res: any) => {
         const statusCode = res.statusCode;
         // Capture the session id the server assigns at initialize (2025 spec).
@@ -868,7 +894,7 @@ export class McpClient extends EventEmitter {
             const www = (res.headers?.['www-authenticate'] as string | undefined) ?? null;
             this.oauth.onUnauthorized(www).then((ok: boolean) => {
               if (ok) {
-                this.sendHttpRequest(method, params, signal, true).then(resolve, reject);
+                this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
               } else {
                 reject(new Error('MCP HTTP 401 Unauthorized (authorization failed)'));
               }
@@ -1062,7 +1088,7 @@ export class McpClient extends EventEmitter {
     }).catch(() => { /* best-effort */ });
   }
 
-  private sendRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  private sendRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error('MCP request aborted'));
@@ -1077,10 +1103,11 @@ export class McpClient extends EventEmitter {
         params,
       };
 
+      const effectiveTimeout = timeoutMs ?? this.requestTimeout;
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error(`MCP request '${method}' timed out after ${this.requestTimeout}ms`));
-      }, this.requestTimeout);
+        reject(new Error(`MCP request '${method}' timed out after ${effectiveTimeout}ms`));
+      }, effectiveTimeout);
 
       let abortHandler: (() => void) | undefined;
       if (signal) {
@@ -1223,6 +1250,16 @@ export class McpClient extends EventEmitter {
       void this.handleSampling(notification as JsonRpcNotification & { id?: number });
     }
 
+    // Server abandoned a request it sent us (e.g. a pending elicitation) — abort
+    // the matching in-flight handler so a frontend prompt resolves cancel (H08).
+    if (notification.method === 'notifications/cancelled') {
+      const params = notification.params as { requestId?: number | string } | undefined;
+      if (params?.requestId !== undefined) {
+        const controller = this._inboundAborts.get(params.requestId);
+        if (controller) controller.abort();
+      }
+    }
+
     if (notification.method === 'ping' && id !== undefined) {
       this.respondToServerRequest(id, { result: {} });
     }
@@ -1283,25 +1320,47 @@ export class McpClient extends EventEmitter {
    */
   private async handleElicitation(notification: JsonRpcNotification & { id?: number }): Promise<void> {
     const raw = (notification.params ?? {}) as Partial<McpElicitationRequest>;
+    const id = notification.id;
+    // Register an abort controller so an inbound notifications/cancelled for this
+    // request id can cancel the pending prompt (H08).
+    let controller: AbortController | undefined;
+    if (id !== undefined && id !== null) {
+      controller = new AbortController();
+      this._inboundAborts.set(id, controller);
+    }
     const request: McpElicitationRequest = {
       message: typeof raw.message === 'string' ? raw.message : '',
       requestedSchema:
         raw.requestedSchema && typeof raw.requestedSchema === 'object'
           ? (raw.requestedSchema as Record<string, unknown>)
           : {},
+      signal: controller?.signal,
     };
     let result: McpElicitationResult;
+    let serverCancelled = false;
     if (this.onElicitation) {
       try {
-        result = await this.onElicitation(request);
+        // Race the handler against server cancellation so a frontend that does not
+        // observe the signal still unblocks the read loop.
+        const abortPromise = controller
+          ? new Promise<McpElicitationResult>((resolve) => {
+              controller!.signal.addEventListener('abort', () => { serverCancelled = true; resolve({ action: 'cancel' }); }, { once: true });
+            })
+          : undefined;
+        result = abortPromise
+          ? await Promise.race([this.onElicitation(request), abortPromise])
+          : await this.onElicitation(request);
       } catch {
         result = { action: 'cancel' };
       }
     } else {
       result = { action: 'decline' };
     }
-    if (notification.id !== undefined && notification.id !== null) {
-      this.respondToServerRequest(notification.id, { result });
+    if (id !== undefined && id !== null) {
+      this._inboundAborts.delete(id);
+      // Per MCP spec a cancelled request should not be answered; only respond when
+      // the server did NOT abandon it.
+      if (!serverCancelled) this.respondToServerRequest(id, { result });
     }
   }
 

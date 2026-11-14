@@ -140,6 +140,16 @@ export class FileCache {
     return cached;
   }
 
+  /**
+   * List the paths of every file currently tracked in the cache (read into
+   * context), in insertion order. Powers the `/files` command's enumeration of
+   * the read-file-state cache. Includes mtime-only and partial-view entries, since
+   * they still represent files the model has seen.
+   */
+  listPaths(): string[] {
+    return Array.from(this.cache.keys());
+  }
+
   /** Remove a single file from the cache (e.g. after a failed edit so the next read returns full content). */
   delete(path: string): void {
     const entry = this.cache.get(path);

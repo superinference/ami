@@ -7,14 +7,35 @@ import { ToolDefinition, ToolResult } from '../types';
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
 /**
+ * Run git with NO SHELL (execFile with an argv array) so a branch name, path, or
+ * ref can never be interpreted as a shell metacharacter (command-injection
+ * immune — parity with worktree-manager's gitExec and Claude's
+ * execFileNoThrowWithCwd). Returns trimmed stdout.
+ */
+function runGit(
+  args: string[],
+  opts: { cwd: string; stdio?: 'ignore' | 'pipe'; timeout?: number; env?: NodeJS.ProcessEnv } = { cwd: process.cwd() },
+): string {
+  const out = child_process.execFileSync('git', args, {
+    cwd: opts.cwd,
+    encoding: 'utf-8',
+    stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
+    timeout: opts.timeout,
+    env: opts.env,
+  });
+  return typeof out === 'string' ? out.trim() : '';
+}
+
+/**
  * Dependency seam for tests (mirrors the _createClient / _lspDiagHooks pattern).
- * All git subprocess calls route through this object so tests can inject
- * failures (e.g. a corrupted `git worktree list`, an unresolvable HEAD) via
- * `mock.method(_enterWorktreeHooks, 'execSync', ...)`. The default implementation
- * is the real child_process.execSync, so production behaviour is unchanged.
+ * All git subprocess calls route through `exec` (an argv array, NO shell) so
+ * tests can inject failures (e.g. a corrupted `git worktree list`, an
+ * unresolvable HEAD) via `mock.method(_enterWorktreeHooks, 'exec', ...)`. The
+ * default implementation is the real no-shell git runner, so production
+ * behaviour is unchanged.
  */
 export const _enterWorktreeHooks = {
-  execSync: child_process.execSync as typeof child_process.execSync,
+  exec: runGit,
 };
 
 function validateSlug(name: string): boolean {
@@ -32,12 +53,12 @@ function getDefaultBranch(cwd: string): string {
   // Offline-friendly, NO shell pipe: read the origin/HEAD symref directly
   // instead of `git remote show origin | grep` (a network + shell-pipe call).
   try {
-    const sym = _enterWorktreeHooks.execSync('git symbolic-ref --short refs/remotes/origin/HEAD', { cwd, encoding: 'utf-8' }).toString().trim();
+    const sym = _enterWorktreeHooks.exec(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd });
     const match = sym.match(/^origin\/(.+)$/);
     if (match) return match[1];
   } catch { /* fallback */ }
   try {
-    _enterWorktreeHooks.execSync('git rev-parse --verify refs/heads/main', { cwd, stdio: 'ignore' });
+    _enterWorktreeHooks.exec(['rev-parse', '--verify', 'refs/heads/main'], { cwd, stdio: 'ignore' });
     return 'main';
   } catch { /* fallback */ }
   return 'master';
@@ -79,7 +100,7 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     try {
-      _enterWorktreeHooks.execSync('git rev-parse --is-inside-work-tree', { cwd: context.cwd, stdio: 'ignore' });
+      _enterWorktreeHooks.exec(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
     } catch {
       return {
         output: 'Error: not inside a git repository. To use worktree isolation with another VCS, configure WorktreeCreate/WorktreeRemove hooks in settings.',
@@ -100,7 +121,7 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
       }
       try {
-        const list = _enterWorktreeHooks.execSync('git worktree list --porcelain', { cwd: context.cwd, encoding: 'utf-8', timeout: 5000 });
+        const list = _enterWorktreeHooks.exec(['worktree', 'list', '--porcelain'], { cwd: context.cwd, timeout: 5000 });
         // NFC-normalize parsed worktree paths before the identity comparison.
         const worktrees = list.split('\n').filter(l => l.startsWith('worktree ')).map(l => l.slice(9).normalize('NFC'));
         const resolved = path.resolve(existingPath).normalize('NFC');
@@ -147,7 +168,7 @@ export const enterWorktreeTool: ToolDefinition = {
       // Explicit base ref: verify it resolves to a commit, else fail loud
       // (do not silently fall back to HEAD and branch from the wrong place).
       try {
-        _enterWorktreeHooks.execSync(`git rev-parse --verify ${JSON.stringify(requestedBaseRef)}^{commit}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['rev-parse', '--verify', `${requestedBaseRef}^{commit}`], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       } catch {
         return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).`, isError: true };
       }
@@ -155,11 +176,11 @@ export const enterWorktreeTool: ToolDefinition = {
     try {
       const baseRef = requestedBaseRef || `origin/${defaultBranch}`;
       try {
-        _enterWorktreeHooks.execSync(`git rev-parse --verify ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
-        _enterWorktreeHooks.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" ${JSON.stringify(baseRef)}`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['rev-parse', '--verify', baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['worktree', 'add', '-B', branchName, worktreeDir, baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       } catch {
         if (requestedBaseRef) throw new Error(`could not create worktree from base_ref "${requestedBaseRef}"`);
-        _enterWorktreeHooks.execSync(`git worktree add -B "${branchName}" "${worktreeDir}" HEAD`, { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['worktree', 'add', '-B', branchName, worktreeDir, 'HEAD'], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       }
     } catch (e) {
       return { output: `Error creating worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
@@ -167,7 +188,7 @@ export const enterWorktreeTool: ToolDefinition = {
 
     let commitHash: string;
     try {
-      commitHash = _enterWorktreeHooks.execSync('git rev-parse --short HEAD', { cwd: worktreeDir, encoding: 'utf-8' }).trim();
+      commitHash = _enterWorktreeHooks.exec(['rev-parse', '--short', 'HEAD'], { cwd: worktreeDir });
     } catch {
       commitHash = 'unknown';
     }

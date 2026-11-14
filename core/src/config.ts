@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from './logger';
 import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
+import { validateEngineConfig, type EngineConfig } from './types';
 
 /**
  * Project-level configuration that can be stored in
@@ -154,9 +155,22 @@ export function loadGlobalConfig(): ProjectConfig | null {
 /** Thrown when a present managed-config file fails to parse (fail-closed). */
 export class ManagedConfigError extends Error {}
 
-export function loadManagedConfig(): ProjectConfig | null {
-  const configPath = process.env.SUPERINFERENCE_MANAGED_CONFIG || '/etc/superinference/config.json';
-  if (!fsHooks.existsSync(configPath)) return null;
+/** The managed-config base file path (env override or the /etc default). */
+export function getManagedConfigPath(): string {
+  return process.env.SUPERINFERENCE_MANAGED_CONFIG || '/etc/superinference/config.json';
+}
+
+/**
+ * The managed drop-in directory (`<managedBase>/config.d`). Admins can layer
+ * additional managed policy as individual `*.json` files here instead of editing
+ * one monolithic file (parity: Claude's managed-settings.d/ drop-ins).
+ */
+export function getManagedDropInDir(): string {
+  return path.join(path.dirname(getManagedConfigPath()), 'config.d');
+}
+
+/** Read + JSON-parse a managed file, failing closed on any read/parse error. */
+function parseManagedFile(configPath: string): ProjectConfig {
   try {
     const raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
     return JSON.parse(stripJsoncComments(raw)) as ProjectConfig;
@@ -166,13 +180,86 @@ export function loadManagedConfig(): ProjectConfig | null {
   }
 }
 
+/** Merge one managed drop-in over an accumulated base (later wins; env key-merges). */
+function mergeManagedLayer(base: ProjectConfig, next: ProjectConfig): ProjectConfig {
+  const merged: ProjectConfig = { ...base, ...next };
+  if (base.env || next.env) merged.env = { ...base.env, ...next.env };
+  return merged;
+}
+
+export function loadManagedConfig(): ProjectConfig | null {
+  const configPath = getManagedConfigPath();
+  let merged: ProjectConfig | null = fsHooks.existsSync(configPath) ? parseManagedFile(configPath) : null;
+
+  // Layer `<managedBase>/config.d/*.json` drop-ins alphabetically (last file
+  // wins) over the base. A broken drop-in fails closed, like the base file.
+  const dropInDir = getManagedDropInDir();
+  let entries: string[] = [];
+  try {
+    if (fsHooks.existsSync(dropInDir)) {
+      entries = (fsHooks.readdirSync(dropInDir) as string[]).filter(e => e.endsWith('.json')).sort();
+    }
+  } catch {
+    entries = [];
+  }
+  for (const name of entries) {
+    const dropIn = parseManagedFile(path.join(dropInDir, name));
+    merged = merged === null ? dropIn : mergeManagedLayer(merged, dropIn);
+  }
+  return merged;
+}
+
+/** A single field-level value-validation problem in an otherwise-parseable config. */
+export interface ConfigValueIssue {
+  /** The offending config key (e.g. "permissionMode", "maxTurns"). */
+  field: string;
+  /** Human-readable reason the value is invalid. */
+  message: string;
+}
+
 /** A problem found while loading a config file (distinct from "file absent"). */
 export interface ConfigDiagnostic {
   path: string;
-  kind: 'parse-error' | 'not-object';
+  kind: 'parse-error' | 'not-object' | 'invalid-value';
   message: string;
   /** Where the corrupt file was backed up, or the most recent known-good backup. */
   backupPath?: string;
+  /** For `invalid-value`: the per-field issues (grouped by this file). */
+  issues?: ConfigValueIssue[];
+}
+
+/** The ProjectConfig enum fields and their allowed values. */
+const PROJECT_CONFIG_ENUMS: ReadonlyArray<readonly [keyof ProjectConfig, readonly string[]]> = [
+  ['permissionMode', ['ask', 'auto-allow', 'deny-all']],
+  ['cacheTtl', ['5m', '1h']],
+];
+
+/**
+ * Validate the VALUES of a parsed config (the file parsed as a JSON object, but a
+ * field may still hold an out-of-range number or an invalid enum string — the
+ * TypeScript type gives no runtime guarantee). Returns a field-level issue list
+ * so the loader can surface "your config.json has a bad value" instead of
+ * silently accepting it (parity: Claude surfaces settings-validation errors).
+ *
+ * Numeric knobs reuse the canonical {@link validateEngineConfig} (no duplicate
+ * range logic); only the ProjectConfig-specific enum fields are checked here.
+ */
+export function validateProjectConfigValues(config: ProjectConfig): ConfigValueIssue[] {
+  const issues: ConfigValueIssue[] = [];
+  for (const [field, allowed] of PROJECT_CONFIG_ENUMS) {
+    const value = config[field];
+    if (value !== undefined && !allowed.includes(value as string)) {
+      issues.push({ field: field as string, message: `must be one of ${allowed.join(', ')} (got ${JSON.stringify(value)})` });
+    }
+  }
+  // Numeric knobs — delegate to the single canonical EngineConfig validator,
+  // one field at a time so each invalid value is attributed to its own field.
+  for (const field of ['maxTurns', 'tokenBudget', 'maxBudgetUsd'] as const) {
+    if (config[field] === undefined) continue;
+    const r = validateEngineConfig({ [field]: config[field] } as Partial<EngineConfig>);
+    if (!r.valid) issues.push({ field, message: r.warnings.join('; ') });
+  }
+  return issues;
 }
 
 /**
@@ -238,8 +325,18 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     coreLog('config', `invalid config at ${configPath}: ${message}`);
     return { config: null, diagnostic: { path: configPath, kind: 'not-object', message } };
   }
+  const config = parsed as ProjectConfig;
+  // The file is a valid JSON object, but individual VALUES may still be invalid
+  // (bad enum, out-of-range number). Surface those per-field rather than silently
+  // accepting them — the valid parts still load (validation is advisory).
+  const issues = validateProjectConfigValues(config);
+  if (issues.length > 0) {
+    const message = `${issues.length} invalid config value(s): ${issues.map(i => `${i.field}: ${i.message}`).join('; ')}`;
+    coreLog('config', `invalid value(s) in ${configPath}: ${message}`);
+    return { config, diagnostic: { path: configPath, kind: 'invalid-value', message, issues } };
+  }
   coreLog('config', `loaded ${configPath}`);
-  return { config: parsed as ProjectConfig };
+  return { config };
 }
 
 function loadConfigFile(configPath: string): ProjectConfig | null {
