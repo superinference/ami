@@ -1,3 +1,5 @@
+import { isGitInvocationReadOnly } from '../permissions';
+
 const READ_ONLY_PREFIXES = new Set([
   'ls', 'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'find', 'wc',
   'file', 'stat', 'du', 'df', 'which', 'type', 'whereis', 'whoami',
@@ -33,6 +35,11 @@ export function isReadOnlyBashCommand(command: string): boolean {
     if (cmd === 'git') {
       const subCmd = tokens.find((t, i) => i > 0 && !t.startsWith('-'));
       if (!subCmd || !GIT_READ_ONLY.has(subCmd)) return false;
+      // A read-only subcommand can still WRITE (ref creation, remote mutation,
+      // `git config key value`, `--output` file write) — the shared guard in
+      // permissions.ts is the single source of truth, so a mutating git command
+      // is never cached as side-effect-free.
+      if (!isGitInvocationReadOnly(tokens)) return false;
       continue;
     }
 

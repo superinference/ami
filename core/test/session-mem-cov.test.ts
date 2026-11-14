@@ -325,9 +325,13 @@ describe('isPidAlive — error classification', () => {
     assert.equal(isPidAlive(NaN), false);
   });
 
-  it('treats pid 1 (init) as alive (EPERM for a non-owned process)', () => {
-    // As non-root, signalling pid 1 -> EPERM -> alive. As root it is signalable -> alive.
-    assert.equal(isPidAlive(1), true);
+  it('treats sentinel pids <= 1 as dead (never a legitimate lock holder)', () => {
+    // PID 0 targets the caller's own process group and PID 1 is init/systemd —
+    // a corrupt/zero lock body must never read as a live holder, or the lock
+    // could never be reclaimed. The <=1 guard short-circuits before process.kill.
+    assert.equal(isPidAlive(1), false);
+    assert.equal(isPidAlive(0), false);
+    assert.equal(isPidAlive(-5), false);
   });
 });
 
@@ -339,7 +343,7 @@ describe('acquireSessionLock / isSessionLocked — defensive paths', () => {
     fs.symlinkSync(path.join(dir, 'nope'), lockPath);
     const lock = acquireSessionLock(dir);
     assert.equal(lock.acquired, true);
-    assert.equal(fs.readFileSync(lockPath, 'utf-8').trim(), String(process.pid));
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid, process.pid);
     lock.release();
     assert.equal(fs.existsSync(lockPath), false);
   });

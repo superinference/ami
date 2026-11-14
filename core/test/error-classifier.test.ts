@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 
-import { classifyError, friendlyErrorMessage, ERROR_CATEGORIES, type ClassifiedError } from '../src/error-classifier';
+import { classifyError, friendlyErrorMessage, findErrorCode, ERROR_CATEGORIES, type ClassifiedError } from '../src/error-classifier';
 
 // ---------------------------------------------------------------------------
 // Helper to assert the full shape of a classified error
@@ -1012,5 +1012,63 @@ describe('ERROR_CATEGORIES', () => {
       assert.ok((ERROR_CATEGORIES as readonly string[]).includes(result.category),
         `classifyError("${input}") returned unknown category: ${result.category}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findErrorCode — cause-chain walker (G11)
+// ---------------------------------------------------------------------------
+describe('findErrorCode', () => {
+  it('returns a top-level code', () => {
+    assert.equal(findErrorCode(Object.assign(new Error('x'), { code: 'ETIMEDOUT' })), 'ETIMEDOUT');
+  });
+
+  it('descends the cause chain to find the first string code', () => {
+    const e = Object.assign(new Error('Connection error.'), {
+      cause: Object.assign(new Error('fetch failed'), {
+        cause: Object.assign(new Error('boom'), { code: 'ECONNRESET' }),
+      }),
+    });
+    assert.equal(findErrorCode(e), 'ECONNRESET');
+  });
+
+  it('returns undefined when no code exists anywhere', () => {
+    assert.equal(findErrorCode(new Error('plain')), undefined);
+    assert.equal(findErrorCode(null), undefined);
+    assert.equal(findErrorCode('str'), undefined);
+  });
+
+  it('stops at maxDepth and does not exceed it', () => {
+    // Chain of depth 7, code only at the very bottom → beyond default depth 5.
+    let deep: unknown = Object.assign(new Error('bottom'), { code: 'CERT_HAS_EXPIRED' });
+    for (let i = 0; i < 7; i++) deep = Object.assign(new Error(`lvl${i}`), { cause: deep });
+    assert.equal(findErrorCode(deep), undefined);
+    assert.equal(findErrorCode(deep, 10), 'CERT_HAS_EXPIRED');
+  });
+
+  it('is guarded against a cyclic cause', () => {
+    const e = new Error('loop') as Error & { cause?: unknown };
+    e.cause = e;
+    assert.equal(findErrorCode(e), undefined);
+  });
+
+  it('ignores a non-string code', () => {
+    assert.equal(findErrorCode(Object.assign(new Error('x'), { code: 500 })), undefined);
+  });
+});
+
+describe('classifyError folds the nested cause code into classification (G11)', () => {
+  it('classifies a code-less wrapper with a nested ETIMEDOUT as network_error', () => {
+    const e = Object.assign(new Error('Connection error.'), {
+      cause: Object.assign(new Error('boom'), { code: 'ETIMEDOUT' }),
+    });
+    assert.equal(classifyError(e).category, 'network_error');
+  });
+
+  it('classifies a code-less wrapper with a nested CERT_HAS_EXPIRED as ssl_error', () => {
+    const e = Object.assign(new Error('Connection error.'), {
+      cause: Object.assign(new Error('tls'), { code: 'CERT_HAS_EXPIRED' }),
+    });
+    assert.equal(classifyError(e).category, 'ssl_error');
   });
 });

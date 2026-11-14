@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync } from './tool-utils';
+import { coerceBool } from '../utils/coerce';
 import { getFileCache } from '../file-cache';
 
 const CONTEXT_LINES = 3;
@@ -61,13 +62,39 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
   try {
     const stat = fs.lstatSync(resolved);
     if (stat.isSymbolicLink()) {
-      const target = fs.realpathSync(resolved);
+      let target: string;
+      try {
+        target = fs.realpathSync(resolved);
+      } catch (realErr) {
+        // realpath threw ENOENT but lstat says this entry IS a symlink → it is a
+        // DANGLING symlink (its target does not exist yet). An attacker can pre-place
+        // such a link (e.g. x -> ~/.ssh/authorized_keys) so a later write creates and
+        // populates the target OUTSIDE the workspace. Resolve the link's DECLARED
+        // destination and block it when it escapes, instead of silently falling
+        // through to the "nonexistent, nothing to escape" path.
+        if ((realErr as { code?: string })?.code === 'ENOENT') {
+          const linkDest = path.resolve(path.dirname(resolved), fs.readlinkSync(resolved));
+          if (!linkDest.startsWith(cwdAbs + path.sep) && linkDest !== cwdAbs) {
+            return `Error: "${resolved}" is a dangling symlink pointing to "${linkDest}" outside the workspace — write blocked (symlink-escape).`;
+          }
+          // Dangling but points back inside the workspace — harmless; fall through to
+          // the parent-directory checks below.
+          target = linkDest;
+        } else {
+          throw realErr;
+        }
+      }
       if (!target.startsWith(cwdAbs + path.sep) && target !== cwdAbs) {
         return `Error: "${resolved}" is a symlink resolving to "${target}" outside the workspace — write blocked.`;
       }
     }
-  } catch {
-    // File doesn't exist yet — no symlink to escape through
+  } catch (err) {
+    // A thrown error from the dangling-symlink branch above must propagate as a block,
+    // not be swallowed as "nonexistent". Only a genuinely-absent path (lstat ENOENT)
+    // means there is no symlink to escape through.
+    if ((err as { code?: string })?.code !== 'ENOENT') {
+      return `Error: cannot verify write target "${resolved}": ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   // Check parent directories for symlinks escaping the workspace
@@ -103,7 +130,7 @@ export function commitWrite(
     if (symlinkErr) return symlinkErr;
     let enc: ReturnType<typeof detectEncoding> = 'utf-8';
     try { if (fs.existsSync(resolved)) enc = detectEncoding(fs.readFileSync(resolved).subarray(0, 4)); } catch { /* default utf-8 */ }
-    fs.writeFileSync(resolved, encodeText(rawToWrite, enc));
+    writeFileAtomicSync(resolved, encodeText(rawToWrite, enc));
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return `Error writing file: ${message}`;
@@ -169,6 +196,14 @@ export async function writeEntireFile(
 
   if (fileExists && oldContent.length > 0 && context.filesRead?.has(resolved)) {
     const fileCache = getFileCache(context.cwd);
+    // A partial/size-capped read is not a safe basis for a full overwrite: the
+    // model never saw the tail of the file. Require an explicit full read first.
+    if (fileCache.isPartialView(resolved)) {
+      return {
+        output: `Error: You have only read a PARTIAL view of "${resolved}" (the file was size-capped on read). Read the full file (file_read with allow_large:true, or offset/limit over the whole file) before overwriting it, to avoid clobbering content you have not seen.`,
+        isError: true,
+      };
+    }
     if (fileCache.hasChanged(resolved)) {
       fileCache.delete(resolved);
       return { output: 'Error: File has been modified since you last read it. Read the file again before overwriting.', isError: true };
@@ -204,15 +239,12 @@ export async function writeEntireFile(
     };
   }
 
-  const oldLines = oldContent.split('\n');
-  const diffParts: string[] = [`--- ${resolved}`, `+++ ${resolved}`];
-  const maxShow = 20;
-  diffParts.push(`@@ -1,${Math.min(oldLines.length, maxShow)} +1,${Math.min(lineCount, maxShow)} @@`);
-  for (const l of oldLines.slice(0, maxShow)) diffParts.push(`-${l}`);
-  if (oldLines.length > maxShow) diffParts.push(`... (-${oldLines.length - maxShow} more removed)`);
-  for (const l of lines.slice(0, maxShow)) diffParts.push(`+${l}`);
-  if (lineCount > maxShow) diffParts.push(`... (+${lineCount - maxShow} more added)`);
-  return { output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n${diffParts.join('\n')}` };
+  // Minimal structured diff: emit only the changed hunks (+ surrounding context)
+  // via the common-prefix/suffix differ, instead of marking the entire old file
+  // as removed and the entire new file as added. For a small edit inside a large
+  // file this keeps the overwrite diff proportional to what actually changed.
+  const diff = buildUnifiedDiff(normalizeToLf(oldContent), normalizeToLf(content), resolved);
+  return { output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n${diff}` };
 }
 
 async function applySequentialEdits(
@@ -376,7 +408,7 @@ export const fileEditTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const filePath = (input.file_path ?? input.path) as string;
-    const replaceAll = (input.replace_all as boolean) ?? false;
+    const replaceAll = coerceBool(input.replace_all);
     const editsInput = input.edits;
 
     if (!filePath || filePath.trim().length === 0) {
@@ -436,7 +468,7 @@ export const fileEditTool: ToolDefinition = {
         edits.push({
           old_string: String(e.old_string ?? ''),
           new_string: String(e.new_string ?? ''),
-          replace_all: Boolean(e.replace_all),
+          replace_all: coerceBool(e.replace_all),
         });
       }
       return applySequentialEdits(resolved, edits, context);

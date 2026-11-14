@@ -5,7 +5,9 @@ import { getContextWindow, getModelCapabilities, readAdvertisedContextWindow, co
 describe('Model context windows', () => {
   it('returns correct window for Claude models', () => {
     assert.equal(getContextWindow('claude-opus-4-20250514'), 200000);
-    assert.equal(getContextWindow('claude-sonnet-4-6'), 200000);
+    // Sonnet 4+ gets the 1M window: the provider unconditionally sends the
+    // context-1m beta for this family, so the endpoint serves a 1M window (G19).
+    assert.equal(getContextWindow('claude-sonnet-4-6'), 1_000_000);
     assert.equal(getContextWindow('claude-opus-5-5'), 1_000_000);
     assert.equal(getContextWindow('claude-sonnet-5-5'), 1_000_000);
     assert.equal(getContextWindow('claude-fable-5-1'), 1_000_000);
@@ -21,8 +23,8 @@ describe('Model context windows', () => {
     assert.equal(getContextWindow('claude-sonnet-4-5-1m'), 1_000_000);
     // a model whose base already exceeds 1M keeps its larger window
     assert.equal(getContextWindow('gpt-6-astra[1m]'), 1_050_000);
-    // no marker → unchanged
-    assert.equal(getContextWindow('claude-sonnet-4-6'), 200000);
+    // opus-4 has no 1M beta and no marker → stays at its 200k base
+    assert.equal(getContextWindow('claude-opus-4-6'), 200000);
   });
 
   it('returns correct window for GPT models', () => {

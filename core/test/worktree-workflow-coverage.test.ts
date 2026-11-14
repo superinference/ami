@@ -94,7 +94,7 @@ describe('exitWorktreeTool — keep action inside worktree path (lines 64-65)', 
     const r = await exitWorktreeTool.execute({ action: 'keep' }, c);
 
     assert.ok(!r.isError);
-    assert.ok(r.output.includes('Worktree kept at:'));
+    assert.ok(r.output.includes('Worktree kept'));
     assert.ok(r.output.includes(worktreePath));
     // Session should be cleared
     assert.equal(getCurrentWorktreeSession(), null);
@@ -111,7 +111,7 @@ describe('exitWorktreeTool — keep action inside worktree path (lines 64-65)', 
     );
 
     assert.ok(!r.isError);
-    assert.ok(r.output.includes('Worktree kept at:'));
+    assert.ok(r.output.includes('Worktree kept'));
   });
 });
 
@@ -254,7 +254,7 @@ describe('exitWorktreeTool — successful remove with discard_changes (lines 91-
     );
 
     assert.ok(!r.isError, r.output);
-    assert.ok(r.output.includes('Worktree removed:'));
+    assert.ok(r.output.includes('Worktree removed'));
     assert.ok(hookFired, 'Hook should have been called');
     assert.ok(hookData?.worktreePath, 'Hook should receive worktreePath');
     assert.equal(getCurrentWorktreeSession(), null, 'Session should be cleared');
@@ -269,7 +269,7 @@ describe('exitWorktreeTool — successful remove with discard_changes (lines 91-
     );
 
     assert.ok(!r.isError, r.output);
-    assert.ok(r.output.includes('Worktree removed:'));
+    assert.ok(r.output.includes('Worktree removed'));
   });
 
   it('removes worktree without a hookManager', async () => {
@@ -281,7 +281,7 @@ describe('exitWorktreeTool — successful remove with discard_changes (lines 91-
     );
 
     assert.ok(!r.isError, r.output);
-    assert.ok(r.output.includes('Worktree removed:'));
+    assert.ok(r.output.includes('Worktree removed'));
   });
 });
 
@@ -309,7 +309,7 @@ describe('exitWorktreeTool — fallback removal when git worktree remove fails (
     );
 
     assert.ok(!r.isError, r.output);
-    assert.ok(r.output.includes('Worktree removed:'));
+    assert.ok(r.output.includes('Worktree removed'));
   });
 });
 

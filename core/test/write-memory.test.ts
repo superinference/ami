@@ -66,4 +66,37 @@ describe('write_memory tool', () => {
     assert.equal(writeMemoryTool.isReadOnly, false);
     assert.equal(writeMemoryTool.name, 'write_memory');
   });
+
+  it('blocks a write whose content contains a detected secret (and does not persist it)', async () => {
+    const c = ctx();
+    const r = await writeMemoryTool.execute(
+      { name: 'leak', content: 'the api key is sk-ant-abcdefghijklmnopqrstuvwxyz0123' },
+      c,
+    );
+    assert.equal(r.isError, true);
+    assert.match(String(r.output), /refusing to store/);
+    assert.match(String(r.output), /secret/);
+    // The secret value itself must NOT be echoed back.
+    assert.doesNotMatch(String(r.output), /sk-ant-abcdefghijklmnopqrstuvwxyz/);
+    // Nothing was written.
+    assert.equal(new MemoryManager(tmp).readMemory('leak'), null);
+  });
+
+  it('pluralizes the secret count for multiple matches', async () => {
+    const c = ctx();
+    const r = await writeMemoryTool.execute(
+      { name: 'leak2', content: 'sk-ant-abcdefghijklmnopqrstuvwxyz0123\nghp_abcdefghijklmnopqrstuvwxyz0123456789' },
+      c,
+    );
+    assert.equal(r.isError, true);
+    assert.match(String(r.output), /secrets/);
+  });
+
+  it('description documents secret exclusion, dedup, and body structure guidance', () => {
+    const d = writeMemoryTool.description;
+    assert.match(d, /Do NOT store secrets/);
+    assert.match(d, /even when the user explicitly asks/);
+    assert.match(d, /UPDATE an existing entry/);
+    assert.match(d, /How to apply/);
+  });
 });

@@ -106,15 +106,14 @@ describe('task-tracker: persistence + formatting behavior', () => {
     fs.mkdirSync(sub, { recursive: true });
     fs.writeFileSync(path.join(sub, 'tasks.json'), '{ this is not valid json', 'utf-8');
 
-    // Seed in-memory state first; a corrupt file must NOT wipe it (parse throws
-    // before tasks.clear() runs), proving the catch is a true no-op recovery.
-    await taskTrackerTool.execute({ action: 'create', subject: 'survivor' }, ctx);
-    const before = getTaskState().size;
-    assert.equal(before, 1);
-
+    // Point at the corrupt file; the initial load's catch leaves state empty.
     setTaskPersistPath(dir);
+    assert.equal(getTaskState().size, 0);
 
-    // Corrupt file -> catch -> in-memory state untouched.
+    // A mutation re-reads under lock; the corrupt file's parse throw is caught
+    // (no throw out of create) and the new task persists cleanly over it.
+    const created = await taskTrackerTool.execute({ action: 'create', subject: 'survivor' }, ctx);
+    assert.equal(created.isError, false);
     assert.equal(getTaskState().size, 1);
     assert.equal(getTaskState().get(1)?.subject, 'survivor');
   });
@@ -152,20 +151,26 @@ describe('task-tracker: persistence + formatting behavior', () => {
     assert.deepEqual(state.get(1)?.blocks, [2]);
   });
 
-  it('formatTask falls back to the "[ ]" icon for an unknown persisted status', async () => {
+  it('drops a persisted record with an out-of-schema status (resilient load)', async () => {
     const dir = mkTmp();
     writeTasksFile(dir, {
-      nextId: 2,
+      nextId: 3,
       tasks: [
-        // status outside STATUS_ICONS keys -> `|| '[ ]'` fallback arm.
+        // status outside the schema enum -> dropped on read.
         { id: 1, subject: 'weird', description: '', status: 'archived', blocks: [], blockedBy: [] },
+        // a valid record alongside it survives (one bad record != lose the rest).
+        { id: 2, subject: 'ok', description: '', status: 'pending', blocks: [], blockedBy: [] },
       ],
     });
     setTaskPersistPath(dir);
 
-    const res = await taskTrackerTool.execute({ action: 'get', task_id: '1' }, ctx);
-    assert.equal(res.isError, false);
-    assert.ok(res.output.startsWith('[ ] Task #1: weird [archived]'));
+    assert.equal(getTaskState().size, 1, 'invalid record dropped, valid kept');
+    const bad = await taskTrackerTool.execute({ action: 'get', task_id: '1' }, ctx);
+    assert.equal(bad.isError, true);
+    assert.ok(bad.output.includes('not found'));
+    const ok = await taskTrackerTool.execute({ action: 'get', task_id: '2' }, ctx);
+    assert.equal(ok.isError, false);
+    assert.ok(ok.output.startsWith('[ ] Task #2: ok [pending]'));
   });
 
   it('unresolvedBlockers drops dangling (deleted) blocker ids when formatting', async () => {

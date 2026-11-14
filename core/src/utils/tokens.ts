@@ -14,6 +14,35 @@ export function estimateTokens(text: string): number {
 }
 
 /**
+ * Chars-per-token ratio for a given file extension. Dense structured text
+ * (JSON/JSONL/JSONC) is dominated by single-character tokens (`{`, `}`, `:`,
+ * `,`, `"`), so its real ratio is closer to 2 than the default ~4 — using the
+ * generic ratio badly UNDER-estimates JSON and can let an oversized tool
+ * result slip past a token budget. Mirrors Claude's bytesPerTokenForFileType.
+ */
+export function charsPerTokenForFileType(fileExtension: string): number {
+  switch (fileExtension.toLowerCase().replace(/^\./, '')) {
+    case 'json':
+    case 'jsonl':
+    case 'jsonc':
+      return 2;
+    default:
+      return CHARS_PER_TOKEN;
+  }
+}
+
+/**
+ * Like {@link estimateTokens} but uses a content-type-aware chars-per-token
+ * ratio when the file type is known (dense JSON counts ~2 chars/token). Used
+ * when an API-based token count is unavailable and the rough estimate must not
+ * under-count a structured payload.
+ */
+export function estimateTokensForFileType(text: string, fileExtension: string): number {
+  if (text.length === 0) return 0;
+  return Math.ceil(text.length / charsPerTokenForFileType(fileExtension));
+}
+
+/**
  * Estimate the total token cost of an array of tool schemas
  * (name + description + JSON-serialised inputSchema).
  */

@@ -47,6 +47,7 @@ import {
   type FormatterConfig,
 } from '../src/formatter';
 import { ToolAnalytics } from '../src/tool-analytics';
+import { Reservoir } from '../src/utils/reservoir';
 import { TurnMetrics } from '../src/turn-metrics';
 import { projectStateDir } from '../src/reference-journal';
 
@@ -595,11 +596,24 @@ describe('cron: matchField', () => {
 });
 
 describe('cron: wrapPromptSafely', () => {
-  it('wraps the prompt in a randomized fence', () => {
+  it('wraps the prompt in a fence of at least 3 backticks', () => {
     const out = wrapPromptSafely('do a thing');
     assert.match(out, /Previously scheduled task/);
     assert.match(out, /do a thing/);
-    assert.match(out, /`{4,}/);
+    assert.match(out, /`{3,}/);
+  });
+
+  it('sizes the fence longer than the longest backtick run in the prompt (injection containment)', () => {
+    const prompt = 'ignore this ```` and this ``';
+    const out = wrapPromptSafely(prompt);
+    // Longest run in the prompt is 4 backticks, so the fence must be >= 5.
+    const fenceMatch = out.match(/\n(`{3,})\n/);
+    assert.ok(fenceMatch, 'a fence line should exist');
+    assert.ok(fenceMatch![1].length >= 5, `fence (${fenceMatch![1].length}) must exceed the 4-backtick run`);
+  });
+
+  it('asks the user to confirm a missed task before running it', () => {
+    assert.match(wrapPromptSafely('x'), /confirm before running/i);
   });
 });
 
@@ -691,25 +705,30 @@ describe('cron: CronScheduler core', () => {
     assert.throws(() => sched.computeNextRun('* * *'), /Invalid cron expression/);
   });
 
-  it('computeNextRun throws when no occurrence exists within the search window', () => {
+  it('computeNextRun returns null when no occurrence exists within the search window', () => {
     // Feb 30th never occurs: a valid 5-field cron that matches no minute in a year.
-    assert.throws(() => sched.computeNextRun('0 0 30 2 *'), /Invalid cron expression/);
+    assert.equal(sched.computeNextRun('0 0 30 2 *'), null);
+  });
+
+  it('computeNextRun still throws for a structurally invalid expression', () => {
+    assert.throws(() => sched.computeNextRun('bad'), /Invalid cron expression/);
   });
 
   it('computeNextRun honors a fromTime anchor', () => {
     const base = new Date('2020-01-01T00:00:00Z').getTime();
     const next = sched.computeNextRun('0 0 * * *', base);
-    assert.ok(next > base);
+    assert.ok(next && next > base);
   });
 
-  it('formatSchedule renders human-readable schedules', () => {
+  it('formatSchedule renders human-readable schedules (12-hour clock)', () => {
     assert.match(sched.formatSchedule('*/15 * * * *'), /every 15 minutes/);
-    assert.match(sched.formatSchedule('30 9 5 6 1'), /at minute 30/);
-    assert.match(sched.formatSchedule('30 9 5 6 1'), /at hour 9/);
+    // specific minute + hour reads as a wall-clock time
+    assert.match(sched.formatSchedule('30 9 5 6 1'), /at 9:30 am/);
     assert.match(sched.formatSchedule('30 9 5 6 1'), /on day 5/);
     assert.match(sched.formatSchedule('30 9 5 6 1'), /in month 6/);
     assert.match(sched.formatSchedule('0 0 * * 1,3'), /on Mon, Wed/);
-    assert.match(sched.formatSchedule('0 0 * * 9'), /on 9/); // out-of-range day index falls through
+    assert.match(sched.formatSchedule('*/30 */2 * * *'), /every 2 hours/);
+    assert.match(sched.formatSchedule('0 0 * * 1-5'), /Mon to Fri/);
     assert.equal(sched.formatSchedule('* * * * *'), 'every minute');
     assert.equal(sched.formatSchedule('bad'), 'bad');
   });
@@ -769,11 +788,12 @@ describe('cron: ticker, locks and expiry', () => {
     assert.deepEqual(fired, []); // skipped
   });
 
-  it('tick runs durable jobs when it can acquire the lock, replacing a stale lock', () => {
+  it('tick runs durable jobs when it can acquire the lock, replacing a dead-owner lock', () => {
     fs.mkdirSync(projectStateDir(dir), { recursive: true });
     fs.writeFileSync(
       path.join(projectStateDir(dir), 'cron.lock'),
-      JSON.stringify({ sessionId: 'old', pid: 1, timestamp: Date.now() - 10 * 60 * 1000 }),
+      // A very high pid that is not running → PID-liveness treats the lock as stale.
+      JSON.stringify({ sessionId: 'old', pid: 2_147_483_646, timestamp: Date.now() - 10 * 60 * 1000 }),
     );
     const sched = new CronScheduler(dir, 'mine');
     const j = sched.create({ cron: '*/5 * * * *', prompt: 'p', durable: true });
@@ -792,11 +812,11 @@ describe('cron: ticker, locks and expiry', () => {
     assert.ok(!fs.existsSync(path.join(projectStateDir(dir), 'cron.lock')));
   });
 
-  it('acquireLock returns false on a corrupt lock file', () => {
+  it('acquireLock reclaims a corrupt lock file (treat-as-stale recovery)', () => {
     fs.mkdirSync(projectStateDir(dir), { recursive: true });
     fs.writeFileSync(path.join(projectStateDir(dir), 'cron.lock'), '{corrupt');
     const sched = new CronScheduler(dir, 'self');
-    assert.equal((sched as unknown as { acquireLock: () => boolean }).acquireLock(), false);
+    assert.equal((sched as unknown as { acquireLock: () => boolean }).acquireLock(), true);
   });
 
   it('releaseLock leaves a foreign lock intact', () => {
@@ -860,23 +880,48 @@ describe('cron: durable persistence', () => {
   beforeEach(() => { dir = mkTmp(); });
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-  it('loads only durable jobs from disk, estimating jitter for malformed crons', () => {
+  it('loads valid durable jobs and DROPS entries with a malformed cron on load', () => {
     fs.mkdirSync(projectStateDir(dir), { recursive: true });
     const jobs: CronJob[] = [
+      // Malformed cron -> re-validation drops this entry.
       { id: 'cron_9_a', cron: 'weird', prompt: 'durable', recurring: true, durable: true, createdAt: Date.now(), nextRun: Date.now() - 20 * 60 * 1000 },
       { id: 'cron_3_c', cron: '0 0 * * *', prompt: 'durable2', recurring: true, durable: true, createdAt: Date.now() },
       { id: 'cron_8_b', cron: '0 0 * * *', prompt: 'ephemeral', recurring: true, durable: false, createdAt: Date.now() },
     ];
     fs.writeFileSync(path.join(projectStateDir(dir), 'scheduled_tasks.json'), JSON.stringify(jobs));
     const sched = new CronScheduler(dir, 's');
-    assert.equal(sched.list().length, 2);
-    assert.equal(sched.get('cron_9_a')!.prompt, 'durable');
-    // Next id must exceed the max loaded num; getNextIdNum iterates 9 then 3,
-    // exercising the "num not greater than running max" branch.
+    // Only the valid durable job survives (malformed dropped, ephemeral not loaded).
+    assert.equal(sched.list().length, 1);
+    assert.equal(sched.get('cron_9_a'), undefined, 'malformed-cron entry must be dropped');
+    assert.equal(sched.get('cron_3_c')!.prompt, 'durable2');
+    // getNextIdNum sees max loaded num 3 → next is 4.
     const created = sched.create({ cron: '0 0 * * *', prompt: 'new' });
-    assert.match(created.id, /^cron_10_/);
-    // getDueJobs exercises computeJitter -> estimatePeriod on a <2-part cron
-    assert.ok(sched.getDueJobs().some((j) => j.id === 'cron_9_a'));
+    assert.match(created.id, /^cron_4_/);
+    sched.stopTicker();
+  });
+
+  it('drops persisted entries with a bad shape (sanitizes untrusted on-disk JSON)', () => {
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectStateDir(dir), 'scheduled_tasks.json'),
+      JSON.stringify([
+        { id: 'ok', cron: '0 0 * * *', prompt: 'p', recurring: true, durable: true, createdAt: Date.now() },
+        { id: 123, cron: '0 0 * * *', prompt: 'bad-id', recurring: true, durable: true, createdAt: Date.now() },
+        { nope: 'not a job' },
+      ]),
+    );
+    const sched = new CronScheduler(dir, 's');
+    assert.equal(sched.list().length, 1);
+    sched.stopTicker();
+  });
+
+  it('deletes a corrupt scheduled_tasks.json on load', () => {
+    fs.mkdirSync(projectStateDir(dir), { recursive: true });
+    const p = path.join(projectStateDir(dir), 'scheduled_tasks.json');
+    fs.writeFileSync(p, '{not json');
+    const sched = new CronScheduler(dir, 's');
+    assert.equal(sched.list().length, 0);
+    assert.equal(fs.existsSync(p), false, 'corrupt state file should be deleted');
     sched.stopTicker();
   });
 
@@ -1141,6 +1186,7 @@ describe('tool-analytics', () => {
     // the defensive callCount===0 / minDurationMs===Infinity guards in getStats.
     (a as unknown as { data: Map<string, unknown> }).data.set('ghost', {
       callCount: 0, errorCount: 0, totalDurationMs: 0, minDurationMs: Infinity, maxDurationMs: 0,
+      requestTokens: 0, resultTokens: 0, durations: new Reservoir(),
     });
     const s = a.getStats('ghost');
     assert.equal(s.avgDurationMs, 0);
@@ -1221,10 +1267,15 @@ describe('turn-metrics', () => {
       totalToolCalls: 1,
       totalTokens: 100,
       totalDurationMs: 1000,
+      totalDurationMsWithoutRetries: 1000,
       avgToolCallsPerTurn: 1,
       avgTokensPerTurn: 100,
       tokensPerSecond: 100,
+      tokensPerSecondWithoutRetries: 100,
       longestTurnMs: 1000,
+      byModel: {},
+      activeTimeMs: 0,
+      budget: null,
     });
   });
 

@@ -131,6 +131,78 @@ describe('createRequestSignature / verifyRequestSignature', () => {
     assert.equal(result.valid, false);
     assert.equal(result.reason, 'signature expired');
   });
+
+  // --- Crash-safety on malformed/attacker-controlled signatures (G1) ---
+  // Without the hex/length guard + try/catch, crypto.timingSafeEqual throws a
+  // RangeError on a length mismatch and Buffer.from(x,'hex') truncates odd/
+  // non-hex input — turning a wrong-length forged signature into an uncaught
+  // exception (a DoS on the verification boundary). These must return
+  // {valid:false,reason:'signature malformed'} and never throw.
+  it('does not throw on a too-short (wrong byte length) signature', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    sig.signature = 'ab'; // 1 byte vs 32-byte HMAC → timingSafeEqual would RangeError
+    let result!: ReturnType<typeof verifyRequestSignature>;
+    assert.doesNotThrow(() => {
+      result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    });
+    assert.equal(result.valid, false);
+    assert.equal(result.reason, 'signature malformed');
+  });
+
+  it('does not throw on an odd-length signature', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    sig.signature = 'abc'; // odd length — Buffer.from('abc','hex') truncates
+    let result!: ReturnType<typeof verifyRequestSignature>;
+    assert.doesNotThrow(() => {
+      result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    });
+    assert.equal(result.valid, false);
+    assert.equal(result.reason, 'signature malformed');
+  });
+
+  it('does not throw on a non-hex signature of the right length', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    sig.signature = 'z'.repeat(64); // 64 chars but not hex
+    let result!: ReturnType<typeof verifyRequestSignature>;
+    assert.doesNotThrow(() => {
+      result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    });
+    assert.equal(result.valid, false);
+    assert.equal(result.reason, 'signature malformed');
+  });
+
+  it('does not throw on an empty signature', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    sig.signature = '';
+    let result!: ReturnType<typeof verifyRequestSignature>;
+    assert.doesNotThrow(() => {
+      result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    });
+    assert.equal(result.valid, false);
+    assert.equal(result.reason, 'signature malformed');
+  });
+
+  it('does not throw when signature is not a string', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    // Simulate a deserialized payload where the field is the wrong type.
+    (sig as unknown as { signature: unknown }).signature = 12345;
+    let result!: ReturnType<typeof verifyRequestSignature>;
+    assert.doesNotThrow(() => {
+      result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    });
+    assert.equal(result.valid, false);
+    assert.equal(result.reason, 'signature malformed');
+  });
+
+  it('still rejects a well-formed but wrong signature as mismatch (not malformed)', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    // Flip one hex char — same length, valid hex, wrong value.
+    const flipped = sig.signature[0] === 'a' ? 'b' : 'a';
+    sig.signature = flipped + sig.signature.slice(1);
+    const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    assert.equal(result.valid, false);
+    assert.equal(result.reason, 'signature mismatch');
+  });
 });
 
 describe('NonceTracker', () => {
@@ -197,5 +269,50 @@ describe('NonceTracker', () => {
     assert.equal(tracker.isReplay('b'), false);
     assert.equal(tracker.isReplay('c'), true);
     assert.equal(tracker.isReplay('d'), true);
+  });
+
+  // --- O(1) FIFO ring-buffer eviction (G29) ---
+  it('evicts in strict FIFO insertion order over a full wrap', () => {
+    const tracker = new NonceTracker(3);
+    for (const n of ['a', 'b', 'c']) tracker.record(n);
+    tracker.record('d'); // evict a
+    tracker.record('e'); // evict b
+    assert.deepEqual(
+      ['a', 'b', 'c', 'd', 'e'].map(n => tracker.isReplay(n)),
+      [false, false, true, true, true],
+    );
+  });
+
+  it('never exceeds capacity under a sustained flood', () => {
+    const cap = 1000;
+    const tracker = new NonceTracker(cap);
+    for (let i = 0; i < cap * 5; i++) tracker.record(`nonce-${i}`);
+    assert.equal(tracker.size(), cap);
+    // Only the last `cap` nonces remain.
+    assert.equal(tracker.isReplay(`nonce-${cap * 5 - 1}`), true);
+    assert.equal(tracker.isReplay('nonce-0'), false);
+    assert.equal(tracker.isReplay(`nonce-${cap * 4 - 1}`), false);
+  });
+
+  it('clears the ring so a previously-evicting tracker starts empty', () => {
+    const tracker = new NonceTracker(2);
+    tracker.record('a');
+    tracker.record('b');
+    tracker.record('c'); // wraps once
+    tracker.clear();
+    assert.equal(tracker.size(), 0);
+    // Re-recording what used to be present must succeed (true), proving the ring
+    // (not just the Set) was reset.
+    assert.equal(tracker.record('b'), true);
+    assert.equal(tracker.record('c'), true);
+  });
+
+  it('a capacity of 1 keeps only the most recent nonce', () => {
+    const tracker = new NonceTracker(1);
+    assert.equal(tracker.record('x'), true);
+    assert.equal(tracker.record('y'), true);
+    assert.equal(tracker.size(), 1);
+    assert.equal(tracker.isReplay('x'), false);
+    assert.equal(tracker.isReplay('y'), true);
   });
 });

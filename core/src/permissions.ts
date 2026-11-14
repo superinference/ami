@@ -767,10 +767,126 @@ function allSegmentsKnown(command: string): boolean {
 }
 
 /**
+ * Git read-only write-guard — shared by the bash classifier AND the bash-result
+ * cache (`isReadOnlyBashCommand`) so there is ONE place that knows which git
+ * forms actually mutate state. A git subcommand can appear in a "read-only"
+ * allowlist yet still WRITE: creating a ref (`git branch <name>`, `git tag
+ * <name>`), rewriting remotes (`git remote add/remove/set-url/rename`), writing
+ * a file via `--output`/`-o`, or setting config (`git config key value`).
+ * Claude Code's readOnlyCommandValidation.ts rejects each of these before
+ * auto-approval; this mirrors that.
+ *
+ * `tokens` is a single git invocation beginning at the `git` token. Returns
+ * true when the invocation is a genuine read-only form, false when it writes.
+ */
+export function isGitInvocationReadOnly(tokens: string[]): boolean {
+  if (tokens[0] !== 'git') return true; // not a git invocation — not our concern
+
+  // Skip git global options (and the value they consume) to reach the subcommand.
+  const valueGlobals = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+  let i = 1;
+  while (i < tokens.length) {
+    const t = tokens[i]!;
+    if (!t.startsWith('-')) break;
+    if (valueGlobals.has(t)) { i += 2; continue; } // `--opt value`
+    i += 1;                                         // flag or `--opt=value`
+  }
+  const sub = tokens[i];
+  if (!sub) return true; // bare `git` prints help — harmless
+  const rest = tokens.slice(i + 1);
+
+  // A file-writing output flag turns ANY read subcommand into a write.
+  for (const a of rest) {
+    if (a === '-o' || a === '--output' || a.startsWith('--output=')) return false;
+  }
+
+  if (sub === 'branch' || sub === 'tag') {
+    const writeFlags = sub === 'branch'
+      ? new Set(['-d', '-D', '--delete', '-m', '-M', '--move', '-c', '-C', '--copy',
+          '-f', '--force', '--set-upstream-to', '-u', '--unset-upstream', '--edit-description'])
+      : new Set(['-d', '--delete', '-a', '--annotate', '-s', '--sign', '-m', '--message',
+          '-F', '--file', '-f', '--force']);
+    // Read flags whose FOLLOWING token is a value (not a ref name / positional).
+    const valueFlags = new Set(['--contains', '--no-contains', '--merged', '--no-merged',
+      '--points-at', '--sort', '--format', '--color', '--column']);
+    let hasList = false;
+    let hasPositional = false;
+    for (let k = 0; k < rest.length; k++) {
+      const a = rest[k]!;
+      if (a === '-l' || a === '--list') { hasList = true; continue; }
+      if (writeFlags.has(a)) return false;
+      if (a.startsWith('-')) {
+        if (!a.includes('=') && valueFlags.has(a)) k++; // skip the consumed value
+        continue;
+      }
+      hasPositional = true; // a bare ref name
+    }
+    // A bare positional without --list is ref CREATION (a write).
+    return !(hasPositional && !hasList);
+  }
+
+  if (sub === 'remote') {
+    const first = rest.find(a => !a.startsWith('-'));
+    if (!first) return true; // bare `git remote` / `git remote -v`
+    return first === 'show' || first === 'get-url';
+  }
+
+  if (sub === 'config') {
+    const writeSubops = ['--add', '--unset', '--unset-all', '--replace-all',
+      '--remove-section', '--rename-section', '--edit', '-e'];
+    if (rest.some(a => writeSubops.includes(a))) return false;
+    const readSubops = ['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l'];
+    if (rest.some(a => readSubops.includes(a))) return true;
+    // `git config key value` writes; `git config key` reads a single value.
+    const positionals = rest.filter(a => !a.startsWith('-'));
+    return positionals.length < 2;
+  }
+
+  return true; // other read subcommands (status/log/diff/show/...) stay read-only
+}
+
+/**
+ * Whole-command git read-only guard for the bash classifier. Splits a (possibly
+ * compound) command into segments, validates every git invocation via
+ * isGitInvocationReadOnly, and refuses a compound that changes directory before
+ * running git (`cd /attacker && git status`) — a sandbox escape where git runs
+ * attacker-planted .git/hooks from the new cwd (Claude's cd+git guard).
+ */
+export function isGitReadOnlyCommandSafe(command: string): boolean {
+  const unwrapped = unwrapShellControlStructures(command);
+  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
+  let hasCd = false;
+  let hasGit = false;
+  for (const seg of segments) {
+    const tokens = seg.trim().split(/\s+/);
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+    const cmd = tokens[i];
+    if (cmd === 'cd' || cmd === 'pushd' || cmd === 'popd' || cmd === 'chdir') hasCd = true;
+    if (cmd === 'git') {
+      hasGit = true;
+      if (!isGitInvocationReadOnly(tokens.slice(i))) return false;
+    }
+  }
+  if (hasCd && hasGit) return false;
+  return true;
+}
+
+/**
  * Match a simple glob-like pattern against a string.
  * Supports '*' as a wildcard for any sequence of characters.
  */
 const _patternCache = new Map<string, RegExp>();
+/**
+ * Match a glob-like pattern (only `*` is special, expanding to any run of
+ * characters; every other metachar is escaped) against a value. This is the
+ * canonical wildcard matcher reused by MCP-server allowlists, permission rules
+ * and the HTTP-hook URL allowlist — do not re-implement it per site.
+ */
+export function wildcardMatch(pattern: string, value: string): boolean {
+  return matchPattern(pattern, value);
+}
+
 function matchPattern(pattern: string, value: string): boolean {
   if (pattern.includes('\x00') || value.includes('\x00')) return false;
   if (pattern === value) return true;
@@ -1233,6 +1349,11 @@ export class PermissionManager {
     // Check safe prefixes (e.g., "git status", "npm test")
     for (const cmd of bases) {
       if (SAFE_PREFIXES.has(cmd)) {
+        // A git read-only prefix can still smuggle a write (ref creation via
+        // `git branch/tag <name>`, remote mutation, `--output` file write) or a
+        // sandbox escape (`cd /attacker && git ...` runs planted .git/hooks).
+        // Validate the full command before auto-allowing.
+        if (cmd.startsWith('git ') && !isGitReadOnlyCommandSafe(unwrapped)) return 'unsafe';
         if (allSegmentsKnown(unwrapped)) return 'safe';
         break;
       }

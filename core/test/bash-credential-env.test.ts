@@ -322,3 +322,125 @@ describe('SENSITIVE_ENV_SET', () => {
     assert.ok(SENSITIVE_ENV_SET.has('BUN_CONFIG_TOKEN'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Parity: header-bearing, cloud-bearer, GitHub-Actions OIDC/runtime, and
+// action-input credential vars whose token word is NOT the last name segment
+// (so suffix-only matching misses them). Mirrors Claude Code's GHA scrub list.
+// ---------------------------------------------------------------------------
+
+describe('sanitizeEnvForSubprocess – header/token-adjacent credential vars', () => {
+  it('strips OTEL_EXPORTER_OTLP_HEADERS (carries Authorization=Bearer)', () => {
+    const r = sanitizeEnvForSubprocess({ PATH: '/usr/bin', OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer tok' });
+    assert.equal(r.OTEL_EXPORTER_OTLP_HEADERS, undefined);
+  });
+
+  it('strips OTEL_EXPORTER_OTLP_{LOGS,METRICS,TRACES}_HEADERS', () => {
+    const r = sanitizeEnvForSubprocess({
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: 'a=1',
+      OTEL_EXPORTER_OTLP_METRICS_HEADERS: 'b=2',
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'c=3',
+    });
+    assert.equal(r.OTEL_EXPORTER_OTLP_LOGS_HEADERS, undefined);
+    assert.equal(r.OTEL_EXPORTER_OTLP_METRICS_HEADERS, undefined);
+    assert.equal(r.OTEL_EXPORTER_OTLP_TRACES_HEADERS, undefined);
+  });
+
+  it('strips ANTHROPIC_CUSTOM_HEADERS', () => {
+    const r = sanitizeEnvForSubprocess({ ANTHROPIC_CUSTOM_HEADERS: 'X-Api-Key: secret' });
+    assert.equal(r.ANTHROPIC_CUSTOM_HEADERS, undefined);
+  });
+
+  it('strips any *_HEADERS var via suffix pattern', () => {
+    const r = sanitizeEnvForSubprocess({ MY_CUSTOM_HEADERS: 'Authorization=Bearer x' });
+    assert.equal(r.MY_CUSTOM_HEADERS, undefined);
+  });
+
+  it('strips AWS_BEARER_TOKEN_BEDROCK (token word is not the last segment)', () => {
+    const r = sanitizeEnvForSubprocess({ AWS_BEARER_TOKEN_BEDROCK: 'bedrock-tok' });
+    assert.equal(r.AWS_BEARER_TOKEN_BEDROCK, undefined);
+  });
+
+  it('strips AZURE_CLIENT_CERTIFICATE_PATH', () => {
+    const r = sanitizeEnvForSubprocess({ AZURE_CLIENT_CERTIFICATE_PATH: '/secrets/cert.pem' });
+    assert.equal(r.AZURE_CLIENT_CERTIFICATE_PATH, undefined);
+  });
+
+  it('strips GitHub Actions OIDC request URL + token', () => {
+    const r = sanitizeEnvForSubprocess({
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://x/token',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'reqtok',
+    });
+    assert.equal(r.ACTIONS_ID_TOKEN_REQUEST_URL, undefined);
+    assert.equal(r.ACTIONS_ID_TOKEN_REQUEST_TOKEN, undefined);
+  });
+
+  it('strips GitHub Actions runtime URL + token (cache/artifact API)', () => {
+    const r = sanitizeEnvForSubprocess({
+      ACTIONS_RUNTIME_URL: 'https://x/runtime',
+      ACTIONS_RUNTIME_TOKEN: 'rtok',
+    });
+    assert.equal(r.ACTIONS_RUNTIME_URL, undefined);
+    assert.equal(r.ACTIONS_RUNTIME_TOKEN, undefined);
+  });
+
+  it('strips ALL_INPUTS (JSON blob containing api keys)', () => {
+    const r = sanitizeEnvForSubprocess({ ALL_INPUTS: '{"anthropic_api_key":"sk-ant"}' });
+    assert.equal(r.ALL_INPUTS, undefined);
+  });
+
+  it('strips action-input duplicates (OVERRIDE_GITHUB_TOKEN, DEFAULT_WORKFLOW_TOKEN, SSH_SIGNING_KEY)', () => {
+    const r = sanitizeEnvForSubprocess({
+      OVERRIDE_GITHUB_TOKEN: 'x',
+      DEFAULT_WORKFLOW_TOKEN: 'y',
+      SSH_SIGNING_KEY: 'z',
+    });
+    assert.equal(r.OVERRIDE_GITHUB_TOKEN, undefined);
+    assert.equal(r.DEFAULT_WORKFLOW_TOKEN, undefined);
+    assert.equal(r.SSH_SIGNING_KEY, undefined);
+  });
+
+  it('strips the GitHub-Actions INPUT_<NAME> duplicate of a sensitive var', () => {
+    // GitHub Actions auto-creates INPUT_<NAME> copies of `with:` inputs.
+    const r = sanitizeEnvForSubprocess({
+      INPUT_ANTHROPIC_API_KEY: 'sk-ant',
+      INPUT_ALL_INPUTS: '{"k":"v"}',
+      INPUT_OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer t',
+    });
+    assert.equal(r.INPUT_ANTHROPIC_API_KEY, undefined);
+    assert.equal(r.INPUT_ALL_INPUTS, undefined);
+    assert.equal(r.INPUT_OTEL_EXPORTER_OTLP_HEADERS, undefined);
+  });
+
+  it('keeps a benign INPUT_<NAME> that is not sensitive', () => {
+    const r = sanitizeEnvForSubprocess({ INPUT_MODEL: 'opus', INPUT_VERBOSE: 'true' });
+    assert.equal(r.INPUT_MODEL, 'opus');
+    assert.equal(r.INPUT_VERBOSE, 'true');
+  });
+});
+
+describe('SENSITIVE_ENV_SET – parity additions', () => {
+  for (const k of [
+    'ANTHROPIC_CUSTOM_HEADERS',
+    'OTEL_EXPORTER_OTLP_HEADERS',
+    'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+    'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
+    'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+    'AWS_BEARER_TOKEN_BEDROCK',
+    'AZURE_CLIENT_CERTIFICATE_PATH',
+    'ACTIONS_ID_TOKEN_REQUEST_URL',
+    'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+    'ACTIONS_RUNTIME_URL',
+    'ACTIONS_RUNTIME_TOKEN',
+    'ALL_INPUTS',
+    'OVERRIDE_GITHUB_TOKEN',
+    'DEFAULT_WORKFLOW_TOKEN',
+    'SSH_SIGNING_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_FOUNDRY_API_KEY',
+  ]) {
+    it(`contains ${k}`, () => {
+      assert.ok(SENSITIVE_ENV_SET.has(k));
+    });
+  }
+});

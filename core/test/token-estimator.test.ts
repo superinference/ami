@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { estimateTokens, estimateToolCallTokens, estimateMessageTokens, estimateConversationTokens } from '../src/token-estimator';
+import { estimateTokens, estimateToolCallTokens, estimateMessageTokens, estimateConversationTokens, estimateBlockTokens, estimateContentTokens, estimateTokensForFileType, charsPerTokenForFileType, IMAGE_DOCUMENT_TOKEN_ESTIMATE } from '../src/token-estimator';
 
 describe('estimateTokens', () => {
   it('returns 0 for empty string', () => {
@@ -84,15 +84,95 @@ describe('estimateMessageTokens', () => {
         { type: 'text', text: 'Describe this image' },
       ],
     } as any);
-    assert.ok(estimate > 4);
+    // image (2000) + the text + overhead
+    assert.ok(estimate > IMAGE_DOCUMENT_TOKEN_ESTIMATE);
   });
 
-  it('handles array content with no text parts', () => {
+  it('counts an image block as the fixed conservative estimate, not zero', () => {
     const estimate = estimateMessageTokens({
       role: 'user',
       content: [{ type: 'image', source: { data: 'base64data' } }],
     } as any);
-    assert.equal(estimate, 4);
+    assert.equal(estimate, IMAGE_DOCUMENT_TOKEN_ESTIMATE + 4);
+  });
+});
+
+describe('estimateBlockTokens (per-block-type dispatch)', () => {
+  it('counts a tool_use block by name + serialized input, not zero', () => {
+    const block = { type: 'tool_use', name: 'bash', input: { command: 'find / -name "*.ts"'.repeat(20) } };
+    const est = estimateBlockTokens(block);
+    assert.ok(est > 20, 'large tool_use input must contribute many tokens');
+  });
+
+  it('counts a thinking block by its thinking text', () => {
+    const est = estimateBlockTokens({ type: 'thinking', thinking: 'x'.repeat(400) });
+    assert.ok(est >= 100);
+  });
+
+  it('counts a redacted_thinking block by its data payload', () => {
+    const est = estimateBlockTokens({ type: 'redacted_thinking', data: 'y'.repeat(400) });
+    assert.ok(est >= 100);
+  });
+
+  it('gives image and document a fixed conservative estimate (not char-counted)', () => {
+    const hugePdf = { type: 'document', source: { data: 'A'.repeat(1_330_000) } };
+    assert.equal(estimateBlockTokens(hugePdf), IMAGE_DOCUMENT_TOKEN_ESTIMATE);
+    assert.equal(estimateBlockTokens({ type: 'image', source: { data: 'A'.repeat(1_330_000) } }), IMAGE_DOCUMENT_TOKEN_ESTIMATE);
+  });
+
+  it('recurses into tool_result content (string and nested blocks)', () => {
+    assert.equal(estimateBlockTokens({ type: 'tool_result', content: 'hello' }), estimateTokens('hello'));
+    const nested = { type: 'tool_result', content: [{ type: 'text', text: 'abcd' }, { type: 'image', source: {} }] };
+    assert.equal(estimateBlockTokens(nested), estimateTokens('abcd') + IMAGE_DOCUMENT_TOKEN_ESTIMATE);
+  });
+
+  it('counts a raw string block directly', () => {
+    assert.equal(estimateBlockTokens('abcd'), estimateTokens('abcd'));
+  });
+
+  it('serializes unknown block types instead of dropping them', () => {
+    const est = estimateBlockTokens({ type: 'server_tool_use', foo: 'z'.repeat(80) });
+    assert.ok(est > 0);
+  });
+
+  it('returns 0 for a non-object, non-string block', () => {
+    assert.equal(estimateBlockTokens(42 as any), 0);
+    assert.equal(estimateBlockTokens(null as any), 0);
+  });
+
+  it('text block with non-string text counts as 0', () => {
+    assert.equal(estimateBlockTokens({ type: 'text', text: 123 }), 0);
+  });
+
+  it('thinking/redacted block with missing payload counts as 0', () => {
+    assert.equal(estimateBlockTokens({ type: 'thinking' }), 0);
+    assert.equal(estimateBlockTokens({ type: 'redacted_thinking' }), 0);
+  });
+});
+
+describe('estimateContentTokens', () => {
+  it('handles nullish, string, array and object content', () => {
+    assert.equal(estimateContentTokens(null), 0);
+    assert.equal(estimateContentTokens(undefined), 0);
+    assert.equal(estimateContentTokens('abcd'), estimateTokens('abcd'));
+    assert.equal(estimateContentTokens([{ type: 'text', text: 'ab' }]), estimateTokens('ab'));
+    assert.ok(estimateContentTokens({ nested: 'x'.repeat(40) }) > 0);
+  });
+});
+
+describe('charsPerTokenForFileType / estimateTokensForFileType', () => {
+  it('uses a denser 2 chars/token ratio for JSON family', () => {
+    assert.equal(charsPerTokenForFileType('json'), 2);
+    assert.equal(charsPerTokenForFileType('.jsonl'), 2);
+    assert.equal(charsPerTokenForFileType('JSONC'), 2);
+    assert.equal(charsPerTokenForFileType('ts'), 4);
+  });
+
+  it('estimates dense JSON at roughly double the generic estimate', () => {
+    const json = '{"a":1,"b":2,"c":3}'.repeat(10);
+    assert.equal(estimateTokensForFileType(json, 'json'), Math.ceil(json.length / 2));
+    assert.ok(estimateTokensForFileType(json, 'json') > estimateTokens(json));
+    assert.equal(estimateTokensForFileType('', 'json'), 0);
   });
 });
 

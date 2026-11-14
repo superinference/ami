@@ -393,11 +393,33 @@ export function detectSelfKill(command: string): string | null {
   return null;
 }
 
-function detectBlockedSleep(command: string, runInBackground: boolean, hasCustomTimeout: boolean): string | null {
+const SLEEP_SUFFIX_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+
+/**
+ * Total duration (seconds) of a leading `sleep` command, or null if the command
+ * is not a bare `sleep`. Mirrors GNU coreutils grammar: `sleep NUMBER[SUFFIX]...`
+ * where SUFFIX ∈ {s,m,h,d} (default seconds), NUMBER may be a decimal, and
+ * multiple arguments are summed (`sleep 1m 30` = 90s).
+ */
+export function parseSleepSeconds(command: string): number | null {
+  const m = command.match(/^\s*sleep\s+(.+?)\s*$/i);
+  if (!m) return null;
+  const args = m[1].split(/\s+/);
+  let total = 0;
+  for (const arg of args) {
+    const a = arg.match(/^(\d*\.?\d+)([smhd]?)$/i);
+    if (!a) return null; // not a plain sleep duration (var, expr, flag, …) — don't guess
+    total += parseFloat(a[1]) * SLEEP_SUFFIX_SECONDS[(a[2] || 's').toLowerCase()];
+  }
+  return total;
+}
+
+export function detectBlockedSleep(command: string, runInBackground: boolean, hasCustomTimeout: boolean): string | null {
   if (runInBackground || hasCustomTimeout) return null;
-  const match = command.match(/^\s*sleep\s+(\d+)/);
-  if (match && parseInt(match[1]) > 10) {
-    return `Blocking sleep for ${match[1]}s detected. Use run_in_background: true for long waits, or schedule_wakeup for timed delays.`;
+  const seconds = parseSleepSeconds(command);
+  if (seconds !== null && seconds > 10) {
+    const pretty = Number.isInteger(seconds) ? `${seconds}` : seconds.toFixed(2).replace(/\.?0+$/, '');
+    return `Blocking sleep for ${pretty}s detected. Use run_in_background: true for long waits, or schedule_wakeup for timed delays.`;
   }
   return null;
 }
@@ -417,11 +439,33 @@ export const SENSITIVE_ENV_SET = new Set([
   'BUN_CONFIG_TOKEN',
   'PYPI_TOKEN',
   'SSH_AUTH_SOCK', 'GIT_ASKPASS',
+  // --- Credential-bearing vars whose "secret" word is NOT the last name
+  //     segment, so the suffix patterns below cannot catch them. These mirror
+  //     the GitHub-Actions subprocess scrub list: a prompt-injection attack in
+  //     a bash command (e.g. `echo $ALL_INPUTS`) could otherwise exfiltrate
+  //     these tokens. The parent AMI process keeps them (lazy SDK reads); only
+  //     spawned child processes are scrubbed.
+  'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_FOUNDRY_API_KEY',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  // OTLP exporter headers — documented to carry Authorization=Bearer tokens for
+  // monitoring backends; read in-process by the OTEL SDK, never needed by children.
+  'OTEL_EXPORTER_OTLP_HEADERS', 'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+  'OTEL_EXPORTER_OTLP_METRICS_HEADERS', 'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+  // Cloud bearer creds whose token word is mid-name.
+  'AWS_BEARER_TOKEN_BEDROCK', 'AZURE_CLIENT_CERTIFICATE_PATH',
+  // GitHub Actions OIDC — minting an App installation token → repo takeover.
+  'ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+  // GitHub Actions artifact/cache API — cache poisoning → supply-chain pivot.
+  'ACTIONS_RUNTIME_URL', 'ACTIONS_RUNTIME_TOKEN',
+  // action-specific duplicates — ALL_INPUTS contains anthropic_api_key as JSON.
+  'ALL_INPUTS', 'OVERRIDE_GITHUB_TOKEN', 'DEFAULT_WORKFLOW_TOKEN', 'SSH_SIGNING_KEY',
 ]);
 
 const SENSITIVE_SUFFIX_PATTERNS = [
   /_KEY$/i, /_SECRET$/i, /_TOKEN$/i, /_PASSWORD$/i,
   /_CREDENTIALS$/i, /_PRIVATE_KEY$/i, /_API_KEY$/i,
+  // Any *_HEADERS var — header values commonly carry Authorization=Bearer tokens.
+  /_HEADERS$/i,
 ];
 
 const SAFE_PREFIX_RE = /^(PATH|HOME|USER|SHELL|TERM|LANG|DISPLAY|TMPDIR|PWD|OLDPWD|HOSTNAME|LOGNAME|SHLVL|_)$/i;
@@ -442,6 +486,11 @@ function isSafeEnvVar(key: string): boolean {
 // — a different threat model, hence a different name (audit #21: not a duplicate, renamed to
 // end the same-name collision).
 function isSubprocessSensitiveEnvVar(key: string): boolean {
+  // GitHub Actions auto-creates INPUT_<NAME> duplicates of `with:` inputs
+  // (e.g. INPUT_ANTHROPIC_API_KEY, INPUT_ALL_INPUTS), duplicating the same
+  // secrets under a prefixed name — scrub those exactly as their base var.
+  const input = /^INPUT_(.+)$/i.exec(key);
+  if (input && isSubprocessSensitiveEnvVar(input[1])) return true;
   if (SENSITIVE_ENV_SET.has(key)) return true;
   if (isSafeEnvVar(key)) return false;
   return SENSITIVE_SUFFIX_PATTERNS.some(p => p.test(key));
@@ -899,10 +948,40 @@ interface ExitCodeInfo {
   isNonError?: boolean;
 }
 
-function interpretExitCode(command: string, exitCode: number): ExitCodeInfo | null {
+/**
+ * Reduce a raw command token to its base command name for exit-code semantics:
+ * strip a PowerShell call operator (`&`/`.`) prefix, surrounding quotes, the
+ * directory portion of a path (`/usr/bin/grep` → `grep`, Windows `\` too), and a
+ * trailing `.exe` (case-insensitive). Without this, a path-qualified or quoted
+ * command (`/usr/bin/grep`, `"grep"`, `grep.exe`) would miss its exit-code rule.
+ */
+export function normalizeBaseCommand(raw: string): string {
+  let b = (raw || '').trim();
+  b = b.replace(/^[&.]+\s*/, ''); // PowerShell call/dot-source operator
+  if (b.length >= 2 && ((b[0] === '"' && b[b.length - 1] === '"') || (b[0] === "'" && b[b.length - 1] === "'"))) {
+    b = b.slice(1, -1);
+  }
+  const slash = Math.max(b.lastIndexOf('/'), b.lastIndexOf('\\'));
+  if (slash >= 0) b = b.slice(slash + 1);
+  b = b.replace(/\.exe$/i, '');
+  return b;
+}
+
+export function interpretExitCode(command: string, exitCode: number): ExitCodeInfo | null {
   const parts = command.trim().split(/[|;&]\s*/);
   const lastCmd = parts[parts.length - 1].trim().split(/\s+/)[0];
-  const base = lastCmd || command.trim().split(/\s+/)[0];
+  const base = normalizeBaseCommand(lastCmd || command.trim().split(/\s+/)[0]);
+  // robocopy uses a bitfield exit code: bits 0-2 (values 1/2/4) are informational
+  // success states, bit 3 (8) = mismatched/failed files, bit 4 (16) = fatal. So an
+  // exit code < 8 is success, not an error.
+  if (base.toLowerCase() === 'robocopy' && exitCode >= 0 && exitCode < 8) {
+    const notes: string[] = [];
+    if (exitCode & 1) notes.push('files copied');
+    if (exitCode & 2) notes.push('extra files/dirs present');
+    if (exitCode & 4) notes.push('mismatched files/dirs present');
+    const detail = notes.length ? notes.join(', ') : 'no files needed copying';
+    return { message: `(robocopy success — exit ${exitCode}: ${detail})`, isNonError: true };
+  }
   if (exitCode === 1 && (base === 'grep' || base === 'egrep' || base === 'fgrep' || base === 'rg')) return { message: '(no matches found — not an error)', isNonError: true };
   if (exitCode === 1 && base === 'diff') return { message: '(files differ — not an error)', isNonError: true };
   if (exitCode === 1 && base === 'git') {

@@ -8,6 +8,7 @@ import { createDefaultTools } from './index';
 import { coerceBool } from '../utils/coerce';
 import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
+import { getCurrentTeam, registerTeamMember, setTeamMemberActive } from './team';
 import { SessionManager } from '../session';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
@@ -79,6 +80,42 @@ export function resetAgentRegistry(): void {
 const DEFAULT_MAX_AGENT_DEPTH = 5;
 export const DEFAULT_MAX_AGENTS_PER_SESSION = 50;
 export const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
+
+/**
+ * Universal baseline denylist applied to EVERY sub-agent regardless of its mode
+ * or explicit tool allowlist (mirrors Claude Code's ALL_AGENT_DISALLOWED_TOOLS):
+ *  - plan_mode is interactive-only — its "exit" awaits a user approval that never
+ *    comes in a sub-agent, and its state is module-global (would corrupt the
+ *    parent's plan state).
+ *  - workflow would let a sub-agent launch another workflow run recursively.
+ * An explicit agent-def `tools` list (even `['*']`) cannot reintroduce these.
+ */
+export const ALL_AGENT_DISALLOWED_TOOLS = new Set(['plan_mode', 'workflow']);
+
+/** Bare family aliases → a concrete default model string. */
+export const MODEL_ALIASES: Record<string, string> = {
+  'sonnet': 'claude-sonnet-4',
+  'opus': 'claude-opus-4',
+  'haiku': 'claude-haiku-4-5',
+};
+
+/**
+ * Resolve a sub-agent's model from a requested value, with ANTI-DOWNGRADE:
+ * when the request is a bare family alias (sonnet/opus/haiku) and the PARENT is
+ * already running a model of that same family, inherit the parent's EXACT model
+ * string instead of the generic alias default. So a parent on
+ * `claude-opus-4-8` that spawns `task({ model: 'opus' })` keeps the child on
+ * `claude-opus-4-8` rather than silently downgrading it to `claude-opus-4`.
+ * A full model name is returned verbatim; an unknown alias passes through.
+ */
+export function resolveSubagentModel(requested: string | undefined, parentModel: string | undefined): string | undefined {
+  if (!requested) return undefined;
+  const isFamilyAlias = Object.prototype.hasOwnProperty.call(MODEL_ALIASES, requested);
+  if (isFamilyAlias && parentModel && parentModel.toLowerCase().includes(requested.toLowerCase())) {
+    return parentModel;
+  }
+  return MODEL_ALIASES[requested] || requested;
+}
 
 /**
  * Decide whether an isolated agent worktree is safe to remove after the
@@ -285,13 +322,9 @@ export const taskTool: ToolDefinition = {
       };
     }
 
-    const MODEL_ALIASES: Record<string, string> = {
-      'sonnet': 'claude-sonnet-4',
-      'opus': 'claude-opus-4',
-      'haiku': 'claude-haiku-4-5',
-    };
     const rawModel = input.model as string | undefined;
-    const modelOverride = rawModel ? (MODEL_ALIASES[rawModel] || rawModel) : undefined;
+    const parentModel = context._providerConfig?.model;
+    const modelOverride = resolveSubagentModel(rawModel, parentModel);
 
     if (context._hookManager) {
       const agentTypeCheck = await context._hookManager.executePreToolUse?.({
@@ -329,8 +362,26 @@ export const taskTool: ToolDefinition = {
       agentTokenBudget = agentDef.autoCompactWindow;
 
       if (agentDef.tools && agentDef.tools.length > 0) {
-        const allowed = new Set(agentDef.tools);
-        tools = allTools.getAll().filter(t => allowed.has(t.name));
+        const everything = allTools.getAll();
+        if (agentDef.tools.includes('*')) {
+          // Wildcard allowlist: the agent gets every tool (the baseline denylist
+          // below still strips plan_mode/workflow).
+          tools = everything;
+        } else {
+          // Reject an allowlist naming a tool that does not exist — a silent
+          // filter-to-nothing hides the typo and strands the agent.
+          const known = new Set(everything.map(t => t.name));
+          const invalid = agentDef.tools.filter(n => !known.has(n));
+          if (invalid.length > 0) {
+            return {
+              output: `Error: agent "${subagentType}" lists unknown tool(s): ${invalid.join(', ')}. ` +
+                `Available tools: ${[...known].sort().join(', ')}.`,
+              isError: true,
+            };
+          }
+          const allowed = new Set(agentDef.tools);
+          tools = everything.filter(t => allowed.has(t.name));
+        }
         if (!shouldAllowNestedTask(currentDepth, maxDepth)) {
           tools = tools.filter(t => t.name !== 'task');
         }
@@ -353,11 +404,9 @@ export const taskTool: ToolDefinition = {
       tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
     }
 
-    // Universal guard: plan_mode is interactive-only (its "exit" awaits user
-    // approval that never comes in a subagent, and its state is module-global).
-    // Strip it unconditionally so an explicit agent-def `tools` list can't
-    // reintroduce it. See filterToolsForAgent for the rationale.
-    tools = tools.filter(t => t.name !== 'plan_mode');
+    // Universal baseline denylist — applied last so no mode or explicit
+    // allowlist (incl. `['*']`) can reintroduce plan_mode or workflow.
+    tools = tools.filter(t => !ALL_AGENT_DISALLOWED_TOOLS.has(t.name));
 
     const subAbort = new AbortController();
     // Providers often serialize booleans as the STRING "true"/"false" in tool-call
@@ -466,6 +515,11 @@ export const taskTool: ToolDefinition = {
         agentNameRegistry.set(agentName, taskId);
       }
       if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
+      // If a team is active, a named teammate joins it as an active member so the
+      // team-delete guard can see it and refuse to disband while it runs.
+      if (agentName && getCurrentTeam()) {
+        registerTeamMember({ name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd });
+      }
       const tasksDir = projectStateDir(context.cwd, 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
       const outputPath = path.join(tasksDir, `${taskId}.output`);
@@ -562,6 +616,9 @@ export const taskTool: ToolDefinition = {
         if (!result) {
           try { fs.writeFileSync(outputPath, '(subagent produced no output)'); } catch { /* dir removed */ }
         }
+        // The teammate has finished — mark it idle so team_delete no longer
+        // treats it as an active member blocking teardown.
+        setTeamMemberActive(taskId, false);
         if (context.processManager) {
           const label = taskDescription || `${prompt.slice(0, 80)}`;
           context.processManager.updateEntry(taskId, {
@@ -583,6 +640,9 @@ export const taskTool: ToolDefinition = {
       agentNameRegistry.set(agentName, taskId);
     }
     if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
+    if (agentName && getCurrentTeam()) {
+      registerTeamMember({ name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd });
+    }
     let resultText = '';
 
     let effectivePromptForSubmit = effectivePrompt;
@@ -669,6 +729,9 @@ export const taskTool: ToolDefinition = {
     } finally {
       clearStallTimer();
       subEngine.shutdown?.();
+      // Foreground teammate finished (success or error) — mark it idle so it no
+      // longer blocks team_delete.
+      setTeamMemberActive(taskId, false);
     }
     context.abortSignal.removeEventListener('abort', forwardAbort);
 
@@ -678,11 +741,15 @@ export const taskTool: ToolDefinition = {
 
     if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
       try {
-        const status = child_process.execSync('git status --porcelain', { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
-        const unpushed = child_process.execSync('git rev-list HEAD --not --remotes', { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
+        // Shell-free: pass the worktree path as an argv element to git, never
+        // interpolated into a shell command line. A worktree path with a space
+        // or shell metacharacter would otherwise let `execSync` run arbitrary
+        // commands during cleanup.
+        const status = child_process.execFileSync('git', ['status', '--porcelain'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
+        const unpushed = child_process.execFileSync('git', ['rev-list', 'HEAD', '--not', '--remotes'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
         const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
         if (shouldRemoveWorktree(status, unpushed, runningAgents)) {
-          child_process.execSync(`git worktree remove --force "${effectiveCwd}"`, { cwd: context.cwd, timeout: 10000 });
+          child_process.execFileSync('git', ['worktree', 'remove', '--force', effectiveCwd], { cwd: context.cwd, timeout: 10000 });
           resultText += '\n[Agent worktree cleaned up — no changes detected]';
         }
       } catch {}

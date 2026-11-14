@@ -467,9 +467,15 @@ describe('CronScheduler — formatSchedule', () => {
     assert.ok(result.includes('at minute 30'));
   });
 
-  it('formats specific hour', () => {
+  it('formats a specific minute+hour as a 12-hour time', () => {
     const result = sched.formatSchedule('0 9 * * *');
-    assert.ok(result.includes('at hour 9'));
+    assert.ok(result.includes('at 9:00 am'));
+  });
+
+  it('formats a PM hour with the am/pm suffix', () => {
+    assert.ok(sched.formatSchedule('0 15 * * *').includes('at 3:00 pm'));
+    assert.ok(sched.formatSchedule('0 0 * * *').includes('at 12:00 am'));
+    assert.ok(sched.formatSchedule('0 12 * * *').includes('at 12:00 pm'));
   });
 
   it('formats specific day of month', () => {

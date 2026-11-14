@@ -119,7 +119,12 @@ export function supportsOneMillionContextBeta(modelId: string): boolean {
 
 export function getContextWindow(modelId: string): number {
   const lower = modelId.toLowerCase();
-  const oneMillion = hasOneMillionMarker(modelId);
+  // Grant the 1M window either when the id carries an explicit [1m]/-1m marker,
+  // OR when the model is one for which the provider unconditionally sends the
+  // `context-1m-2025-08-07` beta (Sonnet 4+). In the latter case the endpoint
+  // actually serves a 1M window with no id marker, so the local budget must match
+  // or compaction fires far too early. Mirrors Claude's betas+modelSupports1M path.
+  const oneMillion = hasOneMillionMarker(modelId) || supportsOneMillionContextBeta(modelId);
   for (const [key, tokens] of Object.entries(CONTEXT_WINDOWS)) {
     const keyLower = key.toLowerCase();
     const idx = lower.indexOf(keyLower);
@@ -541,6 +546,46 @@ const BUDGET_MAP: Record<ThinkingLevel, number> = {
 export const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 
 /**
+ * Per-family max-output-token ceilings. Several models pair a large context
+ * window with a much smaller completion cap (e.g. claude-3-5-sonnet has a 200k
+ * window but only an 8,192-token output cap), so a request that fits the window
+ * can still exceed the model's output limit and be rejected by the API. Longer
+ * ids come first so `claude-3-5-sonnet` is not shadowed by `claude-3`. A live
+ * `/models` capability can override via registerModelCapabilities({ maxOutputTokens }).
+ */
+const OUTPUT_TOKEN_CAPS: Record<string, number> = {
+  // Anthropic — older small-output families
+  'claude-3-5-sonnet': 8192,
+  'claude-3.5-sonnet': 8192,
+  'claude-3-5-haiku': 8192,
+  'claude-3.5-haiku': 8192,
+  'claude-3-opus': 4096,
+  'claude-3-sonnet': 4096,
+  'claude-3-haiku': 4096,
+  // OpenAI
+  'gpt-4-turbo': 4096,
+  'gpt-4o-mini': 16384,
+  'gpt-4o': 16384,
+  'o1-mini': 65536,
+};
+
+/**
+ * The model's own max-output-token ceiling, or undefined when unknown (callers
+ * then clamp only against the context window). Honors a dynamically-registered
+ * capability first, then the static family table.
+ */
+export function getMaxOutputTokens(modelId: string): number | undefined {
+  if (typeof modelId !== 'string' || !modelId) return undefined;
+  const registered = getModelCapabilities(modelId)?.maxOutputTokens;
+  if (registered !== undefined && registered > 0) return registered;
+  const lower = modelId.toLowerCase();
+  for (const [key, cap] of Object.entries(OUTPUT_TOKEN_CAPS)) {
+    if (lower.includes(key)) return cap;
+  }
+  return undefined;
+}
+
+/**
  * Tokens held back so the prompt and the completion do not land on the
  * same last token of the window.
  */
@@ -566,10 +611,16 @@ export function fitOutputTokens(
   requested: number,
   contextWindow: number,
   promptTokens: number,
+  modelId?: string,
 ): number {
-  const ask = Number.isFinite(requested) && requested > 0
+  let ask = Number.isFinite(requested) && requested > 0
     ? Math.floor(requested)
     : DEFAULT_MAX_OUTPUT_TOKENS;
+  // Clamp against the model's own output ceiling first: a request that fits the
+  // context window can still exceed the model's max-output cap (e.g. 8,192 for
+  // claude-3-5-sonnet) and be rejected by the API.
+  const outputCap = modelId ? getMaxOutputTokens(modelId) : undefined;
+  if (outputCap !== undefined) ask = Math.min(ask, outputCap);
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) return ask;
   const prompt = Number.isFinite(promptTokens) && promptTokens > 0 ? Math.floor(promptTokens) : 0;
   const cap = contextWindow - prompt - OUTPUT_FIT_SAFETY_TOKENS;

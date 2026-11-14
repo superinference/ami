@@ -103,8 +103,7 @@ describe('credential-guard :: containsCredential negatives', () => {
     'short', // below length floor
     '',
     'sk-tooshort', // sk- prefix but too short for pattern
-    'password = hunterhunter', // low entropy assigned value, not flagged
-    'name: a repeated aaaaaaaaaaaaaaaaaaaa string', // low variety
+    'name: a repeated aaaaaaaaaaaaaaaaaaaa string', // low variety, non-secret key
   ];
   for (const t of benign) {
     it(`ignores benign input ${JSON.stringify(t).slice(0, 40)}`, () => {
@@ -115,6 +114,12 @@ describe('credential-guard :: containsCredential negatives', () => {
   it('returns false for null-ish/empty text', () => {
     assert.equal(containsCredential(''), false);
     assert.equal(containsCredential(undefined as unknown as string), false);
+  });
+
+  // G30: a value assigned to a definite secret-named key is flagged regardless of
+  // entropy/length (field-name based), so a low-entropy password no longer leaks.
+  it('flags a low-entropy value assigned to a secret-named key (password)', () => {
+    assert.equal(containsCredential('password = hunterhunter'), true);
   });
 });
 

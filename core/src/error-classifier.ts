@@ -13,6 +13,28 @@
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 import { classifyZdrError } from './openrouter-zdr';
 
+/**
+ * Walk an error's `.cause` chain (depth-limited, loop-guarded) and return the
+ * first string `code` found. The Anthropic/undici SDK wraps the real
+ * network/TLS error (ETIMEDOUT, CERT_HAS_EXPIRED, …) inside nested `.cause`
+ * objects, so the top-level error is often a generic "Connection error." with no
+ * `code` of its own — inspecting only the top level misses it. Mirrors Claude's
+ * extractConnectionErrorDetails cause walk. `maxDepth` bounds the descent and a
+ * visited set guards against self-referential / cyclic causes.
+ */
+export function findErrorCode(err: unknown, maxDepth = 5): string | undefined {
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  for (let depth = 0; depth <= maxDepth; depth++) {
+    if (current === null || typeof current !== 'object' || seen.has(current)) break;
+    seen.add(current);
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 export const ERROR_CATEGORIES = [
   'rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
   'auth_error', 'output_too_large', 'content_filter', 'server_error',
@@ -174,7 +196,11 @@ export function classifyError(error: string | Error): ClassifiedError {
   }
 
   const errorString = error instanceof Error ? error.message : error;
-  const lower = errorString.toLowerCase();
+  // Fold the root `.cause` code (e.g. a nested ETIMEDOUT / CERT_HAS_EXPIRED that
+  // the SDK hides under a generic "Connection error.") into the matched text, so
+  // network/SSL classification works even when the top-level message has no code.
+  const causeCode = error instanceof Error ? findErrorCode(error) : undefined;
+  const lower = (causeCode ? `${errorString} ${causeCode}` : errorString).toLowerCase();
 
   // Abort — not retryable, checked first so it short-circuits.
   // Exclude ECONNABORTED which is a network error, not a user-initiated abort.

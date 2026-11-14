@@ -952,6 +952,7 @@ describe('scoutTool', () => {
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
       const cached = path.join(projectStateDir(work, 'scout-cache'), repoName);
       fs.mkdirSync(cached, { recursive: true });
+      fs.mkdirSync(path.join(cached, '.git'), { recursive: true });
       fs.writeFileSync(path.join(cached, 'main.go'), 'package main\n');
 
       const r = await scoutTool.execute({ repo: repoStr }, ctx({ cwd: work }));
@@ -970,6 +971,7 @@ describe('scoutTool', () => {
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
       const cached = path.join(projectStateDir(work, 'scout-cache'), repoName);
       fs.mkdirSync(cached, { recursive: true });
+      fs.mkdirSync(path.join(cached, '.git'), { recursive: true });
       fs.writeFileSync(path.join(cached, 'readme.md'), 'lowercase readme body\n');
       const r = await scoutTool.execute({ repo: repoStr }, ctx({ cwd: work }));
       assert.ok(!r.isError);
@@ -986,6 +988,7 @@ describe('scoutTool', () => {
       const repoName = repoStr.replace(/[^a-zA-Z0-9_-]/g, '_');
       const cached = path.join(projectStateDir(work, 'scout-cache'), repoName);
       fs.mkdirSync(cached, { recursive: true });
+      fs.mkdirSync(path.join(cached, '.git'), { recursive: true });
       fs.writeFileSync(path.join(cached, 'x.py'), 'print(1)\n');
       const r = await scoutTool.execute({ repo: repoStr }, ctx({ cwd: work }));
       assert.ok(!r.isError);

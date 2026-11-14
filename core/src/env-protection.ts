@@ -47,6 +47,156 @@ export function isPinnedVariable(name: string): boolean {
   return POLICY_VARIABLES.has(upper) || CODE_LOADING_VARIABLES.has(upper) || TELEMETRY_VARIABLES.has(upper);
 }
 
+// ---------------------------------------------------------------------------
+// Settings-sourced env-var trust (parity: Claude's managedEnvConstants.ts /
+// managedEnv.ts). A settings file can carry an `env` block. Applying it blindly
+// lets a committed, project-local file redirect inference traffic
+// (ANTHROPIC_BASE_URL), disable TLS verification (NODE_TLS_REJECT_UNAUTHORIZED)
+// or inject code (LD_PRELOAD) into the agent process. These helpers classify
+// which env vars are safe to apply from an untrusted (project-scoped) source and
+// which must be stripped.
+// ---------------------------------------------------------------------------
+
+/**
+ * Allowlist of env vars that are safe to apply from ANY settings source,
+ * including untrusted project-scoped files. Anything NOT in this set is treated
+ * as dangerous when it originates from a project-scoped source and is only
+ * applied from trusted sources (global/user config, managed policy, CLI flag).
+ *
+ * This is the source of truth for env-var safety. Keep it conservative: a var
+ * only belongs here if a malicious project cannot weaponize it (no network
+ * redirect, no TLS-trust change, no auth switch, no code loading).
+ */
+export const SAFE_ENV_VARS = new Set([
+  // Tuning knobs — behavior only, no trust boundary crossed
+  'BASH_DEFAULT_TIMEOUT_MS',
+  'BASH_MAX_OUTPUT_LENGTH',
+  'BASH_MAX_TIMEOUT_MS',
+  'MAX_MCP_OUTPUT_TOKENS',
+  'MAX_THINKING_TOKENS',
+  'MCP_TIMEOUT',
+  'MCP_TOOL_TIMEOUT',
+  'SUPERINFERENCE_MAX_OUTPUT_TOKENS',
+  'SUPERINFERENCE_SUBAGENT_MODEL',
+  'USE_BUILTIN_RIPGREP',
+  // Model-name defaults (identifiers only, not endpoints/auth)
+  'SUPERINFERENCE_MODEL',
+  'SUPERINFERENCE_DEFAULT_HAIKU_MODEL',
+  'SUPERINFERENCE_DEFAULT_SONNET_MODEL',
+  'SUPERINFERENCE_DEFAULT_OPUS_MODEL',
+  // Feature toggles
+  'DISABLE_AUTOUPDATER',
+  'DISABLE_COST_WARNINGS',
+  'DISABLE_ERROR_REPORTING',
+  'ENABLE_TOOL_SEARCH',
+]);
+
+/**
+ * True when `name` is in the SAFE_ENV_VARS allowlist (case-insensitive).
+ */
+export function isSafeEnvVar(name: string): boolean {
+  return SAFE_ENV_VARS.has(name.toUpperCase());
+}
+
+/**
+ * Env vars that control inference routing — which provider, which endpoint,
+ * which credentials. When the host owns routing (it sets
+ * SUPERINFERENCE_PROVIDER_MANAGED_BY_HOST in the spawn env), these are stripped
+ * from every settings-sourced env object so a user's config cannot redirect
+ * requests away from the host-configured provider.
+ *
+ * Classified by pattern (any `*_API_KEY`, `*_AUTH_TOKEN`, `*_BASE_URL`) plus an
+ * explicit set of routing/credential vars that don't match the suffixes.
+ */
+export const PROVIDER_MANAGED_ENV_VARS = new Set([
+  'AI_API_KEY',
+  'AI_BASE_URL',
+  'PROVIDER_BASE_URL',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_PROFILE',
+  'AWS_REGION',
+  'AWS_DEFAULT_REGION',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'HF_TOKEN',
+  'SUPERINFERENCE_PROVIDER_MANAGED_BY_HOST',
+]);
+
+const PROVIDER_MANAGED_ENV_SUFFIXES = ['_API_KEY', '_AUTH_TOKEN', '_BASE_URL'];
+
+/**
+ * True when `name` is an inference-routing / provider-credential env var.
+ */
+export function isProviderManagedEnvVar(name: string): boolean {
+  const upper = name.toUpperCase();
+  if (PROVIDER_MANAGED_ENV_VARS.has(upper)) return true;
+  return PROVIDER_MANAGED_ENV_SUFFIXES.some(s => upper.endsWith(s));
+}
+
+/** Why a settings-sourced env var was not applied to the process env. */
+export const ENV_REJECT_REASONS = ['pinned', 'provider-managed', 'unsafe-untrusted'] as const;
+export type EnvRejectReason = (typeof ENV_REJECT_REASONS)[number];
+
+/** Trust tier of the settings source supplying an `env` block. */
+export const ENV_TRUST_TIERS = ['trusted', 'project'] as const;
+export type EnvTrustTier = (typeof ENV_TRUST_TIERS)[number];
+
+export interface SettingsEnvFilterResult {
+  /** Env vars that passed the trust filter and may be written to process.env. */
+  applied: Record<string, string>;
+  /** Env vars that were rejected, with the reason. */
+  rejected: Array<{ key: string; reason: EnvRejectReason }>;
+}
+
+/**
+ * Filter a settings-sourced `env` block against the trust model.
+ *
+ * Rejection order (first match wins):
+ *  1. `pinned`           — policy/code-loading/telemetry vars are never settable
+ *                          from settings regardless of tier.
+ *  2. `provider-managed` — when `hostManagedProvider`, routing/credential vars
+ *                          are stripped so settings cannot re-route inference.
+ *  3. `unsafe-untrusted` — for a `project`-tier source, anything outside
+ *                          SAFE_ENV_VARS is dropped (a committed project file
+ *                          must not inject dangerous vars).
+ *
+ * A `trusted` source (global/user config, managed policy, explicit CLI flag)
+ * may apply any var that is not pinned or host-provider-managed.
+ */
+export function filterSettingsEnv(
+  env: Record<string, string> | undefined,
+  opts: { tier: EnvTrustTier; hostManagedProvider?: boolean },
+): SettingsEnvFilterResult {
+  const applied: Record<string, string> = {};
+  const rejected: Array<{ key: string; reason: EnvRejectReason }> = [];
+  if (!env) return { applied, rejected };
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== 'string') continue;
+    if (isPinnedVariable(key)) {
+      rejected.push({ key, reason: 'pinned' });
+      continue;
+    }
+    if (opts.hostManagedProvider && isProviderManagedEnvVar(key)) {
+      rejected.push({ key, reason: 'provider-managed' });
+      continue;
+    }
+    if (opts.tier === 'project' && !isSafeEnvVar(key)) {
+      rejected.push({ key, reason: 'unsafe-untrusted' });
+      continue;
+    }
+    applied[key] = value;
+  }
+  return { applied, rejected };
+}
+
+/** True when the host has declared that it owns inference routing. */
+export function isHostManagedProvider(envSource: NodeJS.ProcessEnv = process.env): boolean {
+  const v = envSource.SUPERINFERENCE_PROVIDER_MANAGED_BY_HOST;
+  return v != null && v !== '' && v !== '0' && v.toLowerCase() !== 'false';
+}
+
 export function getPinCategory(name: string): PinCategory | null {
   const upper = name.toUpperCase();
   if (POLICY_VARIABLES.has(upper)) return 'policy';

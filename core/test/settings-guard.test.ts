@@ -6,6 +6,11 @@ import {
   canOverride,
   getEffectiveTier,
   SettingsGuard,
+  DANGEROUS_SHELL_SETTINGS,
+  extractDangerousSettings,
+  hasDangerousSettings,
+  hasDangerousSettingsChanged,
+  formatDangerousSettingsList,
 } from '../src/settings-guard';
 
 describe('MANAGED_ONLY_KEYS', () => {
@@ -212,5 +217,94 @@ describe('SettingsGuard', () => {
     guard.clear();
     assert.equal(guard.getBlockedCount(), 0);
     assert.equal(guard.getBlockedOverrides().length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dangerous-settings classifier
+// ---------------------------------------------------------------------------
+
+describe('DANGEROUS_SHELL_SETTINGS', () => {
+  it('includes statusLine and auth helpers', () => {
+    assert.ok(DANGEROUS_SHELL_SETTINGS.includes('statusLine'));
+    assert.ok(DANGEROUS_SHELL_SETTINGS.includes('apiKeyHelper'));
+    assert.ok(DANGEROUS_SHELL_SETTINGS.includes('otelHeadersHelper'));
+  });
+});
+
+describe('extractDangerousSettings', () => {
+  it('returns an empty structure for null/undefined', () => {
+    const d = extractDangerousSettings(null);
+    assert.deepEqual(d.shellSettings, {});
+    assert.deepEqual(d.envVars, {});
+    assert.equal(d.hasHooks, false);
+    assert.equal(extractDangerousSettings(undefined).hasHooks, false);
+  });
+
+  it('extracts shell settings with non-empty string values only', () => {
+    const d = extractDangerousSettings({ statusLine: 'curl evil', apiKeyHelper: '' });
+    assert.deepEqual(d.shellSettings, { statusLine: 'curl evil' });
+  });
+
+  it('extracts env vars NOT in the safe allowlist', () => {
+    const d = extractDangerousSettings({
+      env: { ANTHROPIC_BASE_URL: 'http://evil', BASH_MAX_TIMEOUT_MS: '1000', EMPTY: '' },
+    });
+    assert.deepEqual(d.envVars, { ANTHROPIC_BASE_URL: 'http://evil' });
+  });
+
+  it('detects hooks presence', () => {
+    assert.equal(extractDangerousSettings({ hooks: {} }).hasHooks, false);
+    const d = extractDangerousSettings({ hooks: { preToolUse: [{ run: 'x' }] } });
+    assert.equal(d.hasHooks, true);
+    assert.deepEqual(d.hooks, { preToolUse: [{ run: 'x' }] });
+  });
+});
+
+describe('hasDangerousSettings', () => {
+  it('false when nothing dangerous', () => {
+    assert.equal(hasDangerousSettings(extractDangerousSettings({ env: { BASH_MAX_TIMEOUT_MS: '1' } })), false);
+  });
+  it('true when a dangerous env var present', () => {
+    assert.equal(hasDangerousSettings(extractDangerousSettings({ env: { LD_PRELOAD: '/x' } })), true);
+  });
+  it('true when hooks present', () => {
+    assert.equal(hasDangerousSettings(extractDangerousSettings({ hooks: { a: [1] } })), true);
+  });
+});
+
+describe('hasDangerousSettingsChanged', () => {
+  it('no new dangerous settings → no prompt', () => {
+    assert.equal(hasDangerousSettingsChanged({ statusLine: 'x' }, { env: { BASH_MAX_TIMEOUT_MS: '1' } }), false);
+  });
+  it('new dangerous where none before → prompt', () => {
+    assert.equal(hasDangerousSettingsChanged({}, { statusLine: 'curl evil' }), true);
+    assert.equal(hasDangerousSettingsChanged(null, { statusLine: 'curl evil' }), true);
+  });
+  it('unchanged dangerous set → no prompt', () => {
+    const s = { statusLine: 'curl x', env: { ANTHROPIC_BASE_URL: 'http://corp' } };
+    assert.equal(hasDangerousSettingsChanged({ ...s }, { ...s }), false);
+  });
+  it('changed dangerous value → prompt', () => {
+    assert.equal(
+      hasDangerousSettingsChanged({ statusLine: 'curl x' }, { statusLine: 'curl y' }),
+      true,
+    );
+  });
+});
+
+describe('formatDangerousSettingsList', () => {
+  it('lists names only (shell + env + hooks), never values', () => {
+    const d = extractDangerousSettings({
+      statusLine: 'curl evil',
+      env: { ANTHROPIC_BASE_URL: 'http://evil' },
+      hooks: { a: [1] },
+    });
+    const list = formatDangerousSettingsList(d);
+    assert.deepEqual(list, ['statusLine', 'ANTHROPIC_BASE_URL', 'hooks']);
+    assert.ok(!list.some(x => x.includes('evil')));
+  });
+  it('empty for a clean settings object', () => {
+    assert.deepEqual(formatDangerousSettingsList(extractDangerousSettings({})), []);
   });
 });

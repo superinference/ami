@@ -91,8 +91,9 @@ describe('fileEditTool – create / overwrite success paths', () => {
     );
     assert.equal(res.isError, undefined);
     assert.ok(res.output.includes('Successfully wrote'));
-    assert.ok(res.output.includes('more removed'));
-    assert.ok(res.output.includes('more added'));
+    // The overwrite renders a proportional unified diff: old lines removed, new added.
+    assert.ok(res.output.includes('-old0'));
+    assert.ok(res.output.includes('+new0'));
     // trackFileHistory created a backup
     const histDir = path.join(tmpDir, '.ami', 'file-history');
     assert.ok(fs.existsSync(histDir));
@@ -1144,16 +1145,18 @@ describe('fileEditTool – deeper error paths', () => {
   });
 
   it('inner encoding-detect failure still writes (readFileSync on unreadable existing file)', async () => {
-    const fp = path.join(tmpDir, 'noperm.txt');
+    const dir = path.join(tmpDir, 'noperm-dir');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'noperm.txt');
     fs.writeFileSync(fp, 'existing\n');
-    fs.chmodSync(fp, 0o000);
+    fs.chmodSync(fp, 0o000);   // inner encoding-detect readFileSync throws (caught)
+    fs.chmodSync(dir, 0o555);  // atomic temp-write in a read-only dir fails → outer catch
     try {
       const res = await fileEditTool.execute({ file_path: fp, new_string: 'fresh\n' }, ctx());
-      // readFileSync inside commitWrite throws (caught); the writeFileSync also
-      // fails for a 0o000 file, so we get a write error — but the inner catch ran.
       assert.equal(res.isError, true);
       assert.ok(res.output.includes('Error writing file'));
     } finally {
+      fs.chmodSync(dir, 0o755);
       fs.chmodSync(fp, 0o644);
     }
   });
@@ -1231,9 +1234,12 @@ describe('fileEditTool – branch completeness', () => {
   });
 
   it('single replace surfaces a commitWrite failure on a read-only file', async () => {
-    const fp = path.join(tmpDir, 'ro-single.txt');
+    const dir = path.join(tmpDir, 'ro-single-dir');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'ro-single.txt');
     fs.writeFileSync(fp, 'alpha beta\n');
-    fs.chmodSync(fp, 0o444);
+    fs.chmodSync(fp, 0o444);   // read-only file blocks the direct-write fallback
+    fs.chmodSync(dir, 0o555);  // read-only dir blocks the atomic temp-write
     try {
       const res = await fileEditTool.execute(
         { file_path: fp, old_string: 'alpha', new_string: 'gamma' },
@@ -1242,14 +1248,18 @@ describe('fileEditTool – branch completeness', () => {
       assert.equal(res.isError, true);
       assert.ok(res.output.includes('Error writing file'));
     } finally {
+      fs.chmodSync(dir, 0o755);
       fs.chmodSync(fp, 0o644);
     }
   });
 
   it('sequential edit surfaces a commitWrite failure on a read-only file', async () => {
-    const fp = path.join(tmpDir, 'ro-seq.txt');
+    const dir = path.join(tmpDir, 'ro-seq-dir');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'ro-seq.txt');
     fs.writeFileSync(fp, 'one two\n');
-    fs.chmodSync(fp, 0o444);
+    fs.chmodSync(fp, 0o444);   // read-only file blocks the direct-write fallback
+    fs.chmodSync(dir, 0o555);  // read-only dir blocks the atomic temp-write
     try {
       const res = await fileEditTool.execute(
         { file_path: fp, edits: [{ old_string: 'one', new_string: 'uno' }] },
@@ -1258,6 +1268,7 @@ describe('fileEditTool – branch completeness', () => {
       assert.equal(res.isError, true);
       assert.ok(res.output.includes('Error writing file'));
     } finally {
+      fs.chmodSync(dir, 0o755);
       fs.chmodSync(fp, 0o644);
     }
   });

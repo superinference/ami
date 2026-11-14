@@ -5,17 +5,17 @@ export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
-export { discoverPlugins, loadCommands } from './plugins';
-export type { PluginBundle, CommandDefinition } from './plugins';
+export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV } from './plugins';
+export type { PluginBundle, CommandDefinition, GitSourceValidation, PluginValidationResult, PluginValidationIssue, PluginLoadFailure } from './plugins';
 // Skill/agent TYPES + arg-safety live in core (bare building blocks). The
 // SkillManager (management) lives in common/src/skill-manager.ts.
 export type { SkillDefinition, AgentDefinition, SkillManagerLike } from './skills';
 export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS } from './skills';
 // Skill catalog types + path-safety for URL-based skill discovery.
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult } from './skill-catalog';
-export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl } from './skill-catalog';
-export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, estimateUsageCost } from './cost-tracker';
-export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest } from './cost-tracker';
+export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256 } from './skill-catalog';
+export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, estimateUsageCost, diffToolHashes, WEB_SEARCH_COST_PER_REQUEST, MIN_CACHE_MISS_TOKENS, PARTIAL_CACHE_BREAK_RATIO } from './cost-tracker';
+export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta } from './cost-tracker';
 export {
   resolveConfigDir, migrateLegacyDataDir, projectStateDir, projectSlug, journalPathFor, subagentJournalPathFor,
   toReferenceToolName, toReferenceModelId, buildUsageFields,
@@ -36,15 +36,24 @@ export type { McpServerState } from './mcp/manager';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
 export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES } from './error-classifier';
 export type { ClassifiedError, ErrorCategory } from './error-classifier';
-export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES } from './hooks';
-export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType } from './hooks';
+export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES, resolveHookTimeoutMs, combineHookAbort, HOOK_AGENT_DISALLOWED_TOOLS, isHttpHookUrlAllowed, interpolateHookHeaderEnv, unwrapHookSpecificOutput, matchesHookIf } from './hooks';
+export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy } from './hooks';
+export { shouldSkipHookDueToTrust } from './hook-protection';
+export { wildcardMatch } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
 export { SessionMemoryExtractor } from './session-memory';
 export type { SessionFact } from './session-memory';
 export { AnalyticsTracker, generateToolSummary } from './analytics';
-export type { AnalyticsEvent } from './analytics';
+export type { AnalyticsEvent, AnalyticsTrackerOpts } from './analytics';
+export {
+  getPrivacyLevel, isTelemetryDisabled, isEssentialTrafficOnly, isEnvTruthy,
+  sanitizeToolNameForAnalytics, sanitizeAnalyticsData, sanitizeAnalyticsValue,
+  shouldSampleEvent, MAX_ANALYTICS_STRING_LEN,
+} from './analytics';
+export type { PrivacyLevel, SanitizeOpts } from './analytics';
 export type { FileState } from './file-cache';
-export { Profiler } from './profiler';
+export { Profiler, FpsTracker } from './profiler';
+export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming } from './profiler';
 export { WorkspaceIndexer, findProjectRoot } from './workspace-indexer';
 export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
@@ -83,8 +92,8 @@ export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUT
 export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, THINKING_LEVELS, REVIEW_EFFORT_LEVELS } from './model-capabilities';
 export { PERMISSION_MODES, BASH_CLASSIFICATIONS } from './permissions';
 export { detectProvider, listModels, validateModel } from './model-registry';
-export { loadProjectConfig, loadGlobalConfig, mergeConfigs } from './config';
-export type { ProjectConfig } from './config';
+export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics } from './config';
+export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic } from './config';
 export { STRATEGY_NAMES } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
 export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK } from './prompt-categorizer';
@@ -94,13 +103,23 @@ export { SELECTION_STRATEGIES } from './credential-pool';
 export type { CredentialEntry, SelectionStrategy } from './credential-pool';
 export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
 export { estimateTokens, estimateToolSchemaTokens } from './utils/tokens';
+export {
+  atomicWriteFileSync,
+  secureMkdirSync,
+  OWNER_ONLY_FILE_MODE,
+  OWNER_ONLY_DIR_MODE,
+} from './utils/fs-atomic';
+export type { AtomicWriteOptions } from './utils/fs-atomic';
+export { getGitBranch } from './utils/git';
 export { generateTitle } from './title-generator';
 export { ProcessManager } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
 
-export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens } from './token-estimator';
-export type { ToolStats } from './tool-analytics';
+export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE } from './token-estimator';
+export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
+export type { ToolStats, ContextHint } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
+export { Reservoir, percentile as reservoirPercentile, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
@@ -122,6 +141,8 @@ export { AdmissionLog, ADMISSION_ACTIONS, ADMISSION_OUTCOMES, ADMISSION_SUBJECTS
 export type { AdmissionEntry, AdmissionAction, AdmissionOutcome, AdmissionSubject } from './admission-log';
 export { isPinnedVariable, getPinCategory, getAllPinnedVariables, EnvProtectionGuard, PIN_CATEGORIES } from './env-protection';
 export type { PinCategory, EnvSetAttempt, EnvCheckResult } from './env-protection';
+export { SAFE_ENV_VARS, isSafeEnvVar, PROVIDER_MANAGED_ENV_VARS, isProviderManagedEnvVar, ENV_REJECT_REASONS, ENV_TRUST_TIERS, filterSettingsEnv, isHostManagedProvider } from './env-protection';
+export type { EnvRejectReason, EnvTrustTier, SettingsEnvFilterResult } from './env-protection';
 export { isProtectedEvent, canHookEvent, PROTECTED_EVENTS, PASSTHROUGH_EVENTS, HOOK_TIERS, sortHooksByTier, isStricterVerdict, HookChainGuard } from './hook-protection';
 export type { HookTier, HookRegistration } from './hook-protection';
 export { isModAllowed, parseModId, normalizeModName, modNamesMatch, validateModId, ManagedModsEnforcer } from './managed-mods';
@@ -133,6 +154,8 @@ export type { RateLimitInfo } from './rate-limit-parser';
 export { canOverride, getEffectiveTier, filterManagedKeys, SettingsGuard, SETTINGS_TIERS } from './settings-guard';
 export type { SettingsTier, SettingsSource } from './settings-guard';
 export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from './settings-guard';
+export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged, formatDangerousSettingsList } from './settings-guard';
+export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';
 export { detectToolConflict, isReservedToolName, ToolRegistryGuard } from './tools/tool-registry-guard';
 export type { ToolConflict } from './tools/tool-registry-guard';
@@ -144,7 +167,8 @@ export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recov
 export { isProtectedLogTier, canModifyLog, UILogGuard, LOG_TIERS } from './ui-log-guard';
 export type { LogTier, LogEntry } from './ui-log-guard';
 export { validateEngineConfig, sanitizeEngineConfig } from './types';
-export { TelemetryBatchSender, sendOtlpBatch, toOtlpLogsPayload, otlpLogsUrl } from './analytics';
+export { TelemetryBatchSender, sendOtlpBatch, postOtlpBatch, isRetryableStatus, toOtlpLogsPayload, otlpLogsUrl } from './analytics';
+export type { OtlpSendResult } from './analytics';
 export type { TelemetryBatch } from './analytics';
 export { SessionDiffTracker } from './session';
 export type { FileChange } from './session';
@@ -160,3 +184,4 @@ export type { RequestSignature } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';
 export type { SecurityPattern, SecurityFinding } from './code-security-patterns';
 export { AMI_VERSION, AMI_CLIENT_NAME, AMI_CLIENT_INFO } from './version';
+export { escapeXmlAttr, escapeXmlText, safeXmlKey } from './xml-escape';

@@ -7,11 +7,10 @@ import * as os from 'os';
 import { configTool } from '../src/tools/config-tool';
 import type { ToolContext } from '../src/types';
 
-// Wave 1 coverage: exercises the remaining uncovered branches of config-tool.ts
-//   - set with key present but value === undefined  -> falls through to Usage error
-//   - set when existing config.json is corrupt JSON -> inner JSON.parse catch, resets to {}
-//   - set when the write path cannot be created     -> outer catch, isError output
-describe('configTool wave1 coverage', () => {
+// Branch coverage for the enhanced config-tool: corrupt-file guards (refuse to
+// clobber, distinguish absent vs corrupt), value-missing guidance, and the
+// write-failure path.
+describe('configTool corrupt/guard coverage', () => {
   let tmpDir: string;
 
   before(() => {
@@ -20,46 +19,40 @@ describe('configTool wave1 coverage', () => {
 
   after(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('set with a key but no value short-circuits to the Usage error', async () => {
+  it('set with a key but no value asks for a value (does not write)', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'novalue-'));
     const ctx = { cwd: dir } as ToolContext;
     const result = await configTool.execute!({ action: 'set', key: 'model' }, ctx);
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('Usage'));
-    // The guard must NOT have written a config file for an undefined value.
+    assert.ok(result.output.includes('Provide a value'));
     assert.equal(fs.existsSync(path.join(dir, '.ami', 'config.json')), false);
   });
 
-  it('set with an explicit undefined value short-circuits to the Usage error', async () => {
+  it('set with an explicit undefined value asks for a value', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'explicit-undef-'));
     const ctx = { cwd: dir } as ToolContext;
     const result = await configTool.execute!({ action: 'set', key: 'model', value: undefined }, ctx);
     assert.equal(result.isError, true);
-    assert.ok(result.output.includes('Usage'));
+    assert.ok(result.output.includes('Provide a value'));
     assert.equal(fs.existsSync(path.join(dir, '.ami', 'config.json')), false);
   });
 
-  it('set recovers when the existing config.json holds corrupt JSON', async () => {
+  it('set REFUSES to clobber an existing corrupt config (protects user data)', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'corrupt-'));
     const ctx = { cwd: dir } as ToolContext;
     const configDir = path.join(dir, '.ami');
     const configPath = path.join(configDir, 'config.json');
     fs.mkdirSync(configDir, { recursive: true });
-    // Pre-existing garbage that JSON.parse cannot handle -> inner catch resets to {}.
     fs.writeFileSync(configPath, '{ this is not: valid json ]');
 
     const result = await configTool.execute!({ action: 'set', key: 'provider', value: 'anthropic' }, ctx);
-    assert.equal(result.isError, undefined);
-    assert.ok(result.output.includes('provider'));
-    assert.ok(result.output.includes('anthropic'));
-
-    // The file must have been rewritten as valid JSON containing only the new key,
-    // proving the corrupt content was discarded (not merged).
-    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    assert.deepEqual(parsed, { provider: 'anthropic' });
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Refusing to write'));
+    // Corrupt content must be preserved untouched, not overwritten.
+    assert.equal(fs.readFileSync(configPath, 'utf-8'), '{ this is not: valid json ]');
   });
 
-  it('get recovers (no-config message) when config.json holds corrupt JSON', async () => {
+  it('get distinguishes a corrupt config from an absent one', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'corrupt-get-'));
     const ctx = { cwd: dir } as ToolContext;
     const configDir = path.join(dir, '.ami');
@@ -67,18 +60,18 @@ describe('configTool wave1 coverage', () => {
     fs.writeFileSync(path.join(configDir, 'config.json'), '}}not json{{');
 
     const result = await configTool.execute!({ action: 'get', key: 'model' }, ctx);
-    assert.ok(result.output.includes('No project config'));
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('corrupt'));
   });
 
-  it('set returns an isError result when the config directory cannot be created', async () => {
+  it('set returns an isError result when the config file cannot be written', async () => {
     const dir = fs.mkdtempSync(path.join(tmpDir, 'writefail-'));
     const ctx = { cwd: dir } as ToolContext;
-    // Create a FILE named ".ami" so mkdirSync(dirname) hits ENOTDIR
-    // and the outer catch returns an error result instead of throwing.
+    // Create a FILE named ".ami" so the write path hits ENOTDIR.
     fs.writeFileSync(path.join(dir, '.ami'), 'blocker');
 
     const result = await configTool.execute!({ action: 'set', key: 'model', value: 'gpt-4o' }, ctx);
     assert.equal(result.isError, true);
-    assert.ok(result.output.startsWith('Error:'));
+    assert.ok(result.output.includes('Error writing config'));
   });
 });

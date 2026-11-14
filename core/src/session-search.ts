@@ -33,6 +33,27 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
     try {
       const raw = fs.readFileSync(path.join(sessionsDir, file), 'utf-8');
       const session = JSON.parse(raw);
+      const sessionId = session.id ?? file.replace('.json', '');
+      // Session-level metadata (user tag + title) is searchable in /resume, so a
+      // labeled session surfaces even when no message body matches the query.
+      const metaText = [session.tag, session.customTitle, session.aiTitle]
+        .filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
+        .join(' ');
+      if (metaText) {
+        const lowerMeta = metaText.toLowerCase();
+        const metaMatch = terms.filter(t => lowerMeta.includes(t)).length;
+        if (metaMatch > 0) {
+          const literalBonus = terms.length > 1 && lowerMeta.includes(phrase) ? 1 : 0;
+          results.push({
+            sessionId,
+            role: 'meta',
+            content: metaText.slice(0, 300),
+            // Hoist a tag/title hit above scattered body matches of equal coverage.
+            score: metaMatch / terms.length + literalBonus + 0.5,
+            timestamp: session.createdAt,
+          });
+        }
+      }
       for (const msg of session.messages ?? []) {
         const content = typeof msg.content === 'string' ? msg.content : '';
         if (!content) continue;
@@ -43,7 +64,7 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
           // scattered-term matches of the same coverage.
           const literalBonus = terms.length > 1 && lower.includes(phrase) ? 1 : 0;
           results.push({
-            sessionId: session.id ?? file.replace('.json', ''),
+            sessionId,
             role: msg.role,
             content: content.slice(0, 300),
             score: matchCount / terms.length + literalBonus,

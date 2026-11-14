@@ -40,6 +40,12 @@ export const taskListTool: ToolDefinition = {
       return `${t.taskId}  PID ${t.pid}  ${status}  ${time}  ${t.description}`;
     });
 
-    return { output: `Background tasks (${tasks.length}):\n${lines.join('\n')}`, isError: false };
+    // Bounded tool output: cap the listing so a very large task set can't flood context.
+    const MAX_OUTPUT_CHARS = 30_000;
+    let body = lines.join('\n');
+    if (body.length > MAX_OUTPUT_CHARS) {
+      body = body.slice(0, MAX_OUTPUT_CHARS) + `\n... [task list truncated at ${MAX_OUTPUT_CHARS} chars]`;
+    }
+    return { output: `Background tasks (${tasks.length}):\n${body}`, isError: false };
   },
 };

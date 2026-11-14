@@ -87,7 +87,61 @@ export function stripEmptyTextBlocks(messages: Array<Record<string, unknown>>): 
   }
 }
 
+/**
+ * Remove duplicate tool_use / tool_result ids across messages (CC-1212).
+ *
+ * Compaction, resume, split-streaming re-pushes, or an orphan handler that ran
+ * twice can produce two assistant tool_call blocks carrying the SAME id, or two
+ * `role:'tool'` results for the same tool_call_id. The Anthropic API rejects
+ * these ("tool_use ids must be unique" / "duplicate tool_result") with a 400 that
+ * permanently deadlocks a resumed/compacted session. This keeps the FIRST
+ * occurrence of each id and drops later duplicates, mirroring Claude's
+ * `allSeenToolUseIds` pre-send pairing repair. Runs before orphan healing so the
+ * synthetic-result pass sees the deduped set.
+ */
+export function dedupeToolCallIds(messages: Message[]): Message[] {
+  const seenCallIds = new Set<string>();
+  const seenResultIds = new Set<string>();
+  const result: Message[] = [];
+
+  for (const msg of messages) {
+    // Drop a duplicate tool_result (same tool_call_id already emitted).
+    if (msg.role === 'tool') {
+      if (seenResultIds.has(msg.tool_call_id)) continue;
+      seenResultIds.add(msg.tool_call_id);
+      result.push(msg);
+      continue;
+    }
+    // Strip any tool_call whose id was already emitted (cross-message or within
+    // the same assistant message).
+    if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      const kept: typeof msg.tool_calls = [];
+      for (const tc of msg.tool_calls) {
+        if (seenCallIds.has(tc.id)) continue;
+        seenCallIds.add(tc.id);
+        kept.push(tc);
+      }
+      if (kept.length === msg.tool_calls.length) {
+        result.push(msg);
+      } else if (kept.length > 0) {
+        result.push({ ...msg, tool_calls: kept });
+      } else {
+        // Every tool_call was a duplicate; keep the message but without tool_calls
+        // so a stray assistant turn doesn't re-introduce the rejected ids.
+        const rest = { ...msg };
+        delete (rest as { tool_calls?: unknown }).tool_calls;
+        result.push(rest);
+      }
+      continue;
+    }
+    result.push(msg);
+  }
+
+  return result;
+}
+
 export function healOrphanedToolCalls(messages: Message[]): Message[] {
+  messages = dedupeToolCallIds(messages);
   const result: Message[] = [];
   const answeredIds = new Set<string>();
   // All assistant-issued tool_call ids, so we can drop tool_results that refer

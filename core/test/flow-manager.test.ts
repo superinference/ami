@@ -126,6 +126,16 @@ describe('FlowManager', () => {
       assert.equal(fm.getFlow(flowId)?.status, 'completed');
     });
 
+    it('records completedAt when a flow reaches a terminal status', () => {
+      const flowId = fm.getOrCreateActiveFlow('test');
+      fm.addAgent(flowId, 'agent-1');
+      assert.equal(fm.getFlow(flowId)?.completedAt, undefined, 'active flow has no completedAt');
+      const before = Date.now();
+      fm.updateFlowStatus(flowId, () => 'completed');
+      const completedAt = fm.getFlow(flowId)?.completedAt;
+      assert.ok(typeof completedAt === 'number' && completedAt >= before, 'completedAt set on terminal');
+    });
+
     it('sets partial when any agent failed', () => {
       const flowId = fm.getOrCreateActiveFlow('test');
       fm.addAgent(flowId, 'agent-1');
@@ -282,6 +292,26 @@ describe('FlowManager', () => {
       assert.ok(terminal.length <= 21, `terminal flows bounded, got ${terminal.length}`);
       assert.ok(flows.some(f => f.flowId === keptActive), 'active flow is never pruned');
       assert.ok(flows.length < 31, 'pruning actually happened');
+    });
+
+    it('evicts the oldest-FINISHED terminal flow (by completedAt, not createdAt)', () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 21; i++) {
+        const id = fm.createFlow(`t${i}`);
+        fm.addAgent(id, `a${i}`);
+        fm.updateFlowStatus(id, () => 'completed');
+        ids.push(id);
+      }
+      // Give every flow a distinct completion time; make ids[5] finish FIRST even
+      // though it was created in the middle (so createdAt != completedAt order).
+      ids.forEach((id, i) => { const f = fm.getFlow(id); if (f) f.completedAt = 1000 + i; });
+      const victim = fm.getFlow(ids[5])!;
+      victim.completedAt = 1;
+      // 21 terminal, cap 20 → one eviction, which must be the oldest-finished.
+      (fm as unknown as { pruneTerminal(): void }).pruneTerminal();
+      assert.equal(fm.getFlow(ids[5]), undefined, 'oldest-finished flow evicted');
+      assert.ok(fm.getFlow(ids[0]), 'a later-finished (older created) flow survives');
+      assert.ok(fm.getFlow(ids[20]), 'newest-finished flow survives');
     });
   });
 

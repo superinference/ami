@@ -13,6 +13,20 @@ export interface SkillCatalogEntry {
   version?: string;
   description?: string;
   files: string[];
+  /**
+   * Optional integrity map: relative file path → lowercase hex SHA-256 of the
+   * file's bytes. When present, the discovery layer verifies each downloaded
+   * file against its declared digest and refuses a tampered/corrupt file.
+   */
+  checksums?: Record<string, string>;
+}
+
+/** Lowercase 64-char hex SHA-256 digest. */
+const HEX_SHA256_RE = /^[a-f0-9]{64}$/;
+
+/** Whether `s` is a well-formed lowercase hex SHA-256 digest. */
+export function isHexSha256(s: unknown): s is string {
+  return typeof s === 'string' && HEX_SHA256_RE.test(s);
 }
 
 export interface SkillCatalogIndex {
@@ -135,11 +149,35 @@ export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
       continue;
     }
 
+    // Optional per-file integrity digests. Keep only well-formed hex SHA-256
+    // entries that correspond to a validated safe file; flag malformed ones.
+    let checksums: Record<string, string> | undefined;
+    if (entry.checksums !== undefined) {
+      if (!entry.checksums || typeof entry.checksums !== 'object' || Array.isArray(entry.checksums)) {
+        errors.push(`skills[${i}] "${entry.name}": "checksums" must be an object`);
+      } else {
+        const parsed: Record<string, string> = {};
+        for (const [file, digest] of Object.entries(entry.checksums as Record<string, unknown>)) {
+          if (!safeFiles.includes(file)) {
+            errors.push(`skills[${i}] "${entry.name}": checksum for unknown/unsafe file "${file}"`);
+            continue;
+          }
+          if (!isHexSha256(digest)) {
+            errors.push(`skills[${i}] "${entry.name}": invalid SHA-256 checksum for "${file}"`);
+            continue;
+          }
+          parsed[file] = digest;
+        }
+        if (Object.keys(parsed).length > 0) checksums = parsed;
+      }
+    }
+
     skills.push({
       name: entry.name,
       version: typeof entry.version === 'string' ? entry.version : undefined,
       description: typeof entry.description === 'string' ? entry.description : undefined,
       files: safeFiles,
+      checksums,
     });
   }
 

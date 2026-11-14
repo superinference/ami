@@ -36,8 +36,12 @@ export function filterToolsForSkill(
 export const skillTool: ToolDefinition = {
   name: 'skill',
   description:
-    'Invoke a skill by name. The skill\'s instructions are loaded and executed in a subagent context. ' +
-    'Use this when a skill matches the user\'s request. Available skills are listed in the system prompt.',
+    'Invoke a skill by name. The skill\'s instructions are loaded and executed (inline or in a subagent). ' +
+    'Use this when a skill matches the user\'s request. Available skills are listed in the system prompt. ' +
+    'A user-typed slash command (e.g. /commit) IS a skill invocation — pass the bare name ("commit"). ' +
+    'A leading slash is tolerated and stripped. Do NOT use this tool for built-in CLI commands ' +
+    '(/help, /clear, /model, etc.) — those are handled by the CLI, not skills. ' +
+    'With no skill name it reports the available skills.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -71,12 +75,14 @@ export const skillTool: ToolDefinition = {
     // this with {name|skill_name|skillName, prompt} (skills are listed by name)
     // and would otherwise waste a turn on an "empty skill name" error before
     // retrying with a different key. Normalize all the variants they try.
-    const skillName = (input.skill ?? input.name ?? input.skill_name ?? input.skillName) as string;
+    const rawName = (input.skill ?? input.name ?? input.skill_name ?? input.skillName) as string;
     const args = (input.args ?? input.prompt ?? input.arguments) as string | undefined;
 
-    if (!skillName || skillName.trim().length === 0) {
-      return { output: 'Error: skill name must not be empty.', isError: true };
+    if (!rawName || rawName.trim().length === 0) {
+      return { output: 'Error: skill name must not be empty. Pass the bare skill name, e.g. {"skill":"code-review"}.', isError: true };
     }
+    // Tolerate a leading slash (models often pass a slash-command form "/commit").
+    const skillName = rawName.trim().replace(/^\/+/, '');
 
     if (!context._skillManager) {
       return { output: 'Error: skill manager not available in this context.', isError: true };
@@ -124,7 +130,10 @@ export const skillTool: ToolDefinition = {
     if (isInline && context._engineAddSystemReminder) {
       context._engineAddSystemReminder(`[Skill: ${skillName}]\n${skillContent}`);
       context._engineSetActiveSkill?.(skillName);
-      return { output: `Skill "${skillName}" activated inline. Following its instructions.` };
+      return {
+        output: `Skill "${skillName}" activated inline. Following its instructions.`,
+        metadata: { mode: 'inline', skill: skillName, model: skill?.model },
+      };
     }
     const allTools = createDefaultTools(context.cwd);
     const tools = filterToolsForSkill(allTools.getAll(), skill);
@@ -144,6 +153,9 @@ export const skillTool: ToolDefinition = {
       tools,
       sessionId: SessionManager.newId(),
       permissionMode: 'auto-allow',
+      // Forward the parent session's permission rules so inherited deny rules
+      // still apply inside the forked skill (least-privilege / policy honored).
+      permissionRules: context._parentPermissionRules,
       permissionPromptHandler: context._permissionPromptHandler,
       abortController: subAbort,
     };
@@ -166,17 +178,36 @@ export const skillTool: ToolDefinition = {
         if (event.type === 'error') {
           result += `\nError: ${event.error}`;
         }
+        // Surface the forked skill's nested activity (tool use/results/text) to
+        // the parent stream so its progress is visible live, not just at the end.
+        context._emitChild?.(event);
       }
     } catch (err) {
+      // Preserve whatever partial progress was produced before the failure.
+      const partial = result ? `\n\n--- Partial output before error ---\n${capSkillOutput(result)}` : '';
       return {
-        output: `Skill execution error: ${err instanceof Error ? err.message : String(err)}`,
+        output: `Skill execution error: ${err instanceof Error ? err.message : String(err)}${partial}`,
         isError: true,
+        metadata: { mode: 'forked', skill: skillName, model: providerConfig.model, toolCount: tools.length },
       };
     } finally {
       context.abortSignal.removeEventListener('abort', forwardAbort);
       (subEngine as any).shutdown?.();
     }
 
-    return { output: result || '(skill produced no output)', isError: false };
+    const header = `[Skill: ${skillName} · ${tools.length} tools · model ${providerConfig.model || 'default'}]`;
+    return {
+      output: `${header}\n${capSkillOutput(result) || '(skill produced no output)'}`,
+      isError: false,
+      metadata: { mode: 'forked', skill: skillName, model: providerConfig.model, toolCount: tools.length },
+    };
   },
 };
+
+/** Hard cap on how much forked-skill output is echoed back into the context. */
+export const SKILL_MAX_RESULT_CHARS = 100_000;
+
+function capSkillOutput(text: string): string {
+  if (text.length <= SKILL_MAX_RESULT_CHARS) return text;
+  return text.slice(0, SKILL_MAX_RESULT_CHARS) + '\n[... skill output truncated ...]';
+}

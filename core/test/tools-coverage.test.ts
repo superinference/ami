@@ -460,6 +460,109 @@ describe('skillTool — subagent execution', () => {
     assert.ok(r.output.includes('no output'));
   });
 
+  it('normalizes a leading slash in the skill name', async () => {
+    let requested: string | null = null;
+    const r = await skillTool.execute(
+      { skill: '/inline-slash' },
+      ctx({
+        _skillManager: {
+          getSkill: (n: string) => { requested = n; return { name: 'inline-slash', context: 'inline' }; },
+          getSkillContent: () => 'content',
+          listSkills: () => [],
+        } as any,
+        _engineAddSystemReminder: () => {},
+      }),
+    );
+    assert.ok(!r.isError);
+    assert.equal(requested, 'inline-slash');
+    assert.equal(r.metadata?.mode, 'inline');
+  });
+
+  it('forked skill returns a labeled header + metadata and caps output', async () => {
+    const { SKILL_MAX_RESULT_CHARS } = require('../src/tools/skill');
+    const big = 'y'.repeat(SKILL_MAX_RESULT_CHARS + 50);
+    const r = await skillTool.execute(
+      { skill: 'sub-skill' },
+      ctx({
+        _skillManager: {
+          getSkill: () => ({ name: 'sub-skill', context: 'subagent' }),
+          getSkillContent: () => 'go',
+          listSkills: () => [],
+        } as any,
+        _providerConfig: { baseUrl: 'http://t', apiKey: 'k', model: 'm' },
+        _engineFactory: fakeEngineFactory([{ type: 'text_delta', text: big }]),
+      }),
+    );
+    assert.ok(!r.isError);
+    assert.ok(r.output.includes('[Skill: sub-skill'));
+    assert.ok(r.output.includes('skill output truncated'));
+    assert.equal(r.metadata?.mode, 'forked');
+    assert.equal(r.metadata?.toolCount && (r.metadata.toolCount as number) > 0, true);
+  });
+
+  it('forwards forked skill events to the parent via _emitChild', async () => {
+    const seen: any[] = [];
+    await skillTool.execute(
+      { skill: 'sub-skill' },
+      ctx({
+        _skillManager: {
+          getSkill: () => ({ name: 'sub-skill', context: 'subagent' }),
+          getSkillContent: () => 'go',
+          listSkills: () => [],
+        } as any,
+        _providerConfig: { baseUrl: 'http://t', apiKey: 'k', model: 'm' },
+        _emitChild: (e: any) => seen.push(e),
+        _engineFactory: fakeEngineFactory([
+          { type: 'tool_use', name: 'bash' } as any,
+          { type: 'text_delta', text: 'ok' },
+        ]),
+      }),
+    );
+    assert.ok(seen.some((e) => e.type === 'tool_use'));
+    assert.ok(seen.some((e) => e.type === 'text_delta'));
+  });
+
+  it('preserves partial output when the forked skill throws mid-stream', async () => {
+    const r = await skillTool.execute(
+      { skill: 'sub-skill' },
+      ctx({
+        _skillManager: {
+          getSkill: () => ({ name: 'sub-skill', context: 'subagent' }),
+          getSkillContent: () => 'go',
+          listSkills: () => [],
+        } as any,
+        _providerConfig: { baseUrl: 'http://t', apiKey: 'k', model: 'm' },
+        _engineFactory: (_cfg: any) => ({
+          submit: async function* () {
+            yield { type: 'text_delta' as const, text: 'got this far' };
+            throw new Error('mid-stream boom');
+          },
+        }),
+      }),
+    );
+    assert.ok(r.isError);
+    assert.ok(r.output.includes('mid-stream boom'));
+    assert.ok(r.output.includes('got this far'));
+  });
+
+  it('forwards parent permission rules into the forked skill config', async () => {
+    let captured: any = null;
+    await skillTool.execute(
+      { skill: 'sub-skill' },
+      ctx({
+        _skillManager: {
+          getSkill: () => ({ name: 'sub-skill', context: 'subagent' }),
+          getSkillContent: () => 'go',
+          listSkills: () => [],
+        } as any,
+        _providerConfig: { baseUrl: 'http://t', apiKey: 'k', model: 'm' },
+        _parentPermissionRules: [{ tool: 'bash', action: 'deny' as const }],
+        _engineFactory: (cfg: any) => { captured = cfg; return fakeEngineFactory([{ type: 'text_delta', text: 'x' }])(cfg); },
+      }),
+    );
+    assert.deepEqual(captured.permissionRules, [{ tool: 'bash', action: 'deny' }]);
+  });
+
   it('filters tools with allowedTools from skill definition', async () => {
     let capturedConfig: any = null;
 
@@ -971,7 +1074,7 @@ describe('sendMessageTool — uncovered paths', () => {
     const approval = JSON.stringify({
       type: 'plan_approval_response',
       approve: true,
-      planId: 'plan-abc',
+      requestId: 'plan-abc',
     });
 
     const r = await sendMessageTool.execute(
@@ -987,6 +1090,7 @@ describe('sendMessageTool — uncovered paths', () => {
     const rejection = JSON.stringify({
       type: 'plan_approval_response',
       approve: false,
+      requestId: 'plan-xyz',
     });
 
     const r = await sendMessageTool.execute(
@@ -2508,7 +2612,7 @@ describe('listMcpResourcesTool — coverage', () => {
   it('errors when no MCP manager', async () => {
     const r = await listMcpResourcesTool.execute({}, ctx());
     assert.ok(r.isError);
-    assert.ok(r.output.includes('MCP not initialized'));
+    assert.ok(r.output.includes('MCP is not initialized'));
   });
 
   it('returns "No MCP resources" when empty', async () => {
@@ -2596,7 +2700,7 @@ describe('readMcpResourceTool — coverage', () => {
       ctx(),
     );
     assert.ok(r.isError);
-    assert.ok(r.output.includes('MCP not initialized'));
+    assert.ok(r.output.includes('MCP is not initialized'));
   });
 
   it('reads string resource', async () => {
@@ -2609,7 +2713,7 @@ describe('readMcpResourceTool — coverage', () => {
       }),
     );
     assert.ok(!r.isError);
-    assert.equal(r.output, 'file contents here');
+    assert.deepEqual(r.metadata?.contents, [{ text: 'file contents here' }]);
   });
 
   it('reads object resource and JSON-stringifies', async () => {
@@ -2622,8 +2726,8 @@ describe('readMcpResourceTool — coverage', () => {
       }),
     );
     assert.ok(!r.isError);
-    const parsed = JSON.parse(r.output);
-    assert.equal(parsed.key, 'value');
+    const inner = JSON.parse((r.metadata?.contents as Array<{ text: string }>)[0].text);
+    assert.equal(inner.key, 'value');
   });
 
   it('truncates large results', async () => {
@@ -2639,8 +2743,7 @@ describe('readMcpResourceTool — coverage', () => {
     );
     assert.ok(!r.isError);
     assert.ok(r.output.includes('persisted to'));
-    assert.ok(r.output.startsWith('y'.repeat(1000)));
-    assert.ok(r.output.endsWith('y'.repeat(1000)));
+    assert.ok(r.output.includes('y'.repeat(1000)));
     assert.ok(r.output.length < 200_000);
   });
 
@@ -2663,70 +2766,106 @@ describe('readMcpResourceTool — coverage', () => {
 // =========================================================================
 
 describe('createMcpAuthTool — coverage', () => {
-  it('creates auth tool with correct normalized name', () => {
-    const tool = createMcpAuthTool('my-server');
+  it('creates auth tool with correct normalized name and side-effect capabilities', () => {
+    const tool = createMcpAuthTool('my-server', { transport: 'http' });
     assert.equal(tool.name, 'mcp__my_server__authenticate');
     assert.ok(tool.description.includes('my-server'));
-    assert.equal(tool.isReadOnly, true);
+    // Side-effecting + interactive: must not be read-only or concurrency-safe.
+    assert.equal(tool.isReadOnly, false);
+    assert.equal(tool.isConcurrencySafe, false);
+    assert.equal(tool.isMcp, true);
   });
 
   it('errors when no MCP manager', async () => {
-    const tool = createMcpAuthTool('srv');
+    const tool = createMcpAuthTool('srv', { transport: 'http' });
     const r = await tool.execute({}, ctx());
     assert.ok(r.isError);
-    assert.ok(r.output.includes('MCP not initialized'));
+    assert.ok(r.output.includes('MCP is not initialized'));
+    assert.equal(r.metadata?.status, 'error');
   });
 
-  it('calls reconnect on MCP manager', async () => {
+  it('rejects OAuth for a stdio transport with an unsupported status', async () => {
+    const tool = createMcpAuthTool('stdio-srv', { transport: 'stdio' });
+    let reconnectCalled = false;
+    const r = await tool.execute({}, ctx({ _mcpManager: { reconnect: async () => { reconnectCalled = true; } } }));
+    assert.ok(r.isError);
+    assert.equal(r.metadata?.status, 'unsupported');
+    assert.ok(r.output.includes('does not support OAuth'));
+    assert.equal(reconnectCalled, false); // never attempts a stdio reconnect
+  });
+
+  it('defaults to stdio (unsupported) when no config is available', async () => {
+    const tool = createMcpAuthTool('no-cfg-srv');
+    const r = await tool.execute({}, ctx({ _mcpManager: { reconnect: async () => {} } }));
+    assert.equal(r.metadata?.status, 'unsupported');
+  });
+
+  it('reads the transport from the manager config when not passed', async () => {
+    const tool = createMcpAuthTool('cfg-srv');
     let reconnectedServer: string | null = null;
-    const tool = createMcpAuthTool('test-server');
-
-    const r = await tool.execute(
-      {},
-      ctx({
-        _mcpManager: {
-          reconnect: async (serverName: string) => {
-            reconnectedServer = serverName;
-          },
-        },
-      }),
-    );
-
+    const r = await tool.execute({}, ctx({
+      _mcpManager: {
+        getServerConfig: (_n: string) => ({ transport: 'http' as const }),
+        getServerStatus: (_n: string) => ({ state: reconnectedServer ? 'ready' : 'disconnected' }),
+        reconnect: async (name: string) => { reconnectedServer = name; },
+      },
+    }));
     assert.ok(!r.isError);
+    assert.equal(r.metadata?.status, 'ok');
+    assert.equal(reconnectedServer, 'cfg-srv');
+  });
+
+  it('reports success only when a reconnect actually (re)establishes the session', async () => {
+    const tool = createMcpAuthTool('test-server', { transport: 'sse' });
+    let connected = false;
+    const r = await tool.execute({}, ctx({
+      _mcpManager: {
+        getServerStatus: (_n: string) => ({ state: connected ? 'ready' : 'disconnected' }),
+        reconnect: async () => { connected = true; },
+      },
+    }));
+    assert.ok(!r.isError);
+    assert.equal(r.metadata?.status, 'ok');
+    assert.equal(r.metadata?.reconnected, true);
     assert.ok(r.output.includes('Authentication completed'));
     assert.ok(r.output.includes('test-server'));
-    assert.equal(reconnectedServer, 'test-server');
   });
 
-  it('handles reconnect error', async () => {
-    const tool = createMcpAuthTool('fail-server');
+  it('reports a no-op when the server was already connected', async () => {
+    const tool = createMcpAuthTool('ready-server', { transport: 'http' });
+    const r = await tool.execute({}, ctx({
+      _mcpManager: {
+        getServerStatus: () => ({ state: 'ready' }),
+        reconnect: async () => {},
+      },
+    }));
+    assert.ok(!r.isError);
+    assert.equal(r.metadata?.reconnected, false);
+    assert.ok(r.output.includes('already connected'));
+  });
 
-    const r = await tool.execute(
-      {},
-      ctx({
-        _mcpManager: {
-          reconnect: async () => { throw new Error('auth failed'); },
-        },
-      }),
-    );
-
+  it('handles reconnect error and redacts secrets from the reason', async () => {
+    const tool = createMcpAuthTool('fail-server', { transport: 'http' });
+    const r = await tool.execute({}, ctx({
+      _mcpManager: {
+        getServerStatus: () => ({ state: 'disconnected' }),
+        reconnect: async () => { throw new Error('auth failed with token sk-ant-abcdefghijklmnopqrstuvwx'); },
+      },
+    }));
     assert.ok(r.isError);
+    assert.equal(r.metadata?.status, 'error');
     assert.ok(r.output.includes('auth failed'));
-    assert.ok(r.output.includes('credentials'));
+    assert.ok(!r.output.includes('sk-ant-abcdefghijklmnopqrstuvwx')); // secret scrubbed
   });
 
   it('handles non-Error auth throw', async () => {
-    const tool = createMcpAuthTool('err-server');
-
-    const r = await tool.execute(
-      {},
-      ctx({
-        _mcpManager: {
-          reconnect: async () => { throw 'string error'; },
-        },
-      }),
-    );
-
+    const tool = createMcpAuthTool('err-server', { transport: 'http' });
+    const r = await tool.execute({}, ctx({
+      _mcpManager: {
+        getServerStatus: () => ({ state: 'disconnected' }),
+        reconnect: async () => { throw 'string error'; },
+      },
+    }));
     assert.ok(r.isError);
     assert.ok(r.output.includes('string error'));
   });

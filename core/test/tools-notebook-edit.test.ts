@@ -156,7 +156,7 @@ describe('notebookEditTool – replace', () => {
     assert.deepEqual(nb.cells[0].outputs, []);
   });
 
-  it('defaults to cell 0 when cell_number not specified', async () => {
+  it('rejects replace with no cell selector instead of silently targeting cell 0', async () => {
     const file = writeNotebook('default.ipynb', [
       { cell_type: 'code', source: 'original' },
     ]);
@@ -165,9 +165,11 @@ describe('notebookEditTool – replace', () => {
       { notebook_path: file, new_source: 'replaced' },
       ctx(),
     );
-    assert.ok(!result.isError);
+    assert.ok(result.isError);
+    assert.match(result.output, /cell_id or cell_number must be specified/);
+    // Cell 0 must be untouched — no silent destructive edit.
     const nb = readNotebook(file);
-    assert.equal(nb.cells[0].source, 'replaced');
+    assert.equal(nb.cells[0].source, 'original');
   });
 
   it('auto-converts out-of-range replace to insert at end', async () => {

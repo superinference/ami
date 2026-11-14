@@ -805,6 +805,11 @@ export class McpManager extends EventEmitter {
     return Array.from(this.clients.keys()).map(name => this.getServerStatus(name)!);
   }
 
+  /** The stored config for a server (transport/url/oauth), or undefined if none. */
+  getServerConfig(name: string): McpServerConfig | undefined {
+    return this.configs.get(name);
+  }
+
   startHealthChecks(intervalMs: number = 30000): void {
     if (this.healthCheckInterval) return;
     this.healthCheckInterval = setInterval(async () => {

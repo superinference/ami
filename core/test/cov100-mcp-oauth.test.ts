@@ -83,7 +83,7 @@ describe('discoverAuthServer — issuer fallback', () => {
 
 describe('McpOAuthSession — scope resolution in the authorization URL', () => {
   const SERVER = 'https://rs.example/mcp';
-  const PRM_URL = 'https://rs.example/.well-known/oauth-protected-resource';
+  const PRM_URL = 'https://rs.example/.well-known/oauth-protected-resource/mcp';
   const AS_META = 'https://as.example/.well-known/oauth-authorization-server';
 
   function routes(prmBody: unknown) {

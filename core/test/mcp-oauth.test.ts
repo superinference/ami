@@ -56,8 +56,10 @@ describe('parseWwwAuthenticate', () => {
 });
 
 describe('wellKnown', () => {
-  it('builds a well-known URL from host, dropping any path', () => {
-    assert.equal(wellKnown('https://rs.example/mcp/v1', 'oauth-authorization-server'), 'https://rs.example/.well-known/oauth-authorization-server');
+  it('inserts .well-known between host and issuer path (RFC 8414 §3.1, path-preserving)', () => {
+    assert.equal(wellKnown('https://rs.example/mcp/v1', 'oauth-authorization-server'), 'https://rs.example/.well-known/oauth-authorization-server/mcp/v1');
+    assert.equal(wellKnown('https://rs.example', 'oauth-authorization-server'), 'https://rs.example/.well-known/oauth-authorization-server');
+    assert.equal(wellKnown('https://rs.example/', 'oauth-protected-resource'), 'https://rs.example/.well-known/oauth-protected-resource');
   });
 });
 
@@ -182,7 +184,7 @@ describe('OAuthTokenStore', () => {
 
 describe('McpOAuthSession', () => {
   const SERVER = 'https://rs.example/mcp';
-  const PRM_URL = 'https://rs.example/.well-known/oauth-protected-resource';
+  const PRM_URL = 'https://rs.example/.well-known/oauth-protected-resource/mcp';
   const AS_META = 'https://as.example/.well-known/oauth-authorization-server';
 
   function fullRoutes(extra: Record<string, { ok?: boolean; status?: number; body: unknown }> = {}) {

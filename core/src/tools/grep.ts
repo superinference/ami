@@ -2,7 +2,8 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
+import { suggestSimilarPaths } from './path-suggest';
 
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
@@ -55,6 +56,38 @@ export function isGrepNoMatchExit(exitCode: number): boolean {
   return exitCode === 1;
 }
 
+/**
+ * ripgrep in a resource-constrained container (Docker/CI with a low thread/RLIMIT
+ * budget) cannot spawn its worker threads: it exits NON-zero and writes 'os error 11'
+ * / 'Resource temporarily unavailable' to STDERR. The Node `spawn` itself succeeds, so
+ * no `error` event with code 'EAGAIN' fires — the only signal is rg's own stderr.
+ * Detecting it lets grep retry once single-threaded (`-j 1`).
+ */
+export function isEagainStderr(stderr: string): boolean {
+  return /os error 11\b|Resource temporarily unavailable/i.test(stderr);
+}
+
+/**
+ * Split a grep `include` file-filter into individual rg `--glob` patterns, splitting
+ * on whitespace but keeping brace groups intact: "*.{ts,tsx}" stays whole (a single
+ * rg glob), while a brace-free "*.ts,*.js" is comma-split into two globs. A naive
+ * split(',') would shred "*.{ts,tsx}" into "*.{ts" and "tsx}" and match nothing.
+ */
+export function splitGlobFilter(include: string): string[] {
+  const out: string[] = [];
+  for (const frag of include.split(/\s+/).filter(Boolean)) {
+    if (frag.includes('{') || frag.includes('}')) {
+      out.push(frag);
+    } else {
+      for (const part of frag.split(',')) {
+        const t = part.trim();
+        if (t) out.push(t);
+      }
+    }
+  }
+  return out;
+}
+
 export const grepTool: ToolDefinition = {
   name: 'grep',
   description:
@@ -74,7 +107,17 @@ export const grepTool: ToolDefinition = {
       include: {
         type: 'string',
         description:
-          'Glob pattern to filter files, e.g. "*.ts" or "*.py".',
+          'Glob pattern to filter files, e.g. "*.ts" or "*.py". Brace groups like "*.{ts,tsx}" are kept intact; space/comma-separate multiple globs.',
+      },
+      glob: {
+        type: 'string',
+        description:
+          'Alias for include (Claude Code canonical name). Glob pattern to filter files, e.g. "*.{ts,tsx}".',
+      },
+      fixed_strings: {
+        type: 'boolean',
+        description: 'Match the pattern as a literal fixed string instead of a regex (ripgrep -F). Default false.',
+        default: false,
       },
       output_mode: {
         type: 'string',
@@ -102,7 +145,7 @@ export const grepTool: ToolDefinition = {
       },
       head_limit: {
         type: 'number',
-        description: 'Maximum number of result lines to return. Default 250.',
+        description: 'Maximum number of result lines to return. Defaults to 250 when unspecified. Pass 0 for unlimited (use sparingly — large result sets waste context).',
       },
       offset: {
         type: 'number',
@@ -130,8 +173,10 @@ export const grepTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const include = input.include as string | undefined;
+    // `glob` is Claude Code's canonical name for the file-filter param; accept both.
+    const include = (input.include ?? input.glob) as string | undefined;
     const outputMode = (input.output_mode as string) || 'files_with_matches';
+    const fixedStrings = (input.fixed_strings as boolean) ?? false;
     const lineNumbers = input.line_numbers as boolean | undefined;
     const caseInsensitive = (input.case_insensitive as boolean) ?? false;
     const contextLines = input.context_lines as number | undefined;
@@ -142,6 +187,10 @@ export const grepTool: ToolDefinition = {
     const beforeContext = input.before_context as number | undefined;
     const afterContext = input.after_context as number | undefined;
     const searchPath = (input.path ?? input.file_path) as string | undefined;
+    // UNC-path guard: short-circuit BEFORE any filesystem access (NTLM leak risk).
+    if (typeof searchPath === 'string' && isUNCPath(searchPath)) {
+      return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${searchPath}`, isError: true };
+    }
     const v = validatePatternAndPath(input.pattern, searchPath, context.cwd, context.allowedReadRoots);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
@@ -151,6 +200,12 @@ export const grepTool: ToolDefinition = {
     if (typeof include === 'string') {
       const includeEscape = rejectEscapingPattern(include);
       if (includeEscape) return includeEscape;
+    }
+    // Self-correcting error when the given search path does not exist.
+    if (typeof searchPath === 'string' && !fs.existsSync(resolved)) {
+      const suggestions = suggestSimilarPaths(resolved, context.cwd);
+      const hint = suggestions.length > 0 ? ` Did you mean ${suggestions[0]}?` : '';
+      return { output: `Error: Path does not exist: ${resolved}. Your current working directory is ${context.cwd}.${hint}`, isError: true };
     }
     const unreadable = assertReadableTarget(resolved);
     if (unreadable) return unreadable;
@@ -164,7 +219,7 @@ export const grepTool: ToolDefinition = {
     // Ask for one past the page so formatResult can say the list was cut.
     // --max-count equal to head_limit hid later matches and dropped offset.
     const fetchLimit = headLimit === 0 ? 0 : offset + Math.max(headLimit, 1) + 1;
-    const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers);
+    const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers, fixedStrings);
     let rgOutcome = await runSearch(rgArgs, 'rg', context, grepHooks.timeoutMs);
 
     if (rgOutcome.eagain) {
@@ -178,7 +233,7 @@ export const grepTool: ToolDefinition = {
 
     if (rgOutcome.output !== null) {
       const cleaned = rgOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
-      const result = formatResult(cleaned, pattern, headLimit, offset);
+      const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
       if (rgOutcome.searchError && !result.isError) {
         result.output += `\n\n[Warning: search exited with error: ${rgOutcome.searchError}]`;
       }
@@ -191,7 +246,7 @@ export const grepTool: ToolDefinition = {
 
     // Fallback to grep
     const grepOutcome = await runSearch(
-      buildGrepArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines),
+      buildGrepArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, fixedStrings),
       'grep',
       context,
       grepHooks.timeoutMs,
@@ -203,7 +258,7 @@ export const grepTool: ToolDefinition = {
 
     if (grepOutcome.output !== null) {
       const cleaned = grepOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
-      const result = formatResult(cleaned, pattern, headLimit, offset);
+      const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
       if (grepOutcome.searchError && !result.isError) {
         result.output += `\n\n[Warning: search exited with error: ${grepOutcome.searchError}]`;
       }
@@ -221,7 +276,7 @@ export const grepTool: ToolDefinition = {
         headLimit,
         offset,
       });
-      return formatResult(fallback, pattern, headLimit, offset);
+      return formatResult(fallback, pattern, headLimit, offset, outputMode);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (/invalid regular expression|unterminated|invalid group/i.test(message)) {
@@ -337,8 +392,11 @@ function buildRgArgs(
   afterContext?: number,
   headLimit?: number,
   lineNumbers?: boolean,
+  fixedStrings?: boolean,
 ): string[] {
   const args = ['--color', 'never', '--max-columns', '500'];
+  // Literal search: match the query as a fixed string, not a regex.
+  if (fixedStrings) args.push('-F');
 
   args.push('--hidden');
   args.push('--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '--glob', '!.bzr', '--glob', '!.jj');
@@ -368,8 +426,7 @@ function buildRgArgs(
   args.push('--sortr', 'modified');
 
   if (include) {
-    const globs = (include as string).split(',').map(g => g.trim());
-    for (const g of globs) args.push('--glob', g);
+    for (const g of splitGlobFilter(include)) args.push('--glob', g);
   }
 
   if (fileType) args.push('--type', fileType);
@@ -389,10 +446,12 @@ function buildGrepArgs(
   outputMode: string,
   caseInsensitive: boolean,
   contextLines?: number,
+  fixedStrings?: boolean,
 ): string[] {
   // -E so `|` is alternation. Basic grep treats it as a literal, which made
   // `BLP|Bell` and `blp_model|blp_policy` report no matches in the testbed.
-  const args: string[] = ['-r', '-E'];
+  // With fixedStrings, use -F (literal) instead so metacharacters match verbatim.
+  const args: string[] = fixedStrings ? ['-r', '-F'] : ['-r', '-E'];
 
   if (outputMode === 'files_with_matches') {
     args.push('-l');
@@ -510,6 +569,13 @@ export function runSearch(
         return;
       }
 
+      // Non-zero exit caused by rg failing to spawn worker threads (EAGAIN) — detected
+      // from rg's own stderr, since no 'error' event fires in this mode. Retry single-threaded.
+      if (command === 'rg' && isEagainStderr(stderr)) {
+        settle({ output: null, eagain: true });
+        return;
+      }
+
       // Exit code > 1: actual error (invalid regex, permission denied, etc.).
       // If we got some stdout, return it but note the error. If no stdout,
       // signal that this searcher failed so we try the next one.
@@ -531,12 +597,29 @@ function isSuiteLogLine(line: string): boolean {
   return /"Action"\s*:/.test(line) && /"(?:Test|Package|Elapsed)"/.test(line);
 }
 
-function formatResult(output: string, pattern: string, limit: number = MAX_LINES, offset: number = 0): ToolResult {
+function formatResult(output: string, pattern: string, limit: number = MAX_LINES, offset: number = 0, outputMode: string = 'content'): ToolResult {
   const kept = output.split('\n').filter(line => line.trim().length > 0 && !isSuiteLogLine(line));
   const trimmed = kept.join('\n').trim();
 
   if (trimmed.length === 0) {
     return { output: `No matches found for pattern: ${pattern}` };
+  }
+
+  // Count mode: aggregate each `path:N` line into a natural-language summary with
+  // correct singular/plural grammar, preserving the per-file breakdown below it.
+  if (outputMode === 'count') {
+    const lines = trimmed.split('\n');
+    let totalMatches = 0;
+    let fileCount = 0;
+    for (const line of lines) {
+      const m = line.match(/:(\d+)\s*$/);
+      if (m) { totalMatches += Number(m[1]); fileCount++; }
+    }
+    if (fileCount > 0) {
+      const occ = totalMatches === 1 ? 'occurrence' : 'occurrences';
+      const fileWord = fileCount === 1 ? 'file' : 'files';
+      return { output: `Found ${totalMatches} total ${occ} across ${fileCount} ${fileWord}.\n${lines.join('\n')}` };
+    }
   }
 
   const allLines = trimmed.split('\n');

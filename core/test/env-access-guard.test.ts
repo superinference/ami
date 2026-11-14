@@ -51,10 +51,15 @@ describe('SENSITIVE_ENV_VARS', () => {
     assert.ok(SENSITIVE_ENV_VARS.has('PASSWORD'));
     assert.ok(SENSITIVE_ENV_VARS.has('CREDENTIAL'));
     assert.ok(SENSITIVE_ENV_VARS.has('AUTH_TOKEN'));
+    assert.ok(SENSITIVE_ENV_VARS.has('PASSPHRASE'));
   });
 
-  it('has 7 entries', () => {
-    assert.equal(SENSITIVE_ENV_VARS.size, 7);
+  it('has 8 entries', () => {
+    assert.equal(SENSITIVE_ENV_VARS.size, 8);
+  });
+
+  it('flags the mTLS client-key passphrase env var as sensitive', () => {
+    assert.equal(isSensitiveEnvVar('AMI_CLIENT_KEY_PASSPHRASE'), true);
   });
 });
 

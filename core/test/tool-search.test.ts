@@ -140,7 +140,7 @@ describe('tool_search', () => {
       isReadOnly: true,
       execute: async () => ({ output: '', isError: false }),
     }]);
-    const result = await toolSearchTool.execute({ query: 'long_desc_tool' }, ctx);
+    const result = await toolSearchTool.execute({ query: 'long_desc' }, ctx);
     assert.ok(result.output.includes('...'));
     assert.ok(!result.output.includes(longDesc));
   });
@@ -153,7 +153,7 @@ describe('tool_search', () => {
       isReadOnly: true,
       execute: async () => ({ output: '', isError: false }),
     }]);
-    const result = await toolSearchTool.execute({ query: 'short_tool' }, ctx);
+    const result = await toolSearchTool.execute({ query: 'short' }, ctx);
     assert.ok(!result.output.includes('...'));
   });
 
@@ -497,5 +497,98 @@ describe('tool_search metadata', () => {
 
   it('description mentions skills', () => {
     assert.ok(toolSearchTool.description.includes('skill'));
+  });
+});
+
+describe('tool_search — parity enhancements', () => {
+  beforeEach(() => { setSearchableTools(mockTools); });
+
+  it('documents every query form and max_results', () => {
+    const d = toolSearchTool.description;
+    assert.ok(d.includes('select:'));
+    assert.ok(d.includes('+term'));
+    assert.ok(d.includes('max_results'));
+    assert.ok((toolSearchTool.inputSchema.properties as any).max_results);
+  });
+
+  it('exact bare tool name is a fast path that loads and returns the schema', async () => {
+    const loaded: string[] = [];
+    const c: ToolContext = { ...ctx, _loadDeferredTool: (n) => loaded.push(n) };
+    const result = await toolSearchTool.execute({ query: 'bash' }, c);
+    const parsed = JSON.parse(result.output);
+    assert.equal(parsed.name, 'bash');
+    assert.ok(parsed.inputSchema);
+    assert.deepEqual(loaded, ['bash']);
+  });
+
+  it('a bare keyword that is not an exact tool name still does ranked search', async () => {
+    const result = await toolSearchTool.execute({ query: 'file' }, ctx);
+    assert.ok(result.output.includes('Tools matching'));
+    assert.ok(result.output.includes('file_read'));
+  });
+
+  it('max_results bounds the number of matches', async () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      name: `widget_${i}`, description: 'a widget tool',
+      inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+      isReadOnly: true, execute: async () => ({ output: '', isError: false }),
+    }));
+    setSearchableTools(many);
+    const result = await toolSearchTool.execute({ query: 'widget', max_results: 2 }, ctx);
+    const bullets = result.output.match(/^- \*\*/gm) || [];
+    assert.equal(bullets.length, 2);
+  });
+
+  it('invalid max_results falls back to the default of 5', async () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      name: `gadget_${i}`, description: 'a gadget tool',
+      inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+      isReadOnly: true, execute: async () => ({ output: '', isError: false }),
+    }));
+    setSearchableTools(many);
+    const result = await toolSearchTool.execute({ query: 'gadget', max_results: -3 }, ctx);
+    const bullets = result.output.match(/^- \*\*/gm) || [];
+    assert.equal(bullets.length, 5);
+  });
+
+  it('graded scoring ranks an exact name-part above a partial match', async () => {
+    setSearchableTools([
+      // 'msg' is an exact name PART here (+3)
+      { name: 'msg_send', description: 'deliver', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: false, execute: async () => ({ output: '', isError: false }) },
+      // 'msg' only appears inside a larger part here (+2)
+      { name: 'msgbox_open', description: 'open a box', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: false, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    const result = await toolSearchTool.execute({ query: 'msg' }, ctx);
+    assert.ok(result.output.indexOf('msg_send') < result.output.indexOf('msgbox_open'));
+  });
+
+  it('returns structured metadata on a successful search', async () => {
+    const result = await toolSearchTool.execute({ query: 'file' }, ctx);
+    assert.equal(result.metadata?.query, 'file');
+    assert.ok(Array.isArray(result.metadata?.matches));
+    assert.equal(result.metadata?.total_deferred_tools, mockTools.length);
+  });
+
+  it('empty results include a pending-MCP hint when an MCP manager is present', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'zzznotathing' },
+      { ...ctx, _mcpManager: {} as any },
+    );
+    assert.ok(result.output.includes('MCP servers may still be connecting'));
+    assert.deepEqual(result.metadata?.matches, []);
+  });
+
+  it('empty results omit the MCP hint without an MCP manager', async () => {
+    const result = await toolSearchTool.execute({ query: 'zzznotathing' }, ctx);
+    assert.ok(!result.output.includes('MCP servers may still be connecting'));
+  });
+
+  it('word-boundary matching does not match mid-word substrings', async () => {
+    setSearchableTools([
+      { name: 'alpha', description: 'already configured', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    // "read" should NOT match "already" via word boundary; name has no match either.
+    const result = await toolSearchTool.execute({ query: 'read' }, ctx);
+    assert.ok(result.output.includes('No tools or skills matched'));
   });
 });

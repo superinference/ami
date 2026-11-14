@@ -15,8 +15,39 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export const STRATEGY_NAMES = ['exact', 'line_trimmed', 'whitespace_normalized', 'indentation_flexible', 'escape_normalized'] as const;
+export const STRATEGY_NAMES = ['exact', 'line_trimmed', 'whitespace_normalized', 'indentation_flexible', 'escape_normalized', 'desanitize_normalized'] as const;
 export type StrategyName = (typeof STRATEGY_NAMES)[number];
+
+/**
+ * Model-emitted API-sanitized token forms → the raw forms that actually live in
+ * files. The provider sanitizes special control tokens in model OUTPUT, so the
+ * model literally never sees (and therefore re-emits the sanitized form of) tokens
+ * like `<function_results>` or a `\n\nHuman:` turn marker. When such a sanitized
+ * form arrives as `old_string`, an exact match fails against the raw file bytes.
+ * Desanitizing the match string (and re-applying the SAME substitutions to
+ * `new_string`) recovers the edit. Mirrors Claude Code's DESANITIZATIONS.
+ */
+export const DESANITIZATIONS: ReadonlyArray<readonly [string, string]> = [
+  ['<fnr>', '<function_results>'],
+  ['</fnr>', '</function_results>'],
+  ['<fnc>', '<function_calls>'],
+  ['</fnc>', '</function_calls>'],
+  ['<n>', '<name>'],
+  ['</n>', '</name>'],
+  ['\n\nH:', '\n\nHuman:'],
+  ['\n\nA:', '\n\nAssistant:'],
+  ['< META_START >', '<META_START>'],
+  ['< META_END >', '<META_END>'],
+];
+
+/** Replace every sanitized token form with its raw form. */
+export function desanitizeMatchString(s: string): string {
+  let out = s;
+  for (const [from, to] of DESANITIZATIONS) {
+    if (out.includes(from)) out = out.split(from).join(to);
+  }
+  return out;
+}
 
 export interface MatchPosition {
   /** Byte offset (character index) in the **original** content. */
@@ -122,6 +153,17 @@ function findByLine(
 
 function findLineTrimmed(content: string, pattern: string): MatchPosition[] {
   return findByLine(content, pattern, l => l.trim());
+}
+
+/**
+ * Desanitize the pattern (map sanitized token forms back to raw) then exact-match
+ * it against the raw file content. Returns [] when the pattern had no sanitized
+ * tokens (nothing new to try — the earlier strategies already covered it).
+ */
+function findDesanitized(content: string, pattern: string): MatchPosition[] {
+  const desanitized = desanitizeMatchString(pattern);
+  if (desanitized === pattern) return [];
+  return findExact(content, desanitized);
 }
 
 function findWhitespaceNormalized(content: string, pattern: string): MatchPosition[] {
@@ -317,6 +359,7 @@ const STRATEGIES: Array<{
   { name: 'whitespace_normalized', find: findWhitespaceNormalized },
   { name: 'indentation_flexible', find: findIndentationFlexible },
   { name: 'escape_normalized', find: findEscapeNormalized },
+  { name: 'desanitize_normalized', find: findDesanitized },
 ];
 
 /**
@@ -329,6 +372,19 @@ export function fuzzyFindAndReplace(
   oldString: string,
   newString: string,
 ): FuzzyResult {
+  // Deletion (new_string === ''): if old_string does not itself end in a newline but
+  // the file contains old_string followed by '\n', delete the whole line INCLUDING its
+  // trailing newline so no empty line is left behind. Only when that yields a single
+  // match; otherwise fall through to the normal strategies.
+  if (newString === '' && oldString.length > 0 && !oldString.endsWith('\n')) {
+    const withNewline = findExact(content, oldString + '\n');
+    if (withNewline.length === 1) {
+      const { start, end } = withNewline[0];
+      const newContent = content.slice(0, start) + content.slice(end);
+      return { newContent, strategy: 'exact', matchCount: 1, error: null };
+    }
+  }
+
   for (const { name, find } of STRATEGIES) {
     const matches = find(content, oldString);
 
@@ -337,7 +393,11 @@ export function fuzzyFindAndReplace(
       const matchedRegion = content.slice(start, end);
 
       let replacement = newString;
-      if (name !== 'exact') {
+      if (name === 'desanitize_normalized') {
+        // Re-apply the SAME sanitized→raw substitutions to the replacement so the
+        // written bytes use the raw token forms, matching the surrounding file.
+        replacement = desanitizeMatchString(newString);
+      } else if (name !== 'exact') {
         replacement = reindentReplacement(matchedRegion, oldString, newString);
       }
       replacement = preserveQuoteStyle(matchedRegion, replacement);

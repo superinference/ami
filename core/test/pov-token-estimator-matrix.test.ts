@@ -6,6 +6,7 @@ import {
   estimateToolCallTokens,
   estimateMessageTokens,
   estimateConversationTokens,
+  IMAGE_DOCUMENT_TOKEN_ESTIMATE,
 } from '../src/token-estimator';
 import {
   estimateTokens as estimateTokensUtil,
@@ -134,7 +135,7 @@ describe('pov/token-estimator matrix: estimateMessageTokens', () => {
     );
   });
 
-  it('array content sums text parts and ignores non-text parts', () => {
+  it('array content sums text parts and counts image blocks at the fixed estimate', () => {
     const msg = {
       role: 'user',
       content: [
@@ -145,7 +146,7 @@ describe('pov/token-estimator matrix: estimateMessageTokens', () => {
     };
     assert.equal(
       estimateMessageTokens(msg as unknown as Message),
-      estimateTokens('foo bar' + 'baz') + OVERHEAD_PER_MESSAGE,
+      estimateTokens('foo bar') + IMAGE_DOCUMENT_TOKEN_ESTIMATE + estimateTokens('baz') + OVERHEAD_PER_MESSAGE,
     );
   });
 
@@ -167,9 +168,11 @@ describe('pov/token-estimator matrix: estimateMessageTokens', () => {
         { type: 'text', text: 'real' },
       ],
     };
+    // null/42/{type:'text'} with no text → 0; {text:123} has no recognized type → serialized
+    // via the catch-all (mirrors Claude's roughTokenCountEstimationForBlock); 'real' → its text.
     assert.equal(
       estimateMessageTokens(msg as unknown as Message),
-      estimateTokens('real') + OVERHEAD_PER_MESSAGE,
+      estimateTokens(JSON.stringify({ text: 123 })) + estimateTokens('real') + OVERHEAD_PER_MESSAGE,
     );
   });
 

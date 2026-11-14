@@ -29,9 +29,11 @@ function validateSlug(name: string): boolean {
 }
 
 function getDefaultBranch(cwd: string): string {
+  // Offline-friendly, NO shell pipe: read the origin/HEAD symref directly
+  // instead of `git remote show origin | grep` (a network + shell-pipe call).
   try {
-    const remote = _enterWorktreeHooks.execSync('git remote show origin 2>/dev/null | grep "HEAD branch"', { cwd, encoding: 'utf-8' });
-    const match = remote.match(/HEAD branch:\s*(\S+)/);
+    const sym = _enterWorktreeHooks.execSync('git symbolic-ref --short refs/remotes/origin/HEAD', { cwd, encoding: 'utf-8' }).toString().trim();
+    const match = sym.match(/^origin\/(.+)$/);
     if (match) return match[1];
   } catch { /* fallback */ }
   try {
@@ -44,9 +46,11 @@ function getDefaultBranch(cwd: string): string {
 export const enterWorktreeTool: ToolDefinition = {
   name: 'enter_worktree',
   description:
-    'Create or enter a git worktree for isolated file modifications. ' +
-    'Creates a new branch under .ami/worktrees/. ' +
-    'Use exit_worktree to leave.',
+    'Create or enter a git worktree for isolated file modifications, on a new branch under .ami/worktrees/. ' +
+    'WHEN TO USE: isolating risky or parallel changes from the main working tree (a large refactor you may want to throw away, work you want on its own branch). ' +
+    'WHEN NOT TO USE: ordinary edits in the current tree, or when the user did not ask for isolation — a worktree adds branch/cwd bookkeeping overhead. ' +
+    'Use exit_worktree (action "keep" or "remove") to leave. ' +
+    'Requires a git repository; outside one, configure WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -77,7 +81,18 @@ export const enterWorktreeTool: ToolDefinition = {
     try {
       _enterWorktreeHooks.execSync('git rev-parse --is-inside-work-tree', { cwd: context.cwd, stdio: 'ignore' });
     } catch {
-      return { output: 'Error: not inside a git repository.', isError: true };
+      return {
+        output: 'Error: not inside a git repository. To use worktree isolation with another VCS, configure WorktreeCreate/WorktreeRemove hooks in settings.',
+        isError: true,
+      };
+    }
+
+    // Nested-isolation guard: refuse to create a NEW worktree while the current
+    // working directory is already inside a worktree (entering an existing one is
+    // still allowed). Detected from the cwd path so it is not sensitive to stale
+    // global session state.
+    if (!existingPath && (context.cwd || '').includes('.ami/worktrees/')) {
+      return { output: 'Error: already inside a worktree. Use exit_worktree before creating another.', isError: true };
     }
 
     if (existingPath) {
@@ -85,17 +100,19 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
       }
       try {
-        const list = _enterWorktreeHooks.execSync('git worktree list --porcelain', { cwd: context.cwd, encoding: 'utf-8' });
-        const worktrees = list.split('\n').filter(l => l.startsWith('worktree ')).map(l => l.slice(9));
-        const resolved = path.resolve(existingPath);
-        if (!worktrees.includes(resolved)) {
+        const list = _enterWorktreeHooks.execSync('git worktree list --porcelain', { cwd: context.cwd, encoding: 'utf-8', timeout: 5000 });
+        // NFC-normalize parsed worktree paths before the identity comparison.
+        const worktrees = list.split('\n').filter(l => l.startsWith('worktree ')).map(l => l.slice(9).normalize('NFC'));
+        const resolved = path.resolve(existingPath).normalize('NFC');
+        const entered = worktrees.find(w => path.resolve(w).normalize('NFC') === resolved);
+        if (!entered) {
           return { output: `Error: "${existingPath}" is not a registered worktree.`, isError: true };
         }
       } catch (e) {
         return { output: `Error listing worktrees: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
       return {
-        output: `Entered existing worktree at: ${existingPath}`,
+        output: `Entered existing worktree at: ${existingPath}. Run exit_worktree when done.`,
       };
     }
 
@@ -174,8 +191,12 @@ export const enterWorktreeTool: ToolDefinition = {
       context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
     }
 
+    const baseLabel = requestedBaseRef || `origin/${defaultBranch}`;
     return {
-      output: `Worktree created:\n  Path: ${worktreeDir}\n  Branch: ${branchName}\n  Base commit: ${commitHash}`,
+      output:
+        `Worktree created (session switched to it):\n` +
+        `  Path: ${worktreeDir}\n  Branch: ${branchName} (based on ${baseLabel})\n  Base commit: ${commitHash}\n` +
+        '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).',
     };
   },
 };

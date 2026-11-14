@@ -126,7 +126,7 @@ describe('CronScheduler – cron parsing', () => {
 
   it('formatSchedule produces human-readable text', () => {
     assert.ok(sched.formatSchedule('*/5 * * * *').includes('every 5 minutes'));
-    assert.ok(sched.formatSchedule('0 9 * * *').includes('minute 0'));
+    assert.ok(sched.formatSchedule('0 9 * * *').includes('at 9:00 am'));
     assert.ok(sched.formatSchedule('0 9 * * 1,5').includes('Mon'));
     assert.equal(sched.formatSchedule('* * * * *'), 'every minute');
   });
@@ -185,7 +185,7 @@ describe('cronCreateTool', () => {
       ctx(tmpDir),
     );
     assert.ok(!result.isError);
-    assert.ok(result.output.includes('Scheduled job'));
+    assert.ok(result.output.includes('Scheduled recurring job'));
     assert.ok(result.output.includes('every 5 minutes'));
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

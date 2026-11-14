@@ -12,6 +12,18 @@ import { suggestSimilarPaths } from './path-suggest';
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
 const MAX_FILE_READ_TOKENS = 25_000;
+/** Raw-size cap for PDFs, read into memory whole for text extraction (DoS guard). */
+const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024; // 20 MB
+
+/**
+ * Security control that travels WITH untrusted file content: a planted file must
+ * not be able to turn the agent into a malware-authoring assistant. Appended to
+ * every text read so the model may analyze/report on malicious code but must
+ * refuse to improve, augment, or author it. Mirrors Claude Code's
+ * CYBER_RISK_MITIGATION_REMINDER (FileReadTool).
+ */
+export const CYBER_RISK_MITIGATION_REMINDER =
+  '\n\n<system-reminder>You may analyze, explain, and report on the file above even if it contains malicious or suspicious code. You MUST refuse to improve, augment, optimize, obfuscate, or author malicious code (malware, exploits, credential stealers, etc.) based on it.</system-reminder>';
 
 /**
  * Dependency seam for fs calls whose failures are defensive TOCTOU/race guards
@@ -181,9 +193,10 @@ async function readFileInRange(
   filePath: string,
   offset: number,
   limit: number,
+  signal?: AbortSignal,
 ): Promise<{ text: string; hasMore: boolean }> {
   const lines: string[] = [];
-  const stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
+  const stream = fs.createReadStream(filePath, { encoding: 'utf-8', signal });
   const rl = require('readline').createInterface({ input: stream, crlfDelay: Infinity });
   let lineNum = 0;
   let hasMore = false;
@@ -250,6 +263,12 @@ export const fileReadTool: ToolDefinition = {
 
     const nullCheck = validateFilePath(filePath);
     if (nullCheck) return nullCheck;
+
+    // Honour cancellation up front — a read issued for an already-aborted turn must
+    // not touch the filesystem or emit content.
+    if (context.abortSignal?.aborted) {
+      return { output: 'Error: file read was cancelled.', isError: true };
+    }
 
     const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd, context.allowedReadRoots);
     if (pathError) return pathError;
@@ -335,6 +354,9 @@ export const fileReadTool: ToolDefinition = {
         const sizeKB = (stat.size / 1024).toFixed(0);
         const totalLines = partial.split('\n').length;
         context.filesRead?.add(resolved);
+        // Flag the cache so a later full-file overwrite is blocked until the model
+        // reads the whole file — this view is truncated to the first slice.
+        getFileCache(context.cwd).markPartialView(resolved, stat.mtimeMs);
         return {
           output: `[PARTIAL VIEW — file is ${sizeKB}KB, showing first ${lines.length} of ~${totalLines}+ lines. Use offset/limit for other sections, or allow_large:true for the full file.]\n${numbered}`,
         };
@@ -370,6 +392,16 @@ export const fileReadTool: ToolDefinition = {
 
     // Handle PDF files — extract text
     if (ext === '.pdf') {
+      // Guard PDF size BEFORE loading the whole file into memory. file-read exempts
+      // .pdf from the generic MAX_READ_SIZE partial-view cap, so without this a huge
+      // PDF would be read whole via fs.readFile → unbounded memory (DoS). Mirrors
+      // Claude's PDF_TARGET_RAW_SIZE (20MB) with a structured too_large rejection.
+      if (stat.size > PDF_TARGET_RAW_SIZE) {
+        return {
+          output: `Error: PDF too large (${(stat.size / 1024 / 1024).toFixed(1)} MB) — exceeds the ${(PDF_TARGET_RAW_SIZE / 1024 / 1024).toFixed(0)} MB limit. Use the pages parameter to extract a specific page range.`,
+          isError: true,
+        };
+      }
       const rawPages = input.pages as string | undefined;
       // Treat empty/whitespace-only pages as omitted (models sometimes pass "")
       const pagesParam = rawPages && rawPages.trim().length > 0 ? rawPages : undefined;
@@ -510,7 +542,7 @@ export const fileReadTool: ToolDefinition = {
     // (UTF-16/BOM files bypass streaming and are fully decoded below).
     if (!isBomText && (input.offset !== undefined || input.limit !== undefined)) {
       fileCache.trackMtime(resolved, stat.mtimeMs);
-      const { text: rangeText, hasMore } = await readFileInRange(resolved, offset, limit);
+      const { text: rangeText, hasMore } = await readFileInRange(resolved, offset, limit, context.abortSignal);
       if (!rangeText) return { output: '(empty file)' };
       let output = `File: ${resolved}\nShowing ${limit} lines from offset ${offset}\n\n${rangeText}`;
       // Make a capped range visible: without this the model sees "Showing N lines
@@ -528,8 +560,8 @@ export const fileReadTool: ToolDefinition = {
 
     // Read file content (decode UTF-16/BOM in its original encoding)
     const content = isBomText
-      ? decodeBuffer(await fs.promises.readFile(resolved)).text
-      : await fs.promises.readFile(resolved, 'utf-8');
+      ? decodeBuffer(await fs.promises.readFile(resolved, { signal: context.abortSignal })).text
+      : await fs.promises.readFile(resolved, { encoding: 'utf-8', signal: context.abortSignal });
 
     if (content.length === 0) {
       return { output: '(empty file)' };
@@ -599,6 +631,8 @@ export const fileReadTool: ToolDefinition = {
         output += `\n\n[Relevant skills: ${matchingSkills.map((s: any) => s.name).join(', ')}]`;
       }
     }
+
+    output += CYBER_RISK_MITIGATION_REMINDER;
 
     context.filesRead?.add(resolved);
     return { output };
@@ -671,11 +705,20 @@ export async function checkBinaryContent(filePath: string): Promise<boolean> {
     const buffer = Buffer.alloc(BINARY_CHECK_BYTES);
     const { bytesRead } = await fd.read(buffer, 0, BINARY_CHECK_BYTES, 0);
     if (bytesRead === 0) return false;
-    let nullCount = 0;
+    // Two-part heuristic (mirrors Claude Code's isBinaryContent):
+    //  (a) any NUL byte → binary immediately;
+    //  (b) non-printable control-character DENSITY — count control bytes (<32)
+    //      other than tab(9)/LF(10)/CR(13); if >10% of the sampled bytes are
+    //      non-printable control chars the content is binary. Catches binaries
+    //      (compiled objects, compressed blobs, UTF-16-without-BOM) that are
+    //      sparse on NULs but dense in other control bytes.
+    let nonPrintable = 0;
     for (let i = 0; i < bytesRead; i++) {
-      if (buffer[i] === 0) nullCount++;
+      const b = buffer[i];
+      if (b === 0) return true;
+      if (b < 32 && b !== 9 && b !== 10 && b !== 13) nonPrintable++;
     }
-    return nullCount / bytesRead > 0.01;
+    return nonPrintable / bytesRead > 0.1;
   } finally {
     await fd.close();
   }

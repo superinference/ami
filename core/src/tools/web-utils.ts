@@ -13,6 +13,20 @@ export const BLOCKED_HOSTNAMES = new Set([
   'instance-data', 'metadata',
 ]);
 
+/**
+ * Whether a host is loopback/localhost — the only host to which a cleartext
+ * `http://` credential may safely be sent (shared url-safety helper so the
+ * cleartext-credential guard and any future caller agree on one definition).
+ */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  return (
+    h === 'localhost' || h.endsWith('.localhost') ||
+    h === '::1' || h === '0.0.0.0' ||
+    /^127\./.test(h)
+  );
+}
+
 export function isPrivateIP(ip: string): boolean {
   // Strip IPv4-mapped IPv6 prefix and re-check
   if (ip.startsWith('::ffff:')) {
@@ -65,11 +79,13 @@ export type HostLookupAll = (
 export async function validateUrlSafety(
   url: string,
   lookup: HostLookupAll = dns.lookup as HostLookupAll,
+  opts?: { allowLoopback?: boolean },
 ): Promise<{ error: string } | { resolvedIP: string }> {
   const parsed = new URL(url);
   const hostname = parsed.hostname.toLowerCase();
+  const allowLoopback = opts?.allowLoopback === true;
 
-  if (BLOCKED_HOSTNAMES.has(hostname)) {
+  if (BLOCKED_HOSTNAMES.has(hostname) && !(allowLoopback && isLoopbackHost(hostname))) {
     return { error: `Blocked: "${hostname}" is a private/metadata hostname` };
   }
 
@@ -87,7 +103,7 @@ export async function validateUrlSafety(
       return { error: `Blocked: DNS resolution failed for "${hostname}" — cannot verify safety` };
     }
     for (const addr of usable) {
-      if (isPrivateIP(addr.address)) {
+      if (isPrivateIP(addr.address) && !(allowLoopback && isLoopbackHost(addr.address))) {
         return { error: `Blocked: "${hostname}" resolves to private IP ${addr.address}` };
       }
     }

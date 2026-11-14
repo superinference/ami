@@ -10,6 +10,7 @@ import {
   withProxyDispatcher,
   mergeBetaTokens,
   withAnthropicBetaHeader,
+  getExtraAnthropicBetas,
   ONE_MILLION_CONTEXT_BETA,
 } from '../src/provider';
 
@@ -254,6 +255,46 @@ describe('withProxyDispatcher', () => {
     await wrapped({ noUrl: true } as any, { method: 'POST' });
     assert.equal(calls[0].init.dispatcher, undefined);
   });
+
+  // --- mTLS (client-certificate) activation (G24/G25/G26) ---
+  it('activates and attaches a direct mTLS dispatcher when a client cert is set (no proxy)', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-mtls-disp-'));
+    const certPath = path.join(dir, 'c.crt');
+    const keyPath = path.join(dir, 'c.key');
+    fs.writeFileSync(certPath, '-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n');
+    fs.writeFileSync(keyPath, '-----BEGIN PRIVATE KEY-----\nY\n-----END PRIVATE KEY-----\n');
+    try {
+      const { base, calls } = capturing();
+      const env = { AMI_CLIENT_CERT: certPath, AMI_CLIENT_KEY: keyPath } as unknown as NodeJS.ProcessEnv;
+      const wrapped = withProxyDispatcher(base, env)!;
+      assert.notEqual(wrapped, base, 'mTLS should activate the wrapper even without a proxy');
+      await wrapped('https://api.anthropic.com/v1/messages', { method: 'POST' });
+      assert.ok(calls[0].init.dispatcher, 'a direct mTLS dispatcher should be attached');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('attaches a proxy dispatcher carrying the client cert when BOTH proxy and mTLS are set', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-mtls-proxy-'));
+    const certPath = path.join(dir, 'c.crt');
+    fs.writeFileSync(certPath, '-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n');
+    try {
+      const { base, calls } = capturing();
+      const env = { HTTPS_PROXY: 'http://proxy.corp:8080', AMI_CLIENT_CERT: certPath } as unknown as NodeJS.ProcessEnv;
+      const wrapped = withProxyDispatcher(base, env)!;
+      await wrapped('https://api.anthropic.com/v1/messages', { method: 'POST' });
+      assert.ok(calls[0].init.dispatcher, 'a proxy dispatcher should be attached');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -309,5 +350,43 @@ describe('withAnthropicBetaHeader', () => {
     });
     const headers = calls[0].init.headers as Headers;
     assert.equal(headers.get('anthropic-beta'), `extended-cache-ttl-2025-04-11,${ONE_MILLION_CONTEXT_BETA}`);
+  });
+
+  it('merges an array of beta tokens, deduped (G17)', async () => {
+    const { base, calls } = capturing();
+    const wrapped = withAnthropicBetaHeader(base, [ONE_MILLION_CONTEXT_BETA, 'my-beta-1', 'my-beta-1']);
+    await wrapped('https://vertex.example/v1/messages', { method: 'POST' });
+    const headers = calls[0].init.headers as Headers;
+    assert.equal(headers.get('anthropic-beta'), `${ONE_MILLION_CONTEXT_BETA},my-beta-1`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G17 — ANTHROPIC_BETAS env passthrough
+// ---------------------------------------------------------------------------
+describe('getExtraAnthropicBetas (ANTHROPIC_BETAS env)', () => {
+  const saved = process.env.ANTHROPIC_BETAS;
+  const restore = () => {
+    if (saved === undefined) delete process.env.ANTHROPIC_BETAS;
+    else process.env.ANTHROPIC_BETAS = saved;
+  };
+
+  it('returns [] when unset', () => {
+    delete process.env.ANTHROPIC_BETAS;
+    assert.deepEqual(getExtraAnthropicBetas(), []);
+    restore();
+  });
+
+  it('comma-splits, trims, and drops empties', () => {
+    process.env.ANTHROPIC_BETAS = ' beta-a , , beta-b ,';
+    assert.deepEqual(getExtraAnthropicBetas(), ['beta-a', 'beta-b']);
+    restore();
+  });
+
+  it('mergeBetaTokens accepts the extra betas array and folds them in without dup', () => {
+    process.env.ANTHROPIC_BETAS = 'context-1m-2025-08-07,custom-beta';
+    const merged = mergeBetaTokens('extended-cache-ttl-2025-04-11', getExtraAnthropicBetas());
+    assert.equal(merged, 'extended-cache-ttl-2025-04-11,context-1m-2025-08-07,custom-beta');
+    restore();
   });
 });

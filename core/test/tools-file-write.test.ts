@@ -342,18 +342,24 @@ describe('fileEditTool – large file diff truncation', () => {
     assert.ok(result.output.includes('more lines'));
   });
 
-  it('truncates overwrite diff at 20 lines for both old and new', async () => {
+  it('emits a MINIMAL hunk diff for a small change in a large overwrite', async () => {
     const file = path.join(tmpDir, 'large-overwrite.txt');
-    const oldLines = Array.from({ length: 25 }, (_, i) => `old${i + 1}`);
+    const oldLines = Array.from({ length: 40 }, (_, i) => `line${i + 1}`);
     fs.writeFileSync(file, oldLines.join('\n') + '\n');
 
-    const newLines = Array.from({ length: 25 }, (_, i) => `new${i + 1}`);
+    // Change exactly ONE line in the middle via a full-file overwrite.
+    const newLines = [...oldLines];
+    newLines[20] = 'CHANGED';
     const result = await fileEditTool.execute(
       { file_path: file, content: newLines.join('\n') + '\n' },
       ctx(),
     );
     assert.ok(!result.isError);
-    assert.ok(result.output.includes('more removed'));
-    assert.ok(result.output.includes('more added'));
+    // Only the changed line + surrounding context is emitted — NOT the whole file.
+    assert.ok(result.output.includes('-line21'));
+    assert.ok(result.output.includes('+CHANGED'));
+    // Distant unchanged lines must NOT appear as removed/added markers.
+    assert.ok(!result.output.includes('-line1\n'));
+    assert.ok(!result.output.includes('-line40'));
   });
 });

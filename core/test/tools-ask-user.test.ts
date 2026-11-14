@@ -53,6 +53,32 @@ describe('askUserQuestionTool – definition', () => {
     const prop = askUserQuestionTool.inputSchema.properties.allowFreeText;
     assert.equal(prop.type, 'boolean');
   });
+
+  it('enforces cardinality bounds in the schema (1-4 questions, 2-4 options)', () => {
+    const q = askUserQuestionTool.inputSchema.properties.questions as any;
+    assert.equal(q.minItems, 1);
+    assert.equal(q.maxItems, 4);
+    assert.equal(q.items.properties.options.minItems, 2);
+    assert.equal(q.items.properties.options.maxItems, 4);
+    assert.equal(q.items.properties.header.maxLength, 12);
+  });
+
+  it('options carry a stable machine key distinct from the label', () => {
+    const q = askUserQuestionTool.inputSchema.properties.questions as any;
+    assert.ok(q.items.properties.options.items.properties.key);
+  });
+
+  it('question supports a previewFormat enum (markdown|html)', () => {
+    const q = askUserQuestionTool.inputSchema.properties.questions as any;
+    assert.deepEqual(q.items.properties.previewFormat.enum, ['markdown', 'html']);
+  });
+
+  it('description carries recommended-first, auto-Other, and preview constraints', () => {
+    const d = askUserQuestionTool.description;
+    assert.match(d, /\(Recommended\)/);
+    assert.match(d, /"Other"\/free-text choice is provided/);
+    assert.match(d, /single-select questions only/);
+  });
 });
 
 // ---------------------------------------------------------------------------

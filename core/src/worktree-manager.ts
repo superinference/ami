@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 export const GIT_NO_PROMPT_ENV = {
   GIT_TERMINAL_PROMPT: '0',
@@ -11,16 +11,70 @@ export const GIT_NO_PROMPT_ENV = {
 // Config flags for unattended git: never fire user hooks (a post-checkout or
 // pre-commit hook can block forever on prompts), never start the fsmonitor
 // daemon (hangs on `status`), never attempt GPG signing (blocks on a passphrase
-// prompt). Placed before the subcommand (`git -c k=v <cmd>`).
-const GIT_HARDENING_FLAGS =
-  '-c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false';
+// prompt). Passed as argv pairs (`git -c k=v <cmd>`), never a shell string.
+const GIT_HARDENING_FLAGS = [
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'commit.gpgsign=false',
+];
 
 // Hard ceiling so a wedged git invocation can never hang an unattended run.
 const GIT_CMD_TIMEOUT_MS = 15_000;
 
-/** Prefix a git subcommand with the unattended hardening config flags. */
-function gitCmd(args: string): string {
-  return `git ${GIT_HARDENING_FLAGS} ${args}`;
+/**
+ * Run git with the hardening flags, NO SHELL (execFile with an argv array), so
+ * branch names / paths / refs can never be interpreted as shell metacharacters
+ * (command-injection immune). Returns trimmed stdout.
+ */
+function gitExec(args: string[], opts: { cwd: string; timeout?: number; stdio?: 'ignore' | 'pipe' } = { cwd: process.cwd() }): string {
+  const env = { ...process.env, ...GIT_NO_PROMPT_ENV };
+  const out = execFileSync('git', [...GIT_HARDENING_FLAGS, ...args], {
+    cwd: opts.cwd,
+    encoding: 'utf-8',
+    env,
+    timeout: opts.timeout ?? GIT_CMD_TIMEOUT_MS,
+    stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
+  });
+  return typeof out === 'string' ? out.trim() : '';
+}
+
+/** 40-hex (SHA-1) or 64-hex (SHA-256) git object id. */
+export function isValidGitSha(sha: string): boolean {
+  return /^[0-9a-f]{40}$/.test(sha) || /^[0-9a-f]{64}$/.test(sha);
+}
+
+/** Allow-list validator for a ref/branch name used in git argv. Rejects the
+ *  characters git itself forbids plus anything that could confuse tooling. */
+export function isSafeRefName(ref: string): boolean {
+  if (!ref || ref.length > 255) return false;
+  if (/[\x00-\x20~^:?*[\\\s]/.test(ref)) return false; // control, space, glob, git-forbidden
+  if (ref.includes('..') || ref.includes('@{')) return false;
+  if (ref.startsWith('/') || ref.endsWith('/') || ref.startsWith('-')) return false;
+  if (ref.endsWith('.lock') || ref.endsWith('.')) return false;
+  return true;
+}
+
+/**
+ * Resolve the canonical MAIN repository root, even when invoked from inside an
+ * existing worktree (so nested-worktree creation targets the real repo, not a
+ * linked worktree). Falls back to cwd when git can't answer.
+ */
+export function resolveMainRepoRoot(cwd: string): string {
+  try {
+    // --git-common-dir points at the main repo's .git even from a linked worktree.
+    const commonDir = gitExec(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd });
+    if (commonDir) {
+      const norm = commonDir.normalize('NFC');
+      // The main worktree root is the parent of the common .git dir.
+      const root = path.basename(norm) === '.git' ? path.dirname(norm) : norm;
+      if (fs.existsSync(root)) return root;
+    }
+  } catch { /* fall through */ }
+  try {
+    const top = gitExec(['rev-parse', '--show-toplevel'], { cwd });
+    if (top) return top.normalize('NFC');
+  } catch { /* fall through */ }
+  return cwd;
 }
 
 export const MAX_WORKTREES = 10;
@@ -74,16 +128,21 @@ export function worktreeBranchName(slug: string): string {
 
 export function createWorktreeSession(cwd: string, name: string): WorktreeSession {
   const startMs = Date.now();
-  const worktreeDir = path.join(cwd, '.ami', 'worktrees', name);
+  // Resolve to the canonical main repo root so creation works even when invoked
+  // from inside an existing (linked) worktree.
+  const repoRoot = resolveMainRepoRoot(cwd);
+  const worktreeDir = path.join(repoRoot, '.ami', 'worktrees', name);
   const branch = worktreeBranchName(name);
+  if (!isSafeRefName(branch)) {
+    throw new Error(`Refusing to create worktree: unsafe branch name "${branch}".`);
+  }
 
   let originalBranch: string | undefined;
   let originalHead: string | undefined;
-  const gitEnv = { ...process.env, ...GIT_NO_PROMPT_ENV };
   try {
-    originalBranch = execSync(gitCmd('rev-parse --abbrev-ref HEAD'), { cwd, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
-    originalHead = execSync(gitCmd('rev-parse HEAD'), { cwd, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
-  } catch {}
+    originalBranch = gitExec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot });
+    originalHead = gitExec(['rev-parse', 'HEAD'], { cwd: repoRoot });
+  } catch { /* detached / fresh repo */ }
 
   // Create the worktree on disk if it doesn't already exist.
   // enter-worktree.ts creates the worktree itself (with base_ref support) then
@@ -91,11 +150,18 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
   // to create the worktree as well.
   if (!fs.existsSync(worktreeDir)) {
     fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
-    execSync(gitCmd(`worktree add -B "${branch}" "${worktreeDir}" HEAD`), { cwd, stdio: 'ignore', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS });
+    try {
+      gitExec(['worktree', 'add', '-B', branch, worktreeDir, 'HEAD'], { cwd: repoRoot, stdio: 'ignore' });
+    } catch (err) {
+      // Tear down a half-created worktree so a failed add leaves no debris.
+      try { gitExec(['worktree', 'remove', '--force', worktreeDir], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best effort */ }
+      try { if (fs.existsSync(worktreeDir)) fs.rmSync(worktreeDir, { recursive: true, force: true }); } catch { /* best effort */ }
+      throw err;
+    }
   }
 
   const session: WorktreeSession = {
-    originalCwd: cwd,
+    originalCwd: repoRoot,
     worktreePath: worktreeDir,
     worktreeName: name,
     worktreeBranch: branch,
@@ -112,30 +178,35 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
  * Count changes in a worktree (uncommitted files + unpushed commits).
  * Returns null on git failure (fail-closed — never removes on error).
  */
-export function countWorktreeChanges(worktreePath: string, cwd: string): { uncommitted: number; unpushed: number } | null {
-  const gitEnv = { ...process.env, ...GIT_NO_PROMPT_ENV };
+export function countWorktreeChanges(
+  worktreePath: string,
+  cwd: string,
+  opts: { ignoreUntracked?: boolean } = {},
+): { uncommitted: number; unpushed: number } | null {
   try {
-    const status = execSync(gitCmd('status --porcelain'), { cwd: worktreePath, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
+    // --no-optional-locks: a read-only status must not take the index lock
+    // (avoids contending with a concurrent git in the same worktree).
+    const statusArgs = ['--no-optional-locks', 'status', '--porcelain'];
+    if (opts.ignoreUntracked) statusArgs.push('--untracked-files=no');
+    const status = gitExec(statusArgs, { cwd: worktreePath });
     const uncommitted = status ? status.split('\n').length : 0;
-    let unpushed = 0;
-    try {
-      // Check if HEAD is detached
-      let isDetached = false;
-      try {
-        execSync(gitCmd('symbolic-ref -q HEAD'), { cwd: worktreePath, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS });
-      } catch {
-        isDetached = true;
-      }
 
-      // Use --not --remotes to count commits not on any remote branch.
-      // This works regardless of whether the branch has an upstream configured
-      // (worktree branches created by enter_worktree never have upstream set).
-      // For detached HEAD, also exclude local branches so we only count
-      // truly orphaned commits.
-      const notFlags = isDetached ? '--not --remotes --branches' : '--not --remotes';
-      const revList = execSync(gitCmd(`rev-list HEAD ${notFlags}`), { cwd: worktreePath, encoding: 'utf-8', env: gitEnv, timeout: GIT_CMD_TIMEOUT_MS }).trim();
+    // Fail-closed: if we cannot definitively count unpushed commits, return null
+    // so the caller never treats an unverifiable worktree as safe to delete.
+    let isDetached = false;
+    try {
+      gitExec(['symbolic-ref', '-q', 'HEAD'], { cwd: worktreePath });
+    } catch {
+      isDetached = true;
+    }
+    const notFlags = isDetached ? ['--not', '--remotes', '--branches'] : ['--not', '--remotes'];
+    let unpushed: number;
+    try {
+      const revList = gitExec(['rev-list', 'HEAD', ...notFlags], { cwd: worktreePath });
       unpushed = revList ? revList.split('\n').length : 0;
-    } catch {}
+    } catch {
+      return null; // rev-list unverifiable → fail closed
+    }
     return { uncommitted, unpushed };
   } catch {
     return null;
@@ -149,11 +220,13 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): str
   const cleaned: string[] = [];
   const now = Date.now();
   const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
-  const gitEnv = { ...process.env, ...GIT_NO_PROMPT_ENV };
+  // Never reap the worktree the active session is currently using.
+  const activePath = currentSession?.worktreePath ? path.resolve(currentSession.worktreePath) : null;
 
   for (const entry of fs.readdirSync(worktreeDir)) {
     const fullPath = path.join(worktreeDir, entry);
     try {
+      if (activePath && path.resolve(fullPath) === activePath) continue;
       const stat = fs.statSync(fullPath);
       if (!stat.isDirectory()) continue;
 
@@ -162,34 +235,90 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): str
 
       if ((now - stat.mtimeMs) > ageThreshold) {
         const changes = countWorktreeChanges(fullPath, cwd);
-        if (changes === null) continue;
+        if (changes === null) continue; // fail-closed: never remove on uncertainty
         if (changes.uncommitted > 0 || changes.unpushed > 0) continue;
 
         try {
-          execSync(gitCmd(`worktree remove --force "${fullPath}"`), { cwd, timeout: 10000, env: gitEnv });
+          gitExec(['worktree', 'remove', '--force', fullPath], { cwd, timeout: 10000 });
           cleaned.push(entry);
-        } catch {}
+        } catch { /* leave it for the next sweep */ }
       }
-    } catch {}
+    } catch { /* unreadable entry — skip */ }
   }
 
   // Prune any stale worktree metadata
   try {
-    execSync(gitCmd('worktree prune'), { cwd, timeout: 5000, env: gitEnv, stdio: 'ignore' });
-  } catch {}
+    gitExec(['worktree', 'prune'], { cwd, timeout: 5000, stdio: 'ignore' });
+  } catch { /* best effort */ }
 
   return cleaned;
+}
+
+/**
+ * Bump a worktree directory's mtime so an actively-reused worktree is not reaped
+ * by the stale-cleanup sweep on resume.
+ */
+export function bumpWorktreeMtime(worktreePath: string): void {
+  try {
+    const now = new Date();
+    fs.utimesSync(worktreePath, now, now);
+  } catch { /* best effort */ }
+}
+
+/**
+ * Enumerate all git worktrees (bounded, NFC-normalized, current-first then
+ * alphabetical). Returns [] on any failure so callers never block on git.
+ */
+export function listWorktrees(cwd: string): Array<{ path: string; branch?: string; isCurrent: boolean }> {
+  let raw: string;
+  try {
+    raw = gitExec(['worktree', 'list', '--porcelain'], { cwd, timeout: 5000 });
+  } catch {
+    return [];
+  }
+  const current = path.resolve(cwd);
+  const out: Array<{ path: string; branch?: string; isCurrent: boolean }> = [];
+  let cur: { path: string; branch?: string } | null = null;
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      if (cur) out.push({ ...cur, isCurrent: false });
+      cur = { path: line.slice('worktree '.length).trim().normalize('NFC') };
+    } else if (line.startsWith('branch ') && cur) {
+      cur.branch = line.slice('branch '.length).trim();
+    }
+  }
+  if (cur) out.push({ ...cur, isCurrent: false });
+  for (const w of out) {
+    w.isCurrent = path.resolve(w.path) === current || current.startsWith(path.resolve(w.path) + path.sep);
+  }
+  out.sort((a, b) => {
+    if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+    return a.path.localeCompare(b.path);
+  });
+  return out;
+}
+
+/** True when `child` is contained within `parent` (no path escape). */
+function isWithin(parent: string, child: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 export function symlinkLargeDirectories(sourceCwd: string, worktreePath: string, dirs: string[] = ['node_modules']): void {
   for (const dir of dirs) {
     const source = path.join(sourceCwd, dir);
     const target = path.join(worktreePath, dir);
+    // Path-traversal guard: a poisoned dir name must not escape either root.
+    if (!isWithin(sourceCwd, source) || !isWithin(worktreePath, target)) continue;
     try {
       if (fs.existsSync(source) && !fs.existsSync(target)) {
         fs.symlinkSync(source, target, 'dir');
       }
-    } catch {}
+    } catch (err: unknown) {
+      // ENOENT/EEXIST are benign races; anything else is swallowed to keep
+      // worktree setup resilient.
+      void err;
+    }
   }
 }
 
@@ -215,6 +344,14 @@ export function copyWorktreeIncludes(sourceCwd: string, worktreePath: string): s
   for (const entry of lines) {
     const sourcePath = path.join(sourceCwd, entry);
     const targetPath = path.join(worktreePath, entry);
+    // Path-escape guard: an entry must stay inside BOTH the source repo and the
+    // worktree — never copy an arbitrary absolute/`..` path.
+    if (!isWithin(sourceCwd, sourcePath) || !isWithin(worktreePath, targetPath)) continue;
+    // Skip git-TRACKED files: .worktreeinclude is for carrying over untracked /
+    // gitignored files (.env, local caches); a tracked file is already present
+    // in the worktree checkout, so copying it would be redundant/wrong. Files in
+    // a non-git dir (or untracked) are still copied.
+    if (isGitTracked(sourceCwd, entry)) continue;
     try {
       if (!fs.existsSync(sourcePath)) continue;
       const stat = fs.statSync(sourcePath);
@@ -225,10 +362,22 @@ export function copyWorktreeIncludes(sourceCwd: string, worktreePath: string): s
         fs.copyFileSync(sourcePath, targetPath);
       }
       copied.push(entry);
-    } catch {}
+    } catch { /* best effort per entry */ }
   }
 
   return copied;
+}
+
+/** True when `relPath` is a git-TRACKED file in the repo at `cwd`. In a
+ *  non-git directory (or for an untracked path) this returns false. */
+function isGitTracked(cwd: string, relPath: string): boolean {
+  try {
+    // ls-files --error-unmatch exits 0 only when the path is tracked.
+    gitExec(['ls-files', '--error-unmatch', '--', relPath], { cwd, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function validateWorktreeGitFile(worktreePath: string): { valid: boolean; error?: string } {

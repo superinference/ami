@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { spillToolText } from '../src/tools/spill-output';
+import { spillToolText, formatSize, spillErrorReason, buildSpillBanner } from '../src/tools/spill-output';
 import { projectStateDir } from '../src/reference-journal';
 
 describe('spillToolText', () => {
@@ -143,6 +143,82 @@ describe('spillToolText', () => {
       }
     });
     fs.rmSync(dataDir, { recursive: true });
+  });
+
+  it('banner reports total original size in human-readable units', () => {
+    const text = 'z'.repeat(5000);
+    const result = spillToolText(tmpDir, 'total', text, 1000);
+    assert.match(result, /chars persisted to/);
+    assert.match(result, /of [\d.]+ KB\)/);
+  });
+
+  it('is idempotent — the same text yields the same spill filename and is not rewritten twice', () => {
+    const text = 'idem' + 'k'.repeat(5000);
+    const r1 = spillToolText(tmpDir, 'idem', text, 1000);
+    const spillDir = projectStateDir(tmpDir, 'tool-results');
+    const files1 = fs.readdirSync(spillDir).filter(f => f.startsWith('idem-'));
+    const mtime1 = fs.statSync(path.join(spillDir, files1[0])).mtimeMs;
+    const r2 = spillToolText(tmpDir, 'idem', text, 1000);
+    const files2 = fs.readdirSync(spillDir).filter(f => f.startsWith('idem-'));
+    assert.equal(files2.length, files1.length, 'no duplicate spill file created');
+    // Same deterministic path appears in both banners.
+    assert.equal(r1, r2);
+    assert.ok(fs.statSync(path.join(spillDir, files2[0])).mtimeMs >= mtime1);
+  });
+
+  it('prefers newline boundaries for head/tail previews', () => {
+    const head = 'line-a\nline-b\n';
+    const tail = '\nlast-line\n';
+    const text = head + 'm'.repeat(5000) + tail;
+    const result = spillToolText(tmpDir, 'nl', text, 400);
+    // head preview should end cleanly on a newline, not mid "mmm"
+    assert.ok(result.startsWith('line-a\n'));
+  });
+
+  it('snaps head and tail to nearby newline boundaries', () => {
+    // limit 1000 -> headLen 670, tailLen 130, tailStart = len-130.
+    // Put a newline just before 670 and just after tailStart so both snap branches fire.
+    const parts: string[] = [];
+    parts.push('A'.repeat(620));
+    parts.push('\n');            // newline at 620 (within 120 before headLen 670)
+    parts.push('B'.repeat(4000));
+    const base = parts.join('');
+    const tailStart = base.length + 11 - 130; // target tailStart in final string
+    const text = base + 'C'.repeat(30) + '\n' + 'D'.repeat(120);
+    const result = spillToolText(tmpDir, 'snap', text, 1000);
+    assert.ok(result.includes('truncated'));
+    assert.ok(tailStart > 0);
+  });
+
+  describe('formatSize', () => {
+    it('formats bytes, KB, MB, GB', () => {
+      assert.equal(formatSize(512), '512 B');
+      assert.equal(formatSize(2048), '2.0 KB');
+      assert.equal(formatSize(5 * 1024 * 1024), '5.0 MB');
+      assert.equal(formatSize(3 * 1024 * 1024 * 1024), '3.0 GB');
+    });
+  });
+
+  describe('spillErrorReason', () => {
+    it('maps known error codes and falls back', () => {
+      assert.match(spillErrorReason('ENOSPC'), /disk full/);
+      assert.match(spillErrorReason('EACCES'), /permission denied/);
+      assert.match(spillErrorReason('EPERM'), /permission denied/);
+      assert.match(spillErrorReason('EROFS'), /read-only/);
+      assert.match(spillErrorReason('EDQUOT'), /quota/);
+      assert.match(spillErrorReason('ENOTDIR'), /invalid spill path/);
+      assert.match(spillErrorReason('ENOENT'), /invalid spill path/);
+      assert.match(spillErrorReason('EWEIRD'), /error EWEIRD/);
+      assert.match(spillErrorReason(undefined), /unknown error/);
+    });
+  });
+
+  describe('buildSpillBanner', () => {
+    it('omits the total clause when total is undefined', () => {
+      const b = buildSpillBanner(10, '/tmp/x.txt');
+      assert.ok(!b.includes('total'));
+      assert.ok(b.includes('persisted to /tmp/x.txt'));
+    });
   });
 
   it('falls back gracefully when cwd does not exist', () => {

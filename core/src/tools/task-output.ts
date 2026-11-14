@@ -3,7 +3,11 @@ import { coerceBool } from '../utils/coerce';
 
 /** Default cap on how long task_output({wait:true}) blocks for a task to finish. */
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+/** Hard upper bound on the blocking wait timeout (mirrors Claude's 600000 cap). */
+const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 const WAIT_POLL_INTERVAL_MS = 400;
+/** Hard character cap on returned task output so a chatty task can't flood context. */
+const MAX_OUTPUT_CHARS = 100_000;
 
 export const taskOutputTool: ToolDefinition = {
   name: 'task_output',
@@ -44,8 +48,11 @@ export const taskOutputTool: ToolDefinition = {
     const taskId = input.task_id as string;
     const tail = (input.tail as number) ?? 50;
     const wait = coerceBool(input.wait);
-    const waitTimeoutMs = typeof input.timeout_ms === 'number' && input.timeout_ms > 0
+    // Clamp the blocking wait to [1ms, MAX]; a request above the cap is clamped,
+    // not honored, so the model can't park a call for an unbounded time.
+    const requestedTimeout = typeof input.timeout_ms === 'number' && input.timeout_ms > 0
       ? input.timeout_ms : DEFAULT_WAIT_TIMEOUT_MS;
+    const waitTimeoutMs = Math.min(requestedTimeout, MAX_WAIT_TIMEOUT_MS);
 
     let result = context.processManager.getOutput(taskId, tail);
     if (!result) {
@@ -80,12 +87,24 @@ export const taskOutputTool: ToolDefinition = {
       `Elapsed: ${elapsed}`,
     ];
 
+    // Distinct retrieval status: a wait that returned while still running means the
+    // timeout elapsed (not that the task is ready) — call that out explicitly so
+    // the model doesn't mistake it for a completed result.
+    if (wait && result.status === 'running') {
+      lines.push(`Retrieval: wait timed out after ${waitTimeoutMs}ms — task still running (call task_output again to keep waiting).`);
+    }
+
     if (result.exitCode !== null) {
       lines.push(`Exit code: ${result.exitCode}`);
     }
 
     if (result.output.trim()) {
-      lines.push('', '--- Output (last ' + tail + ' lines) ---', result.output.trim());
+      // Byte/char cap: truncate from the FRONT (keep the latest tail) and mark it.
+      let body = result.output.trim();
+      if (body.length > MAX_OUTPUT_CHARS) {
+        body = `... [output truncated to the last ${MAX_OUTPUT_CHARS} chars]\n` + body.slice(body.length - MAX_OUTPUT_CHARS);
+      }
+      lines.push('', '--- Output (last ' + tail + ' lines) ---', body);
     } else {
       lines.push('', '(no output yet)');
     }

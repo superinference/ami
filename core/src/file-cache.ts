@@ -8,6 +8,11 @@ export interface FileState {
   mtime: number;
   contentHash: string;
   tokenEstimate: number;
+  /** True when the model has only seen a PARTIAL view of this file (size-capped
+   *  partial read, truncated/stripped injected view). A partial view is not a
+   *  safe basis for a full overwrite — file_edit's write path requires a full
+   *  Read first when this is set, to avoid clobbering content never seen. */
+  isPartialView?: boolean;
 }
 
 function hashContent(content: string): string {
@@ -106,6 +111,21 @@ export class FileCache {
     if (!this.cache.has(path)) {
       this.cache.set(path, { path, content: '', mtime, contentHash: '', tokenEstimate: 0 });
     }
+  }
+
+  /**
+   * Record that the model has only seen a PARTIAL view of this file (e.g. a
+   * size-capped partial read). Tracks the mtime (so change detection works) but
+   * no content, and flags the entry partial so file_edit's full-overwrite path
+   * can require an explicit full Read before clobbering unseen content.
+   */
+  markPartialView(path: string, mtime: number): void {
+    this.cache.set(path, { path, content: '', mtime, contentHash: '', tokenEstimate: 0, isPartialView: true });
+  }
+
+  /** True when the cached view of this file is only partial (see markPartialView). */
+  isPartialView(path: string): boolean {
+    return this.cache.get(path)?.isPartialView === true;
   }
 
   /**
