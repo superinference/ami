@@ -192,3 +192,38 @@ export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById,
 export type { SecurityPattern, SecurityFinding } from './code-security-patterns';
 export { AMI_VERSION, AMI_CLIENT_NAME, AMI_CLIENT_INFO } from './version';
 export { escapeXmlAttr, escapeXmlText, safeXmlKey } from './xml-escape';
+export {
+  LSPClient,
+  getLSPClient,
+  DEFAULT_LSP_SERVERS,
+  getAllLspServers,
+  registerLspServers,
+  resetLspServers,
+  resolveLanguageForExtension,
+  languageIdForExtension,
+  assertNoAutoFetch,
+  validateLspServerConfig,
+  loadLspServersFromFile,
+  DiagnosticTracker,
+  mapLspSeverity,
+  convertPublishDiagnostics,
+  areDiagnosticsEqual,
+  normalizeDiagnosticPath,
+  diagnosticPathsEqual,
+  uriToPath,
+  diagnosticSeveritySymbol,
+  formatNewDiagnosticsSummary,
+  formatDiagnosticsDetail,
+} from './lsp';
+export type {
+  LspServerConfig,
+  NotificationHandler,
+  RequestHandler,
+  Diagnostic,
+  DiagnosticFile,
+  DiagnosticSource,
+  DiagnosticSeverityName,
+  DiagnosticRange,
+  DiagnosticPosition,
+  PublishDiagnosticsParams,
+} from './lsp';
