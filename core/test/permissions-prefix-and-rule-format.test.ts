@@ -66,7 +66,7 @@ test('suggestAllowPrefix prefers two-word, applies bare-root + NEVER_SUGGEST gua
 test('normalizeToolName canonicalizes legacy/cross-framework names', () => {
   assert.equal(normalizeToolName('Bash'), 'bash');
   assert.equal(normalizeToolName('Edit'), 'file_edit');
-  assert.equal(normalizeToolName('Write'), 'file_write');
+  assert.equal(normalizeToolName('Write'), 'file_edit'); // Write/Edit/MultiEdit all map to the single file_edit tool
   assert.equal(normalizeToolName('KillShell'), 'task_stop');
   assert.equal(normalizeToolName('bash'), 'bash'); // already canonical
   assert.equal(normalizeToolName('unknown_tool'), 'unknown_tool');

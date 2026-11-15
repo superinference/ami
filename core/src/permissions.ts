@@ -1513,8 +1513,8 @@ export interface PermissionRuleValue {
  * or an AMI legacy name resolves to the same canonical AMI tool, so rules keep
  * matching after a rename or when imported from a Claude settings file.
  */
-const PERMISSION_TOOL_ALIASES: Record<string, string> = {
-  Bash: 'bash', Read: 'file_read', Edit: 'file_edit', Write: 'file_write',
+export const PERMISSION_TOOL_ALIASES: Record<string, string> = {
+  Bash: 'bash', Read: 'file_read', Edit: 'file_edit', Write: 'file_edit',
   MultiEdit: 'file_edit', Glob: 'glob', Grep: 'grep', LS: 'list_dir',
   WebFetch: 'web_fetch', WebSearch: 'web_search', NotebookEdit: 'notebook_edit',
   Task: 'task', TodoWrite: 'todo_write',

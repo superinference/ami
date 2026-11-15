@@ -7,7 +7,7 @@ import type { Message, AssistantMessage } from './types';
 import { log as coreLog } from './logger';
 import { EventEmitter } from 'events';
 import { canHookEvent, shouldSkipHookDueToTrust } from './hook-protection';
-import { verdictRank, wildcardMatch } from './permissions';
+import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 
 // ---------------------------------------------------------------------------
@@ -886,13 +886,9 @@ export interface HookConfigFile {
  * Unknown shapes are skipped defensively.
  */
 /** Map Claude Code's capitalized tool names to AMI tool names so a matcher like
- *  'Bash' or 'Edit|Write' actually gates the AMI tools at execution time. */
-const CLAUDE_TO_AMI_TOOL: Record<string, string> = {
-  Bash: 'bash', Read: 'file_read', Edit: 'file_edit', Write: 'file_edit',
-  MultiEdit: 'file_edit', Glob: 'glob', Grep: 'grep', LS: 'list_dir',
-  WebFetch: 'web_fetch', WebSearch: 'web_search', NotebookEdit: 'notebook_edit',
-  Task: 'task', TodoWrite: 'todo_write',
-};
+ *  'Bash' or 'Edit|Write' actually gates the AMI tools at execution time. Shares
+ *  the single canonical alias map with the permission-rule parser (no duplicate). */
+const CLAUDE_TO_AMI_TOOL: Record<string, string> = PERMISSION_TOOL_ALIASES;
 
 /** Translate the tool-name tokens in a hook matcher ('Edit|Write' → 'file_edit|
  *  file_edit'). Unknown tokens (already-AMI names, custom regex) pass through. */
