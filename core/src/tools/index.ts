@@ -150,7 +150,7 @@ export { webSearchTool } from './web-search';
 export { notebookEditTool } from './notebook-edit';
 export { searchSymbolsTool, getWorkspaceIndexer } from './search-symbols';
 export { taskTool } from './task';
-export { toolSearchTool, setSearchableTools } from './tool-search';
+export { toolSearchTool, setSearchableTools, resolveSearchableTool, resolveSearchableSkill } from './tool-search';
 export { askUserQuestionTool } from './ask-user';
 export { gitCommitTool } from './git-commit';
 export { taskTrackerTool, resetTaskState } from './task-tracker';

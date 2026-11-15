@@ -7,6 +7,39 @@ export function setSearchableTools(tools: ToolDefinition[]): void {
   _allTools = tools;
 }
 
+/**
+ * Resolve a tool by name for the `select:`/bare fast-path loaders. Tries an
+ * exact match first, then a case-insensitive fallback. The fallback is a
+ * cross-framework parity superset: models trained on Claude Code conventions
+ * emit PascalCase names (`select:Bash`, bare `Read`) while AMI registers tools
+ * in snake_case (`bash`, `file_read`) — resolving them case-insensitively lets
+ * those loads succeed instead of erroring as "not found". Callers MUST use the
+ * returned definition's canonical `.name` when loading the deferred tool.
+ */
+export function resolveSearchableTool(name: string): ToolDefinition | undefined {
+  const exact = _allTools.find(t => t.name === name);
+  if (exact) return exact;
+  const lower = name.toLowerCase();
+  return _allTools.find(t => t.name.toLowerCase() === lower);
+}
+
+/**
+ * Resolve a skill by name with the same exact-then-case-insensitive strategy as
+ * {@link resolveSearchableTool}, so `select:RESEARCH` resolves the `research`
+ * skill. Returns `null` when no skill manager is present or nothing matches.
+ */
+export function resolveSearchableSkill(
+  context: ToolContext,
+  name: string,
+): SkillDefinition | null {
+  const mgr = context._skillManager;
+  if (!mgr) return null;
+  const direct = mgr.getSkill(name);
+  if (direct) return direct;
+  const lower = name.toLowerCase();
+  return mgr.listSkills().find(s => s.name.toLowerCase() === lower) ?? null;
+}
+
 function formatSkillActivation(skill: SkillDefinition): string {
   if (isStanceSkill(skill)) {
     return `Activate stance with: skill({skill: "${skill.name}"})`;
@@ -70,6 +103,7 @@ export const toolSearchTool: ToolDefinition = {
     '  - "select:name" — load the full schema for a specific tool (or skill details). ' +
     'Comma-separate names ("select:a,b,c") to load several at once.\n' +
     '  - a bare exact tool/skill name — same as select: (fast path, resolves and loads it directly).\n' +
+    '  Name matching for select:/bare-name is case-insensitive (e.g. "Bash" resolves "bash").\n' +
     '  - keywords — ranked fuzzy search over names + descriptions; "+term" REQUIRES that term ' +
     'to appear in the match NAME, other terms only affect ranking.\n' +
     'Results are a ranked bullet list (top max_results). Use when you need a tool/skill not in your current set.',
@@ -105,23 +139,35 @@ export const toolSearchTool: ToolDefinition = {
 
     if (query.startsWith('select:')) {
       // Parse one or more comma-separated names: trim each, drop empties, dedupe.
+      // Dedupe is CASE-INSENSITIVE (keeping the first-seen casing) so that
+      // `select:bash,BASH` collapses to one entry instead of loading the same
+      // tool twice — consistent with the case-insensitive resolver below.
       const rawNames = query
         .slice('select:'.length)
         .split(',')
         .map(n => n.trim())
         .filter(n => n.length > 0);
-      const names = [...new Set(rawNames)];
+      const seen = new Set<string>();
+      const names: string[] = [];
+      for (const n of rawNames) {
+        const key = n.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        names.push(n);
+      }
 
       // Single-name select: preserve the original behavior — a bare JSON payload
       // for the matched tool/skill, or a not-found error listing what's available.
       if (names.length <= 1) {
         const name = names[0] ?? '';
-        const tool = _allTools.find(t => t.name === name);
+        const tool = resolveSearchableTool(name);
         if (tool) {
-          context._loadDeferredTool?.(name);
+          // Load under the CANONICAL name so a case-variant input still targets
+          // the registered deferred tool.
+          context._loadDeferredTool?.(tool.name);
           return { output: JSON.stringify(toolPayload(tool), null, 2), isError: false };
         }
-        const skill = context._skillManager?.getSkill(name);
+        const skill = resolveSearchableSkill(context, name);
         if (skill) {
           return { output: JSON.stringify(skillPayload(skill), null, 2), isError: false };
         }
@@ -133,13 +179,13 @@ export const toolSearchTool: ToolDefinition = {
       const skillsOut: Record<string, unknown>[] = [];
       const notFound: string[] = [];
       for (const name of names) {
-        const tool = _allTools.find(t => t.name === name);
+        const tool = resolveSearchableTool(name);
         if (tool) {
-          context._loadDeferredTool?.(name);
+          context._loadDeferredTool?.(tool.name);
           toolsOut.push(toolPayload(tool));
           continue;
         }
-        const skill = context._skillManager?.getSkill(name);
+        const skill = resolveSearchableSkill(context, name);
         if (skill) {
           skillsOut.push(skillPayload(skill));
           continue;
@@ -160,9 +206,11 @@ export const toolSearchTool: ToolDefinition = {
     // needed. (Skills are not fast-pathed — a keyword can legitimately equal a
     // skill name, so skills go through ranked search.)
     if (!/\s/.test(query) && !query.startsWith('+')) {
-      const exactTool = _allTools.find(t => t.name === query);
+      // Case-insensitive resolution (see resolveSearchableTool) so a bare
+      // PascalCase name like `Bash` loads the registered `bash` tool.
+      const exactTool = resolveSearchableTool(query);
       if (exactTool) {
-        context._loadDeferredTool?.(query);
+        context._loadDeferredTool?.(exactTool.name);
         return { output: JSON.stringify(toolPayload(exactTool), null, 2), isError: false };
       }
     }
