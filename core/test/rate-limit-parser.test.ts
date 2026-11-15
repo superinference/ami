@@ -62,6 +62,21 @@ describe('parseRetryAfterHeader', () => {
   it('returns null for empty string', () => {
     assert.equal(parseRetryAfterHeader(''), null);
   });
+
+  it('caps the HTTP-date branch at 24h like the numeric branch (rejects far-future date)', () => {
+    // A retry-after date two days out must NOT bypass the 86400s ceiling the
+    // numeric branch enforces — it should be rejected (null), not returned as an
+    // unbounded ~172800000ms backoff.
+    const farFuture = new Date(Date.now() + 2 * 86400_000 + 60_000);
+    assert.equal(parseRetryAfterHeader(farFuture.toUTCString()), null);
+  });
+
+  it('accepts an HTTP-date within the 24h ceiling', () => {
+    const withinDay = new Date(Date.now() + 23 * 60 * 60 * 1000);
+    const result = parseRetryAfterHeader(withinDay.toUTCString());
+    assert.ok(result !== null);
+    assert.ok(result! > 0 && result! <= 86400_000);
+  });
 });
 
 describe('parseRateLimitHeaders', () => {
@@ -131,6 +146,26 @@ describe('parseRateLimitHeaders', () => {
     assert.ok(info.resetAt !== null);
     const delta = info.resetAt!.getTime() - Date.now();
     assert.ok(delta > 28_000 && delta <= 31_000);
+  });
+
+  it('interprets a bare integer in the unix-epoch range as an ABSOLUTE reset, not a relative delta', () => {
+    // Anthropic's unified-reset header carries absolute epoch SECONDS. A reset
+    // 40s out expressed as epoch-seconds must resolve to ~40s from now — not
+    // ~(epoch) seconds in the future.
+    const epochSec = Math.floor(Date.now() / 1000) + 40;
+    const info = parseRateLimitHeaders({ 'x-ratelimit-reset-requests': String(epochSec) });
+    assert.ok(info.resetAt !== null);
+    const delta = info.resetAt!.getTime() - Date.now();
+    assert.ok(delta > 35_000 && delta <= 41_000, `delta was ${delta}`);
+    // And the derived wait must be sane (seconds), not ~54 years of ms.
+    assert.ok(suggestedWaitMs(info) <= 41_000);
+  });
+
+  it('still treats a small bare integer as a relative delta', () => {
+    const info = parseRateLimitHeaders({ 'x-ratelimit-reset-requests': '45' });
+    assert.ok(info.resetAt !== null);
+    const delta = info.resetAt!.getTime() - Date.now();
+    assert.ok(delta > 43_000 && delta <= 46_000, `delta was ${delta}`);
   });
 
   it('handles array header values', () => {

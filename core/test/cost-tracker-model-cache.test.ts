@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 
 import {
@@ -9,6 +9,8 @@ import {
   WEB_SEARCH_COST_PER_REQUEST,
   MIN_CACHE_MISS_TOKENS,
   PARTIAL_CACHE_BREAK_RATIO,
+  _resetPricingCache,
+  _fetchPricing,
   type CacheDiagRequest,
 } from '../src/cost-tracker';
 
@@ -85,6 +87,86 @@ describe('CostTracker — unknown-model accuracy flag', () => {
     assert.deepEqual(s.unknownModels, []);
     assert.equal(s.webSearchRequests, 0);
     assert.equal(s.costAccuracy, 'exact');
+  });
+});
+
+describe('CostTracker — retry-aware API duration tracking', () => {
+  it('accumulates total duration including retries, and a without-retries figure', () => {
+    const t = new CostTracker('gpt-4o');
+    t.trackRequestDuration(100);                      // successful request
+    t.trackRequestDuration(40, { wasRetry: true });   // a retry attempt
+    t.trackRequestDuration(60, { wasRetry: false });  // another successful request
+    const s = t.getStats();
+    assert.equal(s.apiDurationMs, 200);               // 100 + 40 + 60
+    assert.equal(s.apiDurationMsWithoutRetries, 160); // 100 + 60 (retry excluded)
+    // The delta is the observable time cost of retries.
+    assert.equal(s.apiDurationMs - s.apiDurationMsWithoutRetries, 40);
+  });
+
+  it('ignores non-finite, zero and negative durations', () => {
+    const t = new CostTracker('gpt-4o');
+    t.trackRequestDuration(NaN);
+    t.trackRequestDuration(Infinity);
+    t.trackRequestDuration(0);
+    t.trackRequestDuration(-10);
+    t.trackRequestDuration(-10, { wasRetry: true });
+    const s = t.getStats();
+    assert.equal(s.apiDurationMs, 0);
+    assert.equal(s.apiDurationMsWithoutRetries, 0);
+  });
+
+  it('defaults to zero duration and resets it', () => {
+    const t = new CostTracker('gpt-4o');
+    assert.equal(t.getStats().apiDurationMs, 0);
+    assert.equal(t.getStats().apiDurationMsWithoutRetries, 0);
+    t.trackRequestDuration(500);
+    t.reset();
+    const s = t.getStats();
+    assert.equal(s.apiDurationMs, 0);
+    assert.equal(s.apiDurationMsWithoutRetries, 0);
+  });
+});
+
+describe('estimateUsageCost — per-model cache-write price', () => {
+  const savedFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = savedFetch;
+    _resetPricingCache();
+  });
+
+  it('honors a gateway-advertised cache-write price instead of the 1.25x ratio', async () => {
+    // Gateway quotes per-TOKEN prices; perTokenToPerMillion multiplies by 1e6.
+    //   input = $1/Mtok, output = $2/Mtok, cache-write = $5/Mtok (NOT 1.25x input).
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        data: [{
+          id: 'vendor/cw-model',
+          pricing: { input: '0.000001', output: '0.000002', input_cache_write: '0.000005' },
+        }],
+      }),
+    })) as unknown as typeof fetch;
+    _resetPricingCache();
+    await _fetchPricing();
+
+    const cost = estimateUsageCost('cw-model', { ...ZERO, cacheCreationTokens: 1_000_000 });
+    // 1M cache-write at the model's own $5/Mtok = $5.00 (ratio fallback would give $1.25).
+    assert.ok(Math.abs(cost - 5) < 1e-9, `expected $5 (gateway cache-write), got $${cost}`);
+  });
+
+  it('falls back to the 1.25x input ratio when the gateway omits a cache-write price', async () => {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'vendor/nocw-model', pricing: { input: '0.000004', output: '0.000008' } }],
+      }),
+    })) as unknown as typeof fetch;
+    _resetPricingCache();
+    await _fetchPricing();
+
+    const cost = estimateUsageCost('nocw-model', { ...ZERO, cacheCreationTokens: 1_000_000 });
+    // No cache-write slot → input ($4/Mtok) * 1.25 = $5.00.
+    assert.ok(Math.abs(cost - 5) < 1e-9, `expected $5 (input*1.25 fallback), got $${cost}`);
   });
 });
 

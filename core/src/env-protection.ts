@@ -5,6 +5,14 @@
 
 // Policy and sign-in variables — control where policy and auth are read from
 export const POLICY_VARIABLES = new Set([
+  // The managed-config path override actually consumed by config.ts
+  // (getManagedConfigPath → process.env.SUPERINFERENCE_MANAGED_CONFIG). This is
+  // the trust anchor that decides WHERE org/managed policy is read from, so a
+  // settings-sourced `env` block must never be able to relocate it to an
+  // attacker-controlled file. (Historically only the never-read alias
+  // SUPERINFERENCE_MANAGED_SETTINGS_PATH was pinned, leaving the real knob
+  // unguarded — kept below because hooks.ts still reads it.)
+  'SUPERINFERENCE_MANAGED_CONFIG',
   'SUPERINFERENCE_MANAGED_SETTINGS_PATH',
   'SUPERINFERENCE_REMOTE_SETTINGS_PATH',
   'SUPERINFERENCE_MOCK_REMOTE_SETTINGS',

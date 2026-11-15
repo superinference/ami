@@ -203,7 +203,15 @@ function normalizeForScanning(text: string): string {
 function sanitizeContent(content: string, filePath: string): string {
   if (content.length > MAX_INSTRUCTION_FILE_SIZE) {
     coreLog('memory', `Instruction file ${filePath} exceeds ${MAX_INSTRUCTION_FILE_SIZE} bytes — truncating`);
-    content = content.slice(0, MAX_INSTRUCTION_FILE_SIZE);
+    let cut = content.slice(0, MAX_INSTRUCTION_FILE_SIZE);
+    // Cut back to the last newline inside the cap so an instruction/memory file is
+    // never sliced mid-line (which can split a markdown construct or a sentence and
+    // feed the model a corrupt half-line). Fall back to the raw slice only when the
+    // kept prefix has no newline at all. Append a visible marker so the truncation
+    // is never silent — mirrors the entrypoint cap's named-warning behavior.
+    const nl = cut.lastIndexOf('\n');
+    if (nl > 0) cut = cut.slice(0, nl);
+    content = `${cut}\n[truncated — ${path.basename(filePath)} exceeded the ${MAX_INSTRUCTION_FILE_SIZE}-byte cap]`;
   }
 
   const lines = content.split('\n');
@@ -859,6 +867,10 @@ export class MemoryManager {
       const out: string[] = [];
       for (const f of fs.readdirSync(dir)) {
         if (!f.endsWith('.md')) continue;
+        // The MEMORY.md index is a table of contents, not a memory body — exclude
+        // it from the body scan (mirrors loadMemories) so a team/MEMORY.md index
+        // isn't dumped verbatim into the prompt as if it were a memory.
+        if (f === MEMORY_INDEX_FILENAME) continue;
         const candidate = path.join(dir, f);
         // SYMLINK-ESCAPE CONTAINMENT: a `.md` entry in the (version-controlled,
         // shared) team-memory dir may be a symlink pointing OUT of it — e.g. to
@@ -866,6 +878,12 @@ export class MemoryManager {
         // system prompt. Verify the realpath is still contained within the team
         // dir before reading; skip anything that escapes.
         if (realpathWithin(candidate, dir) === null) continue;
+        // BOUNDED READ: skip a runaway team-memory file rather than slurping it
+        // whole into the context (mirrors the loadMemories MAX_MEMORY_FILE_BYTES
+        // guard) — the team dir is shared/untrusted and must not stuff the prompt.
+        try {
+          if (this._statSync(candidate).size > MAX_MEMORY_FILE_BYTES) continue;
+        } catch { continue; }
         const raw = fs.readFileSync(candidate, 'utf-8');
         const { body } = parseFrontmatter(raw);
         const content = sanitizeContent(body.trim(), candidate);
