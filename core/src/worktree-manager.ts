@@ -177,6 +177,13 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
       try { if (fs.existsSync(worktreeDir)) fs.rmSync(worktreeDir, { recursive: true, force: true }); } catch { /* best effort */ }
       throw err;
     }
+  } else {
+    // Fast-resume path: the worktree already exists and is being re-entered.
+    // Bump its mtime so the stale-worktree sweep (cleanupStaleWorktrees keys
+    // removal off stat.mtimeMs) can never reap a worktree that is actively
+    // being reused — a long-lived worktree created past the age cutoff but
+    // resumed here must count as fresh.
+    bumpWorktreeMtime(worktreeDir);
   }
 
   const session: WorktreeSession = {
