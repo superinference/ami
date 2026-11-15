@@ -228,6 +228,19 @@ describe('LSPClient e2e: publishDiagnostics capture + baseline diff', () => {
     assert.equal(got!.diagnostics.length, 0);
   });
 
+  it('opens a file over the LSP size limit without streaming its content', async () => {
+    client = makeClient();
+    const f = path.join(dir, 'huge.mock');
+    // Defense-in-depth: the didOpen path must not readFileSync a multi-hundred-MB
+    // file. Truncate past the 10MB limit so the size guard sends empty text; the
+    // document still registers and the server reports no diagnostics for it.
+    fs.writeFileSync(f, 'ERR in a huge file\n');
+    fs.truncateSync(f, 10_000_001);
+    const got = await client.getDiagnostics(f);
+    assert.ok(got);
+    assert.equal(got!.diagnostics.length, 0);
+  });
+
   it('getAllDiagnostics lists only files with issues', async () => {
     client = makeClient();
     const f = path.join(dir, 'errs2.mock');
@@ -414,6 +427,15 @@ describe('LSPClient: document sync + accessors', () => {
     client = makeClient();
     assert.equal(client.getCapabilities('mocklang'), undefined);
     assert.equal(client.isInitialized('mocklang'), false);
+  });
+
+  it('isConnected reflects whether any server is initialized', async () => {
+    client = makeClient();
+    assert.equal(client.isConnected(), false);
+    await client.ensureServer('mocklang', dir);
+    assert.equal(client.isConnected(), true);
+    client.shutdown();
+    assert.equal(client.isConnected(), false);
   });
 
   it('ensureServer returns false for an unknown language', async () => {

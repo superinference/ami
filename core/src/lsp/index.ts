@@ -23,7 +23,14 @@ export {
   diagnosticSeveritySymbol,
   formatNewDiagnosticsSummary,
   formatDiagnosticsDetail,
+  capDiagnosticVolume,
+  isUncPath,
+  lspFileSizeBytes,
   DIAGNOSTIC_SEVERITY_NAMES,
+  MAX_LSP_FILE_SIZE_BYTES,
+  MAX_DIAGNOSTICS_PER_FILE,
+  MAX_TOTAL_DIAGNOSTICS,
+  MAX_DIAGNOSTICS_SUMMARY_CHARS,
 } from './diagnostic-tracking';
 export type {
   Diagnostic,
