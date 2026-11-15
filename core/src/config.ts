@@ -47,6 +47,15 @@ export interface ProjectConfig {
   alwaysLoadTools?: string[];
   /** Ordered fallback model chain stepped through on provider errors. */
   fallbackModels?: string[];
+  /**
+   * Managed killswitch: when true, the bypass/auto-allow ("YOLO") permission modes
+   * are forbidden — a requested `--yolo` / `bypassPermissions` / `auto-allow` is
+   * force-downgraded to the safe default and the Shift+Tab cycle skips them. A
+   * {@link MANAGED_ONLY_KEYS} entry, so only a managed/enterprise config tier can
+   * set it; project/local/env/cli can never flip it. Parity: Claude Code's
+   * `permissions.disableBypassPermissionsMode === 'disable'`.
+   */
+  disableBypassPermissionsMode?: boolean;
   /** MCP allowlist: when non-empty, only these MCP servers may be connected. */
   allowedMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
@@ -573,6 +582,13 @@ export function mergeConfigs(
   // layers (project/local/env/cli) — otherwise managed enforcement is defeated.
   if (managedConfig?.enforceAvailableModels) {
     merged.enforceAvailableModels = managedConfig.enforceAvailableModels;
+  }
+  // The bypass/auto-allow killswitch is a MANAGED_ONLY_KEY: it is honored ONLY
+  // from the managed tier. Lower layers never contribute it (the per-field loop
+  // above deliberately omits it), so a project/local/env/cli config can neither
+  // enable nor disable the killswitch — managed policy is the sole source.
+  if (managedConfig?.disableBypassPermissionsMode) {
+    merged.disableBypassPermissionsMode = true;
   }
   // Managed MCP allowlist is also authoritative.
   if (managedConfig?.allowedMcpServers) {
