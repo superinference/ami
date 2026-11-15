@@ -362,7 +362,7 @@ describe('engine-backed (prompt) hook wiring', () => {
       return { async *submit() { yield { type: 'text_delta', text: 'SYSTEM:done' }; }, shutdown() {} };
     });
     const decision = await hm.executePreToolUse(preCtx('bash'));
-    assert.deepEqual(captured.disallowedTools, ['task', 'plan_mode']);
+    assert.deepEqual(captured.disallowedTools, ['task', 'plan_mode', 'workflow', 'AskUserQuestion', 'task_output', 'task_kill']);
     assert.ok(captured.abortController instanceof AbortController);
     assert.equal(decision.action, 'allow');
     assert.equal(decision.additionalContext, 'done');

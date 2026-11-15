@@ -199,7 +199,7 @@ describe('engine-backed hook posture', () => {
     assert.equal(cfg.maxTurns, MAX_AGENT_TURNS);
     assert.equal(cfg.maxTurns, 50);
     assert.equal(cfg.disableThinking, true);
-    assert.deepEqual(cfg.disallowedTools, ['task', 'plan_mode']);
+    assert.deepEqual(cfg.disallowedTools, ['task', 'plan_mode', 'workflow', 'AskUserQuestion', 'task_output', 'task_kill']);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -273,7 +273,12 @@ describe('getHookEventMetadata', () => {
     assert.equal(getHookEventMetadata('preCompact')!.matcherField, 'trigger');
   });
   it('omits the matcher field for events with no matchable field', () => {
-    assert.equal(getHookEventMetadata('sessionEnd')!.matcherField, undefined);
+    assert.equal(getHookEventMetadata('worktreeCreate')!.matcherField, undefined);
+  });
+  it('scopes session lifecycle + stopFailure hooks on their discriminator field', () => {
+    assert.equal(getHookEventMetadata('sessionStart')!.matcherField, 'source');
+    assert.equal(getHookEventMetadata('sessionEnd')!.matcherField, 'reason');
+    assert.equal(getHookEventMetadata('stopFailure')!.matcherField, 'error');
   });
   it('returns undefined for an unknown event', () => {
     assert.equal(getHookEventMetadata('bogusEvent'), undefined);

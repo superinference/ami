@@ -37,7 +37,7 @@ describe('matcherAppliesToCtx', () => {
     assert.equal(matcherAppliesToCtx('configChange', 'settings.*', { source: 'settings.json' }), true);
   });
   it('an event with no matchable field treats the matcher as a no-op', () => {
-    assert.equal(matcherAppliesToCtx('sessionEnd', 'anything', {}), true);
+    assert.equal(matcherAppliesToCtx('worktreeCreate', 'anything', {}), true);
   });
   it('a missing field value only matches a wildcard', () => {
     assert.equal(matcherAppliesToCtx('notification', '*', {}), true);
