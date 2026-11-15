@@ -100,6 +100,85 @@ describe('MCP connect tool execution', () => {
     assert.ok(result.output.includes('Failed'));
     assert.ok(result.output.includes('No container runtime'));
   });
+
+  it('returns a cancelled result immediately when the signal is already aborted', async () => {
+    let connectCalled = false;
+    const mockMcpManager = {
+      ensureConnected: async () => { connectCalled = true; },
+      getToolsForServer: () => [],
+    };
+    const ac = new AbortController();
+    ac.abort();
+    const tool = createMcpConnectTool('kali', 'Start kali');
+    const result = await tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: ac.signal,
+      filesRead: new Set(),
+      _mcpManager: mockMcpManager,
+    } as any);
+    assert.equal(connectCalled, false, 'must short-circuit before calling ensureConnected');
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('cancelled'));
+    assert.equal((result.metadata as any)?.status, 'aborted');
+  });
+
+  it('cancels an in-flight connect when the signal aborts during the connect', async () => {
+    const ac = new AbortController();
+    const mockMcpManager = {
+      // Never resolves on its own — only the abort race can settle the connect.
+      ensureConnected: () => new Promise<void>(() => { /* hang */ }),
+      getToolsForServer: () => [{ name: 'nmap_scan' }],
+    };
+    const tool = createMcpConnectTool('kali', 'Start kali');
+    const p = tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: ac.signal,
+      filesRead: new Set(),
+      _mcpManager: mockMcpManager,
+    } as any);
+    // Abort after the race is established.
+    setImmediate(() => ac.abort());
+    const result = await p;
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('cancelled'));
+    assert.equal((result.metadata as any)?.status, 'aborted');
+  });
+
+  it('removes the abort listener after a successful connect (no leak)', async () => {
+    const ac = new AbortController();
+    const mockMcpManager = {
+      ensureConnected: async () => {},
+      getToolsForServer: () => [{ name: 'nmap_scan' }],
+    };
+    const tool = createMcpConnectTool('kali', 'Start kali');
+    const result = await tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: ac.signal,
+      filesRead: new Set(),
+      _mcpManager: mockMcpManager,
+    } as any);
+    assert.ok(!result.isError);
+    // Aborting after completion must not throw or affect anything (listener gone).
+    assert.doesNotThrow(() => ac.abort());
+  });
+
+  it('reports a genuine connection failure as a failure, not a cancellation', async () => {
+    const mockMcpManager = {
+      ensureConnected: async () => { throw new Error('boom'); },
+      getToolsForServer: () => [],
+    };
+    const tool = createMcpConnectTool('kali', 'Start kali');
+    const result = await tool.execute({}, {
+      cwd: '/tmp',
+      abortSignal: new AbortController().signal,
+      filesRead: new Set(),
+      _mcpManager: mockMcpManager,
+    } as any);
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('Failed'));
+    assert.ok(!result.output.includes('cancelled'));
+    assert.equal((result.metadata as any)?.status, 'error');
+  });
 });
 
 // ---------------------------------------------------------------------------
