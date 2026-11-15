@@ -9,6 +9,10 @@ export interface ToolStats {
   minDurationMs: number;
   maxDurationMs: number;
   errorRate: number;
+  /** Calls that did NOT error (callCount - errorCount). */
+  successCount: number;
+  /** Fraction of calls that succeeded (1 - errorRate); 0 when no calls. */
+  successRate: number;
   /** Tokens spent emitting this tool's tool_use blocks (request side). */
   requestTokens: number;
   /** Tokens in this tool's tool_result payloads (result side). */
@@ -28,6 +32,8 @@ const EMPTY_STATS: ToolStats = {
   minDurationMs: 0,
   maxDurationMs: 0,
   errorRate: 0,
+  successCount: 0,
+  successRate: 0,
   requestTokens: 0,
   resultTokens: 0,
   p50DurationMs: 0,
@@ -44,6 +50,27 @@ interface ToolEntry {
   requestTokens: number;
   resultTokens: number;
   durations: Reservoir;
+}
+
+/** Aggregate tool-usage summary across every tracked tool. */
+export interface OverallToolStats {
+  totalCalls: number;
+  totalErrors: number;
+  totalSuccesses: number;
+  totalDurationMs: number;
+  avgDurationMs: number;
+  errorRate: number;
+  successRate: number;
+  totalRequestTokens: number;
+  totalResultTokens: number;
+  /** Number of distinct tools that have been recorded. */
+  distinctTools: number;
+}
+
+/** A serializable point-in-time view of all analytics (overall + per-tool). */
+export interface ToolAnalyticsSnapshot {
+  overall: OverallToolStats;
+  tools: ToolStats[];
 }
 
 /** Per-tool-type context-bloat remediation hint (copy-pasteable advice + estimated savings). */
@@ -82,6 +109,28 @@ function toolKey(tool: string): string {
   return tool.toLowerCase();
 }
 
+/**
+ * Coerce an untrusted duration into a finite, non-negative millisecond value.
+ * Guards the aggregates/percentiles against NaN, ±Infinity, and negative inputs
+ * that would otherwise poison totals (NaN avg) or pin `min` below zero.
+ */
+function sanitizeDuration(durationMs: number): number {
+  return Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+}
+
+function newEntry(): ToolEntry {
+  return {
+    callCount: 0,
+    errorCount: 0,
+    totalDurationMs: 0,
+    minDurationMs: Infinity,
+    maxDurationMs: 0,
+    requestTokens: 0,
+    resultTokens: 0,
+    durations: new Reservoir(),
+  };
+}
+
 export class ToolAnalytics {
   private data = new Map<string, ToolEntry>();
 
@@ -91,39 +140,36 @@ export class ToolAnalytics {
     isError: boolean,
     tokens?: { requestTokens?: number; resultTokens?: number },
   ): void {
-    const entry = this.data.get(toolName) ?? {
-      callCount: 0,
-      errorCount: 0,
-      totalDurationMs: 0,
-      minDurationMs: Infinity,
-      maxDurationMs: 0,
-      requestTokens: 0,
-      resultTokens: 0,
-      durations: new Reservoir(),
-    };
+    const key = toolKey(toolName);
+    const entry = this.data.get(key) ?? newEntry();
+    const d = sanitizeDuration(durationMs);
     entry.callCount++;
     if (isError) entry.errorCount++;
-    entry.totalDurationMs += durationMs;
-    if (durationMs < entry.minDurationMs) entry.minDurationMs = durationMs;
-    if (durationMs > entry.maxDurationMs) entry.maxDurationMs = durationMs;
-    entry.durations.add(durationMs);
+    entry.totalDurationMs += d;
+    if (d < entry.minDurationMs) entry.minDurationMs = d;
+    if (d > entry.maxDurationMs) entry.maxDurationMs = d;
+    entry.durations.add(d);
     if (tokens?.requestTokens) entry.requestTokens += Math.max(0, tokens.requestTokens);
     if (tokens?.resultTokens) entry.resultTokens += Math.max(0, tokens.resultTokens);
-    this.data.set(toolName, entry);
+    this.data.set(key, entry);
   }
 
   getStats(toolName: string): ToolStats {
-    const entry = this.data.get(toolName);
-    if (!entry) return { ...EMPTY_STATS, tool: toolName };
+    const key = toolKey(toolName);
+    const entry = this.data.get(key);
+    if (!entry) return { ...EMPTY_STATS, tool: key };
+    const errorRate = entry.callCount > 0 ? entry.errorCount / entry.callCount : 0;
     return {
-      tool: toolName,
+      tool: key,
       callCount: entry.callCount,
       errorCount: entry.errorCount,
       totalDurationMs: entry.totalDurationMs,
       avgDurationMs: entry.callCount > 0 ? entry.totalDurationMs / entry.callCount : 0,
       minDurationMs: entry.minDurationMs === Infinity ? 0 : entry.minDurationMs,
       maxDurationMs: entry.maxDurationMs,
-      errorRate: entry.callCount > 0 ? entry.errorCount / entry.callCount : 0,
+      errorRate,
+      successCount: entry.callCount - entry.errorCount,
+      successRate: entry.callCount > 0 ? 1 - errorRate : 0,
       requestTokens: entry.requestTokens,
       resultTokens: entry.resultTokens,
       p50DurationMs: entry.durations.percentile(50),
@@ -187,6 +233,74 @@ export class ToolAnalytics {
     let sum = 0;
     for (const e of this.data.values()) sum += e.resultTokens;
     return sum;
+  }
+
+  /** Total wall-clock duration (ms) summed across every tool call. */
+  get totalDurationMs(): number {
+    let sum = 0;
+    for (const e of this.data.values()) sum += e.totalDurationMs;
+    return sum;
+  }
+
+  /**
+   * Aggregate tool-usage summary across all tools in a single object — the
+   * session-level view Claude Code surfaces alongside the per-tool breakdown.
+   * All rates are 0 when nothing has been recorded (no NaN).
+   */
+  getOverallStats(): OverallToolStats {
+    let totalCalls = 0;
+    let totalErrors = 0;
+    let totalDurationMs = 0;
+    let totalRequestTokens = 0;
+    let totalResultTokens = 0;
+    let distinctTools = 0;
+    for (const e of this.data.values()) {
+      distinctTools++;
+      totalCalls += e.callCount;
+      totalErrors += e.errorCount;
+      totalDurationMs += e.totalDurationMs;
+      totalRequestTokens += e.requestTokens;
+      totalResultTokens += e.resultTokens;
+    }
+    const errorRate = totalCalls > 0 ? totalErrors / totalCalls : 0;
+    return {
+      totalCalls,
+      totalErrors,
+      totalSuccesses: totalCalls - totalErrors,
+      totalDurationMs,
+      avgDurationMs: totalCalls > 0 ? totalDurationMs / totalCalls : 0,
+      errorRate,
+      successRate: totalCalls > 0 ? 1 - errorRate : 0,
+      totalRequestTokens,
+      totalResultTokens,
+      distinctTools,
+    };
+  }
+
+  /**
+   * Fold another analytics instance into this one — used to roll sub-agent /
+   * cross-session tool usage up into a parent aggregate. Counts, durations and
+   * tokens accumulate; min/max extend; latency samples are re-observed into the
+   * reservoir so percentiles stay representative.
+   */
+  merge(other: ToolAnalytics): void {
+    for (const [key, src] of other.data) {
+      const dst = this.data.get(key) ?? newEntry();
+      dst.callCount += src.callCount;
+      dst.errorCount += src.errorCount;
+      dst.totalDurationMs += src.totalDurationMs;
+      if (src.minDurationMs < dst.minDurationMs) dst.minDurationMs = src.minDurationMs;
+      if (src.maxDurationMs > dst.maxDurationMs) dst.maxDurationMs = src.maxDurationMs;
+      dst.requestTokens += src.requestTokens;
+      dst.resultTokens += src.resultTokens;
+      for (const v of src.durations.values()) dst.durations.add(v);
+      this.data.set(key, dst);
+    }
+  }
+
+  /** A serializable, point-in-time snapshot of the full analytics state. */
+  snapshot(): ToolAnalyticsSnapshot {
+    return { overall: this.getOverallStats(), tools: this.getSummary() };
   }
 
   reset(): void {

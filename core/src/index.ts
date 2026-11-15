@@ -129,7 +129,7 @@ export type { BackgroundProcess } from './process-manager';
 
 export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE } from './token-estimator';
 export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
-export type { ToolStats, ContextHint } from './tool-analytics';
+export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
 export { Reservoir, percentile as reservoirPercentile, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
