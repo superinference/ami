@@ -17,7 +17,10 @@ describe('SECURITY_PATTERNS', () => {
     for (const p of SECURITY_PATTERNS) {
       assert.ok(p.id, 'missing id');
       assert.ok(p.regex, 'missing regex');
-      assert.ok(p.severity === 'high' || p.severity === 'medium', `invalid severity: ${p.severity}`);
+      assert.ok(
+        p.severity === 'high' || p.severity === 'medium' || p.severity === 'low',
+        `invalid severity: ${p.severity}`,
+      );
       assert.ok(p.message, 'missing message');
     }
   });

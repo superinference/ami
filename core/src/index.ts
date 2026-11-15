@@ -218,7 +218,7 @@ export type { SafeModeConfig, BlockedResource } from './safe-mode';
 export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS } from './request-signature';
 export type { RequestSignature, SignatureAlgorithm } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';
-export type { SecurityPattern, SecurityFinding } from './code-security-patterns';
+export type { SecurityPattern, SecurityFinding, SecuritySeverity } from './code-security-patterns';
 export { AMI_VERSION, AMI_CLIENT_NAME, AMI_CLIENT_INFO } from './version';
 export { escapeXmlAttr, escapeXmlText, safeXmlKey } from './xml-escape';
 export {
