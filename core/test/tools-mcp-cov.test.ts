@@ -215,6 +215,28 @@ describe('listMcpResourcesTool', () => {
     assert.match(res.output, /Available servers: alpha, beta/);
   });
 
+  it('rejects a known-but-not-connected server filter with its state + the connected servers', async () => {
+    const context = fakeManager({
+      listServers: () => [{ name: 'alpha', state: 'ready' }, { name: 'beta', state: 'error' }],
+      // Would succeed if the pre-flight guard did not short-circuit first.
+      listResources: async () => [{ uri: 'res://x', name: 'X', mimeType: 'text/plain', server: 'beta' }],
+    });
+    const res = await listMcpResourcesTool.execute!({ server: 'beta' }, context);
+    assert.equal(res.isError, true);
+    assert.match(res.output, /MCP server "beta" is not connected \(state: error\)/);
+    assert.match(res.output, /Connected servers: alpha/);
+  });
+
+  it('allows a filter for a ready server (state present) and lists its resources', async () => {
+    const context = fakeManager({
+      listServers: () => [{ name: 'alpha', state: 'ready' }],
+      listResources: async () => [{ uri: 'res://1', name: 'One', mimeType: 'text/plain', server: 'alpha' }],
+    });
+    const res = await listMcpResourcesTool.execute!({ server: 'alpha' }, context);
+    assert.equal(res.isError, undefined);
+    assert.match(res.output, /res:\/\/1 — One/);
+  });
+
   it('prefixes each resource with its server when listing across all servers', async () => {
     const context = fakeManager({
       listServers: () => [{ name: 'alpha' }, { name: 'beta' }],
@@ -334,6 +356,41 @@ describe('readMcpResourceTool', () => {
     const res = await readMcpResourceTool.execute!({ server: 'ghost', uri: 'u' }, context);
     assert.equal(res.isError, true);
     assert.match(res.output, /Unknown MCP server "ghost".*Available servers: alpha/s);
+  });
+
+  it('rejects a known-but-not-connected server with its state + the connected servers', async () => {
+    let read = false;
+    const context = fakeManager({
+      listServers: () => [{ name: 'alpha', state: 'ready' }, { name: 'beta', state: 'connecting' }],
+      readResource: async () => { read = true; return 'body'; },
+    });
+    const res = await readMcpResourceTool.execute!({ server: 'beta', uri: 'u' }, context);
+    assert.equal(res.isError, true);
+    assert.match(res.output, /MCP server "beta" is not connected \(state: connecting\)/);
+    assert.match(res.output, /Connected servers: alpha/);
+    // The read must be short-circuited before reaching the transport.
+    assert.equal(read, false);
+  });
+
+  it('omits the connected-servers hint when no server is ready', async () => {
+    const context = fakeManager({
+      listServers: () => [{ name: 'beta', state: 'error' }],
+      readResource: async () => 'body',
+    });
+    const res = await readMcpResourceTool.execute!({ server: 'beta', uri: 'u' }, context);
+    assert.equal(res.isError, true);
+    assert.match(res.output, /MCP server "beta" is not connected \(state: error\)\.$/);
+    assert.doesNotMatch(res.output, /Connected servers/);
+  });
+
+  it('allows a read when the server is present and ready (state) ', async () => {
+    const context = fakeManager({
+      listServers: () => [{ name: 'alpha', state: 'ready' }],
+      readResource: async () => ({ contents: [{ uri: 'res://1', mimeType: 'text/plain', text: 'hi' }] }),
+    });
+    const res = await readMcpResourceTool.execute!({ server: 'alpha', uri: 'res://1' }, context);
+    assert.equal(res.isError, undefined);
+    assert.match(res.output, /hi/);
   });
 
   it('degrades to a text note when blob persistence fails', async () => {
