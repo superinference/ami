@@ -59,6 +59,9 @@ const CHECK_IDS = {
   GIT_WORKTREE_ESCAPE: 58,
   GIT_INTERNAL_WRITE: 59,
   POWERSHELL_EXECUTION: 60,
+  EVAL_LIKE_BUILTIN: 61,
+  GIT_CONFIG_RCE: 62,
+  INCOMPLETE_COMMAND: 63,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -265,6 +268,25 @@ function validateDanglingOperator(command: string): SecurityCheckResult {
   const trimmed = command.trimEnd();
   if (/(?:&&|\|\||[;|])\s*$/.test(trimmed)) {
     return fail(CHECK_IDS.DANGLING_OPERATOR, 'Blocked: command ends with a dangling operator (&&, ||, ;, |) — the next command could be injected');
+  }
+  return PASS;
+}
+
+function validateIncompleteCommand(command: string): SecurityCheckResult {
+  // A command that BEGINS with a continuation fragment — a leading tab, a bare
+  // shell operator (`;`/`&&`/`||`/`|`/`>`/`>>`/`<`), or a leading flag with no
+  // command name — is a truncated/injected fragment: no command name is present
+  // for per-command classification, so it must not be auto-approved. (The
+  // TRAILING dangling-operator case is handled by validateDanglingOperator.)
+  if (/^\s*\t/.test(command)) {
+    return fail(CHECK_IDS.INCOMPLETE_COMMAND, 'Blocked: command begins with a tab — likely an incomplete/continuation fragment');
+  }
+  const trimmed = command.trimStart();
+  if (/^(?:&&|\|\||;|\||>>?|<)/.test(trimmed)) {
+    return fail(CHECK_IDS.INCOMPLETE_COMMAND, 'Blocked: command begins with a shell operator — likely an injected continuation fragment');
+  }
+  if (/^-/.test(trimmed)) {
+    return fail(CHECK_IDS.INCOMPLETE_COMMAND, 'Blocked: command begins with a flag with no command name — likely an incomplete fragment');
   }
   return PASS;
 }
@@ -486,7 +508,13 @@ function validateNewlines(command: string): SecurityCheckResult {
   // legitimate multi-line heredocs are not mistaken for smuggled extra commands (ui#26).
   const extracted = extractQuotedContent(stripHeredocBodies(command));
   if (!/[\n\r]/.test(extracted.fullyUnquoted)) return PASS;
-  if (/(?<![\\])[\n\r]\s*\S/.test(extracted.fullyUnquoted)) {
+  // A backslash-newline is a line continuation ONLY at a word boundary (preceded
+  // by whitespace). A MID-word continuation like `tr\<newline>aceroute` joins in
+  // bash to `traceroute`, but token/allowlist classification sees the command as
+  // `tr` — the shell-quote/bash command-name differential. So only a whitespace-
+  // then-backslash before the newline is exempted; a non-whitespace `\<newline>`
+  // is still flagged.
+  if (/(?<![\s]\\)[\n\r]\s*\S/.test(extracted.fullyUnquoted)) {
     return fail(CHECK_IDS.NEWLINES, 'Command contains newlines that could separate multiple commands');
   }
   return PASS;
@@ -676,6 +704,15 @@ function validateJqDangerous(command: string): SecurityCheckResult {
   if (/\bjq\b/.test(command) && /\bsystem\s*\(/.test(command)) {
     return fail(CHECK_IDS.JQ_DANGEROUS, 'jq system() calls can execute arbitrary commands');
   }
+  // jq file-reading / module-loading flags: --rawfile/--slurpfile read an
+  // arbitrary file's contents into a variable (arbitrary-read / exfil), and
+  // -L/--library-path loads jq modules from an attacker-chosen directory
+  // (code-load). `-f/--from-file` is intentionally NOT blocked — loading the
+  // filter program from a file is ordinary jq usage and the program itself is
+  // still sandboxed (system() is caught above).
+  if (/\bjq\b/.test(command) && /(?:^|\s)(?:--rawfile|--slurpfile|-L|--library-path)\b/.test(command)) {
+    return fail(CHECK_IDS.JQ_DANGEROUS, 'jq --rawfile/--slurpfile/-L/--library-path can read arbitrary files or load code from an arbitrary path');
+  }
   if (/\b[gm]?awk\b/.test(command) && /\bsystem\s*\(/.test(command)) {
     return fail(CHECK_IDS.JQ_DANGEROUS, 'awk system() calls can execute arbitrary commands');
   }
@@ -765,7 +802,14 @@ function validateQuotedNewline(command: string): SecurityCheckResult {
 }
 
 function validateMidWordHash(command: string): SecurityCheckResult {
-  if (/\S#\S/.test(command) && !/'[^']*#[^']*'/.test(command) && !/"[^"]*#[^"]*"/.test(command)) {
+  // A `#` with a non-whitespace char immediately before it is a mid-word hash:
+  // bash keeps it as a literal word (`echo test# foo` → word `test#`), but the
+  // shell-quote parser treats it as a comment start and drops the remainder — a
+  // parser-differential that can hide trailing arguments from line-based checks.
+  // Only the preceding char must be non-whitespace (catches `test# foo`, not just
+  // `a#b`). `${#…}` (array/param length) and `$#` (arg count) are excluded — the
+  // `#` there is a parameter-expansion operator, not a word/comment boundary.
+  if (/\S(?<!\$)(?<!\$\{)#/.test(command) && !/'[^']*#[^']*'/.test(command) && !/"[^"]*#[^"]*"/.test(command)) {
     return fail(CHECK_IDS.MID_WORD_HASH, 'Mid-word # character may cause unexpected comment behavior in some shells');
   }
   return PASS;
@@ -784,8 +828,45 @@ function validateBacktickInjection(command: string): SecurityCheckResult {
   return PASS;
 }
 
+/**
+ * Walk a command with real bash single/double-quote semantics and flag the
+ * shell-quote single-quote backslash misparse family. Each time a single-quoted
+ * token closes, count the run of backslashes immediately before the closing
+ * quote: an ODD count is always a misparse (`'\'`, `'abc\'`), and an EVEN count
+ * is a misparse only when a later `'` exists that the shell-quote chunker regex
+ * can consume as a false close — the documented HackerOne token-merge vector
+ * `git ls-remote 'safe\\' '--upload-pack=evil' 'repo'` (shell-quote merges the
+ * tokens into one arg, bash keeps three, hiding `--upload-pack` from arg checks).
+ */
+function hasShellQuoteSingleQuoteBug(command: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (inSingle) {
+      if (c === "'") {
+        let backslashes = 0;
+        for (let j = i - 1; j >= 0 && command[j] === '\\'; j--) backslashes++;
+        if (backslashes % 2 === 1) return true;
+        if (backslashes > 0 && command.indexOf("'", i + 1) !== -1) return true;
+        inSingle = false;
+      }
+      continue;
+    }
+    if (inDouble) {
+      if (c === '\\') { i++; continue; }
+      if (c === '"') inDouble = false;
+      continue;
+    }
+    if (c === '\\') { i++; continue; }
+    if (c === "'") { inSingle = true; continue; }
+    if (c === '"') { inDouble = true; continue; }
+  }
+  return false;
+}
+
 function validateShellQuoteBug(command: string): SecurityCheckResult {
-  if (/'\\'/.test(command)) {
+  if (hasShellQuoteSingleQuoteBug(command)) {
     return fail(CHECK_IDS.SHELL_QUOTE_BUG, 'Blocked: shell-quote single-quote backslash pattern detected (library misparse vector)');
   }
   return PASS;
@@ -947,6 +1028,18 @@ const AST_BLOCKED_COMMANDS = new Set([
 ]);
 
 function validateASTCommands(command: string): SecurityCheckResult {
+  // Fail-closed fallback: the AST parser returns null on syntactically complex /
+  // unparseable input, which previously let AST-only-blocked commands (useradd,
+  // mkfs, mount, nc, …) pass unchecked when the parse was unavailable. Scan each
+  // compound/pipeline segment's resolved base command directly so these stay
+  // blocked regardless of parser availability.
+  for (const seg of splitShellSegments(command)) {
+    const base = segmentBaseCommand(seg);
+    if (base && AST_BLOCKED_COMMANDS.has(base)) {
+      return fail(CHECK_IDS.AST_HIDDEN_COMMAND, `blocked command '${base}' found in command`);
+    }
+  }
+
   const ast = parseBashAST(command);
   if (!ast) return PASS;
 
@@ -1026,6 +1119,16 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     const credTheft = detectGitCredentialTheft(command);
     if (credTheft.blocked) {
       return fail(CHECK_IDS.GIT_CREDENTIAL_THEFT, credTheft.reason!);
+    }
+  }
+
+  // Git config RCE keys — blocks `git config` writes / `git -c key=cmd` that set
+  // a config key whose value git later executes as a shell command (core.pager,
+  // core.sshCommand, core.editor, core.fsmonitor, diff.external, …).
+  {
+    const gitCfgRce = detectGitConfigRce(command);
+    if (gitCfgRce.blocked) {
+      return fail(CHECK_IDS.GIT_CONFIG_RCE, gitCfgRce.reason!);
     }
   }
 
@@ -1199,7 +1302,20 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // Eval-like / code-evaluating builtins — blocks guaranteed-execution builtins
+  // (enable -f, hash -p, compgen -C/-F, coproc, readarray -C, fc -e/-s, bind -x)
+  // that run attacker argv as code while bypassing command-name classification.
+  {
+    const evalLike = detectEvalLikeBuiltins(command);
+    if (evalLike.blocked) {
+      return fail(CHECK_IDS.EVAL_LIKE_BUILTIN, evalLike.reason!);
+    }
+  }
+
   result = validateDanglingOperator(command);
+  if (!result.safe) return result;
+
+  result = validateIncompleteCommand(command);
   if (!result.safe) return result;
 
   result = validateObfuscatedFlags(command);
@@ -1304,7 +1420,34 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   rmdir: (a) => a.filter(x => !x.startsWith('-')),
   mv: (a) => a.filter(x => !x.startsWith('-')),
   cp: (a) => a.filter(x => !x.startsWith('-')),
-  find: (a) => { const paths: string[] = []; for (let i = 0; i < a.length; i++) { if (!a[i].startsWith('-') && a[i] !== '--') paths.push(a[i]); else break; } return paths; },
+  find: (a) => {
+    // Collect the leading search roots, then the ARGUMENT of path-taking
+    // predicates (-newer/-samefile/-path/… and the -fprint* write actions).
+    // Global options -H/-L/-P do not stop root collection.
+    const paths: string[] = [];
+    const GLOBAL = new Set(['-H', '-L', '-P']);
+    const PATH_PREDICATES = new Set([
+      '-newer', '-anewer', '-cnewer', '-mnewer', '-samefile',
+      '-path', '-wholename', '-ipath', '-iwholename', '-lname', '-ilname',
+      '-fprint', '-fprint0', '-fprintf',
+    ]);
+    let i = 0;
+    while (i < a.length) {
+      const t = a[i];
+      if (GLOBAL.has(t)) { i++; continue; }
+      if (t.startsWith('-') || t === '(' || t === '!') break;
+      paths.push(t);
+      i++;
+    }
+    for (; i < a.length; i++) {
+      const t = a[i];
+      if ((PATH_PREDICATES.has(t) || /^-newer[a-zA-Z]{2}$/.test(t)) && i + 1 < a.length) {
+        paths.push(a[i + 1]);
+        i++;
+      }
+    }
+    return paths;
+  },
   stat: (a) => a.filter(x => !x.startsWith('-')),
   diff: (a) => a.filter(x => !x.startsWith('-')),
   file: (a) => a.filter(x => !x.startsWith('-')),
@@ -1341,6 +1484,12 @@ const FILE_TAKING_FLAGS: Record<string, Set<string>> = {
   rsync: new Set(['--include-from', '--exclude-from', '--files-from']),
   tee: new Set([]),
   dd: new Set([]),
+  // mv/cp -t/--target-directory moves the real write destination off the
+  // positional list into a flag value; recover it so the destination is still
+  // path-validated (the fused `--target-directory=PATH` form is handled by the
+  // generic `--key=value` branch in extractOptionValuePaths).
+  mv: new Set(['-t', '--target-directory']),
+  cp: new Set(['-t', '--target-directory']),
 };
 
 function looksLikePath(value: string): boolean {
@@ -1867,11 +2016,18 @@ export function extractCommandPaths(command: string): string[] {
   const cmd = tokens[0];
   const args = tokens.slice(1);
   const ddIdx = args.indexOf('--');
-  const effectiveArgs = ddIdx >= 0 ? args.slice(ddIdx + 1) : args;
+  // POSIX `--` end-of-options: EVERY token after `--` is a positional path even
+  // if it begins with `-`. Without this, a payload like
+  // `rm -- -/../.claude/settings.local.json` has its leading-dash path dropped by
+  // the per-command `!startsWith('-')` filters, so validation sees zero paths and
+  // the write/delete goes unchecked. Run the per-command extractor on the
+  // pre-`--` args and force-include the post-`--` tokens as paths.
+  const beforeDashDash = ddIdx >= 0 ? args.slice(0, ddIdx) : args;
+  const postDashDash = ddIdx >= 0 ? args.slice(ddIdx + 1).filter(x => x.length > 0) : [];
   const extractor = PATH_COMMANDS[cmd];
-  const positional = extractor ? extractor(effectiveArgs) : [];
-  const optionPaths = extractOptionValuePaths(cmd, args);
-  return [...positional, ...optionPaths];
+  const positional = extractor ? extractor(beforeDashDash) : [];
+  const optionPaths = extractOptionValuePaths(cmd, beforeDashDash);
+  return [...new Set([...positional, ...optionPaths, ...postDashDash])];
 }
 
 // ---------------------------------------------------------------------------
@@ -2073,6 +2229,49 @@ export function detectGitCredentialTheft(command: string): { blocked: boolean; r
   // 4. Block GIT_CONFIG env vars targeting credential.helper
   if (/\bGIT_CONFIG_VALUE_\d+\s*=/.test(stripped) && /credential\.helper/.test(stripped)) {
     return { blocked: true, reason: 'GIT_CONFIG env vars can override credential.helper' };
+  }
+
+  return { blocked: false };
+}
+
+// Git config keys whose VALUE is executed as a shell command by git — setting any
+// of these is a code-execution vector (beyond credential.helper, handled above;
+// core.hooksPath is handled by detectGitInternalWrite). Matches Claude Code's
+// blanket "NEVER mutate git config" posture for the RCE-bearing keys.
+const GIT_RCE_CONFIG_KEY = '(?:core\\.(?:pager|sshcommand|editor|fsmonitor|askpass)|sequence\\.editor|diff\\.external|uploadpack\\.packobjectshook)';
+const GIT_RCE_CONFIG_INLINE_RE = new RegExp(`\\bgit\\b[^;|&]*\\s-c\\s+${GIT_RCE_CONFIG_KEY}\\s*=`, 'i');
+const GIT_RCE_CONFIG_KEY_RE = new RegExp(GIT_RCE_CONFIG_KEY, 'i');
+
+/**
+ * Block git-config mutations that set a key whose value git later runs as a shell
+ * command (core.pager / core.sshCommand / core.editor / core.fsmonitor /
+ * core.askpass / sequence.editor / diff.external / uploadpack.packObjectsHook),
+ * both via `git config <key> <value>` writes and the inline `git -c <key>=<cmd>`
+ * form. Read-only `git config --get/--list` invocations are allowed.
+ */
+export function detectGitConfigRce(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  if (!/\bgit\b/.test(stripped)) return { blocked: false };
+
+  // Inline `git -c core.pager=<cmd> …` — the value runs immediately.
+  if (GIT_RCE_CONFIG_INLINE_RE.test(stripped)) {
+    return { blocked: true, reason: 'git -c <key>=<cmd> can set a config key whose value git executes as a shell command' };
+  }
+
+  // `git config <key> <value>` writes.
+  if (/\bgit\s+config\b/.test(stripped) && GIT_RCE_CONFIG_KEY_RE.test(stripped)) {
+    // Read-only invocations never mutate config.
+    if (/\s(?:--get|--get-all|--get-regexp|--get-urlmatch|--list|-l)\b/.test(stripped)) {
+      return { blocked: false };
+    }
+    // --unset removes the setting (safe-ish) but still a config mutation we allow.
+    if (/\s--unset(?:-all)?\b/.test(stripped)) {
+      return { blocked: false };
+    }
+    const m = stripped.match(new RegExp(`${GIT_RCE_CONFIG_KEY}(\\s*=|\\s+\\S)`, 'i'));
+    if (m) {
+      return { blocked: true, reason: `git config sets ${m[0].replace(/\s*=.*$|\s+\S.*$/, '')} to an executable value — code-execution vector` };
+    }
   }
 
   return { blocked: false };
@@ -2916,6 +3115,59 @@ export function detectSourceExecution(command: string, options?: { detachedMode?
   return { blocked: false };
 }
 
+// ---------------------------------------------------------------------------
+// Eval-like / code-evaluating shell builtins
+// ---------------------------------------------------------------------------
+// Several bash builtins execute attacker-controlled argv as code the moment the
+// command runs (guaranteed execution), bypassing command-name allow/deny checks
+// that only look at the leading word. `eval`/`source`/`.` are handled by
+// detectSourceExecution and `mapfile` by validateZshDangerousCommands; this guard
+// covers the remaining high-signal, rarely-legitimate forms. `trap`, `command`,
+// `exec`, and `let` are deliberately NOT blocked here: they have common
+// legitimate uses (cleanup traps, `command -v`, `exec >file`, arithmetic) and a
+// hard block would regress real build/test scripts (superset divergence from
+// Claude Code, which prompts rather than blocks).
+export function detectEvalLikeBuiltins(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  // Command-position boundary: start-of-string or just after a command separator
+  // (`;`/`|`/`&`/`(`/newline). A plain space is deliberately NOT a boundary so a
+  // builtin name used as an ARGUMENT (`echo coproc`, `grep enable file`) is not
+  // mistaken for an invocation.
+  const B = '(?:^|[;|&(\\n]\\s*)';
+
+  // enable -f lib.so name → dlopens an arbitrary shared object as a builtin.
+  if (new RegExp(`${B}enable\\s+(?:-\\w+\\s+)*-f\\b`).test(stripped)) {
+    return { blocked: true, reason: 'enable -f dlopens an arbitrary shared object as a shell builtin' };
+  }
+  // hash -p /path name → points a command name at an arbitrary binary.
+  if (new RegExp(`${B}hash\\s+(?:-\\w+\\s+)*-p\\b`).test(stripped)) {
+    return { blocked: true, reason: 'hash -p poisons command lookup to point a name at an arbitrary binary' };
+  }
+  // compgen -C cmd / -F func → runs a command/function immediately to generate
+  // completions.
+  if (new RegExp(`${B}compgen\\b[^;|&]*\\s-[CF]\\b`).test(stripped)) {
+    return { blocked: true, reason: 'compgen -C/-F executes an arbitrary command or function' };
+  }
+  // coproc [NAME] cmd → spawns an arbitrary command as a background coprocess.
+  if (new RegExp(`${B}coproc\\b`).test(stripped)) {
+    return { blocked: true, reason: 'coproc spawns an arbitrary command as a background coprocess' };
+  }
+  // readarray/mapfile -C callback → runs a callback command while reading.
+  if (new RegExp(`${B}readarray\\b[^;|&]*\\s-C\\b`).test(stripped)) {
+    return { blocked: true, reason: 'readarray -C runs an arbitrary callback command' };
+  }
+  // fc -e / fc -s → re-executes history entries as shell commands.
+  if (new RegExp(`${B}fc\\s+(?:-\\w+\\s+)*-[es]\\b`).test(stripped)) {
+    return { blocked: true, reason: 'fc -e/-s re-executes history entries as shell commands' };
+  }
+  // bind -x '"seq":cmd' → binds a key sequence to execute a command.
+  if (new RegExp(`${B}bind\\s+(?:-\\w+\\s+)*-x\\b`).test(stripped)) {
+    return { blocked: true, reason: 'bind -x binds a key sequence to execute an arbitrary command' };
+  }
+
+  return { blocked: false };
+}
+
 export {
   validateControlCharacters,
   validateCarriageReturn,
@@ -3459,5 +3711,14 @@ export function detectPowerShellExecution(command: string): { blocked: boolean; 
 // ---------------------------------------------------------------------------
 
 export function joinLineContinuations(command: string): string {
-  return command.replace(/\\\n/g, '');
+  // A backslash-newline is a line continuation ONLY when an ODD number of
+  // backslashes precedes the newline: the final backslash escapes the newline.
+  // With an EVEN count the backslashes pair up as literal escape sequences and
+  // the newline is a genuine command separator — joining there would hide the
+  // second command from per-command checks (e.g. `echo \\<newline>rm -rf /` is
+  // two commands in bash). So only odd runs collapse (dropping one backslash +
+  // the newline); even runs are left intact.
+  return command.replace(/(\\+)\n/g, (match, backslashes: string) =>
+    backslashes.length % 2 === 1 ? backslashes.slice(0, -1) : match,
+  );
 }
