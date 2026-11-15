@@ -241,6 +241,42 @@ function resolvePluginHooksFile(root: string): string | undefined {
 }
 
 /**
+ * Read a manifest field as a non-empty relative path string, or undefined when it
+ * is absent, blank, or a non-string (array / object-mapping forms are not yet
+ * supported and fall back to the default). A declared override has already passed
+ * the manifest `..`/absolute safety gate before this runs.
+ */
+function manifestPathOverride(manifest: Record<string, unknown>, field: string): string | undefined {
+  const v = manifest[field];
+  return typeof v === 'string' && v.trim() !== '' ? v : undefined;
+}
+
+/**
+ * Resolve a plugin component directory, honoring a manifest-declared relative
+ * override (Claude parity) and otherwise auto-detecting the fixed default dir.
+ * Either path is hardened against `..`/symlink escape by {@link hardenedResolve},
+ * which yields undefined for a nonexistent or escaping path.
+ */
+function resolveComponentDir(
+  root: string,
+  manifest: Record<string, unknown>,
+  field: string,
+  defaultRel: string,
+): string | undefined {
+  return hardenedResolve(root, manifestPathOverride(manifest, field) ?? defaultRel);
+}
+
+/**
+ * Resolve a plugin's hooks file: a manifest-declared `hooks` path override wins;
+ * otherwise fall back to the <root>/hooks.json or <root>/hooks/hooks.json
+ * convention via {@link resolvePluginHooksFile}.
+ */
+function resolvePluginHooksFromManifest(root: string, manifest: Record<string, unknown>): string | undefined {
+  const override = manifestPathOverride(manifest, 'hooks');
+  return override ? hardenedResolve(root, override) : resolvePluginHooksFile(root);
+}
+
+/**
  * Minimal TOML string parser for the simple `key = "value"` format used by
  * command definition files. Handles backslash escapes (\n, \t, \\, \").
  */
@@ -275,8 +311,18 @@ function parseTomlString(content: string, key: string): string | undefined {
 }
 
 /**
+ * Labelled fallback description for a command whose TOML omits `description`.
+ * Claude parity: a command is identified by its (required) prompt body; the
+ * description is a user-facing affordance only, so a missing one falls back to a
+ * generic label rather than silently dropping the whole command.
+ */
+export const DEFAULT_COMMAND_DESCRIPTION = 'Plugin command';
+
+/**
  * Load TOML command definitions from a plugin's commands/ directory.
- * Each `.toml` file defines a slash command with `description` and `prompt` fields.
+ * Each `.toml` file defines a slash command; `prompt` is required (it is what the
+ * command runs), while `description` is optional and falls back to
+ * {@link DEFAULT_COMMAND_DESCRIPTION} when absent.
  */
 export function loadCommands(dir: string): CommandDefinition[] {
   let entries: string[];
@@ -293,8 +339,11 @@ export function loadCommands(dir: string): CommandDefinition[] {
       const name = path.basename(file, '.toml');
       const desc = parseTomlString(content, 'description');
       const prompt = parseTomlString(content, 'prompt');
-      if (desc && prompt) {
-        const cmd: CommandDefinition = { name, description: desc, prompt, filePath };
+      // A command needs a prompt to do anything; the description is user-facing
+      // only, so a prompt-only command loads with a labelled fallback description
+      // instead of being silently discarded (Claude parity).
+      if (prompt) {
+        const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
         // Optional behavioral knobs (Claude-parity). Each is omitted when absent.
         const argumentHint = parseTomlString(content, 'argument-hint');
         if (argumentHint) cmd.argumentHint = argumentHint;
@@ -625,12 +674,16 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       version: (manifest.version as string | undefined) ?? '0.0.0',
       root,
       defaultEnabled: typeof manifest.defaultEnabled === 'boolean' ? manifest.defaultEnabled : undefined,
-      skillsDir: hardenedResolve(root, 'skills'),
-      agentsDir: hardenedResolve(root, 'agents'),
-      commandsDir: hardenedResolve(root, 'commands'),
-      // Hooks live at <root>/hooks.json OR, per the Claude Code convention
-      // (used by e.g. the impeccable plugin), <root>/hooks/hooks.json.
-      hooksFile: resolvePluginHooksFile(root),
+      // Component paths: honor a manifest-declared relative override (Claude parity)
+      // and fall back to the fixed default directory when none is declared. The
+      // override was already vetted against `..`/absolute by the hardErrors gate
+      // above; resolveComponentDir additionally hardens it against symlink escape.
+      skillsDir: resolveComponentDir(root, manifest, 'skills', 'skills'),
+      agentsDir: resolveComponentDir(root, manifest, 'agents', 'agents'),
+      commandsDir: resolveComponentDir(root, manifest, 'commands', 'commands'),
+      // Hooks: a manifest-declared `hooks` file path overrides the convention of
+      // <root>/hooks.json OR <root>/hooks/hooks.json (the Claude Code layout).
+      hooksFile: resolvePluginHooksFromManifest(root, manifest),
     });
   }
   return { bundles, failures };
