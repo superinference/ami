@@ -140,6 +140,15 @@ export type PreSamplingHookFn = (context: PreSamplingContext) => Promise<HookDec
 export interface SessionContext {
   sessionId: string;
   cwd: string;
+  /** Why the SessionStart hook is firing — Claude Code's `source` discriminator
+   *  (startup | resume | clear | compact). A `matcher` on a sessionStart hook is
+   *  tested against this (HOOK_MATCHER_FIELD.sessionStart = 'source') so a hook
+   *  can scope to e.g. only `resume`. */
+  source?: string;
+  /** Why the SessionEnd hook is firing — Claude Code's `reason` discriminator
+   *  (clear | logout | prompt_input_exit | other). A `matcher` on a sessionEnd
+   *  hook is tested against this (HOOK_MATCHER_FIELD.sessionEnd = 'reason'). */
+  reason?: string;
 }
 
 export interface SubagentContext {
@@ -504,12 +513,20 @@ export function combineHookAbort(
 }
 
 /**
- * Tools a hook-spawned agent/prompt engine must NOT get — prevents a stop/
- * verification hook agent from recursively spawning subagents or entering the
- * interactive plan mode (Claude Code's ALL_AGENT_DISALLOWED_TOOLS). The engine
- * factory filters these out of the hook engine's toolset.
+ * Tools a hook-spawned agent/prompt engine must NOT get — Claude Code filters a
+ * stop/verification hook agent's toolset through ALL_AGENT_DISALLOWED_TOOLS so it
+ * cannot recursively spawn subagents, launch a workflow, enter the interactive
+ * plan mode, block on an AskUserQuestion (no user answers a hook), or reach into
+ * the parent's background tasks. This is the hook superset: the canonical
+ * sub-agent denylist (ALL_AGENT_DISALLOWED_TOOLS in tools/task.ts —
+ * plan_mode/workflow/AskUserQuestion/task_output/task_kill) PLUS `task` itself
+ * (sub-agents may nest, but a hook agent must not spawn ANY subagent). It is
+ * duplicated verbatim here rather than imported because tools/task.ts →
+ * tools/index.ts → hooks.ts is a module cycle; keep the two in sync.
  */
-export const HOOK_AGENT_DISALLOWED_TOOLS: readonly string[] = ['task', 'plan_mode'];
+export const HOOK_AGENT_DISALLOWED_TOOLS: readonly string[] = [
+  'task', 'plan_mode', 'workflow', 'AskUserQuestion', 'task_output', 'task_kill',
+];
 
 /**
  * Three-state HTTP-hook URL allowlist check (Claude Code semantics):
@@ -799,6 +816,14 @@ export const HOOK_MATCHER_FIELD: Record<string, string> = {
   subagentStop: 'mode',
   preCompact: 'trigger',
   postCompact: 'trigger',
+  // Session lifecycle: scope on the boundary cause (Claude Code's
+  // SessionStart `source` / SessionEnd `reason` discriminators) so a hook can
+  // fire for e.g. only `resume` or only `clear`.
+  sessionStart: 'source',
+  sessionEnd: 'reason',
+  // A StopFailure hook can scope on the failure cause (Claude Code's `error`
+  // field, e.g. rate_limit / authentication_failed).
+  stopFailure: 'error',
   elicitation: 'mcpServerName',
   elicitationResult: 'mcpServerName',
   configChange: 'source',
@@ -1611,7 +1636,8 @@ export class HookManager extends EventEmitter {
         }
         case 'sessionStart': {
           const fn: SessionHookFn = async (ctx) => {
-            const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId });
+            if (!matcherAppliesToCtx('sessionStart', matcher, ctx as unknown as Record<string, unknown>)) return;
+            const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId, source: ctx.source });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             const result = await runner();
@@ -1631,7 +1657,8 @@ export class HookManager extends EventEmitter {
         }
         case 'sessionEnd': {
           const fn: SessionHookFn = async (ctx) => {
-            const eventData = serializeHookEvent({ event: 'sessionEnd', sessionId: ctx.sessionId });
+            if (!matcherAppliesToCtx('sessionEnd', matcher, ctx as unknown as Record<string, unknown>)) return;
+            const eventData = serializeHookEvent({ event: 'sessionEnd', sessionId: ctx.sessionId, reason: ctx.reason });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
@@ -1923,6 +1950,7 @@ export class HookManager extends EventEmitter {
         }
         case 'stopFailure': {
           const fn: StopFailureHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('stopFailure', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'stopFailure', error: ctx.error, hookIndex: ctx.hookIndex });
             const runner = () => this.runHookByType(hookConfig, cwd, eventData);
             if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
