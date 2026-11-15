@@ -302,22 +302,47 @@ export class SessionManager {
   }
 
   /**
-   * List all sessions with metadata (id, date, first message preview).
+   * List sessions with metadata (id, date, first message preview).
+   *
+   * Two-pass for cost: a cheap stat-only candidate pass (1 syscall/file, no
+   * content read) sorts by mtime descending, then only the `offset..offset+limit`
+   * window is actually JSON-parsed — so `list({ limit })` over a large store reads
+   * N stats + ~limit parses instead of parsing every file. With no `limit` the
+   * full set is parsed (unchanged behaviour). The returned entries are always
+   * sorted by recorded date descending so callers see a stable order regardless
+   * of the mtime pre-sort.
    */
-  list(): SessionListEntry[] {
+  list(opts: { limit?: number; offset?: number } = {}): SessionListEntry[] {
     const files = this.listFiles();
-    const entries: SessionListEntry[] = [];
 
-    for (const filePath of files) {
+    // Cheap stat-only pass: carry mtime (for candidate ordering) + size (reused
+    // for fileSize so we never stat a file twice). A stat race just omits the file.
+    const candidates = files.map(filePath => {
+      let mtimeMs = 0;
+      let size: number | undefined;
+      try {
+        const st = fs.statSync(filePath);
+        mtimeMs = st.mtimeMs;
+        size = st.size;
+      } catch { /* stat race — treat as oldest / size-less */ }
+      return { filePath, mtimeMs, size };
+    });
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    const offset = opts.offset !== undefined && opts.offset > 0 ? opts.offset : 0;
+    const window = opts.limit === undefined
+      ? candidates.slice(offset)
+      : candidates.slice(offset, offset + Math.max(0, opts.limit));
+
+    const entries: SessionListEntry[] = [];
+    for (const { filePath, size: fileSize } of window) {
       // Preview only needs inline data — skip blob rehydration for speed.
       const session = this.readSessionFile(filePath, false);
       if (!session) continue;
 
       const preview = this.extractPreview(session);
-      // messageCount / fileSize / gitBranch are all available at ~zero extra
-      // cost from the already-parsed inline JSON (no blob rehydration needed).
-      let fileSize: number | undefined;
-      try { fileSize = fs.statSync(filePath).size; } catch { /* stat race — omit */ }
+      // messageCount / gitBranch come at ~zero extra cost from the already-parsed
+      // inline JSON (no blob rehydration needed); fileSize is reused from the stat pass.
       entries.push({
         id: session.id,
         date: session.updatedAt || session.createdAt,
@@ -739,6 +764,12 @@ function makeAcquiredHandle(lockPath: string): { acquired: true; release: () => 
     if (released) return;
     released = true;
     activeLockReleases.delete(release);
+    // Ownership-verified release: only unlink the lock if it STILL belongs to us.
+    // If another live process judged our lock stale (dead PID / cross-host fallback)
+    // and reclaimed it, the file now carries their pid — deleting it would wipe a
+    // lock we no longer own (boundary violation). A missing/corrupt lock is a no-op.
+    const payload = readLockPayload(lockPath);
+    if (payload && payload.pid !== process.pid) return;
     try { fsHooks.unlinkSync(lockPath); } catch { /* already gone */ }
   };
   activeLockReleases.add(release);
