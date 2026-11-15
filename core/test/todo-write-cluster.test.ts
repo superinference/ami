@@ -129,6 +129,18 @@ describe('todo-write cluster (T1-T8)', () => {
     assert.deepEqual(itemSchema.properties.status.enum, ['pending', 'in_progress', 'completed', 'cancelled']);
   });
 
+  // --- T5b: strict advertised item schema (mirrors Claude z.strictObject + .min(1))
+  it('T5b: inputSchema item declares additionalProperties:false (rejects unknown per-item keys)', () => {
+    const itemSchema = (todoWriteTool.inputSchema.properties as any).todos.items;
+    assert.equal(itemSchema.additionalProperties, false);
+  });
+
+  it('T5b: inputSchema declares minLength:1 on content and activeForm', () => {
+    const itemSchema = (todoWriteTool.inputSchema.properties as any).todos.items;
+    assert.equal(itemSchema.properties.content.minLength, 1);
+    assert.equal(itemSchema.properties.activeForm.minLength, 1);
+  });
+
   // --- T6: nudge gate --------------------------------------------------------
   it('T6: nudges when a 3+ item list is fully completed on the main thread with no verify step', async () => {
     const { context } = ctx({ sessionId: 's1' });
