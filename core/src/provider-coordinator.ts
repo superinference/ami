@@ -138,8 +138,24 @@ export class ProviderCoordinator {
     const config = this.getConfig();
     const modelId = config.model || '';
     return modelId.startsWith('claude') ||
-      (config.baseUrl?.includes('anthropic.com') ?? false) ||
+      this.isAnthropicBaseUrl(config.baseUrl) ||
       config.provider === 'anthropic';
+  }
+
+  /** Host-based (parsed) classification of an Anthropic first-party endpoint.
+   *  A raw `baseUrl.includes('anthropic.com')` is host-spoofable — it matches
+   *  `anthropic.com.evil.example`, `not-anthropic.com`, and
+   *  `evil.example/?x=anthropic.com` alike. Parse the URL and inspect the real
+   *  hostname so only `anthropic.com` and its genuine subdomains qualify. */
+  private isAnthropicBaseUrl(baseUrl: string | undefined): boolean {
+    if (!baseUrl) return false;
+    let host: string;
+    try {
+      host = new URL(baseUrl).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+    return host === 'anthropic.com' || host.endsWith('.anthropic.com');
   }
 
   hasFallback(): boolean {
