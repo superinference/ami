@@ -1,3 +1,5 @@
+import { OUTPUT_STYLES } from './types';
+
 export const PROMPT_INTENTS = ['explain', 'troubleshoot', 'generate', 'refactor', 'review', 'git_ops', 'research', 'other'] as const;
 export type Intent = (typeof PROMPT_INTENTS)[number];
 
@@ -38,6 +40,88 @@ export function categorizePrompt(userMessage: string): PromptCategory {
   }
 
   return { intent, scope };
+}
+
+// ---------------------------------------------------------------------------
+// Prompt-level behavioral signals — pure predicates over the raw message.
+//
+// These are building blocks (core): they classify a single user prompt without
+// deciding what to DO about it. Consumers (common/engine) ride the result on the
+// prompt_categorized analytics event; selectTier (below) additionally consumes
+// the continuation signal so a resumed coding turn is not under-provisioned.
+// ---------------------------------------------------------------------------
+
+/**
+ * FUNCTIONAL: continuation / "keep going" detection.
+ *
+ * A bare "continue" (the WHOLE prompt, trimmed, case-insensitive) or the phrases
+ * "keep going" / "go on" anywhere in the prompt signal that the user wants the
+ * previous work resumed rather than a fresh chat turn. The whole-string special
+ * case for "continue" avoids flagging ordinary sentences that merely contain the
+ * word ("continue reading the file into a buffer").
+ */
+export function matchesKeepGoingKeyword(input: string): boolean {
+  const lower = input.toLowerCase().trim();
+  if (lower === 'continue') return true;
+  return /\b(keep going|go on)\b/.test(lower);
+}
+
+// Frustration/negative-sentiment lexicon. A behavioral signal that the user is
+// frustrated — consumers can surface it (analytics) or adapt tone.
+const NEGATIVE_KEYWORD_PATTERN =
+  /\b(wtf|wth|ffs|omfg|shit(ty|tiest)?|dumbass|horrible|awful|piss(ed|ing)? off|piece of (shit|crap|junk)|what the (fuck|hell)|fucking? (broken|useless|terrible|awful|horrible)|fuck you|screw (this|you)|so frustrating|this sucks|damn it)\b/;
+
+/**
+ * FUNCTIONAL: negative/frustration sentiment detection.
+ *
+ * Returns true when the prompt matches the frustration lexicon (e.g. "wtf",
+ * "this sucks", "so frustrating", "fucking broken"). Case-insensitive.
+ */
+export function matchesNegativeKeyword(input: string): boolean {
+  return NEGATIVE_KEYWORD_PATTERN.test(input.toLowerCase());
+}
+
+// ---------------------------------------------------------------------------
+// Query-source categorization — provenance tags for analytics segmentation.
+//
+// Pure, self-contained string builders (core building blocks). Consumers emit
+// the returned tag on turn/api-call events so usage can be segmented by agent
+// category or active output style. The custom-style collapse below ensures a
+// user's custom output-style name never leaks into analytics.
+// ---------------------------------------------------------------------------
+
+/**
+ * FUNCTIONAL: structured agent query-source categorization.
+ *
+ * - built-in agent WITH a type  -> `agent:builtin:<agentType>`
+ * - built-in agent WITHOUT a type -> `agent:default`
+ * - any non-built-in agent       -> `agent:custom`
+ */
+export function getQuerySourceForAgent(agentType: string | undefined, isBuiltInAgent: boolean): string {
+  if (isBuiltInAgent) {
+    return agentType ? `agent:builtin:${agentType}` : 'agent:default';
+  }
+  return 'agent:custom';
+}
+
+/**
+ * FUNCTIONAL: REPL query-source tagging by active output style.
+ *
+ * - the default style (or no style)        -> `repl_main_thread`
+ * - a built-in style (member of OUTPUT_STYLES) -> `repl_main_thread:outputStyle:<style>`
+ * - any other (custom) style               -> `repl_main_thread:outputStyle:custom`
+ *
+ * The membership test against OUTPUT_STYLES collapses every unknown/custom style
+ * into a single `:custom` bucket, so analytics segments built-in styles without
+ * leaking custom style names.
+ */
+export function getQuerySourceForREPL(style?: string): string {
+  const active = style ?? 'default';
+  if (active === 'default') return 'repl_main_thread';
+  const isBuiltIn = (OUTPUT_STYLES as readonly string[]).includes(active);
+  return isBuiltIn
+    ? `repl_main_thread:outputStyle:${active}`
+    : 'repl_main_thread:outputStyle:custom';
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +223,16 @@ export function selectTier(
   const heavy = BREADTH_PATTERN.test(userMessage)
     || (!!signals.hasContextFiles && WORK_INTENTS.has(category.intent));
 
+  // A continuation signal ("continue" / "keep going" / "go on") resumes the
+  // prior turn's work. It carries no code tokens of its own, so without this
+  // guard a bare "continue" would short-circuit to 'conversational' and
+  // under-provision a resumed coding turn (worst on a fresh/first turn, where
+  // the escalate-only ratchet in consumers has no prior tier to inherit).
+  const continuation = matchesKeepGoingKeyword(userMessage);
+
   if (!codey
     && !heavy
+    && !continuation
     && isShort(userMessage)
     && CONVERSATIONAL_INTENTS.has(category.intent)) {
     return 'conversational';

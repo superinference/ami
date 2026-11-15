@@ -14,6 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   searchSessions,
+  searchSessionsRanked,
   matchSnippet,
   flattenMessageText,
   MAX_SESSION_SEARCH_BYTES,
@@ -85,5 +86,57 @@ describe('system-reminder stripping (no phantom matches)', () => {
     writeSession('sr', { messages: [{ role: 'user', content: 'ordinary <system-reminder>phantomneedle</system-reminder> body' }] });
     const r = searchSessions(tmpDir, 'phantomneedle');
     assert.equal(r.find(x => x.sessionId === 'sr'), undefined, 'reminder-only term must not match');
+  });
+  it('strips an UNCLOSED trailing <system-reminder> span (break-guard)', () => {
+    // No closing tag — a truncated transcript. Text after the open tag must not
+    // be indexed, but text before it must survive.
+    const out = flattenMessageText({ role: 'user', content: 'keepthisword <system-reminder>phantomopen rest of reminder' });
+    assert.ok(out.includes('keepthisword'), 'text before the open tag survives');
+    assert.doesNotMatch(out, /phantomopen/, 'unclosed reminder body must be stripped');
+  });
+  it('searchSessions does not match a term inside an unclosed system-reminder', () => {
+    writeSession('sropen', { messages: [{ role: 'user', content: 'realbody <system-reminder>phantomopen123' }] });
+    const byPhantom = searchSessions(tmpDir, 'phantomopen123');
+    assert.equal(byPhantom.find(x => x.sessionId === 'sropen'), undefined, 'unclosed reminder term must not match');
+    const byBody = searchSessions(tmpDir, 'realbody');
+    assert.ok(byBody.find(x => x.sessionId === 'sropen'), 'text before the unclosed tag is still searchable');
+  });
+});
+
+describe('searchSessionsRanked — AbortSignal cancellation', () => {
+  beforeEach(() => {
+    writeSession('x', { messages: [{ role: 'user', content: 'aborttoken one' }] });
+    writeSession('y', { messages: [{ role: 'user', content: 'aborttoken two' }] });
+  });
+
+  it('skips the ranker and returns substring order when the signal is already aborted', async () => {
+    const substring = searchSessions(tmpDir, 'aborttoken');
+    let called = false;
+    const ranked = await searchSessionsRanked(tmpDir, 'aborttoken', {
+      signal: AbortSignal.abort(),
+      rankFn: async (_q, c) => { called = true; return c.map(r => r.sessionId).reverse(); },
+    });
+    assert.equal(called, false, 'ranker must not run for an already-aborted search');
+    assert.deepEqual(ranked.map(r => r.sessionId), substring.map(r => r.sessionId));
+  });
+
+  it('threads the signal into rankFn so a consumer can abort its rerank', async () => {
+    const controller = new AbortController();
+    let received: AbortSignal | undefined;
+    await searchSessionsRanked(tmpDir, 'aborttoken', {
+      signal: controller.signal,
+      rankFn: async (_q, c, signal) => { received = signal; return c.map(r => r.sessionId); },
+    });
+    assert.equal(received, controller.signal, 'rankFn must receive the caller signal');
+  });
+
+  it('a mid-flight rankFn abort degrades gracefully to substring order', async () => {
+    const substring = searchSessions(tmpDir, 'aborttoken');
+    const controller = new AbortController();
+    const ranked = await searchSessionsRanked(tmpDir, 'aborttoken', {
+      signal: controller.signal,
+      rankFn: async () => { controller.abort(); throw new Error('aborted'); },
+    });
+    assert.deepEqual(ranked.map(r => r.sessionId), substring.map(r => r.sessionId));
   });
 });

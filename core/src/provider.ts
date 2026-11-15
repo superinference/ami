@@ -1830,6 +1830,16 @@ function extractStatusCode(errorText: string): number | null {
   return null;
 }
 
+// FUNCTIONAL: the Anthropic SDK sometimes fails to propagate the 529 status code
+// during streaming, so an overload surfaces as an error whose body carries
+// `"type":"overloaded_error"` but no parseable HTTP status. Treat that body signal
+// as a retryable overload (equivalent to 529) regardless of the parsed status, so
+// a status-less overload is retried instead of terminating the turn.
+const OVERLOADED_ERROR_STATUS = 529;
+function isOverloadedError(errorText: string): boolean {
+  return /"type"\s*:\s*"overloaded_error"/i.test(errorText);
+}
+
 const NETWORK_ERROR_CODES = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT',
   'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH',
@@ -1968,9 +1978,12 @@ export async function* streamChatCompletionWithRetry(
         // retry even a normally-terminal status the API says is worth retrying;
         // absent => fall back to the retryable-status set.
         const shouldRetryHdr = chunk.responseHeaders?.['x-should-retry'];
+        // A streamed overload may lose its 529 status; detect it from the body so it
+        // is still retried (unless the API explicitly says x-should-retry: false).
+        const bodyOverloaded = statusCode === null && isOverloadedError(chunk.error ?? '');
         const retryAllowed = shouldRetryHdr === 'false'
           ? false
-          : (shouldRetryHdr === 'true' || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
+          : (shouldRetryHdr === 'true' || bodyOverloaded || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
         if (retryAllowed && attempt < maxRetries) {
           if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
             yield chunk;
@@ -2001,8 +2014,9 @@ export async function* streamChatCompletionWithRetry(
           if (options?.onRetry) {
             // statusCode may be null when the retry was forced by x-should-retry:true
             // on an error with no parsed HTTP status; 0 is the established "unknown
-            // status" sentinel other onRetry call sites use.
-            options.onRetry(attempt + 1, maxRetries, delayMs, statusCode ?? 0);
+            // status" sentinel other onRetry call sites use. A body-detected overload
+            // reports as 529 so the callback sees the overload it is actually retrying.
+            options.onRetry(attempt + 1, maxRetries, delayMs, statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : 0));
           }
 
           try {
@@ -2137,6 +2151,19 @@ export const CREDENTIAL_PATTERNS: RegExp[] = [
   /gsk_[a-zA-Z0-9_-]{10,}/g,
   /xai-[a-zA-Z0-9_-]{10,}/g,
   /hf_[a-zA-Z0-9_-]{10,}/g,
+  // FUNCTIONAL: credentials AMI itself provisions but the error path would leak.
+  // AWS access-key IDs (amazon-bedrock via AWS_ACCESS_KEY_ID): long-term AKIA plus
+  // temporary/STS and other canonical prefixes, each followed by 16 upper-alnum.
+  /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|ABIA|ACCA)[0-9A-Z]{16}\b/g,
+  // GCP service-account identities (google-vertex via GOOGLE_APPLICATION_CREDENTIALS,
+  // a service-account JSON): <name>@<project>.iam.gserviceaccount.com.
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.iam\.gserviceaccount\.com\b/g,
+  // AWS_* / GOOGLE_* secret env assignments — redact only the value (lookbehind keeps
+  // the variable name intact for debuggability), e.g. `AWS_SECRET_ACCESS_KEY=…`.
+  /(?<=\bAWS[_-][A-Za-z0-9_]+\s*[=:]\s*)[^\s,;"']+/gi,
+  /(?<=\bGOOGLE[_-][A-Za-z0-9_]+\s*[=:]\s*)[^\s,;"']+/gi,
+  // Generic secret-named assignment fallback: API[-_]KEY / TOKEN / SECRET / PASSWORD = value.
+  /(?<=\b(?:API[-_]?KEY|TOKEN|SECRET|PASSWORD)\s*[=:]\s*)[^\s,;"']+/gi,
 ];
 
 export function sanitizeErrorMessage(error: Error | string): string {

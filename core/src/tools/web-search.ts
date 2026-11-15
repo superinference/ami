@@ -5,6 +5,19 @@ import { extractQuery } from './tool-utils';
 const FETCH_TIMEOUT_MS = 10000;
 const MAX_CONTENT_PER_RESULT = 3000;
 const TOP_RESULTS_TO_FETCH = 3;
+const MIN_QUERY_LENGTH = 2;
+
+/**
+ * Current month/year injected into the tool description so the model grounds
+ * recency-sensitive queries in the present year instead of a stale
+ * training-cutoff year. Computed once at module load (the process is a single
+ * session). Mirrors Claude's getLocalMonthYear() temporal guidance.
+ */
+const CURRENT_YEAR = new Date().getFullYear();
+const CURRENT_MONTH_YEAR = new Date().toLocaleString('en-US', {
+  month: 'long',
+  year: 'numeric',
+});
 
 interface SearchResult {
   title: string;
@@ -128,12 +141,14 @@ function formatResults(query: string, results: SearchResult[]): string {
 export const webSearchTool: ToolDefinition = {
   name: 'web_search',
   description:
-    'Search the web and return results with article content. Returns search results with titles, URLs, snippets, and the actual page content from the top results.',
+    'Search the web and return results with article content. Returns search results with titles, URLs, snippets, and the actual page content from the top results. ' +
+    `The current month is ${CURRENT_MONTH_YEAR}. You MUST use the current year (${CURRENT_YEAR}) when searching for recent information, documentation, or current events — e.g. for "latest React docs", search "React documentation ${CURRENT_YEAR}", NOT last year.`,
   inputSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
+        minLength: MIN_QUERY_LENGTH,
         description: 'The search query',
       },
       allowed_domains: {
@@ -159,6 +174,30 @@ export const webSearchTool: ToolDefinition = {
     const q = extractQuery(input);
     if (q.error) return q.error;
     const query = q.query;
+
+    // Reject degenerate 1-character / whitespace-trimmed queries before any
+    // budget spend or network call (mirrors Claude's z.string().min(2)).
+    if (query.trim().length < MIN_QUERY_LENGTH) {
+      return {
+        output: `Error: query must be at least ${MIN_QUERY_LENGTH} characters.`,
+        isError: true,
+      };
+    }
+
+    // allowed_domains and blocked_domains are mutually exclusive: supplying both
+    // is contradictory (the allow-list already excludes everything else), so
+    // reject with a corrective message instead of silently chaining filters.
+    const allowedDomains = input.allowed_domains as string[] | undefined;
+    const blockedDomains = input.blocked_domains as string[] | undefined;
+    if (
+      allowedDomains && allowedDomains.length > 0 &&
+      blockedDomains && blockedDomains.length > 0
+    ) {
+      return {
+        output: 'Error: Cannot specify both allowed_domains and blocked_domains in the same request',
+        isError: true,
+      };
+    }
 
     // Session-wide runaway cap with token-bucket refill.
     const budget = context._webSearchBudget;
@@ -195,9 +234,6 @@ export const webSearchTool: ToolDefinition = {
       }
 
       let results = parseDuckDuckGoResults(body);
-
-      const allowedDomains = input.allowed_domains as string[] | undefined;
-      const blockedDomains = input.blocked_domains as string[] | undefined;
 
       if (allowedDomains && allowedDomains.length > 0) {
         results = results.filter(r => {

@@ -65,12 +65,58 @@ export interface InstalledSkillManifest {
 
 const UNSAFE_SEGMENT_RE = /[/\\]/;
 
+/**
+ * Whether a candidate string has the shape of a traversal/separator attack:
+ * empty, a bare "." / "..", or containing a null byte or a path separator.
+ */
+function hasUnsafeShape(s: string): boolean {
+  if (s === '' || s === '.' || s === '..') return true;
+  if (s.includes('\0')) return true;
+  if (UNSAFE_SEGMENT_RE.test(s)) return true;
+  return false;
+}
+
+/**
+ * Expand a segment into every form an attacker (or a downstream layer) could
+ * coerce it into before it reaches the filesystem: the raw string, every
+ * percent-decoded form (iterated so double/triple URL-encoding is unwrapped),
+ * and the NFKC Unicode normalization of each. This defeats encoded traversal
+ * (`%2e%2e`, `%2f`, `%252e%252e`) and Unicode-normalization traversal
+ * (fullwidth `．．` U+FF0E, `／` U+FF0F → `..`, `/`).
+ *
+ * Percent-decoding strictly shortens the string whenever it changes a `%XX`
+ * escape, so the loop is guaranteed to terminate (it stops on a no-op decode
+ * or on a malformed-escape throw).
+ */
+function candidateForms(s: string): string[] {
+  const forms: string[] = [s];
+  let cur = s;
+  for (;;) {
+    let dec: string;
+    try {
+      dec = decodeURIComponent(cur);
+    } catch {
+      // Malformed percent-encoding (e.g. a literal "100%.md"): it cannot be a
+      // valid encoded traversal, so stop decoding and keep the raw form.
+      break;
+    }
+    if (dec === cur) break;
+    forms.push(dec);
+    cur = dec;
+  }
+  for (const f of [...forms]) {
+    const normalized = f.normalize('NFKC');
+    if (!forms.includes(normalized)) forms.push(normalized);
+  }
+  return forms;
+}
+
 export function isSafeSegment(segment: string): boolean {
   if (!segment || segment.length === 0) return false;
-  if (segment === '.' || segment === '..') return false;
-  if (segment.includes('\0')) return false;
-  if (UNSAFE_SEGMENT_RE.test(segment)) return false;
   if (segment.length > 255) return false;
+  for (const form of candidateForms(segment)) {
+    if (hasUnsafeShape(form)) return false;
+  }
   return true;
 }
 
@@ -93,6 +139,15 @@ export interface CatalogValidationResult {
   index?: SkillCatalogIndex;
 }
 
+/**
+ * Upper bounds on an untrusted catalog index to prevent a hostile/compromised
+ * catalog from exhausting memory via an unbounded `skills` array or an
+ * unbounded per-skill `files` array (resource-exhaustion / DoS guard). Mirrors
+ * the entry-count ceilings applied when ingesting other untrusted bundles.
+ */
+export const MAX_CATALOG_SKILLS = 10_000;
+export const MAX_FILES_PER_SKILL = 10_000;
+
 export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
   const errors: string[] = [];
 
@@ -104,6 +159,15 @@ export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
 
   if (!Array.isArray(obj.skills)) {
     return { valid: false, errors: ['Catalog index must have a "skills" array'] };
+  }
+
+  if (obj.skills.length > MAX_CATALOG_SKILLS) {
+    return {
+      valid: false,
+      errors: [
+        `Catalog index exceeds the maximum of ${MAX_CATALOG_SKILLS} skills (got ${obj.skills.length})`,
+      ],
+    };
   }
 
   const skills: SkillCatalogEntry[] = [];
@@ -128,6 +192,13 @@ export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
 
     if (!Array.isArray(entry.files) || entry.files.length === 0) {
       errors.push(`skills[${i}] "${entry.name}": missing or empty "files" array`);
+      continue;
+    }
+
+    if (entry.files.length > MAX_FILES_PER_SKILL) {
+      errors.push(
+        `skills[${i}] "${entry.name}": exceeds the maximum of ${MAX_FILES_PER_SKILL} files (got ${entry.files.length})`,
+      );
       continue;
     }
 

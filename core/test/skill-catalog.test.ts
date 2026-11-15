@@ -6,6 +6,8 @@ import {
   isSafeRelativePath,
   validateCatalogIndex,
   resolveSkillUrl,
+  MAX_CATALOG_SKILLS,
+  MAX_FILES_PER_SKILL,
 } from '../src/skill-catalog';
 
 // ---------------------------------------------------------------------------
@@ -68,6 +70,47 @@ describe('isSafeSegment', () => {
   it('accepts name with spaces (no slash/backslash/null)', () => {
     assert.equal(isSafeSegment('my skill'), true);
   });
+
+  // --- URL-encoded traversal rejection (decodeURIComponent re-check) ---
+
+  it('rejects percent-encoded ".." (%2e%2e)', () => {
+    assert.equal(isSafeSegment('%2e%2e'), false);
+  });
+
+  it('rejects percent-encoded forward slash (%2f)', () => {
+    assert.equal(isSafeSegment('a%2fb'), false);
+  });
+
+  it('rejects percent-encoded backslash (%5c)', () => {
+    assert.equal(isSafeSegment('a%5cb'), false);
+  });
+
+  it('rejects double percent-encoded ".." (%252e%252e)', () => {
+    assert.equal(isSafeSegment('%252e%252e'), false);
+  });
+
+  it('rejects percent-encoded null byte (%00)', () => {
+    assert.equal(isSafeSegment('foo%00bar'), false);
+  });
+
+  it('accepts a literal percent that is not valid encoding (100%.md)', () => {
+    // decodeURIComponent throws on "100%.md"; the raw form is still safe.
+    assert.equal(isSafeSegment('100%.md'), true);
+  });
+
+  // --- NFKC Unicode-normalization traversal rejection ---
+
+  it('rejects fullwidth ".." (U+FF0E U+FF0E) that NFKC-normalizes to ".."', () => {
+    assert.equal(isSafeSegment('．．'), false);
+  });
+
+  it('rejects fullwidth solidus (U+FF0F) that NFKC-normalizes to "/"', () => {
+    assert.equal(isSafeSegment('a／b'), false);
+  });
+
+  it('accepts an accented name whose NFKC form is still safe', () => {
+    assert.equal(isSafeSegment('café'), true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -118,6 +161,18 @@ describe('isSafeRelativePath', () => {
 
   it('rejects path with null byte in a segment', () => {
     assert.equal(isSafeRelativePath('foo\0bar'), false);
+  });
+
+  it('rejects a segment with percent-encoded separator (a%2fb)', () => {
+    assert.equal(isSafeRelativePath('a%2fb'), false);
+  });
+
+  it('rejects a percent-encoded traversal segment (%2e%2e/x)', () => {
+    assert.equal(isSafeRelativePath('%2e%2e/x'), false);
+  });
+
+  it('rejects a fullwidth-dot traversal segment (．．/x)', () => {
+    assert.equal(isSafeRelativePath('．．/x'), false);
   });
 });
 
@@ -376,6 +431,49 @@ describe('validateCatalogIndex', () => {
     assert.equal(result.valid, false);
     assert.equal(result.errors.length, 2);
     assert.equal(result.index, undefined);
+  });
+
+  it('rejects a catalog whose skills array exceeds MAX_CATALOG_SKILLS', () => {
+    const skills = Array.from({ length: MAX_CATALOG_SKILLS + 1 }, (_, i) => ({
+      name: `s${i}`,
+      files: ['SKILL.md'],
+    }));
+    const result = validateCatalogIndex({ skills });
+    assert.equal(result.valid, false);
+    assert.equal(result.index, undefined);
+    assert.ok(result.errors.some(e => /maximum of .* skills/.test(e)));
+  });
+
+  it('accepts a catalog at exactly MAX_CATALOG_SKILLS', () => {
+    const skills = Array.from({ length: MAX_CATALOG_SKILLS }, (_, i) => ({
+      name: `s${i}`,
+      files: ['SKILL.md'],
+    }));
+    const result = validateCatalogIndex({ skills });
+    assert.equal(result.valid, true);
+    assert.equal(result.index!.skills.length, MAX_CATALOG_SKILLS);
+  });
+
+  it('rejects a single skill whose files array exceeds MAX_FILES_PER_SKILL', () => {
+    const files = Array.from({ length: MAX_FILES_PER_SKILL + 1 }, (_, i) => `f${i}.md`);
+    const result = validateCatalogIndex({ skills: [{ name: 'big', files }] });
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some(e => /maximum of .* files/.test(e)));
+  });
+
+  it('accepts a skill with exactly MAX_FILES_PER_SKILL files', () => {
+    const files = Array.from({ length: MAX_FILES_PER_SKILL }, (_, i) => `f${i}.md`);
+    const result = validateCatalogIndex({ skills: [{ name: 'big', files }] });
+    assert.equal(result.valid, true);
+    assert.equal(result.index!.skills[0].files.length, MAX_FILES_PER_SKILL);
+  });
+
+  it('rejects a catalog entry whose name is a percent-encoded traversal', () => {
+    const result = validateCatalogIndex({
+      skills: [{ name: '%2e%2e', files: ['SKILL.md'] }],
+    });
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some(e => /unsafe skill name/.test(e)));
   });
 
   it('filters unsafe file paths but keeps safe ones in same skill', () => {

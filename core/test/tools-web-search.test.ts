@@ -49,6 +49,66 @@ describe('webSearchTool – validation', () => {
     const result = await webSearchTool.execute({ query: '   ' }, ctx());
     assert.equal(result.isError, true);
   });
+
+  // Parity (F0277/F1612): minimum query length (>= 2 chars). A single-character
+  // query must be rejected before any budget spend or network call.
+  it('rejects a single-character query (min length 2)', async () => {
+    const result = await webSearchTool.execute({ query: 'a' }, ctx());
+    assert.equal(result.isError, true);
+    assert.match(result.output, /at least 2 characters/);
+  });
+
+  it('rejects a query that trims to a single character', async () => {
+    const result = await webSearchTool.execute({ query: ' a ' }, ctx());
+    assert.equal(result.isError, true);
+    assert.match(result.output, /at least 2 characters/);
+  });
+
+  it('declares minLength 2 on the query schema property', () => {
+    assert.equal(webSearchTool.inputSchema.properties.query.minLength, 2);
+  });
+
+  // Parity (F0277/F1612): allowed_domains and blocked_domains are mutually
+  // exclusive — supplying both is contradictory and must be rejected, not
+  // silently chained.
+  it('rejects supplying both allowed_domains and blocked_domains', async () => {
+    const result = await webSearchTool.execute(
+      { query: 'react hooks', allowed_domains: ['a.com'], blocked_domains: ['b.com'] },
+      ctx(),
+    );
+    assert.equal(result.isError, true);
+    assert.match(
+      result.output,
+      /Cannot specify both allowed_domains and blocked_domains/,
+    );
+  });
+
+  it('does not treat empty domain arrays as mutually exclusive', async () => {
+    // Both empty => no contradiction; falls through to the query/abort path
+    // (an already-aborted signal keeps the test network-free).
+    const ac = new AbortController();
+    ac.abort();
+    const result = await webSearchTool.execute(
+      { query: 'react hooks', allowed_domains: [], blocked_domains: [] },
+      ctx({ abortSignal: ac.signal }),
+    );
+    assert.doesNotMatch(
+      result.output,
+      /Cannot specify both allowed_domains and blocked_domains/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parity (F0277/F1610): current-year temporal grounding in the tool description
+// ---------------------------------------------------------------------------
+
+describe('webSearchTool – description recency guidance', () => {
+  it('injects the current year and a current-year directive', () => {
+    const year = String(new Date().getFullYear());
+    assert.match(webSearchTool.description, new RegExp(year));
+    assert.match(webSearchTool.description, /current year/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
