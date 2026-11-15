@@ -10,11 +10,47 @@ import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
 import { getCurrentTeam, registerTeamMember, setTeamMemberActive } from './team';
 import { SessionManager } from '../session';
+import { PERMISSION_MODES } from '../permissions';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
 const AUTO_BG_MS = 120_000; // eslint-disable-line @typescript-eslint/no-unused-vars
 
 const SUBAGENT_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Turn budget for a `fork` child when its agent definition sets none (mirrors
+ *  Claude Code's FORK_AGENT maxTurns:200 — a context-inheriting clone needs a
+ *  generous ceiling because it continues the parent's full task). */
+export const DEFAULT_FORK_MAX_TURNS = 200;
+
+/**
+ * Git config flags that neutralize arbitrary-code-execution vectors when AMI
+ * auto-invokes git on a repository it has not been told is trusted. A malicious
+ * `.git/config` can run code via `core.fsmonitor`, `core.hooksPath`, or
+ * `diff.external`; these `-c` overrides disable all three for the one invocation.
+ * Prepended to every git call the task tool makes on a model-/worktree-derived cwd.
+ *
+ * NOTE: worktree-manager.ts hardens its OWN git calls with a parallel
+ * (hooks/fsmonitor/gpgsign) set; this one adds the `diff.external` vector the
+ * cleanup path needs. They should be consolidated into one exported constant once
+ * the owning lane can touch worktree-manager.ts.
+ */
+export const GIT_HARDENING_ARGS = [
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'diff.external=',
+];
+
+/**
+ * Generate a high-entropy, symlink-attack-resistant task/agent ID: 8 random
+ * bytes rendered as 16 hex chars (2^64 combinations). The ID derives an on-disk
+ * output path, so weak entropy (the old `randomBytes(4)` = 2^32) would make a
+ * brute-force symlink race on that path feasible; 8 bytes closes it (Claude Code
+ * uses a 36-char alphabet for the same 8-byte entropy — hex keeps every existing
+ * `agent-[a-f0-9]+` consumer working while matching the entropy floor).
+ */
+export function generateTaskId(prefix = 'agent'): string {
+  return `${prefix}-${crypto.randomBytes(8).toString('hex')}`;
+}
 
 /**
  * Framing prepended to a mode-only sub-agent's task (no subagent_type identity) so
@@ -43,6 +79,7 @@ export const SUBAGENT_SYSTEM_PROMPT =
 
 - Do precisely what the task asks — nothing more. Do not add verification, cleanup, refactors, or "while I'm here" work the task did not request.
 - Use tools only when the task requires them; prefer answering directly. Do NOT create or edit files, run commands, or run tests unless the task explicitly requires it.
+- When searching: start broad and narrow down; if the first strategy finds nothing, try another; consider alternate naming conventions and check multiple locations before concluding something is absent.
 - When you have the result, give it directly and concisely as your final message, then STOP. Your final message IS the deliverable returned to the caller.
 - Do not loop re-checking, re-running, or re-announcing completion. One correct answer, then stop.
 - Read any error in full and fix the root cause; never fabricate results. If the task is impossible or underspecified, say so plainly and stop.`;
@@ -52,6 +89,8 @@ export const EXPLORE_SUBAGENT_SYSTEM_PROMPT =
   `You are a read-only exploration sub-agent handling one search/investigation task.
 
 - Investigate using read and search tools only. Do NOT modify files, run mutating commands, or make any changes.
+- Adapt your search breadth to the thoroughness the caller requests ("quick" for a basic lookup, "medium" for moderate exploration, "very thorough" for comprehensive analysis).
+- Start broad and narrow down; if one search strategy yields nothing, try another; consider alternate naming conventions and check multiple locations before concluding something does not exist.
 - Gather exactly what the task asks for, cite concrete locations (file:line) where relevant, then report your findings directly and concisely as your final message and STOP. Your final message IS the deliverable.
 - Do not over-explore beyond what the task asks. One focused report, then stop.`;
 
@@ -75,6 +114,21 @@ export function getAgentNameById(taskId: string): string | undefined {
 export function resetAgentRegistry(): void {
   agentNameRegistry.clear();
   agentSessionRegistry.clear();
+}
+
+/**
+ * Resolve a caller-supplied agent `name` to a UNIQUE addressable name. The task
+ * tool documents `name` as "must be unique" (it is the send_message / resume
+ * key), but a model reusing a base name would silently overwrite the earlier
+ * agent's registry entry, orphaning it. On collision we append an incrementing
+ * numeric suffix (`name-2`, `name-3`, …) so every spawned agent keeps a distinct,
+ * addressable identity (mirrors Claude Code's generateUniqueTeammateName).
+ */
+export function uniqueAgentName(name: string): string {
+  if (!agentNameRegistry.has(name)) return name;
+  let i = 2;
+  while (agentNameRegistry.has(`${name}-${i}`)) i++;
+  return `${name}-${i}`;
 }
 
 const DEFAULT_MAX_AGENT_DEPTH = 5;
@@ -308,8 +362,13 @@ export const taskTool: ToolDefinition = {
       },
       mode: {
         type: 'string',
-        description: 'Agent mode. "explore" gives read-only tools only. "general" gives all tools including nested task (up to max depth). "fork" clones parent conversation context.',
+        description: 'Agent mode. "explore" gives read-only tools only (state the desired thoroughness in the prompt: "quick", "medium", or "very thorough"). "general" gives all tools including nested task (up to max depth). "fork" clones parent conversation context.',
         enum: ['explore', 'general', 'fork'],
+      },
+      permission_mode: {
+        type: 'string',
+        description: 'Permission mode for the spawned subagent (overrides the default). E.g. "plan", "acceptEdits", "auto-allow". Distinct from "mode", which selects the tool tier.',
+        enum: [...PERMISSION_MODES],
       },
       isolation: {
         type: 'string',
@@ -364,9 +423,17 @@ export const taskTool: ToolDefinition = {
     const taskDescription = input.description as string | undefined;
     const resumeTarget = input.resume as string | undefined;
     const effortOverride = input.effort as string | undefined;
+    const requestedPermissionMode = input.permission_mode as string | undefined;
 
     if (!prompt || prompt.trim().length === 0) {
       return { output: 'Error: prompt must not be empty.', isError: true };
+    }
+
+    if (requestedPermissionMode && !(PERMISSION_MODES as readonly string[]).includes(requestedPermissionMode)) {
+      return {
+        output: `Error: invalid permission_mode "${requestedPermissionMode}". Valid values: ${PERMISSION_MODES.join(', ')}.`,
+        isError: true,
+      };
     }
 
     // Resume: resolve the prior sub-engine sessionId so the spawn below reuses
@@ -409,13 +476,18 @@ export const taskTool: ToolDefinition = {
     const modelOverride = resolveSubagentModel(rawModel, parentModel);
 
     if (context._hookManager) {
+      // Gate on the SPECIFIC named agent type when one is requested (mirrors
+      // Claude Code's Agent(<type>) deny rules), falling back to the tool tier
+      // `mode` for a mode-only spawn — so an `Agent(researcher)` deny rule can
+      // block exactly that subagent type rather than only the coarse mode.
+      const agentTypeForGate = subagentType || mode;
       const agentTypeCheck = await context._hookManager.executePreToolUse?.({
         messages: [], turnCount: 0,
         toolName: 'task',
-        toolInput: { subagent_type: mode, prompt: prompt.slice(0, 100) },
+        toolInput: { subagent_type: agentTypeForGate, prompt: prompt.slice(0, 100) },
       });
       if (agentTypeCheck?.action === 'deny') {
-        return { output: `Error: Agent type "${mode}" denied by permission rules.`, isError: true };
+        return { output: `Error: Agent type "${agentTypeForGate}" denied by permission rules.`, isError: true };
       }
     }
 
@@ -464,6 +536,15 @@ export const taskTool: ToolDefinition = {
           const allowed = new Set(agentDef.tools);
           tools = everything.filter(t => allowed.has(t.name));
         }
+        // Deny wins even when an allowlist is set: an agent may declare BOTH
+        // `tools` and `disallowedTools` (e.g. Claude's planAgent allows the
+        // explore set yet denies edit/write/exit for defense-in-depth). Subtract
+        // the denylist from the allowlist result so the two compose instead of
+        // the allowlist silently ignoring the denylist.
+        if (agentDef.disallowedTools && agentDef.disallowedTools.length > 0) {
+          const denied = new Set(agentDef.disallowedTools);
+          tools = tools.filter(t => !denied.has(t.name));
+        }
         if (!shouldAllowNestedTask(currentDepth, maxDepth)) {
           tools = tools.filter(t => t.name !== 'task');
         }
@@ -489,6 +570,13 @@ export const taskTool: ToolDefinition = {
     // Universal baseline denylist — applied last so no mode or explicit
     // allowlist (incl. `['*']`) can reintroduce plan_mode or workflow.
     tools = tools.filter(t => !ALL_AGENT_DISALLOWED_TOOLS.has(t.name));
+
+    // A `fork` child continues the parent's full task as a context-inheriting
+    // clone, so it needs a generous turn budget. When no agent definition set
+    // one, default to DEFAULT_FORK_MAX_TURNS (mirrors Claude's FORK_AGENT).
+    if (mode === 'fork' && agentMaxTurns === undefined) {
+      agentMaxTurns = DEFAULT_FORK_MAX_TURNS;
+    }
 
     const subAbort = new AbortController();
     // Providers often serialize booleans as the STRING "true"/"false" in tool-call
@@ -537,10 +625,13 @@ export const taskTool: ToolDefinition = {
     }
 
     // Permission mode priority:
-    // 1. Agent definition's permissionMode (e.g. verifier → auto-allow; safe, restricted tools)
-    // 2. explore mode → always auto-allow (read-only tool set)
-    // 3. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
+    // 1. Explicit `permission_mode` input (caller sets the spawned agent's mode,
+    //    e.g. "plan" / "acceptEdits"; validated against PERMISSION_MODES above)
+    // 2. Agent definition's permissionMode (e.g. verifier → auto-allow; safe, restricted tools)
+    // 3. explore mode → always auto-allow (read-only tool set)
+    // 4. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
     const resolvedPermissionMode =
+      requestedPermissionMode ||
       agentPermissionMode ||
       (effectiveMode === 'explore' ? 'auto-allow' : 'ask');
 
@@ -602,12 +693,15 @@ export const taskTool: ToolDefinition = {
       effectivePrompt = `${buildWorktreeNotice(context.cwd, effectiveCwd)}\n\n---\n\n${effectivePrompt}`;
     }
 
-    const agentName = input.name as string | undefined;
+    // Reconcile the caller-supplied name to a unique one BEFORE registering it,
+    // so a reused base name does not silently overwrite an earlier agent's entry.
+    const rawAgentName = input.name as string | undefined;
+    const agentName = rawAgentName ? uniqueAgentName(rawAgentName) : undefined;
 
     if (runInBackground) {
       incrementSpawnCount(context);
       context.subagentLimiter?.recordSpawn();
-      const taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
+      const taskId = generateTaskId();
       if (agentName) {
         agentNameRegistry.set(agentName, taskId);
       }
@@ -726,13 +820,13 @@ export const taskTool: ToolDefinition = {
         }
       })().catch(() => {});
 
-      return { output: `Background agent started: ${taskId}\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.` };
+      return { output: `Background agent started: ${taskId}\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
     }
 
     incrementSpawnCount(context);
     context.subagentLimiter?.recordSpawn();
     const subEngine = context._engineFactory(subConfig);
-    const taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
+    const taskId = generateTaskId();
     if (agentName) {
       agentNameRegistry.set(agentName, taskId);
     }
@@ -769,6 +863,8 @@ export const taskTool: ToolDefinition = {
     let totalTokens = 0;
     const startedAt = Date.now();
     const recentActivities: string[] = [];
+    let exitReason: import('../types').ExitReason | undefined;
+    let sawAbortError = false;
 
     const stallTimeoutMs = parseInt(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS ?? '', 10) || SUBAGENT_STALL_TIMEOUT_MS;
     let stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -794,6 +890,7 @@ export const taskTool: ToolDefinition = {
         }
         if (event.type === 'error') {
           resultText += `\nError: ${event.error}`;
+          if (/\baborted\b/i.test(event.error)) sawAbortError = true;
         }
         if (event.type === 'tool_use_start') {
           toolUseCount++;
@@ -803,9 +900,16 @@ export const taskTool: ToolDefinition = {
         if (event.type === 'usage_update') {
           totalTokens = event.stats?.totalTokens ?? totalTokens;
         }
+        if (event.type === 'done') {
+          exitReason = event.exitReason;
+        }
       }
       if (stalled) {
         resultText += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]`;
+      } else if (exitReason === 'max_turns') {
+        // Distinguish a turn-capped partial result from a clean completion so the
+        // parent/UI does not mistake a truncated run for a finished one.
+        resultText += `\n[Subagent stopped — reached max turns limit${agentMaxTurns ? ` (${agentMaxTurns})` : ''}]`;
       }
     } catch (err) {
       context.abortSignal.removeEventListener('abort', forwardAbort);
@@ -842,12 +946,14 @@ export const taskTool: ToolDefinition = {
         // Shell-free: pass the worktree path as an argv element to git, never
         // interpolated into a shell command line. A worktree path with a space
         // or shell metacharacter would otherwise let `execSync` run arbitrary
-        // commands during cleanup.
-        const status = child_process.execFileSync('git', ['status', '--porcelain'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
-        const unpushed = child_process.execFileSync('git', ['rev-list', 'HEAD', '--not', '--remotes'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
+        // commands during cleanup. GIT_HARDENING_ARGS additionally neutralizes
+        // config-driven code-execution vectors (fsmonitor/hooks/external-diff),
+        // since the worktree's `.git/config` is not a trusted input.
+        const status = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'status', '--porcelain'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
+        const unpushed = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
         const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
         if (shouldRemoveWorktree(status, unpushed, runningAgents)) {
-          child_process.execFileSync('git', ['worktree', 'remove', '--force', effectiveCwd], { cwd: context.cwd, timeout: 10000 });
+          child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'worktree', 'remove', '--force', effectiveCwd], { cwd: context.cwd, timeout: 10000 });
           resultText += '\n[Agent worktree cleaned up — no changes detected]';
         }
       } catch {}
@@ -859,11 +965,30 @@ export const taskTool: ToolDefinition = {
     const cappedResult = taskMaxChars && taskMaxChars > 0
       ? spillToolText(context.cwd, 'task', resultText, taskMaxChars)
       : resultText;
+
+    // A stall-kill or an abort is a FAILURE, not a successful result — surface it
+    // so the parent does not treat a cancelled/timed-out run as a finished one
+    // (mirrors Claude's AbortError-on-abort semantics).
+    const failed = stalled || exitReason === 'abort' || sawAbortError;
+
     context._emitChild?.({
       type: 'subagent_result', nodeId: taskId, depth: relayDepth,
-      success: true, summary: (resultText.trim().split('\n')[0] || 'done').slice(0, 120), tokens: totalTokens,
+      success: !failed, summary: (resultText.trim().split('\n')[0] || 'done').slice(0, 120), tokens: totalTokens,
     });
     const durationS = ((Date.now() - startedAt) / 1000).toFixed(1);
-    return { output: `${cappedResult}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens, ${durationS}s]` };
+    // A metadata-only tail (empty body + stats) reads as "nothing to act on" to
+    // some models and ends the parent turn prematurely — substitute an explicit
+    // no-output marker (mirrors Claude's "(Subagent completed but returned no output.)").
+    const body = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
+    // Continue-affordance: tell the parent it CAN message/resume this agent to
+    // carry the work forward. Skipped for one-shot `explore` runs (read-only
+    // reports that are never continued), mirroring Claude's ONE_SHOT agent types.
+    const continueHint = effectiveMode === 'explore'
+      ? ''
+      : `\nTo continue this agent, call task({ resume: "${agentName || taskId}", prompt: ... }).`;
+    return {
+      output: `${body}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens, ${durationS}s]${continueHint}`,
+      ...(failed ? { isError: true } : {}),
+    };
   },
 };
