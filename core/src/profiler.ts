@@ -78,6 +78,12 @@ export interface TurnTiming {
   cacheHitRate: number;
   /** Input (prompt) tokens per second over the API latency window. */
   inputTokensPerSec: number;
+  /**
+   * True when endTurn() was called with no matching beginTurn() for this index.
+   * In that case startTime/endTime are equal and `duration` is 0 (not meaningful)
+   * rather than silently reporting a full turn against a substituted start clock.
+   */
+  incomplete: boolean;
 }
 
 /**
@@ -195,18 +201,26 @@ export class Profiler {
    * Returns a function that, when called, records the elapsed duration.
    */
   start(label: string): () => void {
-    const startTime = Date.now();
+    // Monotonic high-resolution clock: elapsed is immune to wall-clock jumps
+    // (NTP steps, DST, manual clock changes) that Date.now() is subject to.
+    const startTime = performance.now();
     return () => {
-      this.record(label, Date.now() - startTime);
+      this.record(label, performance.now() - startTime);
     };
   }
 
-  /** Record a pre-measured duration for a labelled operation (bounded reservoir). */
+  /**
+   * Record a pre-measured duration for a labelled operation (bounded reservoir).
+   * Defensively rejects NaN and clamps negatives to 0 so a clock anomaly (or a
+   * bad caller-supplied value) can never poison the min/max/sum/sample arrays.
+   */
   record(label: string, durationMs: number): void {
+    if (Number.isNaN(durationMs)) return;
+    const value = durationMs < 0 ? 0 : durationMs;
     let agg = this.timings.get(label);
     if (!agg) { agg = new TimingAggregate(this._maxSamples, this._rand); this.timings.set(label, agg); }
-    agg.add(durationMs);
-    this._maybeFlagSlow(label, durationMs);
+    agg.add(value);
+    this._maybeFlagSlow(label, value);
   }
 
   /**
@@ -215,13 +229,13 @@ export class Profiler {
    * also bumps the `<label>.failed` counter for introspection.
    */
   async timeAsync<T>(label: string, fn: () => Promise<T>): Promise<T> {
-    const start = Date.now();
+    const start = performance.now();
     try {
       const result = await fn();
-      this.record(label, Date.now() - start);
+      this.record(label, performance.now() - start);
       return result;
     } catch (err) {
-      this.record(label, Date.now() - start);
+      this.record(label, performance.now() - start);
       this.incrementCounter(`${label}.failed`);
       throw err;
     }
@@ -356,9 +370,16 @@ export class Profiler {
     /** Cache-write tokens (optional; defaults to 0). */
     cacheCreationTokens?: number;
   }): void {
-    const startTime = this.turnStartTimes.get(turnIndex) || Date.now();
     const endTime = Date.now();
-    const duration = endTime - startTime;
+    // Boundary guard: a missing beginTurn() must be observable, not silently
+    // reported as an instant turn against a substituted start clock. Use `??`
+    // (not `||`, which would also discard a legitimate 0 timestamp) and flag
+    // the turn incomplete. Clamp duration >= 0 so a backward wall-clock step
+    // between beginTurn and endTurn can never yield a negative turn duration.
+    const recordedStart = this.turnStartTimes.get(turnIndex);
+    const incomplete = recordedStart === undefined;
+    const startTime = recordedStart ?? endTime;
+    const duration = Math.max(0, endTime - startTime);
     const streamingDuration = metrics.apiLatency - metrics.ttftMs;
     const outputTokensPerSec = streamingDuration > 0
       ? (metrics.tokensProduced / (streamingDuration / 1000))
@@ -387,6 +408,7 @@ export class Profiler {
       cacheCreationTokens,
       cacheHitRate,
       inputTokensPerSec,
+      incomplete,
     });
     // Bound retained turns for long-running (cron) sessions: evict the oldest.
     while (this.turns.size > this._maxTurns) {

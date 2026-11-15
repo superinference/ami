@@ -1,3 +1,6 @@
+import * as os from 'node:os';
+import { inspect } from 'node:util';
+
 /**
  * Canonical secret-detection catalog. Each rule pairs a stable snake_case type
  * (used by findCredentials and getCredentialLabel) with its matcher, so the
@@ -117,7 +120,22 @@ export function isHighEntropySecret(token: string): boolean {
 // intact. Unlike the old pattern this accepts short values (no `{16,}` floor) so
 // a short/opaque token under a secret-named key is caught (see redaction tiers).
 const SECRET_ASSIGN_RE =
-  /(?<![A-Za-z0-9_])(password|passwd|secret|token|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|credential|api[_-]?key|access[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9+/_.\-=]+)/gi;
+  /(?<![A-Za-z0-9_])(password|passwd|secret|token|access[_-]?token|auth[_-]?token|authorization|client[_-]?secret|private[_-]?key|credential|api[_-]?key|access[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9+/_.\-=]+)/gi;
+
+// Prefixed UPPER_SNAKE env-var secret names that the lowercase SECRET_ASSIGN_RE
+// misses because its key lookbehind rejects a leading `PREFIX_` (e.g.
+// `AWS_SECRET_ACCESS_KEY`, `GOOGLE_API_KEY`, `GITHUB_TOKEN`, `DB_PASSWORD`). The
+// name MUST carry a `…_` prefix before the secret word so a bare `TOKEN=`/
+// `SECRET=` is left to SECRET_ASSIGN_RE (no double match). Values here are
+// redacted UNCONDITIONALLY — an explicitly secret-named env var is a secret
+// regardless of the value's length/entropy, so a short or low-entropy token
+// cannot slip through. Case-sensitive (no `i`): matching only UPPER_SNAKE names
+// avoids colliding with the lowercase rule and with ordinary identifiers. The
+// prefix is a single flat `[A-Z0-9_]*_` class (star-height 1) so there is no
+// nested-quantifier backtracking. Group 1 = name, 2 = separator (incl. opening
+// quote), 3 = value.
+const ENV_SECRET_ASSIGN_RE =
+  /(?<![A-Za-z0-9_])([A-Z0-9_]*_(?:SECRET_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?|AUTH))(["']?\s*[:=]\s*["']?)([A-Za-z0-9+/_.\-=]+)/g;
 
 // Field names that are UNCONDITIONALLY secret: the assigned value is redacted
 // regardless of length or entropy (a short/opaque session token must not leak just
@@ -132,12 +150,48 @@ function assignedSecretShouldRedact(key: string, value: string): boolean {
   return isHighEntropySecret(value);
 }
 
+/**
+ * Default minimum length for partial-reveal (fingerprint) mode. Values at least
+ * this long keep a short prefix+suffix for diagnosis; shorter values are fully
+ * masked so a tiny secret is never partly exposed.
+ */
+export const REDACT_MIN_LENGTH = 16;
+
+export interface RedactOptions {
+  /**
+   * Partial-reveal (fingerprint) mode: keep the first 8 and last 4 chars of a
+   * value at least `minLength` long, fully masking shorter ones. Off by default
+   * so redaction stays fully opaque unless a caller explicitly opts in (e.g. a
+   * debug/diagnostic sink where a fingerprint aids correlation).
+   */
+  partial?: boolean;
+  /** Length threshold for partial reveal (default `REDACT_MIN_LENGTH`). */
+  minLength?: number;
+}
+
+/**
+ * Replacement string for a single detected secret. Full `[REDACTED]` by default;
+ * in partial mode, a long value becomes `<first8>[REDACTED]<last4>` so its shape
+ * can be correlated across logs without revealing the secret. Short values are
+ * always fully masked.
+ */
+export function maskSecretValue(value: string, options: RedactOptions = {}): string {
+  const min = options.minLength ?? REDACT_MIN_LENGTH;
+  if (options.partial && value.length >= min) {
+    return `${value.slice(0, 8)}${REDACT_PLACEHOLDER}${value.slice(-4)}`;
+  }
+  return REDACT_PLACEHOLDER;
+}
+
 export function containsCredential(text: string): boolean {
   if (!text || text.length < 10) return false;
   if (CREDENTIAL_PATTERNS.some(pattern => {
     pattern.lastIndex = 0;
     return pattern.test(text);
   })) return true;
+  // Prefixed UPPER_SNAKE env-var secret (unconditional).
+  ENV_SECRET_ASSIGN_RE.lastIndex = 0;
+  if (ENV_SECRET_ASSIGN_RE.test(text)) return true;
   // Secret value assigned to a secret-ish key.
   SECRET_ASSIGN_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -147,18 +201,30 @@ export function containsCredential(text: string): boolean {
   return false;
 }
 
-export function redactCredentials(text: string): string {
+export function redactCredentials(text: string, options: RedactOptions = {}): string {
   if (!text || text.length < 10) return text;
   let result = text;
   for (const pattern of CREDENTIAL_PATTERNS) {
     pattern.lastIndex = 0;
-    result = result.replace(new RegExp(pattern.source, pattern.flags), REDACT_PLACEHOLDER);
+    result = result.replace(
+      new RegExp(pattern.source, pattern.flags),
+      (match: string) => maskSecretValue(match, options),
+    );
   }
+  // Prefixed UPPER_SNAKE env-var secrets are unconditionally redacted (keep the
+  // name + separator for context). Runs before SECRET_ASSIGN_RE; because the
+  // name carries an underscore-joined prefix, the lowercase rule's key lookbehind
+  // can never re-match the already-masked assignment, so there is no double pass.
+  result = result.replace(
+    new RegExp(ENV_SECRET_ASSIGN_RE.source, ENV_SECRET_ASSIGN_RE.flags),
+    (_full: string, key: string, sep: string, value: string) =>
+      `${key}${sep}${maskSecretValue(value, options)}`,
+  );
   // Redact the assigned secret value (keep the key + separator for context).
   result = result.replace(
     new RegExp(SECRET_ASSIGN_RE.source, SECRET_ASSIGN_RE.flags),
     (full: string, key: string, sep: string, value: string) =>
-      assignedSecretShouldRedact(key, value) ? `${key}${sep}${REDACT_PLACEHOLDER}` : full,
+      assignedSecretShouldRedact(key, value) ? `${key}${sep}${maskSecretValue(value, options)}` : full,
   );
   return result;
 }
@@ -181,6 +247,14 @@ export function findCredentials(text: string): CredentialMatch[] {
     while ((match = pattern.exec(text)) !== null) {
       found.push({ type, label: getCredentialLabel(type), start: match.index, length: match[0].length });
     }
+  }
+
+  // Prefixed UPPER_SNAKE env-var secrets (value only, unconditional).
+  ENV_SECRET_ASSIGN_RE.lastIndex = 0;
+  let envm: RegExpExecArray | null;
+  while ((envm = ENV_SECRET_ASSIGN_RE.exec(text)) !== null) {
+    const valueStart = envm.index + envm[1].length + envm[2].length;
+    found.push({ type: 'env_secret', label: getCredentialLabel('env_secret'), start: valueStart, length: envm[3].length });
   }
 
   // Secret values assigned to secret-ish keys (value only).
@@ -227,4 +301,78 @@ export class CredentialGuard {
   clear(): void {
     this._detections = [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Redact-by-construction secret wrapper
+// ---------------------------------------------------------------------------
+
+/**
+ * A leak-proof-by-construction holder for a secret value (API key, OAuth/refresh
+ * token, provisioning secret). The raw value lives in a private field and is only
+ * reachable via the single explicit `reveal()` escape hatch — used right at the
+ * HTTP/header-injection boundary. Every implicit stringification path
+ * (`String(x)`, template literals, `JSON.stringify`, `util.inspect`/`console.log`)
+ * returns `REDACT_PLACEHOLDER`, so accidentally logging or serializing a
+ * token-bearing object cannot leak it. This complements the after-the-fact text
+ * scrubbing done by `redactCredentials`: here the value is never exposed to begin
+ * with.
+ */
+export class RedactedSecret {
+  readonly #value: string;
+
+  constructor(value: string) {
+    this.#value = value;
+  }
+
+  /** The single explicit escape hatch — reveal the raw secret for actual use. */
+  reveal(): string {
+    return this.#value;
+  }
+
+  /** `true` iff the wrapped value is empty, without revealing it. */
+  isEmpty(): boolean {
+    return this.#value.length === 0;
+  }
+
+  toString(): string {
+    return REDACT_PLACEHOLDER;
+  }
+
+  toJSON(): string {
+    return REDACT_PLACEHOLDER;
+  }
+
+  [inspect.custom](): string {
+    return REDACT_PLACEHOLDER;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Local-path / PII normalization
+// ---------------------------------------------------------------------------
+
+export interface RedactPathsOptions {
+  /** Current working directory to normalize to `[CWD]` (default `process.cwd()`). */
+  cwd?: string;
+  /** Home directory to normalize to `[HOME]` (default `os.homedir()`). */
+  home?: string;
+}
+
+/**
+ * Replace the user's home directory and current working directory with the
+ * stable placeholders `[HOME]` / `[CWD]` so file paths in exported/shareable
+ * artifacts (session exports, bug reports, diagnostics) don't leak the local
+ * username or machine layout. The cwd is substituted first so a cwd nested under
+ * home collapses to `[CWD]` rather than `[HOME]/…`. Root (`/`) is never used as a
+ * needle, which would otherwise rewrite every path separator.
+ */
+export function redactPaths(text: string, options: RedactPathsOptions = {}): string {
+  if (!text) return text;
+  const cwd = options.cwd ?? process.cwd();
+  const home = options.home ?? os.homedir();
+  let result = text;
+  if (cwd && cwd !== '/') result = result.split(cwd).join('[CWD]');
+  if (home && home !== '/') result = result.split(home).join('[HOME]');
+  return result;
 }

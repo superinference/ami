@@ -42,6 +42,80 @@ describe('Profiler slow-operation detection', () => {
   });
 });
 
+describe('Profiler.record poison-proofing', () => {
+  it('rejects NaN durations entirely so aggregates are never poisoned', () => {
+    const p = new Profiler();
+    p.record('x', NaN);
+    assert.equal(p.getStatistics('x'), null); // nothing was recorded
+    p.record('x', 100);
+    assert.equal(p.getStatistics('x')!.count, 1);
+  });
+
+  it('clamps negative durations to 0 so min/max never go below 0', () => {
+    const p = new Profiler();
+    p.record('x', -50);
+    p.record('x', 100);
+    const s = p.getStatistics('x')!;
+    assert.equal(s.count, 2);
+    assert.equal(s.minMs, 0);
+    assert.ok(s.minMs >= 0);
+  });
+});
+
+describe('Profiler monotonic clock', () => {
+  it('start() cannot record a negative duration even if the wall clock steps backward', () => {
+    const p = new Profiler();
+    const origNow = Date.now;
+    let calls = 0;
+    (Date as unknown as { now: () => number }).now = () => (calls++ === 0 ? 10_000 : 1_000);
+    try {
+      const stop = p.start('op');
+      stop();
+    } finally {
+      (Date as unknown as { now: () => number }).now = origNow;
+    }
+    const s = p.getStatistics('op')!;
+    assert.ok(s.minMs >= 0, 'elapsed must never be negative');
+  });
+});
+
+describe('Profiler endTurn boundary guard', () => {
+  const metrics = { apiLatency: 100, toolExecutionTime: 0, compactionTime: 0, tokensProduced: 0, tokensConsumed: 0, ttftMs: 0 };
+
+  it('flags a turn incomplete with zero duration when beginTurn was skipped', () => {
+    const p = new Profiler();
+    p.endTurn(5, metrics);
+    const t = p.getTurn(5)!;
+    assert.equal(t.incomplete, true);
+    assert.equal(t.duration, 0);
+  });
+
+  it('marks a properly-bracketed turn complete', () => {
+    const p = new Profiler();
+    p.beginTurn(0);
+    p.endTurn(0, metrics);
+    assert.equal(p.getTurn(0)!.incomplete, false);
+  });
+
+  it('clamps turn duration to 0 if the wall clock steps backward mid-turn', () => {
+    const p = new Profiler();
+    const origNow = Date.now;
+    let calls = 0;
+    // beginTurn sees a later time than endTurn (backward step).
+    (Date as unknown as { now: () => number }).now = () => (calls++ === 0 ? 10_000 : 1_000);
+    try {
+      p.beginTurn(0);
+      p.endTurn(0, metrics);
+    } finally {
+      (Date as unknown as { now: () => number }).now = origNow;
+    }
+    const t = p.getTurn(0)!;
+    assert.equal(t.incomplete, false);
+    assert.ok(t.duration >= 0);
+    assert.equal(t.duration, 0);
+  });
+});
+
 describe('Profiler memory-annotated timeline', () => {
   it('builds cumulative + delta + memory rows from checkpoints', () => {
     let t = 1000;

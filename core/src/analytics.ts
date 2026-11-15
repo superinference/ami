@@ -281,6 +281,12 @@ export interface AnalyticsTrackerOpts {
    * a self-hosted collector). Merged over headers parsed from OTEL_EXPORTER_OTLP_HEADERS.
    */
   otlpHeaders?: Record<string, string>;
+  /**
+   * Extra OTLP resource attributes (e.g. deployment.environment, service.namespace)
+   * stamped onto every exported payload. Merged over attributes parsed from
+   * OTEL_RESOURCE_ATTRIBUTES, which an explicit entry here overrides.
+   */
+  otlpResourceAttrs?: Record<string, string>;
   /** Sleep + RNG injection for deterministic tests. */
   sleepImpl?: (ms: number) => Promise<void>;
   rand?: () => number;
@@ -310,6 +316,7 @@ export class AnalyticsTracker {
   private _telemetryMaxBatchBytes: number | undefined;
   private _onBatchDropped: ((eventCount: number, droppedBatchCount: number) => void) | undefined;
   private _otlpHeaders: Record<string, string>;
+  private _otlpResourceAttrs: Record<string, string>;
   private _sleep: (ms: number) => Promise<void>;
   private _rand: () => number;
   /** Serializes mid-session (onBatch) sends so concurrent boundary flushes don't interleave. */
@@ -331,6 +338,8 @@ export class AnalyticsTracker {
     this._onBatchDropped = opts?.onBatchDropped;
     // Headers from OTEL_EXPORTER_OTLP_HEADERS, overridden by any explicit opt.
     this._otlpHeaders = { ...parseOtelHeaders(this._env.OTEL_EXPORTER_OTLP_HEADERS), ...(opts?.otlpHeaders ?? {}) };
+    // Resource attrs from OTEL_RESOURCE_ATTRIBUTES, overridden by any explicit opt.
+    this._otlpResourceAttrs = { ...parseOtelResourceAttrs(this._env.OTEL_RESOURCE_ATTRIBUTES), ...(opts?.otlpResourceAttrs ?? {}) };
     this._sleep = opts?.sleepImpl ?? ((ms) => new Promise(r => setTimeout(r, ms)));
     this._rand = opts?.rand ?? Math.random;
   }
@@ -498,8 +507,9 @@ export class AnalyticsTracker {
   /** POST one batch, retrying retryable failures with capped quadratic backoff + jitter. */
   private async _sendWithRetry(batch: TelemetryBatch): Promise<boolean> {
     const headers = Object.keys(this._otlpHeaders).length > 0 ? this._otlpHeaders : undefined;
+    const resourceAttrs = this._otlpResourceAttrs;
     for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
-      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers });
+      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs });
       if (res.ok) return true;
       if (!res.retryable) return this._dropBatch(batch); // 4xx: permanent, drop
       if (attempt === this._maxAttempts) return this._dropBatch(batch);
@@ -767,6 +777,18 @@ export function parseOtelHeaders(raw: string | undefined): Record<string, string
   return out;
 }
 
+/**
+ * Parse an OTEL_RESOURCE_ATTRIBUTES-style string ("k1=v1,k2=v2") into a
+ * resource-attribute map. Shares the comma / first-'=' grammar with
+ * {@link parseOtelHeaders} (W3C-Baggage-shaped): blanks and keyless pairs are
+ * skipped, and a value may itself contain '=' (only the first '=' separates).
+ * Lets an operator stamp deployment dimensions (e.g. `deployment.environment`,
+ * `service.namespace`) onto every exported OTLP payload.
+ */
+export function parseOtelResourceAttrs(raw: string | undefined): Record<string, string> {
+  return parseOtelHeaders(raw);
+}
+
 function otlpAttrs(obj: Record<string, unknown>): Array<{ key: string; value: { stringValue: string } }> {
   const out: Array<{ key: string; value: { stringValue: string } }> = [];
   for (const [key, v] of Object.entries(obj)) {
@@ -846,17 +868,21 @@ function parseRetryAfterMs(header: string | null | undefined): number | undefine
 export async function postOtlpBatch(
   endpoint: string,
   batch: TelemetryBatch,
-  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; env?: NodeJS.ProcessEnv } = {},
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv } = {},
 ): Promise<OtlpSendResult> {
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as typeof fetch | undefined);
   if (!fetchImpl) return { ok: false, retryable: false };
+  const env = deps.env ?? process.env;
+  // Extra resource attributes: an explicit map wins; otherwise fall back to
+  // OTEL_RESOURCE_ATTRIBUTES so a direct caller honors the env knob too.
+  const resourceAttrs = deps.resourceAttrs ?? parseOtelResourceAttrs(env.OTEL_RESOURCE_ATTRIBUTES);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 5000);
   try {
     const res = await fetchImpl(otlpLogsUrl(endpoint), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(deps.headers ?? {}) },
-      body: JSON.stringify(toOtlpLogsPayload(batch, {}, deps.env ?? process.env)),
+      body: JSON.stringify(toOtlpLogsPayload(batch, resourceAttrs, env)),
       signal: controller.signal,
     });
     if (res.ok) return { ok: true, status: res.status, retryable: false };
@@ -873,7 +899,7 @@ export async function postOtlpBatch(
 export async function sendOtlpBatch(
   endpoint: string,
   batch: TelemetryBatch,
-  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; env?: NodeJS.ProcessEnv } = {},
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv } = {},
 ): Promise<boolean> {
   return (await postOtlpBatch(endpoint, batch, deps)).ok;
 }

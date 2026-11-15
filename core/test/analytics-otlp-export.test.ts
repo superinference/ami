@@ -10,7 +10,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   truncateContent, MAX_OTLP_ATTR_BYTES, shouldIncludeTelemetryAttr, buildTelemetryResourceAttrs,
-  parseOtelHeaders, toOtlpLogsPayload, AnalyticsTracker,
+  parseOtelHeaders, parseOtelResourceAttrs, toOtlpLogsPayload, postOtlpBatch, AnalyticsTracker,
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName,
   type TelemetryBatch,
 } from '../src/analytics';
@@ -132,6 +132,72 @@ describe('AnalyticsTracker OTLP headers threading', () => {
     await t.flushOtlp();
     assert.equal(seen?.['x-env'], '1');
     assert.equal(seen?.['x-explicit'], '2');
+  });
+});
+
+describe('parseOtelResourceAttrs', () => {
+  it('parses comma-separated key=value pairs', () => {
+    assert.deepEqual(parseOtelResourceAttrs('deployment.environment=prod,service.namespace=ami'),
+      { 'deployment.environment': 'prod', 'service.namespace': 'ami' });
+  });
+  it('preserves = inside a value', () => {
+    assert.deepEqual(parseOtelResourceAttrs('k=a=b'), { k: 'a=b' });
+  });
+  it('ignores blanks/malformed and undefined', () => {
+    assert.deepEqual(parseOtelResourceAttrs(' , =v, k='), { k: '' });
+    assert.deepEqual(parseOtelResourceAttrs(undefined), {});
+  });
+});
+
+describe('OTEL_RESOURCE_ATTRIBUTES threading into the OTLP payload', () => {
+  function resourceAttrsFromBody(body: string): Record<string, string> {
+    return resourceAttrMap(JSON.parse(body) as Record<string, unknown>);
+  }
+
+  it('postOtlpBatch honors OTEL_RESOURCE_ATTRIBUTES from env', async () => {
+    let body = '';
+    const fakeFetch = (async (_url: string, init: { body: string }) => {
+      body = init.body; return { ok: true, status: 200 } as Response;
+    }) as unknown as typeof fetch;
+    const batch: TelemetryBatch = { sessionId: 's', batchId: 1, events: [] };
+    await postOtlpBatch('http://h/v1/logs', batch, {
+      fetchImpl: fakeFetch,
+      env: { OTEL_RESOURCE_ATTRIBUTES: 'deployment.environment=prod' } as NodeJS.ProcessEnv,
+    });
+    assert.equal(resourceAttrsFromBody(body)['deployment.environment'], 'prod');
+  });
+
+  it('postOtlpBatch: an explicit resourceAttrs map overrides the env knob', async () => {
+    let body = '';
+    const fakeFetch = (async (_url: string, init: { body: string }) => {
+      body = init.body; return { ok: true, status: 200 } as Response;
+    }) as unknown as typeof fetch;
+    const batch: TelemetryBatch = { sessionId: 's', batchId: 1, events: [] };
+    await postOtlpBatch('http://h/v1/logs', batch, {
+      fetchImpl: fakeFetch,
+      resourceAttrs: { 'deployment.environment': 'staging' },
+      env: { OTEL_RESOURCE_ATTRIBUTES: 'deployment.environment=prod' } as NodeJS.ProcessEnv,
+    });
+    assert.equal(resourceAttrsFromBody(body)['deployment.environment'], 'staging');
+  });
+
+  it('AnalyticsTracker stamps OTEL_RESOURCE_ATTRIBUTES + explicit opt on the exported payload', async () => {
+    let body = '';
+    const fakeFetch = (async (_url: string, init: { body: string }) => {
+      body = init.body; return { ok: true, status: 200 } as Response;
+    }) as unknown as typeof fetch;
+    const t = new AnalyticsTracker(undefined, {
+      env: { OTEL_RESOURCE_ATTRIBUTES: 'deployment.environment=prod,service.namespace=env-ns' } as NodeJS.ProcessEnv,
+      otlpEndpoint: 'http://h/v1/logs',
+      otlpFetch: fakeFetch,
+      otlpResourceAttrs: { 'service.namespace': 'opt-ns' },
+    });
+    t.log('e', {});
+    await t.flushOtlp();
+    const attrs = resourceAttrsFromBody(body);
+    assert.equal(attrs['deployment.environment'], 'prod');
+    // explicit opt overrides the env-sourced value for the same key
+    assert.equal(attrs['service.namespace'], 'opt-ns');
   });
 });
 

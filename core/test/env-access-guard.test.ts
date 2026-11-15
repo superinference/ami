@@ -5,6 +5,9 @@ import {
   canAccessEnv,
   SENSITIVE_ENV_VARS,
   EnvAccessGuard,
+  classifyEnvValue,
+  classifyEnvName,
+  classifyEnvSecret,
 } from '../src/env-access-guard';
 
 describe('isSensitiveEnvVar', () => {
@@ -150,6 +153,7 @@ describe('EnvAccessGuard', () => {
       const result = guard.safeGetEnv('TEST_API_KEY');
       assert.equal(result.redacted, true);
       assert.equal(result.value, '[REDACTED]');
+      assert.equal(result.redactedAs, 'api_key');
     } finally {
       if (original === undefined) delete process.env.TEST_API_KEY;
       else process.env.TEST_API_KEY = original;
@@ -197,5 +201,172 @@ describe('EnvAccessGuard', () => {
     assert.equal(ev.callerTier, 'engine');
     assert.equal(ev.allowed, true);
     assert.equal(typeof ev.timestamp, 'number');
+  });
+});
+
+describe('isSensitiveEnvVar — broadened name coverage (gaps 1560/2581)', () => {
+  it('redacts bare TOKEN/SECRET family names the compound list missed', () => {
+    assert.equal(isSensitiveEnvVar('GITHUB_TOKEN'), true);
+    assert.equal(isSensitiveEnvVar('NPM_TOKEN'), true);
+    assert.equal(isSensitiveEnvVar('SLACK_TOKEN'), true);
+    assert.equal(isSensitiveEnvVar('NPM_SECRET'), true);
+    assert.equal(isSensitiveEnvVar('DB_SECRET'), true);
+  });
+
+  it('redacts bare KEY / PASSWD and provider-prefixed secret names', () => {
+    assert.equal(isSensitiveEnvVar('OPENAI_KEY'), true);
+    assert.equal(isSensitiveEnvVar('SSH_KEY'), true);
+    assert.equal(isSensitiveEnvVar('MYSQL_PASSWD'), true);
+    assert.equal(isSensitiveEnvVar('AWS_SECRET_ACCESS_KEY'), true);
+  });
+
+  it('still returns false for genuinely non-secret names', () => {
+    assert.equal(isSensitiveEnvVar('PATH'), false);
+    assert.equal(isSensitiveEnvVar('HOME'), false);
+    assert.equal(isSensitiveEnvVar('NODE_ENV'), false);
+    assert.equal(isSensitiveEnvVar('MONKEY_BUSINESS'), false);
+  });
+});
+
+describe('classifyEnvValue — value-shape detection (gap 129)', () => {
+  it('detects AWS access-key IDs', () => {
+    assert.equal(classifyEnvValue('AKIAIOSFODNN7EXAMPLE'), 'aws_key');
+    assert.equal(classifyEnvValue('ASIAIOSFODNN7EXAMPLE'), 'aws_key');
+  });
+
+  it('detects GCP API keys', () => {
+    assert.equal(classifyEnvValue('AIzaSyA1234567890abcdefghijklmnopqrstuv'), 'gcp_key');
+  });
+
+  it('detects GCP service-account emails', () => {
+    assert.equal(
+      classifyEnvValue('svc@my-proj.iam.gserviceaccount.com'),
+      'gcp_service_account',
+    );
+  });
+
+  it('detects Anthropic / OpenAI style keys', () => {
+    assert.equal(classifyEnvValue('sk-ant-api03-ABCDEFGHIJKLMNOPQRST'), 'api_key');
+    assert.equal(classifyEnvValue('sk-ABCDEFGHIJKLMNOPQRSTUVWX'), 'api_key');
+  });
+
+  it('detects GitHub classic and fine-grained tokens', () => {
+    assert.equal(classifyEnvValue('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 'token');
+    assert.equal(classifyEnvValue('github_pat_11ABCDE0123456789_abcdefghij'), 'token');
+  });
+
+  it('detects Slack tokens', () => {
+    assert.equal(classifyEnvValue('xoxb-1234567890-abcdefghij'), 'token');
+  });
+
+  it('detects bearer auth headers', () => {
+    assert.equal(classifyEnvValue('Bearer abcdef0123456789'), 'token');
+  });
+
+  it('detects x-api-key headers', () => {
+    assert.equal(classifyEnvValue('X-Api-Key: anything'), 'api_key');
+  });
+
+  it('returns undefined for non-secret-shaped values', () => {
+    assert.equal(classifyEnvValue('just-a-plain-string'), undefined);
+    assert.equal(classifyEnvValue(''), undefined);
+  });
+});
+
+describe('classifyEnvName — name-based classification (gap 2582)', () => {
+  it('classifies AWS, GCP, token, and api_key families', () => {
+    assert.equal(classifyEnvName('AWS_SECRET_ACCESS_KEY'), 'aws_key');
+    assert.equal(classifyEnvName('GOOGLE_API_KEY'), 'gcp_key');
+    assert.equal(classifyEnvName('GCP_CREDENTIAL'), 'gcp_key');
+    assert.equal(classifyEnvName('GITHUB_TOKEN'), 'token');
+    assert.equal(classifyEnvName('MY_API_KEY'), 'api_key');
+  });
+
+  it('falls back to generic for sensitive names without a provider/key cue', () => {
+    assert.equal(classifyEnvName('DB_PASSWORD'), 'generic');
+    assert.equal(classifyEnvName('APP_PASSPHRASE'), 'generic');
+  });
+
+  it('returns undefined for non-sensitive names', () => {
+    assert.equal(classifyEnvName('PATH'), undefined);
+  });
+});
+
+describe('classifyEnvSecret — value precedence over name', () => {
+  it('value shape wins even under an innocuous name', () => {
+    assert.equal(classifyEnvSecret('MY_CONFIG', 'sk-ant-api03-ABCDEFGHIJKLMNOP'), 'api_key');
+    assert.equal(classifyEnvSecret('X', 'AKIAIOSFODNN7EXAMPLE'), 'aws_key');
+  });
+
+  it('falls back to name classification when the value is not secret-shaped', () => {
+    assert.equal(classifyEnvSecret('GITHUB_TOKEN', 'plain-looking'), 'token');
+  });
+
+  it('classifies by name when the value is undefined', () => {
+    assert.equal(classifyEnvSecret('MY_API_KEY', undefined), 'api_key');
+  });
+
+  it('returns undefined when neither name nor value is sensitive', () => {
+    assert.equal(classifyEnvSecret('PATH', '/usr/bin'), undefined);
+  });
+});
+
+describe('EnvAccessGuard.safeGetEnv — value-shape redaction + typed labels', () => {
+  it('redacts a secret-shaped value under an innocuously-named var (gap 129)', () => {
+    const name = `TEST_INNOCENT_${process.pid}`;
+    const original = process.env[name];
+    process.env[name] = 'sk-ant-api03-ABCDEFGHIJKLMNOPQRST';
+    try {
+      const guard = new EnvAccessGuard();
+      const result = guard.safeGetEnv(name);
+      assert.equal(result.redacted, true);
+      assert.equal(result.value, '[REDACTED]');
+      assert.equal(result.redactedAs, 'api_key');
+      assert.ok(!String(result.value).includes('sk-ant'), 'secret must not leak');
+    } finally {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    }
+  });
+
+  it('classifies the redacted value by provider via redactedAs (gap 2582)', () => {
+    const name = `TEST_AWS_CFG_${process.pid}`;
+    const original = process.env[name];
+    process.env[name] = 'AKIAIOSFODNN7EXAMPLE';
+    try {
+      const guard = new EnvAccessGuard();
+      const result = guard.safeGetEnv(name);
+      assert.equal(result.value, '[REDACTED]');
+      assert.equal(result.redactedAs, 'aws_key');
+    } finally {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    }
+  });
+
+  it('redacts an absent sensitive var as undefined with a class label', () => {
+    const name = `TEST_ABSENT_TOKEN_${process.pid}`;
+    delete process.env[name];
+    const guard = new EnvAccessGuard();
+    const result = guard.safeGetEnv(name);
+    assert.equal(result.redacted, true);
+    assert.equal(result.value, undefined);
+    assert.equal(result.redactedAs, 'token');
+  });
+
+  it('passes through a non-secret value unchanged', () => {
+    const name = `TEST_PLAIN_${process.pid}`;
+    const original = process.env[name];
+    process.env[name] = 'visible-value';
+    try {
+      const guard = new EnvAccessGuard();
+      const result = guard.safeGetEnv(name);
+      assert.equal(result.redacted, false);
+      assert.equal(result.value, 'visible-value');
+      assert.equal(result.redactedAs, undefined);
+    } finally {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    }
   });
 });
