@@ -134,6 +134,24 @@ export interface McpElicitationRequest {
    * as a cancel so a request the server abandoned does not hang the UI (H08).
    */
   signal?: AbortSignal;
+  /**
+   * Elicitation mode (2025-06-18 `mode` discriminator). `'form'` (default, and
+   * when absent) collects structured field input against `requestedSchema`;
+   * `'url'` hands the user a `url` to open in a browser and runs a two-phase
+   * open→waiting lifecycle. A frontend reads this to branch its UI.
+   */
+  mode?: 'form' | 'url';
+  /** URL-mode only: the URL the server wants opened in the user's browser. */
+  url?: string;
+  /**
+   * URL-mode only: label for the proceed-without-waiting affordance during the
+   * waiting phase (e.g. 'Skip confirmation'); defaults applied by the frontend.
+   */
+  actionLabel?: string;
+  /** URL-mode only: whether to offer a visible Cancel during the waiting phase. */
+  showCancel?: boolean;
+  /** URL-mode only: set true once the server posts a completion notification. */
+  completed?: boolean;
 }
 
 export interface McpElicitationResult {
@@ -1359,6 +1377,16 @@ export class McpClient extends EventEmitter {
           ? (raw.requestedSchema as Record<string, unknown>)
           : {},
       signal: controller?.signal,
+      // Pass the URL-mode fields through (do NOT strip): a `mode:'url'` server
+      // elicitation hands off a `url` for the browser and runs a two-phase
+      // open→waiting lifecycle with an optional `actionLabel`/`showCancel` and a
+      // server-driven `completed` flag. A form-mode request simply carries none
+      // of these, so the frontend defaults to form handling.
+      ...(raw.mode === 'url' ? { mode: 'url' as const } : {}),
+      ...(typeof raw.url === 'string' ? { url: raw.url } : {}),
+      ...(typeof raw.actionLabel === 'string' ? { actionLabel: raw.actionLabel } : {}),
+      ...(raw.showCancel === true ? { showCancel: true } : {}),
+      ...(raw.completed === true ? { completed: true } : {}),
     };
     let result: McpElicitationResult;
     let serverCancelled = false;
