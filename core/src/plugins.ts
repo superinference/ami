@@ -176,6 +176,12 @@ export interface PluginBundle {
   agentsDir?: string;
   commandsDir?: string;
   hooksFile?: string;
+  /**
+   * Manifest `defaultEnabled` (Claude parity: a plugin may ship disabled-by-default).
+   * Drives the tri-state enablement fallback (managed policy > explicit user marker >
+   * `defaultEnabled` > true). `undefined` when the manifest omits it (treated as true).
+   */
+  defaultEnabled?: boolean;
 }
 
 /**
@@ -618,6 +624,7 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       name: (manifest.name as string | undefined) ?? entry,
       version: (manifest.version as string | undefined) ?? '0.0.0',
       root,
+      defaultEnabled: typeof manifest.defaultEnabled === 'boolean' ? manifest.defaultEnabled : undefined,
       skillsDir: hardenedResolve(root, 'skills'),
       agentsDir: hardenedResolve(root, 'agents'),
       commandsDir: hardenedResolve(root, 'commands'),

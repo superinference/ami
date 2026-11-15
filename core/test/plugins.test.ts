@@ -86,6 +86,18 @@ describe('discoverPlugins', () => {
     assert.ok(bundles[0]!.agentsDir!.endsWith('agents'));
   });
 
+  it('reads manifest defaultEnabled (true/false) and leaves it undefined when omitted or non-boolean', () => {
+    makePlugin('ships-disabled', { name: 'OFF', defaultEnabled: false });
+    makePlugin('ships-enabled', { name: 'ON', defaultEnabled: true });
+    makePlugin('no-default', { name: 'NONE' });
+    makePlugin('bad-default', { name: 'BAD', defaultEnabled: 'yes' });
+    const byName = new Map(discoverPlugins(tmpDir).map(b => [b.name, b]));
+    assert.equal(byName.get('OFF')!.defaultEnabled, false);
+    assert.equal(byName.get('ON')!.defaultEnabled, true);
+    assert.equal(byName.get('NONE')!.defaultEnabled, undefined);
+    assert.equal(byName.get('BAD')!.defaultEnabled, undefined);
+  });
+
   it('populates hooksFile when hooks.json exists', () => {
     makePlugin('with-hooks', { name: 'HK' }, { hooks: true });
     const bundles = discoverPlugins(tmpDir);

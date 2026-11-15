@@ -159,7 +159,7 @@ export { SAFE_ENV_VARS, isSafeEnvVar, PROVIDER_MANAGED_ENV_VARS, isProviderManag
 export type { EnvRejectReason, EnvTrustTier, SettingsEnvFilterResult } from './env-protection';
 export { isProtectedEvent, canHookEvent, PROTECTED_EVENTS, PASSTHROUGH_EVENTS, HOOK_TIERS, sortHooksByTier, isStricterVerdict, HookChainGuard } from './hook-protection';
 export type { HookTier, HookRegistration } from './hook-protection';
-export { isModAllowed, parseModId, normalizeModName, modNamesMatch, validateModId, ManagedModsEnforcer } from './managed-mods';
+export { isModAllowed, isModBlockedByPolicy, getManagedPluginNames, parseModId, normalizeModName, modNamesMatch, validateModId, ManagedModsEnforcer } from './managed-mods';
 export type { ModInfo, ManagedModsPolicy } from './managed-mods';
 export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance, PROVENANCE_TIERS } from './provenance';
 export type { ProvenanceTier, ProvenanceRecord, ProvenanceSummary } from './provenance';
