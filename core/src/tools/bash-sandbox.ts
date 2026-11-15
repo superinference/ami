@@ -10,6 +10,12 @@ export interface SandboxConfig {
   hiddenEnvVars?: string[];
   hiddenFiles?: string[];
   allowedDomains?: string[];
+  // When false/omitted (the secure default), the unshare sandbox bind-mounts
+  // /dev/null over well-known privileged daemon sockets (Docker/containerd)
+  // inside its mount namespace so a sandboxed command cannot reach them — a
+  // classic sandbox-escape vector (e.g. `curl --unix-socket /var/run/docker.sock`
+  // can launch a privileged container). Set true to opt out of that denial.
+  allowUnixSockets?: boolean;
 }
 
 export function getDefaultMemoryMB(): number {
@@ -114,15 +120,81 @@ export function buildSandboxExemptPatterns(options?: SandboxExemptionOptions): R
   return [...SANDBOX_EXEMPT_PATTERNS, ...custom];
 }
 
+/**
+ * Split a command line into its top-level subcommands on shell control
+ * operators (`&&`, `||`, `;`, `|`, `&`, newline) WITHOUT splitting inside
+ * single/double quotes. Each subcommand is evaluated independently by
+ * `shouldUseSandbox` so a compound command cannot escape the sandbox merely
+ * because ONE of its subcommands is exempt (e.g. the `curl` in
+ * `git pull && curl https://evil` must still be sandboxed even though `git` is
+ * exempt). Mirrors the per-subcommand matching the permission layer already does
+ * for command chaining.
+ */
+function splitTopLevelSubcommands(command: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    const two = command.slice(i, i + 2);
+    if (two === '&&' || two === '||') {
+      parts.push(cur);
+      cur = '';
+      i++;
+      continue;
+    }
+    if (ch === ';' || ch === '|' || ch === '&' || ch === '\n') {
+      parts.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts.map(p => p.trim()).filter(p => p.length > 0);
+}
+
+/**
+ * Strip URL arguments (`scheme://...`) from a subcommand before exemption
+ * matching. An exempt keyword appearing inside a URL/arg handed to a network
+ * trigger (e.g. `curl https://git.example.com/x` or
+ * `curl https://raw.githubusercontent.com/npm/pkg`) must NOT flip the exemption
+ * decision — only the command itself may. Attacker-influenced URLs/args can
+ * otherwise defeat the sandbox trigger.
+ */
+function stripUrlArgs(s: string): string {
+  return s.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '');
+}
+
 export function shouldUseSandbox(command: string, options?: SandboxExemptionOptions): boolean {
-  // Match exemptions on the original command so `bash -c "pytest ..."` and
-  // `python tests/runtests.py` are not wrapped. Quote-stripping hides the
-  // inner command and leaves `bash -c`, which is a sandbox trigger.
   const exemptPatterns = buildSandboxExemptPatterns(options);
-  if (exemptPatterns.some(p => p.test(command))) return false;
-  const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
-  if (exemptPatterns.some(p => p.test(stripped))) return false;
-  return SANDBOX_TRIGGER_PATTERNS.some(p => p.test(stripped));
+  // Evaluate each top-level subcommand independently. A compound command is
+  // sandboxed if ANY of its subcommands is a trigger that is not itself exempt,
+  // so an exempt subcommand (git/npm/test-runner) can never suppress the
+  // sandbox for a sibling trigger subcommand (the compound-escape vector).
+  for (const sub of splitTopLevelSubcommands(command)) {
+    // Exemption matches on the subcommand with URL args removed, so an exempt
+    // keyword inside a trigger's URL cannot exempt it. Quotes are KEPT here so
+    // test runners hidden in a quoted argument (`bash -c "pytest ..."`,
+    // `python tests/runtests.py`) remain exempt — AMI's deliberate superset.
+    const forExempt = stripUrlArgs(sub);
+    if (exemptPatterns.some(p => p.test(forExempt))) continue;
+    // Triggers match on the quote-stripped subcommand so trigger text inside
+    // quotes (`echo "curl is a tool"`) does not force the sandbox.
+    const stripped = sub.replace(/"[^"]*"|'[^']*'/g, '');
+    if (SANDBOX_TRIGGER_PATTERNS.some(p => p.test(stripped))) return true;
+  }
+  return false;
 }
 
 export function wrapWithSandbox(
@@ -162,11 +234,12 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
   const escapedCwd = cwd.replace(/'/g, "'\\''");
   const mounts = buildReadOnlyMounts(cfg);
   const credentialScrub = buildCredentialScrub(cfg);
+  const socketDenial = buildSocketDenial(cfg);
   const networkRules =
     !cfg.allowNetwork && hasAllowedDomains
       ? buildNetworkAllowlist(cfg.allowedDomains!)
       : '';
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${credentialScrub}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${credentialScrub}${socketDenial}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
 }
 
 /**
@@ -204,6 +277,37 @@ export function buildCredentialScrub(cfg: SandboxConfig): string {
     }
   }
   return cmds;
+}
+
+/**
+ * Unix-domain sockets that grant control of a privileged host daemon and are a
+ * well-known sandbox-escape vector: a sandboxed command that can talk to the
+ * Docker/containerd socket can launch a privileged container and break out
+ * entirely (`curl --unix-socket /var/run/docker.sock ...`). The auto-sandbox
+ * only wraps network/exec triggers (curl, wget, interpreters), which never
+ * legitimately need these sockets, so by default we bind /dev/null over them
+ * inside the private mount namespace. The denial is confined to the sandbox's
+ * own namespace and never affects the host.
+ */
+const DEFAULT_DENIED_SOCKETS = [
+  '/var/run/docker.sock',
+  '/run/docker.sock',
+  '/var/run/containerd/containerd.sock',
+  '/run/containerd/containerd.sock',
+];
+
+/**
+ * Build shell commands that bind /dev/null over privileged daemon sockets so a
+ * sandboxed command cannot connect to them. Returns '' when the operator has
+ * opted out via `allowUnixSockets`. Each bind is best-effort (`2>/dev/null`) so
+ * a socket that does not exist on this host is silently skipped. Reuses the same
+ * /dev/null-bind technique as the credential file-hiding path.
+ */
+export function buildSocketDenial(cfg: SandboxConfig): string {
+  if (cfg.allowUnixSockets) return '';
+  return DEFAULT_DENIED_SOCKETS.map(
+    s => `mount --bind /dev/null '${s}' 2>/dev/null; `,
+  ).join('');
 }
 
 /**
