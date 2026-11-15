@@ -26,6 +26,7 @@ export interface SkillDefinition {
   allowedTools?: string[]; // Restrict which tools this skill can use
   disallowedTools?: string[]; // Tools to exclude (blacklist, applied after allowedTools)
   argumentHint?: string;  // Hint text for the argument (e.g., "<file-path>")
+  argumentNames?: string[]; // Declared positional argument names (frontmatter `arguments`), bound to $name placeholders
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
   effort?: string;         // Thinking effort level for sub-engine (e.g., "low", "medium", "high")
@@ -165,4 +166,173 @@ export function validateSkillArgs(args: Record<string, string>): { valid: boolea
   }
 
   return { valid: true, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// Frontmatter value coercion & validation — hardening helpers that keep a
+// malformed/injected SKILL.md or agent .md from crashing the loader or silently
+// widening a tool allowlist. These are pure building blocks; the SkillManager
+// (common/) wires them into parseSkillFile / parseAgentFile. They mirror the
+// arg-safety helpers above: validate at the boundary, never trust YAML shape.
+// ---------------------------------------------------------------------------
+
+/**
+ * Coerce a raw frontmatter `description` value into a safe, trimmed string.
+ *
+ * A YAML `description:` can parse to anything — a string, a number, a boolean,
+ * or (for malformed/injected frontmatter) an array or object. Consumers that
+ * call `.trim()` directly throw on a non-string value. This returns:
+ *   - the trimmed string for a non-empty string,
+ *   - `String(value)` for a finite number or a boolean,
+ *   - `null` for everything else (empty/whitespace string, array, object,
+ *     `null`/`undefined`, `NaN`/`Infinity`) so the caller can warn + skip.
+ */
+export function coerceDescriptionToString(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : null;
+  }
+  if (typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
+}
+
+/**
+ * The named thinking-effort levels a skill/agent may request for its sub-engine,
+ * in ascending order. A bare non-negative integer is also accepted (raw token
+ * budget) — see {@link parseEffort}.
+ */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/**
+ * Validate + normalize a raw frontmatter `effort` value against the allowlist.
+ * Returns the canonical lower-cased level name, or the decimal string of a
+ * non-negative integer, or `undefined` when the value is unrecognized — so an
+ * arbitrary/injected effort can never silently propagate into sub-engine config.
+ */
+export function parseEffort(value: unknown): string | undefined {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 0 ? String(value) : undefined;
+  }
+  if (typeof value === 'string') {
+    const t = value.trim().toLowerCase();
+    if ((EFFORT_LEVELS as readonly string[]).includes(t)) return t;
+    if (/^\d+$/.test(t)) return t;
+    return undefined;
+  }
+  return undefined;
+}
+
+/** True when `value` is an accepted effort level or non-negative integer. */
+export function isValidEffort(value: unknown): boolean {
+  return parseEffort(value) !== undefined;
+}
+
+/**
+ * Parse a frontmatter `arguments` field into an ordered list of positional
+ * argument names (bound to bare `$name` placeholders by the content resolver).
+ *
+ * Accepts a single string (split on commas/whitespace) or a string array.
+ * Empty, whitespace-only, and numeric-only names are dropped (numeric names
+ * would collide with `$1`/`$2` positional tokens); names are de-duplicated,
+ * length-capped at {@link MAX_SKILL_ARG_NAME_LENGTH}, and count-capped at
+ * {@link MAX_SKILL_ARG_NAMES}. Any other value type yields `[]`.
+ */
+export function parseArgumentNames(value: unknown): string[] {
+  let raw: string[];
+  if (typeof value === 'string') {
+    raw = value.split(/[,\s]+/);
+  } else if (Array.isArray(value)) {
+    raw = value.map((v) => (typeof v === 'string' ? v : String(v)));
+  } else {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const entry of raw) {
+    const name = entry.trim();
+    if (name.length === 0) continue;       // skip empty / whitespace-only
+    if (/^\d+$/.test(name)) continue;      // skip numeric-only (collides with $1,$2…)
+    if (name.length > MAX_SKILL_ARG_NAME_LENGTH) continue;
+    if (seen.has(name)) continue;          // de-duplicate
+    seen.add(name);
+    names.push(name);
+    if (names.length >= MAX_SKILL_ARG_NAMES) break;
+  }
+  return names;
+}
+
+/** The permission-mode values an agent definition may declare. */
+export const AGENT_PERMISSION_MODES = ['auto-allow', 'ask', 'deny-all'] as const;
+
+/** Structured outcome of validating an agent definition. */
+export interface AgentValidationResult {
+  valid: boolean;      // no hard errors (the definition is loadable)
+  errors: string[];    // reasons the definition must be rejected
+  warnings: string[];  // non-fatal issues the author should see
+}
+
+/**
+ * Validate a (possibly partial / untrusted) agent definition, surfacing
+ * structured errors + warnings instead of silently dropping or mis-loading it.
+ *
+ * Hard errors (→ `valid: false`): a missing/empty `name`, or a missing/empty
+ * `systemPrompt` body.
+ *
+ * Warnings (non-fatal): an invalid `permissionMode`; a `model` not in
+ * `opts.knownModels` (when provided); and any entry of `tools` / `disallowedTools`
+ * not in `opts.knownTools` (when provided) — a typo'd tool name would otherwise
+ * silently widen or misconfigure the allowlist that constrains what the subagent
+ * may execute. Tool/model allowlists are optional so this stays a pure core
+ * building block: the caller (common/) supplies the live tool + model sets.
+ */
+export function validateAgentDefinition(
+  raw: Partial<AgentDefinition>,
+  opts?: { knownTools?: readonly string[]; knownModels?: readonly string[] },
+): AgentValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (typeof raw.name !== 'string' || raw.name.trim().length === 0) {
+    errors.push('Agent definition is missing a name');
+  }
+  if (typeof raw.systemPrompt !== 'string' || raw.systemPrompt.trim().length === 0) {
+    errors.push('Agent definition has an empty body (system prompt)');
+  }
+
+  if (
+    raw.permissionMode !== undefined &&
+    !(AGENT_PERMISSION_MODES as readonly string[]).includes(raw.permissionMode)
+  ) {
+    warnings.push(
+      `Unknown permission mode "${raw.permissionMode}" (valid: ${AGENT_PERMISSION_MODES.join(', ')})`,
+    );
+  }
+
+  if (
+    opts?.knownModels &&
+    raw.model !== undefined &&
+    raw.model !== 'inherit' &&
+    !opts.knownModels.includes(raw.model)
+  ) {
+    warnings.push(`Unknown model "${raw.model}"`);
+  }
+
+  if (opts?.knownTools) {
+    const known = new Set(opts.knownTools);
+    for (const tool of raw.tools ?? []) {
+      if (!known.has(tool)) warnings.push(`Unknown tool in allowlist: "${tool}"`);
+    }
+    for (const tool of raw.disallowedTools ?? []) {
+      if (!known.has(tool)) warnings.push(`Unknown tool in disallowed list: "${tool}"`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
 }
