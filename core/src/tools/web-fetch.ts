@@ -158,19 +158,28 @@ export const webFetchTool: ToolDefinition = {
       };
     }
 
-    // Strip credentials from URL before including in output to prevent leaking
-    // user:password into the LLM conversation context.
+    // Strip credentials from the URL before it is used anywhere: not only to keep
+    // user:password out of the LLM conversation context, but so the credentials are
+    // never transmitted on the wire (Node turns a userinfo-bearing URL into a Basic
+    // Authorization header). We fetch, cache, validate, and display the stripped URL.
     let sanitizedUrl = url;
     if (parsedUrl.username || parsedUrl.password) {
       parsedUrl.username = '';
       parsedUrl.password = '';
       sanitizedUrl = parsedUrl.toString();
+      url = sanitizedUrl;
     }
 
     // Domain filtering
     const allowedDomains = input.allowed_domains as string[] | undefined;
     const blockedDomains = input.blocked_domains as string[] | undefined;
     const host = parsedUrl.hostname;
+
+    // Contradictory filters are almost always a mistake and the intent is ambiguous
+    // (allow-list and deny-list at once). Reject rather than silently pick one.
+    if (allowedDomains && allowedDomains.length > 0 && blockedDomains && blockedDomains.length > 0) {
+      return { output: 'Error: Cannot specify both allowed_domains and blocked_domains in the same request.', isError: true };
+    }
 
     if (allowedDomains && allowedDomains.length > 0) {
       if (!allowedDomains.some(d => host === d || host.endsWith('.' + d))) {
@@ -232,11 +241,31 @@ export const webFetchTool: ToolDefinition = {
         };
       }
 
-      // Cross-host redirect detection
-      const originalHost = new URL(url).hostname;
-      const finalHost = new URL(finalUrl).hostname;
-      if (originalHost !== finalHost) {
-        return { output: `Redirect detected: ${sanitizedUrl} → ${finalUrl}\nThe URL redirected to a different host. Re-fetch with the new URL if needed.` };
+      // Redirect-boundary detection. A redirect that crosses an origin boundary
+      // (host, protocol-downgrade, or port) is surfaced for re-approval instead of
+      // transparently returning content fetched from somewhere the caller did not
+      // ask for. Hostnames are www-normalized so a bare `www.` add/remove on the
+      // same registrable host is treated as the same origin and the content is kept.
+      const originalUrl = new URL(url);
+      const finalParsed = new URL(finalUrl);
+      const normHost = (h: string): string => h.replace(/^www\./i, '');
+      const effectivePort = (u: URL): string =>
+        u.port || (u.protocol === 'https:' ? '443' : u.protocol === 'http:' ? '80' : '');
+      const hostChanged = normHost(originalUrl.hostname) !== normHost(finalParsed.hostname);
+      const protocolDowngrade = originalUrl.protocol === 'https:' && finalParsed.protocol === 'http:';
+      const portChanged = effectivePort(originalUrl) !== effectivePort(finalParsed);
+      if (hostChanged || protocolDowngrade || portChanged) {
+        const reason = hostChanged
+          ? 'a different host'
+          : protocolDowngrade
+            ? 'an insecure (http) protocol'
+            : 'a different port';
+        const refetch = prompt
+          ? `Re-fetch with url="${finalUrl}" and the same prompt="${prompt}" if you still want this content.`
+          : `Re-fetch with url="${finalUrl}" if you still want this content.`;
+        return {
+          output: `Redirect detected: ${sanitizedUrl} → ${finalUrl}\nThe URL redirected to ${reason}; the fetched content was not returned. ${refetch}`,
+        };
       }
 
       // Handle PDF responses — extract text from the PDF
@@ -339,10 +368,13 @@ export const webFetchTool: ToolDefinition = {
       // Apply prompt to content via LLM summarization (like Claude's applyPromptToMarkdown)
       if (input.prompt && typeof input.prompt === 'string' && context._engineFactory) {
         try {
+          // The summarizer processes UNTRUSTED fetched page content. It only needs to
+          // emit text, so it runs under deny-all: a prompt-injection payload in the
+          // page cannot coerce it into executing a tool (it never gets auto-allowed).
           const summarizeEngine = context._engineFactory({
             provider: context._providerConfig!,
             cwd: context.cwd,
-            permissionMode: 'auto-allow',
+            permissionMode: 'deny-all',
             maxTurns: 1,
             tokenBudget: 8000,
           });
