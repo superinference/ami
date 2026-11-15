@@ -5,12 +5,66 @@ import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout } from '../tools/mcp-tool';
+import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
 import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
+
+/** Read a positive-int env override, else the default. */
+function envPositiveInt(name: string, fallback: number): number {
+  const env = process.env[name];
+  if (env) {
+    const n = parseInt(env, 10);
+    if (!Number.isNaN(n) && n > 0) return n;
+  }
+  return fallback;
+}
+
+/** Bounded-concurrency ceiling for connecting LOCAL (stdio/container) MCP servers. */
+export function getMcpConnectionBatchSize(): number {
+  return envPositiveInt('SUPERINFERENCE_MCP_SERVER_CONNECTION_BATCH_SIZE', 3);
+}
+
+/** Bounded-concurrency ceiling for connecting REMOTE (http/sse) MCP servers. */
+export function getMcpRemoteConnectionBatchSize(): number {
+  return envPositiveInt('SUPERINFERENCE_MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE', 20);
+}
+
+/**
+ * The OAuth loopback callback port pinned via `MCP_OAUTH_CALLBACK_PORT`
+ * (Claude-parity env knob), or undefined when unset. When set, the redirect URI
+ * uses this fixed port (no dynamic discovery) so users behind a firewall can
+ * allow-list a stable callback port.
+ */
+export function getConfiguredOAuthCallbackPort(): number | undefined {
+  const env = process.env.MCP_OAUTH_CALLBACK_PORT;
+  if (!env) return undefined;
+  const n = parseInt(env, 10);
+  return !Number.isNaN(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight at once (a minimal
+ * pMap). Preserves no ordering guarantee beyond each worker settling; never
+ * rejects (workers are expected to capture their own errors).
+ */
+export async function runBoundedPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  if (items.length === 0) return;
+  const ceiling = Math.max(1, limit);
+  let cursor = 0;
+  const runners: Promise<void>[] = [];
+  const pump = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const item = items[cursor++];
+      await worker(item);
+    }
+  };
+  for (let i = 0; i < Math.min(ceiling, items.length); i++) runners.push(pump());
+  await Promise.all(runners);
+}
 
 const DEFAULT_MCP_DESCRIPTION_LENGTH = 2048;
 function getMcpMaxDescriptionLength(): number {
@@ -58,6 +112,106 @@ export function normalizeMcpUrl(raw: string): string | null {
 }
 
 /**
+ * A structured MCP allow/deny policy entry (parity with Claude's
+ * allowed/deniedMcpServers): match a server by its name, by its full stdio
+ * command array (`[command, ...args]`, exact), or by upstream URL (exact or a
+ * `*`-wildcard like `https://*.example.com/*`). A bare string is shorthand: a URL
+ * if it parses as one (exact), otherwise a server name; either may contain `*`
+ * to become a wildcard pattern. This supersets AMI's previous name/exact-URL-only
+ * denylist — enabling an admin to deny e.g. `npx -y evil-pkg` regardless of the
+ * server's local name, or a whole subdomain/port family of a blocked host.
+ */
+export type McpPolicyEntry =
+  | string
+  | { serverName: string }
+  | { serverCommand: string[] }
+  | { serverUrl: string };
+
+/**
+ * Compile a `*`-wildcard pattern into an anchored RegExp where `*` matches any
+ * run of characters and every other character is matched literally. Anchored at
+ * both ends so a pattern can never match unintended substrings (no unanchored
+ * regex). Used for URL and server-name wildcard policy entries.
+ */
+export function wildcardToRegExp(pattern: string): RegExp {
+  const NUL = '\u0000';
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === '*' ? NUL : `\\${c}`))
+    .split(NUL)
+    .join('.*');
+  return new RegExp('^' + escaped + '$');
+}
+
+/** Internal compiled form of an allow/deny policy (see {@link McpPolicyEntry}). */
+interface CompiledMcpPolicy {
+  /** When true, server-name matching is case-insensitive (denylist); the allowlist
+   *  stays case-sensitive to preserve its established semantics. */
+  ci: boolean;
+  names: Set<string>;        // exact server names (lower-cased iff ci)
+  namePatterns: RegExp[];    // name wildcard patterns (lower-cased iff ci)
+  urls: Set<string>;         // exact, normalized upstream URLs
+  urlPatterns: RegExp[];     // URL wildcard patterns (matched against raw url)
+  commands: string[][];      // full stdio command arrays (exact match)
+}
+
+function compileMcpPolicy(entries: readonly McpPolicyEntry[], opts?: { caseInsensitiveNames?: boolean }): CompiledMcpPolicy {
+  const ci = opts?.caseInsensitiveNames === true;
+  const foldName = (n: string): string => (ci ? n.toLowerCase() : n);
+  const p: CompiledMcpPolicy = { ci, names: new Set(), namePatterns: [], urls: new Set(), urlPatterns: [], commands: [] };
+  const addName = (n: string): void => {
+    const trimmed = n.trim();
+    if (trimmed.includes('*')) p.namePatterns.push(wildcardToRegExp(foldName(trimmed)));
+    else p.names.add(foldName(trimmed));
+  };
+  for (const e of entries || []) {
+    if (!e) continue;
+    if (typeof e === 'string') {
+      const s = e.trim();
+      if (!s) continue;
+      if (s.includes('*')) {
+        if (/:\/\//.test(s)) p.urlPatterns.push(wildcardToRegExp(s));
+        else p.namePatterns.push(wildcardToRegExp(foldName(s)));
+      } else {
+        const norm = normalizeMcpUrl(s);
+        if (norm) p.urls.add(norm);
+        else p.names.add(foldName(s));
+      }
+      continue;
+    }
+    if ('serverName' in e && typeof e.serverName === 'string' && e.serverName) {
+      addName(e.serverName);
+    } else if ('serverCommand' in e && Array.isArray(e.serverCommand)) {
+      p.commands.push(e.serverCommand.map(String));
+    } else if ('serverUrl' in e && typeof e.serverUrl === 'string' && e.serverUrl) {
+      if (e.serverUrl.includes('*')) p.urlPatterns.push(wildcardToRegExp(e.serverUrl));
+      else { const norm = normalizeMcpUrl(e.serverUrl); if (norm) p.urls.add(norm); }
+    }
+  }
+  return p;
+}
+
+/** Config fields a policy can match against (name is passed separately). */
+interface McpPolicyTarget { url?: string; command?: string; args?: string[] }
+
+/** True when `name`/`config` matches any entry in the compiled policy. */
+function matchMcpPolicy(policy: CompiledMcpPolicy, name: string, config?: McpPolicyTarget): boolean {
+  const candidate = policy.ci ? name.trim().toLowerCase() : name.trim();
+  if (policy.names.has(candidate)) return true;
+  if (policy.namePatterns.some((re) => re.test(candidate))) return true;
+  if (config?.url) {
+    const raw = config.url.trim();
+    const norm = normalizeMcpUrl(raw);
+    if (norm && policy.urls.has(norm)) return true;
+    if (policy.urlPatterns.some((re) => re.test(raw) || (norm !== null && re.test(norm)))) return true;
+  }
+  if (config?.command && policy.commands.length > 0) {
+    const actual = [config.command, ...(config.args ?? [])];
+    if (policy.commands.some((c) => c.length === actual.length && c.every((x, i) => x === actual[i]))) return true;
+  }
+  return false;
+}
+
+/**
  * A non-transient connect failure that looks like an MCP protocol handshake
  * failure — typically an older/non-compliant server that dies or errors on the
  * `initialize` exchange for the current protocol version (M3). We do NOT attempt
@@ -78,6 +232,18 @@ export function handshakeError(name: string, err: unknown): Error {
     `This is often an older or non-compliant MCP server that does not support this protocol version — ` +
     `update it or use a server compatible with MCP ${MCP_PROTOCOL_VERSION}. Original error: ${msg}`,
   );
+}
+
+/**
+ * True when a connect failure is an authentication/authorization problem rather
+ * than a generic error — an OAuth-protected server whose consent is required or
+ * unavailable (headless), or an HTTP 401/403. Lets the manager surface a distinct
+ * `needs-auth` state ("click to authenticate") instead of a hard `error`, matching
+ * Claude Code's dedicated needs-auth connection state.
+ */
+export function isAuthRequiredError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /OAuth consent|requires an interactive frontend|\b401\b|\b403\b|unauthorized|authorization failed|needs? auth|WWW-Authenticate/i.test(msg);
 }
 
 export function isTransientConnectError(err: unknown): boolean {
@@ -121,7 +287,7 @@ export interface McpServerConfig {
   oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; scope?: string };
 }
 
-export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled'] as const;
+export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled', 'needs-auth'] as const;
 export type McpServerState = (typeof MCP_SERVER_STATES)[number];
 
 export interface McpServerStatus {
@@ -130,9 +296,17 @@ export interface McpServerStatus {
   serverInfo: { name: string; version: string } | null;
   toolCount: number;
   resourceCount: number;
+  /** Count of MCP prompts (server "commands") the server exposes. */
+  promptCount?: number;
   uptime: number | null;
   imageAvailable?: boolean;
   containerBacked?: boolean;
+  /**
+   * Authentication status for a remote (sse/http) server: true when it holds a
+   * working session (connected/ready with tools) — mirrors Claude's auth badge.
+   * `undefined` for stdio servers (not auth-scoped) and non-ready remotes.
+   */
+  isAuthenticated?: boolean;
   error?: string;
 }
 
@@ -236,10 +410,24 @@ export class McpManager extends EventEmitter {
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Per-server count of consecutive failed reconnect attempts (for backoff). */
   private reconnectAttempts = new Map<string, number>();
+  /**
+   * Names currently being torn down intentionally (stop/remove/disconnectAll), so
+   * the transport 'close' handler does NOT auto-reconnect a server the user just
+   * stopped. Cleared when the server (re)connects.
+   */
+  private _intentionalDisconnect = new Set<string>();
   private pendingServers = new Map<string, PendingServerInfo>();
   private serverErrors = new Map<string, string>();
   /** Per-server non-fatal config diagnostics (e.g. unset referenced env vars) — H35. */
   private _configWarnings = new Map<string, string[]>();
+  /**
+   * Per-server schema/shape validation errors — a server entry that is malformed
+   * (wrong-typed `args`/`env`, unknown transport, non-object) or that threw while
+   * loading. Such an entry is SKIPPED individually (per-server isolation) instead
+   * of aborting the whole file or being silently cast + passed through. Surfaced
+   * via {@link getConfigValidationErrors} for a /mcp diagnostics view.
+   */
+  private _configValidationErrors = new Map<string, string>();
   /**
    * Per-file FATAL config diagnostics — a config file that exists but could not be
    * parsed (invalid JSON). Keyed by the config file path. A MISSING file is NOT an
@@ -261,12 +449,11 @@ export class McpManager extends EventEmitter {
   _idleTimeoutMs = 30 * 60 * 1000;
   private _idleCheckTimer: ReturnType<typeof setInterval> | null = null;
 
-  private _allowedServers: Set<string> | null = null;
+  /** Compiled allowlist policy (null = unset = allow all). */
+  private _allowedPolicy: CompiledMcpPolicy | null = null;
   private _deniedServers: string[] = [];
-  /** Denylist entries resolved to lowercased server names. */
-  private _deniedServerNames: Set<string> = new Set();
-  /** Denylist entries resolved to normalized upstream URLs. */
-  private _deniedServerUrls: Set<string> = new Set();
+  /** Compiled denylist policy (name/URL/wildcard/command-array). */
+  private _deniedPolicy: CompiledMcpPolicy = compileMcpPolicy([], { caseInsensitiveNames: true });
 
   // Container-runtime hooks. Default to the real implementations; overridable in
   // tests so the auto-pull decision path can be driven deterministically without a
@@ -325,22 +512,29 @@ export class McpManager extends EventEmitter {
     this.rootPaths = paths;
   }
 
-  setAllowedServers(serverNames: string[]): void {
-    this._allowedServers = new Set(serverNames);
+  /**
+   * Configure the allowlist. Accepts plain names (back-compat) or structured
+   * {@link McpPolicyEntry} entries (name/command-array/URL, with `*` wildcards) so
+   * an allowlist can match by command or URL pattern, not just name. A non-null
+   * (even empty) list switches to default-closed; `null` is never set here, so an
+   * empty list blocks everything (unchanged semantics).
+   */
+  setAllowedServers(entries: McpPolicyEntry[]): void {
+    this._allowedPolicy = compileMcpPolicy(entries);
     this._deniedServers = [];
   }
 
-  isServerAllowed(serverName: string): boolean {
-    if (this._allowedServers === null) return true;
-    return this._allowedServers.has(serverName);
+  isServerAllowed(serverName: string, config?: McpPolicyTarget): boolean {
+    if (this._allowedPolicy === null) return true;
+    return matchMcpPolicy(this._allowedPolicy, serverName, config);
   }
 
   getDeniedServers(): string[] {
     return [...this._deniedServers];
   }
 
-  private enforceAllowlist(name: string): void {
-    if (this._allowedServers !== null && !this._allowedServers.has(name)) {
+  private enforceAllowlist(name: string, config?: McpPolicyTarget): void {
+    if (this._allowedPolicy !== null && !matchMcpPolicy(this._allowedPolicy, name, config)) {
       if (!this._deniedServers.includes(name)) {
         this._deniedServers.push(name);
       }
@@ -349,22 +543,17 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Configure servers to deny by name and/or normalized upstream URL (S9).
-   * Default-open: an empty list blocks nothing. An entry that parses as a URL is
-   * matched against each server's normalized `config.url` (origin + path, host
-   * lower-cased, trailing slash stripped) so two differently-named servers that
-   * point at the same upstream are both blocked; any other entry matches the
-   * server name (case-insensitive).
+   * Configure servers to deny by name, normalized/wildcard upstream URL, or full
+   * stdio command array (S9 + Claude allow/deny parity). Default-open: an empty
+   * list blocks nothing. A plain-string entry is a name or exact URL (as before);
+   * a `*`-bearing string is a URL wildcard (if it looks like a URL) or a name
+   * wildcard; a structured entry targets `serverName`/`serverCommand`/`serverUrl`.
+   * So two differently-named servers at the same upstream are both blocked, a
+   * whole subdomain family can be denied via `https://*.evil.com/*`, and a stdio
+   * server can be blocked by its command regardless of its local name.
    */
-  setDeniedServerList(entries: string[]): void {
-    this._deniedServerNames = new Set();
-    this._deniedServerUrls = new Set();
-    for (const e of entries || []) {
-      if (!e || typeof e !== 'string') continue;
-      const norm = normalizeMcpUrl(e);
-      if (norm) this._deniedServerUrls.add(norm);
-      else this._deniedServerNames.add(e.trim().toLowerCase());
-    }
+  setDeniedServerList(entries: McpPolicyEntry[]): void {
+    this._deniedPolicy = compileMcpPolicy(entries, { caseInsensitiveNames: true });
   }
 
   /**
@@ -391,18 +580,26 @@ export class McpManager extends EventEmitter {
     return [...this._configErrors.values()];
   }
 
-  /** True when a server should be blocked by the denylist (by name or URL). */
-  isServerDenied(name: string, config?: { url?: string }): boolean {
-    if (this._deniedServerNames.has(name.trim().toLowerCase())) return true;
-    const u = config?.url ? normalizeMcpUrl(config.url) : null;
-    return u !== null && this._deniedServerUrls.has(u);
+  /**
+   * Per-server config validation errors (malformed/skipped server entries), as a
+   * `{ serverName: message }` map for a /mcp diagnostics view. An entry here was
+   * NOT registered (skipped) because its shape was invalid.
+   */
+  getConfigValidationErrors(): Record<string, string> {
+    return Object.fromEntries(this._configValidationErrors);
+  }
+
+  /** True when a server should be blocked by the denylist (by name, URL, URL
+   *  wildcard, or stdio command array). */
+  isServerDenied(name: string, config?: McpPolicyTarget): boolean {
+    return matchMcpPolicy(this._deniedPolicy, name, config);
   }
 
   addServer(name: string, config: McpServerConfig): void {
     if (this.isServerDenied(name, config)) {
       throw new Error(`MCP server "${name}" is blocked by the denied-servers list`);
     }
-    this.enforceAllowlist(name);
+    this.enforceAllowlist(name, config);
     if (this.clients.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
     }
@@ -432,6 +629,7 @@ export class McpManager extends EventEmitter {
     let oauth: McpOAuthProvider | undefined;
     if (config.oauth && (config.transport === 'http' || config.transport === 'sse') && config.url) {
       const configuredRedirect = config.oauth.redirectUri;
+      const envCallbackPort = getConfiguredOAuthCallbackPort();
       // Persist tokens per server so authentication survives restarts (H22/H45).
       const tokenStore = new FileOAuthTokenStore(
         path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(name)),
@@ -447,10 +645,12 @@ export class McpManager extends EventEmitter {
           this.emit('oauth-authorization-url', name, params.authorizationUrl);
           return this._oauthAuthorizer(params);
         },
-        // Static fallback; when no redirect URI is configured we discover an
-        // available loopback port at consent time so a busy port never wedges auth.
-        redirectUri: configuredRedirect ?? buildRedirectUri(DEFAULT_OAUTH_CALLBACK_PORT),
-        resolveRedirectUri: configuredRedirect
+        // Port precedence: an explicit config redirectUri wins; else a pinned
+        // MCP_OAUTH_CALLBACK_PORT env knob (fixed, firewall-friendly); else a
+        // dynamically-discovered free loopback port at consent time so a busy port
+        // never wedges auth.
+        redirectUri: configuredRedirect ?? buildRedirectUri(envCallbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT),
+        resolveRedirectUri: (configuredRedirect || envCallbackPort)
           ? undefined
           : async () => buildRedirectUri(await findAvailablePort()),
         clientId: config.oauth.clientId,
@@ -471,7 +671,21 @@ export class McpManager extends EventEmitter {
     });
 
     client.on('error', (err) => this.emit('server-error', name, err));
-    client.on('close', (code, uptimeMs) => this.emit('server-close', name, code, uptimeMs));
+    client.on('close', (code, uptimeMs) => {
+      this.emit('server-close', name, code, uptimeMs);
+      // Close-triggered auto-reconnect for REMOTE (http/sse) transports: a dropped
+      // network stream should recover immediately, not wait for the next 30s
+      // health-check ping (which skips non-ready clients). Guarded so an intentional
+      // teardown (stop/remove/disable) or a replaced client never reconnects.
+      const t = this.configs.get(name)?.transport;
+      if ((t === 'http' || t === 'sse')
+        && !this._intentionalDisconnect.has(name)
+        && this.clients.get(name) === client
+        && !this.isDisabled(name)) {
+        coreLog('mcp', `remote MCP '${name}' transport closed, scheduling reconnect`);
+        this.scheduleReconnect(name);
+      }
+    });
     client.on('ready', () => this.emit('server-ready', name));
     client.on('notification', (method: string, params: unknown) => this.emit('notification', name, method, params));
 
@@ -521,11 +735,14 @@ export class McpManager extends EventEmitter {
         ? this._samplingHandler(name, request)
         : Promise.reject(new Error(`sampling not supported (no handler) for server '${name}'`));
 
+    // A freshly (re)registered client is a live server again — clear any stale
+    // intentional-teardown marker so its transport closes auto-reconnect normally.
+    this._intentionalDisconnect.delete(name);
     this.clients.set(name, client);
   }
 
   addPendingServer(name: string, config: McpServerConfig, opts?: { needsApproval?: boolean }): void {
-    this.enforceAllowlist(name);
+    this.enforceAllowlist(name, config);
     if (this.clients.has(name) || this.pendingServers.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
     }
@@ -642,7 +859,13 @@ export class McpManager extends EventEmitter {
       coreLog('mcp', `MCP server connected on-demand: ${name} (${this.getToolsForServer(name).length} tools)`);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      pending.state = 'error';
+      // Distinguish "needs authentication" from a hard error: an OAuth-protected
+      // server whose consent is required/unavailable gets the recoverable
+      // `needs-auth` state (surfaced for a "click to authenticate" affordance),
+      // not `error` — Claude-parity for its dedicated needs-auth connection state.
+      const authNeeded = isAuthRequiredError(err) || this._lastAuthUrls.has(name);
+      const newState: McpServerState = authNeeded ? 'needs-auth' : 'error';
+      pending.state = newState;
       pending.error = errMsg;
       this.serverErrors.set(name, errMsg);
       this.pendingServers.set(name, pending);
@@ -650,7 +873,7 @@ export class McpManager extends EventEmitter {
         this.clients.get(name)!.disconnect();
         this.clients.delete(name);
       }
-      this.emit('server-state-changed', name, 'error');
+      this.emit('server-state-changed', name, newState);
       coreLog('mcp', `on-demand connect failed for ${name}: ${errMsg}`);
       throw err;
     }
@@ -659,6 +882,8 @@ export class McpManager extends EventEmitter {
   async stopServer(name: string, disable?: boolean): Promise<void> {
     const client = this.clients.get(name);
     if (client) {
+      // Mark intentional so the close handler does not auto-reconnect a stopped server.
+      this._intentionalDisconnect.add(name);
       client.disconnect();
       this.clients.delete(name);
       this.invalidateToolCache(name);
@@ -744,7 +969,15 @@ export class McpManager extends EventEmitter {
         error: info.error || this.serverErrors.get(name),
       });
     }
-    return result;
+    // Deterministic alphabetical order regardless of Map insertion order so the
+    // /mcp listing is stable (Claude-parity).
+    return result.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** Authentication status for a remote (sse/http) server; undefined otherwise. */
+  private deriveIsAuthenticated(config: McpServerConfig | undefined, client: McpClient): boolean | undefined {
+    if (config?.transport !== 'http' && config?.transport !== 'sse') return undefined;
+    return client.state === 'ready' && (client.tools?.length ?? 0) > 0;
   }
 
   private getFullServerStatus(name: string): McpServerStatus {
@@ -762,8 +995,10 @@ export class McpManager extends EventEmitter {
       serverInfo: client.serverInfo,
       toolCount: client.tools.length,
       resourceCount: client.resources.length,
+      promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
       containerBacked: !!config?.containerConfig,
+      isAuthenticated: this.deriveIsAuthenticated(config, client),
       error: this.serverErrors.get(name),
     };
   }
@@ -777,6 +1012,7 @@ export class McpManager extends EventEmitter {
 
     const client = this.clients.get(name);
     if (client) {
+      this._intentionalDisconnect.add(name);
       client.disconnect();
       this.clients.delete(name);
     }
@@ -836,17 +1072,31 @@ export class McpManager extends EventEmitter {
     throw lastErr;
   }
 
+  /**
+   * Connect every registered client with BOUNDED concurrency (Claude-parity:
+   * MCP_SERVER_CONNECTION_BATCH_SIZE / MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE).
+   * Servers are split into local (stdio/container, process-spawning) and remote
+   * (http/sse, network) groups, each run through its own concurrency pool, so a
+   * config with many stdio servers never stampedes N child processes at once
+   * (ENOMEM/EAGAIN under load) and remote servers get a higher ceiling. Previously
+   * an unbounded `Promise.all` fired all connects simultaneously.
+   */
   async connectAll(): Promise<Map<string, Error | null>> {
     const results = new Map<string, Error | null>();
-    const promises = Array.from(this.clients.keys()).map(async (name) => {
-      try {
-        await this.connectServer(name);
-        results.set(name, null);
-      } catch (err) {
-        results.set(name, err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-    await Promise.all(promises);
+    const local: string[] = [];
+    const remote: string[] = [];
+    for (const name of this.clients.keys()) {
+      const t = this.configs.get(name)?.transport;
+      (t === 'http' || t === 'sse' ? remote : local).push(name);
+    }
+    const connectOne = async (name: string) => {
+      try { await this.connectServer(name); results.set(name, null); }
+      catch (err) { results.set(name, err instanceof Error ? err : new Error(String(err))); }
+    };
+    await Promise.all([
+      runBoundedPool(local, getMcpConnectionBatchSize(), connectOne),
+      runBoundedPool(remote, getMcpRemoteConnectionBatchSize(), connectOne),
+    ]);
     return results;
   }
 
@@ -855,25 +1105,47 @@ export class McpManager extends EventEmitter {
     // higher-level race), so a slow tool is not killed by the short request/connect
     // timeout (H25/H30). Callers may override.
     const callOptions = { signal: options?.signal, timeoutMs: options?.timeoutMs ?? getMcpToolTimeout() };
+    let serverName: string;
+    let bareToolName: string;
     const colonIdx = qualifiedName.indexOf(':');
     if (colonIdx === -1) {
       const entry = this.findToolByName(qualifiedName);
       if (!entry) throw new Error(`MCP tool '${qualifiedName}' not found`);
-      this._lastUsedAt.set(entry.serverName, Date.now());
-      const client = this.clients.get(entry.serverName);
-      if (!client) throw new Error(`MCP server '${entry.serverName}' not connected`);
-      return client.callTool(qualifiedName, args, callOptions);
+      serverName = entry.serverName;
+      bareToolName = qualifiedName;
+    } else {
+      serverName = qualifiedName.slice(0, colonIdx);
+      bareToolName = qualifiedName.slice(colonIdx + 1);
     }
-
-    const serverName = qualifiedName.slice(0, colonIdx);
-    const toolName = qualifiedName.slice(colonIdx + 1);
     this._lastUsedAt.set(serverName, Date.now());
     const client = this.clients.get(serverName);
     if (!client) throw new Error(`MCP server '${serverName}' not found`);
-    return client.callTool(toolName, args, callOptions);
+
+    try {
+      return await client.callTool(bareToolName, args, callOptions);
+    } catch (err) {
+      // Transparent single retry after MCP session expiry (Claude-parity
+      // MAX_SESSION_RETRIES=1): a routine Streamable-HTTP session rotation closes
+      // the transport; clear the stale cache, reconnect, and re-run against a
+      // fresh session so the rotation is invisible to the model instead of failing.
+      if (err instanceof McpSessionExpiredError) {
+        coreLog('mcp', `Session expired calling ${qualifiedName}, reconnecting and retrying once`);
+        this.invalidateToolCache(serverName);
+        this.emit('session-expired', serverName);
+        await client.reconnect();
+        await this.refreshToolsForServer(serverName);
+        return await client.callTool(bareToolName, args, callOptions);
+      }
+      throw err;
+    }
   }
 
   async listResources(serverFilter?: string): Promise<Array<McpResource & { server: string }>> {
+    // A `server` filter that matches no connected client is a user/model error
+    // worth reporting (with the valid names) rather than silently returning [].
+    if (serverFilter && !this.clients.has(serverFilter)) {
+      throw new Error(`MCP server "${serverFilter}" not found. Available servers: ${this.availableServerNames()}`);
+    }
     const results: Array<McpResource & { server: string }> = [];
     for (const [name, client] of this.clients) {
       if (serverFilter && name !== serverFilter) continue;
@@ -892,9 +1164,14 @@ export class McpManager extends EventEmitter {
     return results;
   }
 
+  /** Comma-separated list of currently-connected server names (for error hints). */
+  private availableServerNames(): string {
+    return [...this.clients.keys()].sort((a, b) => a.localeCompare(b)).join(', ');
+  }
+
   async readResource(serverName: string, uri: string, options?: { signal?: AbortSignal }): Promise<unknown> {
     const client = this.clients.get(serverName);
-    if (!client) throw new Error(`MCP server "${serverName}" not connected`);
+    if (!client) throw new Error(`MCP server "${serverName}" not connected. Available servers: ${this.availableServerNames()}`);
     try {
       return await client.readResource(uri, options?.signal);
     } catch (err) {
@@ -914,7 +1191,14 @@ export class McpManager extends EventEmitter {
       try {
         const prompts = await client.listPrompts();
         for (const p of prompts) {
-          results.push({ ...p, server: name });
+          // Strip invisible/control Unicode from server-provided prompt metadata
+          // (names, descriptions, argument fields — keys AND values) before it
+          // enters the model's context / slash-command table. A malicious MCP
+          // server can otherwise hide instructions in prompt names/descriptions via
+          // zero-width/Tag/bidi characters (ASCII-smuggling prompt injection,
+          // HackerOne #3086545). Mirrors the sanitization already applied to tool
+          // names/descriptions in createMcpTool.
+          results.push({ ...recursivelySanitizeUnicode(p), server: name });
         }
       } catch {}
     }
@@ -923,8 +1207,10 @@ export class McpManager extends EventEmitter {
 
   async getPrompt(serverName: string, promptName: string, args: Record<string, string> = {}): Promise<{ description?: string; messages: McpPromptMessage[] }> {
     const client = this.clients.get(serverName);
-    if (!client) throw new Error(`MCP server "${serverName}" not connected`);
-    return client.getPrompt(promptName, args);
+    if (!client) throw new Error(`MCP server "${serverName}" not connected. Available servers: ${this.availableServerNames()}`);
+    const result = await client.getPrompt(promptName, args);
+    // Sanitize the server-authored prompt metadata/messages before they reach the model.
+    return recursivelySanitizeUnicode(result);
   }
 
   getAllTools(): Array<{ serverName: string; schema: McpToolSchema }> {
@@ -968,18 +1254,23 @@ export class McpManager extends EventEmitter {
   getServerStatus(name: string): McpServerStatus | null {
     const client = this.clients.get(name);
     if (!client) return null;
+    const config = this.configs.get(name);
     return {
       name,
       state: client.state,
       serverInfo: client.serverInfo,
       toolCount: client.tools.length,
       resourceCount: client.resources.length,
+      promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
+      isAuthenticated: this.deriveIsAuthenticated(config, client),
     };
   }
 
   listServers(): McpServerStatus[] {
-    return Array.from(this.clients.keys()).map(name => this.getServerStatus(name)!);
+    return Array.from(this.clients.keys())
+      .map(name => this.getServerStatus(name)!)
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** The stored config for a server (transport/url/oauth), or undefined if none. */
@@ -1022,14 +1313,21 @@ export class McpManager extends EventEmitter {
     }
 
     const toolName = qualifiedName.includes(':') ? qualifiedName.slice(qualifiedName.indexOf(':') + 1) : qualifiedName;
-    const readOnlyPrefixes = ['get', 'list', 'search', 'find', 'read', 'view', 'show', 'describe', 'fetch', 'query'];
-    const destructivePrefixes = ['delete', 'remove', 'drop', 'destroy', 'purge', 'clear', 'truncate'];
-    const openWorldPrefixes = ['web', 'fetch', 'http', 'curl', 'download', 'upload', 'send', 'post'];
+    const readOnlyVerbs = ['get', 'list', 'search', 'find', 'read', 'view', 'show', 'describe', 'fetch', 'query'];
+    const destructiveVerbs = ['delete', 'remove', 'drop', 'destroy', 'purge', 'clear', 'truncate'];
+    const openWorldVerbs = ['web', 'fetch', 'http', 'curl', 'download', 'upload', 'send', 'post'];
 
+    // Normalize camelCase + kebab-case to snake_case before classifying so a verb
+    // that is NOT the leading token is still found (Claude-parity): e.g.
+    // `searchJiraIssues` → `search_jira_issues`, `web_search_exa`, `brave-web-search`.
+    // Fall back to the leading-prefix check too, so single-token lowercase names
+    // like `getuser` keep classifying as before (strict superset of old behavior).
     const lower = toolName.toLowerCase();
-    const isReadOnly = readOnlyPrefixes.some(p => lower.startsWith(p));
-    const isDestructive = destructivePrefixes.some(p => lower.startsWith(p));
-    const isOpenWorld = openWorldPrefixes.some(p => lower.startsWith(p));
+    const tokens = new Set(normalizeMcpToolName(toolName).split('_').filter(Boolean));
+    const classify = (verbs: string[]) => verbs.some(v => tokens.has(v) || lower.startsWith(v));
+    const isReadOnly = classify(readOnlyVerbs);
+    const isDestructive = classify(destructiveVerbs);
+    const isOpenWorld = classify(openWorldVerbs);
 
     return {
       readOnlyHint: isReadOnly || undefined,
@@ -1083,6 +1381,8 @@ export class McpManager extends EventEmitter {
     this.reconnectAttempts.clear();
     this._configWarnings.clear();
     this._configErrors.clear();
+    this._configValidationErrors.clear();
+    for (const name of this.clients.keys()) this._intentionalDisconnect.add(name);
     for (const client of this.clients.values()) {
       client.disconnect();
     }
@@ -1120,32 +1420,57 @@ export class McpManager extends EventEmitter {
       if (typeof servers !== 'object') return;
 
       for (const [name, serverConfig] of Object.entries(servers)) {
-        const cfg = serverConfig as McpServerConfig;
-        if (!cfg.command && !cfg.url) continue;
-        const missing = new Set<string>();
-        const expanded = this.expandConfigEnv(cfg, missing);
-        // Surface (don't silently blank) env vars a server config references but
-        // that are unset — a common cause of a server failing to start (H35).
-        if (missing.size > 0) {
-          const list = [...missing];
-          this._configWarnings.set(name, list);
-          coreLog('mcp', `MCP server "${name}" references unset env var(s): ${list.join(', ')}`);
-          this.emit('config-warning', name, list);
-        } else {
-          this._configWarnings.delete(name);
+        // Per-server isolation: one malformed/throwing entry must NOT abort the
+        // rest of the file (Claude-parity) — each entry is loaded in its own guard.
+        try {
+          // Map a Claude-Code-style `type` transport discriminator onto AMI's
+          // `transport` field so a `{ "type": "http", "url": ... }` interop entry
+          // is understood.
+          const normalized = normalizeMcpServerEntry(serverConfig);
+          // Reject a malformed entry (wrong-typed args/env/headers, unknown
+          // transport, non-object) with a per-server diagnostic instead of casting
+          // arbitrary JSON straight into a child-process spawn / HTTP request.
+          const issues = validateMcpServerConfigShape(normalized);
+          if (issues.length > 0) {
+            const msg = issues.join('; ');
+            this._configValidationErrors.set(name, msg);
+            coreLog('mcp', `invalid MCP server "${name}": ${msg}`);
+            this.emit('config-invalid', name, issues);
+            continue;
+          }
+          this._configValidationErrors.delete(name);
+          const cfg = normalized as McpServerConfig;
+          if (!cfg.command && !cfg.url) continue;
+          const missing = new Set<string>();
+          const expanded = this.expandConfigEnv(cfg, missing);
+          // Surface (don't silently blank) env vars a server config references but
+          // that are unset — a common cause of a server failing to start (H35).
+          if (missing.size > 0) {
+            const list = [...missing];
+            this._configWarnings.set(name, list);
+            coreLog('mcp', `MCP server "${name}" references unset env var(s): ${list.join(', ')}`);
+            this.emit('config-warning', name, list);
+          } else {
+            this._configWarnings.delete(name);
+          }
+          // Skip denylisted servers without aborting the rest of the load (S9).
+          if (this.isServerDenied(name, expanded)) {
+            coreLog('mcp', `skipping denied MCP server "${name}"`);
+            continue;
+          }
+          // M14 — gate project-tier servers behind approval unless already approved.
+          if (opts?.projectScoped && !this._approvedServers.has(name)) {
+            coreLog('mcp', `project MCP server "${name}" requires approval — registered pending`);
+            this.addPendingServer(name, expanded, { needsApproval: true });
+            continue;
+          }
+          this.addServer(name, expanded);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this._configValidationErrors.set(name, message);
+          coreLog('mcp', `failed to load MCP server "${name}": ${message}`);
+          this.emit('config-invalid', name, [message]);
         }
-        // Skip denylisted servers without aborting the rest of the load (S9).
-        if (this.isServerDenied(name, expanded)) {
-          coreLog('mcp', `skipping denied MCP server "${name}"`);
-          continue;
-        }
-        // M14 — gate project-tier servers behind approval unless already approved.
-        if (opts?.projectScoped && !this._approvedServers.has(name)) {
-          coreLog('mcp', `project MCP server "${name}" requires approval — registered pending`);
-          this.addPendingServer(name, expanded, { needsApproval: true });
-          continue;
-        }
-        this.addServer(name, expanded);
       }
     } catch (err) {
       // The file exists but is malformed (invalid JSON). Surface it as a fatal
@@ -1273,6 +1598,70 @@ export const MAX_MCP_RECONNECT_ATTEMPTS = 5;
 export const MCP_RECONNECT_BASE_DELAY_MS = 1000;
 export const MAX_MCP_RECONNECT_DELAY_MS = 30_000;
 
+/** Transport values AMI understands (for config validation / `type` mapping). */
+const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http']);
+
+/**
+ * Canonicalize an MCP tool name for verb classification: camelCase and kebab-case
+ * reduce to a single snake_case key (Claude-parity `normalize()`), so a read/search
+ * verb is found even when it is not the leading token (e.g. `searchJiraIssues` →
+ * `search_jira_issues`, `brave-web-search` → `brave_web_search`).
+ */
+export function normalizeMcpToolName(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/-/g, '_')
+    .toLowerCase();
+}
+
+/**
+ * Normalize a raw MCP server config entry: map a Claude-Code-style `type`
+ * transport discriminator (`{ "type": "http", "url": ... }`) onto AMI's canonical
+ * `transport` field when `transport` is absent, and drop the `type` key. Non-object
+ * entries are returned unchanged for the validator to reject.
+ */
+export function normalizeMcpServerEntry(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const c = { ...(raw as Record<string, unknown>) };
+  if (c.transport === undefined && c.type !== undefined) {
+    c.transport = c.type; // keep even an unsupported value so validation flags it
+  }
+  delete c.type;
+  return c;
+}
+
+/**
+ * Lightweight runtime validation of an (untrusted) MCP server config entry before
+ * it reaches a child-process spawn / HTTP request (Claude-parity schema guard).
+ * Returns a list of human-readable problems ([] when valid): `command`/`url` must
+ * be strings, `args` a string array, `env`/`headers` string→string objects, and
+ * `transport` one of stdio|sse|http. The entry is skipped when non-empty.
+ */
+export function validateMcpServerConfigShape(cfg: unknown): string[] {
+  if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) {
+    return ['server config must be a JSON object'];
+  }
+  const c = cfg as Record<string, unknown>;
+  const issues: string[] = [];
+  if (c.command !== undefined && typeof c.command !== 'string') issues.push('`command` must be a string');
+  if (c.url !== undefined && typeof c.url !== 'string') issues.push('`url` must be a string');
+  if (c.args !== undefined && (!Array.isArray(c.args) || c.args.some((a) => typeof a !== 'string'))) {
+    issues.push('`args` must be an array of strings');
+  }
+  for (const key of ['env', 'headers'] as const) {
+    const v = c[key];
+    if (v !== undefined) {
+      if (typeof v !== 'object' || v === null || Array.isArray(v) || Object.values(v as Record<string, unknown>).some((x) => typeof x !== 'string')) {
+        issues.push(`\`${key}\` must be an object of string values`);
+      }
+    }
+  }
+  if (c.transport !== undefined && !SUPPORTED_MCP_TRANSPORTS.has(String(c.transport))) {
+    issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, or http)`);
+  }
+  return issues;
+}
+
 const ALLOWED_SCHEMA_KEYS = new Set([
   'type', 'properties', 'required', 'additionalProperties',
   'description', 'title', '$schema', 'definitions', '$defs',
@@ -1385,9 +1774,19 @@ export function findMcpConfigPaths(cwd: string): string[] {
   const projectConfig = path.join(cwd, '.ami', 'mcp.json');
   if (fs.existsSync(projectConfig)) paths.push(projectConfig);
 
-  // 2. Claude Code project interop — the shareable `.mcp.json` at the repo root.
-  const claudeProjectConfig = path.join(cwd, '.mcp.json');
-  if (fs.existsSync(claudeProjectConfig)) paths.push(claudeProjectConfig);
+  // 2. Claude Code project interop — the shareable `.mcp.json`. Walk from cwd UP
+  //    to the filesystem root collecting every `.mcp.json` (closer-to-cwd first),
+  //    so a monorepo-root config is still found when AMI is launched from a nested
+  //    subdirectory (Claude-parity). first-wins precedence means the nearest file's
+  //    servers take priority over an ancestor's.
+  let dir = path.resolve(cwd);
+  while (true) {
+    const candidate = path.join(dir, '.mcp.json');
+    if (fs.existsSync(candidate)) paths.push(candidate);
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
 
   // 3. AMI user-global (~/.ami/mcp.json).
   const globalConfig = path.join(homeDir, '.ami', 'mcp.json');
