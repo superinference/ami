@@ -131,6 +131,66 @@ describe('listDirTool – error handling', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cancellation / abort support
+// ---------------------------------------------------------------------------
+
+describe('listDirTool – cancellation', () => {
+  it('returns a cancelled error when the abort signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await listDirTool.execute(
+      { path: tmpDir },
+      ctx({ abortSignal: controller.signal }),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.toLowerCase().includes('cancel'));
+  });
+
+  it('short-circuits before touching the filesystem when aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // Point at a non-existent dir: if the abort guard did not fire first we would
+    // instead get the "not found" error, so this discriminates the fix.
+    const result = await listDirTool.execute(
+      { path: path.join(tmpDir, 'does-not-exist') },
+      ctx({ abortSignal: controller.signal }),
+    );
+    assert.equal(result.isError, true);
+    assert.ok(result.output.toLowerCase().includes('cancel'));
+    assert.ok(!result.output.includes('not found'));
+  });
+
+  it('lists normally when the signal is not aborted', async () => {
+    const controller = new AbortController();
+    const result = await listDirTool.execute(
+      { path: tmpDir },
+      ctx({ abortSignal: controller.signal }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('4 entries'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UNC path guard (NTLM credential-leak hardening)
+// ---------------------------------------------------------------------------
+
+describe('listDirTool – UNC path guard', () => {
+  it('rejects backslash UNC paths before any filesystem access', async () => {
+    const result = await listDirTool.execute({ path: '\\\\attacker\\share' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('UNC'));
+    assert.ok(result.output.includes('NTLM'));
+  });
+
+  it('rejects double-slash UNC paths', async () => {
+    const result = await listDirTool.execute({ path: '//attacker/share' }, ctx());
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('UNC'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Relative paths
 // ---------------------------------------------------------------------------
 
