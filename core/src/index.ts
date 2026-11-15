@@ -134,7 +134,7 @@ export {
   displayPath,
   stripTrailingSep,
 } from './utils/path';
-export { generateTitle } from './title-generator';
+export { generateTitle, sanitizeTitle, truncateTitle } from './title-generator';
 export { ProcessManager, TASK_STATUS } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
 
