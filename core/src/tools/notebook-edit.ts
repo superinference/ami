@@ -2,7 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
-import { validateFilePath, validateFileWritePath, buildUnifiedDiff } from './tool-utils';
+import {
+  validateFilePath,
+  validateFileWritePath,
+  buildUnifiedDiff,
+  decodeBuffer,
+  encodeText,
+  isNonUtfEncoding,
+  detectLineEnding,
+  convertToLineEnding,
+  writeFileAtomicSync,
+} from './tool-utils';
 
 /** Normalize a notebook cell source (string or string[]) to a single string. */
 function cellSourceToString(source: string | string[] | undefined): string {
@@ -119,7 +129,7 @@ export const notebookEditTool: ToolDefinition = {
 
     if (path.extname(resolved) !== '.ipynb') {
       return {
-        output: 'Error: File must be a Jupyter notebook (.ipynb).',
+        output: 'Error: File must be a Jupyter notebook (.ipynb). For editing other file types, use the file_edit tool.',
         isError: true,
       };
     }
@@ -137,9 +147,13 @@ export const notebookEditTool: ToolDefinition = {
     }
 
     // --- Read and parse the notebook ---
-    let raw: string;
+    // Read raw bytes (not a utf-8 string) so the notebook's original character
+    // encoding (UTF-8, UTF-8+BOM, UTF-16LE/BE) and CRLF/LF line-ending
+    // convention can be detected and round-tripped on write-back, instead of
+    // silently normalizing every notebook to LF/UTF-8.
+    let rawBuf: Buffer;
     try {
-      raw = await fs.promises.readFile(resolved, 'utf-8');
+      rawBuf = await fs.promises.readFile(resolved);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('ENOENT')) {
@@ -153,6 +167,18 @@ export const notebookEditTool: ToolDefinition = {
         isError: true,
       };
     }
+
+    // Refuse to edit a notebook stored in a non-UTF legacy encoding: decoding it
+    // as UTF-8 and writing it back would silently corrupt the bytes.
+    if (isNonUtfEncoding(rawBuf)) {
+      return {
+        output: `Error: "${resolved}" appears to use a non-UTF encoding. Editing it as UTF-8 would silently corrupt the notebook.`,
+        isError: true,
+      };
+    }
+
+    const { text: raw, encoding: fileEncoding } = decodeBuffer(rawBuf);
+    const lineEnding = detectLineEnding(raw);
 
     let notebook: NotebookContent;
     try {
@@ -175,8 +201,15 @@ export const notebookEditTool: ToolDefinition = {
 
     // --- Resolve cell_id to cell_number ---
     if (cellId && cellNumber === undefined) {
-      // Support cell-N alias (e.g. "cell-0", "cell-5")
-      if (typeof cellId === 'string' && cellId.startsWith('cell-')) {
+      // Prefer an exact match on a cell's real `id` property. ONLY if no cell
+      // owns that id do we fall back to treating a "cell-N" string as a
+      // positional alias. The id match must win: a notebook cell whose genuine
+      // id is literally "cell-5" (a legal nbformat id) must resolve to that
+      // cell, not to positional index 5 — otherwise the wrong cell is edited.
+      const byId = notebook.cells.findIndex(c => c.id === cellId);
+      if (byId !== -1) {
+        cellNumber = byId;
+      } else if (typeof cellId === 'string' && cellId.startsWith('cell-')) {
         const idx = parseInt(cellId.slice(5), 10);
         if (!isNaN(idx) && idx >= 0 && idx < notebook.cells.length) {
           cellNumber = idx;
@@ -184,17 +217,13 @@ export const notebookEditTool: ToolDefinition = {
       }
 
       if (cellNumber === undefined) {
-        const idx = notebook.cells.findIndex(c => c.id === cellId);
-        if (idx === -1) {
-          const available = notebook.cells
-            .map((c, i) => c.id ? `${i}:${c.id}` : `${i}:(no id)`)
-            .join(', ');
-          return {
-            output: `Error: cell_id "${cellId}" not found. Available cells: ${available}`,
-            isError: true,
-          };
-        }
-        cellNumber = idx;
+        const available = notebook.cells
+          .map((c, i) => c.id ? `${i}:${c.id}` : `${i}:(no id)`)
+          .join(', ');
+        return {
+          output: `Error: cell_id "${cellId}" not found. Available cells: ${available}`,
+          isError: true,
+        };
       }
     }
 
@@ -320,10 +349,14 @@ export const notebookEditTool: ToolDefinition = {
     }
 
     // --- Write the modified notebook back ---
+    // JSON.stringify always emits LF; re-apply the file's original line-ending
+    // convention and character encoding, then write atomically (temp file +
+    // fsync-flushed rename) so a crash or power loss mid-write cannot leave a
+    // truncated, unparseable .ipynb on disk.
     let updatedJson: string;
     try {
-      updatedJson = JSON.stringify(notebook, null, 1);
-      await fs.promises.writeFile(resolved, updatedJson, 'utf-8');
+      updatedJson = convertToLineEnding(JSON.stringify(notebook, null, 1), lineEnding);
+      writeFileAtomicSync(resolved, encodeText(updatedJson, fileEncoding));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
@@ -331,6 +364,9 @@ export const notebookEditTool: ToolDefinition = {
         isError: true,
       };
     }
+    // Cache the decoded form (BOM stripped, original line endings preserved) so
+    // it matches what the file-cache's decodeBuffer-based freshness check reads
+    // back from disk — otherwise a preserved CRLF/BOM would be seen as a change.
     getFileCache(context.cwd).setWritten(resolved, updatedJson);
 
     if (!context.detachedMode) {
