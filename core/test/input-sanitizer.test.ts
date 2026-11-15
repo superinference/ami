@@ -11,6 +11,7 @@ import {
   recoverJsonStringFields,
   repairJsonArguments,
   recursivelySanitizeUnicode,
+  MAX_SANITIZE_ITERATIONS,
 } from '../src/tools/input-sanitizer';
 
 describe('recursivelySanitizeUnicode', () => {
@@ -494,5 +495,196 @@ describe('repairJsonArguments', () => {
     const result = repairJsonArguments('{"config": {"key": "val",},}');
     assert.ok(result !== null);
     assert.deepEqual((result!.config as any).key, 'val');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripInvisibleUnicode — NFKC normalization (compatibility/composed folding)
+// ---------------------------------------------------------------------------
+
+describe('stripInvisibleUnicode — NFKC normalization', () => {
+  it('folds full-width ASCII letters to canonical ASCII', () => {
+    // 'Ａ' (U+FF21 fullwidth A) must normalize to 'A' so a command/name disguised
+    // via full-width homoglyphs resolves before matching/display.
+    assert.equal(stripInvisibleUnicode('ＡＢＣ'), 'ABC');
+  });
+
+  it('folds full-width digits to ASCII digits', () => {
+    assert.equal(stripInvisibleUnicode('３０'), '30');
+  });
+
+  it('folds compatibility ligatures (U+FB01 fi) to their ASCII sequence', () => {
+    assert.equal(stripInvisibleUnicode('ﬁle'), 'file');
+  });
+
+  it('normalizes then still strips an invisible char exposed alongside', () => {
+    // full-width 'rm' + zero-width space + full-width space-less payload.
+    assert.equal(stripInvisibleUnicode('ｒｍ​ -rf'), 'rm -rf');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripInvisibleUnicode — Unicode general-category stripping (Cf/Co/Cn)
+// ---------------------------------------------------------------------------
+
+describe('stripInvisibleUnicode — property-class category stripping', () => {
+  it('strips BMP private-use-area codepoints (U+E000, U+F8FF) the enumerated list misses', () => {
+    assert.equal(stripInvisibleUnicode('x' + String.fromCodePoint(0xE000) + 'y'), 'xy');
+    assert.equal(stripInvisibleUnicode('x' + String.fromCodePoint(0xF8FF) + 'y'), 'xy');
+  });
+
+  it('strips Unicode noncharacters/unassigned (U+FDD0, U+FFFE)', () => {
+    assert.equal(stripInvisibleUnicode('x' + String.fromCodePoint(0xFDD0) + 'y'), 'xy');
+    assert.equal(stripInvisibleUnicode('x' + String.fromCodePoint(0xFFFE) + 'y'), 'xy');
+  });
+
+  it('strips a format char (Cf) that is not in the enumerated range (U+070F)', () => {
+    // Syriac abbreviation mark — general category Cf — not in INVISIBLE_RE's
+    // enumerated list; only the \p{Cf} class catches it.
+    assert.equal(stripInvisibleUnicode('x' + String.fromCodePoint(0x070F) + 'y'), 'xy');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripInvisibleUnicode — bounded iterate-to-fixpoint
+// ---------------------------------------------------------------------------
+
+describe('stripInvisibleUnicode — bounded fixpoint iteration', () => {
+  it('exposes a MAX_SANITIZE_ITERATIONS bound', () => {
+    assert.equal(typeof MAX_SANITIZE_ITERATIONS, 'number');
+    assert.ok(MAX_SANITIZE_ITERATIONS >= 1);
+  });
+
+  it('returns within the bound for clean input (no throw, tight bound)', () => {
+    // Clean input settles on the first pass, so even a bound of 1 is fine.
+    assert.equal(stripInvisibleUnicode('ls -la', 1), 'ls -la');
+  });
+
+  it('throws loudly with an input preview when the bound is exhausted', () => {
+    // A single-char bound: input that DOES change on pass 1 can never reach a
+    // fixpoint within 1 iteration, so the guard throws rather than returning a
+    // partially-sanitized string.
+    assert.throws(
+      () => stripInvisibleUnicode('a​b', 1),
+      /maximum iterations \(1\) for input: a/,
+    );
+  });
+
+  it('includes only a 100-char preview of the input in the error', () => {
+    const long = 'a​'.repeat(200); // 400 chars, needs stripping on every pass
+    try {
+      stripInvisibleUnicode(long, 1);
+      assert.fail('expected throw');
+    } catch (err) {
+      const msg = (err as Error).message;
+      const preview = msg.split('for input: ')[1];
+      assert.equal(preview.length, 100);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeCommandForDisplay — ASCII control-char neutralization
+// ---------------------------------------------------------------------------
+
+describe('normalizeCommandForDisplay — control-char stripping', () => {
+  it('strips backspace (0x08) so it cannot erase rendered characters', () => {
+    assert.equal(normalizeCommandForDisplay('rm -rf safe\u0008\u0008\u0008\u0008/'), 'rm -rf safe/');
+  });
+
+  it('strips carriage return (0x0D) so it cannot overwrite the displayed line', () => {
+    assert.equal(normalizeCommandForDisplay('echo ok\rrm -rf /'), 'echo okrm -rf /');
+  });
+
+  it('strips ESC (0x1B) so it cannot inject cursor/colour escape sequences', () => {
+    assert.equal(normalizeCommandForDisplay('echo \u001b[31mred\u001b[0m'), 'echo [31mred[0m');
+  });
+
+  it('strips DEL (0x7F)', () => {
+    assert.equal(normalizeCommandForDisplay('ab\u007fc'), 'abc');
+  });
+
+  it('preserves newlines (multi-line commands stay intact)', () => {
+    assert.equal(normalizeCommandForDisplay('line1\nline2'), 'line1\nline2');
+  });
+
+  it('still expands tabs to four spaces alongside control-char stripping', () => {
+    assert.equal(normalizeCommandForDisplay('a\u0008\tb'), 'a    b');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recoverJsonStringFields — numeric / integer / boolean coercion
+// ---------------------------------------------------------------------------
+
+describe('recoverJsonStringFields — number coercion', () => {
+  const numberSchema = { properties: { n: { type: 'number' } } };
+
+  it('coerces a quoted integer literal to a number', () => {
+    assert.strictEqual(recoverJsonStringFields({ n: '30' }, numberSchema).n, 30);
+  });
+
+  it('coerces a quoted float literal to a number', () => {
+    assert.strictEqual(recoverJsonStringFields({ n: '3.14' }, numberSchema).n, 3.14);
+  });
+
+  it('coerces a quoted negative literal to a number', () => {
+    assert.strictEqual(recoverJsonStringFields({ n: '-5' }, numberSchema).n, -5);
+  });
+
+  it('leaves an empty string untouched (fails loudly, not silently coerced)', () => {
+    assert.strictEqual(recoverJsonStringFields({ n: '' }, numberSchema).n, '');
+  });
+
+  it('leaves a non-numeric string untouched', () => {
+    assert.strictEqual(recoverJsonStringFields({ n: 'abc' }, numberSchema).n, 'abc');
+  });
+
+  it('leaves exponential/garbage notation untouched (not a strict decimal literal)', () => {
+    assert.strictEqual(recoverJsonStringFields({ n: '1e5' }, numberSchema).n, '1e5');
+  });
+
+  it('does not touch an already-numeric value', () => {
+    assert.strictEqual(recoverJsonStringFields({ n: 42 }, numberSchema).n, 42);
+  });
+});
+
+describe('recoverJsonStringFields — integer coercion', () => {
+  const intSchema = { properties: { i: { type: 'integer' } } };
+
+  it('coerces a quoted whole-number literal', () => {
+    assert.strictEqual(recoverJsonStringFields({ i: '7' }, intSchema).i, 7);
+  });
+
+  it('leaves a quoted float untouched (so the mismatch surfaces, not truncated)', () => {
+    assert.strictEqual(recoverJsonStringFields({ i: '3.14' }, intSchema).i, '3.14');
+  });
+
+  it('leaves a non-numeric string untouched', () => {
+    assert.strictEqual(recoverJsonStringFields({ i: 'x' }, intSchema).i, 'x');
+  });
+});
+
+describe('recoverJsonStringFields — boolean coercion', () => {
+  const boolSchema = { properties: { b: { type: 'boolean' } } };
+
+  it('coerces the quoted string "true" to true', () => {
+    assert.strictEqual(recoverJsonStringFields({ b: 'true' }, boolSchema).b, true);
+  });
+
+  it('coerces the quoted string "false" to false', () => {
+    assert.strictEqual(recoverJsonStringFields({ b: 'false' }, boolSchema).b, false);
+  });
+
+  it('is case/space-insensitive for quoted booleans', () => {
+    assert.strictEqual(recoverJsonStringFields({ b: '  TRUE ' }, boolSchema).b, true);
+  });
+
+  it('leaves a non-boolean string untouched (not silently read as false)', () => {
+    assert.strictEqual(recoverJsonStringFields({ b: 'maybe' }, boolSchema).b, 'maybe');
+  });
+
+  it('does not touch an already-boolean value', () => {
+    assert.strictEqual(recoverJsonStringFields({ b: false }, boolSchema).b, false);
   });
 });

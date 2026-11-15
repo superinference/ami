@@ -61,3 +61,112 @@ describe('scout – cache re-clone on repo mismatch', () => {
     });
   });
 });
+
+// --- git source validation: block transport-helper RCE before any clone --------
+describe('scout – git source safety gate', () => {
+  it('rejects a transport-helper source (ext::) WITHOUT ever invoking git', async () => {
+    let cloneCalled = false;
+    scoutHooks.existsSync = (() => false) as typeof scoutHooks.existsSync;
+    scoutHooks.mkdirSync = (() => undefined) as unknown as typeof scoutHooks.mkdirSync;
+    scoutHooks.execFileSync = (() => { cloneCalled = true; return '' as unknown as Buffer; }) as typeof scoutHooks.execFileSync;
+    scoutHooks.execSync = (() => '' as unknown as Buffer) as typeof scoutHooks.execSync;
+
+    const r = await scoutTool.execute({ repo: 'ext::sh -c "touch /tmp/pwned"' }, ctx());
+    assert.equal(r.isError, true, 'dangerous transport source must be rejected');
+    assert.match(r.output, /transport-helper/i, 'reason must name the transport-helper block');
+    assert.equal(cloneCalled, false, 'git must NEVER be spawned for a rejected source');
+  });
+
+  it('rejects an argument-injection source (leading -)', async () => {
+    let cloneCalled = false;
+    scoutHooks.existsSync = (() => false) as typeof scoutHooks.existsSync;
+    scoutHooks.execFileSync = (() => { cloneCalled = true; return '' as unknown as Buffer; }) as typeof scoutHooks.execFileSync;
+    const r = await scoutTool.execute({ repo: '--upload-pack=touch /tmp/x' }, ctx());
+    assert.equal(r.isError, true);
+    assert.equal(cloneCalled, false, 'no clone for a flag-shaped source');
+  });
+
+  it('still accepts GitHub shorthand (owner/repo) and reaches the clone', async () => {
+    let cloneCalled = false;
+    scoutHooks.existsSync = (() => false) as typeof scoutHooks.existsSync;
+    scoutHooks.mkdirSync = (() => undefined) as unknown as typeof scoutHooks.mkdirSync;
+    scoutHooks.execFileSync = ((cmd: string, args: string[]) => {
+      if (args[0] === 'clone') cloneCalled = true;
+      return '' as unknown as Buffer;
+    }) as typeof scoutHooks.execFileSync;
+    scoutHooks.execSync = (() => '' as unknown as Buffer) as typeof scoutHooks.execSync;
+    scoutHooks.readFileSync = (() => '' as unknown as Buffer) as typeof scoutHooks.readFileSync;
+    await scoutTool.execute({ repo: 'owner/repo' }, ctx());
+    assert.equal(cloneCalled, true, 'valid shorthand must proceed to clone');
+  });
+});
+
+// --- clone credential/prompt hardening: stdin ignored + ssh BatchMode ----------
+describe('scout – clone prompt hardening', () => {
+  it('ignores stdin and sets ssh BatchMode so git cannot hang on a prompt', async () => {
+    let cloneOpts: { stdio?: unknown; env?: Record<string, string | undefined> } | undefined;
+    scoutHooks.existsSync = (() => false) as typeof scoutHooks.existsSync;
+    scoutHooks.mkdirSync = (() => undefined) as unknown as typeof scoutHooks.mkdirSync;
+    scoutHooks.execFileSync = ((cmd: string, args: string[], opts: unknown) => {
+      if (args[0] === 'clone') cloneOpts = opts as typeof cloneOpts;
+      return '' as unknown as Buffer;
+    }) as typeof scoutHooks.execFileSync;
+    scoutHooks.execSync = (() => '' as unknown as Buffer) as typeof scoutHooks.execSync;
+    scoutHooks.readFileSync = (() => '' as unknown as Buffer) as typeof scoutHooks.readFileSync;
+
+    await scoutTool.execute({ repo: 'owner/repo' }, ctx());
+    assert.ok(cloneOpts, 'clone ran');
+    assert.deepEqual(cloneOpts!.stdio, ['ignore', 'pipe', 'pipe'], 'stdin must be ignored');
+    assert.match(String(cloneOpts!.env?.GIT_SSH_COMMAND ?? ''), /BatchMode/i, 'ssh must run in BatchMode');
+    assert.equal(cloneOpts!.env?.GIT_TERMINAL_PROMPT, '0', 'terminal prompt disabled');
+  });
+});
+
+// --- truncation visibility: files / README / grep get explicit markers ----------
+describe('scout – truncation markers', () => {
+  // Reusable cached-repo setup: cache + .git present, origin matches → no re-clone.
+  function cachedRepo(over: Partial<typeof scoutHooks>) {
+    scoutHooks.existsSync = (() => true) as typeof scoutHooks.existsSync;
+    scoutHooks.rmSync = (() => undefined) as typeof scoutHooks.rmSync;
+    scoutHooks.mkdirSync = (() => undefined) as unknown as typeof scoutHooks.mkdirSync;
+    scoutHooks.execFileSync = ((cmd: string, args: string[]) => {
+      if (args.includes('get-url')) return 'https://github.com/owner/repo\n';
+      return '';
+    }) as typeof scoutHooks.execFileSync;
+    scoutHooks.execSync = (() => '' as unknown as Buffer) as typeof scoutHooks.execSync;
+    scoutHooks.readFileSync = (() => '' as unknown as Buffer) as typeof scoutHooks.readFileSync;
+    Object.assign(scoutHooks, over);
+  }
+
+  it('marks an over-cap file listing', async () => {
+    const many = Array.from({ length: 55 }, (_, i) => `./f${i}.ts`).join('\n');
+    cachedRepo({ execSync: (() => many as unknown as Buffer) as typeof scoutHooks.execSync });
+    const r = await scoutTool.execute({ repo: 'owner/repo' }, ctx());
+    assert.match(r.output, /showing first 50; more files exist/i, 'file truncation marker missing');
+  });
+
+  it('marks a README longer than the cap', async () => {
+    cachedRepo({ readFileSync: (() => 'x'.repeat(5000) as unknown as Buffer) as typeof scoutHooks.readFileSync });
+    const r = await scoutTool.execute({ repo: 'owner/repo' }, ctx());
+    assert.match(r.output, /README truncated to first 3000 chars/i, 'README truncation marker missing');
+  });
+
+  it('reports grep match count when matches exceed the cap', async () => {
+    const grepLines = Array.from({ length: 30 }, (_, i) => `./a.ts:${i}:hit`).join('\n');
+    cachedRepo({
+      execFileSync: ((cmd: string, args: string[]) => {
+        if (args.includes('get-url')) return 'https://github.com/owner/repo\n';
+        if (cmd === 'grep') return grepLines;
+        return '';
+      }) as typeof scoutHooks.execFileSync,
+    });
+    const r = await scoutTool.execute({ repo: 'owner/repo', query: 'hit' }, ctx());
+    assert.match(r.output, /showing first 20 of 30 matches/i, 'grep truncation marker missing');
+  });
+
+  it('adds no marker when nothing is truncated', async () => {
+    cachedRepo({ execSync: (() => './only.ts\n' as unknown as Buffer) as typeof scoutHooks.execSync });
+    const r = await scoutTool.execute({ repo: 'owner/repo' }, ctx());
+    assert.doesNotMatch(r.output, /more files exist|truncated|showing first/i, 'no marker for small output');
+  });
+});

@@ -6,15 +6,64 @@
 // The `u` flag makes this codepoint-aware so the astral Unicode TAG block
 // (U+E0000–U+E007F) is stripped too — that block can smuggle a full hidden ASCII
 // instruction past a human reviewer and into the model (prompt injection). (H1)
+//
+// The Unicode general-category classes \p{Cf} (format), \p{Co} (private-use) and
+// \p{Cn} (unassigned/noncharacters) are the PRIMARY, category-complete defense —
+// they catch EVERY format char, ALL private-use codepoints (BMP PUA U+E000–U+F8FF
+// plus the supplementary PUA planes) and all unassigned/noncharacter codepoints,
+// so a smuggling char that is not in the hand-enumerated list (newly-assigned
+// format chars, PUA glyphs, noncharacters) is still removed by category. The
+// explicit enumerated ranges are kept as a documented FALLBACK.
 // eslint-disable-next-line security/detect-bidi-characters, security/detect-unsafe-regex -- intentional bidi chars to strip them; a single flat character class cannot backtrack (no ReDoS)
-const INVISIBLE_RE = new RegExp('[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB\\u{E0000}-\\u{E007F}]', 'gu');
+const INVISIBLE_RE = new RegExp('[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB\\u{E0000}-\\u{E007F}\\p{Cf}\\p{Co}\\p{Cn}]', 'gu');
 
-export function stripInvisibleUnicode(text: string): string {
-  return text.replace(INVISIBLE_RE, '');
+// ASCII C0 control chars + DEL, EXCEPT tab (U+0009) and newline (U+000A). These
+// terminal-display-spoofing vectors — backspace (erases rendered chars), carriage
+// return (overwrites a displayed line), ESC (injects cursor/colour sequences) —
+// can hide or rewrite part of a command shown to a human in a permission prompt.
+// eslint-disable-next-line no-control-regex -- intentional: strip control chars from display
+const DISPLAY_CONTROL_RE = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
+
+/**
+ * Upper bound on the normalize-and-strip passes `stripInvisibleUnicode` runs
+ * before it gives up. One pass is not a fixpoint: NFKC normalization can expose
+ * a new strippable codepoint, and stripping can enable a new composition — so we
+ * iterate until the string stops changing. The bound is an explicit DoS boundary
+ * for adversarially-layered/deeply-composed input (mirrors Claude Code's
+ * MAX_ITERATIONS). Exported so callers/tests can tighten it.
+ */
+export const MAX_SANITIZE_ITERATIONS = 10;
+
+/**
+ * Strip invisible/smuggling Unicode from a string, hardened against
+ * composition-based bypasses:
+ *  1. NFKC normalization folds composed/compatibility sequences (full-width
+ *     ASCII, ligatures, compatibility forms) to their canonical form FIRST, so a
+ *     dangerous char disguised as a composed/compatibility sequence cannot slip
+ *     past the character class.
+ *  2. The invisible/format/private-use/unassigned character class is removed.
+ *  3. Steps 1–2 repeat to a fixpoint (bounded by `maxIterations`) because a
+ *     single pass can leave a residual hidden char that only a re-pass removes.
+ * Throws loudly (with a short input preview) if the string never settles within
+ * the bound — a pathological payload fails observably rather than silently
+ * returning partially-sanitized text.
+ */
+export function stripInvisibleUnicode(text: string, maxIterations: number = MAX_SANITIZE_ITERATIONS): string {
+  let current = text;
+  for (let i = 0; i < maxIterations; i++) {
+    const previous = current;
+    current = current.normalize('NFKC').replace(INVISIBLE_RE, '');
+    if (current === previous) return current;
+  }
+  throw new Error(
+    `Unicode sanitization reached maximum iterations (${maxIterations}) for input: ${text.slice(0, 100)}`,
+  );
 }
 
 export function normalizeCommandForDisplay(command: string): string {
-  return stripInvisibleUnicode(command).replace(/\t/g, '    ');
+  return stripInvisibleUnicode(command)
+    .replace(DISPLAY_CONTROL_RE, '')
+    .replace(/\t/g, '    ');
 }
 
 /** Depth cap for the recursive unicode sanitizer (mirrors sanitizeToolInput). */
@@ -79,14 +128,37 @@ export function recoverJsonStringFields(
     const value = result[key];
     if (typeof value !== 'string') continue;
     const expectedType = propSchema.type;
-    if (expectedType !== 'array' && expectedType !== 'object') continue;
     const trimmed = value.trim();
-    const isArrayLike = trimmed.startsWith('[') && trimmed.endsWith(']');
-    const isObjectLike = trimmed.startsWith('{') && trimmed.endsWith('}');
-    if ((expectedType === 'array' && isArrayLike) || (expectedType === 'object' && isObjectLike)) {
-      try {
-        result[key] = JSON.parse(trimmed);
-      } catch { /* keep original string */ }
+    if (expectedType === 'array' || expectedType === 'object') {
+      const isArrayLike = trimmed.startsWith('[') && trimmed.endsWith(']');
+      const isObjectLike = trimmed.startsWith('{') && trimmed.endsWith('}');
+      if ((expectedType === 'array' && isArrayLike) || (expectedType === 'object' && isObjectLike)) {
+        try {
+          result[key] = JSON.parse(trimmed);
+        } catch { /* keep original string */ }
+      }
+    } else if (expectedType === 'number') {
+      // Models frequently quote numeric tool args (e.g. {"head_limit":"30"}).
+      // Coerce ONLY strict decimal literals that are finite — garbage like
+      // "" / "abc" / "1e5" is left as a string so it fails loudly downstream
+      // instead of being silently masked (mirrors semanticNumber).
+      // eslint-disable-next-line security/detect-unsafe-regex -- fully anchored (^…$), no nested/overlapping quantifiers; `\d+` and the optional `\.\d+` are separated by a literal `.`, so matching is linear (no ReDoS)
+      if (/^-?\d+(?:\.\d+)?$/.test(trimmed) && Number.isFinite(Number(trimmed))) {
+        result[key] = Number(trimmed);
+      }
+    } else if (expectedType === 'integer') {
+      // Integer fields coerce only whole-number literals that fit a safe
+      // integer; a quoted float ("3.14") stays a string so the mismatch
+      // surfaces rather than being truncated.
+      if (/^-?\d+$/.test(trimmed) && Number.isSafeInteger(Number(trimmed))) {
+        result[key] = Number(trimmed);
+      }
+    } else if (expectedType === 'boolean') {
+      // Coerce quoted booleans ("true"/"false", case-insensitive); any other
+      // string is left untouched so it is not silently read as `false`.
+      const lower = trimmed.toLowerCase();
+      if (lower === 'true') result[key] = true;
+      else if (lower === 'false') result[key] = false;
     }
   }
   return result;

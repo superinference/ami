@@ -13,6 +13,9 @@ let _lastPlan: string | null = null;
 export const MAX_SLUG_RETRIES = 5;
 /** Hard cap on how much plan content is echoed back into the context on exit. */
 export const PLAN_MAX_RESULT_CHARS = 100_000;
+/** Soft conciseness threshold: `verify` warns past this so the model trims the
+ *  plan to a reviewable outline rather than a dump before exiting. */
+export const PLAN_SOFT_CAP_CHARS = 12_000;
 
 export function isPlanModeActive(): boolean { return _planModeActive; }
 export function setPlanModeActive(active: boolean): void { _planModeActive = active; }
@@ -76,9 +79,13 @@ export const planModeTool: ToolDefinition = {
           type: 'object',
           properties: {
             tool: { type: 'string', enum: ['Bash'], description: 'Tool the prompt targets (only Bash may be pre-approved).' },
-            prompt: { type: 'string' },
+            prompt: {
+              type: 'string',
+              description: 'The exact Bash command the plan needs to run during implementation (e.g. "npm run build"). Added verbatim as a session permission rule on exit.',
+            },
           },
           required: ['tool', 'prompt'],
+          additionalProperties: false,
         },
         description: 'Bash commands the plan needs for implementation (added as session permission rules on exit). Only Bash prompts are allowed.',
       },
@@ -175,8 +182,16 @@ export const planModeTool: ToolDefinition = {
       if (_planFilePath) {
         try { planContent = fs.readFileSync(_planFilePath, 'utf-8'); } catch { /* no file yet */ }
       }
+      let status: string;
+      if (!planContent) {
+        status = 'Plan file is empty — write your plan before exiting.';
+      } else if (planContent.length > PLAN_SOFT_CAP_CHARS) {
+        status = `Plan is long (${planContent.length} chars, soft cap ${PLAN_SOFT_CAP_CHARS}) — trim it to a concise, reviewable outline before exiting.`;
+      } else {
+        status = 'Plan has content.';
+      }
       return {
-        output: `Plan mode active.\nPlan file: ${_planFilePath}\nPlan length: ${planContent.length} chars\n${planContent ? 'Plan has content.' : 'Plan file is empty — write your plan before exiting.'}`,
+        output: `Plan mode active.\nPlan file: ${_planFilePath}\nPlan length: ${planContent.length} chars\n${status}`,
         isError: false,
       };
     }

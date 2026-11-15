@@ -28,6 +28,9 @@ export function spillErrorReason(errCode?: string): string {
     case 'EPERM': return 'permission denied';
     case 'EROFS': return 'read-only filesystem';
     case 'EDQUOT': return 'disk quota exceeded';
+    case 'EMFILE':
+    case 'ENFILE': return 'too many open files';
+    case 'EEXIST': return 'file already exists';
     case 'ENOTDIR':
     case 'ENOENT': return 'invalid spill path';
     default: return errCode ? `error ${errCode}` : 'unknown error';
@@ -64,9 +67,14 @@ export function buildSpillBanner(
  * The spill filename is deterministic (content hash) and writes are idempotent
  * (skip if the identical file already exists), so replaying the same output does
  * not create duplicate spill files.
+ *
+ * A non-finite `limit` (Infinity / NaN) is a hard opt-out: such output is already
+ * self-bounded by its producer, so it is passed through verbatim and never spilled.
  */
 export function spillToolText(cwd: string, prefix: string, text: string, limit: number): string {
-  if (text.length <= limit) return text;
+  // Non-finite limit = hard opt-out (self-bounded tools must never be spilled and
+  // re-read circularly). Finite-and-under-limit output is returned unchanged.
+  if (!Number.isFinite(limit) || text.length <= limit) return text;
 
   let spillFile: string | null = null;
   let errCode: string | undefined;
@@ -74,10 +82,31 @@ export function spillToolText(cwd: string, prefix: string, text: string, limit: 
     const spillDir = projectStateDir(cwd || process.cwd(), 'tool-results');
     fs.mkdirSync(spillDir, { recursive: true });
     const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
-    spillFile = path.join(spillDir, `${prefix}-${hash}.txt`);
-    // Idempotent: only write when absent (or size differs from a partial write).
-    if (!fs.existsSync(spillFile) || fs.statSync(spillFile).size !== Buffer.byteLength(text)) {
-      fs.writeFileSync(spillFile, text, 'utf-8');
+    // Sanitise the caller-supplied prefix to a single safe path segment before
+    // interpolating it — a value containing `/` or `..` would otherwise escape
+    // spillDir and write the full (untruncated) output to an arbitrary location.
+    const safePrefix = prefix.replace(/[^A-Za-z0-9._-]/g, '_') || 'tool';
+    spillFile = path.join(spillDir, `${safePrefix}-${hash}.txt`);
+    // Exclusive ('wx' = O_CREAT|O_EXCL) write: race-free vs a stat-then-write
+    // TOCTOU and refuses to create through a pre-existing symlink at the
+    // deterministic target, defeating a symlink-swap arbitrary-file-overwrite.
+    try {
+      fs.writeFileSync(spillFile, text, { encoding: 'utf-8', flag: 'wx' });
+    } catch (e: unknown) {
+      if ((e as { code?: string }).code === 'EEXIST') {
+        // Deterministic (content-hashed) name already present. Use lstat (never
+        // follows a symlink) to confirm it is a regular file of the right size —
+        // identical content is an idempotent replay, nothing to do. Anything else
+        // (a planted symlink, or a partial/corrupt prior write) is unlinked — which
+        // removes the symlink itself, not its target — and rewritten with O_EXCL.
+        const st = fs.lstatSync(spillFile);
+        if (!st.isFile() || st.size !== Buffer.byteLength(text)) {
+          fs.unlinkSync(spillFile);
+          fs.writeFileSync(spillFile, text, { encoding: 'utf-8', flag: 'wx' });
+        }
+      } else {
+        throw e;
+      }
     }
   } catch (err: unknown) {
     spillFile = null;

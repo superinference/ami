@@ -21,10 +21,39 @@ function extForMime(mimeType: string | undefined): string {
 /** A single normalized entry of a resource read (text OR a persisted blob path). */
 interface ResourceContent { uri?: string; mimeType?: string; text?: string; blobSavedTo?: string }
 
-/** Append an available-servers affordance to a not-found error, when we can list them. */
-function withAvailableServers(message: string, mcpManager: { listServers?: () => Array<{ name: string }> } | undefined): string {
-  const names = mcpManager?.listServers?.().map((s) => s.name) ?? [];
-  return names.length ? `${message} Available servers: ${names.join(', ')}.` : `${message} No MCP servers are currently connected.`;
+/** Minimal view of a server-status row needed for pre-flight validation. */
+interface ServerLike { name: string; state?: string }
+
+/**
+ * Pre-flight validation shared by both resource tools. Returns an actionable
+ * error message when the named server is unknown or present-but-not-connected,
+ * or null when the server is usable (or when we have no inventory to validate
+ * against, in which case we defer to the manager's own downstream error).
+ *
+ * This discriminates two precondition branches the model can self-correct from:
+ *   - unknown server      → lists the server names that DO exist
+ *   - not-connected server → reports its state + lists the connected servers,
+ *     instead of letting an opaque transport / not-ready error bubble up.
+ */
+function preflightServerError(
+  mcpManager: { listServers?: () => ServerLike[] } | undefined,
+  server: string,
+): string | null {
+  const servers = mcpManager?.listServers?.() ?? [];
+  if (!servers.length) return null; // no inventory — let the manager report.
+  const names = servers.map((s) => s.name);
+  if (!names.includes(server)) {
+    return `Unknown MCP server "${server}". Available servers: ${names.join(', ')}.`;
+  }
+  const match = servers.find((s) => s.name === server)!;
+  // A server present in the inventory but not in the `ready` state cannot serve
+  // a resources request — surface a distinct, actionable "not connected" error.
+  if (match.state !== undefined && match.state !== 'ready') {
+    const ready = servers.filter((s) => s.state === 'ready').map((s) => s.name);
+    const hint = ready.length ? ` Connected servers: ${ready.join(', ')}.` : '';
+    return `MCP server "${server}" is not connected (state: ${match.state}).${hint}`;
+  }
+  return null;
 }
 
 export const listMcpResourcesTool: ToolDefinition = {
@@ -45,12 +74,11 @@ export const listMcpResourcesTool: ToolDefinition = {
     const mcpManager = context._mcpManager;
     if (!mcpManager) return { output: 'Error: MCP is not initialized.', isError: true };
     const serverFilter = input.server as string | undefined;
-    // Unknown server filter → tell the model which servers actually exist.
+    // Pre-flight: distinguish an unknown or not-connected filter from a genuinely
+    // empty catalog, telling the model which servers actually exist / are ready.
     if (serverFilter) {
-      const names = mcpManager.listServers?.().map((s: { name: string }) => s.name) ?? [];
-      if (names.length && !names.includes(serverFilter)) {
-        return { output: withAvailableServers(`Unknown MCP server "${serverFilter}".`, mcpManager), isError: true };
-      }
+      const preErr = preflightServerError(mcpManager, serverFilter);
+      if (preErr) return { output: preErr, isError: true };
     }
     try {
       const resources = await mcpManager.listResources(serverFilter);
@@ -118,10 +146,10 @@ export const readMcpResourceTool: ToolDefinition = {
     const mcpManager = context._mcpManager;
     if (!mcpManager) return { output: 'Error: MCP is not initialized.', isError: true };
     const server = input.server as string;
-    const names = mcpManager.listServers?.().map((s: { name: string }) => s.name) ?? [];
-    if (names.length && !names.includes(server)) {
-      return { output: withAvailableServers(`Unknown MCP server "${server}".`, mcpManager), isError: true };
-    }
+    // Pre-flight: validate the server exists and is connected before issuing the
+    // resources/read, returning a distinct actionable error for each case.
+    const preErr = preflightServerError(mcpManager, server);
+    if (preErr) return { output: preErr, isError: true };
     try {
       const result = await mcpManager.readResource(server, input.uri as string, { signal: context.abortSignal });
       const dir = path.join(os.tmpdir(), 'ami-mcp-resources');
