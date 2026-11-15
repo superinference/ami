@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { discoverPlugins, loadCommands } from '../src/plugins';
+import { discoverPlugins, loadCommands, DEFAULT_COMMAND_DESCRIPTION } from '../src/plugins';
 import type { PluginBundle, CommandDefinition } from '../src/plugins';
 
 let tmpDir: string;
@@ -238,6 +238,51 @@ describe('discoverPlugins', () => {
     assert.ok(bundles[0]!.commandsDir);
     assert.ok(bundles[0]!.commandsDir!.endsWith('commands'));
   });
+
+  it('honors manifest-declared relative component path overrides (skills/agents/commands/hooks)', () => {
+    makePlugin('overrides', {
+      name: 'OV',
+      skills: 'custom/skills',
+      agents: 'custom/agents',
+      commands: 'custom/cmds',
+      hooks: 'custom/hooks.json',
+    }, { skills: false, agents: false, hooks: false });
+    const root = path.join(tmpDir, 'overrides');
+    fs.mkdirSync(path.join(root, 'custom', 'skills'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'custom', 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'custom', 'cmds'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'custom', 'hooks.json'), '{}');
+    const bundles = discoverPlugins(tmpDir);
+    assert.equal(bundles.length, 1);
+    assert.ok(bundles[0]!.skillsDir!.endsWith(path.join('custom', 'skills')));
+    assert.ok(bundles[0]!.agentsDir!.endsWith(path.join('custom', 'agents')));
+    assert.ok(bundles[0]!.commandsDir!.endsWith(path.join('custom', 'cmds')));
+    assert.ok(bundles[0]!.hooksFile!.endsWith(path.join('custom', 'hooks.json')));
+  });
+
+  it('falls back to default dirs when a manifest override is absent or non-string', () => {
+    // `skills` is an array (object-mapping/array forms not yet supported) → default dir used.
+    makePlugin('fallback-override', { name: 'FB', skills: ['a', 'b'] }, { skills: true, agents: false, hooks: false });
+    const bundles = discoverPlugins(tmpDir);
+    assert.equal(bundles.length, 1);
+    assert.ok(bundles[0]!.skillsDir!.endsWith('skills'));
+  });
+
+  it('leaves a component undefined when its manifest override points at a missing dir', () => {
+    makePlugin('missing-override', { name: 'MO', skills: 'nope/here' }, { skills: true, agents: false, hooks: false });
+    const bundles = discoverPlugins(tmpDir);
+    assert.equal(bundles.length, 1);
+    // The declared override does not exist, so hardenedResolve yields undefined
+    // (the default `skills/` dir is NOT consulted once an override is declared).
+    assert.equal(bundles[0]!.skillsDir, undefined);
+  });
+
+  it('rejects a bundle whose manifest override escapes the plugin dir via ".."', () => {
+    makePlugin('escape-override', { name: 'ESC', skills: '../outside' });
+    const bundles = discoverPlugins(tmpDir);
+    // The ".." override is a hard manifest error → the bundle is a failure, not loaded.
+    assert.equal(bundles.length, 0);
+  });
 });
 
 describe('loadCommands', () => {
@@ -282,21 +327,25 @@ describe('loadCommands', () => {
     assert.equal(cmds[0]!.prompt, 'Line one\nLine two\ttabbed');
   });
 
-  it('skips .toml files missing required fields', () => {
+  it('drops a .toml with no prompt but loads a prompt-only one with a fallback description', () => {
     const dir = path.join(tmpDir, 'partial-cmds');
     fs.mkdirSync(dir, { recursive: true });
-    // Missing prompt
+    // Missing prompt → dropped (a command needs a prompt to do anything).
     fs.writeFileSync(path.join(dir, 'no-prompt.toml'), 'description = "desc only"');
-    // Missing description
+    // Missing description → loaded with the labelled fallback (Claude parity).
     fs.writeFileSync(path.join(dir, 'no-desc.toml'), 'prompt = "prompt only"');
-    // Valid
+    // Valid (both fields).
     fs.writeFileSync(path.join(dir, 'valid.toml'), [
       'description = "Valid"',
       'prompt = "Do something"',
     ].join('\n'));
     const cmds = loadCommands(dir);
-    assert.equal(cmds.length, 1);
-    assert.equal(cmds[0]!.name, 'valid');
+    assert.equal(cmds.length, 2);
+    const byName = new Map(cmds.map(c => [c.name, c]));
+    assert.equal(byName.has('no-prompt'), false, 'prompt-less command must be dropped');
+    assert.equal(byName.get('no-desc')!.description, DEFAULT_COMMAND_DESCRIPTION);
+    assert.equal(byName.get('no-desc')!.prompt, 'prompt only');
+    assert.equal(byName.get('valid')!.description, 'Valid');
   });
 
   it('loads multiple commands from multiple .toml files', () => {
