@@ -194,8 +194,8 @@ export { containsCredential, redactCredentials, findCredentials, getCredentialLa
 export type { CredentialMatch } from './credential-guard';
 export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, SafeModeGuard, BLOCKED_RESOURCES } from './safe-mode';
 export type { SafeModeConfig, BlockedResource } from './safe-mode';
-export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker } from './request-signature';
-export type { RequestSignature } from './request-signature';
+export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS } from './request-signature';
+export type { RequestSignature, SignatureAlgorithm } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';
 export type { SecurityPattern, SecurityFinding } from './code-security-patterns';
 export { AMI_VERSION, AMI_CLIENT_NAME, AMI_CLIENT_INFO } from './version';
