@@ -1,4 +1,5 @@
 import * as child_process from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -8,6 +9,46 @@ import { scanForSecrets } from './tool-utils';
 
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
 const TRAILER_REGEX = /Co-Authored-By:\s*AMI\s*<ami@superinference\.org>/i;
+
+/**
+ * Secret-bearing FILE guard. Mirrors the sensitive-name/ext/pattern list that
+ * permissions.ts applies to reads so the sanctioned commit path can never stage
+ * and push a credential file (`.env`, `credentials.json`, `id_rsa`, `*.pem`, …).
+ * These constants are local because the permissions.ts equivalents are
+ * function-scoped and not exported; keep the two lists in sync if either moves.
+ */
+const SECRET_FILE_NAMES = new Set([
+  'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa', '.netrc',
+  'credentials.json',
+]);
+const SECRET_FILE_EXTS = ['.pem', '.key', '.p12', '.pfx', '.keystore'];
+/** Suffixes that make an `.env`-prefixed file a safe template, not a real secret. */
+const SAFE_ENV_SUFFIX_REGEX = /\.(example|sample|template|dist|defaults?)$/i;
+const SECRET_FILE_PATTERNS = [/^secrets\.ya?ml$/i];
+
+/** True when a staged file's basename matches a known secret-file shape. */
+function isSecretFile(basename: string): boolean {
+  if (/^\.env($|\.)/i.test(basename) && !SAFE_ENV_SUFFIX_REGEX.test(basename)) return true;
+  if (SECRET_FILE_NAMES.has(basename)) return true;
+  if (SECRET_FILE_EXTS.some(ext => basename.toLowerCase().endsWith(ext))) return true;
+  return SECRET_FILE_PATTERNS.some(p => p.test(basename));
+}
+
+/**
+ * Strip foreign / disallowed attribution from a commit message before the AMI
+ * trailer is applied. Removes any `Co-Authored-By:` trailer that is NOT AMI's
+ * own and any AI-tool provenance footer (lines carrying the 🤖 marker), so an
+ * external assistant's byline can never land in a commit — matching the repo's
+ * attribution policy regardless of what the drafted message contained.
+ */
+function stripDisallowedAttribution(message: string): string {
+  const kept = message.split('\n').filter(line => {
+    if (/^\s*Co-Authored-By:/i.test(line) && !TRAILER_REGEX.test(line)) return false;
+    if (line.includes('🤖')) return false;
+    return true;
+  });
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
 
 /**
  * Dependency seam for tests (mirrors the fsHooks pattern in config.ts). The
@@ -32,7 +73,9 @@ function buildCommitEnv(): NodeJS.ProcessEnv {
 }
 
 function buildFinalMessage(message: string): string {
-  const trimmed = message.trim();
+  // Always remove foreign/disallowed attribution first — a drafted message must
+  // never carry another assistant's byline, even when the AMI trailer is opted out.
+  const trimmed = stripDisallowedAttribution(message.trim());
   // Attribution opt-out for user projects that don't want the byline.
   if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') {
     return trimmed;
@@ -116,6 +159,25 @@ export const gitCommitTool: ToolDefinition = {
       };
     }
 
+    // Secret-bearing FILE guard: refuse to commit staged paths that look like
+    // credential files (.env, credentials.json, id_rsa, *.pem, …). git_commit
+    // stages/commits directly via git, bypassing the bash permission layer, so
+    // this is the only place that can stop a credential file reaching a remote.
+    const stagedResult = await execCommand('git diff --cached --name-only', execOpts);
+    const secretFiles = stagedResult.stdout
+      .split('\n')
+      .map(p => p.trim())
+      .filter(Boolean)
+      .filter(p => isSecretFile(path.basename(p)));
+    if (secretFiles.length > 0) {
+      return {
+        output:
+          `Error: refusing to commit files that likely contain secrets: ${secretFiles.join(', ')}. ` +
+          'Unstage them (git restore --staged <file>) or add them to .gitignore before committing.',
+        isError: true,
+      };
+    }
+
     const secrets = scanForSecrets(message);
     if (secrets.length > 0) {
       return { output: `Warning: Potential secrets detected in commit message: ${secrets.join(', ')}. Remove secrets before committing.`, isError: true };
@@ -124,12 +186,19 @@ export const gitCommitTool: ToolDefinition = {
     // Build the final commit message with trailer
     const finalMessage = buildFinalMessage(message);
 
-    // Write message to temp file to avoid shell escaping issues
+    // Write message to temp file to avoid shell escaping issues. Use an
+    // unpredictable randomUUID name and the 'wx' (O_EXCL) flag so a pre-planted
+    // symlink or a predictable-path attacker can't hijack the write target.
     const tmpDir = os.tmpdir();
-    const tmpFile = path.join(tmpDir, `ami-commit-${Date.now()}-${process.pid}.txt`);
+    const tmpFile = path.join(tmpDir, `ami-commit-${crypto.randomUUID()}.txt`);
 
     try {
-      _gitCommitFs.writeFileSync(tmpFile, finalMessage, 'utf-8');
+      try {
+        _gitCommitFs.writeFileSync(tmpFile, finalMessage, { encoding: 'utf-8', flag: 'wx' });
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e);
+        return { output: `Error writing commit message file: ${err}`, isError: true };
+      }
 
       // In detached/unattended mode, bypass user hooks and GPG signing so a
       // pre-commit hook or a passphrase prompt can't hang the run. In the
@@ -162,4 +231,4 @@ export const gitCommitTool: ToolDefinition = {
   },
 };
 
-export { buildFinalMessage, CO_AUTHOR_TRAILER, TRAILER_REGEX };
+export { buildFinalMessage, CO_AUTHOR_TRAILER, TRAILER_REGEX, isSecretFile, stripDisallowedAttribution };
