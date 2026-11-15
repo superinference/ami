@@ -123,6 +123,15 @@ export interface McpPrompt {
 export const MCP_ELICITATION_ACTIONS = ['accept', 'decline', 'cancel'] as const;
 export type McpElicitationAction = (typeof MCP_ELICITATION_ACTIONS)[number];
 
+/**
+ * Elicitation presentation modes (2025-06-18 `mode` discriminator): `'form'`
+ * collects structured field input; `'url'` hands the user a URL to open and runs
+ * a two-phase open→waiting lifecycle. Absent/unknown values are treated as
+ * `'form'` by the frontend.
+ */
+export const MCP_ELICITATION_MODES = ['form', 'url'] as const;
+export type McpElicitationMode = (typeof MCP_ELICITATION_MODES)[number];
+
 export interface McpElicitationRequest {
   /** Human-readable prompt the server wants shown to the user. */
   message: string;
@@ -140,7 +149,7 @@ export interface McpElicitationRequest {
    * `'url'` hands the user a `url` to open in a browser and runs a two-phase
    * open→waiting lifecycle. A frontend reads this to branch its UI.
    */
-  mode?: 'form' | 'url';
+  mode?: McpElicitationMode;
   /** URL-mode only: the URL the server wants opened in the user's browser. */
   url?: string;
   /**
