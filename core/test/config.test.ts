@@ -807,4 +807,75 @@ describe('validateProjectConfigValues', () => {
   it('does not flag valid numeric knobs', () => {
     assert.deepEqual(validateProjectConfigValues({ maxTurns: 50, tokenBudget: 200000, maxBudgetUsd: 10 }), []);
   });
+
+  it('flags a string where a number is expected (and skips the range check for it)', () => {
+    // RED without the base-type guard: "ten" <= 0 is false, so a string maxBudgetUsd
+    // would slip past validateEngineConfig entirely and defeat the spend cap.
+    const issues = validateProjectConfigValues({ maxBudgetUsd: 'ten' as unknown as number });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'maxBudgetUsd');
+    assert.match(issues[0]!.message, /must be a number \(got string\)/);
+    assert.equal(issues[0]!.value, 'ten');
+  });
+
+  it('flags a non-finite number as a bad number', () => {
+    const issues = validateProjectConfigValues({ maxTurns: NaN as unknown as number });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'maxTurns');
+    assert.match(issues[0]!.message, /must be a number/);
+  });
+
+  it('flags a non-boolean where a boolean is expected', () => {
+    const issues = validateProjectConfigValues({ safeMode: 'yes' as unknown as boolean });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'safeMode');
+    assert.match(issues[0]!.message, /must be a boolean \(got string\)/);
+  });
+
+  it('flags a non-array where a string[] is expected', () => {
+    const issues = validateProjectConfigValues({ allowedMcpServers: 'srv' as unknown as string[] });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'allowedMcpServers');
+    assert.match(issues[0]!.message, /must be a string\[\] \(got string\)/);
+  });
+
+  it('flags an array that is not homogeneously string[]', () => {
+    const issues = validateProjectConfigValues({ enforceAvailableModels: ['ok', 7] as unknown as string[] });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'enforceAvailableModels');
+    assert.match(issues[0]!.message, /must be a string\[\]/);
+  });
+
+  it('flags null / an array where an object is expected', () => {
+    const nullIssues = validateProjectConfigValues({ superinference: null as unknown as ProjectConfig['superinference'] });
+    assert.equal(nullIssues.length, 1);
+    assert.equal(nullIssues[0]!.field, 'superinference');
+    assert.match(nullIssues[0]!.message, /must be a object \(got null\)/);
+    const arrIssues = validateProjectConfigValues({ env: [] as unknown as ProjectConfig['env'] });
+    assert.equal(arrIssues.length, 1);
+    assert.equal(arrIssues[0]!.field, 'env');
+    assert.match(arrIssues[0]!.message, /must be a object \(got array\)/);
+  });
+
+  it('accepts a well-typed array, boolean and object', () => {
+    assert.deepEqual(
+      validateProjectConfigValues({
+        allowedMcpServers: ['a', 'b'],
+        safeMode: true,
+        superinference: { enforcing: true },
+        env: { FOO: 'bar' },
+      }),
+      [],
+    );
+  });
+
+  it('reports a non-string enum value once (not also as a type error)', () => {
+    // permissionMode/cacheTtl are not in the base-type table, so a numeric value is
+    // surfaced by the enum check alone.
+    const issues = validateProjectConfigValues({ permissionMode: 2 as unknown as ProjectConfig['permissionMode'] });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0]!.field, 'permissionMode');
+    assert.match(issues[0]!.message, /must be one of/);
+    assert.equal(issues[0]!.value, 2);
+  });
 });

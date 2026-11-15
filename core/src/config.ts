@@ -250,6 +250,18 @@ export interface ConfigValueIssue {
   field: string;
   /** Human-readable reason the value is invalid. */
   message: string;
+  /** The offending value, so a caller can surface "you supplied X" to the user
+   *  (parity: Claude's ValidationError.invalidValue). */
+  value?: unknown;
+}
+
+/**
+ * Describe the JSON runtime kind of a value for a diagnostic message, distinguishing
+ * `null` and `array` from a plain `object` (mirroring JSON's own value types). Shared
+ * by the "not an object" and per-field type diagnostics so the wording stays one source.
+ */
+function describeJsonType(value: unknown): string {
+  return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
 }
 
 /** A problem found while loading a config file (distinct from "file absent"). */
@@ -269,30 +281,92 @@ const PROJECT_CONFIG_ENUMS: ReadonlyArray<readonly [keyof ProjectConfig, readonl
   ['cacheTtl', ['5m', '1h']],
 ];
 
+/** The expected runtime base-type of each typed ProjectConfig field. */
+type ConfigFieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'object';
+
+/**
+ * Expected runtime base-type of each typed ProjectConfig field. Enum fields live in
+ * {@link PROJECT_CONFIG_ENUMS}; numeric RANGE is delegated to {@link validateEngineConfig}.
+ * This table only guards the base runtime type so an untrusted JSON value of the wrong
+ * type (a string where a number/boolean/array is expected) is surfaced instead of
+ * silently flowing into runtime behavior — e.g. a string `maxBudgetUsd`, whose
+ * `"ten" <= 0` comparison is `false`, would otherwise slip past the spend-cap range
+ * check. Parity: Claude's per-field settings-schema validation.
+ */
+const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, ConfigFieldType]> = [
+  ['model', 'string'], ['provider', 'string'], ['baseUrl', 'string'],
+  ['thinkingLevel', 'string'], ['maxEffortLevel', 'string'], ['fallbackModel', 'string'],
+  ['compactionModel', 'string'], ['skill', 'string'], ['statusLine', 'string'],
+  ['maxTurns', 'number'], ['tokenBudget', 'number'], ['maxBudgetUsd', 'number'],
+  ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
+  ['maxWebSearchesPerSession', 'number'],
+  ['safeMode', 'boolean'], ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
+  ['composerHintsEnabled', 'boolean'], ['disableBypassPermissionsMode', 'boolean'],
+  ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
+  ['allowManagedModsOnly', 'boolean'],
+  ['enforceAvailableModels', 'string[]'], ['allowedMcpServers', 'string[]'],
+  ['fallbackModels', 'string[]'], ['alwaysLoadTools', 'string[]'],
+  ['sandboxExcludedCommands', 'string[]'],
+  ['superinference', 'object'], ['managedMcpServers', 'object'],
+  ['enabledPlugins', 'object'], ['env', 'object'],
+  ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
+];
+
+/**
+ * True when `value` matches the expected {@link ConfigFieldType}. Numbers must be
+ * finite (an out-of-range literal is not a usable knob); arrays must be homogeneously
+ * `string[]`; objects exclude `null` and arrays.
+ */
+function matchesConfigFieldType(value: unknown, type: ConfigFieldType): boolean {
+  switch (type) {
+    case 'string': return typeof value === 'string';
+    case 'number': return typeof value === 'number' && Number.isFinite(value);
+    case 'boolean': return typeof value === 'boolean';
+    case 'string[]': return Array.isArray(value) && value.every(v => typeof v === 'string');
+    case 'object': return value !== null && typeof value === 'object' && !Array.isArray(value);
+  }
+}
+
 /**
  * Validate the VALUES of a parsed config (the file parsed as a JSON object, but a
- * field may still hold an out-of-range number or an invalid enum string — the
- * TypeScript type gives no runtime guarantee). Returns a field-level issue list
- * so the loader can surface "your config.json has a bad value" instead of
- * silently accepting it (parity: Claude surfaces settings-validation errors).
+ * field may still hold the wrong type, an out-of-range number, or an invalid enum
+ * string — the TypeScript type gives no runtime guarantee). Returns a field-level
+ * issue list (each carrying the offending `value`) so the loader can surface "your
+ * config.json has a bad value" instead of silently accepting it (parity: Claude
+ * surfaces per-field settings-validation errors).
  *
- * Numeric knobs reuse the canonical {@link validateEngineConfig} (no duplicate
- * range logic); only the ProjectConfig-specific enum fields are checked here.
+ * Numeric RANGE reuses the canonical {@link validateEngineConfig} (no duplicate range
+ * logic); this adds the ProjectConfig-specific base-type and enum checks.
  */
 export function validateProjectConfigValues(config: ProjectConfig): ConfigValueIssue[] {
   const issues: ConfigValueIssue[] = [];
+  // 1. Base runtime-type guard. Untrusted JSON gives no runtime guarantee for a field
+  //    the type calls a number/boolean/array; surface a wrong base type rather than
+  //    letting it silently flow past the enum/range checks below.
+  const typeInvalid = new Set<string>();
+  for (const [field, type] of PROJECT_CONFIG_FIELD_TYPES) {
+    const value = config[field];
+    if (value === undefined) continue;
+    if (!matchesConfigFieldType(value, type)) {
+      issues.push({ field: field as string, message: `must be a ${type} (got ${describeJsonType(value)})`, value });
+      typeInvalid.add(field as string);
+    }
+  }
+  // 2. Enum fields (permissionMode/cacheTtl are not in the type table above, so a
+  //    non-string enum value is reported here as an out-of-set value).
   for (const [field, allowed] of PROJECT_CONFIG_ENUMS) {
     const value = config[field];
     if (value !== undefined && !allowed.includes(value as string)) {
-      issues.push({ field: field as string, message: `must be one of ${allowed.join(', ')} (got ${JSON.stringify(value)})` });
+      issues.push({ field: field as string, message: `must be one of ${allowed.join(', ')} (got ${JSON.stringify(value)})`, value });
     }
   }
-  // Numeric knobs — delegate to the single canonical EngineConfig validator,
-  // one field at a time so each invalid value is attributed to its own field.
+  // 3. Numeric RANGE — delegate to the single canonical EngineConfig validator, one
+  //    field at a time so each invalid value is attributed to its own field. Skip a
+  //    field already flagged in step 1 so a non-number can't reach the range logic.
   for (const field of ['maxTurns', 'tokenBudget', 'maxBudgetUsd'] as const) {
-    if (config[field] === undefined) continue;
+    if (config[field] === undefined || typeInvalid.has(field)) continue;
     const r = validateEngineConfig({ [field]: config[field] } as Partial<EngineConfig>);
-    if (!r.valid) issues.push({ field, message: r.warnings.join('; ') });
+    if (!r.valid) issues.push({ field, message: r.warnings.join('; '), value: config[field] });
   }
   return issues;
 }
@@ -356,7 +430,7 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     return { config: null, diagnostic: { path: configPath, kind: 'parse-error', message, backupPath } };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    const message = `Expected a JSON object, got ${parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed}`;
+    const message = `Expected a JSON object, got ${describeJsonType(parsed)}`;
     coreLog('config', `invalid config at ${configPath}: ${message}`);
     return { config: null, diagnostic: { path: configPath, kind: 'not-object', message } };
   }
@@ -751,7 +825,7 @@ export function validateConfigJson(content: string): { valid: boolean; error?: s
     return { valid: false, error: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}` };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { valid: false, error: `Expected a JSON object, got ${parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed}` };
+    return { valid: false, error: `Expected a JSON object, got ${describeJsonType(parsed)}` };
   }
   return { valid: true };
 }
