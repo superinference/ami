@@ -9,13 +9,16 @@
  *   3. whitespace_normalized — collapse whitespace runs to single space
  *   4. indentation_flexible  — strip leading whitespace entirely
  *   5. escape_normalized     — convert \\n to newlines, smart quotes to ASCII
+ *   6. desanitize_normalized — map API-sanitized token forms back to raw
+ *   7. block_anchor          — last-resort: match a >=3-line block on its first
+ *                              and last (trimmed) lines, ignoring the interior
  */
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export const STRATEGY_NAMES = ['exact', 'line_trimmed', 'whitespace_normalized', 'indentation_flexible', 'escape_normalized', 'desanitize_normalized'] as const;
+export const STRATEGY_NAMES = ['exact', 'line_trimmed', 'whitespace_normalized', 'indentation_flexible', 'escape_normalized', 'desanitize_normalized', 'block_anchor'] as const;
 export type StrategyName = (typeof STRATEGY_NAMES)[number];
 
 /**
@@ -117,6 +120,13 @@ function findByLine(
   const normContentLines = contentLines.map(normalizeLine);
   const normPatternLines = patternLines.map(normalizeLine);
 
+  // Guard: a pattern that normalizes to nothing but empty lines (empty or
+  // whitespace-only old_string) must NOT silently match the file's blank lines.
+  // Such a match is never what the caller intended and is inherently ambiguous;
+  // fall through so the caller gets a clean not-found instead of clobbering a
+  // random blank line.
+  if (normPatternLines.every(l => l === '')) return [];
+
   const results: MatchPosition[] = [];
 
   // Slide the pattern window over the content lines
@@ -172,6 +182,61 @@ function findWhitespaceNormalized(content: string, pattern: string): MatchPositi
 
 function findIndentationFlexible(content: string, pattern: string): MatchPosition[] {
   return findByLine(content, pattern, l => l.replace(/^\s+/, ''));
+}
+
+/**
+ * Block-anchor matching (last-resort fuzzy strategy).
+ *
+ * When every line-level strategy fails — typically because the INTERIOR of a
+ * multi-line block drifted (reformatting, a renamed local, a reflowed comment)
+ * while its boundaries are stable — anchor the match on the first and last lines
+ * only. A candidate is a window of exactly `patternLines.length` content lines
+ * whose first and last lines (trimmed) equal the pattern's first and last lines
+ * (trimmed). The interior is intentionally ignored.
+ *
+ * Constraints that keep this safe and additive:
+ *   - requires >= 3 lines (a 2-line block is just its two anchors, which the
+ *     line-level strategies already cover; anchoring there adds nothing and
+ *     would over-match),
+ *   - both anchors must be non-empty after trimming (blank boundaries are not
+ *     distinctive enough to anchor on),
+ *   - the window length is fixed to the pattern length so the replaced span is
+ *     unambiguous, and multiple candidates still surface as an ambiguity error.
+ */
+function findBlockAnchor(content: string, pattern: string): MatchPosition[] {
+  const { lines: contentLines, terminated: contentTerminated } = splitLogicalLines(content);
+  const { lines: patternLines, terminated: patternTerminated } = splitLogicalLines(pattern);
+
+  const span = patternLines.length;
+  if (span < 3) return [];
+
+  const firstAnchor = patternLines[0].trim();
+  const lastAnchor = patternLines[span - 1].trim();
+  if (firstAnchor.length === 0 || lastAnchor.length === 0) return [];
+
+  const results: MatchPosition[] = [];
+  for (let i = 0; i + span <= contentLines.length; i++) {
+    if (contentLines[i].trim() !== firstAnchor) continue;
+    if (contentLines[i + span - 1].trim() !== lastAnchor) continue;
+
+    // Map the window back to original byte offsets (same accounting as findByLine).
+    let start = 0;
+    for (let k = 0; k < i; k++) {
+      start += contentLines[k].length + 1; // +1 for \n
+    }
+    let end = start;
+    for (let k = i; k < i + span; k++) {
+      end += contentLines[k].length;
+      const lastPatternLine = k === i + span - 1;
+      const newlineFollows = k < contentLines.length - 1 || contentTerminated;
+      if (!lastPatternLine || (patternTerminated && newlineFollows)) {
+        end += 1;
+      }
+    }
+    results.push({ start, end });
+  }
+
+  return results;
 }
 
 function normalizeEscapes(s: string): string {
@@ -360,6 +425,7 @@ const STRATEGIES: Array<{
   { name: 'indentation_flexible', find: findIndentationFlexible },
   { name: 'escape_normalized', find: findEscapeNormalized },
   { name: 'desanitize_normalized', find: findDesanitized },
+  { name: 'block_anchor', find: findBlockAnchor },
 ];
 
 /**
@@ -372,6 +438,15 @@ export function fuzzyFindAndReplace(
   oldString: string,
   newString: string,
 ): FuzzyResult {
+  // An empty old_string has no anchor to locate — matching it would be a no-op
+  // insertion at an arbitrary position (and the escape/indexOf paths would even
+  // report every offset as a "match"). Reject it up front with a clean, typed
+  // failure rather than clobbering the file. Non-empty whitespace is still
+  // allowed through so a genuine exact run of spaces/tabs can match.
+  if (oldString === '') {
+    return { newContent: null, strategy: null, matchCount: 0, error: 'old_string is empty' };
+  }
+
   // Deletion (new_string === ''): if old_string does not itself end in a newline but
   // the file contains old_string followed by '\n', delete the whole line INCLUDING its
   // trailing newline so no empty line is left behind. Only when that yields a single

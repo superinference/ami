@@ -17,17 +17,82 @@ export const PERMISSION_MODES = ['ask', 'auto-allow', 'deny-all', 'acceptEdits',
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
+ * Non-canonical permission-mode spellings → the canonical {@link PermissionMode}
+ * they denote. This is purely ADDITIVE acceptance: it widens the set of strings
+ * {@link normalizePermissionMode} will ACCEPT, it never changes what a canonical
+ * mode means and never maps anything to a MORE-permissive default (unknown stays
+ * `null`). Keys are matched exactly first, then case-insensitively.
+ *
+ * Parity note: Claude Code's interactive default mode is named `default`; AMI
+ * names that same semantic `ask`. A Claude settings.json (`"defaultMode":
+ * "default"`) or `--permission-mode default` must therefore resolve to `ask`
+ * rather than be rejected. The kebab/camel/lowercase variants let a rule file
+ * authored against either naming convention load without a spelling mismatch
+ * (the mode names deliberately mix AMI-kebab and CC-camel, see above).
+ */
+export const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
+  // Legacy removed duplicate (both denied every tool call) — kept for back-compat.
+  dontAsk: 'deny-all',
+  // Claude Code's canonical name for the interactive default.
+  default: 'ask',
+  normal: 'ask',
+  interactive: 'ask',
+  // Case/kebab-insensitive spellings of the mixed-naming canonical modes.
+  acceptedits: 'acceptEdits',
+  'accept-edits': 'acceptEdits',
+  bypasspermissions: 'bypassPermissions',
+  'bypass-permissions': 'bypassPermissions',
+  bypass: 'bypassPermissions',
+  denyall: 'deny-all',
+  autoallow: 'auto-allow',
+  'plan-mode': 'plan',
+};
+
+/**
  * The single acceptance boundary for a permission-mode string (discovery-driven: the
  * valid set IS {@link PERMISSION_MODES}, so a new mode is accepted everywhere the moment
- * it is added to the const — no hardcoded subset can drift, cf. ui#19). Returns the mode,
- * maps the removed legacy duplicate `dontAsk` → `deny-all` for back-compat, or null if
- * unknown. Every consumer (CLI `--permission-mode`, project config, `/permissions <mode>`)
- * MUST validate through this rather than an inline list.
+ * it is added to the const — no hardcoded subset can drift, cf. ui#19). Returns the
+ * canonical mode, resolves a non-canonical spelling via {@link PERMISSION_MODE_ALIASES}
+ * (exact match first, then case-insensitively — e.g. `default` → `ask`, the Claude Code
+ * wire name), or null if unknown. Every consumer (CLI `--permission-mode`, project
+ * config, `/permissions <mode>`) MUST validate through this rather than an inline list.
  */
 export function normalizePermissionMode(raw: string): PermissionMode | null {
   const m = raw.trim();
-  if (m === 'dontAsk') return 'deny-all';
-  return (PERMISSION_MODES as readonly string[]).includes(m) ? (m as PermissionMode) : null;
+  // Canonical modes win first — an alias can never shadow or re-map a real mode.
+  if ((PERMISSION_MODES as readonly string[]).includes(m)) return m as PermissionMode;
+  // Exact alias (preserves camel spellings like `dontAsk`), then case-insensitive.
+  return PERMISSION_MODE_ALIASES[m] ?? PERMISSION_MODE_ALIASES[m.toLowerCase()] ?? null;
+}
+
+/**
+ * The ordered set of permission modes a user cycles through interactively (the
+ * Claude Code shift-tab cycle: default → accept-edits → plan → default). The
+ * blanket modes (`deny-all`, `auto-allow`, `bypassPermissions`) are deliberately
+ * EXCLUDED so an accidental keypress can never silently drop into a mode that
+ * allows or denies everything — those are reachable only via an explicit flag.
+ */
+export const PERMISSION_MODE_CYCLE: readonly PermissionMode[] = ['ask', 'acceptEdits', 'plan'];
+
+/**
+ * Advance the permission mode one step around {@link PERMISSION_MODE_CYCLE}
+ * (parity with Claude Code's shift-tab mode toggle). `forward` mirrors shift-tab,
+ * `backward` the reverse. If `current` is a flag-only blanket mode outside the
+ * cycle, re-enter at the safe interactive default (`forward`) or the last cycle
+ * entry (`backward`) — a user-initiated cycle never auto-widens a blanket deny
+ * into a permissive blanket mode; it lands on a rule-evaluated mode.
+ */
+export function cyclePermissionMode(
+  current: PermissionMode,
+  direction: 'forward' | 'backward' = 'forward',
+): PermissionMode {
+  const n = PERMISSION_MODE_CYCLE.length;
+  const idx = PERMISSION_MODE_CYCLE.indexOf(current);
+  if (idx === -1) {
+    return direction === 'forward' ? PERMISSION_MODE_CYCLE[0]! : PERMISSION_MODE_CYCLE[n - 1]!;
+  }
+  const next = direction === 'forward' ? (idx + 1) % n : (idx - 1 + n) % n;
+  return PERMISSION_MODE_CYCLE[next]!;
 }
 
 /**

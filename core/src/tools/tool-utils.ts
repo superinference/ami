@@ -29,6 +29,10 @@ export const BLOCKED_PATHS = [
   '/dev/stdin', '/dev/stdout', '/dev/stderr',
   '/dev/fd/', '/dev/tcp/', '/dev/udp/',
   '/proc/self/fd/', '/proc/self/mem',
+  // PARITY ADD: physical/kernel memory + I/O-port devices. Reading these can
+  // dump raw RAM (leaking any process's secrets) or hard-hang the reader;
+  // /proc/kcore exposes the live kernel core image for the same reason.
+  '/dev/mem', '/dev/kmem', '/dev/port', '/proc/kcore',
 ];
 
 export function isBlockedPath(filePath: string): boolean {
@@ -61,12 +65,23 @@ export function validateFilePath(filePath: string): ToolResult | null {
 /**
  * Escape control characters in a file path for safe display in error messages.
  * Prevents newlines/tabs from breaking message formatting.
+ *
+ * PARITY FIX: previously only `\n`/`\r`/`\t` were escaped, so an attacker-named
+ * path containing an ESC (`\x1b`), BEL (`\x07`), backspace, or other C0/C1/DEL
+ * control byte flowed verbatim into a terminal error message — a classic ANSI
+ * terminal-injection vector (cursor moves, title rewrites, hidden-text tricks).
+ * We keep the readable `\n`/`\r`/`\t` forms and escape every other control
+ * character as a `\xHH` sequence.
  */
 export function sanitizePathForDisplay(filePath: string): string {
   return filePath
     .replace(/\n/g, '\\n')
     .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
+    .replace(/\t/g, '\\t')
+    // Remaining C0 controls (excl. the three handled above), DEL, and C1 range.
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, (c) =>
+      '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'),
+    );
 }
 
 /**
@@ -438,12 +453,25 @@ export function renderToolDescription(
 
 const SECRET_PATTERNS = [
   /(?:^|[^a-zA-Z0-9])(?:sk-[a-zA-Z0-9]{20,})(?:[^a-zA-Z0-9]|$)/,   // OpenAI
-  /(?:^|[^a-zA-Z0-9])(?:sk-ant-[a-zA-Z0-9]{20,})/,                   // Anthropic
-  /(?:^|[^a-zA-Z0-9])(?:ghp_[a-zA-Z0-9]{36})/,                       // GitHub PAT
+  // PARITY FIX: real Anthropic keys are `sk-ant-api03-<base64url>` — the body
+  // contains `-`/`_`, so the old `[a-zA-Z0-9]{20,}` run stopped after `api03`
+  // and never matched a genuine key. Allow `_` and `-` in the token body.
+  /(?:^|[^a-zA-Z0-9])(?:sk-ant-[a-zA-Z0-9_-]{20,})/,                 // Anthropic
+  /(?:^|[^a-zA-Z0-9])(?:ghp_[a-zA-Z0-9]{36})/,                       // GitHub PAT (classic)
+  // PARITY FIX: GitHub fine-grained PATs use the `github_pat_` prefix (82-char
+  // body incl. underscores) — previously undetected as a dedicated token.
+  /(?:^|[^a-zA-Z0-9])(?:github_pat_[A-Za-z0-9_]{70,})/,              // GitHub fine-grained PAT
   /(?:^|[^a-zA-Z0-9])(?:gh[osur]_[a-zA-Z0-9]{36,})/,                 // GitHub OAuth/Server/User/Refresh
   /(?:^|[^a-zA-Z0-9])(?:gsk_[a-zA-Z0-9]{20,})/,                      // Groq
   /(?:^|[^a-zA-Z0-9])(?:AKIA[A-Z0-9]{16})/,                          // AWS Access Key
   /(?:^|[^a-zA-Z0-9])(?:AIza[a-zA-Z0-9_-]{35})/,                     // Google API Key
+  // PARITY ADD: Google OAuth access/refresh tokens (`ya29.<token>`).
+  /(?:^|[^a-zA-Z0-9])(?:ya29\.[0-9A-Za-z_-]{20,})/,                  // Google OAuth token
+  // PARITY ADD: Stripe secret / restricted keys (`sk_live_`, `rk_test_`, …) —
+  // underscore-delimited, so the OpenAI `sk-` rule never matched them.
+  /(?:^|[^a-zA-Z0-9])(?:[rs]k_(?:live|test)_[0-9a-zA-Z]{20,})/,      // Stripe secret/restricted key
+  // PARITY ADD: SendGrid API keys (`SG.<22>.<43>`).
+  /(?:^|[^a-zA-Z0-9])(?:SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})/,  // SendGrid
   /(?:^|[^a-zA-Z0-9])(?:gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/,  // GitLab
   /(?:^|[^a-zA-Z0-9])(?:xox[bpsar]-[a-zA-Z0-9-]{10,})/,              // Slack
   /(?:^|[^a-zA-Z0-9])(?:eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,})/,  // JWT
@@ -493,13 +521,20 @@ export function redactSecrets(content: string): string {
   // 2. Token patterns (first 6 of SECRET_PATTERNS) capture a single boundary char
   // then the secret; redact just the secret run.
   const tokenRes = [
-    /(sk-ant-[a-zA-Z0-9-]{20,})/g,
+    // PARITY FIX: include `_` so real `sk-ant-api03-…` Anthropic keys redact fully.
+    /(sk-ant-[a-zA-Z0-9_-]{20,})/g,
     /(sk-[a-zA-Z0-9]{20,})/g,
+    // PARITY ADD: GitHub fine-grained PAT — must precede the generic `gh*` rules.
+    /(github_pat_[A-Za-z0-9_]{70,})/g,
     /(ghp_[a-zA-Z0-9]{36})/g,
     /(gh[osur]_[a-zA-Z0-9]{36,})/g,
     /(gsk_[a-zA-Z0-9]{20,})/g,
     /(AKIA[A-Z0-9]{16})/g,
     /(AIza[a-zA-Z0-9_-]{35})/g,
+    // PARITY ADD: Google OAuth, Stripe, SendGrid tokens.
+    /(ya29\.[0-9A-Za-z_-]{20,})/g,
+    /([rs]k_(?:live|test)_[0-9a-zA-Z]{20,})/g,
+    /(SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})/g,
     /(gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/g,
     /(xox[bpsar]-[a-zA-Z0-9-]{10,})/g,
     /(eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]+)/g,

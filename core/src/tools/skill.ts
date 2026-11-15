@@ -1,7 +1,63 @@
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, isStanceSkill } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, isStanceSkill, sanitizeSkillArgs } from '../skills';
+
+/**
+ * The outcome of resolving a requested skill name against the manager.
+ * - `skill`/`canonicalName` identify the resolved skill (the name the manager
+ *   recognizes — pass it to `getSkillContent`).
+ * - `ambiguous` lists the qualified candidates when an UNqualified request
+ *   matches several directory/plugin-scoped skills and cannot be disambiguated.
+ */
+export interface SkillResolution {
+  skill: SkillDefinition | null;
+  canonicalName: string;
+  ambiguous?: string[];
+}
+
+/**
+ * Resolve a requested skill name to a registered skill, mirroring Claude Code's
+ * Skill-tool name resolution as an additive superset:
+ *
+ * 1. **Exact match** — handles unscoped names and fully-qualified `plugin:skill`
+ *    / directory-scoped `dir:name` forms that the manager stores verbatim.
+ * 2. **Qualifier fallback** — a qualified request (`X:Y`) whose prefix is not
+ *    registered falls back to the bare skill segment `Y` (so `web:deploy`
+ *    resolves `deploy` when only the unscoped skill exists).
+ * 3. **Most-specific-wins** — an UNqualified request `Y` resolves to a unique
+ *    scoped variant `*:Y` when exactly one exists; when several scoped skills
+ *    match it is reported as ambiguous so the caller can qualify it rather than
+ *    silently guessing.
+ *
+ * Pure + exported for testability. Takes only the subset of the manager it needs.
+ */
+export function resolveSkillTarget(
+  requested: string,
+  manager: Pick<SkillManagerLike, 'getSkill' | 'listSkills'>,
+): SkillResolution {
+  const name = requested.trim().replace(/^\/+/, '');
+
+  const exact = manager.getSkill(name);
+  if (exact) return { skill: exact, canonicalName: name };
+
+  if (name.includes(':')) {
+    const bare = name.slice(name.lastIndexOf(':') + 1);
+    if (bare && bare !== name) {
+      const bareMatch = manager.getSkill(bare);
+      if (bareMatch) return { skill: bareMatch, canonicalName: bare };
+    }
+    return { skill: null, canonicalName: name };
+  }
+
+  const suffix = `:${name}`;
+  const scoped = manager.listSkills().filter(s => s.name.endsWith(suffix));
+  if (scoped.length === 1) return { skill: scoped[0], canonicalName: scoped[0].name };
+  if (scoped.length > 1) {
+    return { skill: null, canonicalName: name, ambiguous: scoped.map(s => s.name) };
+  }
+  return { skill: null, canonicalName: name };
+}
 
 /**
  * Filter tools for a skill based on its allowedTools and disallowedTools settings.
@@ -81,6 +137,13 @@ export const skillTool: ToolDefinition = {
     const rawName = (input.skill ?? input.name ?? input.skill_name ?? input.skillName) as string;
     const args = (input.args ?? input.prompt ?? input.arguments) as string | undefined;
 
+    // FUNCTIONAL (parity/arg-safety): bound the ARGUMENTS passthrough before it
+    // reaches the skill template. Previously the raw args string flowed unbounded
+    // into getSkillContent (and MCP getPrompt); an oversized value could blow up
+    // the context. sanitizeSkillArgs caps the value to MAX_SKILL_ARG_VALUE_LENGTH,
+    // matching the arg-safety limits Claude Code enforces on skill invocation.
+    const safeArgs = args ? sanitizeSkillArgs({ ARGUMENTS: args }) : undefined;
+
     if (!rawName || rawName.trim().length === 0) {
       return { output: 'Error: skill name must not be empty. Pass the bare skill name, e.g. {"skill":"code-review"}.', isError: true };
     }
@@ -91,7 +154,18 @@ export const skillTool: ToolDefinition = {
       return { output: 'Error: skill manager not available in this context.', isError: true };
     }
 
-    const skillDef = context._skillManager.getSkill(skillName);
+    // FUNCTIONAL (parity/name-resolution): resolve plugin-qualified (`plugin:skill`)
+    // and directory-scoped (`dir:name`) names with most-specific-wins semantics
+    // instead of a single verbatim getSkill() lookup. See resolveSkillTarget.
+    const resolution = resolveSkillTarget(skillName, context._skillManager);
+    if (resolution.ambiguous) {
+      return {
+        output: `Error: skill "${skillName}" is ambiguous — it matches multiple scoped skills: ${resolution.ambiguous.join(', ')}. Qualify it, e.g. {"skill":"${resolution.ambiguous[0]}"}.`,
+        isError: true,
+      };
+    }
+    const skillDef = resolution.skill;
+    const resolvedName = resolution.canonicalName;
     if (skillDef && isStanceSkill(skillDef)) {
       // Stance skills are activated by switching the session stance, which the
       // engine special-cases BEFORE this tool runs (it registers the stance's
@@ -107,14 +181,14 @@ export const skillTool: ToolDefinition = {
       return { output: `Error: Skill "${skillName}" has disableModelInvocation set and cannot be invoked by the model.`, isError: true };
     }
 
-    const skillContent = context._skillManager.getSkillContent(skillName, args ? { ARGUMENTS: args } : undefined);
+    const skillContent = context._skillManager.getSkillContent(resolvedName, safeArgs);
 
     if (context._mcpManager && !skillContent) {
       try {
         const mcpPrompts = await context._mcpManager.listPrompts?.();
         const mcpSkill = mcpPrompts?.find((p: any) => p.name === skillName);
         if (mcpSkill) {
-          const promptResult = await context._mcpManager.getPrompt?.(mcpSkill.server, skillName, args ? { ARGUMENTS: args } : {});
+          const promptResult = await context._mcpManager.getPrompt?.(mcpSkill.server, skillName, safeArgs ?? {});
           if (promptResult) {
             return { output: `[MCP Skill: ${skillName}]\n${JSON.stringify(promptResult)}` };
           }
@@ -131,11 +205,11 @@ export const skillTool: ToolDefinition = {
     const isInline = skill?.context === 'inline' || !skill?.context;
 
     if (isInline && context._engineAddSystemReminder) {
-      context._engineAddSystemReminder(`[Skill: ${skillName}]\n${skillContent}`);
-      context._engineSetActiveSkill?.(skillName);
+      context._engineAddSystemReminder(`[Skill: ${resolvedName}]\n${skillContent}`);
+      context._engineSetActiveSkill?.(resolvedName);
       return {
-        output: `Skill "${skillName}" activated inline. Following its instructions.`,
-        metadata: { mode: 'inline', skill: skillName, model: skill?.model },
+        output: `Skill "${resolvedName}" activated inline. Following its instructions.`,
+        metadata: { mode: 'inline', skill: resolvedName, model: skill?.model },
       };
     }
     const allTools = createDefaultTools(context.cwd);
@@ -191,18 +265,18 @@ export const skillTool: ToolDefinition = {
       return {
         output: `Skill execution error: ${err instanceof Error ? err.message : String(err)}${partial}`,
         isError: true,
-        metadata: { mode: 'forked', skill: skillName, model: providerConfig.model, toolCount: tools.length },
+        metadata: { mode: 'forked', skill: resolvedName, model: providerConfig.model, toolCount: tools.length },
       };
     } finally {
       context.abortSignal.removeEventListener('abort', forwardAbort);
       (subEngine as any).shutdown?.();
     }
 
-    const header = `[Skill: ${skillName} · ${tools.length} tools · model ${providerConfig.model || 'default'}]`;
+    const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}]`;
     return {
       output: `${header}\n${capSkillOutput(result) || '(skill produced no output)'}`,
       isError: false,
-      metadata: { mode: 'forked', skill: skillName, model: providerConfig.model, toolCount: tools.length },
+      metadata: { mode: 'forked', skill: resolvedName, model: providerConfig.model, toolCount: tools.length },
     };
   },
 };

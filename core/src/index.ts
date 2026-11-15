@@ -3,6 +3,8 @@ export type { Session, SessionListEntry, TurnInterruption } from './session';
 export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall, describeProviders } from './provider';
 export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
+export { skillTool, filterToolsForSkill, resolveSkillTarget, SKILL_MAX_RESULT_CHARS } from './tools/skill';
+export type { SkillResolution } from './tools/skill';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
 export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV, VALID_INSTALL_SCOPES } from './plugins';
@@ -127,14 +129,16 @@ export { generateTitle } from './title-generator';
 export { ProcessManager, TASK_STATUS } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
 
-export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE } from './token-estimator';
+export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE, estimateTextTokens, estimateImageTokens, utf8ByteLength } from './token-estimator';
 export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
-export type { ToolStats, ContextHint } from './tool-analytics';
+export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
 export { Reservoir, percentile as reservoirPercentile, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { FILE_IMAGES_KINDS } from './tools/file-read';
-export { MCP_AUTH_STATUS } from './tools/mcp-auth';
+export { MCP_AUTH_STATUS, MCP_AUTH_ERROR_KINDS, redactAuthUrl, classifyMcpAuthError } from './tools/mcp-auth';
+export type { McpAuthStatus, McpAuthErrorKind, McpAuthServerConfig } from './tools/mcp-auth';
+export { scheduleWakeupTool, clampWakeupDelay, resetLoopPacingState, LOOP_CONTINUE_SENTINEL, NOOP_STREAK_WARN_THRESHOLD, WAKEUP_MIN_DELAY_SECONDS, WAKEUP_MAX_DELAY_SECONDS } from './tools/schedule-wakeup';
 export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite, detectGitInternalWrite, detectPowerShellExecution } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
 export { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE, _resetDockerAvailableCache } from './tools/docker-sandbox';
@@ -143,7 +147,8 @@ export { withExtraHeaders } from './provider';
 // Consumed by common (/model ZDR listing); the ZDR-error + request-side helpers are
 // used internally by core (error-classifier, provider) so are not re-exported here.
 export { fetchZdrModelIds, filterZdrModels } from './openrouter-zdr';
-export { levenshteinDistance, suggestSimilarPaths } from './tools/path-suggest';
+export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, suggestByBasename } from './tools/path-suggest';
+export type { PathSuggestionKind, PathCorrectionOptions, PathCorrectionResult, BasenameSearchOptions } from './tools/path-suggest';
 export type { TurnData, TurnSummary } from './turn-metrics';
 export { TurnMetrics } from './turn-metrics';
 export { isGrepNoMatchExit, stripGrepFlags } from './tools/grep';
@@ -171,8 +176,8 @@ export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS, isBypassPermissionsModeDisabled, i
 export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged, formatDangerousSettingsList } from './settings-guard';
 export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';
-export { detectToolConflict, isReservedToolName, ToolRegistryGuard } from './tools/tool-registry-guard';
-export type { ToolConflict } from './tools/tool-registry-guard';
+export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateToolName, validateToolDefinition, filterAvailableTools, TOOL_NAME_PATTERN, MAX_TOOL_NAME_LENGTH } from './tools/tool-registry-guard';
+export type { ToolConflict, RegistrableToolLike } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
 export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
 export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn } from './conversation-summary';
@@ -243,3 +248,10 @@ export type {
   DiagnosticPosition,
   PublishDiagnosticsParams,
 } from './lsp';
+
+// --- batch #10 additive parity exports ---
+export { mapChildToSubagentEvent, summarizeToolInput, createSubagentRelay } from './tools/subagent-relay';
+export type { SubagentRelay, SubagentState, RelayMessage, RelaySendResult, RelayRejectReason, RelayCompletion } from './tools/subagent-relay';
+export { parseEnvInt, parseEnvFloat, parseEnvBool, resolveEnvVar, parseDotenv, loadDotenv } from './utils/env';
+export type { DotenvParseOptions, LoadDotenvOptions } from './utils/env';
+export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, cyclePermissionMode } from './permissions';

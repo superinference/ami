@@ -141,6 +141,8 @@ test('ToolAnalytics: unknown tool returns zeroed stats keyed by name', () => {
     minDurationMs: 0,
     maxDurationMs: 0,
     errorRate: 0,
+    successCount: 0,
+    successRate: 0,
     requestTokens: 0,
     resultTokens: 0,
     p50DurationMs: 0,
