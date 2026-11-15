@@ -2405,6 +2405,23 @@ export class PermissionManager {
   }
 
   /**
+   * FORBIDDEN at ANY symlink hop: expand `filePath`, walk the FULL symlink chain
+   * ({@link getPathsForPermissionCheck}) and return true if the original path, ANY
+   * intermediate target, OR the final resolved path is a forbidden read path. This
+   * closes the symlink-chain escape where only the final realpath is inspected —
+   * e.g. `top → dir/id_rsa → dir/plain.txt`: the final `plain.txt` is innocuous but
+   * the intermediate `id_rsa` hop is a credential path the deny must still catch.
+   * Mirrors Claude's getPathsForPermissionCheck "match at any hop" semantics.
+   */
+  private isForbiddenAtAnyHop(filePath: string, cwd: string): boolean {
+    const expanded = expandPath(filePath, cwd);
+    for (const hop of getPathsForPermissionCheck(expanded)) {
+      if (this.isForbiddenReadPath(hop)) return true;
+    }
+    return false;
+  }
+
+  /**
    * WORKSPACE containment: a resolved path is inside the workspace iff it is under the
    * launch cwd OR under a user-granted read root (registerAllowedRoot). This is the
    * boundary that confines the agent to where it was started — sibling, parent, and
@@ -2435,6 +2452,10 @@ export class PermissionManager {
   isPathAllowed(filePath: string, cwd: string): boolean {
     const resolved = this.resolveForCheck(filePath, cwd);
     if (this.isForbiddenReadPath(resolved)) return false;
+    // Also inspect every symlink hop, not just the final realpath, so a forbidden
+    // intermediate target in a symlink chain cannot be laundered behind an
+    // innocuous final file.
+    if (this.isForbiddenAtAnyHop(filePath, cwd)) return false;
     return this.isWithinWorkspace(resolved, cwd);
   }
 
@@ -2450,6 +2471,10 @@ export class PermissionManager {
   classifyReadAccess(filePath: string, cwd: string): 'allow' | 'deny' | 'prompt' {
     const resolved = this.resolveForCheck(filePath, cwd);
     if (this.isForbiddenReadPath(resolved)) return 'deny';
+    // A forbidden target at ANY symlink hop (not only the final realpath) is a
+    // hard deny — a chain cannot launder a credential/system path behind an
+    // innocuous final file.
+    if (this.isForbiddenAtAnyHop(filePath, cwd)) return 'deny';
     if (this.isWithinWorkspace(resolved, cwd)) return 'allow';
     return 'prompt';
   }

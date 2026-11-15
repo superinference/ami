@@ -67,6 +67,34 @@ test('getPathsForPermissionCheck survives circular symlink loops', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// ---------------------------------------------------------------------------
+// Symlink-chain forbidden-path check (gaps permissions2 #28/#29): a credential/
+// system path at ANY hop of a symlink chain must be denied, even when the FINAL
+// realpath is an innocuous file. RED without the isForbiddenAtAnyHop wiring into
+// isPathAllowed/classifyReadAccess: the chain's final target is innocuous and
+// inside the workspace, so the old single-realpath check returns allow.
+// ---------------------------------------------------------------------------
+test('forbidden credential path at an intermediate symlink hop is denied (chain laundering)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-hop-'));
+  const plain = path.join(dir, 'plain.txt');
+  const cred = path.join(dir, 'id_rsa');   // intermediate hop: forbidden basename
+  const top = path.join(dir, 'top.txt');   // innocuous entry name
+  fs.writeFileSync(plain, 'not-a-secret');
+  fs.symlinkSync(plain, cred);             // id_rsa -> plain.txt
+  fs.symlinkSync(cred, top);               // top.txt -> id_rsa -> plain.txt
+  const pm = new PermissionManager();
+  // The final realpath is plain.txt (innocuous, in-workspace), but the chain
+  // passes through id_rsa — it must be a hard deny, not allow.
+  assert.equal(pm.classifyReadAccess(top, dir), 'deny');
+  assert.equal(pm.isPathAllowed(top, dir), false);
+  // Negative control: an all-innocuous chain inside the workspace stays allowed.
+  const okLink = path.join(dir, 'ok.txt');
+  fs.symlinkSync(plain, okLink);           // ok.txt -> plain.txt (no forbidden hop)
+  assert.equal(pm.classifyReadAccess(okLink, dir), 'allow');
+  assert.equal(pm.isPathAllowed(okLink, dir), true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('acceptEdits prompts for agent-config and suspicious paths, allows normal source edits', async () => {
   const pm = new PermissionManager('acceptEdits');
   assert.equal(await pm.check('file_edit', { file_path: '/repo/.ami/settings.json' }), 'ask');
