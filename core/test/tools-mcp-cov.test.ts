@@ -376,7 +376,8 @@ describe('lspDiagnosticsTool', () => {
   it('returns a workspace message when no file_path is provided', async () => {
     const res = await lspDiagnosticsTool.execute!({}, ctx());
     assert.equal(res.isError, undefined);
-    assert.match(res.output, /No diagnostics reported in the workspace\./);
+    // With no connected server the tool reports the connection-gated affordance.
+    assert.match(res.output, /No LSP server is currently connected/);
   });
 
   it('falls back gracefully when LSP client acquisition throws (catch branch)', async () => {
@@ -405,16 +406,20 @@ describe('lspReferencesTool', () => {
     ]);
     const res = await lspReferencesTool.execute!({ symbol: 'My' }, ctx());
     assert.equal(res.isError, undefined);
-    assert.match(res.output, /References for "My":/);
-    assert.match(res.output, /MyClass \(class\) in \/w\/a\.ts:10/);
-    assert.match(res.output, /myFn \(function\) in \/w\/b\.ts:3/);
+    // New grouped, pluralized format: header + per-file grouping + SymbolKind label.
+    assert.match(res.output, /Found 2 references to "My" across 2 files:/);
+    assert.match(res.output, /\/w\/a\.ts:/);
+    assert.match(res.output, /MyClass \(class\) - Line 10/);
+    assert.match(res.output, /myFn \(function\) - Line 3/);
   });
 
   it('reports no references when the indexer finds nothing', async () => {
     mock.method(_lspDiagHooks, 'searchSymbols', () => []);
     const res = await lspReferencesTool.execute!({ symbol: 'nope' }, ctx());
     assert.equal(res.isError, undefined);
-    assert.equal(res.output, 'No references found for "nope".');
+    // Actionable no-results message explaining why nothing was found.
+    assert.match(res.output, /No references found for "nope"\./);
+    assert.match(res.output, /indexer has not scanned/);
   });
 
   it('falls back to grep guidance when the indexer throws (catch branch)', async () => {
