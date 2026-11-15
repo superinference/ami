@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import {
   isModAllowed,
   isModBlockedByPolicy,
+  isLocalOrInlineSource,
   getManagedPluginNames,
   parseModId,
   normalizeModName,
@@ -158,6 +159,74 @@ describe('isModBlockedByPolicy (unconditional org force-disable)', () => {
   it('ManagedModsEnforcer.shouldBlock still allows a non-listed mod with allowManagedModsOnly OFF', () => {
     const policy: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'other@m': false } };
     assert.deepEqual(ManagedModsEnforcer.shouldBlock(userMod, policy), { blocked: false });
+  });
+});
+
+describe('isLocalOrInlineSource (non-spoofable provenance vouch)', () => {
+  it('typed source is authoritative: local / inline => true, remote => false', () => {
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', source: 'local' }), true);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', source: 'inline' }), true);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', source: 'remote' }), false);
+  });
+
+  it('typed remote source overrides a spoofed local-looking marketplace name', () => {
+    const spoof: ModInfo = { name: 'm', id: 'm@x', tier: 'user', marketplace: 'local-attacker', source: 'remote' };
+    assert.equal(isLocalOrInlineSource(spoof), false);
+  });
+
+  it('legacy fallback: absent marketplace is treated as a local in-repo copy', () => {
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user' }), true);
+  });
+
+  it('legacy fallback: local/inline display-name prefix honored, remote rejected', () => {
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'local-folder' }), true);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'inline' }), true);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'npm' }), false);
+  });
+});
+
+describe('isModAllowed — non-spoofable source vouch under allowManagedModsOnly', () => {
+  it('BLOCKS a remote-sourced mod that spoofs a local marketplace name', () => {
+    // Pre-fix, marketplace="local-evil".startsWith("local") vouched this remote mod as
+    // local and ALLOWED it; the typed source='remote' must now block it.
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'spoof@mkt': true },
+    };
+    const spoof: ModInfo = {
+      name: 'spoof',
+      id: 'spoof@mkt',
+      tier: 'user',
+      marketplace: 'local-evil',
+      source: 'remote',
+    };
+    const result = isModAllowed(spoof, policy);
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason!.includes('remote marketplace'));
+  });
+
+  it('ALLOWS a mod stamped source=local even if its marketplace name looks remote', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'trusted@npm-mirror': true },
+    };
+    const mod: ModInfo = {
+      name: 'trusted',
+      id: 'trusted@npm-mirror',
+      tier: 'user',
+      marketplace: 'npm-mirror',
+      source: 'local',
+    };
+    assert.equal(isModAllowed(mod, policy).allowed, true);
+  });
+
+  it('ALLOWS a mod stamped source=inline', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'inl@here': true },
+    };
+    const mod: ModInfo = { name: 'inl', id: 'inl@here', tier: 'user', marketplace: 'anything', source: 'inline' };
+    assert.equal(isModAllowed(mod, policy).allowed, true);
   });
 });
 
