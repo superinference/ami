@@ -12,10 +12,48 @@
  * `DiagnosticSource` (the LSPClient provides one), so it is unit-testable
  * without a real language server.
  */
+import * as fs from 'fs';
 import * as path from 'path';
 
 /** LSP DiagnosticSeverity enum → human-readable name (1=Error…4=Hint). */
 export const DIAGNOSTIC_SEVERITY_NAMES = ['Error', 'Warning', 'Info', 'Hint'] as const;
+
+/**
+ * Max bytes of a file we will stream into a language server. Matches Claude
+ * Code's `MAX_LSP_FILE_SIZE_BYTES` (10MB). A larger file can OOM or wedge the
+ * server, so the open/change path skips reading it and the LSP tool reports it.
+ */
+export const MAX_LSP_FILE_SIZE_BYTES = 10_000_000;
+
+/**
+ * Per-file / total caps on untrusted diagnostics injected into the model's
+ * context, matching Claude's LSPDiagnosticRegistry constants. A noisy or
+ * malicious server cannot flood the conversation past these.
+ */
+export const MAX_DIAGNOSTICS_PER_FILE = 10;
+export const MAX_TOTAL_DIAGNOSTICS = 30;
+
+/** Char budget for a rendered diagnostics block (Claude's 4000) + marker. */
+export const MAX_DIAGNOSTICS_SUMMARY_CHARS = 4000;
+
+/**
+ * True for a UNC path (`\\server\share` or `//server/share`). Touching one with
+ * stat()/readFile() on Windows triggers an outbound SMB/NTLM auth, leaking
+ * credentials — so the LSP entry points short-circuit before any filesystem
+ * access. Mirrors Claude's validateInput UNC guard.
+ */
+export function isUncPath(p: string): boolean {
+  return p.startsWith('\\\\') || p.startsWith('//');
+}
+
+/** Size of a file in bytes, or `undefined` when it cannot be stat()ed. */
+export function lspFileSizeBytes(filePath: string): number | undefined {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return undefined;
+  }
+}
 export type DiagnosticSeverityName = (typeof DIAGNOSTIC_SEVERITY_NAMES)[number];
 
 export interface DiagnosticPosition {
@@ -246,9 +284,39 @@ export function formatNewDiagnosticsSummary(files: DiagnosticFile[]): string {
   return `Found ${totalIssues} new diagnostic ${issueWord} in ${fileCount} ${fileWord}`;
 }
 
+/** Severity sort rank — Error(0) highest priority … Hint(3). */
+function severityRank(severity: DiagnosticSeverityName): number {
+  return DIAGNOSTIC_SEVERITY_NAMES.indexOf(severity);
+}
+
+/**
+ * Enforce volume caps on untrusted LSP diagnostics before they reach the model:
+ * each file's diagnostics are sorted severity-first (so errors survive), capped
+ * at MAX_DIAGNOSTICS_PER_FILE, then the running total is capped at
+ * MAX_TOTAL_DIAGNOSTICS. Files that end up empty are dropped. Input is not
+ * mutated. Mirrors Claude's LSPDiagnosticRegistry volume limiting.
+ */
+export function capDiagnosticVolume(files: DiagnosticFile[]): DiagnosticFile[] {
+  const out: DiagnosticFile[] = [];
+  let total = 0;
+  for (const file of files) {
+    const sorted = [...file.diagnostics].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+    let capped = sorted.slice(0, MAX_DIAGNOSTICS_PER_FILE);
+    const remaining = MAX_TOTAL_DIAGNOSTICS - total;
+    if (capped.length > remaining) {
+      capped = capped.slice(0, Math.max(0, remaining));
+    }
+    if (capped.length > 0) {
+      out.push({ uri: file.uri, diagnostics: capped });
+      total += capped.length;
+    }
+  }
+  return out;
+}
+
 /** Detailed, severity-annotated rendering of diagnostic files for tool output. */
 export function formatDiagnosticsDetail(files: DiagnosticFile[]): string {
-  return files
+  const rendered = files
     .map((file) => {
       const name = uriToPath(file.uri);
       const lines = file.diagnostics
@@ -263,4 +331,11 @@ export function formatDiagnosticsDetail(files: DiagnosticFile[]): string {
       return `${name}:\n${lines}`;
     })
     .join('\n\n');
+
+  // Hard char cap so a flood of diagnostics can't blow the model's context.
+  if (rendered.length > MAX_DIAGNOSTICS_SUMMARY_CHARS) {
+    const marker = '…[truncated]';
+    return rendered.slice(0, MAX_DIAGNOSTICS_SUMMARY_CHARS - marker.length) + marker;
+  }
+  return rendered;
 }

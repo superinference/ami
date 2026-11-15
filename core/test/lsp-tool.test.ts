@@ -1,8 +1,12 @@
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, before, after } from 'node:test';
 import { mock } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { lspTool, _lspToolHooks } from '../src/tools/lsp';
+import { MAX_LSP_FILE_SIZE_BYTES } from '../src/lsp/diagnostic-tracking';
 import type { ToolContext } from '../src/types';
 
 const ctx: ToolContext = { cwd: '/proj' } as ToolContext;
@@ -40,7 +44,38 @@ describe('lspTool dispatch + formatting', () => {
     const res = await lspTool.execute!({ operation: 'goToDefinition', file_path: 'a.ts', line: 10, character: 4 }, ctx);
     assert.equal(fake.calls[0].method, 'textDocument/definition');
     assert.deepEqual((fake.calls[0].params as { position: unknown }).position, { line: 9, character: 3 });
+    assert.ok(res.output.includes('Found 1 definition:'));
     assert.ok(res.output.includes('/proj/a.ts:6:3'));
+  });
+
+  it('goToDefinition with multiple sites uses the plural noun', async () => {
+    const fake = fakeClient(() => [
+      { uri: 'file:///proj/a.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+      { uri: 'file:///proj/b.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 1 } } },
+    ]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'goToDefinition', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('Found 2 definitions:'));
+  });
+
+  it('findReferences with a single site uses the singular header', async () => {
+    const fake = fakeClient(() => [{ uri: 'file:///proj/a.ts', range: { start: { line: 3, character: 1 }, end: { line: 3, character: 2 } } }]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'findReferences', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('Found 1 reference:'));
+    assert.ok(res.output.includes('/proj/a.ts:4:2'));
+  });
+
+  it('filters malformed (uri-less) reference entries before formatting', async () => {
+    const fake = fakeClient(() => [
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+      { uri: 'file:///proj/a.ts', range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } } },
+    ]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'findReferences', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    // One entry dropped → single valid reference remains.
+    assert.ok(res.output.includes('Found 1 reference:'));
+    assert.ok(res.output.includes('/proj/a.ts:2:1'));
   });
 
   it('findReferences includes includeDeclaration and lists all locations', async () => {
@@ -51,8 +86,12 @@ describe('lspTool dispatch + formatting', () => {
     mock.method(_lspToolHooks, 'getLSPClient', () => fake);
     const res = await lspTool.execute!({ operation: 'findReferences', file_path: 'a.ts', line: 1, character: 1 }, ctx);
     assert.equal((fake.calls[0].params as { context: { includeDeclaration: boolean } }).context.includeDeclaration, true);
-    assert.ok(res.output.includes('/proj/a.ts:1:1'));
-    assert.ok(res.output.includes('/proj/b.ts:5:3'));
+    // Count header + per-file grouping (singular/plural) with 1-based Line L:C.
+    assert.ok(res.output.includes('Found 2 references across 2 files:'));
+    assert.ok(res.output.includes('/proj/a.ts:'));
+    assert.ok(res.output.includes('/proj/b.ts:'));
+    assert.ok(res.output.includes('Line 1:1'));
+    assert.ok(res.output.includes('Line 5:3'));
   });
 
   it('hover extracts MarkupContent value', async () => {
@@ -131,31 +170,65 @@ describe('lspTool formatting edge cases', () => {
     const fake = fakeClient(() => []);
     mock.method(_lspToolHooks, 'getLSPClient', () => fake);
     const res = await lspTool.execute!({ operation: 'goToImplementation', file_path: 'a.ts', line: 1, character: 1 }, ctx);
-    assert.ok(res.output.includes('No goToImplementation results'));
+    assert.ok(res.output.includes('No implementation found'));
   });
 
-  it('reports "No result" when the server returns null', async () => {
+  it('reports an actionable "no definition" message when the server returns null', async () => {
     const fake = fakeClient(() => null);
     mock.method(_lspToolHooks, 'getLSPClient', () => fake);
     const res = await lspTool.execute!({ operation: 'goToDefinition', file_path: 'a.ts', line: 1, character: 1 }, ctx);
-    assert.ok(res.output.includes('No result'));
+    assert.ok(res.output.includes('No definition found'));
+    assert.ok(res.output.includes('not indexed by the LSP server'));
   });
 
-  it('documentSymbol handles a flat SymbolInformation[] shape', async () => {
+  it('documentSymbol handles a flat SymbolInformation[] shape with kind labels', async () => {
     const fake = fakeClient(() => [{ name: 'Flat', kind: 12, location: { uri: 'file:///proj/a.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 4 } } } }]);
     mock.method(_lspToolHooks, 'getLSPClient', () => fake);
     const res = await lspTool.execute!({ operation: 'documentSymbol', file_path: 'a.ts' }, ctx);
-    assert.ok(res.output.includes('Flat'));
-    assert.ok(res.output.includes('/proj/a.ts:3:1'));
+    assert.ok(res.output.includes('Flat (Function)'));
+    assert.ok(res.output.includes('Line 3'));
   });
 
-  it('documentSymbol / workspaceSymbol report empty', async () => {
+  it('documentSymbol renders kind labels, indentation and detail for a hierarchy', async () => {
+    const fake = fakeClient(() => [{ name: 'Outer', kind: 5, detail: 'class Outer', range: { start: { line: 0, character: 0 }, end: { line: 9, character: 0 } }, children: [{ name: 'inner', kind: 6, range: { start: { line: 1, character: 2 }, end: { line: 1, character: 8 } } }] }]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'documentSymbol', file_path: 'a.ts' }, ctx);
+    assert.ok(res.output.includes('Document symbols:'));
+    assert.ok(res.output.includes('Outer (Class) class Outer - Line 1'));
+    assert.ok(res.output.includes('  inner (Method) - Line 2'));
+  });
+
+  it('workspaceSymbol groups by file with kind labels and container', async () => {
+    const fake = fakeClient(() => [{ name: 'Thing', kind: 5, containerName: 'ns', location: { uri: 'file:///proj/x.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 4 } } } }]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'workspaceSymbol', file_path: 'a.ts' }, ctx);
+    assert.ok(res.output.includes('Found 1 symbol in workspace:'));
+    assert.ok(res.output.includes('Thing (Class) - Line 3 in ns'));
+  });
+
+  it('documentSymbol / workspaceSymbol report actionable empty messages', async () => {
     const fake = fakeClient(() => []);
     mock.method(_lspToolHooks, 'getLSPClient', () => fake);
     const r1 = await lspTool.execute!({ operation: 'documentSymbol', file_path: 'a.ts' }, ctx);
-    assert.ok(r1.output.includes('No symbols'));
+    assert.ok(r1.output.includes('No symbols found in document'));
     const r2 = await lspTool.execute!({ operation: 'workspaceSymbol', file_path: 'a.ts' }, ctx);
-    assert.ok(r2.output.includes('No workspace symbols'));
+    assert.ok(r2.output.includes('No symbols found in workspace'));
+  });
+
+  it('documentSymbol / workspaceSymbol handle a non-array (null) server result', async () => {
+    const fake = fakeClient(() => null);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const r1 = await lspTool.execute!({ operation: 'documentSymbol', file_path: 'a.ts' }, ctx);
+    assert.ok(r1.output.includes('No symbols found in document'));
+    const r2 = await lspTool.execute!({ operation: 'workspaceSymbol', file_path: 'a.ts' }, ctx);
+    assert.ok(r2.output.includes('No symbols found in workspace'));
+  });
+
+  it('findReferences reports an actionable message for an empty result', async () => {
+    const fake = fakeClient(() => []);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'findReferences', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('No references found'));
   });
 
   it('hover handles string, array and value-less object forms', async () => {
@@ -252,5 +325,105 @@ describe('lspTool guards', () => {
     mock.method(_lspToolHooks, 'getLSPClient', () => fake);
     const res = await lspTool.execute!({ operation: 'findReferences', file_path: 'a.ts', line: 1, character: 1 }, ctx);
     assert.ok(res.output.includes('/proj/e.ts:0:0'));
+  });
+});
+
+describe('lspTool call-hierarchy enrichment', () => {
+  it('incomingCalls groups by file with kind labels and call-site ranges', async () => {
+    const fake = fakeClient((method) => {
+      if (method === 'textDocument/prepareCallHierarchy') return [{ name: 't', uri: 'file:///proj/a.ts', range: { start: { line: 1, character: 0 }, end: { line: 1, character: 6 } } }];
+      return [
+        { from: { name: 'caller1', kind: 12, uri: 'file:///proj/b.ts', range: { start: { line: 8, character: 0 }, end: { line: 8, character: 6 } } }, fromRanges: [{ start: { line: 9, character: 2 }, end: { line: 9, character: 8 } }] },
+        { from: { name: 'caller2', kind: 6, uri: 'file:///proj/c.ts', range: { start: { line: 3, character: 0 }, end: { line: 3, character: 6 } } } },
+      ];
+    });
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'incomingCalls', file_path: 'a.ts', line: 2, character: 1 }, ctx);
+    assert.ok(res.output.includes('Found 2 incoming calls:'));
+    assert.ok(res.output.includes('caller1 (Function) - Line 9'));
+    assert.ok(res.output.includes('[calls at: 10:3]'));
+    assert.ok(res.output.includes('caller2 (Method) - Line 4'));
+    assert.ok(res.output.includes('/proj/b.ts:'));
+    assert.ok(res.output.includes('/proj/c.ts:'));
+  });
+
+  it('outgoingCalls annotates call sites with "called from"', async () => {
+    const fake = fakeClient((method) => {
+      if (method === 'textDocument/prepareCallHierarchy') return [{ name: 't', uri: 'file:///proj/a.ts', range: { start: { line: 1, character: 0 }, end: { line: 1, character: 6 } } }];
+      return [{ to: { name: 'callee', kind: 12, uri: 'file:///proj/c.ts', range: { start: { line: 3, character: 0 }, end: { line: 3, character: 6 } } }, fromRanges: [{ start: { line: 5, character: 4 }, end: { line: 5, character: 9 } }] }];
+    });
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'outgoingCalls', file_path: 'a.ts', line: 2, character: 1 }, ctx);
+    assert.ok(res.output.includes('Found 1 outgoing call:'));
+    assert.ok(res.output.includes('[called from: 6:5]'));
+  });
+
+  it('filters call entries whose from/to is undefined', async () => {
+    const fake = fakeClient((method) => {
+      if (method === 'textDocument/prepareCallHierarchy') return [{ name: 't', uri: 'file:///proj/a.ts', range: { start: { line: 1, character: 0 }, end: { line: 1, character: 6 } } }];
+      return [{}, { from: { name: 'realCaller', uri: 'file:///proj/b.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } } }];
+    });
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'incomingCalls', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('Found 1 incoming call:'));
+    assert.ok(res.output.includes('realCaller'));
+  });
+
+  it('prepareCallHierarchy renders multiple items and the Unknown kind fallback', async () => {
+    const fake = fakeClient(() => [
+      { name: 'one', uri: 'file:///proj/a.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+      { name: 'two', kind: 5, detail: 'exported', uri: 'file:///proj/b.ts', range: { start: { line: 4, character: 0 }, end: { line: 4, character: 1 } } },
+    ]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'prepareCallHierarchy', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('Found 2 call hierarchy items:'));
+    assert.ok(res.output.includes('one (Unknown)'));
+    assert.ok(res.output.includes('two (Class)'));
+    assert.ok(res.output.includes('[exported]')); // detail suffix
+  });
+
+  it('renders <unknown location> for a call item with a missing uri', async () => {
+    const fake = fakeClient(() => [{ name: 'noUri', kind: 12, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'prepareCallHierarchy', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('noUri (Function) - <unknown location>'));
+  });
+});
+
+describe('lspTool safety guards', () => {
+  let dir: string;
+  before(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-tool-')); });
+  after(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('skips a UNC file path before touching the filesystem', async () => {
+    const res = await lspTool.execute!({ operation: 'hover', file_path: '//host/share/f.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('UNC path'));
+    assert.ok(!res.isError);
+  });
+
+  it('refuses a file that exceeds the LSP size limit', async () => {
+    const big = path.join(dir, 'big.ts');
+    fs.writeFileSync(big, '');
+    fs.truncateSync(big, MAX_LSP_FILE_SIZE_BYTES + 1); // sparse file, no real write
+    const res = await lspTool.execute!({ operation: 'hover', file_path: big, line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('File too large for LSP analysis'));
+    assert.ok(res.output.includes('exceeds 10MB limit'));
+  });
+
+  it('allows a normally-sized existing file through the size guard', async () => {
+    const small = path.join(dir, 'small.ts');
+    fs.writeFileSync(small, 'const x = 1;\n');
+    const fake = fakeClient(() => ({ contents: 'ok' }));
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'hover', file_path: small, line: 1, character: 1 }, ctx);
+    assert.equal(res.output, 'ok');
+  });
+
+  it('rejects a zero/negative/fractional line or character', async () => {
+    for (const bad of [{ line: 0, character: 1 }, { line: 1, character: -2 }, { line: 1.5, character: 1 }]) {
+      const res = await lspTool.execute!({ operation: 'hover', file_path: 'a.ts', ...bad }, ctx);
+      assert.ok(res.isError);
+      assert.ok(res.output.includes('positive integer'));
+    }
   });
 });

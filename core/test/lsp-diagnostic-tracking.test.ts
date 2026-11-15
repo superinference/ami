@@ -13,10 +13,18 @@ import {
   diagnosticSeveritySymbol,
   formatNewDiagnosticsSummary,
   formatDiagnosticsDetail,
+  capDiagnosticVolume,
+  isUncPath,
+  lspFileSizeBytes,
+  MAX_DIAGNOSTICS_PER_FILE,
+  MAX_TOTAL_DIAGNOSTICS,
+  MAX_DIAGNOSTICS_SUMMARY_CHARS,
   type Diagnostic,
   type DiagnosticFile,
   type DiagnosticSource,
 } from '../src/lsp/diagnostic-tracking';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 function diag(message: string, line = 0, severity: Diagnostic['severity'] = 'Error'): Diagnostic {
   return { message, severity, range: { start: { line, character: 0 }, end: { line, character: 1 } } };
@@ -230,5 +238,77 @@ describe('formatting', () => {
     for (const s of ['Error', 'Warning', 'Info', 'Hint'] as const) {
       assert.ok(diagnosticSeveritySymbol(s).length > 0);
     }
+  });
+});
+
+describe('path + size safety helpers', () => {
+  it('isUncPath detects backslash and forward-slash UNC prefixes', () => {
+    assert.equal(isUncPath('\\\\server\\share\\f'), true);
+    assert.equal(isUncPath('//server/share/f'), true);
+    assert.equal(isUncPath('/home/user/f.ts'), false);
+    assert.equal(isUncPath('C:/x'), false);
+  });
+
+  it('lspFileSizeBytes returns a size for a real file and undefined for a missing one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-size-'));
+    try {
+      const f = path.join(dir, 'a.ts');
+      fs.writeFileSync(f, 'hello');
+      assert.equal(lspFileSizeBytes(f), 5);
+      assert.equal(lspFileSizeBytes(path.join(dir, 'missing.ts')), undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('capDiagnosticVolume', () => {
+  const mk = (uri: string, n: number, severity: Diagnostic['severity'] = 'Error'): DiagnosticFile => ({
+    uri,
+    diagnostics: Array.from({ length: n }, (_v, i) => diag(`m${i}`, i, severity)),
+  });
+
+  it('caps each file to MAX_DIAGNOSTICS_PER_FILE', () => {
+    const out = capDiagnosticVolume([mk('file:///a.ts', MAX_DIAGNOSTICS_PER_FILE + 5)]);
+    assert.equal(out[0].diagnostics.length, MAX_DIAGNOSTICS_PER_FILE);
+  });
+
+  it('caps the running total to MAX_TOTAL_DIAGNOSTICS and drops emptied files', () => {
+    const files = Array.from({ length: 6 }, (_v, i) => mk(`file:///f${i}.ts`, MAX_DIAGNOSTICS_PER_FILE));
+    const out = capDiagnosticVolume(files);
+    const total = out.reduce((s, f) => s + f.diagnostics.length, 0);
+    assert.equal(total, MAX_TOTAL_DIAGNOSTICS); // 3 files * 10 = 30; files 4-6 dropped
+    assert.equal(out.length, 3);
+  });
+
+  it('sorts severity-first so errors survive truncation over hints', () => {
+    const file: DiagnosticFile = {
+      uri: 'file:///a.ts',
+      diagnostics: [
+        ...Array.from({ length: MAX_DIAGNOSTICS_PER_FILE }, (_v, i) => diag(`hint${i}`, i, 'Hint')),
+        diag('the-error', 99, 'Error'),
+      ],
+    };
+    const out = capDiagnosticVolume([file]);
+    assert.equal(out[0].diagnostics.length, MAX_DIAGNOSTICS_PER_FILE);
+    assert.ok(out[0].diagnostics.some((d) => d.message === 'the-error'));
+  });
+
+  it('does not mutate its input', () => {
+    const input = [mk('file:///a.ts', MAX_DIAGNOSTICS_PER_FILE + 2)];
+    capDiagnosticVolume(input);
+    assert.equal(input[0].diagnostics.length, MAX_DIAGNOSTICS_PER_FILE + 2);
+  });
+});
+
+describe('formatDiagnosticsDetail truncation', () => {
+  it('caps the rendered block at MAX_DIAGNOSTICS_SUMMARY_CHARS with a marker', () => {
+    const file: DiagnosticFile = {
+      uri: 'file:///a.ts',
+      diagnostics: Array.from({ length: 200 }, (_v, i) => diag('x'.repeat(100), i)),
+    };
+    const out = formatDiagnosticsDetail([file]);
+    assert.ok(out.length <= MAX_DIAGNOSTICS_SUMMARY_CHARS);
+    assert.ok(out.endsWith('…[truncated]'));
   });
 });

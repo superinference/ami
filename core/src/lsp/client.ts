@@ -32,7 +32,9 @@ import {
 import {
   convertPublishDiagnostics,
   DiagnosticTracker,
+  lspFileSizeBytes,
   normalizeDiagnosticPath,
+  MAX_LSP_FILE_SIZE_BYTES,
   type DiagnosticFile,
   type DiagnosticSource,
   type PublishDiagnosticsParams,
@@ -231,6 +233,17 @@ export class LSPClient implements DiagnosticSource {
     return this.servers.get(language)?.initialized === true;
   }
 
+  /**
+   * Health predicate backing tool affordances: true when at least one language
+   * server is connected and initialized. Mirrors Claude's `isLspConnected()`.
+   */
+  isConnected(): boolean {
+    for (const conn of this.servers.values()) {
+      if (conn.initialized) return true;
+    }
+    return false;
+  }
+
   // ---- inbound message framing / dispatch -------------------------------
 
   private onData(language: string, chunk: Buffer): void {
@@ -416,7 +429,15 @@ export class LSPClient implements DiagnosticSource {
     const languageId = languageIdForExtension(path.extname(filePath));
     let text = content;
     if (text === undefined) {
-      try { text = fs.readFileSync(filePath, 'utf-8'); } catch { text = ''; }
+      // File-size boundary: never stream a huge file into the server (OOM/wedge
+      // guard, parity with Claude's MAX_LSP_FILE_SIZE_BYTES). Open it as empty so
+      // the document is still registered but no multi-hundred-MB buffer is read.
+      const size = lspFileSizeBytes(filePath);
+      if (size !== undefined && size > MAX_LSP_FILE_SIZE_BYTES) {
+        text = '';
+      } else {
+        try { text = fs.readFileSync(filePath, 'utf-8'); } catch { text = ''; }
+      }
     }
     this.rawNotify(conn, 'textDocument/didOpen', {
       textDocument: { uri, languageId, version: 1, text },
