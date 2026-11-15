@@ -22,6 +22,8 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { assertPathWithin } from './path-safety';
+import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
+import { logError } from './logger';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
 export const COMPAT_VERSION = '2.1.307';
@@ -31,14 +33,29 @@ export const COMPAT_VERSION = '2.1.307';
 // ---------------------------------------------------------------------------
 
 /**
+ * Expand a leading `~` in a config-dir override to the user's home directory.
+ * A value supplied via settings.json `env` (as opposed to a shell) is NOT
+ * tilde-expanded by the OS, so an override of `~/.ami` would otherwise create a
+ * literal `~` directory in the cwd (gh-30794 / CC-212). We expand only a leading
+ * `~` segment; every other value (absolute or otherwise) passes through verbatim
+ * so existing precedence/behaviour is unchanged.
+ */
+function expandConfigDir(value: string): string {
+  if (value === '~' || value.startsWith('~/') || value.startsWith('~\\')) {
+    return path.join(os.homedir(), value.slice(1));
+  }
+  return value;
+}
+
+/**
  * Resolve the data dir the journal is written under, matching the dashboard's own
  * precedence: an explicit CLAUDE_CONFIG_DIR wins (lets a user point the dashboard and us
  * at one dir), then our SUPERINFERENCE_DATA_DIR override, else ~/.ami.
- * We never write into ~/.claude.
+ * We never write into ~/.claude. A leading `~` in an override is expanded (gh-30794).
  */
 export function resolveConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) return env.CLAUDE_CONFIG_DIR;
-  if (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim()) return env.SUPERINFERENCE_DATA_DIR;
+  if (env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) return expandConfigDir(env.CLAUDE_CONFIG_DIR);
+  if (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim()) return expandConfigDir(env.SUPERINFERENCE_DATA_DIR);
   return path.join(os.homedir(), '.ami');
 }
 
@@ -68,7 +85,11 @@ export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeD
         fs.renameSync(src, dst);
         migrated.push(sub);
       }
-    } catch { /* best-effort — a failed migration must never block startup */ }
+    } catch (err) {
+      // Best-effort — a failed migration must never block startup, but record it
+      // so a partial relocation is diagnosable instead of silently swallowed.
+      logError('migrate-legacy', `failed to migrate ${sub}`, { error: String(err) });
+    }
   }
   return migrated;
 }
@@ -80,8 +101,8 @@ export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeD
  * treated as authoritative and REPLACES the defaults (keeps tests + power-users deterministic).
  */
 export function resolveReadDirs(env: NodeJS.ProcessEnv = process.env): string[] {
-  if (env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) return [env.CLAUDE_CONFIG_DIR];
-  if (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim()) return [env.SUPERINFERENCE_DATA_DIR];
+  if (env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) return [expandConfigDir(env.CLAUDE_CONFIG_DIR)];
+  if (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim()) return [expandConfigDir(env.SUPERINFERENCE_DATA_DIR)];
   const dirs: string[] = [
     path.join(os.homedir(), '.ami'),
     path.join(os.homedir(), '.claude'),
@@ -466,17 +487,50 @@ export function buildUserEntry(a: UserEntryArgs): UserEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * Append one JSONL entry to `filePath`, creating parent dirs as needed. A single
- * appendFileSync of "<json>\n" is atomic enough for our line sizes; a torn tail from a
- * crash mid-write is tolerated by the reader (it skips unparseable lines).
+ * Append one owner-only JSONL line to `filePath`. On the FIRST write the file is
+ * created race-free with mode 0o600 via the `ax` flag (atomic create-with-mode —
+ * no TOCTOU window between an existence check and open); once it exists the `ax`
+ * open fails EEXIST and we fall through to a plain append (perms were set at
+ * create time). A single appendFileSync of "<json>\n" is atomic enough for our
+ * line sizes; a torn tail from a crash mid-write is tolerated by the reader
+ * (it skips unparseable lines). The journal holds full prompts, `thinking`
+ * blocks and tool_use inputs, so it must never be group/world-readable.
+ */
+function appendJsonlLine(filePath: string, line: string): void {
+  try {
+    // `ax` = append + exclusive-create; creates the file 0o600 atomically, or
+    // throws EEXIST if it is already there.
+    fs.appendFileSync(filePath, line, { flag: 'ax', mode: OWNER_ONLY_FILE_MODE });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      fs.appendFileSync(filePath, line); // already created with the restrictive mode
+      return;
+    }
+    throw err; // e.g. ENOENT (parent dir missing) — handled by appendEntry's retry
+  }
+}
+
+/**
+ * Append one JSONL entry to `filePath`. Append-first: the common path (the
+ * project dir already exists) is a single syscall — we only `mkdir` the parent
+ * (owner-only, 0o700) on failure and retry once, instead of walking the dir tree
+ * before every line (one assistant turn can emit many lines).
  * Best-effort: never throws into the engine loop.
  */
 export function appendEntry(filePath: string, entry: object): void {
+  const line = ndjsonSafeStringify(entry) + '\n';
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.appendFileSync(filePath, ndjsonSafeStringify(entry) + '\n');
+    appendJsonlLine(filePath, line);
   } catch {
-    /* telemetry is best-effort — a disk/permission error must not break the turn */
+    // Most likely the parent dir does not exist yet — create it owner-only and
+    // retry once. Any further failure (disk/permission) is swallowed: telemetry
+    // is best-effort and must not break the turn.
+    try {
+      secureMkdirSync(path.dirname(filePath));
+      appendJsonlLine(filePath, line);
+    } catch {
+      /* best-effort — a disk/permission error must not break the turn */
+    }
   }
 }
 
@@ -512,6 +566,11 @@ export function dashboardConfigPath(env: NodeJS.ProcessEnv = process.env): strin
  * Idempotently add `dataDir` to the dashboard config's extra-dirs array so it scans our
  * journal. Merges into an existing config, preserving other keys. Best-effort (never throws).
  * Returns true if a write happened.
+ *
+ * The config can be the user's real shared config (when CLAUDE_CONFIG_DIR points
+ * at it), so the rewrite goes through the canonical crash-safe writer (temp file →
+ * fsync → atomic rename, owner-only 0o600, non-atomic fallback): a crash / ENOSPC
+ * mid-write can never truncate it and lose every other key.
  */
 export function registerDataDir(dataDir: string, configPath: string): boolean {
   try {
@@ -527,8 +586,7 @@ export function registerDataDir(dataDir: string, configPath: string): boolean {
     const existing = Array.isArray(cfg[key]) ? (cfg[key] as unknown[]).map(String) : [];
     if (existing.includes(dataDir)) return false;
     cfg[key] = [...existing, dataDir];
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
+    atomicWriteFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
     return true;
   } catch {
     return false;
