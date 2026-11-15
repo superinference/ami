@@ -46,6 +46,9 @@ test('TurnMetrics: fresh instance reports zeroed, guard-safe summary', () => {
     byModel: {},
     activeTimeMs: 0,
     budget: null,
+    totalCostUsd: 0,
+    avgCostPerTurn: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
   });
   // Getters agree with the summary.
   assert.equal(m.turnCount, 0);

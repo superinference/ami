@@ -144,7 +144,14 @@ export { withExtraHeaders } from './provider';
 // used internally by core (error-classifier, provider) so are not re-exported here.
 export { fetchZdrModelIds, filterZdrModels } from './openrouter-zdr';
 export { levenshteinDistance, suggestSimilarPaths } from './tools/path-suggest';
-export type { TurnData, TurnSummary } from './turn-metrics';
+export type {
+  TurnData,
+  TurnSummary,
+  ModelTurnUsage,
+  TurnBudgetStatus,
+  TokenBreakdown,
+  TurnMetricsSnapshot,
+} from './turn-metrics';
 export { TurnMetrics } from './turn-metrics';
 export { isGrepNoMatchExit, stripGrepFlags } from './tools/grep';
 export { expandBraces, estimateBraceExpansions } from './brace-expansion';
