@@ -16,6 +16,7 @@ import { registerLspServers, resetLspServers } from '../src/lsp/config';
 const MOCK_SERVER = String.raw`
 let buf = Buffer.alloc(0);
 let cmCount = 0;
+const changeVersions = []; // textDocument.version seen on each didChange
 const pendingPing = new Map(); // pingId -> originalRequestId
 function send(msg) {
   const b = JSON.stringify(msg);
@@ -40,7 +41,8 @@ function handle(msg) {
   if (m === 'initialize') { send({ jsonrpc: '2.0', id: msg.id, result: { capabilities: { hoverProvider: true, definitionProvider: true, callHierarchyProvider: true } } }); return; }
   if (m === 'initialized' || m === 'textDocument/didSave') return;
   if (m === 'textDocument/didOpen') { if ((msg.params.textDocument.text || '').includes('NOPUB')) return; send({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri: msg.params.textDocument.uri, diagnostics: diagsFor(msg.params.textDocument.text) } }); return; }
-  if (m === 'textDocument/didChange') { send({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri: msg.params.textDocument.uri, diagnostics: diagsFor(msg.params.contentChanges[0].text) } }); return; }
+  if (m === 'textDocument/didChange') { changeVersions.push(msg.params.textDocument.version); send({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri: msg.params.textDocument.uri, diagnostics: diagsFor(msg.params.contentChanges[0].text) } }); return; }
+  if (m === 'test/versions') { send({ jsonrpc: '2.0', id: msg.id, result: { versions: changeVersions } }); return; }
   if (m === 'textDocument/definition') { send({ jsonrpc: '2.0', id: msg.id, result: [{ uri: msg.params.textDocument.uri, range: { start: { line: 5, character: 2 }, end: { line: 5, character: 8 } } }] }); return; }
   if (m === 'textDocument/hover') { send({ jsonrpc: '2.0', id: msg.id, result: { contents: { kind: 'markdown', value: 'THE HOVER' } } }); return; }
   if (m === 'textDocument/references') { send({ jsonrpc: '2.0', id: msg.id, result: [{ uri: msg.params.textDocument.uri, range: { start: { line: 1, character: 0 }, end: { line: 1, character: 2 } } }, { uri: msg.params.textDocument.uri, range: { start: { line: 9, character: 0 }, end: { line: 9, character: 2 } } }] }); return; }
@@ -468,5 +470,54 @@ describe('LSPClient: document sync + accessors', () => {
   it('the default (non-injected) sleep resolves', async () => {
     const real = new LSPClient();
     await real._sleep(1); // exercise the production backoff sleep
+  });
+});
+
+describe('LSPClient: canonical URI construction + document versioning', () => {
+  let client: LSPClient;
+  afterEach(() => client?.shutdown());
+
+  it('percent-encodes file URIs for paths with spaces (pathToFileURL)', async () => {
+    client = makeClient();
+    // A directory whose name contains a space would, with raw `file://${path}`
+    // interpolation, produce a malformed URI (literal space) that servers reject.
+    const spaceDir = path.join(dir, 'has space');
+    fs.mkdirSync(spaceDir, { recursive: true });
+    const f = path.join(spaceDir, 'err.mock');
+    fs.writeFileSync(f, 'ERR here\n');
+    const got = await client.getDiagnostics(f);
+    assert.ok(got);
+    // The server echoes back the exact URI the client sent. A canonical URI is
+    // percent-encoded (%20), not a raw literal space.
+    assert.ok(got!.uri.includes('%20'), `expected percent-encoded URI, got ${got!.uri}`);
+    assert.ok(!/ /.test(new URL(got!.uri).pathname), 'URI path must not contain a raw space');
+    // Diagnostics must still resolve correctly through the normalized key.
+    assert.equal(got!.diagnostics.length, 1);
+    assert.equal(got!.diagnostics[0].message, 'bad thing');
+  });
+
+  it('sends strictly increasing monotonic didChange versions (not Date.now())', async () => {
+    client = makeClient();
+    const f = path.join(dir, 'versioned.mock');
+    fs.writeFileSync(f, 'clean\n');
+    await client.notifyDidChange(f, 'one\n', dir);
+    await client.notifyDidChange(f, 'two\n', dir);
+    await client.notifyDidChange(f, 'three\n', dir);
+    const res = await client.sendRequest<{ versions: number[] }>('mocklang', 'test/versions', {});
+    // didOpen seeds version 1, so the three changes are 2, 3, 4 — small sequential
+    // integers, NOT large Date.now() timestamps.
+    assert.deepEqual(res.versions, [2, 3, 4]);
+  });
+
+  it('spawns the language server with windowsHide set', async () => {
+    client = makeClient();
+    let seenOpts: { windowsHide?: boolean } | undefined;
+    const realSpawn = client._spawn;
+    client._spawn = ((cmd: string, args: string[], opts: { windowsHide?: boolean }) => {
+      seenOpts = opts;
+      return realSpawn(cmd, args, opts as Parameters<typeof realSpawn>[2]);
+    }) as typeof realSpawn;
+    await client.ensureServer('mocklang', dir);
+    assert.equal(seenOpts?.windowsHide, true);
   });
 });
