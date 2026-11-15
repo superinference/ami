@@ -506,6 +506,25 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
     );
     assert.deepEqual(merged.enforceAvailableModels, ['managed-x', 'managed-y']);
   });
+  it('honors managed disableBypassPermissionsMode and ignores non-managed attempts', () => {
+    // managed sets it → merged is true.
+    const managedOn = mergeConfigs({}, {}, null, null, null, { disableBypassPermissionsMode: true });
+    assert.equal(managedOn.disableBypassPermissionsMode, true);
+    // A project/local/env/cli config can NEVER flip the killswitch (managed-only key).
+    const nonManaged = mergeConfigs(
+      { disableBypassPermissionsMode: true } as Partial<ProjectConfig>, // cli (ignored)
+      { disableBypassPermissionsMode: true } as Partial<ProjectConfig>, // env (ignored)
+      { disableBypassPermissionsMode: true },                           // project (ignored)
+      { disableBypassPermissionsMode: true },                           // global (ignored)
+      { disableBypassPermissionsMode: true },                           // local (ignored)
+      null,                                                             // managed absent
+    );
+    assert.equal(nonManaged.disableBypassPermissionsMode, undefined,
+      'only the managed tier may arm the bypass killswitch');
+    // managed falsy → not armed.
+    const managedOff = mergeConfigs({}, {}, null, null, null, { disableBypassPermissionsMode: false });
+    assert.equal(managedOff.disableBypassPermissionsMode, undefined);
+  });
   it('merges bashOutputMaxChars from project config (overridable)', () => {
     const merged = mergeConfigs({}, {}, { bashOutputMaxChars: 4096 }, null);
     assert.equal(merged.bashOutputMaxChars, 4096);

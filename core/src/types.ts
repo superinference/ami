@@ -813,6 +813,14 @@ export interface EngineConfig {
   /** Operator-configured command prefixes exempt from the bash sandbox (M11),
    *  forwarded to every ToolContext. Additive to the built-in defaults. */
   sandboxExcludedCommands?: string[];
+  /**
+   * Managed killswitch mirrored from the merged config's
+   * `disableBypassPermissionsMode`. When true the engine arms
+   * `PermissionManager.setDisableBypass(true)` so bypass/auto-allow modes stay
+   * forbidden for the whole session (startup, Shift+Tab, `/permissions`, resume,
+   * and live config reloads). Managed-tier only; see {@link ProjectConfig}.
+   */
+  disableBypassPermissionsMode?: boolean;
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Extra absolute paths/dirs the user has granted read access to OUTSIDE the launch

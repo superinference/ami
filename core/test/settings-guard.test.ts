@@ -11,6 +11,7 @@ import {
   hasDangerousSettings,
   hasDangerousSettingsChanged,
   formatDangerousSettingsList,
+  isBypassPermissionsModeDisabled,
 } from '../src/settings-guard';
 
 describe('MANAGED_ONLY_KEYS', () => {
@@ -290,6 +291,20 @@ describe('hasDangerousSettingsChanged', () => {
       hasDangerousSettingsChanged({ statusLine: 'curl x' }, { statusLine: 'curl y' }),
       true,
     );
+  });
+});
+
+describe('isBypassPermissionsModeDisabled', () => {
+  it('is MANAGED_ONLY and true only for a literal true flag', () => {
+    assert.equal(MANAGED_ONLY_KEYS.has('disableBypassPermissionsMode'), true);
+    assert.equal(isBypassPermissionsModeDisabled({ disableBypassPermissionsMode: true }), true);
+    assert.equal(isBypassPermissionsModeDisabled({ disableBypassPermissionsMode: false }), false);
+    // A truthy-but-not-true value is NOT treated as armed (fail safe = permissive
+    // only on an exact true, mirroring Claude's strict 'disable' check).
+    assert.equal(isBypassPermissionsModeDisabled({ disableBypassPermissionsMode: 'disable' }), false);
+    assert.equal(isBypassPermissionsModeDisabled({}), false);
+    assert.equal(isBypassPermissionsModeDisabled(null), false);
+    assert.equal(isBypassPermissionsModeDisabled(undefined), false);
   });
 });
 

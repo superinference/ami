@@ -140,6 +140,20 @@ export const MANAGED_ONLY_KEYS = new Set([
   'disableBypassPermissionsMode',
 ]);
 
+/**
+ * True when a merged config forbids the bypass/auto-allow ("YOLO") permission
+ * modes via the managed `disableBypassPermissionsMode` killswitch. The flag is a
+ * {@link MANAGED_ONLY_KEYS} entry, so by the time a config is merged (see
+ * `mergeConfigs`, which copies it ONLY from the managed tier) a truthy value here
+ * provably originated from admin/managed policy — a project/local/env/cli file
+ * can never set it. Parity: Claude Code's `isBypassPermissionsModeDisabled()`.
+ */
+export function isBypassPermissionsModeDisabled(
+  config: { disableBypassPermissionsMode?: unknown } | null | undefined,
+): boolean {
+  return config?.disableBypassPermissionsMode === true;
+}
+
 export const TIER_LOCKED_KEYS = new Set([
   'permissionMode',
   'maxTurns',
