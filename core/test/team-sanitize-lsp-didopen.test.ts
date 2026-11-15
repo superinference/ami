@@ -84,19 +84,32 @@ describe('LSPClient — didOpen tracking', () => {
   let client: LSPClient;
   const notifications: Array<{ method: string; params: any }> = [];
 
+  // Build a fully-initialized ServerConn around a fake process so `ensureServer`
+  // short-circuits (it returns true when `servers` already has the language) —
+  // no spawn / handshake needed for these document-sync unit tests.
+  const seedServer = (lang: string) => {
+    const fakeProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
+    (client as any).servers.set(lang, {
+      proc: fakeProc,
+      buffer: Buffer.alloc(0),
+      nextId: 0,
+      pending: new Map(),
+      capabilities: {},
+      initialized: true,
+    });
+  };
+
   beforeEach(() => {
     client = new LSPClient();
     notifications.length = 0;
 
-    // Monkey-patch sendNotification to capture what's sent
-    (client as any).sendNotification = (_proc: any, method: string, params: any) => {
+    // Capture outbound notifications (the new client's canonical low-level
+    // notification sink is rawNotify(conn, method, params)).
+    (client as any).rawNotify = (_conn: any, method: string, params: any) => {
       notifications.push({ method, params });
     };
 
-    // Stub a fake process in the processes map so ensureServer is skipped
-    const fakeProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
-    (client as any).processes.set('typescript', fakeProc);
-    (client as any).initialized.add('typescript');
+    seedServer('typescript');
   });
 
   afterEach(() => {
@@ -155,10 +168,8 @@ describe('LSPClient — didOpen tracking', () => {
     client.shutdown();
     notifications.length = 0;
 
-    // Re-add fake process since shutdown cleared it
-    const fakeProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
-    (client as any).processes.set('typescript', fakeProc);
-    (client as any).initialized.add('typescript');
+    // Re-seed the server since shutdown cleared it
+    seedServer('typescript');
 
     await client.notifyDidChange('/tmp/test.ts', 'code2', '/tmp');
     const didOpens = notifications.filter(n => n.method === 'textDocument/didOpen');
@@ -174,19 +185,13 @@ describe('LSPClient — didOpen tracking', () => {
     await client.notifyDidChange('/tmp/test.ts', 'code', '/tmp');
     assert.equal(notifications.length, 2); // didOpen + didChange
 
-    // Simulate process crash: trigger the exit handler
-    const fakeProc = (client as any).processes.get('typescript');
-    const exitListeners = fakeProc.listeners?.('exit') ?? [];
-    // Manually call clearOpenedForLanguage since we can't trigger real events on a fake proc
-    (client as any).clearOpenedForLanguage('typescript');
-    (client as any).processes.delete('typescript');
-    (client as any).initialized.delete('typescript');
+    // Simulate a server crash: clearServer runs the per-language opened-document
+    // cleanup and drops the connection (what the proc 'exit'/'error' handler does).
+    (client as any).clearServer('typescript');
     notifications.length = 0;
 
-    // Re-add fake process (simulates server restart)
-    const newProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
-    (client as any).processes.set('typescript', newProc);
-    (client as any).initialized.add('typescript');
+    // Re-seed the server (simulates server restart)
+    seedServer('typescript');
 
     await client.notifyDidChange('/tmp/test.ts', 'code2', '/tmp');
     const didOpens = notifications.filter(n => n.method === 'textDocument/didOpen');
@@ -194,22 +199,18 @@ describe('LSPClient — didOpen tracking', () => {
   });
 
   it('process crash only clears documents for the crashed language', async () => {
-    // Add a python fake process too
-    const pyProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
-    (client as any).processes.set('python', pyProc);
-    (client as any).initialized.add('python');
+    // Seed a python server too
+    seedServer('python');
 
     await client.notifyDidChange('/tmp/test.ts', 'ts code', '/tmp');
     await client.notifyDidChange('/tmp/test.py', 'py code', '/tmp');
     notifications.length = 0;
 
-    // Crash only typescript
-    (client as any).clearOpenedForLanguage('typescript');
-    (client as any).processes.delete('typescript');
+    // Crash only typescript (clears its opened docs + connection; python untouched)
+    (client as any).clearServer('typescript');
 
-    // Re-add typescript
-    const newTsProc = { stdin: { write: () => {} }, kill: () => {}, on: () => {} } as any;
-    (client as any).processes.set('typescript', newTsProc);
+    // Re-seed typescript
+    seedServer('typescript');
 
     await client.notifyDidChange('/tmp/test.ts', 'ts2', '/tmp');
     await client.notifyDidChange('/tmp/test.py', 'py2', '/tmp');

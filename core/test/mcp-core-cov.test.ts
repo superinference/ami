@@ -29,7 +29,21 @@ function makeFakeProc(opts: { pid?: number | null; killThrows?: boolean; stdinTh
   const stdin: any = new EventEmitter();
   stdin.writable = true;
   stdin._writes = stdinWrites;
-  stdin.write = (s: string) => { if (opts.stdinThrows) throw new Error('EPIPE'); stdinWrites.push(s); return true; };
+  stdin.write = (s: string) => {
+    if (opts.stdinThrows) throw new Error('EPIPE');
+    stdinWrites.push(s);
+    // Minimal conformant-server behaviour: reply to any request (a message
+    // carrying an `id`) with a framed JSON-RPC result so the client's
+    // initialize handshake (and any other request) resolves instead of hanging.
+    const idMatch = /"id":(\d+)/.exec(s);
+    if (idMatch) {
+      const id = Number(idMatch[1]);
+      const body = JSON.stringify({ jsonrpc: '2.0', id, result: { capabilities: {} } });
+      const frame = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+      setImmediate(() => proc.stdout.emit('data', Buffer.from(frame)));
+    }
+    return true;
+  };
   proc.stdin = stdin;
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
@@ -63,10 +77,12 @@ describe('LSPClient — spawn success path', () => {
 
     const ok = await client.ensureServer('typescript', cwd);
     assert.equal(ok, true);
-    // initialize request written with LSP framing
-    assert.equal(proc._writes.length, 1);
+    // Handshake: the initialize request (framed) is written first, then the
+    // mandatory `initialized` notification once the server replies.
+    assert.equal(proc._writes.length, 2);
     assert.match(proc._writes[0], /Content-Length: \d+\r\n\r\n/);
     assert.match(proc._writes[0], /"method":"initialize"/);
+    assert.match(proc._writes[1], /"method":"initialized"/);
 
     // stream handlers are registered — fire them to execute their callbacks
     proc.stdin.emit('error', new Error('pipe'));
@@ -185,18 +201,25 @@ describe('LSPClient — spawn success path', () => {
 
   it('ensureDidOpen falls back to plaintext languageId for unknown extensions', () => {
     const proc = makeFakeProc();
-    (client as any).ensureDidOpen(proc, path.join(cwd, 'notes.unknownext'), 'content');
+    // ensureDidOpen takes a ServerConn (it writes via conn.proc.stdin).
+    (client as any).ensureDidOpen({ proc }, path.join(cwd, 'notes.unknownext'), 'content');
     assert.match(proc._writes.join(''), /"languageId":"plaintext"/);
   });
 
-  it('swallows stdin write errors in sendRequest and sendNotification', async () => {
+  it('swallows stdin write errors during initialize and notifications (no throw)', async () => {
     const proc = makeFakeProc({ stdinThrows: true });
     client._spawnSync = (() => ({ status: 0 })) as any;
     client._spawn = (() => proc) as any;
-    // init sendRequest write throws -> caught; ensureServer still succeeds
-    const ok = await client.ensureServer('typescript', cwd);
-    assert.equal(ok, true);
-    // sendNotification write also throws -> caught
+    // The initialize-request write throws -> caught in rawRequest -> the
+    // handshake can't complete, so the server fails to start (gracefully, no crash).
+    assert.equal(await client.ensureServer('typescript', cwd), false);
+
+    // With an already-initialized server whose stdin throws, a notification
+    // write error is swallowed in rawNotify (no throw) rather than propagating.
+    const throwingProc = makeFakeProc({ stdinThrows: true });
+    (client as any).servers.set('typescript', {
+      proc: throwingProc, buffer: Buffer.alloc(0), nextId: 0, pending: new Map(), capabilities: {}, initialized: true,
+    });
     await client.notifyDidChange(path.join(cwd, 's.ts'), 'code', cwd);
   });
 

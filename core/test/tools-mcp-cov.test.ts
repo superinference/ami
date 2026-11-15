@@ -368,13 +368,15 @@ describe('lspDiagnosticsTool', () => {
   it('returns a file-specific message when file_path is provided', async () => {
     const res = await lspDiagnosticsTool.execute!({ file_path: '/w/foo.ts' }, ctx());
     assert.equal(res.isError, undefined);
-    assert.match(res.output, /\[Diagnostics for \/w\/foo\.ts\]/);
+    // With no running LSP server for the file, the tool reports the absence and
+    // points at manual tooling (Claude-parity message).
+    assert.match(res.output, /No LSP server available for \/w\/foo\.ts\./);
   });
 
   it('returns a workspace message when no file_path is provided', async () => {
     const res = await lspDiagnosticsTool.execute!({}, ctx());
     assert.equal(res.isError, undefined);
-    assert.match(res.output, /\[Workspace diagnostics\]/);
+    assert.match(res.output, /No diagnostics reported in the workspace\./);
   });
 
   it('falls back gracefully when LSP client acquisition throws (catch branch)', async () => {
