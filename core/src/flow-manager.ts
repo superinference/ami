@@ -10,6 +10,10 @@ export interface FlowInfo {
    *  Undefined while active. Drives duration display and terminal-flow eviction
    *  order (evict by when work FINISHED, not when it started). */
   completedAt?: number;
+  /** Whether this flow's completion has already been surfaced to the user. Lets a
+   *  consumer notify on terminal transition exactly once without tracking seen-state
+   *  externally (set via markNotified()). Undefined/false = not yet surfaced. */
+  notified?: boolean;
 }
 
 /**
@@ -27,6 +31,8 @@ export class FlowManager {
   private flows = new Map<string, FlowInfo>();
   // One active flow per key → supports multiple concurrent flows.
   private activeByKey = new Map<string, { flowId: string; lastSpawnTime: number }>();
+  // Flows the inspector is currently displaying — retained from eviction (see pinFlow).
+  private pinnedFlowIds = new Set<string>();
 
   private static readonly DEFAULT_KEY = '__default__';
   /** Cap on retained terminal (non-active) flows so they don't accumulate across a long session. */
@@ -101,21 +107,63 @@ export class FlowManager {
     }
   }
 
+  /** FUNCTIONAL: Pin a flow so pruneTerminal() never evicts it — e.g. the TUI
+   *  inspector is currently displaying it, so it must not vanish out from under the
+   *  view. Pinning wins over the retention cap: a pinned terminal flow is retained
+   *  even beyond MAX_RETAINED_TERMINAL. */
+  pinFlow(flowId: string): void {
+    this.pinnedFlowIds.add(flowId);
+  }
+
+  /** Release a pin so the flow becomes eligible for eviction again. */
+  unpinFlow(flowId: string): void {
+    this.pinnedFlowIds.delete(flowId);
+  }
+
+  /** Whether a flow is currently pinned (retained from eviction). */
+  isPinned(flowId: string): boolean {
+    return this.pinnedFlowIds.has(flowId);
+  }
+
+  /** FUNCTIONAL: Mark a flow's completion as surfaced to the user. Returns true
+   *  only on the FIRST transition to notified so a consumer can notify exactly once
+   *  (dedupe); subsequent calls — and unknown flows — return false. */
+  markNotified(flowId: string): boolean {
+    const flow = this.flows.get(flowId);
+    if (!flow || flow.notified) return false;
+    flow.notified = true;
+    return true;
+  }
+
+  /** Terminal flows whose completion has not yet been surfaced, oldest-FINISHED
+   *  first. A consumer lists these, notifies each, then markNotified()s it. */
+  listUnnotifiedTerminalFlows(): FlowInfo[] {
+    return Array.from(this.flows.values())
+      .filter(f => f.status !== 'active' && !f.notified)
+      .sort((a, b) => (a.completedAt ?? a.createdAt) - (b.completedAt ?? b.createdAt));
+  }
+
   reset(): void {
     this.flows.clear();
     this.activeByKey.clear();
+    this.pinnedFlowIds.clear();
   }
 
   /** Evict terminal (non-active) flows beyond the retention cap, oldest-FINISHED
    *  first. Ordering by completion time (falling back to createdAt) keeps the
-   *  most recently finished flows visible longest. */
+   *  most recently finished flows visible longest. Pinned flows (the inspector is
+   *  viewing them) are skipped and retained even past the cap. */
   private pruneTerminal(): void {
     const terminal = Array.from(this.flows.values())
       .filter(f => f.status !== 'active')
       .sort((a, b) => (a.completedAt ?? a.createdAt) - (b.completedAt ?? b.createdAt));
-    const excess = terminal.length - FlowManager.MAX_RETAINED_TERMINAL;
-    for (let i = 0; i < excess; i++) {
-      this.flows.delete(terminal[i].flowId);
+    let excess = terminal.length - FlowManager.MAX_RETAINED_TERMINAL;
+    if (excess <= 0) return;
+    for (const f of terminal) {
+      if (excess <= 0) break;
+      if (this.pinnedFlowIds.has(f.flowId)) continue;
+      this.flows.delete(f.flowId);
+      excess--;
     }
   }
 }

@@ -66,13 +66,37 @@ Respond with ONLY a JSON object:
           approved,
           score,
           reason: String(parsed.reason || ''),
+          // Attribute the verdict to the model that produced it (the resolved critic
+          // model, which may differ from the main-loop model). Parity: Claude's
+          // advisor-message model attribution.
+          model: provider.model,
         };
       }
     } catch (err) {
-      return { approved: false, score: 0.0, reason: `Critic evaluation failed: ${err instanceof Error ? err.message : String(err)}` };
+      // An exception means the reviewer was UNAVAILABLE (network error, timeout, or
+      // aborted stream) — NOT a substantive rejection. Flag it so the consumer can
+      // soften the belief floor instead of treating {approved:false,score:0} as a real
+      // "no". Parity: Claude's AdvisorMessage "Advisor unavailable (code)" error branch.
+      return {
+        approved: false,
+        score: 0.0,
+        reason: `Critic evaluation failed: ${err instanceof Error ? err.message : String(err)}`,
+        unavailable: true,
+        errorCode: abortSignal.aborted ? 'aborted' : 'stream_error',
+      };
     }
 
-    return { approved: false, score: 0.0, reason: 'Critic evaluation failed: no valid JSON in response' };
+    // Reached the end of the stream with no parseable JSON: the reviewer did respond but
+    // produced unusable output. This is also an UNAVAILABLE state (no genuine verdict was
+    // rendered), distinct from a real rejection. An aborted run can land here too (the
+    // stream yields no content rather than throwing), so prefer the 'aborted' code then.
+    return {
+      approved: false,
+      score: 0.0,
+      reason: 'Critic evaluation failed: no valid JSON in response',
+      unavailable: true,
+      errorCode: abortSignal.aborted ? 'aborted' : 'malformed_response',
+    };
   }
 
   // Extract JSON with balanced-brace matching (handles nested braces in reason field)

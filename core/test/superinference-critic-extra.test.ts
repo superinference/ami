@@ -74,6 +74,10 @@ describe('Critic.evaluate() — success path', () => {
     assert.equal(result.approved, true);
     assert.ok(result.score >= 0 && result.score <= 1);
     assert.equal(typeof result.reason, 'string');
+    // A genuine verdict is NOT unavailable, and attributes the reviewing model.
+    // RED (pre-fix): model undefined. GREEN: set to the resolved critic model.
+    assert.notEqual(result.unavailable, true);
+    assert.equal(result.model, 'test-model');
   });
 });
 
@@ -140,6 +144,10 @@ describe('Critic.evaluate() — unparseable response', () => {
     assert.equal(result.approved, false);
     assert.equal(result.score, 0.0);
     assert.ok(result.reason!.includes('Critic evaluation failed'));
+    // FUNCTIONAL: an unparseable response is an UNAVAILABLE state, not a real rejection.
+    // RED (pre-fix): unavailable/errorCode undefined -> consumer floors belief like a "no".
+    assert.equal(result.unavailable, true);
+    assert.equal(result.errorCode, 'malformed_response');
   });
 });
 
@@ -181,6 +189,68 @@ describe('Critic.evaluate() — stream error', () => {
     assert.equal(result.approved, false);
     assert.equal(result.score, 0.0);
     assert.ok(result.reason!.includes('Critic evaluation failed'));
+    // FUNCTIONAL: an HTTP-500 stream yields no usable content (the provider surfaces it
+    // without throwing), so this is reviewer UNAVAILABILITY — distinct from a rejection.
+    // RED (pre-fix): unavailable undefined. GREEN: unavailable=true with an error code.
+    assert.equal(result.unavailable, true);
+    assert.equal(result.errorCode, 'malformed_response');
+  });
+
+  it('flags errorCode "aborted" when the abort signal fired', async () => {
+    const critic = new Critic(0.05, 0.10);
+    const provider = {
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'test-key',
+      model: 'test-model',
+    };
+    const ac = new AbortController();
+    ac.abort();
+
+    const result = await critic.evaluate('query', 'result', provider, ac.signal);
+    assert.equal(result.approved, false);
+    assert.equal(result.unavailable, true);
+    // An aborted run is distinguished from a generic stream failure by its error code.
+    assert.equal(result.errorCode, 'aborted');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Critic.evaluate() — catch branch with an aborted signal (DI seam)
+// A stream that THROWS while the signal is aborted must report errorCode 'aborted',
+// not 'stream_error'. Uses the injectable streamFn to hit the catch path deterministically.
+// ---------------------------------------------------------------------------
+describe('Critic.evaluate() — thrown stream (DI seam)', () => {
+  // eslint-disable-next-line require-yield
+  async function* throwingStream(): AsyncGenerator<never> {
+    throw new Error('network blew up mid-stream');
+  }
+  const provider = {
+    baseUrl: 'http://127.0.0.1:1/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+  };
+
+  it('reports errorCode "aborted" when the stream throws and the signal is aborted', async () => {
+    const critic = new Critic(0.05, 0.10, throwingStream as never);
+    const ac = new AbortController();
+    ac.abort();
+
+    const result = await critic.evaluate('query', 'result', provider, ac.signal);
+    assert.equal(result.approved, false);
+    assert.equal(result.unavailable, true);
+    assert.equal(result.errorCode, 'aborted');
+  });
+
+  it('reports errorCode "stream_error" when the stream throws and the signal is live', async () => {
+    const critic = new Critic(0.05, 0.10, throwingStream as never);
+    const ac = new AbortController();
+
+    const result = await critic.evaluate('query', 'result', provider, ac.signal);
+    assert.equal(result.approved, false);
+    assert.equal(result.unavailable, true);
+    // A genuine thrown stream on a live signal is a generic infrastructure failure.
+    assert.equal(result.errorCode, 'stream_error');
+    assert.ok(result.reason!.includes('network blew up mid-stream'));
   });
 });
 

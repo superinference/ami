@@ -266,11 +266,66 @@ function classifyDiscoveryDiagnostic(diagnostic: string | null): 'auth' | 'netwo
   return 'none';
 }
 
+/**
+ * User-declared trusted model ids (comma-separated SI_CUSTOM_MODEL) that bypass
+ * provider listing entirely. Mirrors Claude's ANTHROPIC_CUSTOM_MODEL_OPTION: a
+ * self-hosted / private model id that a live /models listing will never return
+ * can still be force-accepted so validateModel does not reject it. Read at call
+ * time so an override set after import takes effect.
+ */
+function customModelIds(): string[] {
+  return (process.env.SI_CUSTOM_MODEL || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Deprecated / renamed model-id patterns mapped to a currently-recommended
+ * successor. Advisory only: feeds `suggestion` when a requested id has NO
+ * substring overlap with any live model (e.g. a fully removed id), so the user
+ * still gets a concrete "try this instead" target. Mirrors Claude's
+ * get3PFallbackSuggestion replacement chain.
+ */
+const DEPRECATED_REPLACEMENTS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /claude-?3[._-]?5[._-]?sonnet/i, replacement: 'claude-sonnet-4-5' },
+  { pattern: /claude-?3[._-]?5[._-]?haiku/i, replacement: 'claude-haiku-4-5' },
+  { pattern: /claude-?3[._-]?opus/i, replacement: 'claude-opus-4-1' },
+  { pattern: /gpt-?4(?:[._-]?turbo|[._-]?0613|[._-]?1106)/i, replacement: 'gpt-4o' },
+  { pattern: /gpt-?3[._-]?5/i, replacement: 'gpt-4o-mini' },
+];
+
+function suggestDeprecatedReplacement(modelId: string, available: string[]): string | undefined {
+  for (const { pattern, replacement } of DEPRECATED_REPLACEMENTS) {
+    if (pattern.test(modelId)) {
+      // Prefer the successor the provider actually lists; otherwise suggest the
+      // canonical successor id so the user still has a concrete target.
+      const live = available.find(id => id.toLowerCase().includes(replacement.toLowerCase()));
+      return live ?? replacement;
+    }
+  }
+  return undefined;
+}
+
 export async function validateModel(
   config: ProviderConfig,
   modelId: string,
 ): Promise<ValidateModelResult> {
-  const cacheKey = `${detectProvider(config)}:::${config.baseUrl ?? ''}:::${modelId}`;
+  // Normalize the argument up front so leading/trailing whitespace does not
+  // silently defeat exact matching, and an empty/whitespace id gets a clear,
+  // self-contained error rather than falling through to the substring branch
+  // (where `id.includes('')` is always true and every model "matches").
+  const normalized = (modelId ?? '').trim();
+  if (normalized === '') {
+    return { valid: false, available: [], reason: 'Model name cannot be empty', errorKind: 'none' };
+  }
+
+  // A user-declared trusted id is accepted without any provider round-trip.
+  if (customModelIds().some(c => c.toLowerCase() === normalized.toLowerCase())) {
+    return { valid: true, available: [], errorKind: 'none' };
+  }
+
+  const cacheKey = `${detectProvider(config)}:::${config.baseUrl ?? ''}:::${normalized}`;
   if (validModelCache.has(cacheKey)) return { valid: true, available: [] };
 
   const { models, diagnostic } = await listModelsDiagnostic(config);
@@ -287,15 +342,21 @@ export async function validateModel(
   }
 
   const ids = models.map(m => m.id);
-  const exact = ids.find(id => id === modelId);
+  // Exact match first, then a case-insensitive exact match (providers differ in
+  // id casing), before falling back to substring matching.
+  const exact = ids.find(id => id === normalized)
+    ?? ids.find(id => id.toLowerCase() === normalized.toLowerCase());
   if (exact) {
     validModelCache.add(cacheKey);
     return { valid: true, available: ids, errorKind: 'none' };
   }
 
-  // Try substring match
-  const partial = ids.filter(id => id.includes(modelId) || modelId.includes(id));
-  const suggestion = partial.length > 0 ? partial[0] : undefined;
+  // Try substring match, then a deprecated/renamed-id replacement suggestion for
+  // ids that have no overlap with any live model at all.
+  const partial = ids.filter(id => id.includes(normalized) || normalized.includes(id));
+  const suggestion = partial.length > 0
+    ? partial[0]
+    : suggestDeprecatedReplacement(normalized, ids);
 
   return { valid: false, available: ids, suggestion, errorKind: 'none' };
 }

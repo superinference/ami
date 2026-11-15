@@ -336,7 +336,10 @@ export const grepTool: ToolDefinition = {
   },
 };
 
-const FALLBACK_SKIP_DIRS = new Set(['node_modules', '.git', 'vendor', 'dist', 'build', '.svn']);
+// Keep the VCS metadata set aligned with buildRgArgs' --glob exclusions (git, svn, hg,
+// bzr, jj, sl) so the in-process fallback never searches an internal object store that
+// the ripgrep path skips.
+const FALLBACK_SKIP_DIRS = new Set(['node_modules', '.git', 'vendor', 'dist', 'build', '.svn', '.hg', '.bzr', '.jj', '.sl']);
 const FALLBACK_MAX_FILES = 4000;
 const FALLBACK_MAX_FILE_BYTES = 1_000_000;
 
@@ -441,7 +444,10 @@ function buildRgArgs(
   if (fixedStrings) args.push('-F');
 
   args.push('--hidden');
-  args.push('--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '--glob', '!.bzr', '--glob', '!.jj');
+  // Exclude VCS metadata stores from searches. `.sl` is Sapling — without it a grep
+  // over a Sapling checkout would walk the internal object store (noise + possible
+  // leakage of packed content). Mirrors Claude Code's full VCS exclusion set.
+  args.push('--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '--glob', '!.bzr', '--glob', '!.jj', '--glob', '!.sl');
 
   if (outputMode === 'files_with_matches') {
     args.push('--files-with-matches');
@@ -472,8 +478,13 @@ function buildRgArgs(
   }
 
   if (fileType) args.push('--type', fileType);
-  if (beforeContext != null) args.push('-B', String(beforeContext));
-  if (afterContext != null) args.push('-A', String(afterContext));
+  // context_lines (-C) takes precedence: when a symmetric context is set, the
+  // independent before/after knobs are ignored so the two can't fight over the
+  // same window. Mirrors Claude Code's GrepTool precedence.
+  if (!(contextLines && contextLines > 0)) {
+    if (beforeContext != null) args.push('-B', String(beforeContext));
+    if (afterContext != null) args.push('-A', String(afterContext));
+  }
 
   if (pattern.startsWith('-')) args.push('-e', pattern);
   else args.push(pattern);
