@@ -234,6 +234,11 @@ export const globTool: ToolDefinition = {
           onlyFiles: true,
           absolute: false,
           expandDirectories: false,
+          // Forward the turn's AbortSignal so a cancelled turn (Esc / engine
+          // abort) stops the in-process crawl immediately instead of walking
+          // the whole tree before the timeout fires (mirrors the rg route,
+          // which already forwards the signal to its child process).
+          signal: context.abortSignal,
         });
         const raced = await Promise.race([walked, timeout]);
         if (timer) clearTimeout(timer);
@@ -241,6 +246,15 @@ export const globTool: ToolDefinition = {
           return { output: `Error: glob timed out after ${timeoutMs / 1000}s. Use a more specific pattern or a narrower path.`, isError: true };
         }
         entries = raced;
+      }
+
+      // Cancellation: tinyglobby resolves to [] (it does NOT throw) when its
+      // signal aborts mid-walk, and an aborted rg route likewise falls through
+      // to an empty tinyglobby result. Either would masquerade as a definitive
+      // "No files found" below. Surface the cancellation explicitly so the model
+      // doesn't treat an interrupted search as a real empty result.
+      if (context.abortSignal?.aborted) {
+        return { output: 'Error: glob search was cancelled.', isError: true };
       }
 
       if (entries.length === 0) {
