@@ -123,6 +123,15 @@ export {
 } from './utils/fs-atomic';
 export type { AtomicWriteOptions } from './utils/fs-atomic';
 export { getGitBranch } from './utils/git';
+export {
+  expandPath,
+  isPathSafe,
+  toRelativePath,
+  isPathWithin,
+  abbreviateHome,
+  displayPath,
+  stripTrailingSep,
+} from './utils/path';
 export { generateTitle } from './title-generator';
 export { ProcessManager, TASK_STATUS } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
