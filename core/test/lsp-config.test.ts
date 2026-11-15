@@ -110,6 +110,27 @@ describe('validateLspServerConfig', () => {
   it('rejects non-string args', () => {
     assert.throws(() => validateLspServerConfig('x', { command: 'c', args: [1, 2] }), /array of strings/);
   });
+
+  it('accepts a command-only config (all optional fields absent)', () => {
+    const c = validateLspServerConfig('x', { command: 'c' });
+    assert.equal(c.command, 'c');
+    assert.equal(c.args, undefined);
+    assert.equal(c.env, undefined);
+    assert.equal(c.workspaceFolder, undefined);
+    assert.equal(c.initializationOptions, undefined);
+    assert.equal(c.startupTimeout, undefined);
+    assert.equal(c.maxRestarts, undefined);
+    assert.equal(c.extensionToLanguage, undefined);
+  });
+
+  it('skips non-string entries in extensionToLanguage', () => {
+    const c = validateLspServerConfig('x', {
+      command: 'c',
+      extensionToLanguage: { '.ok': 'lang', '.bad': 123 },
+    });
+    assert.equal(c.extensionToLanguage!['.ok'], 'lang');
+    assert.equal('.bad' in c.extensionToLanguage!, false);
+  });
 });
 
 describe('loadLspServersFromFile', () => {

@@ -68,6 +68,40 @@ describe('path helpers', () => {
     assert.equal(uriToPath('/plain/path.ts'), '/plain/path.ts');
   });
 
+  it('uriToPath keeps a malformed percent-escape raw (decode catch branch)', () => {
+    // A lone '%' is an invalid escape → decodeURIComponent throws → keep raw.
+    assert.equal(uriToPath('file:///tmp/100%.ts'), '/tmp/100%.ts');
+  });
+
+  it('uriToPath + normalizeDiagnosticPath handle Windows drive URIs', () => {
+    const orig = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      // file:///C:/… → drop the leading slash, and the key is lowercased.
+      assert.equal(uriToPath('file:///C:/Users/x.ts'), 'C:/Users/x.ts');
+      assert.equal(normalizeDiagnosticPath('file:///C:/Users/X.TS'), normalizeDiagnosticPath('c:/users/x.ts'));
+    } finally {
+      Object.defineProperty(process, 'platform', orig);
+    }
+  });
+
+  it('diagnosticSeveritySymbol falls back for an out-of-enum severity', () => {
+    assert.equal(diagnosticSeveritySymbol('Error'), '✖');
+    assert.equal(diagnosticSeveritySymbol('Bogus' as Diagnostic['severity']), '•');
+  });
+
+  it('convertPublishDiagnostics maps null/undefined code to undefined', () => {
+    const out = convertPublishDiagnostics({
+      uri: 'file:///x.ts',
+      diagnostics: [
+        { message: 'a', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, code: null as unknown as undefined },
+        { message: 'b', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+      ],
+    });
+    assert.equal(out[0].code, undefined);
+    assert.equal(out[1].code, undefined);
+  });
+
   it('normalize + equality treat uri and path the same', () => {
     assert.ok(diagnosticPathsEqual('file:///tmp/a.ts', '/tmp/a.ts'));
     assert.equal(normalizeDiagnosticPath('file:///tmp/a.ts'), path.resolve('/tmp/a.ts'));

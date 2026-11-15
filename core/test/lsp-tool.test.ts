@@ -219,4 +219,38 @@ describe('lspTool guards', () => {
     const res = await lspTool.execute!({ operation: 'hover', file_path: '/abs/a.ts', line: 1, character: 1 }, ctx);
     assert.equal(res.output, 'x');
   });
+
+  it('exercises the real (default) getLSPClient hook', () => {
+    // No mock: drives the lazy-require default implementation (returns the
+    // process-wide singleton). Must not throw.
+    const client = _lspToolHooks.getLSPClient();
+    assert.ok(client);
+    assert.equal(typeof client.request, 'function');
+  });
+
+  it('formats a populated prepareCallHierarchy result', async () => {
+    const fake = fakeClient(() => [
+      { name: 'myFunc', uri: 'file:///proj/a.ts', range: { start: { line: 4, character: 2 }, end: { line: 4, character: 8 } } },
+    ]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'prepareCallHierarchy', file_path: 'a.ts', line: 5, character: 3 }, ctx);
+    assert.ok(res.output.includes('myFunc'));
+    assert.ok(res.output.includes('/proj/a.ts:5')); // 0-based line 4 → 1-based 5
+  });
+
+  it('formats a LocationLink (targetUri/targetRange) definition result', async () => {
+    const fake = fakeClient(() => [
+      { targetUri: 'file:///proj/d.ts', targetRange: { start: { line: 9, character: 0 }, end: { line: 9, character: 4 } } },
+    ]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'goToDefinition', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('/proj/d.ts:10:1')); // 0-based 9 → 1-based 10
+  });
+
+  it('formats a location with a missing range (defensive 0:0 fallback)', async () => {
+    const fake = fakeClient(() => [{ uri: 'file:///proj/e.ts' }]);
+    mock.method(_lspToolHooks, 'getLSPClient', () => fake);
+    const res = await lspTool.execute!({ operation: 'findReferences', file_path: 'a.ts', line: 1, character: 1 }, ctx);
+    assert.ok(res.output.includes('/proj/e.ts:0:0'));
+  });
 });
