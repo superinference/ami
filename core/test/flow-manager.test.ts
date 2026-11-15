@@ -315,6 +315,102 @@ describe('FlowManager', () => {
     });
   });
 
+  describe('pin/retain (eviction special-casing)', () => {
+    it('pinFlow retains a terminal flow that would otherwise be evicted', () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 21; i++) {
+        const id = fm.createFlow(`t${i}`);
+        fm.addAgent(id, `a${i}`);
+        fm.updateFlowStatus(id, () => 'completed');
+        ids.push(id);
+      }
+      // Give distinct completion times; make ids[0] the oldest-finished (first victim).
+      ids.forEach((id, i) => { const f = fm.getFlow(id); if (f) f.completedAt = 1000 + i; });
+      // Pin the would-be victim so it survives; the next-oldest is evicted instead.
+      fm.pinFlow(ids[0]);
+      assert.equal(fm.isPinned(ids[0]), true);
+      (fm as unknown as { pruneTerminal(): void }).pruneTerminal();
+      assert.ok(fm.getFlow(ids[0]), 'pinned oldest-finished flow is retained');
+      assert.equal(fm.getFlow(ids[1]), undefined, 'next-oldest unpinned flow evicted instead');
+    });
+
+    it('retention wins over the cap: all-pinned terminal flows are kept beyond MAX', () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 25; i++) {
+        const id = fm.createFlow(`p${i}`);
+        fm.addAgent(id, `a${i}`);
+        fm.updateFlowStatus(id, () => 'completed');
+        fm.pinFlow(id);
+        ids.push(id);
+      }
+      (fm as unknown as { pruneTerminal(): void }).pruneTerminal();
+      // Every flow is pinned → none evictable → all retained even past the cap of 20.
+      assert.equal(fm.listFlows().length, 25, 'pinned flows retained beyond the cap');
+    });
+
+    it('unpinFlow re-enables eviction for a previously pinned flow', () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 21; i++) {
+        const id = fm.createFlow(`u${i}`);
+        fm.addAgent(id, `a${i}`);
+        fm.updateFlowStatus(id, () => 'completed');
+        ids.push(id);
+      }
+      ids.forEach((id, i) => { const f = fm.getFlow(id); if (f) f.completedAt = 1000 + i; });
+      fm.pinFlow(ids[0]);
+      fm.unpinFlow(ids[0]);
+      assert.equal(fm.isPinned(ids[0]), false);
+      (fm as unknown as { pruneTerminal(): void }).pruneTerminal();
+      assert.equal(fm.getFlow(ids[0]), undefined, 'unpinned oldest-finished flow evicted again');
+    });
+
+    it('reset clears pins', () => {
+      const id = fm.createFlow('x');
+      fm.pinFlow(id);
+      fm.reset();
+      assert.equal(fm.isPinned(id), false, 'pins cleared on reset');
+    });
+
+    it('isPinned is false for never-pinned flows', () => {
+      const id = fm.createFlow('x');
+      assert.equal(fm.isPinned(id), false);
+    });
+  });
+
+  describe('notified flag (completion-surfaced dedupe)', () => {
+    it('active flows have no notified flag', () => {
+      const id = fm.getOrCreateActiveFlow('test');
+      assert.equal(fm.getFlow(id)?.notified, undefined);
+    });
+
+    it('markNotified returns true once then false (dedupe)', () => {
+      const id = fm.createFlow('t');
+      fm.addAgent(id, 'a');
+      fm.updateFlowStatus(id, () => 'completed');
+      assert.equal(fm.markNotified(id), true, 'first mark reports a new transition');
+      assert.equal(fm.getFlow(id)?.notified, true);
+      assert.equal(fm.markNotified(id), false, 'second mark is deduped');
+    });
+
+    it('markNotified returns false for unknown flows', () => {
+      assert.equal(fm.markNotified('flow-nope'), false);
+    });
+
+    it('listUnnotifiedTerminalFlows returns terminal + unnotified, oldest-finished first', () => {
+      const a = fm.createFlow('a'); fm.addAgent(a, 'a1'); fm.updateFlowStatus(a, () => 'completed');
+      const b = fm.createFlow('b'); fm.addAgent(b, 'b1'); fm.updateFlowStatus(b, () => 'completed');
+      const active = fm.createFlow('still-active'); // excluded (active)
+      fm.getFlow(a)!.completedAt = 200;
+      fm.getFlow(b)!.completedAt = 100;
+      let pending = fm.listUnnotifiedTerminalFlows().map(f => f.flowId);
+      assert.deepEqual(pending, [b, a], 'oldest-finished first, active excluded');
+      assert.ok(!pending.includes(active));
+      fm.markNotified(b);
+      pending = fm.listUnnotifiedTerminalFlows().map(f => f.flowId);
+      assert.deepEqual(pending, [a], 'notified flow dropped from the pending set');
+    });
+  });
+
   describe('integration: time-window grouping', () => {
     it('groups rapid spawns into one flow', () => {
       const flowId = fm.getOrCreateActiveFlow('batch');
