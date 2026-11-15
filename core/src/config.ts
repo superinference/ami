@@ -56,6 +56,21 @@ export interface ProjectConfig {
    * `permissions.disableBypassPermissionsMode === 'disable'`.
    */
   disableBypassPermissionsMode?: boolean;
+  /**
+   * Managed hook kill-switch: when true, ALL hook execution is disabled across
+   * every event (preToolUse/postToolUse/sessionStart/sessionEnd/subagentStart/…
+   * including status-line and file-suggestion hooks). A {@link MANAGED_ONLY_KEYS}
+   * entry — only a managed/enterprise config tier can set it; project/local/env/cli
+   * can never flip it. Parity: Claude Code's `disableAllHooks` policy setting.
+   */
+  disableAllHooks?: boolean;
+  /**
+   * Managed hook lockdown: when true, ONLY admin/managed-sourced hooks execute —
+   * user, project, and plugin hooks are blocked (managed > non-managed privilege
+   * boundary). A {@link MANAGED_ONLY_KEYS} entry — managed tier is the sole source.
+   * Parity: Claude Code's `allowManagedHooksOnly` policy setting.
+   */
+  allowManagedHooksOnly?: boolean;
   /** MCP allowlist: when non-empty, only these MCP servers may be connected. */
   allowedMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
@@ -589,6 +604,17 @@ export function mergeConfigs(
   // enable nor disable the killswitch — managed policy is the sole source.
   if (managedConfig?.disableBypassPermissionsMode) {
     merged.disableBypassPermissionsMode = true;
+  }
+  // Managed hook kill-switches are MANAGED_ONLY_KEYS: honored ONLY from the managed
+  // tier (the per-field loop above deliberately omits them), so a project/local/env/
+  // cli config can neither disable all hooks nor relax the managed-only lockdown —
+  // managed policy is the sole source. Parity: Claude Code's disableAllHooks /
+  // allowManagedHooksOnly policy settings.
+  if (managedConfig?.disableAllHooks) {
+    merged.disableAllHooks = true;
+  }
+  if (managedConfig?.allowManagedHooksOnly) {
+    merged.allowManagedHooksOnly = true;
   }
   // Managed MCP allowlist is also authoritative.
   if (managedConfig?.allowedMcpServers) {

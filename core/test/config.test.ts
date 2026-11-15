@@ -525,6 +525,41 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
     const managedOff = mergeConfigs({}, {}, null, null, null, { disableBypassPermissionsMode: false });
     assert.equal(managedOff.disableBypassPermissionsMode, undefined);
   });
+  it('honors managed disableAllHooks and ignores non-managed attempts', () => {
+    // managed sets it → merged is true.
+    const managedOn = mergeConfigs({}, {}, null, null, null, { disableAllHooks: true });
+    assert.equal(managedOn.disableAllHooks, true);
+    // A project/local/env/cli config can NEVER arm the hook kill-switch (managed-only key).
+    const nonManaged = mergeConfigs(
+      { disableAllHooks: true } as Partial<ProjectConfig>, // cli (ignored)
+      { disableAllHooks: true } as Partial<ProjectConfig>, // env (ignored)
+      { disableAllHooks: true },                           // project (ignored)
+      { disableAllHooks: true },                           // global (ignored)
+      { disableAllHooks: true },                           // local (ignored)
+      null,                                                // managed absent
+    );
+    assert.equal(nonManaged.disableAllHooks, undefined,
+      'only the managed tier may disable all hooks');
+    // managed falsy → not armed.
+    const managedOff = mergeConfigs({}, {}, null, null, null, { disableAllHooks: false });
+    assert.equal(managedOff.disableAllHooks, undefined);
+  });
+  it('honors managed allowManagedHooksOnly and ignores non-managed attempts', () => {
+    const managedOn = mergeConfigs({}, {}, null, null, null, { allowManagedHooksOnly: true });
+    assert.equal(managedOn.allowManagedHooksOnly, true);
+    const nonManaged = mergeConfigs(
+      { allowManagedHooksOnly: true } as Partial<ProjectConfig>, // cli (ignored)
+      { allowManagedHooksOnly: true } as Partial<ProjectConfig>, // env (ignored)
+      { allowManagedHooksOnly: true },                           // project (ignored)
+      { allowManagedHooksOnly: true },                           // global (ignored)
+      { allowManagedHooksOnly: true },                           // local (ignored)
+      null,                                                      // managed absent
+    );
+    assert.equal(nonManaged.allowManagedHooksOnly, undefined,
+      'only the managed tier may restrict hooks to managed-only');
+    const managedOff = mergeConfigs({}, {}, null, null, null, { allowManagedHooksOnly: false });
+    assert.equal(managedOff.allowManagedHooksOnly, undefined);
+  });
   it('merges bashOutputMaxChars from project config (overridable)', () => {
     const merged = mergeConfigs({}, {}, { bashOutputMaxChars: 4096 }, null);
     assert.equal(merged.bashOutputMaxChars, 4096);
