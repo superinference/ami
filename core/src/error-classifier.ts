@@ -35,6 +35,34 @@ export function findErrorCode(err: unknown, maxDepth = 5): string | undefined {
   return undefined;
 }
 
+/**
+ * Minify-safe abort/cancellation detection. An aborted fetch/stream surfaces as
+ * a DOMException whose `name` is 'AbortError' (code 20) in Node's
+ * fetch/AbortController path, but bundlers can rename concrete classes, so an
+ * `instanceof SomeAbortClass` check is brittle. Union the stable signals: the
+ * 'AbortError' name, a DOMException ABORT_ERR code, and a message fallback —
+ * while never mistaking an ECONNABORTED network drop for a user cancellation.
+ * Mirrors Claude's isAbortError. Exported so the engine/provider can share one
+ * definition instead of ad-hoc `message.includes('abort')` checks.
+ */
+export function isAbortError(err: unknown): boolean {
+  if (typeof err === 'string') {
+    const m = err.toLowerCase();
+    return (m.includes('abort') || m.includes('cancel')) && !m.includes('econnaborted');
+  }
+  if (err === null || typeof err !== 'object') return false;
+  if ((err as { name?: unknown }).name === 'AbortError') return true;
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.code === DOMException.ABORT_ERR) {
+    return true;
+  }
+  const message = (err as { message?: unknown }).message;
+  if (typeof message === 'string') {
+    const m = message.toLowerCase();
+    return (m.includes('abort') || m.includes('cancel')) && !m.includes('econnaborted');
+  }
+  return false;
+}
+
 export const ERROR_CATEGORIES = [
   'rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
   'auth_error', 'output_too_large', 'content_filter', 'server_error',
@@ -205,8 +233,9 @@ function classifySDKError(error: Error): ClassifiedError | null {
   const message = error.message;
 
   // Abort/cancel — check early before SDK type checks, since an abort
-  // may wrap an SDK error
-  if (error.name === 'AbortError' || message.includes('abort') || message.includes('cancel')) {
+  // may wrap an SDK error. Uses the shared minify-safe detector (which also
+  // declines to treat an ECONNABORTED network drop as a cancellation).
+  if (isAbortError(error)) {
     return { category: 'abort', message, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
@@ -275,6 +304,14 @@ function classifySDKError(error: Error): ClassifiedError | null {
       case 529:
         return { category: 'model_unavailable', message: msg, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 10000 };
       default:
+        // Generic status fallback: any other 5xx (504 gateway timeout, 507/508,
+        // Cloudflare 520-527, 599, …) is a transient server/gateway failure —
+        // retryable with fallback, mirroring Claude's `status >= 500` rule.
+        // Keeps the explicit cases above (500/502 server, 503/529 overload)
+        // authoritative while no longer dropping uncommon 5xx codes to 'unknown'.
+        if (typeof status === 'number' && status >= 500) {
+          return { category: 'server_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 3000 };
+        }
         return null; // fall through to regex
     }
   }
@@ -335,13 +372,10 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
   const causeCode = error instanceof Error ? findErrorCode(error) : undefined;
   const lower = (causeCode ? `${errorString} ${causeCode}` : errorString).toLowerCase();
 
-  // Abort — not retryable, checked first so it short-circuits.
-  // Exclude ECONNABORTED which is a network error, not a user-initiated abort.
-  if (
-    (lower.includes('abort') && !lower.includes('econnaborted')) ||
-    lower.includes('aborterror') ||
-    lower.includes('cancel')
-  ) {
+  // Abort — not retryable, checked first so it short-circuits. The shared
+  // detector excludes ECONNABORTED, which is a network error, not a
+  // user-initiated abort.
+  if (isAbortError(lower)) {
     return { category: 'abort', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
@@ -438,9 +472,17 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
     return { category: 'model_unavailable', message: errorString, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 10000 };
   }
 
-  // Server error — retryable, may benefit from fallback
-  // Use word boundary matching for status codes to avoid false positives (port numbers, token counts)
-  if (/\bHTTP\s+500\b|\b500\s+(internal|server)/i.test(errorString) || /\bHTTP\s+502\b/i.test(errorString) || lower.includes('internal server error')) {
+  // Server error — retryable, may benefit from fallback.
+  // Use word-boundary matching for status codes to avoid false positives (port
+  // numbers, token counts). The generic `HTTP 5xx` arm catches uncommon 5xx
+  // codes (504/507/508/599, …); 503/529 overload is already handled above as
+  // model_unavailable, so it never reaches here.
+  if (
+    /\bHTTP\s+500\b|\b500\s+(internal|server)/i.test(errorString) ||
+    /\bHTTP\s+502\b/i.test(errorString) ||
+    /\bHTTP\s+5\d\d\b/i.test(errorString) ||
+    lower.includes('internal server error')
+  ) {
     return { category: 'server_error', message: errorString, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 3000 };
   }
 
@@ -450,8 +492,16 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
     lower.includes('depth_zero_self_signed_cert') ||
     lower.includes('self_signed_cert_in_chain') ||
     lower.includes('cert_has_expired') ||
+    lower.includes('cert_not_yet_valid') ||
+    lower.includes('cert_revoked') ||
+    lower.includes('unable_to_get_issuer_cert') ||
+    lower.includes('unable_to_get_local_issuer_cert') ||
     lower.includes('err_tls_cert_altname_invalid') ||
-    lower.includes('certificate') && (lower.includes('expired') || lower.includes('invalid') || lower.includes('self-signed') || lower.includes('verify'))
+    lower.includes('unable to get local issuer certificate') ||
+    (lower.includes('certificate') &&
+      (lower.includes('expired') || lower.includes('invalid') || lower.includes('self-signed') ||
+       lower.includes('verify') || lower.includes('not yet valid') || lower.includes('revoked') ||
+       lower.includes('hostname')))
   ) {
     return { category: 'ssl_error', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
   }
@@ -487,7 +537,7 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
 const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   rate_limited: 'Rate limited by the provider — retrying after a delay.',
   plan_limit: 'Plan or billing limit reached — check your account usage and billing settings.',
-  context_overflow: 'Response context too large — compacting conversation.',
+  context_overflow: 'Context limit reached — compacting conversation. Run /compact or /clear to continue.',
   model_unavailable: 'Model temporarily unavailable — retrying.',
   auth_error: 'Authentication error — check your API key.',
   output_too_large: 'Model output exceeded size limit — retrying with smaller output.',
@@ -521,6 +571,41 @@ export function networkErrorHint(lowerMsg: string): string {
   return 'Network error — retrying connection. Check your proxy/gateway first, then VPN/firewall.';
 }
 
+/**
+ * Build a per-code, actionable SSL/TLS certificate hint. A bare "SSL error"
+ * leaves the user guessing; distinguishing expired / not-yet-valid / revoked /
+ * self-signed / hostname-mismatch / untrusted-chain cases tells them exactly
+ * what to fix — and points corporate-proxy users at NODE_EXTRA_CA_CERTS rather
+ * than the blunt NODE_TLS_REJECT_UNAUTHORIZED=0. Every branch mentions
+ * "certificate" so downstream renderers can key off it. Mirrors Claude's
+ * per-code SSL guidance.
+ */
+export function getSSLErrorHint(message: string): string {
+  const lower = (typeof message === 'string' ? message : '').toLowerCase();
+  if (lower.includes('cert_has_expired') || (lower.includes('certificate') && lower.includes('expired'))) {
+    return "SSL/TLS certificate has expired — the server's certificate is no longer valid. Verify your system clock and the provider's certificate.";
+  }
+  if (lower.includes('cert_not_yet_valid') || (lower.includes('certificate') && lower.includes('not yet valid'))) {
+    return 'SSL/TLS certificate is not yet valid — check that your system clock is set correctly.';
+  }
+  if (lower.includes('cert_revoked') || (lower.includes('certificate') && lower.includes('revoked'))) {
+    return 'SSL/TLS certificate has been revoked — do not bypass this; contact your provider.';
+  }
+  if (lower.includes('err_tls_cert_altname_invalid') || (lower.includes('certificate') && lower.includes('hostname'))) {
+    return 'SSL/TLS certificate hostname mismatch — the certificate does not match the server name. Check your provider base URL.';
+  }
+  if (lower.includes('depth_zero_self_signed_cert') || lower.includes('self_signed_cert_in_chain') ||
+      (lower.includes('certificate') && lower.includes('self-signed'))) {
+    return 'Self-signed SSL/TLS certificate — if this is a corporate proxy, set NODE_EXTRA_CA_CERTS to your CA bundle (or NODE_TLS_REJECT_UNAUTHORIZED=0 only for a trusted self-signed cert).';
+  }
+  if (lower.includes('unable_to_get_issuer_cert') || lower.includes('unable_to_get_local_issuer_cert') ||
+      lower.includes('unable_to_verify_leaf_signature') || lower.includes('unable to get local issuer certificate') ||
+      lower.includes('unable to verify')) {
+    return 'SSL/TLS certificate chain could not be verified — if you are behind a corporate proxy, set NODE_EXTRA_CA_CERTS to your CA bundle.';
+  }
+  return FRIENDLY_MESSAGES.ssl_error!;
+}
+
 export function friendlyErrorMessage(classified: ClassifiedError): string {
   // OpenRouter ZDR-violation 404 masquerades as a generic error (often 'unknown'
   // or 'model_unavailable'); surface actionable guidance before the category
@@ -528,6 +613,11 @@ export function friendlyErrorMessage(classified: ClassifiedError): string {
   const zdr = classifyZdrError(classified.message);
   if (zdr.isZdr) return zdr.guidance!;
   if (classified.category === 'unknown' || classified.category === 'abort') {
+    // A bare/empty error body (e.g. a generic API-error prefix with no detail)
+    // is useless to the user — substitute an actionable fallback instead.
+    if (classified.message.trim().length === 0) {
+      return 'An unexpected error occurred. Please wait a moment and try again.';
+    }
     return classified.message;
   }
   // A non-retryable model_unavailable is a 404 model-not-found (vs a retryable
@@ -537,6 +627,10 @@ export function friendlyErrorMessage(classified: ClassifiedError): string {
   }
   if (classified.category === 'network_error') {
     return networkErrorHint(classified.message.toLowerCase());
+  }
+  // SSL/TLS: dispatch a per-code, actionable hint instead of one generic line.
+  if (classified.category === 'ssl_error') {
+    return getSSLErrorHint(classified.message);
   }
   const friendly = FRIENDLY_MESSAGES[classified.category];
   return friendly ?? classified.message;
