@@ -27,7 +27,31 @@ export function isLoopbackHost(host: string): boolean {
   );
 }
 
+/**
+ * URL schemes the web tools are permitted to fetch. Everything else —
+ * `file:`, `ftp:`, `gopher:`, `data:`, `blob:`, `javascript:`, `ws:`/`wss:` —
+ * is refused before any network or filesystem access. A crafted initial URL
+ * (or a redirect to one) that reached a non-HTTP handler would be an SSRF/LFI
+ * surface (`file:///etc/passwd`, `gopher://` request smuggling); the allowlist
+ * closes it. ADDITIVE: pre-existing http/https callers are unaffected.
+ */
+export const ALLOWED_URL_SCHEMES = new Set(['http:', 'https:']);
+
+/** True iff `url` parses and uses an allowed (http/https) scheme. */
+export function isAllowedScheme(url: string): boolean {
+  try {
+    return ALLOWED_URL_SCHEMES.has(new URL(url).protocol.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export function isPrivateIP(ip: string): boolean {
+  // Case-insensitive for IPv6 literals: DNS returns lowercase, but a redirect
+  // host / caller-supplied address can be uppercase (e.g. "FE80::1"), and the
+  // hex-prefix checks below are case-sensitive — normalize so an uppercase
+  // link-local/ULA/loopback literal is not silently treated as public.
+  ip = ip.toLowerCase();
   // Strip IPv4-mapped IPv6 prefix and re-check
   if (ip.startsWith('::ffff:')) {
     return isPrivateIP(ip.slice(7));
@@ -58,11 +82,22 @@ export function isPrivateIP(ip: string): boolean {
 export function isBlockedRedirectTarget(url: string): boolean {
   try {
     const parsed = new URL(url);
+    // A redirect that switches to a non-HTTP scheme (file:, gopher:, data:, …)
+    // must never be followed — that is the classic "redirect to file://" SSRF/LFI
+    // escape. Refuse any scheme outside the allowlist. ADDITIVE.
+    if (!ALLOWED_URL_SCHEMES.has(parsed.protocol.toLowerCase())) return true;
     const hostname = parsed.hostname.toLowerCase();
     if (BLOCKED_HOSTNAMES.has(hostname)) return true;
     // Block obvious private IP patterns in the hostname itself
     if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.|169\.254\.)/.test(hostname)) return true;
     if (hostname === '::1' || hostname.startsWith('[::')) return true;
+    // Bracketed IPv6 literal ([fe80::1], [fc00::1], [fd12::1], …): strip the
+    // brackets and run the FULL private-range check. The "[::"-prefix test above
+    // only catches loopback/unspecified; link-local and ULA redirect targets
+    // slipped through. Public IPv6 (e.g. [2606:2800:...]) stays allowed. ADDITIVE.
+    if (hostname.startsWith('[') && hostname.endsWith(']') && isPrivateIP(hostname.slice(1, -1))) {
+      return true;
+    }
     return false;
   } catch { return true; }
 }
@@ -84,6 +119,13 @@ export async function validateUrlSafety(
   const parsed = new URL(url);
   const hostname = parsed.hostname.toLowerCase();
   const allowLoopback = opts?.allowLoopback === true;
+
+  // Scheme allowlist BEFORE any DNS/network work: refuse file:, ftp:, gopher:,
+  // data:, etc. so a non-HTTP URL can never reach a fetch path. ADDITIVE —
+  // http/https (the only schemes the web tools ever pass) are unaffected.
+  if (!ALLOWED_URL_SCHEMES.has(parsed.protocol.toLowerCase())) {
+    return { error: `Blocked: scheme "${parsed.protocol}" is not allowed (only http/https)` };
+  }
 
   if (BLOCKED_HOSTNAMES.has(hostname) && !(allowLoopback && isLoopbackHost(hostname))) {
     return { error: `Blocked: "${hostname}" is a private/metadata hostname` };
@@ -147,6 +189,58 @@ export function isValidIP(ip: string): boolean {
 }
 
 /**
+ * Turn a Unicode code point into its character, returning '' for anything out
+ * of range or otherwise invalid rather than throwing. Used by stripHtml's
+ * numeric-entity decoder so a malformed reference is dropped, not fatal.
+ */
+function fromCodePointSafe(cp: number): string {
+  if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff) return '';
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Map a declared charset label to a Node Buffer encoding. Covers the labels a
+ * web page realistically declares; unknown labels fall through to the caller's
+ * utf-8 default.
+ */
+const CHARSET_TO_ENCODING: Record<string, BufferEncoding> = {
+  'utf-8': 'utf-8', 'utf8': 'utf-8',
+  'ascii': 'ascii', 'us-ascii': 'ascii',
+  'latin1': 'latin1', 'latin-1': 'latin1',
+  'iso-8859-1': 'latin1', 'iso8859-1': 'latin1',
+  'windows-1252': 'latin1', 'cp1252': 'latin1',
+  'utf-16le': 'utf-16le', 'utf16le': 'utf-16le',
+  'ucs-2': 'utf-16le', 'ucs2': 'utf-16le',
+};
+
+/**
+ * Extract the `charset` parameter from a Content-Type header, normalized to
+ * lowercase, or null if absent/unparsable.
+ */
+export function parseCharset(contentType: string | undefined): string | null {
+  if (!contentType) return null;
+  const m = /charset\s*=\s*"?([^";]+)"?/i.exec(contentType);
+  return m ? m[1].trim().toLowerCase() : null;
+}
+
+/**
+ * Decode an HTTP body buffer to text using the charset declared in its
+ * Content-Type (falling back to utf-8 when none is declared or the label is
+ * unrecognized). Previously every body was force-decoded as utf-8, which
+ * mojibake-corrupted pages served as iso-8859-1/windows-1252/utf-16. ADDITIVE:
+ * utf-8 and charset-less responses decode exactly as before.
+ */
+export function decodeBody(buf: Buffer, contentType?: string): string {
+  const charset = parseCharset(contentType);
+  const enc = charset ? CHARSET_TO_ENCODING[charset] : undefined;
+  return buf.toString(enc ?? 'utf-8');
+}
+
+/**
  * Strip HTML tags and return clean text.
  *
  * Removes <script>, <style>, and <head> blocks entirely (including their
@@ -183,6 +277,13 @@ export function stripHtml(html: string): string {
   text = text.replace(/&quot;/g, '"');
   text = text.replace(/&#39;/g, "'");
   text = text.replace(/&nbsp;/g, ' ');
+
+  // Decode numeric character references — decimal (&#8364;) and hex
+  // (&#x2014;) — so typographic punctuation, currency and other symbols become
+  // real characters instead of surviving as literal entity text (the previous
+  // decoder handled only a fixed named set). ADDITIVE.
+  text = text.replace(/&#(\d+);/g, (_m, d) => fromCodePointSafe(parseInt(d, 10)));
+  text = text.replace(/&#x([0-9a-f]+);/gi, (_m, h) => fromCodePointSafe(parseInt(h, 16)));
 
   // Collapse runs of whitespace on each line, then trim each line
   text = text
@@ -380,7 +481,9 @@ function httpGetInternal(
           settled = true;
           const buf = Buffer.concat(chunks);
           resolve({
-            body: buf.toString('utf-8'),
+            // Decode per the server-declared charset (utf-8 default) instead of
+            // forcing utf-8, so non-utf-8 pages are not mojibake-corrupted.
+            body: decodeBody(buf, res.headers['content-type']),
             // Preserve raw bytes for binary consumers (PDF/image/octet-stream).
             ...(raw ? { bodyBuffer: buf } : {}),
             statusCode,
