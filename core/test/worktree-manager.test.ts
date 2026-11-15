@@ -202,6 +202,25 @@ describe('createWorktreeSession', () => {
     assert.equal(session.worktreePath, worktreeDir);
     assert.ok(fs.existsSync(worktreeDir));
   });
+
+  it('bumps mtime of an already-existing worktree so stale cleanup cannot reap a reused worktree', () => {
+    execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+    execSync('git commit --allow-empty -m "init"', { cwd: tmpDir, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@test.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@test.com' } });
+
+    // Simulate a long-lived worktree created well past the stale-cleanup cutoff.
+    const worktreeDir = path.join(tmpDir, '.ami', 'worktrees', 'reused');
+    fs.mkdirSync(worktreeDir, { recursive: true });
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000); // 40 days ago
+    fs.utimesSync(worktreeDir, old, old);
+    assert.ok(fs.statSync(worktreeDir).mtimeMs < Date.now() - 30 * 24 * 60 * 60 * 1000, 'precondition: mtime is stale');
+
+    // Re-entering the existing worktree must refresh its mtime.
+    createWorktreeSession(tmpDir, 'reused');
+
+    const bumped = fs.statSync(worktreeDir).mtimeMs;
+    assert.ok(bumped > Date.now() - 60_000, 'mtime must be bumped to ~now on resume');
+    assert.ok(bumped > old.getTime(), 'mtime must advance past the stale value');
+  });
 });
 
 // ---------------------------------------------------------------------------

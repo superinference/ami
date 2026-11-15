@@ -102,6 +102,59 @@ describe('fs-atomic: atomicWriteFileSync / secureMkdirSync', () => {
     assert.ok(!fs.readdirSync(dir).some(f => f.includes('.tmp.')));
   });
 
+  it('fsyncs the parent directory so the rename is durable across power loss', () => {
+    const dir = tmpDir();
+    const target = path.join(dir, 'durable', 'f.txt');
+    const mOpen = mock.method(fsHooks, 'openSync'); // tracks + calls through
+    const mFsync = mock.method(fsHooks, 'fsyncSync');
+    const mClose = mock.method(fsHooks, 'closeSync');
+    try {
+      atomicWriteFileSync(target, 'durable-payload');
+    } finally {
+      mOpen.mock.restore();
+      mFsync.mock.restore();
+      mClose.mock.restore();
+    }
+    assert.equal(fs.readFileSync(target, 'utf-8'), 'durable-payload');
+    const parent = path.dirname(target);
+    assert.ok(mOpen.mock.calls.some(c => c.arguments[0] === parent), 'opened the parent dir');
+    assert.ok(mFsync.mock.calls.length >= 1, 'fsynced the dir fd');
+    assert.ok(mClose.mock.calls.length >= 1, 'closed the dir fd');
+  });
+
+  it('tolerates a directory that cannot be opened for fsync (best-effort)', () => {
+    const dir = tmpDir();
+    const target = path.join(dir, 'nofsync.txt');
+    const mOpen = mock.method(fsHooks, 'openSync', () => { throw new Error('EISDIR'); });
+    const mClose = mock.method(fsHooks, 'closeSync');
+    try {
+      atomicWriteFileSync(target, 'still-written');
+    } finally {
+      mOpen.mock.restore();
+      mClose.mock.restore();
+    }
+    // The write must still succeed even though the dir fsync was impossible.
+    assert.equal(fs.readFileSync(target, 'utf-8'), 'still-written');
+    // openSync threw before an fd existed → closeSync must not run.
+    assert.equal(mClose.mock.calls.length, 0);
+  });
+
+  it('tolerates an fsync failure on the dir fd and still closes it', () => {
+    const dir = tmpDir();
+    const target = path.join(dir, 'fsyncfail.txt');
+    const mFsync = mock.method(fsHooks, 'fsyncSync', () => { throw new Error('EINVAL'); });
+    const mClose = mock.method(fsHooks, 'closeSync');
+    try {
+      atomicWriteFileSync(target, 'fsync-threw');
+    } finally {
+      mFsync.mock.restore();
+      mClose.mock.restore();
+    }
+    assert.equal(fs.readFileSync(target, 'utf-8'), 'fsync-threw');
+    // fd was opened, so it must be closed even though fsync threw.
+    assert.ok(mClose.mock.calls.length >= 1);
+  });
+
   it('secureMkdirSync is idempotent and tightens an existing dir', () => {
     if (IS_WIN || IS_ROOT) return;
     const dir = tmpDir();

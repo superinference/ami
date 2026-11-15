@@ -182,11 +182,28 @@ const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', '
 /** Text-like MIME types that can be decoded and shown inline. */
 const TEXT_RESOURCE_PATTERN = /^(text\/|application\/json|application\/xml)/;
 
-/** Process MCP result content array, handling text, image, and resource types.
- *  Returns null if the result does not have a content array (fallback to JSON.stringify). */
+/** Process an MCP tool result, handling the prioritized result shapes and the
+ *  text / image / audio / resource / resource_link content-item types.
+ *  Returns null if the result carries none of these (fallback to JSON.stringify).
+ *
+ *  Result shapes are checked in Claude-compatible priority order: a legacy
+ *  `toolResult` string, then a `structuredContent` object, then the `content`
+ *  array. The first two are otherwise lost to a raw stringify of the whole
+ *  wrapper object (empty content array / _meta and all). */
 export function processMcpContent(result: unknown): { text: string; metadata?: Record<string, unknown> } | null {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
   const obj = result as Record<string, unknown>;
+
+  // Priority 1: legacy `toolResult` plain-string shape.
+  if (typeof obj.toolResult === 'string') {
+    return { text: obj.toolResult };
+  }
+  // Priority 2: `structuredContent` object — emit the structured payload as JSON
+  // so it survives instead of being dropped to a stringify of the whole wrapper.
+  if (obj.structuredContent && typeof obj.structuredContent === 'object') {
+    return { text: JSON.stringify(obj.structuredContent, null, 2) };
+  }
+
   if (!Array.isArray(obj.content)) return null;
 
   const parts: string[] = [];
@@ -204,6 +221,19 @@ export function processMcpContent(result: unknown): { text: string; metadata?: R
       } else {
         parts.push(`[Unsupported image type: ${mime}]`);
       }
+    } else if (item.type === 'audio' && typeof item.data === 'string') {
+      // Audio content is not inlined; surface a size/mime placeholder (mirroring
+      // the image branch) so the block is not silently dropped from the output.
+      const mime = (item.mimeType as string) || 'audio/mpeg';
+      const sizeBytes = Math.ceil(((item.data as string).length * 3) / 4);
+      parts.push(`[Audio: ${mime}, ${sizeBytes} bytes base64]`);
+    } else if (item.type === 'resource_link') {
+      // A link to a resource the server can serve — surface name, uri and any
+      // description so the model knows the referenced content exists.
+      const uri = typeof item.uri === 'string' ? item.uri : 'unknown';
+      const name = typeof item.name === 'string' ? item.name : uri;
+      const desc = typeof item.description === 'string' ? ` (${item.description})` : '';
+      parts.push(`[Resource link: ${name}] ${uri}${desc}`);
     } else if (item.type === 'resource') {
       const resource = item.resource as Record<string, unknown> | undefined;
       if (resource) {
