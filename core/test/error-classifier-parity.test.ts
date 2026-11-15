@@ -10,6 +10,8 @@ import {
   parsePromptTooLongTokenCounts,
   getPromptTooLongTokenGap,
   parseMaxTokensContextOverflow,
+  isAbortError,
+  getSSLErrorHint,
 } from '../src/error-classifier';
 
 function apiError(status: number, message: string): Error {
@@ -147,5 +149,125 @@ describe('timeout env-var hint', () => {
     const c = classifyError('connection timed out');
     const friendly = friendlyErrorMessage(c);
     assert.ok(!friendly.includes('SUPERINFERENCE_API_TIMEOUT_MS'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isAbortError — minify-safe cancellation detection (F1773 / F0984)
+// ---------------------------------------------------------------------------
+describe('isAbortError', () => {
+  it('detects an AbortError by name', () => {
+    assert.equal(isAbortError({ name: 'AbortError' }), true);
+  });
+  it('detects a DOMException AbortError', () => {
+    assert.equal(isAbortError(new DOMException('stream closed', 'AbortError')), true);
+  });
+  it('detects an aborted/cancelled message string', () => {
+    assert.equal(isAbortError('The operation was aborted'), true);
+    assert.equal(isAbortError('request cancelled by user'), true);
+  });
+  it('does NOT treat an ECONNABORTED network drop as an abort', () => {
+    assert.equal(isAbortError('connect ECONNABORTED'), false);
+  });
+  it('returns false for unrelated errors and non-objects', () => {
+    assert.equal(isAbortError('some weird error'), false);
+    assert.equal(isAbortError(null), false);
+    assert.equal(isAbortError(42), false);
+    assert.equal(isAbortError({ foo: 'bar' }), false);
+  });
+  it('an APICallError whose body mentions ECONNABORTED is a server error, not an abort', () => {
+    // Discriminates the new detector: the old `message.includes("abort")` SDK
+    // check mis-classified ECONNABORTED as a (non-retryable) abort.
+    const c = classifyError(apiError(500, 'upstream read ECONNABORTED'));
+    assert.equal(c.category, 'server_error');
+    assert.equal(c.retryable, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Generic 5xx / status fallback (F0166)
+// ---------------------------------------------------------------------------
+describe('generic 5xx retryable fallback', () => {
+  it('classifies a 504 gateway-timeout APICallError as retryable server_error', () => {
+    const c = classifyError(apiError(504, 'gateway timeout'));
+    assert.equal(c.category, 'server_error');
+    assert.equal(c.retryable, true);
+    assert.equal(c.shouldFallback, true);
+  });
+  it('classifies a 507 APICallError as retryable server_error', () => {
+    const c = classifyError(apiError(507, 'insufficient storage'));
+    assert.equal(c.category, 'server_error');
+    assert.equal(c.retryable, true);
+  });
+  it('keeps 503 as model_unavailable (explicit case wins over generic 5xx)', () => {
+    const c = classifyError(apiError(503, 'service overloaded'));
+    assert.equal(c.category, 'model_unavailable');
+  });
+  it('classifies a bare "HTTP 504" string as retryable server_error', () => {
+    const c = classifyError('HTTP 504 Gateway Timeout');
+    assert.equal(c.category, 'server_error');
+    assert.equal(c.retryable, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSL/TLS per-code classification + actionable hints (F1273 / F0166)
+// ---------------------------------------------------------------------------
+describe('SSL per-code classification', () => {
+  it('classifies CERT_NOT_YET_VALID as ssl_error', () => {
+    assert.equal(classifyError('Error: CERT_NOT_YET_VALID').category, 'ssl_error');
+  });
+  it('classifies CERT_REVOKED as ssl_error', () => {
+    assert.equal(classifyError('Error: CERT_REVOKED').category, 'ssl_error');
+  });
+  it('classifies "unable to get local issuer certificate" as ssl_error', () => {
+    assert.equal(classifyError('unable to get local issuer certificate').category, 'ssl_error');
+  });
+  it('does NOT misclassify an OAuth revoked-token message as ssl_error', () => {
+    // "revoked" alone must not trip SSL — it needs "certificate" nearby.
+    assert.notEqual(classifyError('oauth token has been revoked').category, 'ssl_error');
+  });
+});
+
+describe('getSSLErrorHint — per-code actionable guidance', () => {
+  it('expired cert', () => {
+    assert.match(getSSLErrorHint('CERT_HAS_EXPIRED'), /expired/i);
+    assert.match(getSSLErrorHint('CERT_HAS_EXPIRED'), /certificate/i);
+  });
+  it('not-yet-valid cert mentions the clock', () => {
+    assert.match(getSSLErrorHint('CERT_NOT_YET_VALID'), /not yet valid/i);
+    assert.match(getSSLErrorHint('CERT_NOT_YET_VALID'), /clock/i);
+  });
+  it('revoked cert', () => {
+    assert.match(getSSLErrorHint('CERT_REVOKED'), /revoked/i);
+  });
+  it('hostname mismatch', () => {
+    assert.match(getSSLErrorHint('ERR_TLS_CERT_ALTNAME_INVALID'), /hostname/i);
+  });
+  it('self-signed recommends NODE_EXTRA_CA_CERTS', () => {
+    assert.match(getSSLErrorHint('DEPTH_ZERO_SELF_SIGNED_CERT'), /NODE_EXTRA_CA_CERTS/);
+  });
+  it('unverifiable chain recommends NODE_EXTRA_CA_CERTS', () => {
+    assert.match(getSSLErrorHint('unable to get local issuer certificate'), /NODE_EXTRA_CA_CERTS/);
+  });
+  it('friendlyErrorMessage routes ssl_error through the per-code hint', () => {
+    const friendly = friendlyErrorMessage(classifyError('CERT_HAS_EXPIRED'));
+    assert.match(friendly, /expired/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Actionable context-overflow + bare-error fallback messages (F0738 / F1272)
+// ---------------------------------------------------------------------------
+describe('actionable friendly messages', () => {
+  it('context_overflow names the recovery commands', () => {
+    const friendly = friendlyErrorMessage(classifyError('context too long'));
+    assert.match(friendly, /\/compact/);
+    assert.match(friendly, /\/clear/);
+  });
+  it('a bare/empty error body gets an actionable retry fallback', () => {
+    const friendly = friendlyErrorMessage(classifyError(''));
+    assert.notEqual(friendly.trim().length, 0);
+    assert.match(friendly, /try again/i);
   });
 });

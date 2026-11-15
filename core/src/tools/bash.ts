@@ -14,6 +14,11 @@ import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from '.
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
 
 const MAX_OUTPUT_LENGTH = 200_000;
+// Floor for the resolved output cap: the head+tail truncation math in
+// truncateBashText/formatOutput needs room for a head slice, a tail slice, and
+// the "[truncated …]" banner, so an absurdly small BASH_MAX_OUTPUT_LENGTH is
+// clamped up to this minimum rather than producing a degenerate slice.
+const MIN_OUTPUT_LENGTH = 1_000;
 const DEFAULT_TIMEOUT_MS = 120000;
 const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
 const _bashCache = new BashResultCache();
@@ -23,6 +28,23 @@ function parseEnvMs(name: string): number | undefined {
   if (!raw) return undefined;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * [functional parity] Resolve the effective bash output-character cap. Honors
+ * BASH_MAX_OUTPUT_LENGTH (parity: Claude Code's BASH_MAX_OUTPUT_LENGTH tuning
+ * knob — already registered in env-protection's SAFE_ENV_VARS and merged by the
+ * config layer, but previously never READ by the tool, so setting it had no
+ * effect). Falls back to the 200k default when unset, non-numeric, or
+ * non-positive; a positive value is floored at MIN_OUTPUT_LENGTH so the head+tail
+ * truncation math stays valid. Mirrors resolveBashTimeout's env-override pattern.
+ */
+export function resolveBashMaxOutput(): number {
+  const raw = process.env.BASH_MAX_OUTPUT_LENGTH;
+  if (!raw) return MAX_OUTPUT_LENGTH;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return MAX_OUTPUT_LENGTH;
+  return Math.max(MIN_OUTPUT_LENGTH, n);
 }
 
 /**
@@ -908,7 +930,7 @@ export const bashTool: ToolDefinition = {
     }
 
     // Already folded. Spill only non-suite output that is still over the cap.
-    const bashMaxChars = context.outputBudget?.bashMaxChars ?? MAX_OUTPUT_LENGTH;
+    const bashMaxChars = context.outputBudget?.bashMaxChars ?? resolveBashMaxOutput();
     let stdout = spillToolText(context.cwd, 'bash', presented.stdout, bashMaxChars);
     const stderr = presented.stderr;
 
@@ -1141,16 +1163,18 @@ function formatOutput(
   extra?: string,
 ): string {
   const parts: string[] = [];
+  // Honor BASH_MAX_OUTPUT_LENGTH (parity knob); defaults to MAX_OUTPUT_LENGTH.
+  const maxOutput = resolveBashMaxOutput();
 
   if (stdout.length > 0) {
-    parts.push(truncateBashText(stdout, MAX_OUTPUT_LENGTH));
+    parts.push(truncateBashText(stdout, maxOutput));
   }
 
   if (stderr.length > 0) {
     const label = stdout.length > 0 ? '\n[stderr]\n' : '';
     const remaining = Math.max(
       1000,
-      MAX_OUTPUT_LENGTH - (parts.join('').length),
+      maxOutput - (parts.join('').length),
     );
     parts.push(label + truncateBashText(stderr, remaining));
   }

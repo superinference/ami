@@ -1,11 +1,17 @@
 import * as path from 'path';
 
+// PARITY: severity now includes a 'low' tier for weak-but-context-dependent
+// findings (insecure randomness, cleartext HTTP, weak hashing). 'low' findings
+// are advisory — they flag patterns that are frequently benign but can be
+// security-relevant depending on usage.
+export type SecuritySeverity = 'high' | 'medium' | 'low';
+
 export interface SecurityPattern {
   id: string;
   regex: RegExp;
   extensions?: string[];
   excludeExtensions?: string[];
-  severity: 'high' | 'medium';
+  severity: SecuritySeverity;
   message: string;
 }
 
@@ -133,11 +139,56 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     severity: 'medium',
     message: 'AES-ECB leaks plaintext structure — use AES-GCM or AES-CBC with HMAC',
   },
+  // PARITY: additional insecure-pattern detectors (additive).
+  {
+    id: 'python_exec_injection',
+    // Python exec() builtin runs arbitrary code; exclude member access (.exec)
+    // and longer identifiers (execute/execvp) via the preceding-char lookbehind
+    // and the mandatory `(` directly after `exec`.
+    regex: /(?<![a-zA-Z0-9_.])exec\s*\(/,
+    extensions: PY_EXTS,
+    severity: 'high',
+    message: 'exec() executes arbitrary Python — avoid it, or restrict globals/locals and never pass untrusted input',
+  },
+  {
+    id: 'vm_code_execution',
+    regex: /\bvm\.(?:runInThisContext|runInNewContext|runInContext|compileFunction)\s*\(/,
+    extensions: JS_EXTS,
+    severity: 'high',
+    message: 'node:vm executes code strings and is not a security sandbox — never run untrusted input through it',
+  },
+  {
+    id: 'weak_hash',
+    regex: /\bhashlib\.(?:md5|sha1)\s*\(|\bcrypto\.createHash\(\s*['"](?:md5|sha1)['"]/,
+    severity: 'medium',
+    message: 'MD5/SHA-1 are broken for security use — use SHA-256+ (or bcrypt/scrypt/argon2 for passwords)',
+  },
+  {
+    id: 'insecure_random_js',
+    regex: /\bMath\.random\s*\(/,
+    extensions: JS_EXTS,
+    severity: 'low',
+    message: 'Math.random() is not cryptographically secure — use crypto.getRandomValues()/crypto.randomBytes() for tokens or secrets',
+  },
+  {
+    id: 'insecure_random_py',
+    regex: /(?<![a-zA-Z0-9_.])random\.(?:random|randint|randrange|choice|choices|sample|uniform|getrandbits|shuffle)\s*\(/,
+    extensions: PY_EXTS,
+    severity: 'low',
+    message: 'the random module is not cryptographically secure — use the secrets module for tokens or secrets',
+  },
+  {
+    id: 'insecure_http_url',
+    regex: /http:\/\/(?!localhost|127\.0\.0\.1|0\.0\.0\.0)/,
+    excludeExtensions: DOC_EXTS,
+    severity: 'low',
+    message: 'cleartext http:// URL is subject to interception/tampering — use https://',
+  },
 ];
 
 export interface SecurityFinding {
   patternId: string;
-  severity: 'high' | 'medium';
+  severity: SecuritySeverity;
   message: string;
   line: number;
 }

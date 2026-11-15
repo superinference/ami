@@ -667,7 +667,7 @@ describe('code-security-patterns :: scanCodeForSecurityPatterns negatives', () =
     for (const p of SECURITY_PATTERNS) {
       assert.ok(p.id.length > 0);
       assert.ok(p.message.length > 0);
-      assert.ok(p.severity === 'high' || p.severity === 'medium');
+      assert.ok(p.severity === 'high' || p.severity === 'medium' || p.severity === 'low');
       assert.equal(seen.has(p.id), false);
       seen.add(p.id);
     }

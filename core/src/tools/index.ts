@@ -155,7 +155,13 @@ export { askUserQuestionTool } from './ask-user';
 export { gitCommitTool } from './git-commit';
 export { taskTrackerTool, resetTaskState } from './task-tracker';
 export { planModeTool } from './plan-mode';
-export { taskCompleteTool } from './task-complete';
+export {
+  taskCompleteTool,
+  resetCompletedTasks,
+  isTaskCompleted,
+  normalizeTaskStatus,
+  VALID_TASK_STATUSES,
+} from './task-complete';
 export { taskOutputTool } from './task-output';
 export { taskKillTool } from './task-kill';
 export {
