@@ -189,7 +189,7 @@ export { lspDiagnosticsTool, lspReferencesTool } from './lsp-diagnostics';
 export { lspTool } from './lsp';
 export { agenticFetchTool } from './agentic-fetch';
 export { scoutTool } from './scout';
-export { endConversationTool } from './end-conversation';
+export { endConversationTool, resetEndedConversations, isConversationEnded, countPendingWork } from './end-conversation';
 export { isReadOnlyBashCommand, BashResultCache } from './bash-cache';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './command-normalize';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection } from './input-sanitizer';
