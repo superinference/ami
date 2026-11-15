@@ -5,12 +5,19 @@
 const CHARS_PER_TOKEN = 4;
 
 /**
- * Provides a rough token estimate for a piece of text based on the
- * ~4 characters-per-token heuristic.
+ * Provides a rough token estimate for a piece of text based on a
+ * characters-per-token heuristic (default ~4).
+ *
+ * The ratio is configurable so a caller that knows its content is denser than
+ * average prose (e.g. JSON, where `{`/`}`/`:`/`,`/`"` are mostly single-char
+ * tokens) can pass a tighter value and avoid under-counting. Mirrors Claude's
+ * `roughTokenCountEstimation(content, bytesPerToken = 4)`.
  */
-export function estimateTokens(text: string): number {
+export function estimateTokens(text: string, charsPerToken: number = CHARS_PER_TOKEN): number {
   if (text.length === 0) return 0;
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+  // Guard against a non-positive ratio producing Infinity/NaN; fall back to the default.
+  const ratio = charsPerToken > 0 ? charsPerToken : CHARS_PER_TOKEN;
+  return Math.ceil(text.length / ratio);
 }
 
 /**
@@ -38,18 +45,25 @@ export function charsPerTokenForFileType(fileExtension: string): number {
  * under-count a structured payload.
  */
 export function estimateTokensForFileType(text: string, fileExtension: string): number {
-  if (text.length === 0) return 0;
-  return Math.ceil(text.length / charsPerTokenForFileType(fileExtension));
+  return estimateTokens(text, charsPerTokenForFileType(fileExtension));
 }
 
 /**
  * Estimate the total token cost of an array of tool schemas
  * (name + description + JSON-serialised inputSchema).
+ *
+ * `charsPerToken` defaults to the generic ~4 ratio; because a tool's
+ * `inputSchema` is serialised to dense JSON, a caller that wants a tighter
+ * (less optimistic) estimate can pass `charsPerTokenForFileType('json')` so the
+ * schema portion is not under-counted.
  */
-export function estimateToolSchemaTokens(tools: Array<{ name: string; description: string; inputSchema: unknown }>): number {
+export function estimateToolSchemaTokens(
+  tools: Array<{ name: string; description: string; inputSchema: unknown }>,
+  charsPerToken: number = CHARS_PER_TOKEN,
+): number {
   let total = 0;
   for (const tool of tools) {
-    total += estimateTokens(tool.name + tool.description + JSON.stringify(tool.inputSchema));
+    total += estimateTokens(tool.name + tool.description + JSON.stringify(tool.inputSchema), charsPerToken);
   }
   return total;
 }
@@ -58,16 +72,27 @@ export function estimateToolSchemaTokens(tools: Array<{ name: string; descriptio
  * Truncates text so that it approximately fits within `maxTokens`.
  * If the text is already within the limit it is returned unchanged.
  * Otherwise it is sliced and a `[truncated]` marker is appended.
+ *
+ * `charsPerToken` (default ~4) controls the ratio used for both the budget
+ * check and the slice length, so dense content (e.g. JSON — pass
+ * `charsPerTokenForFileType('json')`) is truncated against its real size rather
+ * than the optimistic generic ratio, which would otherwise under-truncate and
+ * leave the payload larger than `maxTokens` permits.
  */
-export function truncateToTokenLimit(text: string, maxTokens: number): string {
+export function truncateToTokenLimit(
+  text: string,
+  maxTokens: number,
+  charsPerToken: number = CHARS_PER_TOKEN,
+): string {
   if (maxTokens <= 0) return '[truncated]';
-  if (estimateTokens(text) <= maxTokens) return text;
+  const ratio = charsPerToken > 0 ? charsPerToken : CHARS_PER_TOKEN;
+  if (estimateTokens(text, ratio) <= maxTokens) return text;
 
   // Reserve a small amount of space for the truncation marker
   const markerText = '\n[truncated]';
-  const markerTokens = estimateTokens(markerText);
+  const markerTokens = estimateTokens(markerText, ratio);
   const availableTokens = Math.max(0, maxTokens - markerTokens);
-  const maxChars = availableTokens * CHARS_PER_TOKEN;
+  const maxChars = availableTokens * ratio;
 
   return text.slice(0, maxChars) + markerText;
 }

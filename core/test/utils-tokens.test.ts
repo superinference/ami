@@ -41,6 +41,28 @@ describe('estimateTokens – unit', () => {
     const text = 'abc';
     assert.equal(estimateTokens(text), 1); // 3 chars / 4 = ceil(0.75) = 1
   });
+
+  it('honours a configurable charsPerToken ratio', () => {
+    const text = 'x'.repeat(100);
+    assert.equal(estimateTokens(text), 25);       // default 4:1
+    assert.equal(estimateTokens(text, 2), 50);    // denser JSON-like ratio
+    assert.equal(estimateTokens(text, 1), 100);   // 1 char = 1 token
+  });
+
+  it('a tighter ratio never under-counts relative to the default', () => {
+    const text = '{"k":"v","n":1}'.repeat(10);
+    assert.ok(estimateTokens(text, 2) >= estimateTokens(text));
+  });
+
+  it('falls back to the default ratio when given a non-positive value', () => {
+    const text = 'x'.repeat(100);
+    assert.equal(estimateTokens(text, 0), 25);
+    assert.equal(estimateTokens(text, -4), 25);
+  });
+
+  it('returns 0 for empty string regardless of ratio', () => {
+    assert.equal(estimateTokens('', 2), 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -75,6 +97,20 @@ describe('estimateToolSchemaTokens', () => {
       estimateTokens(t.name + t.description + JSON.stringify(t.inputSchema))
     );
     assert.equal(total, individual[0] + individual[1]);
+  });
+
+  it('applies a configurable charsPerToken ratio to the serialised schema', () => {
+    const tools = [{
+      name: 'grep',
+      description: 'search',
+      inputSchema: { type: 'object', properties: { pattern: { type: 'string' } } },
+    }];
+    const serialized = tools[0].name + tools[0].description + JSON.stringify(tools[0].inputSchema);
+    // Default stays flat-4 (backward compatible).
+    assert.equal(estimateToolSchemaTokens(tools), Math.ceil(serialized.length / 4));
+    // A denser (JSON) ratio yields a larger, less-optimistic estimate.
+    assert.equal(estimateToolSchemaTokens(tools, 2), Math.ceil(serialized.length / 2));
+    assert.ok(estimateToolSchemaTokens(tools, 2) > estimateToolSchemaTokens(tools));
   });
 
   it('handles tool with complex schema', () => {
@@ -146,5 +182,23 @@ describe('truncateToTokenLimit – unit', () => {
     const text = 'a'.repeat(200);
     const result = truncateToTokenLimit(text, 5);
     assert.ok(result.includes('[truncated]'));
+  });
+
+  it('truncates harder for a denser charsPerToken ratio', () => {
+    const text = 'a'.repeat(400); // 100 tokens @4:1, 200 tokens @2:1
+    // At the default ratio 400 chars = 100 tokens, so a 100-token budget keeps it whole.
+    assert.equal(truncateToTokenLimit(text, 100), text);
+    // At the JSON ratio the same text is 200 tokens, so it must be truncated to fit 100.
+    const dense = truncateToTokenLimit(text, 100, 2);
+    assert.ok(dense.length < text.length);
+    assert.ok(dense.endsWith('[truncated]'));
+    // The truncated result genuinely fits the budget at the same ratio.
+    assert.ok(estimateTokens(dense, 2) <= 100);
+  });
+
+  it('a non-positive ratio falls back to the default behaviour', () => {
+    const text = 'a'.repeat(40); // exactly 10 tokens @4:1
+    assert.equal(truncateToTokenLimit(text, 10, 0), text);
+    assert.equal(truncateToTokenLimit(text, 10, -2), text);
   });
 });
