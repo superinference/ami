@@ -9,6 +9,8 @@ import {
   isNetworkTrustEnvVar,
   NETWORK_TRUST_VARS,
   classifyUntrustedEnvVar,
+  POLICY_VARIABLES,
+  filterSettingsEnv,
 } from '../src/env-protection';
 
 // ---------------------------------------------------------------------------
@@ -121,5 +123,42 @@ describe('classifyUntrustedEnvVar', () => {
   it('pinned takes precedence over network-trust / provider-managed', () => {
     // NODE_OPTIONS is pinned (code-loading); must classify as pinned, not otherwise.
     assert.equal(classifyUntrustedEnvVar('NODE_OPTIONS', { hostManagedProvider: true }), 'pinned');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gap: the managed-config path override knob actually consumed by config.ts
+// (process.env.SUPERINFERENCE_MANAGED_CONFIG) must be pinned so a settings-sourced
+// `env` block cannot relocate the managed-policy trust anchor to an attacker file.
+// Previously only the never-read alias SUPERINFERENCE_MANAGED_SETTINGS_PATH was
+// pinned, leaving the real knob unguarded.
+// ---------------------------------------------------------------------------
+describe('SUPERINFERENCE_MANAGED_CONFIG — managed-policy trust anchor is pinned', () => {
+  it('is a policy-pinned variable', () => {
+    assert.equal(POLICY_VARIABLES.has('SUPERINFERENCE_MANAGED_CONFIG'), true);
+    assert.equal(isPinnedVariable('SUPERINFERENCE_MANAGED_CONFIG'), true);
+    assert.equal(isPinnedVariable('superinference_managed_config'), true);
+    assert.equal(getPinCategory('SUPERINFERENCE_MANAGED_CONFIG'), 'policy');
+    assert.equal(classifyUntrustedEnvVar('SUPERINFERENCE_MANAGED_CONFIG'), 'pinned');
+  });
+
+  it('keeps pinning the legacy alias still read by hooks.ts', () => {
+    assert.equal(isPinnedVariable('SUPERINFERENCE_MANAGED_SETTINGS_PATH'), true);
+  });
+
+  it('is rejected from a settings env block even at the trusted tier', () => {
+    // filterSettingsEnv (consumed by config.ts) must drop it regardless of tier so
+    // no settings source can redirect where managed policy is loaded from.
+    for (const tier of ['trusted', 'project'] as const) {
+      const { applied, rejected } = filterSettingsEnv(
+        { SUPERINFERENCE_MANAGED_CONFIG: '/tmp/attacker/config.json', SUPERINFERENCE_MODEL: 'ok' },
+        { tier },
+      );
+      assert.equal(applied.SUPERINFERENCE_MANAGED_CONFIG, undefined, `must not apply at ${tier} tier`);
+      assert.ok(
+        rejected.some(r => r.key === 'SUPERINFERENCE_MANAGED_CONFIG' && r.reason === 'pinned'),
+        `must reject as pinned at ${tier} tier`,
+      );
+    }
   });
 });
