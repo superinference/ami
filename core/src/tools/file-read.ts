@@ -508,6 +508,12 @@ export async function encodeImageFile(
 ): Promise<{ media_type: string; data: string; dimensions?: ImageDimensions }> {
   const ext = path.extname(absPath).toLowerCase();
   const imageBuffer = await fs.promises.readFile(absPath);
+  // A 0-byte image would otherwise slip through the under-limit fast path and yield
+  // an empty base64 payload the provider rejects with an opaque "image cannot be
+  // empty". Fail fast with an actionable error. Mirrors Claude Code's empty-buffer guard.
+  if (imageBuffer.length === 0) {
+    throw new ImageResizeError(`Image file is empty (0 bytes): ${absPath}`);
+  }
   // Trust the file's actual magic bytes over its extension (a mislabeled or
   // untrusted file can lie about its format); fall back to the extension map only
   // when the content matches no known signature.
@@ -627,7 +633,7 @@ async function readFileInRange(
   offset: number,
   limit: number,
   signal?: AbortSignal,
-): Promise<{ text: string; hasMore: boolean }> {
+): Promise<{ text: string; hasMore: boolean; scannedLines: number }> {
   const lines: string[] = [];
   const stream = fs.createReadStream(filePath, { encoding: 'utf-8', signal });
   const rl = require('readline').createInterface({ input: stream, crlfDelay: Infinity });
@@ -641,7 +647,10 @@ async function readFileInRange(
     if (lineNum > offset) lines.push(`${lineNum}\t${line}`);
   }
   stream.destroy();
-  return { text: lines.join('\n'), hasMore };
+  // `scannedLines` is the number of lines actually seen. When the window yields no
+  // text and we did not break early (hasMore=false), this equals the file's total
+  // line count — enough to tell "empty file" (0) apart from "offset overshot".
+  return { text: lines.join('\n'), hasMore, scannedLines: lineNum };
 }
 
 export const fileReadTool: ToolDefinition = {
@@ -657,16 +666,16 @@ export const fileReadTool: ToolDefinition = {
       },
       offset: {
         type: 'number',
-        description: 'Line number to start reading from (0-based). Defaults to 0.',
+        description: 'Line number to start reading from (0-based, non-negative integer). Defaults to 0.',
       },
       limit: {
         type: 'number',
         description:
-          'Maximum number of lines to read. Defaults to 2000.',
+          'Maximum number of lines to read (positive integer). Defaults to 2000.',
       },
       pages: {
         type: 'string',
-        description: 'Page range for PDF files (e.g. "1-5", "3", "10-20"). Only applicable to PDF files. Max 20 pages per request.',
+        description: 'Page range for PDF files (e.g. "1-5", "3", "10-20", or open-ended "3-" for page 3 onward). Only applicable to PDF files. Max 20 pages per request.',
       },
       allow_large: {
         type: 'boolean',
@@ -683,8 +692,15 @@ export const fileReadTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const filePath = normalizeMacScreenshotPath(input.file_path as string);
-    const offset = (input.offset as number) ?? 0;
-    const limit = (input.limit as number) ?? DEFAULT_LIMIT;
+    // Validate + coerce offset/limit up front: a non-numeric or out-of-range value
+    // (e.g. limit:0, offset:-1, or a stringified "5") must produce a corrective
+    // error, not a silently empty/garbage window.
+    const offsetParsed = coerceReadLineParam(input.offset, { name: 'offset', min: 0 });
+    if (offsetParsed.error) return { output: offsetParsed.error, isError: true };
+    const limitParsed = coerceReadLineParam(input.limit, { name: 'limit', min: 1 });
+    if (limitParsed.error) return { output: limitParsed.error, isError: true };
+    const offset = offsetParsed.value ?? 0;
+    const limit = limitParsed.value ?? DEFAULT_LIMIT;
 
     if (!filePath || filePath.trim().length === 0) {
       return { output: 'Error: file_path must not be empty.', isError: true };
@@ -909,7 +925,7 @@ export const fileReadTool: ToolDefinition = {
           isError: false,
         };
       } catch (err) {
-        return { output: `Error reading PDF: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { output: classifyPdfError(err instanceof Error ? err.message : String(err)), isError: true };
       }
     }
 
@@ -1056,8 +1072,18 @@ export const fileReadTool: ToolDefinition = {
     // (UTF-16/BOM files bypass streaming and are fully decoded below).
     if (!isBomText && (input.offset !== undefined || input.limit !== undefined)) {
       fileCache.trackMtime(resolved, stat.mtimeMs);
-      const { text: rangeText, hasMore } = await readFileInRange(resolved, offset, limit, context.abortSignal);
-      if (!rangeText) return { output: '(empty file)' };
+      const { text: rangeText, hasMore, scannedLines } = await readFileInRange(resolved, offset, limit, context.abortSignal);
+      if (!rangeText) {
+        // Distinguish a truly empty file from an offset that overshot the content:
+        // the latter should tell the model how many lines actually exist so it can
+        // retry with a valid offset, instead of the misleading "(empty file)".
+        if (scannedLines > 0 && offset >= scannedLines) {
+          return {
+            output: `<system-reminder>Warning: the file exists but is shorter than the provided offset (${offset}). The file has ${scannedLines} lines.</system-reminder>`,
+          };
+        }
+        return { output: '(empty file)' };
+      }
       let output = `File: ${resolved}\nShowing ${limit} lines from offset ${offset}\n\n${rangeText}`;
       // Make a capped range visible: without this the model sees "Showing N lines
       // from offset M" and cannot tell the window stopped short of the file's end.
@@ -1187,11 +1213,25 @@ async function readSuiteHeadAndTail(resolved: string, size: number): Promise<str
   }
 }
 
-export function parsePageRange(pages: string): { start: number; end: number; error?: string } {
+export function parsePageRange(pages: string): { start: number; end: number; error?: string; openEnded?: boolean } {
   const trimmed = pages.trim();
   // eslint-disable-next-line security/detect-unsafe-regex
   if (/,/.test(trimmed)) {
     return { start: 0, end: 0, error: `Page lists like "${pages}" are not supported. Read each page or range separately (e.g. pages: "6", then pages: "9", then pages: "15").` };
+  }
+  // Open-ended "N-": read from page N onward. We cannot know the document's last
+  // page until it is parsed, and every request is bounded by the 20-page window,
+  // so interpret "N-" as a 20-page window starting at N (page N through N+19).
+  // Mirrors Claude Code's open-ended parsePDFPageRange (firstPage N, lastPage ∞),
+  // clamped to AMI's per-request page cap.
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, single \d group + literal '-'
+  const openMatch = trimmed.match(/^(\d+)-$/);
+  if (openMatch) {
+    const openStart = parseInt(openMatch[1], 10);
+    if (openStart < 1) {
+      return { start: 0, end: 0, error: `Invalid page range: start must be >= 1 and end >= start.` };
+    }
+    return { start: openStart, end: openStart + 19, openEnded: true };
   }
   // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint \d and literal '-'
   const match = trimmed.match(/^(\d+)(?:-(\d+))?$/);
@@ -1211,6 +1251,49 @@ export function parsePageRange(pages: string): { start: number; end: number; err
 
 export function isBinaryByExtension(ext: string): boolean {
   return KNOWN_BINARY_EXTENSIONS.has(ext.toLowerCase());
+}
+
+/**
+ * Validate and coerce a model-supplied `offset`/`limit` line parameter. Accepts a
+ * real number or a numeric string (several providers serialize numbers as strings)
+ * and rejects non-numeric, fractional, or out-of-range values with an actionable
+ * error instead of silently casting them into arithmetic (which produced empty or
+ * garbage windows). Returns `{}` (use the default) when the param is omitted.
+ * Mirrors Claude Code's semanticNumber(z.number().int()...) schema coercion.
+ */
+export function coerceReadLineParam(
+  value: unknown,
+  opts: { name: string; min: number },
+): { value?: number; error?: string } {
+  if (value === undefined || value === null) return {};
+  let n: number;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    n = Number(value);
+  } else {
+    return { error: `Error: ${opts.name} must be a number, got ${JSON.stringify(value)}.` };
+  }
+  if (!Number.isInteger(n)) {
+    return { error: `Error: ${opts.name} must be an integer, got ${n}.` };
+  }
+  if (n < opts.min) {
+    return { error: `Error: ${opts.name} must be >= ${opts.min}, got ${n}.` };
+  }
+  return { value: n };
+}
+
+/**
+ * Classify a PDF-parse failure into an actionable, model-facing error string.
+ * A password-protected / encrypted PDF is called out distinctly (so the model/
+ * user knows to supply an unprotected copy) instead of being buried in a generic
+ * "Error reading PDF" message. Mirrors Claude Code's password_protected branch.
+ */
+export function classifyPdfError(message: string): string {
+  if (/password|encrypt(ed|ion)?|\bdecrypt/i.test(message)) {
+    return 'Error: PDF is password-protected or encrypted. Please provide an unprotected version.';
+  }
+  return `Error reading PDF: ${message}`;
 }
 
 export async function checkBinaryContent(filePath: string): Promise<boolean> {
