@@ -1484,9 +1484,12 @@ describe('McpManager — listResources', () => {
     manager.addServer('srv1', { command: 'node', args: ['-e', serverScript] });
     await manager.connectServer('srv1');
 
-    // Filter to a non-existent server
-    const empty = await manager.listResources('nonexistent');
-    assert.equal(empty.length, 0);
+    // Filter to a non-existent server now throws, enumerating the valid servers so
+    // the caller/model can self-correct (parity with Claude's server-not-found).
+    await assert.rejects(
+      () => manager.listResources('nonexistent'),
+      /not found\. Available servers: srv1/,
+    );
 
     // Filter to actual server
     const filtered = await manager.listResources('srv1');
