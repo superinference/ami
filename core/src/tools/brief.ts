@@ -3,6 +3,9 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 const INTENTS = ['normal', 'proactive'] as const;
 type Intent = (typeof INTENTS)[number];
 
+// Cap the model/caller-controlled topic so an unbounded value cannot bloat the prompt.
+const MAX_TOPIC_LEN = 300;
+
 export const briefTool: ToolDefinition = {
   name: 'brief',
   description:
@@ -35,7 +38,10 @@ export const briefTool: ToolDefinition = {
     }
     const status: Intent = (rawStatus as Intent) ?? 'normal';
 
-    const topic = (input.topic as string) || 'current conversation';
+    // Type-guard (not just `as string`): a truthy non-string must not be coerced into the
+    // prompt; fall back to the default and bound the length of a valid topic.
+    const topic =
+      typeof input.topic === 'string' && input.topic ? input.topic.slice(0, MAX_TOPIC_LEN) : 'current conversation';
     const lead =
       status === 'proactive'
         ? `Proactively surface the key point about "${topic}" the user needs to know now, in exactly one sentence.`

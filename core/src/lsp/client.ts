@@ -20,6 +20,7 @@
 import * as child_process from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { retryWithBackoff } from '../mcp/oauth';
 import {
@@ -34,6 +35,7 @@ import {
   DiagnosticTracker,
   lspFileSizeBytes,
   normalizeDiagnosticPath,
+  uriToPath,
   MAX_LSP_FILE_SIZE_BYTES,
   type DiagnosticFile,
   type DiagnosticSource,
@@ -70,6 +72,9 @@ export type RequestHandler = (params: unknown) => unknown | Promise<unknown>;
 export class LSPClient implements DiagnosticSource {
   private servers: Map<string, ServerConn> = new Map();
   private openedDocuments: Set<string> = new Set();
+  /** Monotonic per-document version counter (LSP requires strictly increasing
+   * versions per `didChange`; keyed by the canonical document URI). */
+  private documentVersions: Map<string, number> = new Map();
   /** Per-language crash-recovery counter (reset to 0 on a successful init). */
   private crashCounts: Map<string, number> = new Map();
   /** Latest diagnostics per normalized path, from publishDiagnostics. */
@@ -111,6 +116,16 @@ export class LSPClient implements DiagnosticSource {
     return getAllLspServers()[language];
   }
 
+  /**
+   * Canonical `file://` URI for a filesystem path. Uses `pathToFileURL` so the
+   * path is resolved absolutely and percent-encoded (spaces, unicode, `#`, `?`,
+   * …) — raw `file://` + path interpolation produces malformed URIs that servers
+   * like gopls/pyright reject or mis-key. Inverse is `uriToPath`.
+   */
+  private fileUri(filePath: string): string {
+    return pathToFileURL(filePath).href;
+  }
+
   async ensureServer(language: string, cwd: string): Promise<boolean> {
     if (this.servers.has(language)) return true;
     const config = this.configFor(language);
@@ -134,6 +149,8 @@ export class LSPClient implements DiagnosticSource {
       const proc = this._spawn(config.command, config.args ?? [], {
         cwd: config.workspaceFolder ?? cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
+        // No console window for the child on Windows (headless subprocess).
+        windowsHide: true,
         // Scrub credential-bearing env from the untrusted language-server child,
         // then layer any per-server env. Reuses the canonical bash scrub helper.
         env: { ...sanitizeEnvForSubprocess({ ...process.env }), ...config.env },
@@ -185,7 +202,7 @@ export class LSPClient implements DiagnosticSource {
   }
 
   private initializeParams(workspaceFolder: string, config: LspServerConfig): unknown {
-    const workspaceUri = `file://${workspaceFolder}`;
+    const workspaceUri = this.fileUri(workspaceFolder);
     return {
       processId: process.pid,
       // Required by vue-language-server, harmless default elsewhere.
@@ -424,7 +441,7 @@ export class LSPClient implements DiagnosticSource {
   // ---- document sync -----------------------------------------------------
 
   private ensureDidOpen(conn: ServerConn, filePath: string, content?: string): void {
-    const uri = `file://${filePath}`;
+    const uri = this.fileUri(filePath);
     if (this.openedDocuments.has(uri)) return;
     const languageId = languageIdForExtension(path.extname(filePath));
     let text = content;
@@ -443,6 +460,7 @@ export class LSPClient implements DiagnosticSource {
       textDocument: { uri, languageId, version: 1, text },
     });
     this.openedDocuments.add(uri);
+    this.documentVersions.set(uri, 1);
   }
 
   async notifyDidChange(filePath: string, content: string, cwd: string): Promise<void> {
@@ -452,8 +470,14 @@ export class LSPClient implements DiagnosticSource {
     if (!ok) return;
     const conn = this.servers.get(lang)!;
     this.ensureDidOpen(conn, filePath, content);
+    const uri = this.fileUri(filePath);
+    // LSP requires strictly increasing versions per document; a monotonic
+    // counter avoids the collisions a same-millisecond `Date.now()` can produce
+    // (which some servers silently drop).
+    const version = (this.documentVersions.get(uri) ?? 1) + 1;
+    this.documentVersions.set(uri, version);
     this.rawNotify(conn, 'textDocument/didChange', {
-      textDocument: { uri: `file://${filePath}`, version: Date.now() },
+      textDocument: { uri, version },
       contentChanges: [{ text: content }],
     });
   }
@@ -465,7 +489,7 @@ export class LSPClient implements DiagnosticSource {
     if (!ok) return;
     const conn = this.servers.get(lang)!;
     this.ensureDidOpen(conn, filePath);
-    this.rawNotify(conn, 'textDocument/didSave', { textDocument: { uri: `file://${filePath}` } });
+    this.rawNotify(conn, 'textDocument/didSave', { textDocument: { uri: this.fileUri(filePath) } });
   }
 
   // ---- diagnostics (DiagnosticSource) -----------------------------------
@@ -486,7 +510,7 @@ export class LSPClient implements DiagnosticSource {
     if (!this.diagnosticsByUri.has(key)) {
       await this.waitForDiagnostics(key, timeoutMs);
     }
-    return this.diagnosticsByUri.get(key) ?? { uri: `file://${path.resolve(filePath)}`, diagnostics: [] };
+    return this.diagnosticsByUri.get(key) ?? { uri: this.fileUri(filePath), diagnostics: [] };
   }
 
   /** Snapshot of all files that currently have at least one diagnostic. */
@@ -536,9 +560,10 @@ export class LSPClient implements DiagnosticSource {
 
   private clearOpenedForLanguage(language: string): void {
     for (const uri of this.openedDocuments) {
-      const uriPath = uri.replace('file://', '');
+      const uriPath = uriToPath(uri);
       if (resolveLanguageForExtension(path.extname(uriPath)) === language) {
         this.openedDocuments.delete(uri);
+        this.documentVersions.delete(uri);
       }
     }
   }
@@ -550,6 +575,7 @@ export class LSPClient implements DiagnosticSource {
     }
     this.servers.clear();
     this.openedDocuments.clear();
+    this.documentVersions.clear();
     this.crashCounts.clear();
     this.diagnosticsByUri.clear();
     this.diagnosticWaiters.clear();

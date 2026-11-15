@@ -17,6 +17,8 @@ import {
   clampEffortLevel,
   requiresResponsesAPI,
   discoverFromModelList,
+  getContextWindowOverride,
+  readAdvertisedMaxOutputTokens,
   modelSupportsVision,
   supportsOneMillionContextBeta,
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -821,6 +823,120 @@ describe('discoverFromModelList', () => {
     assert.equal(isReasoningModel('gpt-6-luna'), true);
     assert.equal(isReasoningModel('o4-mini-2025-04-16'), true);
     assert.equal(isReasoningModel('gpt-4o'), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Env-var context-window override (parity: CLAUDE_CODE_MAX_CONTEXT_TOKENS)
+// ---------------------------------------------------------------------------
+describe('getContextWindowOverride + getContextWindow env cap', () => {
+  afterEach(() => {
+    delete process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS;
+  });
+
+  it('returns undefined when the env var is unset', () => {
+    assert.equal(getContextWindowOverride(), undefined);
+  });
+
+  it('reads a positive integer override', () => {
+    process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS = '250000';
+    assert.equal(getContextWindowOverride(), 250_000);
+  });
+
+  it('ignores non-numeric, zero, and negative values', () => {
+    for (const bad of ['', 'abc', '0', '-5', '  ']) {
+      process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS = bad;
+      assert.equal(getContextWindowOverride(), undefined, `value ${JSON.stringify(bad)} must be ignored`);
+    }
+  });
+
+  it('caps the effective window below the published size', () => {
+    // claude-opus-4 is a 200k model.
+    assert.equal(getContextWindow('claude-opus-4'), 200000);
+    process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS = '50000';
+    assert.equal(getContextWindow('claude-opus-4'), 50_000);
+  });
+
+  it('takes precedence over 1M-beta detection (Sonnet 4+)', () => {
+    // Without the override, Sonnet 4+ resolves to 1M.
+    assert.equal(getContextWindow('claude-sonnet-4'), 1_000_000);
+    process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS = '120000';
+    assert.equal(getContextWindow('claude-sonnet-4'), 120_000);
+  });
+
+  it('does not apply when the override is invalid', () => {
+    process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS = 'nope';
+    assert.equal(getContextWindow('claude-opus-4'), 200000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Learning the output-token cap from the live /models payload
+// ---------------------------------------------------------------------------
+describe('readAdvertisedMaxOutputTokens + live output-cap discovery', () => {
+  afterEach(() => {
+    clearDynamicCapabilities();
+  });
+
+  it('reads max_tokens (Anthropic/OpenAI completion cap)', () => {
+    assert.equal(readAdvertisedMaxOutputTokens({ max_tokens: 8192 }), 8192);
+  });
+
+  it('reads alternate output-cap field names', () => {
+    assert.equal(readAdvertisedMaxOutputTokens({ max_output_tokens: 4096 }), 4096);
+    assert.equal(readAdvertisedMaxOutputTokens({ max_completion_tokens: 16384 }), 16384);
+    assert.equal(readAdvertisedMaxOutputTokens({ output_token_limit: 2048 }), 2048);
+  });
+
+  it('reads a nested model_info output cap', () => {
+    assert.equal(readAdvertisedMaxOutputTokens({ model_info: { max_tokens: 1234 } }), 1234);
+  });
+
+  it('returns undefined with no positive output field', () => {
+    assert.equal(readAdvertisedMaxOutputTokens({}), undefined);
+    assert.equal(readAdvertisedMaxOutputTokens({ max_tokens: 0 }), undefined);
+    assert.equal(readAdvertisedMaxOutputTokens({ max_tokens: -1 }), undefined);
+  });
+
+  it('discoverFromModelList registers the advertised output cap', () => {
+    const result = discoverFromModelList([
+      { id: 'vllm-served-model', object: 'model', max_tokens: 5000 },
+    ]);
+    assert.equal(result.outputCaps['vllm-served-model'], 5000);
+    assert.equal(getMaxOutputTokens('vllm-served-model'), 5000);
+  });
+
+  it('the discovered cap overrides the static family table', () => {
+    // claude-3-5-sonnet has a static 8192 cap; a live payload can override it.
+    assert.equal(getMaxOutputTokens('claude-3-5-sonnet'), 8192);
+    discoverFromModelList([
+      { id: 'claude-3-5-sonnet', object: 'model', max_tokens: 64000 },
+    ]);
+    assert.equal(getMaxOutputTokens('claude-3-5-sonnet'), 64000);
+  });
+
+  it('clearDynamicCapabilities resets discovered output caps', () => {
+    discoverFromModelList([{ id: 'ephemeral-model', max_tokens: 7000 }]);
+    assert.equal(getMaxOutputTokens('ephemeral-model'), 7000);
+    clearDynamicCapabilities();
+    assert.equal(getMaxOutputTokens('ephemeral-model'), undefined);
+  });
+
+  it('an explicit registration still wins over a discovered cap', () => {
+    discoverFromModelList([{ id: 'priority-model', max_tokens: 3000 }]);
+    registerModelCapabilities('priority-model', {
+      reasoning: true, defaultThinkingLevel: 'medium',
+      supportsAdaptiveThinking: false, requiresTemperatureOne: false,
+      temperatureMustBeUnset: false, maxThinkingBudget: 0,
+      maxOutputTokens: 9000,
+    });
+    assert.equal(getMaxOutputTokens('priority-model'), 9000);
+  });
+
+  it('a discovered cap flows into fitOutputTokens clamping', () => {
+    discoverFromModelList([{ id: 'small-out-model', max_input_tokens: 200000, max_tokens: 4096 }]);
+    // Ask for 64k output with plenty of window; the discovered 4096 cap must clamp it.
+    assert.equal(fitOutputTokens(64000, 200000, 1000, 'small-out-model'), 4096);
   });
 });
 

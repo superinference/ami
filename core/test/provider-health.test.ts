@@ -136,6 +136,87 @@ describe('ProviderHealthTracker', () => {
     assert.equal(stats.latency.max, 500);
     assert.equal(stats.latency.min, 100);
   });
+
+  // --- consecutive-failure / circuit-breaker signal -----------------------
+
+  it('starts with zero consecutive errors and no circuit break', () => {
+    const stats = tracker.getStats();
+    assert.equal(stats.consecutiveErrors, 0);
+    assert.equal(stats.shouldCircuitBreak, false);
+  });
+
+  it('counts consecutive errors and resets the count on a success', () => {
+    tracker.recordError();
+    tracker.recordError();
+    assert.equal(tracker.getStats().consecutiveErrors, 2);
+    tracker.recordRequest(10);
+    assert.equal(tracker.getStats().consecutiveErrors, 0);
+  });
+
+  it('does not trip the breaker below the threshold (4 consecutive errors)', () => {
+    for (let i = 0; i < 4; i++) tracker.recordError();
+    const stats = tracker.getStats();
+    assert.equal(stats.consecutiveErrors, 4);
+    assert.equal(stats.shouldCircuitBreak, false);
+  });
+
+  it('trips the breaker at the threshold (5 consecutive errors)', () => {
+    for (let i = 0; i < 5; i++) tracker.recordError();
+    const stats = tracker.getStats();
+    assert.equal(stats.consecutiveErrors, 5);
+    assert.equal(stats.shouldCircuitBreak, true);
+  });
+
+  it('a single success after a tripped breaker clears the circuit-break signal', () => {
+    for (let i = 0; i < 6; i++) tracker.recordError();
+    assert.equal(tracker.getStats().shouldCircuitBreak, true);
+    tracker.recordRequest(5);
+    const stats = tracker.getStats();
+    assert.equal(stats.consecutiveErrors, 0);
+    assert.equal(stats.shouldCircuitBreak, false);
+  });
+
+  // --- rolling-window error rate / availability ---------------------------
+
+  it('reports zero windowed error rate / full windowed availability with no data', () => {
+    const stats = tracker.getStats();
+    assert.equal(stats.windowedErrorRate, 0);
+    assert.equal(stats.windowedAvailability, 1);
+  });
+
+  it('computes windowed error rate equal to lifetime rate within the window', () => {
+    tracker.recordRequest(100);
+    tracker.recordRequest(100);
+    tracker.recordError(50);
+    tracker.recordRequest(100);
+    const stats = tracker.getStats();
+    assert.equal(stats.windowedErrorRate, 0.25);
+    assert.equal(stats.windowedAvailability, 0.75);
+    assert.equal(stats.errorRate, 0.25);
+  });
+
+  it('windowed rate reflects recent failures while lifetime rate stays diluted', () => {
+    // 100 clean successes, then 100 consecutive errors fill the window.
+    for (let i = 0; i < 100; i++) tracker.recordRequest(10);
+    for (let i = 0; i < 100; i++) tracker.recordError(10);
+    const stats = tracker.getStats();
+    // Window is now entirely errors -> windowed rate 1, availability 0.
+    assert.equal(stats.windowedErrorRate, 1);
+    assert.equal(stats.windowedAvailability, 0);
+    // Lifetime rate is diluted to 0.5 and stays high/slow to recover.
+    assert.equal(stats.errorRate, 0.5);
+    assert.equal(stats.requestCount, 200);
+  });
+
+  it('reset clears the outcome window and circuit-breaker state', () => {
+    for (let i = 0; i < 6; i++) tracker.recordError();
+    tracker.reset();
+    const stats = tracker.getStats();
+    assert.equal(stats.consecutiveErrors, 0);
+    assert.equal(stats.shouldCircuitBreak, false);
+    assert.equal(stats.windowedErrorRate, 0);
+    assert.equal(stats.windowedAvailability, 1);
+  });
 });
 
 describe('ProviderCoordinator health integration', () => {

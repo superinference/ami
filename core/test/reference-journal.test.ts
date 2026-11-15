@@ -4,7 +4,7 @@
  * on-disk alignment with the dashboard's conventions regresses.
  * Run: cd core/core && node --import tsx --test test/reference-journal.test.ts
  */
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -16,6 +16,7 @@ import {
   buildUsageFields, buildAssistantEntry, buildUserEntry,
   appendEntry, dashboardConfigPath, registerDataDir, maybeRegisterDataDir,
 } from '../src/reference-journal';
+import { fsHooks as loggerFsHooks, __resetLoggerForTest } from '../src/logger';
 
 const tmpdirs: string[] = [];
 function mkTmp(): string {
@@ -45,12 +46,25 @@ describe('resolveConfigDir', () => {
     assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '   ', SUPERINFERENCE_DATA_DIR: '/b' } as any), '/b');
     assert.equal(resolveConfigDir({ SUPERINFERENCE_DATA_DIR: '' } as any), path.join(os.homedir(), '.ami'));
   });
+  it('expands a leading ~ in an override (gh-30794: env values are not shell-expanded)', () => {
+    const home = os.homedir();
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '~/.ami' } as any), path.join(home, '.ami'));
+    assert.equal(resolveConfigDir({ SUPERINFERENCE_DATA_DIR: '~/data' } as any), path.join(home, 'data'));
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '~' } as any), home);
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '~\\win' } as any), path.join(home, '\\win'));
+    // a non-tilde value is untouched (no literal '~' dir, no change in contract)
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '/abs/dir' } as any), '/abs/dir');
+  });
 });
 
 describe('resolveReadDirs (cross-agent spend aggregation)', () => {
   it('an explicit override is authoritative (single root, deterministic)', () => {
     assert.deepEqual(resolveReadDirs({ CLAUDE_CONFIG_DIR: '/x' } as any), ['/x']);
     assert.deepEqual(resolveReadDirs({ SUPERINFERENCE_DATA_DIR: '/y' } as any), ['/y']);
+  });
+  it('expands a leading ~ in the authoritative override (parity with resolveConfigDir)', () => {
+    assert.deepEqual(resolveReadDirs({ CLAUDE_CONFIG_DIR: '~/ami' } as any), [path.join(os.homedir(), 'ami')]);
+    assert.deepEqual(resolveReadDirs({ SUPERINFERENCE_DATA_DIR: '~/sup' } as any), [path.join(os.homedir(), 'sup')]);
   });
   it('defaults to BOTH ~/.ami and ~/.claude (read Claude Code spend too)', () => {
     const dirs = resolveReadDirs({} as any);
@@ -211,6 +225,28 @@ describe('appendEntry', () => {
     fs.writeFileSync(asFile, 'x'); // a file where a dir is needed → mkdir throws, must be caught
     assert.doesNotThrow(() => appendEntry(path.join(asFile, 'nested', 's.jsonl'), { a: 1 }));
   });
+  it('append-first: writes into an EXISTING dir without re-walking the tree', () => {
+    // Parent already exists → the hot path appends straight through (no mkdir retry).
+    const dir = mkTmp();
+    const file = path.join(dir, 's.jsonl');
+    appendEntry(file, { a: 1 });
+    appendEntry(file, { a: 2 });
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n');
+    assert.deepEqual(lines.map(l => JSON.parse(l)), [{ a: 1 }, { a: 2 }]);
+  });
+  it('creates the journal file and its project dir owner-only (0o600 / 0o700)', { skip: process.platform === 'win32' }, () => {
+    const dir = mkTmp();
+    const projDir = path.join(dir, 'projects', 'slug');
+    const file = path.join(projDir, 's.jsonl');
+    appendEntry(file, { a: 1 });
+    // The file must not be group/world readable (it holds prompts + tool inputs).
+    assert.equal(fs.statSync(file).mode & 0o077, 0, 'journal file must be 0o600');
+    // The created project dir must be owner-only too.
+    assert.equal(fs.statSync(projDir).mode & 0o077, 0, 'project dir must be 0o700');
+    // A subsequent append (EEXIST path) must not widen the perms.
+    appendEntry(file, { a: 2 });
+    assert.equal(fs.statSync(file).mode & 0o077, 0, 'perms unchanged after EEXIST append');
+  });
 });
 
 describe('dashboard-config registration', () => {
@@ -243,6 +279,12 @@ describe('dashboard-config registration', () => {
     const asFile = path.join(dir, 'blocker');
     fs.writeFileSync(asFile, 'x');
     assert.equal(registerDataDir('/data', path.join(asFile, 'nested', 'cfg.json')), false);
+  });
+  it('registerDataDir writes the config owner-only (0o600) via the crash-safe writer', { skip: process.platform === 'win32' }, () => {
+    const dir = mkTmp();
+    const cfg = path.join(dir, 'sub', 'cfg.json'); // parent created by the atomic writer
+    assert.equal(registerDataDir('/data', cfg), true);
+    assert.equal(fs.statSync(cfg).mode & 0o077, 0, 'dashboard config must not be group/world readable');
   });
   it('maybeRegisterDataDir: false when unconfigured, registers resolved dir when configured', () => {
     assert.equal(maybeRegisterDataDir({} as any), false);
@@ -289,5 +331,31 @@ describe('migrateLegacyDataDir (issue #21 defect 1)', () => {
   });
   it('is a no-op when there is no legacy dir', () => {
     assert.deepEqual(migrateLegacyDataDir({} as any, mkTmp()), []);
+  });
+  it('records (does not swallow blindly) a per-item failure and still never throws', () => {
+    // A legacy subdir exists to migrate, but the ~/.ami target path is a regular
+    // FILE, so mkdir of the target throws for every item → caught + LOGGED, no
+    // items migrated, and startup is never blocked. We capture the logger's write
+    // seam to prove the failure is recorded (not silently swallowed) — this is
+    // what makes the test discriminate the fix from a bare `catch {}`.
+    const home = mkTmp();
+    fs.mkdirSync(path.join(home, '.superinference', 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.ami'), 'x'); // .ami is a file, not a dir
+    __resetLoggerForTest();
+    const lines: string[] = [];
+    const spy = mock.method(loggerFsHooks, 'appendFileSync', (_f: unknown, line: unknown) => {
+      lines.push(String(line));
+    });
+    let moved: string[] = [];
+    try {
+      assert.doesNotThrow(() => { moved = migrateLegacyDataDir({} as any, home); });
+    } finally {
+      spy.mock.restore();
+    }
+    assert.deepEqual(moved, [], 'nothing migrated when the target cannot be created');
+    assert.ok(
+      lines.some(l => l.includes('migrate-legacy') && l.includes('plugins')),
+      'the per-item migration failure must be logged, not silently swallowed',
+    );
   });
 });
