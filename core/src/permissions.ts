@@ -83,7 +83,8 @@ export const BASH_CLASSIFICATIONS = ['safe', 'unsafe', 'destructive'] as const;
 export type BashClassification = (typeof BASH_CLASSIFICATIONS)[number];
 
 /** Scope for an `allow_session` grant on the agent's own config folder. */
-export type SessionGrantScope = 'config-folder' | 'global-config-folder';
+export const SESSION_GRANT_SCOPES = ['config-folder', 'global-config-folder'] as const;
+export type SessionGrantScope = (typeof SESSION_GRANT_SCOPES)[number];
 
 export interface PermissionPromptResult {
   action: 'allow_once' | 'allow_pattern' | 'allow_session' | 'deny' | 'cancelled';
@@ -129,8 +130,10 @@ export type PermissionDecisionReason =
   | { type: 'classifier'; name?: string; reason?: string }
   | { type: 'other'; message?: string };
 
-export type SafetyCheckKind =
-  | 'credential' | 'systemDir' | 'suspiciousPath' | 'agentConfig' | 'buildConfig' | 'destructive';
+export const SAFETY_CHECK_KINDS = [
+  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive',
+] as const;
+export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
 
 /** Build a human-readable explanation from a structured decision reason. */
 export function createPermissionRequestMessage(reason: PermissionDecisionReason): string {

@@ -5,12 +5,12 @@ export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
-export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV } from './plugins';
+export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV, VALID_INSTALL_SCOPES } from './plugins';
 export type { PluginBundle, CommandDefinition, GitSourceValidation, PluginValidationResult, PluginValidationIssue, PluginLoadFailure } from './plugins';
 // Skill/agent TYPES + arg-safety live in core (bare building blocks). The
 // SkillManager (management) lives in common/src/skill-manager.ts.
 export type { SkillDefinition, AgentDefinition, SkillManagerLike } from './skills';
-export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS } from './skills';
+export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS, AGENT_SOURCES } from './skills';
 // Skill catalog types + path-safety for URL-based skill discovery.
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult } from './skill-catalog';
 export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256 } from './skill-catalog';
@@ -38,7 +38,7 @@ export type { McpServerState } from './mcp/manager';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
 export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow } from './error-classifier';
 export type { ClassifiedError, ErrorCategory } from './error-classifier';
-export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES, resolveHookTimeoutMs, combineHookAbort, HOOK_AGENT_DISALLOWED_TOOLS, isHttpHookUrlAllowed, interpolateHookHeaderEnv, unwrapHookSpecificOutput, matchesHookIf } from './hooks';
+export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES, resolveHookTimeoutMs, combineHookAbort, HOOK_AGENT_DISALLOWED_TOOLS, isHttpHookUrlAllowed, interpolateHookHeaderEnv, unwrapHookSpecificOutput, matchesHookIf, ELICITATION_ACTIONS } from './hooks';
 export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy } from './hooks';
 export { shouldSkipHookDueToTrust } from './hook-protection';
 export { wildcardMatch } from './permissions';
@@ -55,6 +55,7 @@ export {
   OTEL_CARDINALITY_DEFAULTS, parseOtelHeaders,
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName, MAX_FILE_EXTENSION_LENGTH,
 } from './analytics';
+export { PRIVACY_LEVELS } from './analytics';
 export type { PrivacyLevel, SanitizeOpts } from './analytics';
 export type { FileState } from './file-cache';
 export { Profiler, FpsTracker } from './profiler';
@@ -93,9 +94,9 @@ export type {
   UsageStats,
 } from './types';
 export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType } from './types';
-export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES } from './types';
+export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS } from './types';
 export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, is1mContextDisabled, supportsOneMillionContextBeta, THINKING_LEVELS, REVIEW_EFFORT_LEVELS } from './model-capabilities';
-export { PERMISSION_MODES, BASH_CLASSIFICATIONS } from './permissions';
+export { PERMISSION_MODES, BASH_CLASSIFICATIONS, PERMISSION_UPDATE_DESTINATIONS, SESSION_GRANT_SCOPES, SAFETY_CHECK_KINDS } from './permissions';
 export { detectProvider, listModels, validateModel } from './model-registry';
 export type { ValidateModelResult } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS } from './config';
@@ -118,7 +119,7 @@ export {
 export type { AtomicWriteOptions } from './utils/fs-atomic';
 export { getGitBranch } from './utils/git';
 export { generateTitle } from './title-generator';
-export { ProcessManager } from './process-manager';
+export { ProcessManager, TASK_STATUS } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
 
 export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE } from './token-estimator';
@@ -127,6 +128,8 @@ export type { ToolStats, ContextHint } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
 export { Reservoir, percentile as reservoirPercentile, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
+export { FILE_IMAGES_KINDS } from './tools/file-read';
+export { MCP_AUTH_STATUS } from './tools/mcp-auth';
 export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
 export { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE, _resetDockerAvailableCache } from './tools/docker-sandbox';
@@ -214,6 +217,7 @@ export {
   diagnosticSeveritySymbol,
   formatNewDiagnosticsSummary,
   formatDiagnosticsDetail,
+  DIAGNOSTIC_SEVERITY_NAMES,
 } from './lsp';
 export type {
   LspServerConfig,

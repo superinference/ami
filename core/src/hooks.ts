@@ -254,7 +254,8 @@ export type WorktreeHookFn = (context: WorktreeContext) => Promise<void>;
 export type FileChangeHookFn = (context: FileChangeContext) => Promise<{ watchPaths?: string[] } | void>;
 export type CwdChangedHookFn = (context: CwdChangedContext) => Promise<{ watchPaths?: string[] } | void>;
 /** Elicitation action a hook may return to short-circuit the user prompt. */
-export type ElicitationAction = 'accept' | 'decline' | 'cancel';
+export const ELICITATION_ACTIONS = ['accept', 'decline', 'cancel'] as const;
+export type ElicitationAction = (typeof ELICITATION_ACTIONS)[number];
 export interface ElicitationHookResult {
   /** Programmatic response that short-circuits / overrides the user prompt. */
   action?: ElicitationAction;

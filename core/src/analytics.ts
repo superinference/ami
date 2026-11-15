@@ -26,7 +26,8 @@ export function isEnvTruthy(v: string | undefined): boolean {
 }
 
 /** Ordered privacy tiers; a more-restrictive signal always wins. */
-export type PrivacyLevel = 'default' | 'no-telemetry' | 'essential-traffic';
+export const PRIVACY_LEVELS = ['default', 'no-telemetry', 'essential-traffic'] as const;
+export type PrivacyLevel = (typeof PRIVACY_LEVELS)[number];
 const PRIVACY_RANK: Record<PrivacyLevel, number> = {
   'default': 0,
   'no-telemetry': 1,
