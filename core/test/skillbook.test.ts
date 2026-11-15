@@ -153,4 +153,176 @@ describe('Skillbook', () => {
     skillbook.apply({ type: 'UPDATE', id: entry!.id, keywords: ['new', 'keywords'] });
     assert.deepEqual(skillbook.getAll()[0].keywords, ['new', 'keywords']);
   });
+
+  // --- Size/length caps on persisted + prompt-injected content ---
+
+  it('ADD clamps an over-long insight to the per-entry cap', () => {
+    const huge = 'x'.repeat(5000);
+    const entry = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: huge } });
+    assert.equal(entry!.insight.length, 2000);
+  });
+
+  it('ADD clamps issue length and keyword count/length', () => {
+    const entry = skillbook.apply({ type: 'ADD', entry: {
+      section: 'context',
+      keywords: Array.from({ length: 50 }, (_, i) => `${'k'.repeat(200)}${i}`),
+      issue: 'y'.repeat(2000),
+      insight: 'ok',
+    } });
+    assert.equal(entry!.issue.length, 500);
+    assert.equal(entry!.keywords.length, 20);
+    assert.ok(entry!.keywords.every(k => k.length <= 100));
+  });
+
+  it('UPDATE clamps an over-long insight', () => {
+    const entry = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'short' } });
+    skillbook.apply({ type: 'UPDATE', id: entry!.id, insight: 'z'.repeat(9000) });
+    assert.equal(skillbook.getAll()[0].insight.length, 2000);
+  });
+
+  it('getContext truncates and reports omitted entries when over the byte budget', () => {
+    // Each insight ~1900 bytes; many helpful entries blow past the 25KB budget.
+    for (let i = 0; i < 40; i++) {
+      const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: [`k${i}`], issue: 'i', insight: 'a'.repeat(1900) } });
+      skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'helpful' });
+    }
+    const context = skillbook.getContext();
+    assert.ok(Buffer.byteLength(context, 'utf-8') <= 25_000 + 200);
+    assert.ok(context.includes('more omitted to stay within the context budget'));
+  });
+
+  // --- Schema validation of untrusted on-disk entries ---
+
+  it('drops malformed entries loaded from disk (bad section / wrong types)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-bad-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      version: 1,
+      entries: [
+        { id: 'ok', section: 'context', keywords: ['k'], issue: 'i', insight: 'good', helpfulCount: 1, harmfulCount: 0, neutralCount: 0, occurrences: [], createdAt: 1, updatedAt: 1 },
+        { id: 'bad-section', section: 'evil', keywords: [], issue: '', insight: 'x' },
+        { id: 123, section: 'context', keywords: [], issue: '', insight: 'x' },
+        { section: 'context', keywords: [], issue: '', insight: 'no id' },
+        { id: 'no-insight', section: 'context', keywords: [], issue: '' },
+        { id: 'bad-keywords', section: 'context', keywords: 'nope', issue: '', insight: 'x' },
+        'not-an-object',
+        null,
+      ],
+    }));
+    const sb = new Skillbook(dir);
+    const all = sb.getAll();
+    assert.equal(all.length, 1);
+    assert.equal(all[0].id, 'ok');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('coerces invalid counts and keeps non-string keywords out on load', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-coerce-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      version: 1,
+      entries: [
+        { id: 'c', section: 'context', keywords: ['a', 5, 'b'], issue: 'i', insight: 'x', helpfulCount: 'NaN', harmfulCount: -3, neutralCount: 2, occurrences: [{ sessionId: 's', timestamp: 1 }, { bad: true }], createdAt: 'x', updatedAt: null },
+      ],
+    }));
+    const sb = new Skillbook(dir);
+    const e = sb.getAll()[0];
+    assert.deepEqual(e.keywords, ['a', 'b']);
+    assert.equal(e.helpfulCount, 0);
+    assert.equal(e.harmfulCount, 0);
+    assert.equal(e.neutralCount, 2);
+    assert.equal(e.occurrences.length, 1);
+    assert.equal(typeof e.createdAt, 'number');
+    assert.equal(typeof e.updatedAt, 'number');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('clamps an over-long insight loaded from disk', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-clamp-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      version: 1,
+      entries: [{ id: 'big', section: 'context', keywords: ['k'], issue: 'i', insight: 'q'.repeat(9000), helpfulCount: 0, harmfulCount: 0, neutralCount: 0, occurrences: [], createdAt: 1, updatedAt: 1 }],
+    }));
+    const sb = new Skillbook(dir);
+    assert.equal(sb.getAll()[0].insight.length, 2000);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // --- Persisted-schema version validation ---
+
+  it('discards entries when the persisted schema version mismatches', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-ver-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      version: 999,
+      entries: [{ id: 'future', section: 'context', keywords: ['k'], issue: 'i', insight: 'x', helpfulCount: 1, harmfulCount: 0, neutralCount: 0, occurrences: [], createdAt: 1, updatedAt: 1 }],
+    }));
+    const sb = new Skillbook(dir);
+    assert.equal(sb.getAll().length, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('discards a legacy file with no version field', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-nover-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      entries: [{ id: 'legacy', section: 'context', keywords: ['k'], issue: 'i', insight: 'x', helpfulCount: 1, harmfulCount: 0, neutralCount: 0, occurrences: [], createdAt: 1, updatedAt: 1 }],
+    }));
+    const sb = new Skillbook(dir);
+    assert.equal(sb.getAll().length, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // --- Multi-section labelling (harness learnings surfaced) ---
+
+  it('getContext surfaces harness learnings under a distinct sub-header', () => {
+    const c = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['ctx'], issue: 'i', insight: 'context insight' } });
+    skillbook.apply({ type: 'TAG', id: c!.id, feedback: 'helpful' });
+    const h = skillbook.apply({ type: 'ADD', entry: { section: 'harness', keywords: ['hns'], issue: 'i', insight: 'harness insight' } });
+    skillbook.apply({ type: 'TAG', id: h!.id, feedback: 'helpful' });
+    const context = skillbook.getContext();
+    assert.ok(context.includes('### Context strategies'));
+    assert.ok(context.includes('context insight'));
+    assert.ok(context.includes('### Harness strategies'));
+    assert.ok(context.includes('harness insight'));
+  });
+
+  it('getContext omits the harness sub-header when no harness entries qualify', () => {
+    const c = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['ctx'], issue: 'i', insight: 'only context' } });
+    skillbook.apply({ type: 'TAG', id: c!.id, feedback: 'helpful' });
+    const context = skillbook.getContext();
+    assert.ok(context.includes('### Context strategies'));
+    assert.ok(!context.includes('### Harness strategies'));
+  });
+
+  // --- Negative / caution learnings channel ---
+
+  it('getCautions surfaces entries tagged more harmful than helpful', () => {
+    const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['danger'], issue: 'risky', insight: 'avoid this approach' } });
+    skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'harmful' });
+    skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'harmful' });
+    const cautions = skillbook.getCautions();
+    assert.ok(cautions.includes('Learnings to Avoid'));
+    assert.ok(cautions.includes('avoid this approach'));
+    assert.ok(cautions.includes('2 harmful'));
+    // And such entries remain excluded from the positive context channel.
+    assert.ok(!skillbook.getContext().includes('avoid this approach'));
+  });
+
+  it('getCautions returns empty string when nothing is net-harmful', () => {
+    const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['good'], issue: 'i', insight: 'helpful thing' } });
+    skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'helpful' });
+    assert.equal(skillbook.getCautions(), '');
+  });
+
+  it('getCautions truncates when over the byte budget', () => {
+    for (let i = 0; i < 40; i++) {
+      const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: [`k${i}`], issue: 'i', insight: 'b'.repeat(1900) } });
+      skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'harmful' });
+    }
+    const cautions = skillbook.getCautions();
+    assert.ok(Buffer.byteLength(cautions, 'utf-8') <= 25_000 + 200);
+    assert.ok(cautions.includes('more omitted to stay within the context budget'));
+  });
 });

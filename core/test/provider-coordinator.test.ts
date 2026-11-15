@@ -187,6 +187,64 @@ describe('ProviderCoordinator', () => {
     assert.equal(coord.isAnthropicProvider(), false);
   });
 
+  it('detects Anthropic provider from an api.anthropic.com subdomain baseUrl (non-claude model)', () => {
+    // Model is NOT claude and provider is unset, so only the host arm can match.
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { baseUrl: 'https://api.anthropic.com/v1', apiKey: 'k', model: 'x-model' },
+    }));
+    assert.equal(coord.isAnthropicProvider(), true);
+  });
+
+  it('detects Anthropic provider from a bare anthropic.com baseUrl (non-claude model)', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { baseUrl: 'https://anthropic.com/v1', apiKey: 'k', model: 'x-model' },
+    }));
+    assert.equal(coord.isAnthropicProvider(), true);
+  });
+
+  it('detects Anthropic provider from an explicit provider field alone', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { baseUrl: 'https://proxy.example/v1', apiKey: 'k', model: 'x-model', provider: 'anthropic' },
+    }));
+    assert.equal(coord.isAnthropicProvider(), true);
+  });
+
+  it('does NOT treat a suffix-spoofed host as Anthropic (anthropic.com.evil.example)', () => {
+    // Old substring test (.includes('anthropic.com')) matched this → security bug.
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { baseUrl: 'https://anthropic.com.evil.example/v1', apiKey: 'k', model: 'x-model' },
+    }));
+    assert.equal(coord.isAnthropicProvider(), false);
+  });
+
+  it('does NOT treat a lookalike domain as Anthropic (not-anthropic.com)', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { baseUrl: 'https://not-anthropic.com/v1', apiKey: 'k', model: 'x-model' },
+    }));
+    assert.equal(coord.isAnthropicProvider(), false);
+  });
+
+  it('does NOT treat anthropic.com appearing only in the path/query as Anthropic', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { baseUrl: 'https://evil.example/?x=anthropic.com', apiKey: 'k', model: 'x-model' },
+    }));
+    assert.equal(coord.isAnthropicProvider(), false);
+  });
+
+  it('returns false for an unparseable baseUrl (non-claude model)', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { baseUrl: 'ht!tp://[not a url', apiKey: 'k', model: 'x-model' },
+    }));
+    assert.equal(coord.isAnthropicProvider(), false);
+  });
+
+  it('returns false when baseUrl is absent (non-claude model)', () => {
+    const coord = new ProviderCoordinator(makeSubsystem({
+      primary: { apiKey: 'k', model: 'x-model' } as ProviderConfig,
+    }));
+    assert.equal(coord.isAnthropicProvider(), false);
+  });
+
   it('hasFallback returns true when configured', () => {
     const coord = new ProviderCoordinator(makeSubsystem({
       fallbackModel: 'backup',

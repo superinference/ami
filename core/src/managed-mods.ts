@@ -3,6 +3,15 @@ export interface ModInfo {
   id: string;
   tier: 'builtin' | 'managed' | 'user';
   marketplace?: string;
+  /**
+   * Typed provenance discriminant set at DISCOVERY time (non-spoofable).
+   * When present it is the AUTHORITATIVE local/inline/remote decision used to
+   * vouch for a mod under `allowManagedModsOnly`; the display-name `marketplace`
+   * string is never consulted once this is set. This closes the spoof where a
+   * REMOTE marketplace named e.g. `local-attacker` / `inline-evil` slipped past
+   * a `marketplace.startsWith('local')` prefix check and was trusted as local.
+   */
+  source?: 'local' | 'inline' | 'remote';
   path?: string;
 }
 
@@ -42,6 +51,23 @@ export function getManagedPluginNames(policy: ManagedModsPolicy | null | undefin
   return names;
 }
 
+/**
+ * Decide whether a mod is a trusted LOCAL/INLINE copy (as opposed to a REMOTE
+ * marketplace) for the `allowManagedModsOnly` vouch. The typed {@link ModInfo.source}
+ * discriminant — stamped at discovery time — is authoritative and NON-SPOOFABLE: a
+ * remote source carries `source: 'remote'` and can never be mistaken for local even
+ * if it names its marketplace `local-attacker` or `inline-evil`. Only when `source`
+ * is absent (legacy {@link ModInfo}) do we fall back to the display-name heuristic:
+ * an absent marketplace is an in-repo/implicit copy (local), otherwise the (spoofable)
+ * `local`/`inline` prefix is honored for backward compatibility until callers set
+ * `source` at discovery time.
+ */
+export function isLocalOrInlineSource(mod: ModInfo): boolean {
+  if (mod.source) return mod.source === 'local' || mod.source === 'inline';
+  if (!mod.marketplace) return true;
+  return mod.marketplace.startsWith('inline') || mod.marketplace.startsWith('local');
+}
+
 export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed: boolean; reason?: string } {
   // Unconditional org force-disable (`enabledPlugins[id] === false`) is evaluated
   // FIRST, before the allow-only short-circuit: an org that explicitly denies ONE
@@ -63,8 +89,10 @@ export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed
   if (policy.enabledPlugins) {
     const entry = policy.enabledPlugins[mod.id];
     if (entry === true || (Array.isArray(entry) && entry.length > 0)) {
-      // Only local folder marketplace copies are vouched for
-      if (mod.marketplace && !mod.marketplace.startsWith('inline') && !mod.marketplace.startsWith('local')) {
+      // Only local/inline copies are vouched for. The typed `source` discriminant
+      // (set at discovery time) is authoritative and non-spoofable here; the
+      // display-name `marketplace` prefix is only a legacy fallback.
+      if (!isLocalOrInlineSource(mod)) {
         return {
           allowed: false,
           reason: `mods are limited to your organization's by policy (allowManagedModsOnly); ${mod.name} from remote marketplace "${mod.marketplace}" was not loaded`,

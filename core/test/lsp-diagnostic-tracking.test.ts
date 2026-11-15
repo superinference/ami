@@ -11,6 +11,7 @@ import {
   diagnosticPathsEqual,
   uriToPath,
   diagnosticSeveritySymbol,
+  diagnosticHeaderPath,
   formatNewDiagnosticsSummary,
   formatDiagnosticsDetail,
   capDiagnosticVolume,
@@ -238,6 +239,28 @@ describe('formatting', () => {
     for (const s of ['Error', 'Warning', 'Info', 'Hint'] as const) {
       assert.ok(diagnosticSeveritySymbol(s).length > 0);
     }
+  });
+
+  it('diagnosticHeaderPath guards a missing/empty uri instead of throwing', () => {
+    assert.equal(diagnosticHeaderPath(undefined), '<unknown location>');
+    assert.equal(diagnosticHeaderPath(''), '<unknown location>');
+    assert.equal(diagnosticHeaderPath('file:///proj/a.ts'), '/proj/a.ts');
+  });
+
+  it('detail renders a malformed file (undefined uri) as <unknown location> and still shows other files', () => {
+    const files = [
+      // A malformed DiagnosticFile whose uri is missing (bad publishDiagnostics
+      // payload). The old code called uriToPath(undefined) which threw.
+      { uri: undefined as unknown as string, diagnostics: [diag('orphan')] },
+      { uri: 'file:///proj/ok.ts', diagnostics: [diag('real')] },
+    ];
+    let out = '';
+    assert.doesNotThrow(() => { out = formatDiagnosticsDetail(files); });
+    assert.ok(out.includes('<unknown location>'));
+    assert.ok(out.includes('orphan'));
+    // The valid file after the malformed one is still rendered (not dropped).
+    assert.ok(out.includes('/proj/ok.ts'));
+    assert.ok(out.includes('real'));
   });
 });
 

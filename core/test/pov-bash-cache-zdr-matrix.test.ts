@@ -74,6 +74,113 @@ describe('isReadOnlyBashCommand — behavioral matrix', () => {
 });
 
 // ---------------------------------------------------------------------------
+// isReadOnlyBashCommand — additive conservatism guards. These close the
+// compound-separator, substitution/expansion, dangerous-flag, and fail-safe
+// boundaries: a command that actually mutates (or is unsound to cache) must NOT
+// be classified read-only, while genuine read-only compounds stay read-only.
+// ---------------------------------------------------------------------------
+describe('isReadOnlyBashCommand — compound-separator boundary', () => {
+  const WRITES: Array<[string, string]> = [
+    ['&& joins a write', 'ls && rm -rf foo'],
+    ['; joins a write', 'ls; rm -rf repo'],
+    ['|| joins a write', 'cat f || rm f'],
+    ['& backgrounds a write', 'ls & rm f'],
+    ['newline joins a write', 'ls\nrm -rf foo'],
+    ['read-only then unknown via &&', 'cat a && frobnicate'],
+    ['&> redirect is a write', 'echo hi &> out.txt'],
+  ];
+  const READS: Array<[string, string]> = [
+    ['&& joins two read-only cmds', 'ls && pwd'],
+    ['; joins two read-only cmds', 'git status; git log'],
+    ['mixed pipe + && of read-only', 'cat a | sort && wc -l b'],
+  ];
+  for (const [label, cmd] of WRITES) {
+    it(`write via compound: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), false, JSON.stringify(cmd));
+    });
+  }
+  for (const [label, cmd] of READS) {
+    it(`read-only compound: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), true, JSON.stringify(cmd));
+    });
+  }
+});
+
+describe('isReadOnlyBashCommand — substitution / expansion rejection', () => {
+  const REJECT: Array<[string, string]> = [
+    ['command substitution $()', 'cat $(date +%s)'],
+    ['backtick substitution', 'echo `id`'],
+    ['variable expansion $VAR', 'cat $HOME/config'],
+    ['non-deterministic $RANDOM', 'echo $RANDOM'],
+    ['brace expansion ${VAR}', 'echo ${PATH}'],
+    ['process substitution <()', 'cat <(ls)'],
+    ['double-quoted $ still expands', 'echo "hi $USER"'],
+  ];
+  const ALLOW: Array<[string, string]> = [
+    ['single-quoted $ is literal', "grep '$pattern' file"],
+    ['single-quoted backtick is literal', "grep 'a\`b' file"],
+  ];
+  for (const [label, cmd] of REJECT) {
+    it(`reject: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), false, JSON.stringify(cmd));
+    });
+  }
+  for (const [label, cmd] of ALLOW) {
+    it(`allow: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), true, JSON.stringify(cmd));
+    });
+  }
+});
+
+describe('isReadOnlyBashCommand — per-command dangerous flags', () => {
+  const WRITES: Array<[string, string]> = [
+    ['find -delete', 'find . -name "*.tmp" -delete'],
+    ['find -exec', 'find . -type f -exec chmod 644 {} +'],
+    ['find -execdir', 'find . -execdir touch {} +'],
+    ['find -fprintf', 'find . -fprintf out.txt "%p\\n"'],
+    ['sed -i in-place', 'sed -i s/a/b/ file'],
+    ['sed -i with suffix', 'sed -i.bak s/a/b/ file'],
+    ['sed --in-place', 'sed --in-place=.bak s/a/b/ file'],
+    ['sort -o output', 'sort -o out.txt in.txt'],
+    ['sort --output=', 'sort --output=out.txt in.txt'],
+    ['awk system()', 'awk \'BEGIN{system("rm -rf x")}\''],
+    ['xargs runs rm', 'find . -type f | xargs rm'],
+    ['xargs -I runs mv', 'ls | xargs -I {} mv {} /tmp'],
+  ];
+  const READS: Array<[string, string]> = [
+    ['find read-only actions', 'find . -name "*.ts" -type f'],
+    ['sed non-destructive', "sed -n '1,10p' file"],
+    ['sort plain', 'sort -r -n file'],
+    ['awk plain program', "awk '{print $1}' file"],
+    ['xargs runs read-only grep', 'ls | xargs grep foo'],
+    ['bare xargs defaults to echo', 'ls | xargs'],
+  ];
+  for (const [label, cmd] of WRITES) {
+    it(`write flag: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), false, JSON.stringify(cmd));
+    });
+  }
+  for (const [label, cmd] of READS) {
+    it(`safe flag: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), true, JSON.stringify(cmd));
+    });
+  }
+});
+
+describe('isReadOnlyBashCommand — parse-failure fail-safe', () => {
+  it('unbalanced double quote is not trusted as read-only', () => {
+    assert.equal(isReadOnlyBashCommand('cat "unterminated'), false);
+  });
+  it('unbalanced single quote is not trusted as read-only', () => {
+    assert.equal(isReadOnlyBashCommand("grep 'unterminated file"), false);
+  });
+  it('balanced quotes still classify normally', () => {
+    assert.equal(isReadOnlyBashCommand('grep "a b" file'), true);
+    assert.equal(isReadOnlyBashCommand("grep 'a b' file"), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // BashResultCache — observe real Map state: hit/miss, key = command+cwd,
 // TTL expiry, LRU eviction at maxSize, per-cwd invalidation, clear, size.
 // ---------------------------------------------------------------------------

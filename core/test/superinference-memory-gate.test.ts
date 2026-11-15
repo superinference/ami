@@ -1,6 +1,11 @@
 import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { MemoryGate } from '../src/superinference/memory-gate';
+import {
+  MemoryGate,
+  MAX_ENTRIES,
+  MAX_CONTEXT_CHARS,
+  MAX_PERSIST_CHARS,
+} from '../src/superinference/memory-gate';
 import type { CriticDecision } from '../src/superinference/types';
 
 // ---------------------------------------------------------------------------
@@ -174,6 +179,65 @@ describe('MemoryGate – persistTo()', () => {
     // The result portion should be substring'd to 200 chars
     const resultPart = savedContent.split('\n').find(l => l.includes('xxx'));
     assert.ok(resultPart!.length < 500, 'Should truncate long results');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overall size caps on gate state and model-facing content
+// ---------------------------------------------------------------------------
+
+describe('MemoryGate – size caps', () => {
+  it('bounds the entries array at MAX_ENTRIES (drops oldest)', () => {
+    const gate = new MemoryGate();
+    for (let i = 0; i < MAX_ENTRIES + 25; i++) {
+      gate.gate(`q${i}`, `r${i}`, { approved: true, score: 0.9 }, 0.5, i);
+    }
+    const entries = gate.getEntries();
+    assert.equal(entries.length, MAX_ENTRIES);
+    // Oldest (q0) was evicted; the most recent entry is retained.
+    assert.equal(entries[0].query, 'q25');
+    assert.equal(entries[entries.length - 1].query, `q${MAX_ENTRIES + 24}`);
+  });
+
+  it('getApprovedContext caps aggregate output and appends a truncation sentinel', () => {
+    const gate = new MemoryGate();
+    // Each entry contributes ~500 chars; enough entries overflow MAX_CONTEXT_CHARS.
+    const big = 'x'.repeat(500);
+    for (let i = 0; i < 40; i++) {
+      gate.gate(`q${i}`, big, { approved: true, score: 0.9 }, 0.5, i);
+    }
+    const ctx = gate.getApprovedContext();
+    assert.ok(
+      ctx.length <= MAX_CONTEXT_CHARS + 80,
+      `context should be capped near MAX_CONTEXT_CHARS, got ${ctx.length}`,
+    );
+    assert.match(ctx, /… \[truncated: \d+ more chars omitted\]$/);
+  });
+
+  it('getApprovedContext does not truncate when under budget', () => {
+    const gate = new MemoryGate();
+    gate.gate('q', 'short answer', { approved: true, score: 0.9 }, 0.5, 1);
+    const ctx = gate.getApprovedContext();
+    assert.equal(ctx, 'Q: q\nA: short answer');
+    assert.doesNotMatch(ctx, /truncated/);
+  });
+
+  it('persistTo caps aggregate persisted content with a sentinel', () => {
+    const gate = new MemoryGate();
+    const big = 'y'.repeat(200);
+    for (let i = 0; i < 80; i++) {
+      gate.gate(`q${i}`, big, { approved: true, score: 0.9 }, 0.5, i);
+    }
+    let savedContent = '';
+    const mockMemory = { saveMemory(_p: string, content: string) { savedContent = content; } };
+    gate.persistTo(mockMemory as any, 'task');
+    // Header + capped body; body portion must respect the budget + sentinel.
+    assert.ok(savedContent.includes('# Task: task'));
+    assert.match(savedContent, /… \[truncated: \d+ more chars omitted\]$/);
+    assert.ok(
+      savedContent.length <= MAX_PERSIST_CHARS + 120,
+      `persisted content should be capped, got ${savedContent.length}`,
+    );
   });
 });
 

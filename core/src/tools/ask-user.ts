@@ -58,6 +58,7 @@ export const askUserQuestionTool: ToolDefinition = {
                   },
                 },
                 required: ['label', 'description'],
+                additionalProperties: false,
               },
             },
             previewFormat: {
@@ -72,6 +73,7 @@ export const askUserQuestionTool: ToolDefinition = {
             },
           },
           required: ['question', 'options'],
+          additionalProperties: false,
         },
       },
       question: {
@@ -91,6 +93,7 @@ export const askUserQuestionTool: ToolDefinition = {
             description: { type: 'string' },
           },
           required: ['label', 'description'],
+          additionalProperties: false,
         },
       },
       answers: {
@@ -122,6 +125,11 @@ export const askUserQuestionTool: ToolDefinition = {
       },
     },
     required: [],
+    // Strict input object: reject unknown top-level keys (parity with Claude's
+    // z.strictObject). `ToolInputSchema` does not yet declare this field, so the
+    // runtime schema carries it while the rest of the literal stays type-checked.
+    // @ts-expect-error -- additionalProperties is a valid JSON Schema keyword here.
+    additionalProperties: false,
   },
   isReadOnly: true,
   async execute(_input, _context) {
