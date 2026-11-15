@@ -26,12 +26,24 @@ export function levenshteinDistance(a: string, b: string): number {
   return matrix[a.length][b.length];
 }
 
+// PARITY (bounds hardening): clamp a caller-supplied count/budget to a safe,
+// non-negative integer. Guards against negative values (e.g. a negative
+// maxResults would turn `slice(0, n)` into a from-the-end slice and leak
+// unintended entries) and non-finite inputs. ADDITIVE: positive integers pass
+// through unchanged, so existing callers keep identical behavior.
+function clampCount(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
 export function suggestSimilarPaths(
   missingPath: string,
   cwd: string,
   maxResults = 3,
   maxDistance = 3,
 ): string[] {
+  const limit = clampCount(maxResults);
+  const budget = clampCount(maxDistance);
   const abs = path.isAbsolute(missingPath) ? missingPath : path.resolve(cwd, missingPath);
 
   if (fs.existsSync(abs)) return [];
@@ -49,11 +61,198 @@ export function suggestSimilarPaths(
   const scored: Array<{ name: string; distance: number }> = [];
   for (const entry of entries) {
     const dist = levenshteinDistance(base.toLowerCase(), entry.toLowerCase());
-    if (dist <= maxDistance && dist > 0) {
+    if (dist === 0) {
+      // PARITY (case correction): a case-only difference (e.g. `README.md`
+      // requested as `readme.md` on a case-sensitive filesystem) is one of the
+      // strongest "did you mean" signals. The previous implementation dropped
+      // these entirely via the `dist > 0` filter. ADDITIVE: surface them with
+      // the lowest distance so they rank ahead of typo corrections. (An entry
+      // whose raw name equals `base` would mean the file exists and we would
+      // have returned above, so `entry !== base` is always a true case mismatch.)
+      if (entry !== base) scored.push({ name: entry, distance: 0 });
+    } else if (dist <= budget) {
       scored.push({ name: entry, distance: dist });
     }
   }
 
   scored.sort((a, b) => a.distance - b.distance);
-  return scored.slice(0, maxResults).map(s => path.join(dir, s.name));
+  return scored.slice(0, limit).map(s => path.join(dir, s.name));
+}
+
+// ---------------------------------------------------------------------------
+// PARITY (rich did-you-mean): report WHY a path was corrected and recover from
+// a misspelled *directory* component, not just a misspelled basename.
+// ---------------------------------------------------------------------------
+
+export type PathSuggestionKind = 'exact-case' | 'typo' | 'missing-dir' | 'none';
+
+export interface PathCorrectionOptions {
+  maxResults?: number;
+  maxDistance?: number;
+}
+
+export interface PathCorrectionResult {
+  kind: PathSuggestionKind;
+  suggestions: string[];
+}
+
+/**
+ * PARITY: a structured "did you mean" correction for a missing path.
+ *
+ * Unlike {@link suggestSimilarPaths} (which only ever returns bare strings and
+ * only inspects the immediate parent directory), this reports a `kind` so a
+ * caller can tailor the message, and it recovers from a misspelled *directory*
+ * component by walking up to the nearest existing ancestor and correcting the
+ * missing segment there.
+ *
+ * - `exact-case`  — a sibling differs only by letter case.
+ * - `typo`        — a sibling is within the edit-distance budget.
+ * - `missing-dir` — the parent directory itself is misspelled; the corrected
+ *                   directory (and the target inside it) is suggested.
+ * - `none`        — nothing close enough, or the path already exists.
+ */
+export function suggestPathCorrection(
+  missingPath: string,
+  cwd: string,
+  opts: PathCorrectionOptions = {},
+): PathCorrectionResult {
+  const maxResults = clampCount(opts.maxResults ?? 3);
+  const maxDistance = clampCount(opts.maxDistance ?? 3);
+  const abs = path.isAbsolute(missingPath) ? missingPath : path.resolve(cwd, missingPath);
+
+  if (fs.existsSync(abs)) return { kind: 'none', suggestions: [] };
+
+  const dir = path.dirname(abs);
+  const base = path.basename(abs);
+
+  let entries: string[] | null;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    entries = null;
+  }
+
+  if (entries) {
+    const caseMatches = entries.filter(
+      e => e !== base && e.toLowerCase() === base.toLowerCase(),
+    );
+    if (caseMatches.length > 0) {
+      return {
+        kind: 'exact-case',
+        suggestions: caseMatches.slice(0, maxResults).map(e => path.join(dir, e)),
+      };
+    }
+    const typo = suggestSimilarPaths(abs, cwd, maxResults, maxDistance);
+    if (typo.length > 0) return { kind: 'typo', suggestions: typo };
+    return { kind: 'none', suggestions: [] };
+  }
+
+  // Parent directory does not exist / is unreadable — try to correct the
+  // misspelled directory component against its own parent.
+  const parent = path.dirname(dir);
+  const dirBase = path.basename(dir);
+  let siblings: string[];
+  try {
+    siblings = fs.readdirSync(parent);
+  } catch {
+    return { kind: 'none', suggestions: [] };
+  }
+
+  const dirCandidates = siblings
+    .filter(s => {
+      try {
+        return fs.statSync(path.join(parent, s)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .map(s => ({ s, d: levenshteinDistance(dirBase.toLowerCase(), s.toLowerCase()) }))
+    .filter(e => e.d <= maxDistance)
+    .sort((a, b) => a.d - b.d);
+
+  const out: string[] = [];
+  for (const c of dirCandidates) {
+    const correctedDir = path.join(parent, c.s);
+    const candidate = path.join(correctedDir, base);
+    if (fs.existsSync(candidate)) {
+      out.push(candidate);
+    } else {
+      for (const sim of suggestSimilarPaths(candidate, correctedDir, maxResults, maxDistance)) {
+        out.push(sim);
+      }
+    }
+    if (out.length >= maxResults) break;
+  }
+
+  if (out.length > 0) {
+    return { kind: 'missing-dir', suggestions: out.slice(0, maxResults) };
+  }
+  return { kind: 'none', suggestions: [] };
+}
+
+// ---------------------------------------------------------------------------
+// PARITY (basename-wide search): find a file by its basename elsewhere in the
+// tree, not just in the directory the caller guessed. Covers the common case of
+// a file that was moved/renamed into another folder.
+// ---------------------------------------------------------------------------
+
+export interface BasenameSearchOptions {
+  maxResults?: number;
+  maxDistance?: number;
+  maxDepth?: number;
+}
+
+const BASENAME_SKIP_DIRS = new Set(['node_modules', '.git']);
+
+/**
+ * PARITY: suggest real paths whose *basename* matches (or is close to) the
+ * basename of `missingPath`, searching the tree rooted at `searchRoot` up to a
+ * bounded depth. Results are ranked nearest-first (edit distance, then shorter
+ * path), de-duplicated, and capped at `maxResults`. `node_modules`/`.git` are
+ * skipped; symlinked directories are not traversed (loop-safe).
+ */
+export function suggestByBasename(
+  missingPath: string,
+  searchRoot: string,
+  opts: BasenameSearchOptions = {},
+): string[] {
+  const maxResults = clampCount(opts.maxResults ?? 5);
+  const maxDistance = clampCount(opts.maxDistance ?? 2);
+  const maxDepth = clampCount(opts.maxDepth ?? 5);
+
+  const baseLower = path.basename(missingPath).toLowerCase();
+  const matches: Array<{ p: string; d: number }> = [];
+
+  const walk = (dir: string, depth: number): void => {
+    if (depth > maxDepth) return;
+    let ents: fs.Dirent[];
+    try {
+      ents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!BASENAME_SKIP_DIRS.has(e.name)) walk(full, depth + 1);
+      } else if (e.isFile()) {
+        const d = levenshteinDistance(baseLower, e.name.toLowerCase());
+        if (d <= maxDistance) matches.push({ p: full, d });
+      }
+    }
+  };
+
+  walk(searchRoot, 0);
+
+  matches.sort((a, b) => a.d - b.d || a.p.length - b.p.length);
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of matches) {
+    if (seen.has(m.p)) continue;
+    seen.add(m.p);
+    out.push(m.p);
+    if (out.length >= maxResults) break;
+  }
+  return out;
 }
