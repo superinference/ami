@@ -1,7 +1,15 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { syntheticOutputTool, validateAgainstSchema, MAX_RESULT_SIZE_CHARS } from '../src/tools/synthetic-output';
+import {
+  syntheticOutputTool,
+  validateAgainstSchema,
+  MAX_RESULT_SIZE_CHARS,
+  ndjsonSafeStringify,
+} from '../src/tools/synthetic-output';
+
+const LS = '\u2028'; // LINE SEPARATOR
+const PS = '\u2029'; // PARAGRAPH SEPARATOR
 
 describe('syntheticOutputTool', () => {
   it('has correct name and metadata', () => {
@@ -96,6 +104,33 @@ describe('syntheticOutputTool', () => {
     const result = await syntheticOutputTool.execute!({ data: circ }, {} as any);
     assert.equal(result.isError, true);
     assert.match(result.output, /Error serializing/);
+  });
+
+  describe('NDJSON-safe serialization (U+2028 / U+2029)', () => {
+    it('escapes line/paragraph separators in the tool output so no raw JS line terminator leaks', async () => {
+      const result = await syntheticOutputTool.execute!({ data: { note: `a${LS}b${PS}c` } }, {} as any);
+      assert.ok(!result.isError);
+      // The raw separators must NOT appear verbatim in the emitted record.
+      assert.ok(!result.output.includes(LS), 'raw U+2028 must not leak into output');
+      assert.ok(!result.output.includes(PS), 'raw U+2029 must not leak into output');
+      // They must be present as \u-escapes instead.
+      assert.ok(result.output.includes('\\u2028'));
+      assert.ok(result.output.includes('\\u2029'));
+      // And the record must still parse back to the exact original value.
+      assert.equal(JSON.parse(result.output).note, `a${LS}b${PS}c`);
+    });
+
+    it('ndjsonSafeStringify keeps the output parse-identical while removing raw separators', () => {
+      const value = { s: `x${LS}${PS}y`, arr: [LS, PS] };
+      const out = ndjsonSafeStringify(value, 2);
+      assert.ok(!out.includes(LS));
+      assert.ok(!out.includes(PS));
+      assert.deepEqual(JSON.parse(out), value);
+    });
+
+    it('ndjsonSafeStringify returns undefined for non-serializable input (passthrough)', () => {
+      assert.equal(ndjsonSafeStringify(undefined), undefined);
+    });
   });
 
   describe('validateAgainstSchema unit', () => {

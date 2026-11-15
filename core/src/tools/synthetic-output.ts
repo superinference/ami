@@ -15,6 +15,23 @@ type JsonSchema = {
   maxItems?: number;
 };
 
+/**
+ * Escape the two Unicode code points that `JSON.stringify` emits verbatim but
+ * that ECMA-262 (section 11.3) treats as line terminators: U+2028 (LINE
+ * SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR). A model-supplied `data` value
+ * carrying either char would otherwise embed a raw JS line break inside the
+ * serialized record, so any NDJSON / line-split consumer (a `tail`, a log
+ * shipper, the Agent SDK transport) would cut the payload mid-string and
+ * silently drop it. Replacing them with their `\uXXXX` escapes keeps the output
+ * parse-identical while making it unbreakable by line-terminator-aware
+ * receivers. Mirrors Claude's `ndjsonSafeStringify`.
+ */
+export function ndjsonSafeStringify(value: unknown, space?: number): string {
+  const serialized = JSON.stringify(value, null, space);
+  if (serialized === undefined) return serialized as unknown as string;
+  return serialized.replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
 function typeOf(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
@@ -122,7 +139,7 @@ export const syntheticOutputTool: ToolDefinition = {
 
     let serialized: string;
     try {
-      serialized = JSON.stringify(data, null, 2);
+      serialized = ndjsonSafeStringify(data, 2);
     } catch (err) {
       return { output: `Error serializing structured output: ${err}`, isError: true };
     }
