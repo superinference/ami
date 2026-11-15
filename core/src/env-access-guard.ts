@@ -18,9 +18,89 @@ export const SENSITIVE_ENV_VARS = new Set([
   'PASSPHRASE',
 ]);
 
+// Word-boundary patterns that catch common secret-bearing variable names the
+// coarse SENSITIVE_ENV_VARS substring list misses: bare TOKEN/SECRET/KEY/PASSWD
+// and provider-prefixed vars such as GITHUB_TOKEN, NPM_SECRET, AWS_SECRET_ACCESS_KEY.
+const SENSITIVE_ENV_NAME_PATTERN =
+  /(^|[_-])(API[_-]?KEY|SECRET[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|PRIVATE[_-]?KEY|PASSWORD|PASSWD|PASSPHRASE|CREDENTIALS?|TOKEN|SECRETS?|KEY)([_-]|$)/;
+
 export function isSensitiveEnvVar(name: string): boolean {
   const upper = name.toUpperCase();
-  return [...SENSITIVE_ENV_VARS].some(s => upper.includes(s));
+  // Keep the original coarse substring match (back-compat), then broaden with a
+  // word-boundary pattern so GITHUB_TOKEN / NPM_SECRET / OPENAI_KEY are caught too.
+  if ([...SENSITIVE_ENV_VARS].some(s => upper.includes(s))) return true;
+  return SENSITIVE_ENV_NAME_PATTERN.test(upper);
+}
+
+/**
+ * Secret categories used to label a redacted value. Mirrors the provider classes
+ * a secret can fall into so redacted diagnostics stay self-describing instead of
+ * collapsing every secret to one opaque marker.
+ */
+export type EnvSecretClass =
+  | 'api_key'
+  | 'aws_key'
+  | 'gcp_key'
+  | 'gcp_service_account'
+  | 'token'
+  | 'generic';
+
+// Value-shape detectors: catch secrets even when the variable NAME is innocuous
+// (e.g. MY_CONFIG holding an sk-ant… key, or X holding a service-account email).
+// Ordered most-specific-first; the first match wins.
+const VALUE_SHAPE_DETECTORS: ReadonlyArray<readonly [RegExp, EnvSecretClass]> = [
+  // AWS access-key IDs (AKIA/ASIA/AGPA/… followed by 16 upper-alnum chars)
+  [/\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[0-9A-Z]{16}\b/, 'aws_key'],
+  // GCP / Google API keys
+  [/\bAIza[0-9A-Za-z_-]{35}\b/, 'gcp_key'],
+  // GCP / Vertex service-account emails
+  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.iam\.gserviceaccount\.com\b/, 'gcp_service_account'],
+  // Anthropic / OpenAI-style secret keys (sk-ant-…, sk-…)
+  [/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/, 'api_key'],
+  // GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_ classic, and fine-grained github_pat_)
+  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/, 'token'],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/, 'token'],
+  // Slack tokens
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, 'token'],
+  // Authorization: Bearer <token> headers
+  [/\b[Bb]earer\s+[A-Za-z0-9._~+/-]{8,}=*/, 'token'],
+  // x-api-key headers
+  [/x-api-key\s*[:=]/i, 'api_key'],
+];
+
+/** Classify a secret purely by the SHAPE of its value, independent of its name. */
+export function classifyEnvValue(value: string): EnvSecretClass | undefined {
+  for (const [pattern, cls] of VALUE_SHAPE_DETECTORS) {
+    if (pattern.test(value)) return cls;
+  }
+  return undefined;
+}
+
+/** Classify a sensitive variable by its NAME (provider prefix / token family). */
+export function classifyEnvName(name: string): EnvSecretClass | undefined {
+  if (!isSensitiveEnvVar(name)) return undefined;
+  const upper = name.toUpperCase();
+  if (/(^|[_-])AWS([_-]|$)/.test(upper)) return 'aws_key';
+  if (/(^|[_-])(GOOGLE|GCP|GCLOUD|VERTEX)([_-]|$)/.test(upper)) return 'gcp_key';
+  if (/(^|[_-])(ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|TOKEN)([_-]|$)/.test(upper)) return 'token';
+  if (/KEY/.test(upper)) return 'api_key';
+  return 'generic';
+}
+
+/**
+ * Decide whether a variable is secret and, if so, which class it belongs to.
+ * Value-shape detection wins over name-based classification, so a provider key
+ * stored under an innocuously-named var is still caught and labeled correctly.
+ */
+export function classifyEnvSecret(
+  name: string,
+  value: string | undefined,
+): EnvSecretClass | undefined {
+  if (value !== undefined) {
+    const byValue = classifyEnvValue(value);
+    if (byValue) return byValue;
+  }
+  return classifyEnvName(name);
 }
 
 export function canAccessEnv(
@@ -88,12 +168,22 @@ export class EnvAccessGuard {
     return this._events.filter(e => !e.allowed).length;
   }
 
-  safeGetEnv(name: string): { value: string | undefined; redacted: boolean } {
-    if (isSensitiveEnvVar(name)) {
-      const exists = process.env[name] !== undefined;
-      return { value: exists ? '[REDACTED]' : undefined, redacted: true };
+  safeGetEnv(name: string): { value: string | undefined; redacted: boolean; redactedAs?: EnvSecretClass } {
+    const raw = process.env[name];
+    // Redact when EITHER the name is sensitive OR the value looks like a secret,
+    // so a secret under an innocuous name (e.g. MY_CONFIG=sk-ant…) is still hidden.
+    // The marker stays the stable '[REDACTED]' token; `redactedAs` carries the
+    // provider/secret class so callers can describe WHAT was hidden without the
+    // value string itself leaking any identifying prefix.
+    const cls = classifyEnvSecret(name, raw);
+    if (cls !== undefined) {
+      return {
+        value: raw !== undefined ? '[REDACTED]' : undefined,
+        redacted: true,
+        redactedAs: cls,
+      };
     }
-    return { value: process.env[name], redacted: false };
+    return { value: raw, redacted: false };
   }
 
   clear(): void {
