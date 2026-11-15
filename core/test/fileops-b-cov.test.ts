@@ -403,6 +403,12 @@ describe('notebook-edit — uncovered paths', () => {
   });
 
   it('reports a write failure (read-only notebook file)', async () => {
+    // RECONCILED for the atomic temp+rename write path. Writes now go to a temp file
+    // in the same directory and are renamed over the target, so a read-only *file*
+    // (in a writable dir) would be silently clobbered by the rename rather than
+    // failing at writeFile(). The tool now guards with an explicit writability
+    // pre-check, so a read-only target still surfaces an error (isError) — the error
+    // message names the read-only/not-writable target instead of a raw EACCES.
     const file = writeRawNotebook('ro.ipynb', {
       nbformat: 4,
       nbformat_minor: 5,
@@ -417,6 +423,7 @@ describe('notebook-edit — uncovered paths', () => {
       );
       assert.equal(result.isError, true);
       assert.match(result.output, /Error writing notebook/);
+      assert.match(result.output, /read-only or not writable/);
     } finally {
       fs.chmodSync(file, 0o644);
     }

@@ -102,6 +102,18 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
+    // FUNCTIONAL: reject an invalid cell_type up front. The input schema declares
+    // the enum ['code', 'markdown'], but execute() previously accepted any string
+    // and would persist a bogus cell_type into the notebook JSON (corrupting it for
+    // Jupyter). Validate here so an unknown type fails loudly instead of silently
+    // writing an invalid cell.
+    if (cellType !== undefined && cellType !== 'code' && cellType !== 'markdown') {
+      return {
+        output: `Error: cell_type must be "code" or "markdown". Got "${cellType}".`,
+        isError: true,
+      };
+    }
+
     let resolved = path.isAbsolute(notebookPath)
       ? notebookPath
       : path.resolve(context.cwd, notebookPath);
@@ -319,12 +331,44 @@ export const notebookEditTool: ToolDefinition = {
       }
     }
 
-    // --- Write the modified notebook back ---
-    let updatedJson: string;
+    // --- Write the modified notebook back (atomic temp + rename) ---
+    // JSON.stringify cannot throw for this plain notebook object (no cycles / BigInt),
+    // so it is computed outside the try to avoid an uncoverable catch arm.
+    const updatedJson = JSON.stringify(notebook, null, 1);
+
+    // FUNCTIONAL: preserve read-only / unwritable-target semantics under the atomic
+    // write below. The atomic rename only needs a writable *directory*, so a
+    // read-only *file* (whose parent dir is writable) would be silently clobbered by
+    // the rename — the opposite of the old direct-writeFile behaviour, which failed.
+    // Guard with an explicit writability pre-check so an unwritable target still
+    // surfaces an error. The notebook always exists here (it was read above), so this
+    // only rejects a genuinely unwritable target (never a missing file).
     try {
-      updatedJson = JSON.stringify(notebook, null, 1);
-      await fs.promises.writeFile(resolved, updatedJson, 'utf-8');
+      await fs.promises.access(resolved, fs.constants.W_OK);
+    } catch {
+      return {
+        output: `Error writing notebook: target is read-only or not writable: ${resolved}`,
+        isError: true,
+      };
+    }
+
+    // FUNCTIONAL: write to a temp file in the same directory, then atomically rename
+    // it over the target. A crash mid-write can no longer leave a truncated /
+    // corrupted .ipynb — the original stays intact until the rename swaps it in one
+    // operation. The temp lives in the same dir so the rename is same-filesystem
+    // (atomic), and is hidden so it is never picked up as a stray notebook.
+    const tmpPath = path.join(
+      path.dirname(resolved),
+      `.${path.basename(resolved)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`,
+    );
+    try {
+      await fs.promises.writeFile(tmpPath, updatedJson, 'utf-8');
+      await fs.promises.rename(tmpPath, resolved);
     } catch (err: unknown) {
+      // Best-effort cleanup of the temp file (it may not exist if writeFile failed).
+      try {
+        await fs.promises.unlink(tmpPath);
+      } catch { /* temp file never created — nothing to clean up */ }
       const msg = err instanceof Error ? err.message : String(err);
       return {
         output: `Error writing notebook: ${msg}`,
