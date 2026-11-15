@@ -108,7 +108,7 @@ export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONF
 export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue } from './config';
 export { STRATEGY_NAMES } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
-export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK } from './prompt-categorizer';
+export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, matchesKeepGoingKeyword, matchesNegativeKeyword, getQuerySourceForAgent, getQuerySourceForREPL } from './prompt-categorizer';
 export type { Intent, Scope, PromptCategory, PromptTier, TierSignals } from './prompt-categorizer';
 export type { RateLimitBucket, RateLimitStatus } from './rate-limiter';
 export { SELECTION_STRATEGIES } from './credential-pool';

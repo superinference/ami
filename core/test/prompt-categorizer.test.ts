@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, type Intent, type Scope, type PromptTier } from '../src/prompt-categorizer';
+import { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, matchesKeepGoingKeyword, matchesNegativeKeyword, getQuerySourceForAgent, getQuerySourceForREPL, type Intent, type Scope, type PromptTier } from '../src/prompt-categorizer';
 
 // ---------------------------------------------------------------------------
 // Intent detection
@@ -418,6 +418,120 @@ describe('selectTier', () => {
     const longChat = 'why ' + 'really '.repeat(60) + 'though';
     assert.ok(longChat.length > 280);
     assert.equal(selectTier(longChat, categorizePrompt(longChat)), 'standard');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Continuation / "keep going" keyword detection
+// ---------------------------------------------------------------------------
+describe('matchesKeepGoingKeyword', () => {
+  it('matches a bare "continue" (whole prompt, trimmed, case-insensitive)', () => {
+    assert.equal(matchesKeepGoingKeyword('continue'), true);
+    assert.equal(matchesKeepGoingKeyword('  Continue  '), true);
+    assert.equal(matchesKeepGoingKeyword('CONTINUE'), true);
+  });
+
+  it('does NOT match "continue" embedded in a larger sentence', () => {
+    // whole-string special case: only a lone "continue" counts
+    assert.equal(matchesKeepGoingKeyword('continue reading the file into a buffer'), false);
+    assert.equal(matchesKeepGoingKeyword('please continue the refactor'), false);
+  });
+
+  it('matches "keep going" anywhere', () => {
+    assert.equal(matchesKeepGoingKeyword('keep going'), true);
+    assert.equal(matchesKeepGoingKeyword('ok keep going please'), true);
+    assert.equal(matchesKeepGoingKeyword('KEEP GOING'), true);
+  });
+
+  it('matches "go on" anywhere', () => {
+    assert.equal(matchesKeepGoingKeyword('go on'), true);
+    assert.equal(matchesKeepGoingKeyword('yes, go on'), true);
+  });
+
+  it('returns false for unrelated prompts', () => {
+    assert.equal(matchesKeepGoingKeyword('fix the bug'), false);
+    assert.equal(matchesKeepGoingKeyword(''), false);
+    assert.equal(matchesKeepGoingKeyword('ongoing work'), false); // not the \bgo on\b phrase
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Negative / frustration sentiment detection
+// ---------------------------------------------------------------------------
+describe('matchesNegativeKeyword', () => {
+  it('matches frustration keywords (case-insensitive)', () => {
+    assert.equal(matchesNegativeKeyword('wtf is going on'), true);
+    assert.equal(matchesNegativeKeyword('this sucks'), true);
+    assert.equal(matchesNegativeKeyword('so frustrating'), true);
+    assert.equal(matchesNegativeKeyword('the build is fucking broken'), true);
+    assert.equal(matchesNegativeKeyword('What The Hell'), true);
+    assert.equal(matchesNegativeKeyword('this is horrible'), true);
+    assert.equal(matchesNegativeKeyword('damn it'), true);
+  });
+
+  it('returns false for neutral/positive prompts', () => {
+    assert.equal(matchesNegativeKeyword('explain this function'), false);
+    assert.equal(matchesNegativeKeyword('thanks, that works great'), false);
+    assert.equal(matchesNegativeKeyword(''), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Query-source categorization
+// ---------------------------------------------------------------------------
+describe('getQuerySourceForAgent', () => {
+  it('tags a built-in agent WITH a type as agent:builtin:<type>', () => {
+    assert.equal(getQuerySourceForAgent('general-purpose', true), 'agent:builtin:general-purpose');
+  });
+
+  it('tags a built-in agent WITHOUT a type as agent:default', () => {
+    assert.equal(getQuerySourceForAgent(undefined, true), 'agent:default');
+    assert.equal(getQuerySourceForAgent('', true), 'agent:default');
+  });
+
+  it('tags any non-built-in agent as agent:custom', () => {
+    assert.equal(getQuerySourceForAgent('my-custom', false), 'agent:custom');
+    assert.equal(getQuerySourceForAgent(undefined, false), 'agent:custom');
+  });
+});
+
+describe('getQuerySourceForREPL', () => {
+  it('maps the default style (or no style) to repl_main_thread', () => {
+    assert.equal(getQuerySourceForREPL('default'), 'repl_main_thread');
+    assert.equal(getQuerySourceForREPL(undefined), 'repl_main_thread');
+  });
+
+  it('tags a built-in style as repl_main_thread:outputStyle:<style>', () => {
+    assert.equal(getQuerySourceForREPL('concise'), 'repl_main_thread:outputStyle:concise');
+    assert.equal(getQuerySourceForREPL('explanatory'), 'repl_main_thread:outputStyle:explanatory');
+    assert.equal(getQuerySourceForREPL('learning'), 'repl_main_thread:outputStyle:learning');
+  });
+
+  it('collapses any custom style to :custom (never leaks the name)', () => {
+    assert.equal(getQuerySourceForREPL('my-personal-style'), 'repl_main_thread:outputStyle:custom');
+    assert.equal(getQuerySourceForREPL('pirate'), 'repl_main_thread:outputStyle:custom');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectTier — continuation signal is never under-provisioned as chat
+// ---------------------------------------------------------------------------
+describe('selectTier — continuation', () => {
+  const tier = (msg: string, sig = {}) => selectTier(msg, categorizePrompt(msg), sig);
+
+  it('a bare "continue" is NOT conversational (resumes prior work)', () => {
+    // short + non-codey + intent 'other' would otherwise be conversational
+    assert.equal(tier('continue'), 'standard');
+  });
+
+  it('"keep going" / "go on" are NOT conversational', () => {
+    assert.equal(tier('keep going'), 'standard');
+    assert.equal(tier('go on'), 'standard');
+  });
+
+  it('non-continuation chat still goes conversational (guard is targeted)', () => {
+    assert.equal(tier('hello there'), 'conversational');
+    assert.equal(tier('what is 2+2'), 'conversational');
   });
 });
 
