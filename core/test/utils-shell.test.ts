@@ -234,6 +234,67 @@ describe('execCommand – stall detection', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Terminating-signal surfacing (distinguish a signal-kill/crash from a timeout)
+// ---------------------------------------------------------------------------
+
+describe('execCommand – signal surfacing', () => {
+  it('reports signal === null for a clean exit', async () => {
+    const result = await execCommand('echo ok', { cwd: process.cwd() });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.signal, null);
+  });
+
+  it('reports signal === null for a non-zero exit (not a signal kill)', async () => {
+    const result = await execCommand('exit 3', { cwd: process.cwd() });
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.signal, null);
+  });
+
+  it('surfaces the terminating signal when the process is killed by one', async () => {
+    // The shell signals itself; Node's close event carries (null, 'SIGTERM').
+    const result = await execCommand('kill -TERM $$', { cwd: process.cwd() });
+    assert.equal(result.exitCode, null);
+    assert.equal(result.signal, 'SIGTERM');
+  });
+
+  it('reports signal === null for an already-aborted signal', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const result = await execCommand('echo nope', { cwd: process.cwd(), abortSignal: ac.signal });
+    assert.equal(result.exitCode, null);
+    assert.equal(result.signal, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stdin `input` feeding
+// ---------------------------------------------------------------------------
+
+describe('execCommand – stdin input', () => {
+  it('feeds the input string to the child process stdin', async () => {
+    const result = await execCommand('cat', { cwd: process.cwd(), input: 'piped payload\n' });
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.stdout.includes('piped payload'));
+  });
+
+  it('counts bytes read from stdin', async () => {
+    const result = await execCommand('wc -c', { cwd: process.cwd(), input: 'abcde' });
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.stdout.includes('5'));
+  });
+
+  it('does not reject when the child exits before reading large input (EPIPE swallowed)', async () => {
+    // `true` ignores stdin and exits immediately; a multi-megabyte write to the
+    // closed pipe raises EPIPE, which must be swallowed rather than rejecting.
+    const result = await execCommand('true', {
+      cwd: process.cwd(),
+      input: 'x'.repeat(4_000_000),
+    });
+    assert.equal(result.exitCode, 0);
+  });
+});
+
 describe('execCommand – EBADF regression', () => {
   it('does not throw EBADF when a process is killed while pipes are active', async () => {
     // Spawn a process that writes continuously to stdout, then timeout-kill it.

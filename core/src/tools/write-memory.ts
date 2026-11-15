@@ -1,6 +1,6 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { MemoryManager, MEMORY_TYPES, type MemoryType } from '../memory';
-import { scanForSecrets } from './tool-utils';
+import { findCredentials } from '../credential-guard';
 
 /**
  * write_memory — persist a durable memory for future sessions. The read side
@@ -47,13 +47,17 @@ export const writeMemoryTool: ToolDefinition = {
 
     // Secret-leak guard: a durable memory persists across sessions and may be
     // committed/synced, so credentials must never be written to it. Block the
-    // write and report only HOW MANY patterns matched — never the secret value.
-    const secrets = scanForSecrets(content);
+    // write and name only the KIND(s) of credential detected (the rule label,
+    // e.g. "Anthropic Key") so the model knows what to remove — but NEVER echo
+    // the matched value itself. Mirrors Claude's team-memory secret guard, which
+    // records the gitleaks ruleId and never the secret.
+    const secrets = findCredentials(content);
     if (secrets.length > 0) {
+      const kinds = [...new Set(secrets.map(s => s.label))].sort();
       return {
         output:
           `Error: refusing to store this memory — it contains ${secrets.length} ` +
-          `detected secret${secrets.length === 1 ? '' : 's'} (API key / token / credential). ` +
+          `detected secret${secrets.length === 1 ? '' : 's'} (${kinds.join(', ')}). ` +
           'Memories persist across sessions and may be shared; remove the sensitive value and try again.',
         isError: true,
       };
