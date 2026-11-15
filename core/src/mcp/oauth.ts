@@ -199,9 +199,59 @@ export function generatePkce(): PkcePair {
   return { verifier, challenge, method: 'S256' };
 }
 
-/** A crypto-random state/nonce value for the authorization request. */
+/** tmp */
 export function generateState(): string {
-  return base64url(randomBytes(16));
+  return base64url(randomBytes(32));
+}
+
+/**
+ * Decode the `exp` claim (seconds since epoch) of an unverified JWT and return it
+ * as absolute epoch-ms, or undefined when the token is not a three-part JWT, the
+ * payload is not JSON, or it carries no numeric `exp`. The signature is NOT
+ * verified — this is used solely as a local expiry hint so a JWT access token that
+ * omits `expires_in` is still refreshed proactively rather than treated as
+ * non-expiring. Trust in the token still derives from the server that issued it.
+ */
+export function decodeJwtExpiry(token: string): number | undefined {
+  const parts = token.split('.');
+  if (parts.length !== 3) return undefined;
+  try {
+    const json = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
+    const payload = JSON.parse(json) as Record<string, unknown>;
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * RFC 3986 §6.2.2 syntax normalization for OAuth identifier comparison: lowercase
+ * the scheme and host, drop a default port, and strip a trailing slash. Used for
+ * RFC 8414 §3.3 issuer mix-up protection so cosmetic URL differences do not cause
+ * a false mismatch nor let a different origin masquerade as the expected one.
+ */
+export function normalizeOAuthUrl(url: string): string {
+  const u = new URL(url);
+  const port = u.port ? `:${u.port}` : '';
+  const pathname = u.pathname.replace(/\/+$/, '');
+  return `${u.protocol.toLowerCase()}//${u.hostname.toLowerCase()}${port}${pathname}`;
+}
+
+/**
+ * RFC 8414 §3.3 mix-up protection: the `issuer` an authorization-server metadata
+ * document advertises must be identical (after syntax normalization) to the issuer
+ * URL the metadata was fetched from. A mismatch means the metadata endpoint is
+ * self-describing as a different issuer — reject it so its authorization/token
+ * endpoints are never trusted.
+ */
+export function assertIssuerMatch(advertisedIssuer: string, requestedIssuer: string): void {
+  let adv: string;
+  try { adv = normalizeOAuthUrl(advertisedIssuer); } catch {
+    throw new Error(`authorization-server issuer is not a valid URL: ${advertisedIssuer}`);
+  }
+  if (adv !== normalizeOAuthUrl(requestedIssuer)) {
+    throw new Error(`authorization-server issuer mismatch (RFC 8414 §3.3): metadata advertises ${advertisedIssuer} but was fetched from ${requestedIssuer}`);
+  }
 }
 
 /**
@@ -298,6 +348,9 @@ export async function discoverAuthServer(fetchImpl: FetchLike, issuer: string): 
   // metadata before we ever POST credentials or redirect for consent.
   assertSecureUrl(authorizationEndpoint, 'authorization endpoint');
   assertSecureUrl(tokenEndpoint, 'token endpoint');
+  // RFC 8414 §3.3 mix-up protection: a metadata document must not self-describe
+  // as a different issuer than the one we fetched it from.
+  if (typeof doc.issuer === 'string') assertIssuerMatch(doc.issuer, issuer);
   return {
     issuer: typeof doc.issuer === 'string' ? doc.issuer : issuer,
     authorizationEndpoint,
@@ -358,11 +411,15 @@ export function buildAuthorizationUrl(params: {
 function toTokens(doc: Record<string, unknown>, now: number): OAuthTokens {
   if (typeof doc.access_token !== 'string') throw new Error('token response missing access_token');
   const expiresIn = typeof doc.expires_in === 'number' ? doc.expires_in : undefined;
+  // Prefer the server-supplied expires_in; when it is absent, fall back to the
+  // access token's own JWT `exp` claim so a JWT that omits expires_in is still
+  // treated as expiring (and refreshed) rather than valid forever.
+  const expiresAt = expiresIn !== undefined ? now + expiresIn * 1000 : decodeJwtExpiry(doc.access_token);
   return {
     accessToken: doc.access_token,
     tokenType: typeof doc.token_type === 'string' ? doc.token_type : 'Bearer',
     refreshToken: typeof doc.refresh_token === 'string' ? doc.refresh_token : undefined,
-    expiresAt: expiresIn !== undefined ? now + expiresIn * 1000 : undefined,
+    expiresAt,
     scope: typeof doc.scope === 'string' ? doc.scope : undefined,
   };
 }
@@ -498,8 +555,13 @@ export function mcpTokenFileName(serverName: string): string {
  * it must drive the user through login (open a browser, capture the redirect) and
  * return the authorization `code`. In headless/detached runs the frontend passes
  * an implementation that throws with guidance — the documented degraded path.
+ *
+ * It SHOULD also return the `state` value echoed back on the redirect so the
+ * session can enforce CSRF/session-fixation protection (RFC 6749 §10.12): when a
+ * `state` is returned it MUST equal the one passed in, or the flow is rejected. A
+ * legacy implementation that omits `state` keeps the prior (unchecked) behavior.
  */
-export type AuthorizeFn = (params: { authorizationUrl: string; redirectUri: string; state: string }) => Promise<{ code: string }>;
+export type AuthorizeFn = (params: { authorizationUrl: string; redirectUri: string; state: string }) => Promise<{ code: string; state?: string }>;
 
 export interface McpOAuthSessionOptions {
   /** The MCP server URL — used as the RFC 8707 resource and for well-known fallback. */
@@ -544,6 +606,8 @@ export class McpOAuthSession implements McpOAuthProvider {
   private effectiveClientId: string | undefined;
   private effectiveClientSecret: string | undefined;
   private resolvedRedirectUri: string | undefined;
+  /** Shared in-flight refresh so concurrent callers coalesce onto one POST. */
+  private refreshInFlight: Promise<string | null> | null = null;
 
   /** Resolve the redirect URI once (dynamic port discovery when configured), then cache it. */
   private async getRedirectUri(): Promise<string> {
@@ -572,30 +636,41 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (live) return live;
     // Token present but expired, and we can refresh without user interaction.
     if (this.store.hasRefreshToken() && this.authMeta && this.effectiveClientId) {
-      const authMeta = this.authMeta;
-      const clientId = this.effectiveClientId;
-      const clientSecret = this.effectiveClientSecret;
-      try {
-        const refreshed = await retryWithBackoff(
-          () => refreshToken(this.fetch, {
-            tokenEndpoint: authMeta.tokenEndpoint,
-            refreshToken: this.store.get()!.refreshToken!,
-            clientId,
-            clientSecret,
-            resource: this.resource,
-          }, this.now()),
-          { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
-        );
-        this.store.set(refreshed);
-        return this.store.authorizationHeader(this.now());
-      } catch (error) {
-        // A dead grant (invalid_grant) can never recover by retry — clear the
-        // stored tokens so the next 401 drives a full interactive re-auth.
-        if (error instanceof OAuthError && error.code === 'invalid_grant') this.store.clear();
-        return null; // fall through to a full re-auth on the next 401
-      }
+      // Single-flight: a burst of requests arriving at expiry must not each POST
+      // the (typically single-use, rotating) refresh_token — all but one would
+      // get invalid_grant and corrupt the stored token. Concurrent callers share
+      // one in-flight refresh promise, cleared once it settles.
+      if (this.refreshInFlight) return this.refreshInFlight;
+      this.refreshInFlight = this.doRefresh().finally(() => { this.refreshInFlight = null; });
+      return this.refreshInFlight;
     }
     return null;
+  }
+
+  /** Perform one silent refresh of the stored tokens; returns the new header or null. */
+  private async doRefresh(): Promise<string | null> {
+    const authMeta = this.authMeta!;
+    const clientId = this.effectiveClientId!;
+    const clientSecret = this.effectiveClientSecret;
+    try {
+      const refreshed = await retryWithBackoff(
+        () => refreshToken(this.fetch, {
+          tokenEndpoint: authMeta.tokenEndpoint,
+          refreshToken: this.store.get()!.refreshToken!,
+          clientId,
+          clientSecret,
+          resource: this.resource,
+        }, this.now()),
+        { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
+      );
+      this.store.set(refreshed);
+      return this.store.authorizationHeader(this.now());
+    } catch (error) {
+      // A dead grant (invalid_grant) can never recover by retry — clear the
+      // stored tokens so the next 401 drives a full interactive re-auth.
+      if (error instanceof OAuthError && error.code === 'invalid_grant') this.store.clear();
+      return null; // fall through to a full re-auth on the next 401
+    }
   }
 
   async onUnauthorized(wwwAuthenticate: string | null): Promise<boolean> {
@@ -656,7 +731,14 @@ export class McpOAuthSession implements McpOAuthProvider {
         state,
         scope,
       });
-      const { code } = await this.opts.authorize({ authorizationUrl, redirectUri, state });
+      const authResult = await this.opts.authorize({ authorizationUrl, redirectUri, state });
+      // RFC 6749 §10.12 CSRF protection: if the consent leg echoes the callback
+      // `state`, it MUST match the one we generated. A mismatch means the redirect
+      // did not originate from our request — reject before spending the code.
+      if (authResult.state !== undefined && authResult.state !== state) {
+        throw new Error('OAuth state mismatch (possible CSRF): callback state does not match the authorization request');
+      }
+      const code = authResult.code;
       const tokens = await exchangeCode(this.fetch, {
         tokenEndpoint: this.authMeta.tokenEndpoint,
         code,
