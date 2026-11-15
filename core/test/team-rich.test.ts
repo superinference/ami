@@ -58,6 +58,32 @@ describe('team rich structure + guards', () => {
     assert.ok(r.isError && r.output.includes('at most'));
   });
 
+  it('rejects a name that does not start/end with an alphanumeric', async () => {
+    for (const bad of ['-foo', 'foo-', '_bar', 'bar_', '-', '_']) {
+      const r = await teamCreateTool.execute({ team_name: bad }, ctx());
+      assert.ok(r.isError, `expected "${bad}" to be rejected`);
+      assert.ok(r.output.includes('alphanumeric'));
+      assert.equal(getCurrentTeam(), null, `no team should be created for "${bad}"`);
+    }
+    // Interior hyphen/underscore and single-char alphanumerics stay valid.
+    const ok = await teamCreateTool.execute({ team_name: 'a-b_c1' }, ctx());
+    assert.equal(ok.isError, undefined);
+    assert.equal(getCurrentTeam()!.name, 'a-b_c1');
+  });
+
+  it('rejects an over-long description before persisting it', async () => {
+    const big = 'd'.repeat(5001);
+    const r = await teamCreateTool.execute({ team_name: 'squad', description: big }, ctx());
+    assert.ok(r.isError, 'over-long description is rejected');
+    assert.ok(r.output.includes('at most'));
+    assert.equal(getCurrentTeam(), null, 'no team created on invalid description');
+    assert.ok(!fs.existsSync(path.join(tmp, '.ami', 'teams', 'squad')), 'nothing persisted');
+    // A description at the limit is accepted and persisted.
+    const ok = await teamCreateTool.execute({ team_name: 'squad', description: 'd'.repeat(5000) }, ctx());
+    assert.equal(ok.isError, undefined);
+    assert.equal(getCurrentTeam()!.description!.length, 5000);
+  });
+
   it('refuses to delete a team with an active member, allows after it goes idle', async () => {
     await teamCreateTool.execute({ team_name: 'squad' }, ctx());
     registerTeamMember({ name: 'worker', agentId: 'agent-1' });

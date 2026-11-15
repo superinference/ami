@@ -123,11 +123,14 @@ export const todoWriteTool: ToolDefinition = {
           type: 'object',
           properties: {
             id: { type: 'string', description: 'Stable item id (optional). If omitted, an index-based id is generated so merge-by-id still works.' },
-            content: { type: 'string', description: 'Imperative description of the task.' },
+            content: { type: 'string', minLength: 1, description: 'Imperative description of the task.' },
             status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] },
-            activeForm: { type: 'string', description: 'Optional present-continuous label shown while this item is in_progress (e.g. "Running tests").' },
+            activeForm: { type: 'string', minLength: 1, description: 'Optional present-continuous label shown while this item is in_progress (e.g. "Running tests").' },
           },
           required: ['content', 'status'],
+          // Strict object: reject unknown per-item keys at the advertised-schema
+          // layer too (mirrors validateTodoInput and Claude's z.strictObject).
+          additionalProperties: false,
         },
         description: 'Array of todo items. By default REPLACES the current list.',
       },

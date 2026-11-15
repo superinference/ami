@@ -30,7 +30,33 @@ export const fsHooks = {
   readFileSync: fs.readFileSync as typeof fs.readFileSync,
   renameSync: fs.renameSync as typeof fs.renameSync,
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
+  openSync: fs.openSync as typeof fs.openSync,
+  fsyncSync: fs.fsyncSync as typeof fs.fsyncSync,
+  closeSync: fs.closeSync as typeof fs.closeSync,
 };
+
+/**
+ * Best-effort fsync of a directory so a preceding rename/create of one of its
+ * entries is durable across power loss — not merely a clean process crash. The
+ * file's own bytes are already flushed via `writeFileSync({ flush: true })`;
+ * fsyncing the *containing directory* is what makes the directory-entry update
+ * (the atomic rename) durable on POSIX. Opening a directory for fsync is not
+ * portable (Windows rejects it, and some filesystems do not support it), so
+ * every step is best-effort and must never abort the caller.
+ */
+function fsyncDirSync(dir: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fsHooks.openSync(dir, 'r');
+    fsHooks.fsyncSync(fd);
+  } catch {
+    /* platform/filesystem without directory fsync — ignore */
+  } finally {
+    if (fd !== undefined) {
+      fsHooks.closeSync(fd);
+    }
+  }
+}
 
 export interface AtomicWriteOptions {
   /** File permission bits. Default {@link OWNER_ONLY_FILE_MODE} (0o600). */
@@ -61,7 +87,9 @@ export function secureMkdirSync(dir: string, mode: number = OWNER_ONLY_DIR_MODE)
  * `flush: true` (fsync the data to disk), applies the mode, then atomically
  * renames it over the target — atomic on POSIX for same-filesystem renames, so
  * a crash / power loss / ENOSPC mid-write can never leave a truncated or
- * corrupt target. On any failure the temp file is cleaned up and a direct
+ * corrupt target. After the rename the parent directory is fsynced (best-effort)
+ * so the directory-entry update is durable across power loss too, not just a
+ * clean process crash. On any failure the temp file is cleaned up and a direct
  * (non-atomic) write is attempted as a last resort so a save is never silently
  * lost. The parent directory is created 0o700 and the file written 0o600 by
  * default (override via `opts`).
@@ -87,6 +115,8 @@ export function atomicWriteFileSync(
     } catch {
       /* best effort */
     }
+    // Make the rename (directory-entry update) durable across power loss.
+    fsyncDirSync(path.dirname(target));
   } catch {
     // Clean up the temp file, then fall back to a non-atomic write.
     try {
@@ -100,5 +130,7 @@ export function atomicWriteFileSync(
     } catch {
       /* best effort */
     }
+    // A fresh create here also adds a directory entry — make it durable too.
+    fsyncDirSync(path.dirname(target));
   }
 }

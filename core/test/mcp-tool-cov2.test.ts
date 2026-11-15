@@ -211,6 +211,54 @@ describe('processMcpContent', () => {
     ] });
     assert.equal(out!.text, 'alpha\nbeta');
   });
+
+  // --- audio content block (previously silently dropped) ---
+  it('surfaces an audio content block with its mime and size', () => {
+    const out = processMcpContent({ content: [{ type: 'audio', data: 'YWJj', mimeType: 'audio/wav' }] });
+    assert.ok(out, 'audio block should no longer be dropped');
+    assert.match(out!.text, /\[Audio: audio\/wav, \d+ bytes base64\]/);
+  });
+
+  it('defaults a missing audio mimeType to audio/mpeg', () => {
+    const out = processMcpContent({ content: [{ type: 'audio', data: 'YWJj' }] });
+    assert.match(out!.text, /audio\/mpeg/);
+  });
+
+  it('skips an audio block whose data is not a string', () => {
+    assert.equal(processMcpContent({ content: [{ type: 'audio', data: 123 }] }), null);
+  });
+
+  // --- resource_link content block (previously silently dropped) ---
+  it('renders a resource_link with name, uri and description', () => {
+    const out = processMcpContent({ content: [{
+      type: 'resource_link', uri: 'file:///doc.md', name: 'Docs', description: 'the manual',
+    }] });
+    assert.ok(out, 'resource_link should no longer be dropped');
+    assert.equal(out!.text, '[Resource link: Docs] file:///doc.md (the manual)');
+  });
+
+  it('falls back to the uri as name and omits an absent description for resource_link', () => {
+    const out = processMcpContent({ content: [{ type: 'resource_link', uri: 'res://thing' }] });
+    assert.equal(out!.text, '[Resource link: res://thing] res://thing');
+  });
+
+  // --- prioritized result shapes (toolResult / structuredContent) ---
+  it('returns the legacy toolResult string shape verbatim (before content array)', () => {
+    const out = processMcpContent({ toolResult: 'plain legacy text', content: [] });
+    assert.ok(out, 'toolResult should be surfaced, not lost to a stringify of the wrapper');
+    assert.equal(out!.text, 'plain legacy text');
+  });
+
+  it('emits structuredContent as JSON (before content array)', () => {
+    const out = processMcpContent({ structuredContent: { a: 1, b: ['x'] }, content: [] });
+    assert.ok(out, 'structuredContent should be surfaced');
+    assert.deepEqual(JSON.parse(out!.text), { a: 1, b: ['x'] });
+  });
+
+  it('still returns null for a wrapper with no renderable shape', () => {
+    assert.equal(processMcpContent({ toolResult: 42 }), null);
+    assert.equal(processMcpContent({ structuredContent: 'not-an-object', content: [] }), null);
+  });
 });
 
 // ---------------------------------------------------------------------------

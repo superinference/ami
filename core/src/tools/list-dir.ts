@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { isWithinWorkspaceRoots } from './tool-utils';
+import { isWithinWorkspaceRoots, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 
 const MAX_ENTRIES = 1000;
@@ -31,6 +31,19 @@ export const listDirTool: ToolDefinition = {
 
     if (!dirPath || dirPath.trim().length === 0) {
       return { output: 'Error: path must not be empty.', isError: true };
+    }
+
+    // Honor engine/turn cancellation BEFORE any filesystem work: a listing on a
+    // slow/network-mounted or very large directory must not keep running after the
+    // turn is aborted (mirrors grep/glob consuming context.abortSignal).
+    if (context.abortSignal?.aborted) {
+      return { output: 'Error: directory listing was cancelled.', isError: true };
+    }
+
+    // UNC-path guard: short-circuit BEFORE any realpath/stat/readdir to avoid an
+    // outbound SMB/NTLM credential leak on Windows (mirrors glob/file-read).
+    if (isUNCPath(dirPath)) {
+      return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${dirPath}`, isError: true };
     }
 
     const resolved = path.isAbsolute(dirPath)
