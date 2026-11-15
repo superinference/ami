@@ -3,6 +3,8 @@ export type { Session, SessionListEntry, TurnInterruption } from './session';
 export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall, describeProviders } from './provider';
 export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
+export { skillTool, filterToolsForSkill, resolveSkillTarget, SKILL_MAX_RESULT_CHARS } from './tools/skill';
+export type { SkillResolution } from './tools/skill';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource } from './memory';
 export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV, VALID_INSTALL_SCOPES } from './plugins';
