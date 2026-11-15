@@ -175,6 +175,40 @@ describe('planModeTool — parity enhancements', () => {
     assert.ok(dir.endsWith('plans'));
   });
 
+  it('allowedPrompts items are a strict object (additionalProperties: false)', () => {
+    const items = (planModeTool.inputSchema.properties as any).allowedPrompts.items;
+    assert.equal(items.additionalProperties, false);
+  });
+
+  it('allowedPrompts prompt field carries a description/example', () => {
+    const items = (planModeTool.inputSchema.properties as any).allowedPrompts.items;
+    assert.equal(typeof items.properties.prompt.description, 'string');
+    assert.ok(items.properties.prompt.description.length > 0);
+  });
+
+  it('verify warns when the plan exceeds the soft conciseness cap', async () => {
+    const fs = require('fs');
+    const { getPlanFilePath, PLAN_SOFT_CAP_CHARS } = require('../src/tools/plan-mode');
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    fs.writeFileSync(getPlanFilePath(), 'y'.repeat(PLAN_SOFT_CAP_CHARS + 100));
+    const result = await planModeTool.execute({ action: 'verify' }, ctx());
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('soft cap'));
+    assert.ok(result.output.includes('trim it'));
+    setPlanModeActive(false);
+  });
+
+  it('verify reports plan-has-content without warning below the soft cap', async () => {
+    const fs = require('fs');
+    const { getPlanFilePath } = require('../src/tools/plan-mode');
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    fs.writeFileSync(getPlanFilePath(), '## Short plan\n- step');
+    const result = await planModeTool.execute({ action: 'verify' }, ctx());
+    assert.ok(result.output.includes('Plan has content.'));
+    assert.ok(!result.output.includes('soft cap'));
+    setPlanModeActive(false);
+  });
+
   it('allocatePlanFile returns a plan-*.md path inside the given dir', () => {
     const os = require('os');
     const fs = require('fs');
