@@ -26,7 +26,10 @@ export function parseEnvIntInRange(
 export class SubagentLimiter {
   private running = 0;
   private totalSpawned = 0;
-  private waitQueue: Array<{ resolve: () => void }> = [];
+  // Each queued waiter carries BOTH resolve and reject so the limiter can settle
+  // it from any drain path (slot handoff, lifetime exhaustion, or reset) — a
+  // waiter must never be silently dropped, or its `await acquire()` hangs forever.
+  private waitQueue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
   readonly maxConcurrent: number;
   readonly maxDepth: number;
   readonly maxLifetime: number;
@@ -43,6 +46,20 @@ export class SubagentLimiter {
   get activeCount(): number { return this.running; }
   get queuedCount(): number { return this.waitQueue.length; }
   get lifetimeCount(): number { return this.totalSpawned; }
+
+  /**
+   * Introspection: concurrency slots not currently occupied. Never negative even
+   * if `running` were ever driven above `maxConcurrent` by a double-acquire bug.
+   */
+  get availableSlots(): number { return Math.max(0, this.maxConcurrent - this.running); }
+
+  /** Single source for the session-limit error so acquire paths never drift. */
+  private lifetimeError(): Error {
+    return new Error(
+      `Session subagent limit reached (${this.maxLifetime}). ` +
+      'Use /clear to reset or set CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION to increase.',
+    );
+  }
 
   canSpawnAtDepth(currentDepth: number): boolean {
     return currentDepth <= this.maxDepth;
@@ -63,40 +80,58 @@ export class SubagentLimiter {
 
   async acquire(): Promise<void> {
     if (this.totalSpawned >= this.maxLifetime) {
-      throw new Error(
-        `Session subagent limit reached (${this.maxLifetime}). ` +
-        'Use /clear to reset or set CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION to increase.',
-      );
+      throw this.lifetimeError();
     }
     if (this.running < this.maxConcurrent) {
       this.running++;
       this.totalSpawned++;
       return;
     }
+    // At the concurrency cap: queue the waiter. The lifetime budget is re-checked
+    // at drain time by `release()`, since `totalSpawned` can advance while waiting.
     return new Promise<void>((resolve, reject) => {
-      this.waitQueue.push({
-        resolve: () => {
-          if (this.totalSpawned >= this.maxLifetime) {
-            reject(new Error(
-              `Session subagent limit reached (${this.maxLifetime}). ` +
-              'Use /clear to reset or set CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION to increase.',
-            ));
-            return;
-          }
-          this.totalSpawned++;
-          resolve();
-        },
-      });
+      this.waitQueue.push({ resolve, reject });
     });
   }
 
+  /**
+   * FUNCTIONAL CHANGE (leak + hang fix): hand the freed concurrency slot to the
+   * next waiter that can actually run. Previously, if the next waiter failed the
+   * lifetime check at drain time, its slot was lost (`running` never decremented)
+   * AND the remaining queued waiters were never drained — they hung forever. Now
+   * a waiter that cannot run is rejected and the SAME slot is offered to the next
+   * waiter; if none can take it, the slot is correctly returned to the free pool.
+   */
   release(): void {
-    if (this.waitQueue.length > 0) {
+    while (this.waitQueue.length > 0) {
       const next = this.waitQueue.shift()!;
+      if (this.totalSpawned >= this.maxLifetime) {
+        // No queued waiter can ever succeed once lifetime is exhausted; reject and
+        // keep draining so none are left pending, then free the slot below.
+        next.reject(this.lifetimeError());
+        continue;
+      }
+      this.totalSpawned++;
       next.resolve();
-    } else {
-      this.running = Math.max(0, this.running - 1);
+      return; // slot handed off to a live waiter
     }
+    this.running = Math.max(0, this.running - 1);
+  }
+
+  /**
+   * FUNCTIONAL CHANGE (additive): non-blocking acquire. Reserves and returns true
+   * when a concurrency slot is free AND the lifetime budget has room; returns
+   * false WITHOUT queueing when at the concurrency cap or when the lifetime budget
+   * is exhausted. Lets callers surface an over-limit rejection instead of awaiting.
+   */
+  tryAcquire(): boolean {
+    if (this.totalSpawned >= this.maxLifetime) return false;
+    if (this.running < this.maxConcurrent) {
+      this.running++;
+      this.totalSpawned++;
+      return true;
+    }
+    return false;
   }
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
@@ -108,9 +143,18 @@ export class SubagentLimiter {
     }
   }
 
+  /**
+   * FUNCTIONAL CHANGE (hang fix): reject every pending queued acquisition before
+   * clearing state. Previously `reset()` truncated the queue in place, so any
+   * `await acquire()` that was waiting on a slot never settled and the caller hung
+   * forever. Rejecting makes a reset/crash observable to awaiters.
+   */
   reset(): void {
+    const pending = this.waitQueue.splice(0, this.waitQueue.length);
+    for (const w of pending) {
+      w.reject(new Error('SubagentLimiter was reset; pending subagent acquisition cancelled.'));
+    }
     this.running = 0;
     this.totalSpawned = 0;
-    this.waitQueue.length = 0;
   }
 }
