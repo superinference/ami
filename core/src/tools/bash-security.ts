@@ -57,6 +57,8 @@ const CHECK_IDS = {
   DANGLING_OPERATOR: 56,
   SELF_PROCESS_KILL: 57,
   GIT_WORKTREE_ESCAPE: 58,
+  GIT_INTERNAL_WRITE: 59,
+  POWERSHELL_EXECUTION: 60,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -490,63 +492,160 @@ function validateNewlines(command: string): SecurityCheckResult {
   return PASS;
 }
 
-function validateSedDangerous(command: string): SecurityCheckResult {
-  const trimmed = command.trim();
-  const tokens = trimmed.split(/\s+/);
-  let baseCmd = '';
-  for (const token of tokens) {
-    if (/^[A-Za-z_]\w*=/.test(token)) continue;
-    baseCmd = token;
-    break;
+/**
+ * Quote-aware splitter on unquoted shell separators (`;`, `&&`, `||`, `|`, `&`).
+ * Keeps separators that live inside single/double quotes intact (so a sed
+ * delimiter like `s|a|b|` is NOT split). Used to validate dangerous commands in
+ * EVERY pipeline stage / compound segment, not only when they are the first word.
+ */
+function splitShellSegments(command: string): string[] {
+  const segs: string[] = [];
+  let cur = '';
+  let inS = false, inD = false, esc = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (esc) { cur += c; esc = false; continue; }
+    if (c === '\\' && !inS) { cur += c; esc = true; continue; }
+    if (c === "'" && !inD) { inS = !inS; cur += c; continue; }
+    if (c === '"' && !inS) { inD = !inD; cur += c; continue; }
+    if (!inS && !inD && (c === ';' || c === '|' || c === '&')) {
+      segs.push(cur);
+      cur = '';
+      while (i + 1 < command.length && (command[i + 1] === ';' || command[i + 1] === '|' || command[i + 1] === '&')) i++;
+      continue;
+    }
+    cur += c;
   }
-  if (baseCmd !== 'sed') return PASS;
+  if (cur) segs.push(cur);
+  return segs;
+}
 
-  // Extract sed expression (everything after flags)
-  const sedArgs = trimmed.replace(/^sed\s+/, '');
+/** First non-assignment token of a segment (after safe wrappers), path-stripped. */
+function segmentBaseCommand(seg: string): string {
+  const tokens = stripSafeWrappers(seg.trim()).trim().split(/\s+/);
+  for (const t of tokens) {
+    if (!t) continue;
+    if (/^[A-Za-z_]\w*=/.test(t)) continue;
+    return t.replace(/^.*\//, '');
+  }
+  return '';
+}
+
+/**
+ * Remove well-formed sed substitution (`s<d>…<d>…<d>flags`) and transliterate
+ * (`y<d>…<d>…<d>`) commands from an expression so their internal delimiters and
+ * replacement text are not misread as addresses or bare commands when scanning
+ * for `w`/`e`/`R` commands. Delimiter-agnostic via a backreference.
+ */
+function stripSedSubCommands(expr: string): string {
+  // eslint-disable-next-line security/detect-unsafe-regex -- each alt consumes >=1 char, lazy, bounded by the \1 backreference; linear
+  const yRe = /\by([^\\\n])(?:\\.|(?!\1)[^\n])*?\1(?:\\.|(?!\1)[^\n])*?\1/;
+  // eslint-disable-next-line security/detect-unsafe-regex -- each alt consumes >=1 char, lazy, bounded by the \1 backreference; linear
+  const sRe = /\bs([^\\\n])(?:\\.|(?!\1)[^\n])*?\1(?:\\.|(?!\1)[^\n])*?\1[a-zA-Z0-9]*/;
+  let out = expr;
+  let prev = '';
+  do {
+    prev = out;
+    out = out.replace(yRe, '');
+    out = out.replace(sRe, '');
+  } while (out !== prev);
+  return out;
+}
+
+/** Extract inline sed script expressions (quoted strings + `-e=`/`--expression=`). */
+function extractSedExpressions(seg: string): string[] {
+  const exprs: string[] = [];
+  const quoted = /'([^']*)'|"([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = quoted.exec(seg)) !== null) exprs.push(m[1] ?? m[2]);
+  for (const mm of seg.matchAll(/(?:--expression=|(?:^|\s)-e=)([^\s'"]+)/g)) {
+    exprs.push(mm[1]);
+  }
+  return exprs;
+}
+
+// Address prefix that can precede a bare sed command (line number, range, `$`,
+// `/regex/`), reused by the write/execute command detectors.
+const SED_ADDR = '(?:[0-9]+(?:~[0-9]+)?(?:\\s*,\\s*(?:[0-9]+|\\$|\\/[^/\\n]*\\/))?|\\$|\\/[^/\\n]*\\/)';
+
+/** Inspect a single extracted sed expression for write/execute commands. */
+function checkSedExpression(expr: string): string | null {
+  // Delimiter-agnostic substitution exec (`s<d>…<d>…<d>…e`) — the replacement is
+  // run as a shell command. Caught BEFORE stripping substitutions.
+  // eslint-disable-next-line security/detect-unsafe-regex -- each alt consumes >=1 char, lazy, bounded by the \1 backreference; linear
+  const sExec = /\bs([^\\\n])(?:\\.|(?!\1)[^\n])*?\1(?:\\.|(?!\1)[^\n])*?\1[a-zA-Z0-9]*e/;
+  if (sExec.test(expr)) {
+    return "sed substitution with 'e' flag executes the replacement as a shell command";
+  }
+  // Delimiter-agnostic substitution write flag (`s<d>…<d>…<d>…w FILE`).
+  // eslint-disable-next-line security/detect-unsafe-regex -- each alt consumes >=1 char, lazy, bounded by the \1 backreference; linear
+  const sWrite = /\bs([^\\\n])(?:\\.|(?!\1)[^\n])*?\1(?:\\.|(?!\1)[^\n])*?\1[a-zA-Z0-9]*w\s+\S/;
+  if (sWrite.test(expr)) {
+    return "sed substitution 'w' flag writes the result to a file";
+  }
+
+  const bare = stripSedSubCommands(expr);
+
+  // 'w'/'W' write command in any address form (start, after `;`/`{`/`}`, after a
+  // line number / range / `$` / `/regex/` address).
+  const wCmd = new RegExp(`(?:^|[;{}])\\s*(?:${SED_ADDR})?\\s*!?\\s*[wW]\\s+\\S`);
+  if (wCmd.test(bare)) {
+    return "sed 'w'/'W' command writes to an arbitrary file";
+  }
+  // 'R' read command (reads an arbitrary file line-by-line).
+  const rCmd = new RegExp(`(?:^|[;{}])\\s*(?:${SED_ADDR})?\\s*!?\\s*R\\s+\\S`);
+  if (rCmd.test(bare)) {
+    return "sed 'R' command reads an arbitrary file";
+  }
+  // 'e' execute command in bare/address forms (`e cmd`, `1e`, `$e`, `/pat/e`).
+  const eCmd = new RegExp(`(?:^|[;{}])\\s*(?:${SED_ADDR})?\\s*!?\\s*e(?=\\s|;|$)`);
+  if (eCmd.test(bare)) {
+    return "sed 'e' command executes an arbitrary shell command";
+  }
+  return null;
+}
+
+/** Full dangerous-sed inspection of ONE segment whose base command is sed. */
+function checkSedSegment(seg: string): SecurityCheckResult {
+  const trimmed = seg.trim();
+  const sedArgs = trimmed.replace(/^.*?\bsed\b\s*/, '');
 
   // Block non-ASCII characters in sed expressions (potential injection)
   if (/[^\x00-\x7F]/.test(sedArgs)) {
     return fail(CHECK_IDS.SED_DANGEROUS, 'sed expression contains non-ASCII characters');
   }
 
-  // Block 'e' flag in substitutions (executes replacement as shell command)
-  if (/\be\b/.test(trimmed) && /s[\/|#@,]/.test(trimmed)) {
-    const substitutionWithExec = /s([\/|#@,])(?:[^\\]|\\.)*?\1(?:[^\\]|\\.)*?\1[^;]*e/;
-    if (substitutionWithExec.test(trimmed)) {
-      return fail(CHECK_IDS.SED_DANGEROUS, "sed substitution with 'e' flag executes the replacement as a shell command");
-    }
+  // Combined/adjacent dangerous flag forms: -ew, -eW, -ee, -we — the -e script
+  // flag fused with a write/execute command, which word-boundary checks miss.
+  if (/(?:^|\s)-[a-zA-Z]*e[wWe]/.test(trimmed) || /(?:^|\s)-[a-zA-Z]*w[eE]/.test(trimmed)) {
+    return fail(CHECK_IDS.SED_DANGEROUS, 'sed combines the -e script flag with a write/execute command');
   }
 
-  // Block 'w' command (writes to file)
-  if (/\bw\s+\S/.test(trimmed) || /['"]\s*w\s+\S/.test(trimmed)) {
-    const wCommandPattern = /(?:^|[;}\s])w\s+(\S+)/;
-    const match = trimmed.match(wCommandPattern);
-    if (match) {
-      return fail(CHECK_IDS.SED_DANGEROUS, `sed 'w' command writes to file: ${match[1]}`);
-    }
+  const expressions = extractSedExpressions(trimmed);
+  // When no quoted/`-e=` expression is present, fall back to scanning the raw
+  // args (covers unquoted scripts).
+  const toCheck = expressions.length > 0 ? expressions : [sedArgs];
+  for (const expr of toCheck) {
+    const reason = checkSedExpression(expr);
+    if (reason) return fail(CHECK_IDS.SED_DANGEROUS, reason);
   }
 
-  // Block 'R'/'W' commands (read/write arbitrary files)
-  if (/\bR\s+\S/.test(trimmed) || /\bW\s+\S/.test(trimmed)) {
-    return fail(CHECK_IDS.SED_DANGEROUS, "sed 'R' or 'W' commands can read/write arbitrary files");
-  }
-
-  // Block 'y' (transliterate) with potential follow-up commands
+  // 'y' (transliterate) with potential follow-up commands
   if (/(?:^|[;'"])y[\/|#]/.test(sedArgs)) {
     return fail(CHECK_IDS.SED_DANGEROUS, "sed 'y' (transliterate) command can be chained with dangerous operations");
   }
 
-  // Block negation operator '!' which can invert address matching
+  // Negation operator '!' which can invert address matching
   if (/!\s*[dewWrRqQ]/.test(sedArgs)) {
     return fail(CHECK_IDS.SED_DANGEROUS, "sed negation operator '!' with command can bypass address restrictions");
   }
 
-  // Block tilde addresses (GNU sed extension)
+  // Tilde addresses (GNU sed extension)
   if (/~/.test(sedArgs) && !/s[\/|#@,].*~/.test(sedArgs)) {
     return fail(CHECK_IDS.SED_DANGEROUS, "sed tilde address is a GNU extension with non-obvious semantics");
   }
 
-  // Block in-place editing of sensitive paths
+  // In-place editing of sensitive paths
   if (/(?:^|\s)-i(?:\s|$|[.'"\\])/.test(trimmed) || /--in-place/.test(trimmed)) {
     const sensitivePatterns = [
       /\/etc\//, /\/root\//, /\.ssh\//, /\.env\b/, /\.bashrc/, /\.profile/,
@@ -559,6 +658,17 @@ function validateSedDangerous(command: string): SecurityCheckResult {
     }
   }
 
+  return PASS;
+}
+
+function validateSedDangerous(command: string): SecurityCheckResult {
+  // Validate sed in EVERY segment of a compound/piped command, not only when sed
+  // is the first word (e.g. `echo hi && sed -e 'w /tmp/evil' file`).
+  for (const seg of splitShellSegments(command)) {
+    if (segmentBaseCommand(seg) !== 'sed') continue;
+    const r = checkSedSegment(seg);
+    if (!r.safe) return r;
+  }
   return PASS;
 }
 
@@ -739,13 +849,26 @@ function stripSafeHeredocSubstitutions(command: string): string | null {
   return result;
 }
 
-function validateCommandSubstitution(command: string, extracted: { fullyUnquoted: string }): SecurityCheckResult {
+function validateCommandSubstitution(
+  command: string,
+  extracted: { fullyUnquoted: string; withDoubleQuotes?: string },
+): SecurityCheckResult {
   let content = extracted.fullyUnquoted;
+  // `$(...)` command substitution EXECUTES even inside double quotes, so a
+  // substitution hidden in a double-quoted string (e.g. `echo "$(evil)"`) is just
+  // as live as unquoted — but the fully-unquoted extraction strips double-quoted
+  // content, missing it (parity bypass). We additionally scan the
+  // double-quote-retaining extraction, but ONLY for `$(` command substitution:
+  // `${VAR:-default}` parameter expansion and `$[...]` arithmetic do NOT execute
+  // commands and are ubiquitous inside double quotes, so blocking them there would
+  // be a false-positive flood.
+  let dq = extracted.withDoubleQuotes;
 
   const stripped = stripSafeHeredocSubstitutions(command);
   if (stripped !== null) {
     const reExtracted = extractQuotedContent(stripped);
     content = reExtracted.fullyUnquoted;
+    dq = reExtracted.withDoubleQuotes;
   }
 
   const patterns: [RegExp, string][] = [
@@ -754,6 +877,10 @@ function validateCommandSubstitution(command: string, extracted: { fullyUnquoted
     [/\$\[/, '$[] arithmetic expansion'],
     [/~\[/, '~[] Zsh parameter expansion'],
     [/=\(/, '=() Zsh process substitution'],
+    // Word-initial `=cmd` is the Zsh EQUALS expansion: `=curl x` expands to
+    // `/usr/bin/curl x`, letting the parser see `=curl` as the base command and
+    // bypassing any deny/allow rule keyed on `curl`.
+    [/(?:^|[\s;&|])=[a-zA-Z_]/, 'Zsh equals expansion (=cmd)'],
     [/\(e:/, '(e:...:) Zsh glob qualifier eval'],
     [/\(\+/, '(+ Zsh glob qualifier'],
     [/\}\s*always\s*\{/, '} always { Zsh always block'],
@@ -763,6 +890,11 @@ function validateCommandSubstitution(command: string, extracted: { fullyUnquoted
     if (pat.test(content)) {
       return fail(CHECK_IDS.COMMAND_SUBSTITUTION, `Blocked: ${desc} detected`);
     }
+  }
+  // Double-quoted command substitution (execution) — checked separately so only
+  // the executing `$(...)` form is caught inside double quotes.
+  if (dq !== undefined && dq !== content && /\$\(/.test(dq)) {
+    return fail(CHECK_IDS.COMMAND_SUBSTITUTION, 'Blocked: $() command substitution detected');
   }
   return PASS;
 }
@@ -903,6 +1035,26 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     const dnsExfil = detectDnsExfiltration(command);
     if (dnsExfil.blocked) {
       return fail(CHECK_IDS.DNS_EXFILTRATION, dnsExfil.reason!);
+    }
+  }
+
+  // Git-internal write / bare-repo hook injection — blocks writes into a .git/
+  // metadata dir (hooks/config/objects/refs/HEAD/index), core.hooksPath overrides,
+  // and root-level HEAD/objects/refs plants that make git run attacker hooks.
+  {
+    const gitInternal = detectGitInternalWrite(command);
+    if (gitInternal.blocked) {
+      return fail(CHECK_IDS.GIT_INTERNAL_WRITE, gitInternal.reason!);
+    }
+  }
+
+  // PowerShell encoded / download-and-execute — blocks -EncodedCommand, web-request
+  // download cradles piped to Invoke-Expression, base64 decode-to-iex, and LOLBAS
+  // download primitives (certutil -urlcache, bitsadmin /transfer, Start-BitsTransfer).
+  {
+    const pwsh = detectPowerShellExecution(command);
+    if (pwsh.blocked) {
+      return fail(CHECK_IDS.POWERSHELL_EXECUTION, pwsh.reason!);
     }
   }
 
@@ -3198,6 +3350,104 @@ export function detectGitWorktreeEscape(command: string): { blocked: boolean; re
         return { blocked: true, reason: `git -C ${target} can redirect git operations outside the worktree` };
       }
     }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Git-internal write / bare-repo hook-injection guard
+// ---------------------------------------------------------------------------
+// Writing into a repository's .git/ metadata directory (hooks, config, objects,
+// refs, HEAD, index) — or planting root-level HEAD/objects/refs so git treats
+// the cwd as a bare repo — lets a subsequent `git` invocation execute freshly
+// written hook scripts, escaping the sandbox. Also blocks core.hooksPath
+// overrides which repoint hook execution at an attacker-controlled directory.
+//
+// NOTE: this is a STATIC guard over the command string. Detecting that the cwd
+// is *already* a disguised bare repo (git's is_git_directory() heuristic / a
+// TOCTOU probe) requires filesystem access and belongs in the bash tool wiring,
+// not this pure validator — that part is intentionally out of scope here.
+
+const GIT_INTERNAL_PATH_RE =
+  /(?:^|\/)\.git\/(?:hooks|config|objects|refs|HEAD|index|info)\b/;
+// NTFS 8.3 short-name form of `.git` (GIT~1) used to bypass literal `.git` checks.
+const GIT_INTERNAL_SHORTNAME_RE =
+  /(?:^|\/)GIT~1\/(?:hooks|config|objects|refs|HEAD|index|info)\b/i;
+
+export function detectGitInternalWrite(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // 1. core.hooksPath override (git config / git -c) — repoints hook execution.
+  if (/\bgit\b/.test(stripped) && /\bcore\.hooksPath\s*[=\s]/i.test(stripped)) {
+    return { blocked: true, reason: 'git core.hooksPath override can execute arbitrary hook scripts' };
+  }
+
+  const targets = collectWriteTargets(stripped).map(t => t.replace(/\\/g, '/'));
+
+  // 2. Writes into any .git/ metadata directory.
+  for (const t of targets) {
+    if (GIT_INTERNAL_PATH_RE.test(t) || GIT_INTERNAL_SHORTNAME_RE.test(t)) {
+      return { blocked: true, reason: `write to git-internal path "${t}" can plant hooks or corrupt the repository` };
+    }
+  }
+
+  // 3. Bare-repo hook injection: writing root-level HEAD / objects/ / refs/
+  //    (unambiguous git-internal names) in a command that also runs git.
+  if (/\bgit\b/.test(stripped)) {
+    for (const t of targets) {
+      const n = t.replace(/^\.\//, '');
+      if (/^HEAD$/.test(n) || /^(?:objects|refs)\//.test(n)) {
+        return { blocked: true, reason: `write to bare-repo git-internal path "${t}" before a git invocation can execute planted hooks` };
+      }
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// PowerShell encoded / download-and-execute guard
+// ---------------------------------------------------------------------------
+// PowerShell offers several opaque execution and download primitives that evade
+// textual security checks: -EncodedCommand (base64 script), web-request download
+// cradles piped to Invoke-Expression, base64 decode-to-iex, and LOLBAS download
+// utilities (certutil -urlcache, bitsadmin /transfer, Start-BitsTransfer).
+
+const POWERSHELL_EXE_RE = /\b(?:pwsh|powershell(?:\.exe)?)\b/i;
+
+export function detectPowerShellExecution(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // 1. -EncodedCommand / -enc / -ec / -e on a PowerShell executable.
+  if (POWERSHELL_EXE_RE.test(stripped) && /\s-(?:e|ec|enc|encoded|encodedcommand)\b/i.test(stripped)) {
+    return { blocked: true, reason: 'PowerShell -EncodedCommand runs a base64-encoded script — opaque to security checks' };
+  }
+
+  const hasIex = /\b(?:iex|invoke-expression)\b/i.test(stripped);
+
+  // 2. Download cradle piped/fed to Invoke-Expression.
+  const hasDownloadCmdlet =
+    /\b(?:iwr|irm|invoke-webrequest|invoke-restmethod)\b/i.test(stripped) ||
+    /\.downloadstring\s*\(|\.downloadfile\s*\(/i.test(stripped);
+  if (hasDownloadCmdlet && hasIex) {
+    return { blocked: true, reason: 'PowerShell download-and-execute cradle (web request piped to Invoke-Expression)' };
+  }
+
+  // 3. Base64 decode executed via Invoke-Expression.
+  if (hasIex && /\[convert\]::frombase64string/i.test(stripped)) {
+    return { blocked: true, reason: 'PowerShell decodes base64 and executes it via Invoke-Expression' };
+  }
+
+  // 4. LOLBAS download primitives.
+  if (/\bcertutil\b/i.test(stripped) && /-urlcache\b/i.test(stripped)) {
+    return { blocked: true, reason: 'certutil -urlcache is a LOLBAS download primitive — can fetch remote payloads' };
+  }
+  if (/\bbitsadmin\b/i.test(stripped) && /\/transfer\b/i.test(stripped)) {
+    return { blocked: true, reason: 'bitsadmin /transfer is a LOLBAS download primitive — can fetch remote payloads' };
+  }
+  if (/\bstart-bitstransfer\b/i.test(stripped)) {
+    return { blocked: true, reason: 'Start-BitsTransfer can download remote payloads' };
   }
 
   return { blocked: false };
