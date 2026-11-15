@@ -821,6 +821,20 @@ export interface EngineConfig {
    * and live config reloads). Managed-tier only; see {@link ProjectConfig}.
    */
   disableBypassPermissionsMode?: boolean;
+  /**
+   * Managed hook kill-switch mirrored from the merged config's `disableAllHooks`.
+   * When true the engine calls `HookManager.setDisableAllHooks(true, true)` before
+   * loading hooks, so ZERO hooks register/run for the whole session. Managed-tier
+   * only; see {@link ProjectConfig}. Parity: Claude Code's `disableAllHooks`.
+   */
+  disableAllHooks?: boolean;
+  /**
+   * Managed hook lockdown mirrored from the merged config's `allowManagedHooksOnly`.
+   * When true the engine calls `HookManager.setAllowManagedHooksOnly(true)` so only
+   * admin/managed-sourced hooks load (user/project/plugin hooks blocked). Managed-tier
+   * only; see {@link ProjectConfig}. Parity: Claude Code's `allowManagedHooksOnly`.
+   */
+  allowManagedHooksOnly?: boolean;
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Extra absolute paths/dirs the user has granted read access to OUTSIDE the launch

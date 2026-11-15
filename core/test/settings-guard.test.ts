@@ -12,6 +12,8 @@ import {
   hasDangerousSettingsChanged,
   formatDangerousSettingsList,
   isBypassPermissionsModeDisabled,
+  isAllHooksDisabled,
+  isManagedHooksOnly,
 } from '../src/settings-guard';
 
 describe('MANAGED_ONLY_KEYS', () => {
@@ -305,6 +307,29 @@ describe('isBypassPermissionsModeDisabled', () => {
     assert.equal(isBypassPermissionsModeDisabled({}), false);
     assert.equal(isBypassPermissionsModeDisabled(null), false);
     assert.equal(isBypassPermissionsModeDisabled(undefined), false);
+  });
+});
+
+describe('isAllHooksDisabled / isManagedHooksOnly (managed hook kill-switches)', () => {
+  it('both keys are MANAGED_ONLY', () => {
+    assert.equal(MANAGED_ONLY_KEYS.has('disableAllHooks'), true);
+    assert.equal(MANAGED_ONLY_KEYS.has('allowManagedHooksOnly'), true);
+  });
+  it('isAllHooksDisabled is true only for a literal true flag', () => {
+    assert.equal(isAllHooksDisabled({ disableAllHooks: true }), true);
+    assert.equal(isAllHooksDisabled({ disableAllHooks: false }), false);
+    assert.equal(isAllHooksDisabled({ disableAllHooks: 'yes' }), false);
+    assert.equal(isAllHooksDisabled({}), false);
+    assert.equal(isAllHooksDisabled(null), false);
+    assert.equal(isAllHooksDisabled(undefined), false);
+  });
+  it('isManagedHooksOnly is true only for a literal true flag', () => {
+    assert.equal(isManagedHooksOnly({ allowManagedHooksOnly: true }), true);
+    assert.equal(isManagedHooksOnly({ allowManagedHooksOnly: false }), false);
+    assert.equal(isManagedHooksOnly({ allowManagedHooksOnly: 1 }), false);
+    assert.equal(isManagedHooksOnly({}), false);
+    assert.equal(isManagedHooksOnly(null), false);
+    assert.equal(isManagedHooksOnly(undefined), false);
   });
 });
 

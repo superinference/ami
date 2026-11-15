@@ -167,7 +167,7 @@ export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, suggestedW
 export type { RateLimitInfo } from './rate-limit-parser';
 export { canOverride, getEffectiveTier, filterManagedKeys, SettingsGuard, SETTINGS_TIERS } from './settings-guard';
 export type { SettingsTier, SettingsSource } from './settings-guard';
-export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS, isBypassPermissionsModeDisabled } from './settings-guard';
+export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS, isBypassPermissionsModeDisabled, isAllHooksDisabled, isManagedHooksOnly } from './settings-guard';
 export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged, formatDangerousSettingsList } from './settings-guard';
 export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';

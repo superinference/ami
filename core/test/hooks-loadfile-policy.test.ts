@@ -134,6 +134,51 @@ describe('HookManager — loadFromFile policies', () => {
     assert.equal(sum.preToolUse, 0, 'project hook is dropped under managed-only');
   });
 
+  it('disableAllHooks (managed) registers ZERO hooks across every source', () => {
+    // Project, user-.claude, and managed sources all define hooks.
+    const managed = path.join(home, 'managed.json');
+    fs.writeFileSync(managed, JSON.stringify({ hooks: [{ event: 'notification', hook: { type: 'command', command: 'echo managed' } }] }));
+    process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH = managed;
+    writeAmi({ hooks: [{ event: 'preToolUse', hook: { type: 'command', command: 'echo project' } }] });
+    writeClaude({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo claude' }] }] } });
+
+    // Managed kill-switch set → loadFromFile must short-circuit before registering
+    // anything, INCLUDING the managed hook. (RED: reverting the loadFromFile
+    // disableAllHooks gate makes these counts non-zero.)
+    hm.setDisableAllHooks(true, true);
+    assert.equal(hm.isAllHooksDisabled(), true);
+    hm.loadFromFile(tmp);
+    const sum = hm.getSummary();
+    const total = Object.values(sum).reduce((a, b) => a + b, 0);
+    assert.equal(total, 0, 'disableAllHooks skips EVERY hook, including managed');
+
+    // Control: a fresh manager WITHOUT the kill-switch loads them, proving the
+    // sources are valid and it is the gate (not empty input) that zeroes the count.
+    const hm2 = new HookManager();
+    hm2.setWorkspaceTrusted(true);
+    hm2.setCwd(tmp);
+    hm2.loadFromFile(tmp);
+    const total2 = Object.values(hm2.getSummary()).reduce((a, b) => a + b, 0);
+    assert.ok(total2 >= 3, 'without the kill-switch the same sources register hooks');
+  });
+
+  it('a NON-managed disableAllHooks collapses to managed-only (managed hooks still run)', () => {
+    const managed = path.join(home, 'managed.json');
+    fs.writeFileSync(managed, JSON.stringify({ hooks: [{ event: 'notification', hook: { type: 'command', command: 'echo managed' } }] }));
+    process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH = managed;
+    writeAmi({ hooks: [{ event: 'preToolUse', hook: { type: 'command', command: 'echo project' } }] });
+
+    // A lower-privilege (non-managed) disableAllHooks cannot disable managed hooks —
+    // it only suppresses non-managed ones (Claude Code's managed > non-managed rule).
+    hm.setDisableAllHooks(true, false);
+    assert.equal(hm.isAllHooksDisabled(), false, 'non-managed disable does NOT set the global kill-switch');
+    assert.equal(hm.isAllowManagedHooksOnly(), true, 'it collapses to allowManagedHooksOnly');
+    hm.loadFromFile(tmp);
+    const sum = hm.getSummary();
+    assert.equal(sum.notification, 1, 'managed hook still runs');
+    assert.equal(sum.preToolUse, 0, 'non-managed (project) hook is suppressed');
+  });
+
   it('without managed-only, both managed and project hooks load', () => {
     const managed = path.join(home, 'managed.json');
     fs.writeFileSync(managed, JSON.stringify({ hooks: [{ event: 'notification', hook: { type: 'command', command: 'echo managed' } }] }));

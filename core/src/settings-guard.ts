@@ -138,6 +138,8 @@ export const MANAGED_ONLY_KEYS = new Set([
   'processWrapper',
   'allowModsToOverrideDenyRules',
   'disableBypassPermissionsMode',
+  'disableAllHooks',
+  'allowManagedHooksOnly',
 ]);
 
 /**
@@ -152,6 +154,34 @@ export function isBypassPermissionsModeDisabled(
   config: { disableBypassPermissionsMode?: unknown } | null | undefined,
 ): boolean {
   return config?.disableBypassPermissionsMode === true;
+}
+
+/**
+ * True when a merged config disables ALL hook execution via the managed
+ * `disableAllHooks` kill-switch (every event — preToolUse/postToolUse/
+ * sessionStart/… including status-line/file-suggestion hooks). The flag is a
+ * {@link MANAGED_ONLY_KEYS} entry, so a truthy value in a merged config provably
+ * originated from the managed tier (`mergeConfigs` copies it ONLY from managed) —
+ * a project/local/env/cli file can never set it. Parity: Claude Code's
+ * `disableAllHooks` policy setting.
+ */
+export function isAllHooksDisabled(
+  config: { disableAllHooks?: unknown } | null | undefined,
+): boolean {
+  return config?.disableAllHooks === true;
+}
+
+/**
+ * True when a merged config restricts hook execution to admin/managed-sourced
+ * hooks only via the managed `allowManagedHooksOnly` policy (user/project/plugin
+ * hooks blocked). A {@link MANAGED_ONLY_KEYS} entry, so by the time a config is
+ * merged a truthy value here provably came from the managed tier. Parity: Claude
+ * Code's `allowManagedHooksOnly` policy setting.
+ */
+export function isManagedHooksOnly(
+  config: { allowManagedHooksOnly?: unknown } | null | undefined,
+): boolean {
+  return config?.allowManagedHooksOnly === true;
 }
 
 export const TIER_LOCKED_KEYS = new Set([
