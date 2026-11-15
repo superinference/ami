@@ -114,14 +114,21 @@ export function mapLspSeverity(severity: number | undefined): DiagnosticSeverity
  * Convert a `textDocument/publishDiagnostics` payload into normalized
  * Diagnostics. `code` is coerced to a string (null/undefined → undefined),
  * matching Claude's `String(code)` coercion.
+ *
+ * FUNCTIONAL (robustness): a malformed/malicious server may publish a diagnostic
+ * with a missing or partial `range` (the LSP spec requires it, but we never trust
+ * untrusted wire data). Reading `d.range.start.line` on such a payload threw and
+ * aborted the WHOLE conversion, dropping every other diagnostic for the file.
+ * Missing range members now default to a zero position so one bad diagnostic can
+ * no longer poison the batch.
  */
 export function convertPublishDiagnostics(params: PublishDiagnosticsParams): Diagnostic[] {
   return (params.diagnostics ?? []).map((d) => ({
     message: d.message,
     severity: mapLspSeverity(d.severity),
     range: {
-      start: { line: d.range.start.line, character: d.range.start.character },
-      end: { line: d.range.end.line, character: d.range.end.character },
+      start: { line: d.range?.start?.line ?? 0, character: d.range?.start?.character ?? 0 },
+      end: { line: d.range?.end?.line ?? 0, character: d.range?.end?.character ?? 0 },
     },
     source: d.source,
     code: d.code !== undefined && d.code !== null ? String(d.code) : undefined,
@@ -167,6 +174,24 @@ export function areDiagnosticsEqual(a: Diagnostic, b: Diagnostic): boolean {
     a.range.end.line === b.range.end.line &&
     a.range.end.character === b.range.end.character
   );
+}
+
+/**
+ * FUNCTIONAL (dedup): collapse structurally-identical diagnostics, preserving
+ * first-seen order. A language server can legitimately publish the same
+ * diagnostic twice (e.g. a rule reported by two overlapping passes, or a
+ * retransmitted `publishDiagnostics`), which would otherwise surface as
+ * duplicate "new" entries and inflate the delta count. Equality is the full
+ * structural key (range + message + severity + source + code) via
+ * `areDiagnosticsEqual`, matching the dedup Claude's registry applies before
+ * presenting diagnostics. Input is not mutated.
+ */
+export function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  for (const d of diagnostics) {
+    if (!out.some((seen) => areDiagnosticsEqual(seen, d))) out.push(d);
+  }
+  return out;
 }
 
 /**
@@ -240,9 +265,23 @@ export class DiagnosticTracker {
       } catch {
         continue;
       }
+      // FUNCTIONAL (path-mismatch guard): `beforeFileEdited` already refuses to
+      // baseline a wrong-file response; the post-edit path must be just as
+      // defensive. If the source returns diagnostics for a DIFFERENT file than
+      // the one requested, do NOT compute a delta against this key's baseline
+      // (every foreign diagnostic would look "new") and do NOT roll that foreign
+      // set forward (which would poison the baseline for all later edits). Skip
+      // it and leave the baseline untouched.
+      if (file && !diagnosticPathsEqual(key, file.uri)) {
+        continue;
+      }
       const current = file ? file.diagnostics : [];
       const base = this.baseline.get(key) ?? [];
-      const fresh = current.filter((d) => !base.some((b) => areDiagnosticsEqual(d, b)));
+      // FUNCTIONAL (dedup): a server may publish the same diagnostic twice; dedup
+      // the fresh set so the delta count reflects distinct new problems.
+      const fresh = dedupeDiagnostics(
+        current.filter((d) => !base.some((b) => areDiagnosticsEqual(d, b))),
+      );
       if (fresh.length > 0) {
         out.push({ uri: file ? file.uri : `file://${key}`, diagnostics: fresh });
       }
@@ -278,7 +317,11 @@ export function diagnosticSeveritySymbol(severity: DiagnosticSeverityName): stri
 export function formatNewDiagnosticsSummary(files: DiagnosticFile[]): string {
   const totalIssues = files.reduce((sum, f) => sum + f.diagnostics.length, 0);
   if (totalIssues === 0) return '';
-  const fileCount = files.length;
+  // FUNCTIONAL: count only files that actually carry a diagnostic. A file entry
+  // with an empty `diagnostics` array (e.g. a cleared file left in the list)
+  // contributes zero issues, so including it in the file count produced wrong
+  // wording like "Found 1 new diagnostic issue in 2 files".
+  const fileCount = files.filter((f) => f.diagnostics.length > 0).length;
   const issueWord = totalIssues === 1 ? 'issue' : 'issues';
   const fileWord = fileCount === 1 ? 'file' : 'files';
   return `Found ${totalIssues} new diagnostic ${issueWord} in ${fileCount} ${fileWord}`;

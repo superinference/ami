@@ -17,6 +17,7 @@ export {
   mapLspSeverity,
   convertPublishDiagnostics,
   areDiagnosticsEqual,
+  dedupeDiagnostics,
   normalizeDiagnosticPath,
   diagnosticPathsEqual,
   uriToPath,
