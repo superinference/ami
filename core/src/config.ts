@@ -267,12 +267,14 @@ function describeJsonType(value: unknown): string {
 /** A problem found while loading a config file (distinct from "file absent"). */
 export interface ConfigDiagnostic {
   path: string;
-  kind: 'parse-error' | 'not-object' | 'invalid-value';
+  kind: 'parse-error' | 'not-object' | 'invalid-value' | 'unknown-key';
   message: string;
   /** Where the corrupt file was backed up, or the most recent known-good backup. */
   backupPath?: string;
   /** For `invalid-value`: the per-field issues (grouped by this file). */
   issues?: ConfigValueIssue[];
+  /** For `unknown-key`: the unrecognized top-level keys (likely typos). */
+  unknownKeys?: string[];
 }
 
 /** The ProjectConfig enum fields and their allowed values. */
@@ -311,6 +313,29 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['enabledPlugins', 'object'], ['env', 'object'],
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
 ];
+
+/**
+ * The complete set of recognized top-level `ProjectConfig` keys, derived from the two
+ * validation tables above (their union is exactly the `ProjectConfig` interface, so this
+ * self-updates whenever a new field is added for validation — no hand-maintained list to
+ * drift). Used by {@link findUnknownConfigKeys} to surface typos. Parity: Claude Code
+ * warns on unrecognized settings keys rather than silently ignoring them.
+ */
+export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
+  ...PROJECT_CONFIG_FIELD_TYPES.map(([k]) => k as string),
+  ...PROJECT_CONFIG_ENUMS.map(([k]) => k as string),
+]);
+
+/**
+ * Return the top-level keys of `config` that are NOT recognized {@link KNOWN_CONFIG_KEYS}.
+ * A non-empty result signals a likely typo (e.g. `"modle"` for `"model"`) or a stale key;
+ * the loader surfaces these as an advisory `unknown-key` diagnostic (the config still
+ * loads — unknown keys are ignored, never fatal). Parity: Claude Code surfaces
+ * unrecognized settings so misspellings don't silently take no effect.
+ */
+export function findUnknownConfigKeys(config: ProjectConfig): string[] {
+  return Object.keys(config).filter(k => !KNOWN_CONFIG_KEYS.has(k));
+}
 
 /**
  * True when `value` matches the expected {@link ConfigFieldType}. Numbers must be
@@ -367,6 +392,19 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     if (config[field] === undefined || typeInvalid.has(field)) continue;
     const r = validateEngineConfig({ [field]: config[field] } as Partial<EngineConfig>);
     if (!r.valid) issues.push({ field, message: r.warnings.join('; '), value: config[field] });
+  }
+  // 4. Nested `superinference` flags must be booleans when present. Step 1 only guards
+  //    that `superinference` is an object; a non-boolean nested flag (e.g.
+  //    `{ enforcing: "true" }`) would otherwise flow TRUTHILY into the reflection gate
+  //    and silently force-enable it. Skip when the outer object type was already flagged.
+  //    Parity: Claude validates nested settings-schema value types, not just the top level.
+  if (config.superinference !== undefined && !typeInvalid.has('superinference')) {
+    const si = config.superinference as Record<string, unknown>;
+    for (const flag of ['enforcing', 'useLLMCritic'] as const) {
+      if (si[flag] !== undefined && typeof si[flag] !== 'boolean') {
+        issues.push({ field: `superinference.${flag}`, message: `must be a boolean (got ${describeJsonType(si[flag])})`, value: si[flag] });
+      }
+    }
   }
   return issues;
 }
@@ -443,6 +481,17 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     const message = `${issues.length} invalid config value(s): ${issues.map(i => `${i.field}: ${i.message}`).join('; ')}`;
     coreLog('config', `invalid value(s) in ${configPath}: ${message}`);
     return { config, diagnostic: { path: configPath, kind: 'invalid-value', message, issues } };
+  }
+  // The file is a valid JSON object with valid values, but may still carry
+  // unrecognized top-level keys (a typo like "modle", or a stale key). Surface those
+  // as an advisory `unknown-key` diagnostic so misspellings don't silently take no
+  // effect — the config still loads (unknown keys are ignored, never fatal). Parity:
+  // Claude Code warns on unrecognized settings keys.
+  const unknownKeys = findUnknownConfigKeys(config);
+  if (unknownKeys.length > 0) {
+    const message = `${unknownKeys.length} unknown config key(s): ${unknownKeys.join(', ')}`;
+    coreLog('config', `unknown key(s) in ${configPath}: ${message}`);
+    return { config, diagnostic: { path: configPath, kind: 'unknown-key', message, unknownKeys } };
   }
   coreLog('config', `loaded ${configPath}`);
   return { config };
