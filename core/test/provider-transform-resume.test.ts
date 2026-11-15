@@ -33,6 +33,32 @@ describe('healOrphanedToolCalls — resume-safe leading orphan', () => {
     assert.ok(!healed.some(m => (m as { content?: unknown }).content === ORPHAN_PLACEHOLDER));
   });
 
+  it('substitutes a placeholder when every surviving message was an orphaned tool_result (empty payload)', () => {
+    // After aggressive compaction the only surviving messages can be orphaned
+    // tool_results. Dropping them all would leave an empty payload, which the
+    // Anthropic API rejects ("at least one message is required"). The repair must
+    // emit a single placeholder user turn so the request is still valid.
+    const messages: Message[] = [
+      { role: 'tool', tool_call_id: 'gone-a', content: 'orphan a' },
+      { role: 'tool', tool_call_id: 'gone-b', content: 'orphan b' },
+    ];
+    const healed = healOrphanedToolCalls(messages);
+    assert.equal(healed.length, 1, 'payload must not be empty');
+    assert.equal(healed[0].role, 'user');
+    assert.equal((healed[0] as { content: string }).content, ORPHAN_PLACEHOLDER);
+    assert.ok(!healed.some(m => m.role === 'tool'), 'no orphaned tool_result survives');
+  });
+
+  it('substitutes a placeholder for a single leading orphaned tool_result with no following turns', () => {
+    const messages: Message[] = [
+      { role: 'tool', tool_call_id: 'gone', content: 'lone orphan' },
+    ];
+    const healed = healOrphanedToolCalls(messages);
+    assert.equal(healed.length, 1);
+    assert.equal(healed[0].role, 'user');
+    assert.equal((healed[0] as { content: string }).content, ORPHAN_PLACEHOLDER);
+  });
+
   it('leaves a well-formed transcript untouched', () => {
     const messages: Message[] = [
       { role: 'user', content: 'go' },

@@ -63,6 +63,41 @@ describe('askUserQuestionTool – definition', () => {
     assert.equal(q.items.properties.header.maxLength, 12);
   });
 
+  it('rejects unknown keys via strict objects (input, question, and option schemas)', () => {
+    const schema = askUserQuestionTool.inputSchema as any;
+    // Top-level input object is strict (z.strictObject parity).
+    assert.equal(schema.additionalProperties, false);
+    // Each question object is strict.
+    assert.equal(schema.properties.questions.items.additionalProperties, false);
+    // Each option object (multi-question form) is strict.
+    assert.equal(
+      schema.properties.questions.items.properties.options.items.additionalProperties,
+      false,
+    );
+    // The single-question shorthand option object is strict too.
+    assert.equal(schema.properties.options.items.additionalProperties, false);
+  });
+
+  it('strict objects still declare every supported key so valid calls pass', () => {
+    const schema = askUserQuestionTool.inputSchema as any;
+    // Sanity: the top-level strictness must not exclude the keys the engine reads.
+    for (const key of [
+      'questions',
+      'question',
+      'options',
+      'answers',
+      'annotations',
+      'metadata',
+      'allowFreeText',
+    ]) {
+      assert.ok(key in schema.properties, `top-level key "${key}" is declared`);
+    }
+    const optProps = schema.properties.questions.items.properties.options.items.properties;
+    for (const key of ['key', 'label', 'description', 'preview']) {
+      assert.ok(key in optProps, `option key "${key}" is declared`);
+    }
+  });
+
   it('options carry a stable machine key distinct from the label', () => {
     const q = askUserQuestionTool.inputSchema.properties.questions as any;
     assert.ok(q.items.properties.options.items.properties.key);

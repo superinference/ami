@@ -372,6 +372,28 @@ export const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // CC default when a hook sets no
 export const DEFAULT_HTTP_HOOK_TIMEOUT_MS = 10 * 60 * 1000;
 export const MAX_HOOKS_PER_EVENT = 10;
 
+/** Default execution budget for SessionEnd hooks (Claude Code's
+ *  SESSION_END_HOOK_TIMEOUT_MS_DEFAULT). SessionEnd hooks run during
+ *  shutdown/clear and must NOT block teardown, so they get a deliberately tight
+ *  default — far below DEFAULT_HOOK_TIMEOUT_MS (60s) — overridable via the
+ *  CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS env var. A slow or hanging teardown
+ *  hook would otherwise stall process exit for up to a minute. */
+export const DEFAULT_SESSIONEND_HOOK_TIMEOUT_MS = 1_500;
+
+/** Resolve the SessionEnd hook execution budget (ms): honor the
+ *  CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS env override when it is a positive
+ *  integer, else fall back to DEFAULT_SESSIONEND_HOOK_TIMEOUT_MS. The result is
+ *  clamped to [100ms, MAX_HOOK_TIMEOUT_MS] so a hostile/typo value can neither
+ *  make the budget unusably small nor exceed the global hook ceiling. */
+export function getSessionEndHookTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS;
+  const parsed = raw !== undefined ? Number.parseInt(raw, 10) : NaN;
+  const ms = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SESSIONEND_HOOK_TIMEOUT_MS;
+  return Math.max(100, Math.min(ms, MAX_HOOK_TIMEOUT_MS));
+}
+
 /** Hard turn-count cap on an agent (multi-turn LLM) hook, independent of the
  *  timeout, so a verification agent cannot loop indefinitely even within budget
  *  (Claude Code's MAX_AGENT_TURNS). Passed to the hook sub-engine. */
@@ -1659,7 +1681,10 @@ export class HookManager extends EventEmitter {
           const fn: SessionHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('sessionEnd', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'sessionEnd', sessionId: ctx.sessionId, reason: ctx.reason });
-            const runner = () => this.runHookByType(hookConfig, cwd, eventData);
+            // SessionEnd runs during shutdown: kill a slow command hook at the
+            // same tight budget that bounds the overall executeSessionEnd run,
+            // so a lingering child process cannot outlive teardown.
+            const runner = () => this.runHookByType(hookConfig, cwd, eventData, AbortSignal.timeout(getSessionEndHookTimeoutMs()));
             if (hookConfig.async) { this.fireAsyncHook(hookConfig, cwd, eventData); return; }
             await runner();
             if (hookConfig.once) this.removeHookOnce(this.sessionEndHooks, fn);
@@ -2156,8 +2181,23 @@ export class HookManager extends EventEmitter {
 
   async executeSessionEnd(ctx: SessionContext): Promise<void> {
     return this.withConcurrencyGate('sessionEnd', async () => {
-      for (const hook of this.sessionEndHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      // SessionEnd hooks run during shutdown/clear; bound the WHOLE run with a
+      // tight budget (getSessionEndHookTimeoutMs) so a slow or hanging teardown
+      // hook — command OR in-process callback — cannot block process exit. On
+      // budget exhaustion we LOG and return (teardown proceeds) rather than
+      // reject, matching Claude Code's "don't block shutdown" contract. Command
+      // hooks additionally receive an AbortSignal at the same budget (see the
+      // sessionEnd registration) so their child processes are actually killed.
+      const budgetMs = getSessionEndHookTimeoutMs();
+      const run = (async () => {
+        for (const hook of this.sessionEndHooks) {
+          try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        }
+      })();
+      try {
+        await runWithTimeout(run, budgetMs, 'sessionEnd hooks');
+      } catch (err) {
+        coreLog('hooks', 'SessionEnd hooks exceeded budget', { budgetMs, error: String(err) });
       }
     });
   }

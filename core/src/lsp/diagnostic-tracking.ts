@@ -314,11 +314,24 @@ export function capDiagnosticVolume(files: DiagnosticFile[]): DiagnosticFile[] {
   return out;
 }
 
+/**
+ * File-header path for a diagnostics block. A missing/empty URI (a malformed
+ * `publishDiagnostics` payload or a synthetic file with no uri) becomes
+ * `<unknown location>` rather than throwing inside `uriToPath` — otherwise one
+ * bad file would abort rendering and the tool's outer catch would drop EVERY
+ * file's diagnostics. Mirrors the defensive `<unknown location>` guard used for
+ * the other LSP tool outputs (tools/lsp.ts formatUri).
+ */
+export function diagnosticHeaderPath(uri: string | undefined): string {
+  if (!uri) return '<unknown location>';
+  return uriToPath(uri);
+}
+
 /** Detailed, severity-annotated rendering of diagnostic files for tool output. */
 export function formatDiagnosticsDetail(files: DiagnosticFile[]): string {
   const rendered = files
     .map((file) => {
-      const name = uriToPath(file.uri);
+      const name = diagnosticHeaderPath(file.uri);
       const lines = file.diagnostics
         .map((d) => {
           const sym = diagnosticSeveritySymbol(d.severity);

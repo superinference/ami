@@ -513,10 +513,21 @@ describe('fileReadTool – text reads', () => {
     assert.ok(res.output.includes('row6'));
   });
 
-  it('returns "(empty file)" for a range read that yields nothing', async () => {
+  it('reports offset-past-end (not "(empty file)") for a non-empty file whose range yields nothing', async () => {
     const fp = path.join(tmpDir, 'range-empty.txt');
     fs.writeFileSync(fp, 'only\n');
     const res = await fileReadTool.execute({ file_path: fp, offset: 100, limit: 10 }, ctx());
+    // The file is NOT empty — the offset overshot. The message must say so and
+    // report the real line count so the model can retry with a valid offset.
+    assert.ok(res.output.includes('shorter than the provided offset (100)'));
+    assert.ok(res.output.includes('1 lines'));
+    assert.ok(!res.output.includes('(empty file)'));
+  });
+
+  it('still returns "(empty file)" for a range read of a truly empty file', async () => {
+    const fp = path.join(tmpDir, 'range-truly-empty.txt');
+    fs.writeFileSync(fp, '');
+    const res = await fileReadTool.execute({ file_path: fp, offset: 0, limit: 10 }, ctx());
     assert.equal(res.output, '(empty file)');
   });
 

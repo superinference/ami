@@ -372,3 +372,66 @@ describe('globTool – glob implementation throws', () => {
     assert.ok(result.output.includes('plain-string-failure'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cancellation / abort support (gap: Cancellation / abort support in glob)
+//
+// The in-process tinyglobby walk must honor the turn's AbortSignal: the signal
+// is forwarded into the crawl so a cancelled turn stops it immediately, and —
+// because tinyglobby RESOLVES to [] (it does not throw) when aborted mid-walk —
+// an explicit post-walk aborted check surfaces the cancellation instead of
+// masquerading as a definitive "No files found".
+// ---------------------------------------------------------------------------
+describe('globTool – cancellation / abort', () => {
+  const realGlob = globHooks.glob;
+  const realRg = globHooks.rgFiles;
+  afterEach(() => {
+    globHooks.glob = realGlob;
+    globHooks.rgFiles = realRg;
+    delete process.env.AMI_GLOB_RG;
+  });
+
+  it('forwards context.abortSignal into the tinyglobby walk', async () => {
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined = undefined;
+    globHooks.glob = ((_pattern: string, opts: { signal?: AbortSignal }) => {
+      seenSignal = opts.signal;
+      return Promise.resolve(['a.ts']);
+    }) as typeof realGlob;
+    await globTool.execute({ pattern: '*.ts' }, ctx({ abortSignal: controller.signal }));
+    // Reverting the signal-threading fix leaves this undefined.
+    assert.strictEqual(seenSignal, controller.signal);
+  });
+
+  it('reports cancellation (not "No files found") when the walk aborts mid-crawl', async () => {
+    const controller = new AbortController();
+    // Mimic tinyglobby: when handed an (aborted) signal it resolves to [].
+    // Only abort+empty if the signal was actually forwarded, so reverting EITHER
+    // the threading or the post-walk check breaks this reproducer.
+    globHooks.glob = ((_pattern: string, opts: { signal?: AbortSignal }) => {
+      if (opts.signal) {
+        controller.abort();
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(['a.ts']);
+    }) as typeof realGlob;
+    const result = await globTool.execute({ pattern: '*.ts' }, ctx({ abortSignal: controller.signal }));
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('cancelled'), `expected cancellation, got: ${result.output}`);
+  });
+
+  it('reports cancellation when the rg route is aborted and falls back to an empty walk', async () => {
+    process.env.AMI_GLOB_RG = '1';
+    const controller = new AbortController();
+    // rg route: an aborted child yields a null result → fall back to tinyglobby,
+    // which (aborted) resolves to []. The post-walk check must still flag it.
+    globHooks.rgFiles = (async (_p: string, _c: string, _i: string[], signal?: AbortSignal) => {
+      if (signal) controller.abort();
+      return null;
+    }) as typeof realRg;
+    globHooks.glob = (async () => []) as typeof realGlob;
+    const result = await globTool.execute({ pattern: '*.ts' }, ctx({ abortSignal: controller.signal }));
+    assert.equal(result.isError, true);
+    assert.ok(result.output.includes('cancelled'), `expected cancellation, got: ${result.output}`);
+  });
+});

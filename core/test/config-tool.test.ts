@@ -304,4 +304,43 @@ describe('configTool', () => {
       assert.equal(cfg.model, 'gpt-4o');
     });
   });
+
+  describe('BOM-prefixed config read', () => {
+    // A config.json written by PowerShell 5.x (or some editors) carries a leading
+    // UTF-8 BOM. Without stripping it, JSON.parse throws and the otherwise-valid
+    // file is misreported as corrupt. The read path must tolerate the BOM.
+    const writeBomConfig = (cwd: string, obj: Record<string, unknown>) => {
+      const dir = path.join(cwd, '.ami');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'config.json'), '﻿' + JSON.stringify(obj, null, 2), 'utf-8');
+    };
+
+    it('reads a BOM-prefixed config without reporting it corrupt (get key)', async () => {
+      const c = freshCtx();
+      writeBomConfig(c.cwd, { model: 'gpt-4o' });
+      const result = await configTool.execute!({ action: 'get', key: 'model' }, c);
+      assert.notEqual(result.isError, true);
+      assert.ok(result.output.includes('gpt-4o'));
+      assert.equal(result.metadata?.value, 'gpt-4o');
+    });
+
+    it('reads a BOM-prefixed config for a full get', async () => {
+      const c = freshCtx();
+      writeBomConfig(c.cwd, { model: 'gpt-4o', safeMode: true });
+      const result = await configTool.execute!({ action: 'get' }, c);
+      assert.notEqual(result.isError, true);
+      assert.ok(result.output.includes('gpt-4o'));
+    });
+
+    it('sets into a BOM-prefixed config without clobbering it as corrupt', async () => {
+      const c = freshCtx();
+      writeBomConfig(c.cwd, { model: 'gpt-4o' });
+      const result = await configTool.execute!({ action: 'set', key: 'provider', value: 'openai' }, c);
+      assert.notEqual(result.isError, true);
+      const cfg = JSON.parse(fs.readFileSync(path.join(c.cwd, '.ami', 'config.json'), 'utf-8'));
+      // Pre-existing key preserved, new key written.
+      assert.equal(cfg.model, 'gpt-4o');
+      assert.equal(cfg.provider, 'openai');
+    });
+  });
 });
