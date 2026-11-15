@@ -108,7 +108,7 @@ export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONF
 export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue } from './config';
 export { STRATEGY_NAMES } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
-export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK } from './prompt-categorizer';
+export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, matchesKeepGoingKeyword, matchesNegativeKeyword, getQuerySourceForAgent, getQuerySourceForREPL } from './prompt-categorizer';
 export type { Intent, Scope, PromptCategory, PromptTier, TierSignals } from './prompt-categorizer';
 export type { RateLimitBucket, RateLimitStatus } from './rate-limiter';
 export { SELECTION_STRATEGIES } from './credential-pool';
@@ -161,8 +161,8 @@ export { isProtectedEvent, canHookEvent, PROTECTED_EVENTS, PASSTHROUGH_EVENTS, H
 export type { HookTier, HookRegistration } from './hook-protection';
 export { isModAllowed, isModBlockedByPolicy, getManagedPluginNames, parseModId, normalizeModName, modNamesMatch, validateModId, ManagedModsEnforcer } from './managed-mods';
 export type { ModInfo, ManagedModsPolicy } from './managed-mods';
-export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance, PROVENANCE_TIERS } from './provenance';
-export type { ProvenanceTier, ProvenanceRecord, ProvenanceSummary } from './provenance';
+export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance, PROVENANCE_TIERS, PROVENANCE_TIER_INFO, PROVENANCE_INTEGRITY_INFO, RISK_CAPABILITIES, describeTier, describeIntegrity, provenanceWarning, elevatedCapabilities, hasElevatedCapabilities, assessProvenanceRisk } from './provenance';
+export type { ProvenanceTier, ProvenanceRecord, ProvenanceSummary, ProvenanceIntegrity, ProvenanceSeverity, ProvenanceTierInfo, ProvenanceIntegrityInfo, RiskCapabilityName, RiskCapabilities, SourceCapabilities, ProvenanceRiskAssessment } from './provenance';
 export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, suggestedWaitMs, formatResetTime, formatRateLimitReset } from './rate-limit-parser';
 export type { RateLimitInfo } from './rate-limit-parser';
 export { canOverride, getEffectiveTier, filterManagedKeys, SettingsGuard, SETTINGS_TIERS } from './settings-guard';

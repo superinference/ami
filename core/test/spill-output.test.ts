@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { createHash } from 'crypto';
 
 import { spillToolText, formatSize, spillErrorReason, buildSpillBanner } from '../src/tools/spill-output';
 import { projectStateDir } from '../src/reference-journal';
@@ -190,6 +191,86 @@ describe('spillToolText', () => {
     assert.ok(tailStart > 0);
   });
 
+  it('treats a non-finite limit as a hard opt-out (never spills, returns verbatim)', () => {
+    const text = 'x'.repeat(100000);
+    // Infinity and NaN both bypass spilling entirely.
+    assert.equal(spillToolText(tmpDir, 'inf', text, Infinity), text);
+    assert.equal(spillToolText(tmpDir, 'nan', text, NaN), text);
+    const spillDir = projectStateDir(tmpDir, 'tool-results');
+    const files = fs.existsSync(spillDir)
+      ? fs.readdirSync(spillDir).filter(f => f.startsWith('inf-') || f.startsWith('nan-'))
+      : [];
+    assert.equal(files.length, 0, 'no spill file created for a non-finite limit');
+  });
+
+  it('sanitizes an unsafe prefix so the spill file cannot escape the spill dir', () => {
+    const text = 't'.repeat(5000);
+    const result = spillToolText(tmpDir, '../../../etc/evil', text, 1000);
+    const spillDir = projectStateDir(tmpDir, 'tool-results');
+    // The sanitized file must live INSIDE spillDir — no path traversal.
+    const files = fs.readdirSync(spillDir).filter(f => f.includes('etc_evil'));
+    assert.ok(files.length > 0, 'sanitized spill file must be inside spillDir');
+    const m = result.match(/persisted to (\S+)/);
+    assert.ok(m, 'success banner expected');
+    assert.ok(
+      path.resolve(m![1]).startsWith(path.resolve(spillDir) + path.sep),
+      'spill path must stay within spillDir',
+    );
+  });
+
+  it('falls back to a default prefix when the prefix is empty', () => {
+    const text = 'e'.repeat(5000);
+    const result = spillToolText(tmpDir, '', text, 1000);
+    const spillDir = projectStateDir(tmpDir, 'tool-results');
+    const files = fs.readdirSync(spillDir).filter(f => f.startsWith('tool-'));
+    assert.ok(files.length > 0, 'empty prefix must fall back to "tool-"');
+    assert.ok(result.includes('persisted to'));
+  });
+
+  it('does not follow a pre-planted symlink at the deterministic spill path (symlink-swap guard)', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-symlink-'));
+    try {
+      withDataDir(dataDir, () => {
+        const text = 'SYM' + 's'.repeat(5000) + 'END';
+        const spillDir = projectStateDir(tmpDir, 'tool-results');
+        fs.mkdirSync(spillDir, { recursive: true });
+        const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
+        const target = path.join(spillDir, `sym-${hash}.txt`);
+        const victim = path.join(dataDir, 'victim.txt');
+        fs.writeFileSync(victim, 'DO NOT OVERWRITE');
+        fs.symlinkSync(victim, target);
+        const result = spillToolText(tmpDir, 'sym', text, 1000);
+        // Victim content intact — the symlink was never followed.
+        assert.equal(fs.readFileSync(victim, 'utf-8'), 'DO NOT OVERWRITE');
+        // Target is now a real regular file holding the full output.
+        assert.ok(fs.lstatSync(target).isFile(), 'target must be a regular file');
+        assert.equal(fs.readFileSync(target, 'utf-8'), text);
+        assert.ok(result.includes('truncated'));
+      });
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers a size-mismatched prior spill file (partial/corrupt write)', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-partial-'));
+    try {
+      withDataDir(dataDir, () => {
+        const text = 'PARTIAL' + 'p'.repeat(5000) + 'DONE';
+        const spillDir = projectStateDir(tmpDir, 'tool-results');
+        fs.mkdirSync(spillDir, { recursive: true });
+        const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
+        const target = path.join(spillDir, `part-${hash}.txt`);
+        fs.writeFileSync(target, 'TRUNC'); // regular file, wrong size
+        const result = spillToolText(tmpDir, 'part', text, 1000);
+        assert.equal(fs.readFileSync(target, 'utf-8'), text, 'partial file must be rewritten in full');
+        assert.ok(result.includes('persisted to'));
+      });
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   describe('formatSize', () => {
     it('formats bytes, KB, MB, GB', () => {
       assert.equal(formatSize(512), '512 B');
@@ -206,6 +287,9 @@ describe('spillToolText', () => {
       assert.match(spillErrorReason('EPERM'), /permission denied/);
       assert.match(spillErrorReason('EROFS'), /read-only/);
       assert.match(spillErrorReason('EDQUOT'), /quota/);
+      assert.match(spillErrorReason('EMFILE'), /too many open files/);
+      assert.match(spillErrorReason('ENFILE'), /too many open files/);
+      assert.match(spillErrorReason('EEXIST'), /file already exists/);
       assert.match(spillErrorReason('ENOTDIR'), /invalid spill path/);
       assert.match(spillErrorReason('ENOENT'), /invalid spill path/);
       assert.match(spillErrorReason('EWEIRD'), /error EWEIRD/);

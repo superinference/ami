@@ -5,6 +5,10 @@ export function isAuthRequiredError(message: string): boolean {
   return /\b401\b|\b403\b|unauthorized|authentication required|requires? auth|www-authenticate|\boauth\b|not authenticated|login required/i.test(message);
 }
 
+/** Rejected by the abort race so a cancelled connect is distinguishable from a
+ * genuine connection failure via identity (never leaks into user-facing text). */
+const MCP_CONNECT_ABORTED = Symbol('mcp-connect-aborted');
+
 export function createMcpConnectTool(serverName: string, description: string): ToolDefinition {
   const normalizedServer = serverName.replace(/[^a-zA-Z0-9_]/g, '_');
 
@@ -20,8 +24,26 @@ export function createMcpConnectTool(serverName: string, description: string): T
       const mcpManager = context._mcpManager;
       if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
 
+      // Honor a user/engine interrupt during a slow connect (a container image
+      // pull can hold the manager's 120s timeout open) instead of blocking until
+      // that internal timeout fires. Mirrors the abort race in mcp-tool.ts.
+      const abortSignal = context.abortSignal;
+      const aborted = (): ToolResult => ({
+        output: `Connection to MCP server '${serverName}' was cancelled.`,
+        isError: true,
+        metadata: { status: 'aborted' },
+      });
+      if (abortSignal?.aborted) return aborted();
+
+      let onAbort: (() => void) | undefined;
+      const abortPromise = new Promise<never>((_, reject) => {
+        if (!abortSignal) return;
+        onAbort = () => reject(MCP_CONNECT_ABORTED);
+        abortSignal.addEventListener('abort', onAbort, { once: true });
+      });
+
       try {
-        await mcpManager.ensureConnected(serverName);
+        await Promise.race([mcpManager.ensureConnected(serverName), abortPromise]);
         const tools = mcpManager.getToolsForServer(serverName);
         const toolNames = tools.map((t: { name: string }) => t.name);
         if (tools.length === 0) {
@@ -35,6 +57,8 @@ export function createMcpConnectTool(serverName: string, description: string): T
           metadata: { status: 'connected', toolCount: tools.length },
         };
       } catch (err) {
+        // A cancelled connect is reported as such, not as a connection failure.
+        if (err === MCP_CONNECT_ABORTED) return aborted();
         const message = err instanceof Error ? err.message : String(err);
         // Discriminate a needs-authentication outcome from a hard failure so the
         // model is steered to the authenticate tool instead of blindly retrying.
@@ -50,6 +74,8 @@ export function createMcpConnectTool(serverName: string, description: string): T
           isError: true,
           metadata: { status: 'error' },
         };
+      } finally {
+        if (onAbort && abortSignal) abortSignal.removeEventListener('abort', onAbort);
       }
     },
   };
