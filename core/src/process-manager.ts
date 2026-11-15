@@ -9,60 +9,6 @@ import { FlowManager } from './flow-manager';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024; // 5 MB per task
 
-/**
- * Upper bound on how many bytes `getOutput` reads into memory in a single call.
- * Even though our own writer caps each task's file at MAX_OUTPUT_BYTES, a
- * registered agent (registerAgent) can point at an externally-written output
- * file of arbitrary size, so the read path tails only the last MAX_READ_BYTES
- * rather than slurping the whole file (mirrors Claude Code's byte-bounded
- * diskOutput reads). The tail is then line-sliced as before.
- */
-const MAX_READ_BYTES = MAX_OUTPUT_BYTES;
-
-/**
- * O_NOFOLLOW where the platform supports it (0 on Windows, where it is absent).
- * Task output files live in a predictable, writable tasks dir, so a sandboxed
- * background command could plant a symlink there; opening with O_NOFOLLOW makes
- * the host open fail instead of following the link and reading/clobbering an
- * arbitrary target (mirrors Claude Code's diskOutput/Shell open flags).
- */
-const O_NOFOLLOW_FLAG = fs.constants.O_NOFOLLOW || 0;
-
-/**
- * Open a task output file for writing, hardened against symlink-swap attacks:
- * O_EXCL (fail rather than reuse/overwrite an existing path — task ids are fresh)
- * plus O_NOFOLLOW (never traverse a planted symlink). Used only by spawn().
- */
-export function openTaskOutputWrite(outputPath: string): number {
-  return fs.openSync(
-    outputPath,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW_FLAG,
-  );
-}
-
-/** Open a task output file for reading with O_NOFOLLOW symlink hardening. */
-export function openTaskOutputRead(outputPath: string): number {
-  return fs.openSync(outputPath, fs.constants.O_RDONLY | O_NOFOLLOW_FLAG);
-}
-
-const TASK_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
-
-/**
- * Generate a high-entropy task id: `<prefix>-<8 chars over a 36-symbol alphabet>`
- * (36^8 ≈ 2.8e12 combinations). The id is used directly to build the on-disk
- * output path, so the entropy is sized to resist brute-force symlink attacks on
- * that path (mirrors Claude Code's generateTaskId; replaces the former 4-byte
- * hex id which had ~650x less entropy over a 16-symbol alphabet).
- */
-export function generateTaskId(prefix: string): string {
-  const bytes = crypto.randomBytes(8);
-  let id = '';
-  for (let i = 0; i < bytes.length; i++) {
-    id += TASK_ID_ALPHABET[bytes[i] % TASK_ID_ALPHABET.length];
-  }
-  return `${prefix}-${id}`;
-}
-
 /** Time to wait after SIGTERM before escalating to SIGKILL. */
 export const GRACEFUL_SHUTDOWN_MS = 1500;
 
@@ -76,11 +22,6 @@ export const MAX_BACKGROUND_PROCESSES = 20;
 export const osHooks: { platform: () => NodeJS.Platform } = { platform: () => os.platform() };
 
 export function isProcessAlive(pid: number): boolean {
-  // Guard non-task pids: 0 targets the WHOLE current process group (process.kill(0,0)
-  // almost always succeeds for the running process) and 1 is init — probing either
-  // would falsely report "alive" and defeat stale-lock/orphan recovery. Mirrors
-  // Claude Code's isProcessRunning pid<=1 guard.
-  if (pid <= 1) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -163,13 +104,6 @@ export interface BackgroundProcess {
   exitCode: number | null;
   outputPath: string;
   startTime: number;
-  /**
-   * Wall-clock time (ms) at which the task reached a terminal state
-   * (completed/failed/killed). Once set, elapsed time is frozen at
-   * `endTime - startTime` instead of ticking forever against the live clock
-   * (mirrors Claude Code's endTime field). Undefined while still running.
-   */
-  endTime?: number;
   /** Cumulative token usage for background agents (undefined for bash tasks). */
   tokenCount?: number;
 }
@@ -193,9 +127,6 @@ interface InternalProcess extends BackgroundProcess {
    *  `kill` is an abort callback. kill() MUST invoke that callback and must NEVER
    *  run `process.kill(-pid)` on it (that targets the app's own process group). */
   _registered?: boolean;
-  /** Set once the stall watchdog has written interactive-prompt guidance to the
-   *  output, so the hint is emitted at most once per task. */
-  _stallNotified?: boolean;
 }
 
 export class ProcessManager extends EventEmitter {
@@ -218,7 +149,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): string {
-    const taskId = generateTaskId('bg');
+    const taskId = `bg-${crypto.randomBytes(4).toString('hex')}`;
     const outputPath = path.join(this.tasksDir, `${taskId}.output`);
 
     const isWindows = osHooks.platform() === 'win32';
@@ -232,7 +163,7 @@ export class ProcessManager extends EventEmitter {
       ...(opts.env ? { env: opts.env } : {}),
     });
 
-    const fd = openTaskOutputWrite(outputPath);
+    const fd = fs.openSync(outputPath, 'w');
 
     const entry: InternalProcess = {
       taskId,
@@ -274,17 +205,15 @@ export class ProcessManager extends EventEmitter {
     proc.stdout?.on('error', swallowEBADF);
     proc.stderr?.on('error', swallowEBADF);
 
-    // Stall detection for background processes. When output stops growing and the
-    // tail looks like an interactive prompt, DO NOT kill the task — write actionable
-    // remediation into its own output (which the model reads via task_output) and
-    // leave it running, so the model can decide what to do. Auto-killing a task that
-    // might self-resolve is more destructive and leaves the model no signal or fix
-    // (mirrors Claude Code's notify-and-let-the-model-decide stall watchdog).
+    // Stall detection for background processes
     let lastOutputSize = 0;
     const stallCheck = setInterval(() => {
       const currentSize = this.getOutputSize(taskId);
       if (currentSize === lastOutputSize) {
-        this.notifyStalledOnPrompt(taskId);
+        const result = this.getOutput(taskId, 10);
+        if (result && this.looksLikePrompt(result.output)) {
+          this.kill(taskId);
+        }
       }
       lastOutputSize = currentSize;
     }, 45_000);
@@ -305,7 +234,6 @@ export class ProcessManager extends EventEmitter {
       if (entry.status !== 'killed') {
         entry.status = code === 0 ? 'completed' : 'failed';
       }
-      entry.endTime = Date.now();
       entry.exitCode = code;
       try { fs.closeSync(fd); } catch { /* already closed */ }
       entry.outputFd = null;
@@ -315,7 +243,6 @@ export class ProcessManager extends EventEmitter {
     proc.on('error', (err) => {
       clearInterval(stallCheck);
       entry.status = 'failed';
-      entry.endTime = Date.now();
       try {
         fs.writeSync(fd, Buffer.from(`\n[process error: ${err.message}]\n`));
         fs.closeSync(fd);
@@ -349,7 +276,6 @@ export class ProcessManager extends EventEmitter {
     if (!entry || entry.status !== 'running') return false;
 
     entry.status = 'killed';
-    entry.endTime = Date.now();
     if (entry._intervalHandle) {
       clearInterval(entry._intervalHandle);
       entry._intervalHandle = undefined;
@@ -397,47 +323,26 @@ export class ProcessManager extends EventEmitter {
     return this.processes.get(taskId)?.status;
   }
 
-  getOutput(taskId: string, tailLines = 50): { status: string; exitCode: number | null; output: string; elapsedMs: number; bytesTotal: number; truncated: boolean } | null {
+  getOutput(taskId: string, tailLines = 50): { status: string; exitCode: number | null; output: string; elapsedMs: number } | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
 
     let output = '';
-    let bytesTotal = 0;
-    let truncated = false;
     try {
-      const size = fs.statSync(entry.outputPath).size;
-      bytesTotal = size;
-      // Tail only the last MAX_READ_BYTES into memory rather than the whole file
-      // (O_NOFOLLOW-hardened read). `truncated` signals the shown output is a
-      // window into a larger file so the caller/model knows content was elided.
-      const readStart = size > MAX_READ_BYTES ? size - MAX_READ_BYTES : 0;
-      if (readStart > 0) truncated = true;
-      const length = size - readStart;
-      const fd = openTaskOutputRead(entry.outputPath);
-      try {
-        const buf = Buffer.allocUnsafe(length);
-        const bytesRead = fs.readSync(fd, buf, 0, length, readStart);
-        let content = buf.subarray(0, bytesRead).toString('utf-8');
-        if (tailLines > 0) {
-          const lines = content.split('\n');
-          if (lines.length > tailLines) truncated = true;
-          content = lines.slice(-tailLines).join('\n');
-        }
+      const content = fs.readFileSync(entry.outputPath, 'utf-8');
+      if (tailLines > 0) {
+        const lines = content.split('\n');
+        output = lines.slice(-tailLines).join('\n');
+      } else {
         output = content;
-      } finally {
-        fs.closeSync(fd);
       }
-    } catch { /* file may not exist yet, or was removed */ }
+    } catch { /* file may not exist yet */ }
 
     return {
       status: entry.status,
       exitCode: entry.exitCode,
       output,
-      // Freeze elapsed at endTime once terminal (don't keep ticking on each read),
-      // and clamp against clock skew so a backwards clock can't yield a negative.
-      elapsedMs: Math.max(0, (entry.endTime ?? Date.now()) - entry.startTime),
-      bytesTotal,
-      truncated,
+      elapsedMs: Date.now() - entry.startTime,
     };
   }
 
@@ -464,7 +369,7 @@ export class ProcessManager extends EventEmitter {
       if (start >= size) {
         return { output: '', offset: size, reset };
       }
-      const fd = openTaskOutputRead(entry.outputPath);
+      const fd = fs.openSync(entry.outputPath, 'r');
       let output = '';
       try {
         const length = size - start;
@@ -482,23 +387,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    // Running tasks first, then newest-first (startTime descending) within a group,
-    // so finished/killed tasks don't stay interleaved with running ones in raw
-    // insertion order (mirrors Claude Code's running-first, newest-first ordering).
-    return Array.from(this.processes.values())
-      .map(({ proc, outputFd, bytesWritten, _intervalHandle, _registered, _stallNotified, ...rest }) => rest)
-      .sort((a, b) => {
-        const aRunning = a.status === 'running' ? 1 : 0;
-        const bRunning = b.status === 'running' ? 1 : 0;
-        if (aRunning !== bRunning) return bRunning - aRunning;
-        return b.startTime - a.startTime;
-      });
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _intervalHandle, _registered, _stallNotified, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, ...rest } = entry;
     return rest;
   }
 
@@ -514,30 +409,6 @@ export class ProcessManager extends EventEmitter {
     const lines = text.trim().split('\n');
     const lastLine = lines[lines.length - 1];
     return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|Press Enter|Continue\?|Overwrite\?|password:/i.test(lastLine);
-  }
-
-  /**
-   * Called by the stall watchdog when a background task stops producing output and
-   * its tail looks like an interactive prompt. Instead of killing the task, write
-   * actionable remediation into its own output exactly once (the model reads it via
-   * task_output) and leave the process running — mirrors Claude Code's notify-and-
-   * let-the-model-decide behavior. Returns true if guidance was written this call.
-   */
-  private notifyStalledOnPrompt(taskId: string): boolean {
-    const entry = this.processes.get(taskId);
-    if (!entry || entry.status !== 'running' || entry.outputFd === null) return false;
-    if (entry._stallNotified) return false;
-    const result = this.getOutput(taskId, 10);
-    if (!result || !this.looksLikePrompt(result.output)) return false;
-    entry._stallNotified = true;
-    const msg = `\n[background command "${entry.description}" appears to be waiting for interactive input. ` +
-      'Kill this task and re-run with piped input (e.g. `echo y | command`) or a non-interactive flag if one exists.]\n';
-    try {
-      const buf = Buffer.from(msg);
-      fs.writeSync(entry.outputFd, buf);
-      entry.bytesWritten += buf.length;
-    } catch { /* fd may be closed */ }
-    return true;
   }
 
   runningCount(): number {
@@ -582,17 +453,7 @@ export class ProcessManager extends EventEmitter {
   updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount'>>): void {
     const entry = this.processes.get(taskId);
     if (!entry) return;
-    if (updates.status !== undefined) {
-      // A terminal status is final: once a task is killed (or otherwise terminal),
-      // a later natural-completion update from the agent loop must NOT clobber it to
-      // completed/failed — a deliberately stopped agent stays 'killed' so the
-      // stop-vs-failure distinction survives (mirrors Claude Code's atomic terminal
-      // guard). Record endTime on the running→terminal transition to freeze elapsed.
-      if (!isTerminalTaskStatus(entry.status)) {
-        entry.status = updates.status;
-        if (isTerminalTaskStatus(updates.status)) entry.endTime = Date.now();
-      }
-    }
+    if (updates.status !== undefined) entry.status = updates.status;
     if (updates.exitCode !== undefined) entry.exitCode = updates.exitCode;
     if (updates.tokenCount !== undefined) entry.tokenCount = updates.tokenCount;
   }
