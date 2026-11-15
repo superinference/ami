@@ -267,12 +267,20 @@ export const sendMessageTool: ToolDefinition = {
   isReadOnly: false,
 
   async execute(input, context: ToolContext): Promise<ToolResult> {
-    const toRaw = input.to as string;
+    let toRaw = input.to as string;
     const content = (input.message as string) ?? (input.content as string);
 
     if (!toRaw || !toRaw.trim()) {
       return { output: 'Error: "to" must not be empty.', isError: true };
     }
+    // Normalize the recipient name: a model frequently emits a padded name
+    // (" worker ", "worker\n") copied from prose/UI. Without trimming, the
+    // lookup (getAgentByName / notifier / mailbox key) misses the real agent and
+    // the message silently lands in a dead " worker " mailbox nobody drains —
+    // and " * " is not recognized as broadcast. Trim once, up front, so every
+    // downstream resolution, broadcast check, and display uses the clean name.
+    // (Mirrors Claude Code normalizing the teammate name before resolution.)
+    toRaw = toRaw.trim();
     if (!content || !content.trim()) {
       return { output: 'Error: "content" must not be empty.', isError: true };
     }
@@ -305,6 +313,25 @@ export const sendMessageTool: ToolDefinition = {
       try { return require('./task'); } catch { return { getAgentByName: () => undefined }; }
     })();
     const to = getAgentByName(toRaw) || toRaw;
+
+    // Self-send guard: addressing your own identity is a no-op that would echo a
+    // message into your own mailbox (and, for a sub-agent with a live notifier,
+    // risk a self-notify/poll loop). Reject it. The sender may be addressed by
+    // its trusted name OR its raw agentId, and the recipient resolves to either
+    // form, so compare the target against the FULL self-identity set rather than
+    // a single string. Broadcast ("*") is never a self-send. (Mirrors Claude
+    // Code refusing to deliver a teammate message back to its own author.)
+    if (toRaw !== '*') {
+      const selfIds = new Set<string>([from]);
+      if (context.agentId) selfIds.add(context.agentId);
+      if (trustedSelf) selfIds.add(trustedSelf);
+      if (selfIds.has(toRaw) || selfIds.has(to)) {
+        return {
+          output: `Error: cannot send a message to yourself ("${toRaw}"). Address a teammate by name or use "*" to broadcast.`,
+          isError: true,
+        };
+      }
+    }
 
     // Terminal-status guard: never inject a message into a dead teammate. When the
     // target resolves to a tracked task (by name or taskId) that has already
