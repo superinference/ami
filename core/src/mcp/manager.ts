@@ -406,6 +406,12 @@ export class McpManager extends EventEmitter {
   private configs = new Map<string, McpServerConfig>();
   private _allTools = new Map<string, { serverName: string; schema: McpToolSchema }>();
   private healthCheckInterval: NodeJS.Timeout | null = null;
+  /**
+   * Wall-clock time of the last health-check tick, used to detect process
+   * suspension (a tick that fires far later than its interval). `null` until
+   * {@link startHealthChecks} seeds it.
+   */
+  private _lastHealthTick: number | null = null;
   private rootPaths: string[] = [];
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Per-server count of consecutive failed reconnect attempts (for backoff). */
@@ -1280,18 +1286,57 @@ export class McpManager extends EventEmitter {
 
   startHealthChecks(intervalMs: number = 30000): void {
     if (this.healthCheckInterval) return;
-    this.healthCheckInterval = setInterval(async () => {
-      for (const [name, client] of this.clients) {
-        if (client.state !== 'ready') continue;
-        try {
-          await client.ping();
-        } catch (err) {
-          coreLog('mcp', `Health check failed for ${name}, attempting reconnect`);
-          this.scheduleReconnect(name);
-        }
-      }
+    // Seed the tick clock so the FIRST real tick (~intervalMs later) is not
+    // mistaken for a suspension gap.
+    this._lastHealthTick = Date.now();
+    this.healthCheckInterval = setInterval(() => {
+      void this._runHealthCheckTick(intervalMs, Date.now());
     }, intervalMs);
     this.healthCheckInterval.unref();
+  }
+
+  /**
+   * One health-check pass. Pings every `ready` client and schedules a reconnect on
+   * failure, with one addition over a plain ping loop: **process-suspension
+   * detection**. `setInterval` does not queue missed ticks — if the host process is
+   * paused (laptop sleep, VM suspend, container freeze) the pending ticks coalesce
+   * into a single late fire. When a tick arrives far later than its interval
+   * ({@link MCP_SUSPENSION_TICK_FACTOR}×), we conclude the process was suspended and
+   * force an immediate reconnect of every ready REMOTE (http/sse) client WITHOUT
+   * waiting for a ping round-trip: after a sleep the socket's NAT mapping is usually
+   * dead, yet `ping()` can falsely succeed because the bytes merely enter the kernel
+   * send buffer — so trusting the ping would leave a silently-dead connection in
+   * place. Local (stdio/container) servers are suspended and resumed together with
+   * us, so they are pinged normally. Exposed (underscore-prefixed) and
+   * clock-injectable so the suspension-gap path is unit-testable without real timers.
+   */
+  async _runHealthCheckTick(intervalMs: number, now: number): Promise<void> {
+    const last = this._lastHealthTick;
+    this._lastHealthTick = now;
+    const suspended = last !== null && now - last > intervalMs * MCP_SUSPENSION_TICK_FACTOR;
+    const forcedReconnects: string[] = [];
+    for (const [name, client] of this.clients) {
+      if (client.state !== 'ready') continue;
+      if (suspended) {
+        const transport = this.configs.get(name)?.transport;
+        if (transport === 'http' || transport === 'sse') {
+          forcedReconnects.push(name);
+          this.scheduleReconnect(name);
+          continue;
+        }
+      }
+      try {
+        await client.ping();
+      } catch {
+        coreLog('mcp', `Health check failed for ${name}, attempting reconnect`);
+        this.scheduleReconnect(name);
+      }
+    }
+    if (suspended) {
+      const gap = now - (last as number);
+      coreLog('mcp', `Health-check tick gap ${Math.round(gap / 1000)}s exceeded ${Math.round(intervalMs / 1000)}s interval; assuming process suspension, forced reconnect of ${forcedReconnects.length} remote MCP server(s)`);
+      this.emit('suspension-detected', gap, forcedReconnects);
+    }
   }
 
   stopHealthChecks(): void {
@@ -1592,6 +1637,13 @@ export class McpManager extends EventEmitter {
 
 export const MAX_MCP_TOOLS_PER_SERVER = 200;
 export const MAX_MCP_TOOL_NAME_LENGTH = 128;
+
+/**
+ * A health-check tick arriving later than `interval × this factor` is treated as
+ * evidence the host process was suspended (sleep/VM-pause/freeze) rather than merely
+ * busy: `setInterval` coalesces the ticks it missed while paused into one late fire.
+ */
+export const MCP_SUSPENSION_TICK_FACTOR = 2;
 
 /** Reconnect backoff bounds for a dropped MCP server (H44). */
 export const MAX_MCP_RECONNECT_ATTEMPTS = 5;
