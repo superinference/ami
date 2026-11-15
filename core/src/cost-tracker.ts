@@ -31,6 +31,16 @@ export interface ExtendedUsageStats extends UsageStats {
   costAccuracy: 'exact' | 'estimated';
   /** Models whose cost fell back to the generic default rate (unknown pricing). */
   unknownModels: string[];
+  /**
+   * Total wall time (ms) spent in API requests, INCLUDING retries — so time lost to
+   * transient failures/retries is observable. 0 when no duration was recorded.
+   */
+  apiDurationMs: number;
+  /**
+   * Total API wall time (ms) counting only the successful (non-retry) attempt of each
+   * request. `apiDurationMs - apiDurationMsWithoutRetries` is the time cost of retries.
+   */
+  apiDurationMsWithoutRetries: number;
 }
 
 /** Per-model usage accumulation used by the running cost total. */
@@ -45,10 +55,16 @@ export interface ModelCostUsage {
 }
 
 // ---------------------------------------------------------------------------
-// Pricing: [inputPerMillion, outputPerMillion, cachedInputPerMillion | null]
+// Pricing: [inputPerMillion, outputPerMillion, cachedInputPerMillion | null,
+//           cacheWritePerMillion? | null]
+//
+// The optional 4th slot is a MODEL-SPECIFIC cache-write (cache_creation) price.
+// Providers' cache-write multiplier is not uniformly 1.25x (Anthropic 5m TTL),
+// so when the gateway advertises one we honor it; absent, we fall back to the
+// global CACHE_WRITE_PRICE_RATIO. Legacy 3-element entries are still valid.
 // ---------------------------------------------------------------------------
 
-type PricingEntry = [number, number, number | null];
+type PricingEntry = [number, number, number | null, (number | null)?];
 
 // Fallback table used when the gateway fetch fails or hasn't completed yet.
 const FALLBACK_PRICING: Record<string, PricingEntry> = {
@@ -111,6 +127,8 @@ interface GatewayModel {
     input?: string;
     output?: string;
     input_cache_read?: string;
+    /** Per-token cache-WRITE (cache_creation) price, when the gateway advertises one. */
+    input_cache_write?: string;
   };
 }
 
@@ -141,15 +159,19 @@ async function fetchLivePricing(): Promise<void> {
       const cached = m.pricing.input_cache_read
         ? perTokenToPerMillion(m.pricing.input_cache_read)
         : null;
+      const cacheWrite = m.pricing.input_cache_write
+        ? perTokenToPerMillion(m.pricing.input_cache_write)
+        : null;
 
-      if (isNaN(input) || isNaN(output) || (cached !== null && isNaN(cached))) continue;
+      if (isNaN(input) || isNaN(output) || (cached !== null && isNaN(cached)) ||
+          (cacheWrite !== null && isNaN(cacheWrite))) continue;
 
       // Store under both the full id ("openai/gpt-4o") and the model name ("gpt-4o")
-      map[m.id] = [input, output, cached];
+      map[m.id] = [input, output, cached, cacheWrite];
       const slash = m.id.indexOf('/');
       if (slash !== -1) {
         const shortName = m.id.slice(slash + 1);
-        if (!map[shortName]) map[shortName] = [input, output, cached];
+        if (!map[shortName]) map[shortName] = [input, output, cached, cacheWrite];
       }
     }
 
@@ -256,6 +278,8 @@ export class CostTracker {
   private _byCategory: Record<string, number> = {};
   private _byModel = new Map<string, ModelCostUsage>();
   private _unknownModels = new Set<string>();
+  private _apiDurationMs = 0;
+  private _apiDurationMsWithoutRetries = 0;
   private model: string;
 
   constructor(model: string) {
@@ -341,6 +365,19 @@ export class CostTracker {
     this.stats.turnCount++;
   }
 
+  /**
+   * Record the wall time (ms) of one API request so retry overhead is observable.
+   * Every call adds to the total; a retry attempt (`wasRetry: true`) adds to the
+   * total ONLY, so the without-retries figure reflects just the successful attempt.
+   * Non-finite / negative durations are ignored.
+   */
+  trackRequestDuration(durationMs: number, opts?: { wasRetry?: boolean }): void {
+    const ms = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+    if (ms === 0) return;
+    this._apiDurationMs += ms;
+    if (!opts?.wasRetry) this._apiDurationMsWithoutRetries += ms;
+  }
+
   getStats(): ExtendedUsageStats {
     const totalPromptTokens = this._cachedPromptTokens + this._uncachedPromptTokens;
     const cacheHitRate = totalPromptTokens > 0
@@ -362,6 +399,8 @@ export class CostTracker {
       webSearchRequests: this._webSearchRequests,
       costAccuracy: this._unknownModels.size > 0 ? 'estimated' : 'exact',
       unknownModels: [...this._unknownModels],
+      apiDurationMs: this._apiDurationMs,
+      apiDurationMsWithoutRetries: this._apiDurationMsWithoutRetries,
     };
   }
 
@@ -384,6 +423,8 @@ export class CostTracker {
     this._byCategory = {};
     this._byModel.clear();
     this._unknownModels.clear();
+    this._apiDurationMs = 0;
+    this._apiDurationMsWithoutRetries = 0;
   }
 }
 
@@ -404,12 +445,14 @@ export function estimateUsageCost(
     webSearchRequests?: number;
   },
 ): number {
-  const [inputPPM, outputPPM, cachedPPM] = matchPricing(model);
+  const [inputPPM, outputPPM, cachedPPM, cacheWritePPM] = matchPricing(model);
   const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
+  // Prefer a model-specific cache-write price; fall back to the global 1.25x ratio.
+  const actualCacheWritePPM = cacheWritePPM ?? inputPPM * CACHE_WRITE_PRICE_RATIO;
   return (
     (Math.max(0, u.uncachedPromptTokens) / 1_000_000) * inputPPM +
     (Math.max(0, u.cachedPromptTokens) / 1_000_000) * actualCachedPPM +
-    (Math.max(0, u.cacheCreationTokens) / 1_000_000) * inputPPM * CACHE_WRITE_PRICE_RATIO +
+    (Math.max(0, u.cacheCreationTokens) / 1_000_000) * actualCacheWritePPM +
     (Math.max(0, u.completionTokens) / 1_000_000) * outputPPM +
     Math.max(0, u.webSearchRequests ?? 0) * WEB_SEARCH_COST_PER_REQUEST
   );

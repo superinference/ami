@@ -143,3 +143,38 @@ describe('parent-walk stops at `.git` FILE (worktree/submodule) (H19)', () => {
     assert.doesNotMatch(out, /GRANDPARENT_RULES/, 'must stop at the `.git` file boundary');
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('team-memory dir scan is bounded and index-excluded (F1213)', () => {
+  it('excludes the team MEMORY.md index and any oversized team file from the body scan', () => {
+    const teamDir = path.join(projectStateDir(CWD, 'memory'), 'team');
+    fs.mkdirSync(teamDir, { recursive: true });
+    fs.writeFileSync(path.join(teamDir, 'ok.md'), 'TEAM_OK_BODY');
+    // A team-level MEMORY.md is a table of contents, not a memory body.
+    fs.writeFileSync(path.join(teamDir, 'MEMORY.md'), '- [idx](x.md) — INDEX_SHOULD_NOT_APPEAR');
+    // A runaway (>256KB) team file must not be slurped whole into the prompt.
+    fs.writeFileSync(path.join(teamDir, 'big.md'), 'BIG_SHOULD_NOT_APPEAR\n' + 'z'.repeat(300_000));
+
+    const joined = new MemoryManager(CWD).loadTeamMemories().join('\n');
+    assert.match(joined, /TEAM_OK_BODY/, 'a normal in-dir team memory still loads');
+    assert.doesNotMatch(joined, /INDEX_SHOULD_NOT_APPEAR/, 'team MEMORY.md index is excluded from the body scan');
+    assert.doesNotMatch(joined, /BIG_SHOULD_NOT_APPEAR/, 'oversized team file is skipped by the size guard');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('oversized instruction files truncate at a newline boundary with a marker (F1211)', () => {
+  it('cuts back to the last newline (no mid-line fragment) and appends a named-cap marker', () => {
+    // 100 complete lines of 100 chars → 10100 bytes, ending exactly on a newline.
+    const filler = ('x'.repeat(100) + '\n').repeat(100);
+    // A long line that straddles the 10240-byte cap: under a raw mid-line slice its
+    // leading fragment would leak; a newline-boundary cut drops it whole.
+    const straddle = 'STRADDLE_' + 'Q'.repeat(400) + '_END\n';
+    fs.writeFileSync(path.join(CWD, 'CLAUDE.md'), filler + straddle + 'aaa\n');
+
+    const out = new MemoryManager(CWD).loadProjectInstructions();
+    assert.match(out, /truncated — CLAUDE\.md exceeded the 10240-byte cap/, 'truncation is surfaced, never silent');
+    assert.doesNotMatch(out, /STRADDLE/, 'the straddling line is dropped whole — no mid-line fragment leaks');
+    assert.match(out, /x{100}/, 'complete lines before the cap are preserved');
+  });
+});

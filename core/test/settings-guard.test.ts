@@ -44,6 +44,40 @@ describe('MANAGED_ONLY_KEYS', () => {
   it('contains allowModsToOverrideDenyRules', () => {
     assert.ok(MANAGED_ONLY_KEYS.has('allowModsToOverrideDenyRules'));
   });
+  it('contains allowManagedPermissionRulesOnly', () => {
+    assert.ok(MANAGED_ONLY_KEYS.has('allowManagedPermissionRulesOnly'));
+  });
+  it('contains strictPluginOnlyCustomization', () => {
+    assert.ok(MANAGED_ONLY_KEYS.has('strictPluginOnlyCustomization'));
+  });
+});
+
+describe('managed-only policy lockdown keys are enforced end-to-end', () => {
+  // Each lockdown policy must be settable ONLY from the managed tier: a lower
+  // tier attempting it is rejected by filterManagedKeys and blocked by the guard.
+  for (const key of ['allowManagedPermissionRulesOnly', 'strictPluginOnlyCustomization']) {
+    it(`${key}: non-managed override is denied and effective tier is managed-only`, () => {
+      // canOverride: a non-managed source cannot set it, managed can.
+      assert.equal(canOverride(key, 'project', 'managed'), false);
+      assert.equal(canOverride(key, 'managed', 'managed'), true);
+
+      // getEffectiveTier: resolves to managed when present, null otherwise.
+      assert.equal(
+        getEffectiveTier(key, [
+          { tier: 'managed' },
+          { tier: 'project' },
+        ]),
+        'managed',
+      );
+      assert.equal(getEffectiveTier(key, [{ tier: 'project' }]), null);
+
+      // SettingsGuard: records the managed-config block reason.
+      const guard = new SettingsGuard();
+      assert.equal(guard.checkOverride(key, 'local', 'managed'), false);
+      const [blocked] = guard.getBlockedOverrides();
+      assert.equal(blocked.reason, `"${key}" can only be set by managed config`);
+    });
+  }
 });
 
 describe('TIER_LOCKED_KEYS', () => {

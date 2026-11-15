@@ -140,6 +140,19 @@ export const MANAGED_ONLY_KEYS = new Set([
   'disableBypassPermissionsMode',
   'disableAllHooks',
   'allowManagedHooksOnly',
+  // Enterprise lockdown that confines permission rules to admin/managed-sourced
+  // ones only (user/project self-authorization is dropped and "always allow"
+  // persistence is refused). Like its `allowManaged*Only` siblings this is an
+  // admin policy, so it is managed-only — a project/local/env/cli file setting it
+  // would let the restricted tier grant itself the lockdown. Parity: Claude
+  // Code's `allowManagedPermissionRulesOnly` policy.
+  'allowManagedPermissionRulesOnly',
+  // Per-surface policy that locks customization (skills/agents/hooks/mcp) to
+  // plugin-provided sources only, blocking user/project tiers. An admin lockdown,
+  // so it is managed-only — a lower tier must not be able to declare (or opt out
+  // of) the restriction on itself. Parity: Claude Code's
+  // `strictPluginOnlyCustomization` policy.
+  'strictPluginOnlyCustomization',
 ]);
 
 /**

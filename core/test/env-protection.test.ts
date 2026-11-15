@@ -108,12 +108,13 @@ describe('getAllPinnedVariables', () => {
 
 describe('constant sets', () => {
   it('POLICY_VARIABLES contains expected entries', () => {
+    assert.ok(POLICY_VARIABLES.has('SUPERINFERENCE_MANAGED_CONFIG'));
     assert.ok(POLICY_VARIABLES.has('SUPERINFERENCE_MANAGED_SETTINGS_PATH'));
     assert.ok(POLICY_VARIABLES.has('SUPERINFERENCE_REMOTE_SETTINGS_PATH'));
     assert.ok(POLICY_VARIABLES.has('SUPERINFERENCE_CONFIG_DIR'));
     assert.ok(POLICY_VARIABLES.has('USE_LOCAL_OAUTH'));
     assert.ok(POLICY_VARIABLES.has('USE_STAGING_OAUTH'));
-    assert.equal(POLICY_VARIABLES.size, 9);
+    assert.equal(POLICY_VARIABLES.size, 10);
   });
 
   it('CODE_LOADING_VARIABLES contains 20 entries', () => {

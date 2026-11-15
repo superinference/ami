@@ -25,18 +25,26 @@ export function parseRateLimitHeaders(headers: Record<string, string | string[] 
   };
 }
 
+/** 24h ceiling on a server-directed retry-after (both numeric and HTTP-date forms). */
+const MAX_RETRY_AFTER_SECONDS = 86400;
+const MAX_RETRY_AFTER_MS = MAX_RETRY_AFTER_SECONDS * 1000;
+
 export function parseRetryAfterHeader(value: string | undefined): number | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
   const seconds = Number(trimmed);
   if (!Number.isNaN(seconds)) {
-    if (seconds < 0 || seconds > 86400) return null;
+    if (seconds < 0 || seconds > MAX_RETRY_AFTER_SECONDS) return null;
     return Math.ceil(seconds * 1000);
   }
   const date = new Date(trimmed);
   if (!Number.isNaN(date.getTime())) {
     const deltaMs = date.getTime() - Date.now();
+    // Apply the same upper bound to the HTTP-date branch as the numeric branch:
+    // a far-future `retry-after` date must not bypass the 24h ceiling and yield
+    // an unbounded backoff.
+    if (deltaMs > MAX_RETRY_AFTER_MS) return null;
     return Math.max(0, Math.ceil(deltaMs));
   }
   return null;
@@ -48,12 +56,26 @@ function parseIntHeader(value: string | undefined): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+/**
+ * A numeric reset value at/above this (unix-epoch seconds, ~year 2001) is an
+ * ABSOLUTE timestamp, not a relative delta. Any genuine relative reset delay is
+ * orders of magnitude smaller, so the magnitude disambiguates the two.
+ */
+const EPOCH_THRESHOLD_SECONDS = 1_000_000_000;
+
 function parseResetHeader(value: string | undefined): Date | null {
   if (!value) return null;
   // eslint-disable-next-line security/detect-unsafe-regex -- fully anchored, linear
   const secMatch = value.trim().match(/^(\d+(?:\.\d+)?)s?$/);
   if (secMatch) {
-    return new Date(Date.now() + parseFloat(secMatch[1]) * 1000);
+    const n = parseFloat(secMatch[1]);
+    // An absolute epoch-seconds reset (e.g. Anthropic's unified-reset header)
+    // must be interpreted as the reset instant itself — treating it as a relative
+    // delta would resolve ~54 years in the future and effectively hang the client.
+    if (n >= EPOCH_THRESHOLD_SECONDS) {
+      return new Date(n * 1000);
+    }
+    return new Date(Date.now() + n * 1000);
   }
   const date = new Date(value.trim());
   return Number.isNaN(date.getTime()) ? null : date;

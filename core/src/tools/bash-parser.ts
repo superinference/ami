@@ -12,6 +12,35 @@ export interface CommandNode {
   raw: string;
 }
 
+/**
+ * Default parser input cap. Mirrors the auto-approve length gate in
+ * bash-security.ts so any AST-consuming path that runs before/independent of
+ * validateBashSecurity cannot be fed unbounded-length input (DoS defense).
+ */
+const MAX_COMMAND_LENGTH = 10_000;
+
+/**
+ * Recursion-depth budget for nested `(...)` subshells and `$(...)` command
+ * substitutions. Adversarial input such as `((((…))))` under MAX_COMMAND_LENGTH
+ * would otherwise recurse once per nesting level and throw a RangeError
+ * (stack overflow) that escapes the security gate. When the cap is reached the
+ * parser stops descending but STILL emits the nesting node, so the subshell-depth
+ * check in bash-security (which blocks >5 levels) keeps firing — i.e. the abort is
+ * fail-CLOSED for the nesting-obfuscation vector, not fail-open. The cap is far
+ * above the legitimate >5 depth limit yet well below the JS call-stack limit.
+ */
+const MAX_PARSE_DEPTH = 50;
+
+// Shell keywords/control-structure tokens. A keyword that leads a simple-command
+// node means the node's real command is hidden behind it (e.g. `then nc …`,
+// `do socat …`, `{ insmod …`). extractCommands uses these sets to recover the
+// hidden command so AST-based blockers in bash-security see inside control-flow
+// bodies and brace command groups instead of only seeing the keyword.
+const KEYWORD_CMD_INTRO = new Set(['if', 'elif', 'while', 'until', 'then', 'else', 'do', '{', '!', 'time']);
+const KEYWORD_VAR_INTRO = new Set(['for', 'select', 'case']);
+const KEYWORD_TERMINATOR = new Set(['fi', 'done', 'esac', '}', 'in']);
+const SHELL_KEYWORDS = new Set<string>([...KEYWORD_CMD_INTRO, ...KEYWORD_VAR_INTRO, ...KEYWORD_TERMINATOR]);
+
 class BashLexer {
   private pos = 0;
   private input: string;
@@ -127,7 +156,7 @@ class BashLexer {
   getRemaining(): string { return this.input.slice(this.pos); }
 }
 
-function parseSimpleCommand(lexer: BashLexer): CommandNode | null {
+function parseSimpleCommand(lexer: BashLexer, depth: number): CommandNode | null {
   lexer.skipWhitespace();
   if (lexer.isAtEnd()) return null;
 
@@ -136,7 +165,10 @@ function parseSimpleCommand(lexer: BashLexer): CommandNode | null {
   if (p === '(') {
     lexer.advance();
     const inner = lexer.readUntilCloseParen();
-    const children = parseBashAST(inner);
+    // Fail-closed recursion budget: past the cap, emit the subshell node WITHOUT
+    // descending, so excessive-nesting detection still fires but we never risk a
+    // stack-overflow RangeError on adversarial `((((…))))` input.
+    const children = depth >= MAX_PARSE_DEPTH ? null : parseBashASTInternal(inner, depth + 1);
     return {
       type: 'subshell',
       children: children ? [children] : [],
@@ -148,7 +180,7 @@ function parseSimpleCommand(lexer: BashLexer): CommandNode | null {
     lexer.advance(); // $
     lexer.advance(); // (
     const inner = lexer.readUntilCloseParen();
-    const children = parseBashAST(inner);
+    const children = depth >= MAX_PARSE_DEPTH ? null : parseBashASTInternal(inner, depth + 1);
     return {
       type: 'command_substitution',
       children: children ? [children] : [],
@@ -183,7 +215,6 @@ function parseSimpleCommand(lexer: BashLexer): CommandNode | null {
 
   const command = words[cmdIdx] || '';
   const args = words.slice(cmdIdx + 1);
-  const rawEnd = lexer.getPosition();
 
   return {
     type: 'simple',
@@ -193,8 +224,8 @@ function parseSimpleCommand(lexer: BashLexer): CommandNode | null {
   };
 }
 
-function parsePipeline(lexer: BashLexer): CommandNode | null {
-  const first = parseSimpleCommand(lexer);
+function parsePipeline(lexer: BashLexer, depth: number): CommandNode | null {
+  const first = parseSimpleCommand(lexer, depth);
   if (!first) return null;
 
   const pipelineCommands: CommandNode[] = [first];
@@ -203,7 +234,7 @@ function parsePipeline(lexer: BashLexer): CommandNode | null {
     const p = lexer.peek();
     if (p === '|' && lexer.peekTwo() !== '||') {
       lexer.advance(); // consume |
-      const next = parseSimpleCommand(lexer);
+      const next = parseSimpleCommand(lexer, depth);
       if (next) pipelineCommands.push(next);
     } else {
       break;
@@ -219,8 +250,8 @@ function parsePipeline(lexer: BashLexer): CommandNode | null {
   };
 }
 
-function parseList(lexer: BashLexer): CommandNode | null {
-  const first = parsePipeline(lexer);
+function parseList(lexer: BashLexer, depth: number): CommandNode | null {
+  const first = parsePipeline(lexer, depth);
   if (!first) return null;
 
   const listItems: CommandNode[] = [first];
@@ -234,17 +265,27 @@ function parseList(lexer: BashLexer): CommandNode | null {
       operators.push(pp);
       lexer.advance();
       lexer.advance();
-      const next = parsePipeline(lexer);
+      const next = parsePipeline(lexer, depth);
       if (next) listItems.push(next);
     } else if (p === ';' || p === '\n') {
       operators.push(';');
       lexer.advance();
-      const next = parsePipeline(lexer);
+      const next = parsePipeline(lexer, depth);
       if (next) listItems.push(next);
     } else if (p === '&') {
       operators.push('&');
       lexer.advance();
-      const next = parsePipeline(lexer);
+      const next = parsePipeline(lexer, depth);
+      if (next) listItems.push(next);
+    } else if (p === ')') {
+      // A `)` surfacing at list level is a case-pattern terminator (e.g.
+      // `case $x in a) cmd;; esac`). Subshell `(...)` parens are fully consumed
+      // by readUntilCloseParen, so this is never a subshell close. Treat it as a
+      // separator so the case-branch body (`cmd`) is parsed as its own command
+      // and stays visible to AST-based security checks instead of being dropped.
+      operators.push(';');
+      lexer.advance();
+      const next = parsePipeline(lexer, depth);
       if (next) listItems.push(next);
     } else {
       break;
@@ -261,12 +302,35 @@ function parseList(lexer: BashLexer): CommandNode | null {
   };
 }
 
-export function parseBashAST(input: string): CommandNode | null {
+function parseBashASTInternal(input: string, depth: number): CommandNode | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
+  // Input-length cap (DoS defense): refuse to parse pathologically long input.
+  if (trimmed.length > MAX_COMMAND_LENGTH) return null;
 
   const lexer = new BashLexer(trimmed);
-  return parseList(lexer);
+  return parseList(lexer, depth);
+}
+
+export function parseBashAST(input: string): CommandNode | null {
+  return parseBashASTInternal(input, 0);
+}
+
+/**
+ * Recover the real command hidden behind leading shell keywords in a simple-command
+ * node. Returns the first genuine command token found after control-structure
+ * keywords (`then`/`do`/`else`/`{`/`!`/`time`/`if`/`while`/…), or null when the
+ * segment introduces only a loop/case variable (`for`/`select`/`case`) or is a
+ * bare terminator (`fi`/`done`/`esac`/`}`).
+ */
+function recoverHiddenCommand(tokens: string[]): string | null {
+  for (const t of tokens) {
+    if (KEYWORD_VAR_INTRO.has(t)) return null;
+    if (KEYWORD_CMD_INTRO.has(t) || KEYWORD_TERMINATOR.has(t)) continue;
+    if (/^[A-Za-z_]\w*=/.test(t)) continue; // env assignment prefix
+    return t;
+  }
+  return null;
 }
 
 export function extractCommands(node: CommandNode): string[] {
@@ -275,6 +339,14 @@ export function extractCommands(node: CommandNode): string[] {
   function walk(n: CommandNode): void {
     if (n.type === 'simple' && n.command) {
       commands.push(n.command);
+      // When a simple node leads with a shell keyword, the real command is hidden
+      // behind it (control-flow body or brace command group). Surface it so
+      // AST-based blockers see `if …; then nc …; fi`, `{ socat …; }`,
+      // `while …; do insmod …; done`, `case … ) mkfs … ;;` etc.
+      if (SHELL_KEYWORDS.has(n.command)) {
+        const recovered = recoverHiddenCommand([n.command, ...(n.args ?? [])]);
+        if (recovered) commands.push(recovered);
+      }
     }
     if (n.children) {
       for (const child of n.children) walk(child);

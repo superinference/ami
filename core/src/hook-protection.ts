@@ -41,6 +41,13 @@ export function isProtectedEvent(event: string): boolean {
 
 export function canHookEvent(event: string, tier: HookTier): boolean {
   if (!isProtectedEvent(event)) return true;
+  // Fail-safe: the `tier` value originates from untrusted plugin/hook
+  // registration data and is only nominally typed `HookTier`. A value that is
+  // not a recognized tier (e.g. a malformed/unknown tier like 'User', 'plugin',
+  // or '') must NOT silently pass the protected-event guard. Deny (fail-closed)
+  // any tier we do not recognize instead of allowing everything that is not the
+  // single excluded 'user' literal.
+  if (!(HOOK_TIERS as readonly string[]).includes(tier)) return false;
   return tier !== 'user';
 }
 
@@ -65,16 +72,60 @@ export function sortHooksByTier(hooks: HookRegistration[]): HookRegistration[] {
   });
 }
 
+/**
+ * Hook permission verdicts, forming a precedence lattice.
+ *
+ * `passthrough` is a FOURTH, neutral state distinct from `allow`: a hook can
+ * observe an event and decline to influence the decision (abstain) without
+ * pinning the outcome to `allow`. Mirrors Claude Code's hook precedence, where
+ * `allow` only wins when nothing is set yet while `passthrough` is a true no-op.
+ * Precedence (strictest wins): passthrough < allow < ask < deny.
+ */
+export type HookVerdict = 'passthrough' | 'allow' | 'ask' | 'deny';
+
+const VERDICT_RANK: Record<HookVerdict, number> = {
+  passthrough: -1, // neutral no-op: never overrides a real verdict, is overridden by any
+  allow: 0,
+  ask: 1,
+  deny: 2,
+};
+
+function verdictRank(verdict: string): number | undefined {
+  return (VERDICT_RANK as Record<string, number | undefined>)[verdict];
+}
+
 export interface HookVerdictCheck {
   event: string;
   hookTier: HookTier;
-  verdict: 'allow' | 'deny' | 'ask';
+  verdict: HookVerdict;
   isStricter: boolean;
 }
 
-export function isStricterVerdict(current: 'allow' | 'deny' | 'ask', previous: 'allow' | 'deny' | 'ask'): boolean {
-  const rank = { allow: 0, ask: 1, deny: 2 };
-  return rank[current] > rank[previous];
+/**
+ * Returns true iff `current` is strictly stricter than `previous` in the verdict
+ * lattice (and should therefore win the strictest-wins merge).
+ *
+ * Fail-safe boundary: `current`/`previous` may carry malformed values straight
+ * from a plugin/hook payload. Rather than silently coercing an unrecognized
+ * value to the least-strict rank (which would let a real `deny` be dropped when
+ * compared against garbage), any value outside the known verdict set throws —
+ * mirroring Claude Code's `processHookJSONOutput`, which rejects unknown
+ * decision types instead of proceeding on malformed input.
+ */
+export function isStricterVerdict(current: string, previous: string): boolean {
+  const currentRank = verdictRank(current);
+  if (currentRank === undefined) {
+    throw new Error(
+      `Unknown hook verdict "${current}". Valid verdicts are: passthrough, allow, ask, deny`,
+    );
+  }
+  const previousRank = verdictRank(previous);
+  if (previousRank === undefined) {
+    throw new Error(
+      `Unknown hook verdict "${previous}". Valid verdicts are: passthrough, allow, ask, deny`,
+    );
+  }
+  return currentRank > previousRank;
 }
 
 export class HookChainGuard {
