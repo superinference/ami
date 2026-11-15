@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult } from '../types';
-import { getScheduler, resetScheduler, CronScheduler, validateCronExpression } from '../cron';
+import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, type CronJob } from '../cron';
 import { coerceBool } from '../utils/coerce';
 
 /** @deprecated Use getScheduler from '../cron' directly */
@@ -12,6 +12,38 @@ export function resetCronScheduler(): void {
 }
 
 const ALLOWED_KEYS = new Set(['cron', 'prompt', 'recurring', 'durable', 'permanent']);
+
+// PARITY (additive): upper bound on a scheduled prompt's length. A prompt far
+// larger than this is almost always an accident (e.g. a whole file pasted in)
+// and would bloat the persisted job store, so it is refused as clean validation
+// instead of silently writing a multi-megabyte entry to scheduled_tasks.json.
+export const MAX_CRON_PROMPT_LEN = 10_000;
+
+/**
+ * PARITY (additive): autonomous-loop (fork-bomb) sentinel. A scheduled prompt
+ * that itself re-invokes the cron scheduler compounds without bound — every fire
+ * schedules one (or more) further jobs. Detect the literal `cron_create` tool
+ * token in the prompt so such self-replicating schedules can be refused up front.
+ * Matches `cron_create`, `cron-create`, and `cron create` (case-insensitive).
+ */
+export function isSelfSchedulingPrompt(prompt: string): boolean {
+  return /\bcron[_\s-]?create\b/i.test(prompt);
+}
+
+/**
+ * PARITY (additive): duplicate-job detection. Return an existing job with an
+ * identical schedule + prompt + recurrence (within the caller's agent scope), or
+ * undefined. Prevents silently stacking an unbounded pile of identical reminders
+ * when the model re-issues the same request.
+ */
+export function findDuplicateCronJob(
+  jobs: CronJob[],
+  cron: string,
+  prompt: string,
+  recurring: boolean,
+): CronJob | undefined {
+  return jobs.find(j => j.cron === cron && j.prompt === prompt && j.recurring === recurring);
+}
 
 export const cronCreateTool: ToolDefinition = {
   name: 'cron_create',
@@ -84,6 +116,21 @@ export const cronCreateTool: ToolDefinition = {
     if (!prompt || !prompt.trim()) {
       return { output: 'Error: prompt must not be empty.', isError: true };
     }
+    // PARITY (additive): refuse an oversized prompt as clean validation.
+    if (prompt.length > MAX_CRON_PROMPT_LEN) {
+      return {
+        output: `Error: prompt is too long (${prompt.length} chars; max ${MAX_CRON_PROMPT_LEN}). Schedule a short instruction, not a full document.`,
+        isError: true,
+      };
+    }
+    // PARITY (additive): refuse a self-replicating schedule (autonomous-loop
+    // sentinel) — a scheduled prompt that re-invokes cron_create fires forever.
+    if (isSelfSchedulingPrompt(prompt)) {
+      return {
+        output: 'Error: prompt would schedule more cron jobs (references cron_create), creating a self-replicating loop. Describe the task itself, not a request to schedule it again.',
+        isError: true,
+      };
+    }
 
     const sched = getScheduler(context.cwd);
 
@@ -92,6 +139,16 @@ export const cronCreateTool: ToolDefinition = {
     // scheduling a job that can never fire.
     if (sched.computeNextRun(cron) === null) {
       return { output: `Error: cron "${cron}" never matches a real date (e.g. an impossible calendar date).`, isError: true };
+    }
+
+    // PARITY (additive): duplicate-job detection — point the caller at the
+    // existing identical job instead of stacking another copy of it.
+    const dup = findDuplicateCronJob(sched.list(context.agentId), cron, prompt, recurring);
+    if (dup) {
+      return {
+        output: `Error: an identical ${recurring ? 'recurring' : 'one-shot'} job already exists (${dup.id}) with the same schedule and prompt. Delete it first with cron_delete if you want to recreate it.`,
+        isError: true,
+      };
     }
 
     let job;

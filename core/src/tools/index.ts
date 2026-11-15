@@ -160,7 +160,7 @@ export { taskOutputTool } from './task-output';
 export { taskKillTool } from './task-kill';
 export { taskListTool } from './task-list';
 export { skillTool } from './skill';
-export { cronCreateTool, getCronScheduler, resetCronScheduler } from './cron-create';
+export { cronCreateTool, getCronScheduler, resetCronScheduler, MAX_CRON_PROMPT_LEN, isSelfSchedulingPrompt, findDuplicateCronJob } from './cron-create';
 export { cronDeleteTool } from './cron-delete';
 export { cronListTool } from './cron-list';
 export { scheduleWakeupTool } from './schedule-wakeup';
