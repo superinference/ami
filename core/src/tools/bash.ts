@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
 import { coerceBool } from '../utils/coerce';
@@ -11,6 +11,7 @@ import { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE } from './docke
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
+import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -62,6 +63,12 @@ export const _bashHooks = {
   // detectDataExfiltration, so this standalone guard only fires if that upstream
   // check is ever narrowed; the seam lets tests exercise this safety net.
   detectDataExfiltration: detectDataExfiltration as typeof detectDataExfiltration,
+  // Sandbox-decision seams: let tests drive the non-container sandbox path
+  // (force shouldUseSandbox true, assert wrapWithSandbox is/ISN'T invoked) so the
+  // dangerouslyDisableSandbox coercion is red-green verifiable without a real
+  // namespace. Defaults are the real implementations — production is unchanged.
+  shouldUseSandbox: shouldUseSandbox as typeof shouldUseSandbox,
+  wrapWithSandbox: wrapWithSandbox as typeof wrapWithSandbox,
 };
 
 function isReadOnlyBashCommand(command: string): boolean {
@@ -416,7 +423,17 @@ export function parseSleepSeconds(command: string): number | null {
 
 export function detectBlockedSleep(command: string, runInBackground: boolean, hasCustomTimeout: boolean): string | null {
   if (runInBackground || hasCustomTimeout) return null;
-  const seconds = parseSleepSeconds(command);
+  // A blocking sleep can hide inside a compound foreground command
+  // (`build && sleep 600`, `a; sleep 300`), so scan each sequencing segment, not
+  // just the whole string. Split only on FOREGROUND separators (&&, ||, ;, |) —
+  // a trailing single `&` backgrounds the sleep, which is not blocking, so it is
+  // deliberately NOT a split point. parseSleepSeconds stays strict, so a segment
+  // with any non-duration token (quotes, flags, extra args) is skipped.
+  let seconds: number | null = null;
+  for (const seg of command.split(/(?:&&|\|\||[;|])/)) {
+    const s = parseSleepSeconds(seg);
+    if (s !== null && (seconds === null || s > seconds)) seconds = s;
+  }
   if (seconds !== null && seconds > 10) {
     const pretty = Number.isInteger(seconds) ? `${seconds}` : seconds.toFixed(2).replace(/\.?0+$/, '');
     return `Blocking sleep for ${pretty}s detected. Use run_in_background: true for long waits, or schedule_wakeup for timed delays.`;
@@ -585,7 +602,20 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
 export const bashTool: ToolDefinition = {
   name: 'bash',
   description:
-    'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. IMPORTANT: Do not use bash for reading files (use file_read), editing files (use file_edit), or searching (use grep/glob). Use absolute paths. Quote paths with spaces. Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never commit unless explicitly asked. Do not sleep between commands. Chain dependent commands with &&. In assistant/detached mode, commands exceeding 15s are auto-backgrounded — use run_in_background for intentionally long tasks.',
+    'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. '
+    + 'IMPORTANT — prefer the dedicated tools over shell equivalents: read files with file_read (NOT cat/head/tail), '
+    + 'edit files with file_edit (NOT sed/awk), search with grep/glob (NOT grep/rg/find), and write files with file_write '
+    + '(NOT echo >/cat <<EOF). Communicate by writing text directly (NOT echo/printf to the shell). '
+    + 'Use absolute paths. Quote paths with spaces. '
+    + 'The working directory persists between commands, but shell state does NOT: each call runs in a fresh non-interactive '
+    + 'shell that is not initialized from your profile (~/.bashrc/.zshrc), so a prior `cd`, exported variables, and your '
+    + 'user-defined aliases/functions are unavailable in the next call — use absolute paths and chain dependent commands with &&. '
+    + 'Do not run interactive/blocking commands that wait for input (e.g. `git rebase -i`, `git add -i`, or anything that opens '
+    + 'an editor or prompts for a password); they will hang. '
+    + 'Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never '
+    + 'commit unless explicitly asked. Do not sleep between commands. '
+    + 'For intentionally long tasks pass run_in_background: true; a command that overruns its timeout is automatically moved to '
+    + 'the background so the session stays responsive.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -601,18 +631,25 @@ export const bashTool: ToolDefinition = {
       run_in_background: {
         type: 'boolean',
         description:
-          'Run this command in the background. Returns immediately with a task ID. ' +
-          'Use task_output to check results later, task_kill to stop it, or task_list to see all background tasks.',
+          'Run this command in the background. Returns immediately with a task ID; you do NOT need to append `&`. ' +
+          'You will be notified when it completes — do not poll. Use task_output to inspect results, task_kill to stop it, ' +
+          'or task_list to see all background tasks.',
       },
       description: {
         type: 'string',
         description:
-          'A short human-readable description of what this command does.',
+          'Clear, concise description of what this command does, in active voice (5-10 words for simple commands). ' +
+          'Examples: `ls` -> "List files in current directory"; `git status` -> "Show working tree status"; ' +
+          '`npm install` -> "Install project dependencies". Avoid vague words like "complex" or "risk".',
       },
       dangerouslyDisableSandbox: {
         type: 'boolean',
         description:
-          'Override sandbox mode and run commands without resource restrictions. Use only when the sandbox interferes with legitimate operations.',
+          'Run this command outside the sandbox (no filesystem/network/resource restrictions). ' +
+          'When a command fails with evidence of a sandbox restriction — "Operation not permitted", access denied to paths ' +
+          'outside the project, or a network/unix-socket connection error — retry that SAME command with ' +
+          'dangerouslyDisableSandbox: true. Scope the override to the individual command that needs it; do not disable the ' +
+          'sandbox pre-emptively.',
       },
     },
     required: ['command'],
@@ -773,9 +810,13 @@ export const bashTool: ToolDefinition = {
         allowNetwork: context.sandbox.allowNetwork !== false,
       });
     } else {
-      const disableSandbox = input.dangerouslyDisableSandbox === true;
-      const useSandbox = !disableSandbox && shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
-      effectiveCommand = useSandbox ? wrapWithSandbox(command, context.cwd) : command;
+      // coerceBool: providers serialize booleans as strings; a strict `=== true`
+      // would silently keep the sandbox on for `dangerouslyDisableSandbox: "true"`.
+      // Use the SAME coercion as run_in_background so both boolean flags behave
+      // identically for string-serialized input.
+      const disableSandbox = coerceBool(input.dangerouslyDisableSandbox);
+      const useSandbox = !disableSandbox && _bashHooks.shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
+      effectiveCommand = useSandbox ? _bashHooks.wrapWithSandbox(command, context.cwd) : command;
     }
 
     if (runInBackground && context.processManager) {
@@ -850,6 +891,22 @@ export const bashTool: ToolDefinition = {
       };
     }
 
+    // If a successful command printed a base64 image data URI (a screenshot,
+    // chart/plot generator, or `… | base64 --to-data-uri`), surface it as a real
+    // image block instead of letting spillToolText truncate the base64 into a
+    // corrupt text blob. Emits the same JSON the engine already parses
+    // (parseImageToolOutput), so no extra engine wiring is required.
+    if (result.exitCode === 0) {
+      const imageOutput = await maybeBuildShellImageOutput(presented.stdout);
+      if (imageOutput !== null) {
+        // NOT run through sanitizeToolOutput: the output is machine-parsed JSON
+        // whose base64 payload must stay byte-exact (credential/ANSI redaction
+        // would corrupt it). The payload is restricted to base64 chars by the
+        // data-URI matcher, so it carries no secrets or escape sequences.
+        return { output: imageOutput, isError: false, metadata: { readOnly } };
+      }
+    }
+
     // Already folded. Spill only non-suite output that is still over the cap.
     const bashMaxChars = context.outputBudget?.bashMaxChars ?? MAX_OUTPUT_LENGTH;
     let stdout = spillToolText(context.cwd, 'bash', presented.stdout, bashMaxChars);
@@ -915,6 +972,58 @@ function presentCommandOutput(
   };
 }
 
+/** A bare base64 image data URI occupying the whole of a command's stdout. */
+const SHELL_IMAGE_DATA_URI_RE = /^data:(image\/[a-z0-9.+_-]+);base64,([A-Za-z0-9+/=\s]+)$/i;
+
+/** Raw-byte ceiling for a shell-produced image before we refuse to decode it
+ *  (parity: Claude Code's MAX_IMAGE_FILE_SIZE = 20MB). Estimated from the base64
+ *  length BEFORE allocating the buffer, so a pathological data URI can't OOM us. */
+const MAX_SHELL_IMAGE_RAW_BYTES = 20 * 1024 * 1024;
+
+/**
+ * When a command's stdout is a single base64 `data:image/...;base64,...` URI
+ * (a screenshot / plot / chart-generator / `… | base64 --to-data-uri`), build a
+ * real image tool_result instead of a text blob that spillToolText would truncate
+ * into a corrupt base64 string. Returns the `{type:'image',source:{type:'base64',…}}`
+ * JSON the engine already recognizes (parseImageToolOutput) — so surfacing a
+ * shell-produced image needs no new engine wiring. Reuses file_read's
+ * compressImageBuffer for the shared size/dimension caps (high-DPI downsample +
+ * 5MB API ceiling), matching how file reads encode images. Returns null when
+ * stdout is not a bare image data URI (ordinary text output is unchanged).
+ * Parity: Claude Code BashTool utils isImageOutput / buildImageToolResult /
+ * resizeShellImageOutput.
+ */
+export async function maybeBuildShellImageOutput(stdout: string): Promise<string | null> {
+  const m = stdout.trim().match(SHELL_IMAGE_DATA_URI_RE);
+  if (!m) return null;
+  const declaredType = m[1].toLowerCase();
+  const b64 = m[2].replace(/\s+/g, '');
+  if (b64.length === 0) return null;
+  // Estimate raw size (base64 inflates by 4/3) before decoding to fail fast on an
+  // oversized URI without materializing the buffer.
+  if (Math.floor((b64.length * 3) / 4) > MAX_SHELL_IMAGE_RAW_BYTES) {
+    return `[Image output omitted: exceeds the ${MAX_SHELL_IMAGE_RAW_BYTES / (1024 * 1024)}MB limit for shell-produced images. Write it to a file and open it with file_read instead.]`;
+  }
+  const buffer = Buffer.from(b64, 'base64');
+  if (buffer.length === 0) return null;
+  const sniffed = detectImageFormatFromBase64(b64);
+  try {
+    const compressed = await compressImageBuffer(buffer, IMAGE_TARGET_RAW_SIZE, sniffed || declaredType);
+    const block: ImageContent & { metadata?: string } = {
+      type: 'image',
+      source: { type: 'base64', media_type: compressed.mediaType, data: compressed.base64 },
+    };
+    const meta = compressed.dimensions ? createImageMetadataText(compressed.dimensions, 'bash stdout') : null;
+    if (meta) block.metadata = meta;
+    return JSON.stringify(block);
+  } catch (err) {
+    if (err instanceof ImageResizeError) {
+      return `[Image output could not be prepared: ${err.message}]`;
+    }
+    return null;
+  }
+}
+
 const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
   { pattern: /ENOSPC|No space left on device/i, hint: 'Disk is full. Free up space in the working directory or /tmp. Check usage with `df -h` and find large files with `du -sh * | sort -rh | head`.' },
   { pattern: /Transform failed|SyntaxError:.*Unexpected/i, hint: 'Your code has a syntax error (missing bracket, semicolon, or mismatched quotes). Use file_read to check the file you last edited.' },
@@ -922,6 +1031,7 @@ const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
   { pattern: /ENOENT.*no such file/i, hint: 'File or directory does not exist. Use list_dir to check what files are available.' },
   { pattern: /TypeError:.*is not a function/i, hint: 'A function call is wrong. Use file_read to check the export names and signatures in the imported module.' },
   { pattern: /ReferenceError:.*is not defined/i, hint: 'A variable or import is missing. Check your imports and variable declarations with file_read.' },
+  { pattern: /Operation not permitted|\bEPERM\b/i, hint: 'This can be a sandbox restriction — the command ran in an isolated sandbox that blocks writes outside the project, network access, or certain syscalls. If the operation is legitimate, retry the SAME command with dangerouslyDisableSandbox: true.' },
   { pattern: /EACCES.*permission denied/i, hint: 'Permission denied. Check file permissions with ls -la, or use a different directory.' },
   { pattern: /EADDRINUSE/i, hint: 'Port already in use. Try a different port or find and kill the process using it (lsof -i :PORT).' },
   { pattern: /ENOMEM|Cannot allocate memory|out of memory/i, hint: 'Out of memory. Try reducing the workload, closing other processes, or increasing available memory.' },
