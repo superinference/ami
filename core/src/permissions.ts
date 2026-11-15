@@ -1223,6 +1223,31 @@ export function wildcardMatch(pattern: string, value: string): boolean {
   return matchPattern(pattern, value);
 }
 
+/**
+ * Compile a glob-like pattern to a regex source, honouring backslash escapes so
+ * a pattern can match a LITERAL asterisk or backslash (Claude's matchWildcardPattern
+ * escape handling, shellRuleMatching.ts): an UNescaped `*` is the wildcard
+ * (`.*`), `\*` is a literal `*`, and `\\` is a literal `\`. A lone backslash
+ * before any other character stays a literal backslash (back-compat). Every
+ * other regex metacharacter is escaped.
+ */
+function globToRegexSource(pattern: string): string {
+  let out = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!;
+    if (ch === '\\') {
+      const next = pattern[i + 1];
+      if (next === '*') { out += '\\*'; i++; continue; }   // escaped → literal asterisk
+      if (next === '\\') { out += '\\\\'; i++; continue; } // escaped → literal backslash
+      out += '\\\\'; continue;                             // lone backslash → literal
+    }
+    if (ch === '*') { out += '.*'; continue; }             // wildcard
+    if (/[.+^${}()|[\]?]/.test(ch)) { out += '\\' + ch; continue; } // escape other metachars
+    out += ch;
+  }
+  return out;
+}
+
 function matchPattern(pattern: string, value: string): boolean {
   if (pattern.includes('\x00') || value.includes('\x00')) return false;
   if (pattern === value) return true;
@@ -1230,13 +1255,10 @@ function matchPattern(pattern: string, value: string): boolean {
 
   let regex = _patternCache.get(pattern);
   if (!regex) {
-    const escaped = pattern
-      .replace(/[.+^${}()|[\]\\?]/g, '\\$&')
-      .replace(/\*/g, '.*');
     // dotAll (`s`): `*` must also match across embedded newlines, so a rule like
     // `*rm -rf*` still matches a multi-line command and a deny cannot be bypassed
     // by splitting the command across lines (Claude's dotAll wildcard matching).
-    regex = new RegExp(`^${escaped}$`, 's');
+    regex = new RegExp(`^${globToRegexSource(pattern)}$`, 's');
     _patternCache.set(pattern, regex);
   }
   return regex.test(value);
@@ -1629,7 +1651,64 @@ export function validatePermissionRule(rule: string): {
       };
     }
   }
+  // Per-tool content validation (Claude's toolValidationConfig customValidation).
+  if (parsed.ruleContent !== undefined) {
+    // WebSearch: patterns are allowed/blocked search terms — wildcards are
+    // meaningless and silently never match. Reject them with guidance.
+    if (parsed.toolName === 'web_search') {
+      if (parsed.ruleContent.includes('*') || parsed.ruleContent.includes('?')) {
+        return {
+          valid: false, error: 'WebSearch patterns cannot contain wildcards',
+          suggestion: 'Use a plain search term (wildcards are not supported for WebSearch)',
+          examples: ['web_search(weather)', 'web_search(stock prices)'],
+        };
+      }
+    }
+    // WebFetch: patterns match a domain, not a full URL. Reject a URL-form
+    // pattern and point at the bare-domain form (Claude's WebFetch validator).
+    if (parsed.toolName === 'web_fetch') {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(parsed.ruleContent)) {
+        return {
+          valid: false, error: 'WebFetch patterns must be a domain, not a URL',
+          suggestion: 'Drop the scheme and path — match on the domain only',
+          examples: ['web_fetch(example.com)', 'web_fetch(*.github.com)'],
+        };
+      }
+    }
+  }
   return { valid: true };
+}
+
+/**
+ * Fault-tolerant filter over a raw array of permission-rule STRINGS (the
+ * `permissions.{allow,deny,ask}` settings.json form). Drops every entry that is
+ * not a string or that fails {@link validatePermissionRule}, keeping the rest so
+ * one malformed rule cannot poison the whole settings file, and returns a
+ * human-readable warning per dropped rule. Fail-open-safe: on any unexpected
+ * shape the entry is skipped with a warning rather than throwing. Mirrors
+ * Claude's filterInvalidPermissionRules (settings/validation.ts) wording.
+ */
+export function filterInvalidPermissionRules(
+  rules: unknown,
+  key = 'permissions',
+): { kept: string[]; warnings: string[] } {
+  const kept: string[] = [];
+  const warnings: string[] = [];
+  if (!Array.isArray(rules)) return { kept, warnings };
+  for (const entry of rules) {
+    if (typeof entry !== 'string') {
+      warnings.push(`Non-string value in ${key} array was removed`);
+      continue;
+    }
+    const result = validatePermissionRule(entry);
+    if (result.valid) {
+      kept.push(entry);
+      continue;
+    }
+    const suffix = result.suggestion ? `. ${result.suggestion}` : '';
+    warnings.push(`Invalid permission rule "${entry}" was skipped: ${result.error}${suffix}`);
+  }
+  return { kept, warnings };
 }
 
 /**
@@ -2699,10 +2778,22 @@ export class PermissionManager {
       if (r.paramPattern !== undefined && paramPattern === undefined) {
         return { warning: `Invalid permission rule for "${r.tool}" was skipped: malformed paramPattern` };
       }
+      const pattern = typeof r.pattern === 'string' ? r.pattern : undefined;
+      // Validate the composed canonical rule string so a syntactically bad rule
+      // (empty tool name, a misplaced bash `:*` prefix, a WebFetch URL / WebSearch
+      // wildcard) is dropped with an actionable warning instead of silently loaded
+      // as a rule that never matches. The pattern is paren-escaped first so a
+      // legitimate parenthesis in the content is not mistaken for a syntax error.
+      const canonical = permissionRuleValueToString({ toolName: r.tool, ruleContent: pattern });
+      const verdict = validatePermissionRule(canonical);
+      if (!verdict.valid) {
+        const suffix = verdict.suggestion ? `. ${verdict.suggestion}` : '';
+        return { warning: `Invalid permission rule "${canonical}" was skipped: ${verdict.error}${suffix}` };
+      }
       return {
         rule: {
           tool: r.tool,
-          pattern: typeof r.pattern === 'string' ? r.pattern : undefined,
+          pattern,
           action: r.action as PermissionRule['action'],
           reason: typeof r.reason === 'string' ? r.reason : undefined,
           paramPattern,

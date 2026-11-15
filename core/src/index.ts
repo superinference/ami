@@ -42,6 +42,11 @@ export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURREN
 export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy } from './hooks';
 export { shouldSkipHookDueToTrust } from './hook-protection';
 export { wildcardMatch } from './permissions';
+export {
+  validatePermissionRule, filterInvalidPermissionRules, permissionRuleValueFromString,
+  permissionRuleValueToString, escapeRuleContent, unescapeRuleContent, normalizeToolName,
+} from './permissions';
+export type { PermissionRuleValue } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
 export { SessionMemoryExtractor, selectIncrementalWindow } from './session-memory';
 export type { SessionFact, IncrementalWindow } from './session-memory';
