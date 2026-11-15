@@ -356,7 +356,31 @@ export class EventConcurrencyLimiter {
 
 export const MAX_HOOK_TIMEOUT_MS = 600_000; // 10 min — matches Claude Code's hook ceiling
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // CC default when a hook sets no timeout
+/** Default HTTP-hook deadline when the hook sets no `timeout` — 10 minutes,
+ *  matching Claude Code's DEFAULT_HTTP_HOOK_TIMEOUT_MS (= TOOL_HOOK_EXECUTION_
+ *  TIMEOUT_MS). A webhook round-trip may legitimately be slow; a too-short
+ *  default (previously 10s) spuriously failed/denied slow hooks. */
+export const DEFAULT_HTTP_HOOK_TIMEOUT_MS = 10 * 60 * 1000;
 export const MAX_HOOKS_PER_EVENT = 10;
+
+/** Hard turn-count cap on an agent (multi-turn LLM) hook, independent of the
+ *  timeout, so a verification agent cannot loop indefinitely even within budget
+ *  (Claude Code's MAX_AGENT_TURNS). Passed to the hook sub-engine. */
+export const MAX_AGENT_TURNS = 50;
+
+/** Cap on hook-contributed context injected into the turn (Claude Code's
+ *  MAX_HOOK_OUTPUT_LENGTH). A UserPromptSubmit hook that emits a huge blob is
+ *  truncated with a marker so it cannot blow out the context window. */
+export const MAX_HOOK_OUTPUT_LENGTH = 10_000;
+
+/** Truncate hook-contributed output to MAX_HOOK_OUTPUT_LENGTH, appending the
+ *  Claude-parity marker when it overflows. Shared so no site re-implements it. */
+export function truncateHookOutput(content: string): string {
+  if (content.length > MAX_HOOK_OUTPUT_LENGTH) {
+    return `${content.substring(0, MAX_HOOK_OUTPUT_LENGTH)}… [output truncated - exceeded ${MAX_HOOK_OUTPUT_LENGTH} characters]`;
+  }
+  return content;
+}
 
 export const BLOCKED_HOOK_COMMANDS: ReadonlySet<string> = new Set([
   'rm -rf /',
@@ -501,22 +525,37 @@ export function isHttpHookUrlAllowed(url: string, allowed: string[] | undefined)
 }
 
 /**
+ * Strip CR, LF, and NUL bytes from an HTTP-hook header value to prevent HTTP
+ * header (CRLF) injection via an env-var value or a hook-configured header
+ * template (Claude Code's sanitizeHeaderValue). A malicious env var such as
+ * `token\r\nX-Evil: 1` would otherwise smuggle a second header into the request.
+ * Implemented with split/join (not a regex) so the control-char class does not
+ * trip the security lint's no-control-regex rule.
+ */
+export function sanitizeHeaderValue(value: string): string {
+  return value.split('\r').join('').split('\n').join('').split('\u0000').join('');
+}
+
+/**
  * Interpolate `$VAR` / `${VAR}` references in HTTP-hook header values from the
  * process environment, gated by an allowlist (the hook's own `allowedEnvVars`
  * intersected with the global `httpHookAllowedEnvVars` setting). Any var not on
  * the allowlist resolves to the empty string so a malicious hooks.json cannot
- * exfiltrate arbitrary secrets through a header.
+ * exfiltrate arbitrary secrets through a header. The fully-interpolated value is
+ * then CRLF/NUL-sanitized (sanitizeHeaderValue) so neither the template literal
+ * NOR a resolved env value can inject an extra header.
  */
 export function interpolateHookHeaderEnv(
   value: string,
   allowed: Set<string>,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_m, braced, bare) => {
+  const interpolated = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_m, braced, bare) => {
     const name = braced ?? bare;
     if (!allowed.has(name)) return '';
     return env[name] ?? '';
   });
+  return sanitizeHeaderValue(interpolated);
 }
 
 /**
@@ -705,6 +744,27 @@ export const HOOK_VERIFICATION_CONTRACT =
   '{"ok": true} if the condition is met, or {"ok": false, "reason": "<why>"} if it is not.';
 
 /**
+ * Substitute the hook input JSON into a prompt/agent hook's prompt template
+ * (Claude Code's addArgumentsToPrompt / substituteArguments):
+ *   - `$ARGUMENTS`        → the full hook-input JSON string
+ *   - `$ARGUMENTS[n]`/`$n`→ the n-th whitespace-delimited token of the input
+ *   - if NO placeholder appears, the input is appended as `\n\nARGUMENTS: <json>`
+ * so an AI-driven hook can reference the event data positionally OR rely on the
+ * append fallback. Indexed tokens use a simple whitespace split (the common case
+ * for hook input); `$ARGUMENTS` always yields the verbatim JSON.
+ */
+export function substituteHookArguments(prompt: string, jsonInput: string): string {
+  const tokens = jsonInput.trim().length ? jsonInput.trim().split(/\s+/) : [];
+  const original = prompt;
+  let out = prompt
+    .replace(/\$ARGUMENTS\[(\d+)\]/g, (_m, i: string) => tokens[parseInt(i, 10)] ?? '')
+    .replace(/\$(\d+)(?!\w)/g, (_m, i: string) => tokens[parseInt(i, 10)] ?? '');
+  out = out.split('$ARGUMENTS').join(jsonInput);
+  if (out === original && jsonInput) out = `${out}\n\nARGUMENTS: ${jsonInput}`;
+  return out;
+}
+
+/**
  * Parse an AI-driven hook's output against the {ok, reason} verification schema.
  * Returns the structured result when the output is a valid verification object,
  * or undefined when it is free-form (callers fall back to raw-text handling).
@@ -755,6 +815,77 @@ export function matcherAppliesToCtx(event: string, matcher: string | undefined, 
   const field = HOOK_MATCHER_FIELD[event];
   if (field === undefined) return true;
   return matchesPattern(matcher, String(ctx[field] ?? ''));
+}
+
+/**
+ * Declarative per-event metadata (Claude Code's getHookEventMetadata): a
+ * human-readable summary + description (input JSON shape + command-hook exit-code
+ * semantics) for every hook event. Drives `/hooks`-style introspection and the
+ * `--introspect` manifest. The matcher field for each event is derived from the
+ * single source HOOK_MATCHER_FIELD (tool events match on the tool name) so the
+ * catalog can never drift from the actual matcher scoping.
+ */
+export interface HookEventMetadata {
+  summary: string;
+  description: string;
+  /** The context field a `matcher` is applied against, or undefined when the
+   *  event has no matchable field (a matcher is a no-op). */
+  matcherField?: string;
+}
+
+/** Events whose matcher applies to the tool name (checked inline at dispatch,
+ *  so they are not all in HOOK_MATCHER_FIELD). */
+const TOOL_MATCHER_EVENTS: ReadonlySet<string> = new Set([
+  'preToolUse', 'postToolUse', 'postToolUseFailure', 'permissionRequest', 'permissionDenied',
+]);
+
+const EXIT_CODE_BLOCKING =
+  '\nExit code 0 — success (stdout parsed for a decision).' +
+  '\nExit code 2 — blocking error: stderr is shown to the model and the action is blocked.' +
+  '\nOther non-zero — non-blocking: stderr is surfaced but the action continues.';
+const EXIT_CODE_OBSERVE =
+  '\nExit code 0 — success (stdout not shown).' +
+  '\nOther non-zero — stderr is surfaced to the user only.';
+
+const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: string }> = {
+  preToolUse: { summary: 'Before tool execution', description: 'Input: JSON of the tool call (tool_name, tool_input).' + EXIT_CODE_BLOCKING },
+  postToolUse: { summary: 'After tool execution', description: 'Input: JSON with tool_name, tool_input, tool_response, duration_ms.' + EXIT_CODE_BLOCKING },
+  postToolUseFailure: { summary: 'After a tool execution fails', description: 'Input: JSON with tool_name, is_error, duration_ms.' + EXIT_CODE_OBSERVE },
+  permissionRequest: { summary: 'When a tool needs permission', description: 'Input: JSON with tool_name, tool_input. Return a permissionDecision (allow|deny|ask).' + EXIT_CODE_BLOCKING },
+  permissionDenied: { summary: 'After a permission is denied', description: 'Input: JSON with tool_name. Return {retry:true} to let the model retry.' + EXIT_CODE_OBSERVE },
+  preSampling: { summary: 'Before a model sampling call', description: 'Input: JSON event marker.' + EXIT_CODE_BLOCKING },
+  postSampling: { summary: 'After a model sampling call', description: 'Input: JSON event marker.' + EXIT_CODE_OBSERVE },
+  userPromptSubmit: { summary: 'When the user submits a prompt', description: 'Input: JSON with prompt, turn_count. May inject additionalContext or block.' + EXIT_CODE_BLOCKING },
+  stop: { summary: 'When the agent turn is about to end', description: 'Input: JSON with stop_hook_active, last_assistant_message. May block turn-end.' + EXIT_CODE_BLOCKING },
+  stopFailure: { summary: 'When a Stop hook itself errors', description: 'Input: JSON with error, hookIndex.' + EXIT_CODE_OBSERVE },
+  error: { summary: 'On an engine/turn error', description: 'Input: JSON event marker.' + EXIT_CODE_OBSERVE },
+  sessionStart: { summary: 'At session start', description: 'Input: JSON with session_id, source. May return initialUserMessage / watchPaths.' + EXIT_CODE_OBSERVE },
+  sessionEnd: { summary: 'At session end', description: 'Input: JSON with session_id, reason.' + EXIT_CODE_OBSERVE },
+  setup: { summary: 'On first-run setup', description: 'Input: JSON with session_id, cwd.' + EXIT_CODE_OBSERVE },
+  subagentStart: { summary: 'When a subagent starts', description: 'Input: JSON with prompt. May contribute additionalContexts.' + EXIT_CODE_OBSERVE },
+  subagentStop: { summary: 'When a subagent stops', description: 'Input: JSON with subagent_session_id.' + EXIT_CODE_OBSERVE },
+  preCompact: { summary: 'Before context compaction', description: 'Input: JSON with message_count, trigger, customInstructions. May override instructions.' + EXIT_CODE_OBSERVE },
+  postCompact: { summary: 'After context compaction', description: 'Input: JSON with message_count.' + EXIT_CODE_OBSERVE },
+  notification: { summary: 'When a notification is sent', description: 'Input: JSON with message, notification type, title.' + EXIT_CODE_OBSERVE },
+  configChange: { summary: 'When configuration changes', description: 'Input: JSON with source, filePath. A blocking hook vetoes the change.' + EXIT_CODE_BLOCKING },
+  instructionsLoaded: { summary: 'When instruction files load', description: 'Input: JSON with filePath, loadReason.' + EXIT_CODE_OBSERVE },
+  taskCreated: { summary: 'When a task is created', description: 'Input: JSON with taskId, subject.' + EXIT_CODE_OBSERVE },
+  taskCompleted: { summary: 'When a task completes', description: 'Input: JSON with taskId, subject, status. A blocking hook vetoes completion.' + EXIT_CODE_BLOCKING },
+  worktreeCreate: { summary: 'When a worktree is created', description: 'Input: JSON with name, worktreePath.' + EXIT_CODE_OBSERVE },
+  worktreeRemove: { summary: 'When a worktree is removed', description: 'Input: JSON with name, worktreePath.' + EXIT_CODE_OBSERVE },
+  fileChanged: { summary: 'When a watched file changes', description: 'Input: JSON with filePath, fileEvent. May return watchPaths.' + EXIT_CODE_OBSERVE },
+  cwdChanged: { summary: 'When the working directory changes', description: 'Input: JSON with oldCwd, newCwd. May return watchPaths.' + EXIT_CODE_OBSERVE },
+  elicitation: { summary: 'Before an MCP elicitation prompt', description: 'Input: JSON with mcp_server_name, message. May return action/content or block.' + EXIT_CODE_BLOCKING },
+  elicitationResult: { summary: 'After an MCP elicitation reply', description: 'Input: JSON with mcp_server_name. May override action/content or block.' + EXIT_CODE_BLOCKING },
+};
+
+/** Return the declarative metadata (summary, description, matcher field) for a
+ *  hook event, or undefined for an unknown event. */
+export function getHookEventMetadata(event: string): HookEventMetadata | undefined {
+  const base = HOOK_EVENT_SUMMARY_DESC[event];
+  if (!base) return undefined;
+  const matcherField = TOOL_MATCHER_EVENTS.has(event) ? 'toolName' : HOOK_MATCHER_FIELD[event];
+  return { summary: base.summary, description: base.description, ...(matcherField ? { matcherField } : {}) };
 }
 
 /**
@@ -2104,7 +2235,15 @@ export class HookManager extends EventEmitter {
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
       if (additionalContext || blockingError || preventContinuation) {
-        return { additionalContext, blockingError, preventContinuation: preventContinuation || undefined, stopReason };
+        // Bound hook-contributed context so a UserPromptSubmit hook that emits a
+        // huge blob cannot blow out the context window (Claude Code's
+        // MAX_HOOK_OUTPUT_LENGTH truncation with a marker).
+        return {
+          additionalContext: additionalContext !== undefined ? truncateHookOutput(additionalContext) : undefined,
+          blockingError,
+          preventContinuation: preventContinuation || undefined,
+          stopReason,
+        };
       }
     });
   }
@@ -2474,11 +2613,27 @@ export class HookManager extends EventEmitter {
       permissionMode: this._hookEnginePermissionMode,
       abortController: abort.controller,
       disallowedTools: HOOK_AGENT_DISALLOWED_TOOLS,
+      // Disable extended thinking for hook evaluation — a verification hook needs a
+      // fast structured verdict, not a reasoning trace (Claude Code's
+      // thinkingConfig:{type:'disabled'} for prompt/agent hooks).
+      disableThinking: true,
+      // Hard turn-count cap on agent (multi-turn) hooks so a verification agent
+      // cannot loop indefinitely even inside the timeout budget (MAX_AGENT_TURNS).
+      // Prompt hooks are single-shot, so the cap only applies to the agent kind.
+      ...(kind === 'agent' ? { maxTurns: MAX_AGENT_TURNS } : {}),
     });
 
-    // Prepend the {ok, reason} verification contract so an AI-driven hook returns
-    // a parseable decision rather than free prose (Claude Code's hookResponseSchema).
-    const fullPrompt = `${HOOK_VERIFICATION_CONTRACT}\n\n${promptText}\n\n${dataLabel}:\n${eventData}`;
+    // Compose the hook prompt, then prepend the {ok, reason} verification contract
+    // so an AI-driven hook returns a parseable decision rather than free prose
+    // (Claude Code's hookResponseSchema). When the prompt references the hook input
+    // via a placeholder ($ARGUMENTS / $ARGUMENTS[n] / $n), substitute it in place
+    // (Claude Code's addArgumentsToPrompt); otherwise append the event data under
+    // the per-kind `dataLabel` ('Event data' / 'Context').
+    const hasArgPlaceholder = /\$ARGUMENTS|\$\d/.test(promptText);
+    const body = hasArgPlaceholder
+      ? substituteHookArguments(promptText, eventData)
+      : `${promptText}\n\n${dataLabel}:\n${eventData}`;
+    const fullPrompt = `${HOOK_VERIFICATION_CONTRACT}\n\n${body}`;
     let result = '';
     let error: string | undefined;
     try {
@@ -2498,8 +2653,10 @@ export class HookManager extends EventEmitter {
     // Structured verification result → block (ok:false) or allow (ok:true).
     const verification = parseHookVerification(result);
     if (verification) {
+      // Claude Code wording parity: "<Prompt|Agent> hook condition was not met: …"
+      const label = kind === 'agent' ? 'Agent' : 'Prompt';
       return {
-        output: verification.ok ? '' : `DENY:Hook condition not met: ${verification.reason ?? 'condition not met'}`,
+        output: verification.ok ? '' : `DENY:${label} hook condition was not met: ${verification.reason ?? 'condition not met'}`,
         error,
       };
     }
@@ -2544,7 +2701,7 @@ export class HookManager extends EventEmitter {
     // (5) Cancellation + hard timeout as ONE combined signal (the canonical
     // combineHookAbort): the request is torn down on parent/user cancel OR the
     // per-hook timeout, matching command/prompt/agent hooks.
-    const timeoutMs = resolveHookTimeoutMs(config.timeout, 10_000);
+    const timeoutMs = resolveHookTimeoutMs(config.timeout, DEFAULT_HTTP_HOOK_TIMEOUT_MS);
     const abort = combineHookAbort(signal, timeoutMs);
     return new Promise((resolve) => {
       let settled = false;
@@ -2593,7 +2750,18 @@ export class HookManager extends EventEmitter {
 
 function matchesPattern(pattern: string, value: string): boolean {
   if (!pattern || pattern === '*') return true;
-  if (pattern.includes('|')) return pattern.split('|').some(p => matchesPattern(p, value));
+  // Claude Code semantics (matchesPattern): a matcher made only of simple token
+  // chars (alphanumeric/underscore, optionally pipe-separated) is an EXACT match
+  // — NOT a substring/regex — so `Edit` scopes to the `Edit` tool alone and never
+  // leaks onto `EditNotebook`. Only a matcher containing regex metacharacters is
+  // treated as a regex (invalid-regex fallback handled below).
+  if (/^[A-Za-z0-9_|]+$/.test(pattern)) {
+    if (pattern.includes('|')) return pattern.split('|').some(p => p === value);
+    return pattern === value;
+  }
+  // A matcher with regex metacharacters is a regex; an invalid one falls back to
+  // literal equality (AMI's long-standing behavior — safer than silently matching
+  // nothing when a user wrote a plain string that happens to contain a metachar).
   try { return new RegExp(pattern).test(value); } catch { return pattern === value; }
 }
 
