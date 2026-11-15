@@ -1,7 +1,7 @@
 export { McpClient, MCP_ELICITATION_ACTIONS, MCP_LOG_LEVELS, MCP_MAX_PAGES } from './client';
 export type {
   McpToolSchema, McpResource, McpResourceTemplate, McpPrompt, McpClientState,
-  McpElicitationRequest, McpElicitationResult, McpElicitationAction,
+  McpElicitationRequest, McpElicitationResult, McpElicitationAction, McpElicitationMode,
   McpSamplingRequest, McpSamplingResult, McpSamplingMessage,
   McpLogLevel, McpLogMessage, McpCompletionRef, McpCompletionResult,
 } from './client';
