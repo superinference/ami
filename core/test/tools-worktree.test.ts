@@ -109,7 +109,10 @@ describe('exitWorktreeTool – validation', () => {
       ctx(),
     );
     assert.ok(result.isError);
-    assert.ok(result.output.includes('must be "keep" or "remove"'));
+    // Invalid input must surface all valid actions (now includes "merge").
+    assert.ok(result.output.includes('"keep"'));
+    assert.ok(result.output.includes('"merge"'));
+    assert.ok(result.output.includes('"remove"'));
   });
 
   it('reports no active session when not in worktree path', async () => {

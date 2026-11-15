@@ -10,12 +10,36 @@ export interface SandboxConfig {
   hiddenEnvVars?: string[];
   hiddenFiles?: string[];
   allowedDomains?: string[];
+  // PARITY (host denylist): domains blocked for outbound traffic. Honored only
+  // within the allowlist path (alongside `allowedDomains`), where their resolved
+  // IPs are DROPped BEFORE the allow ACCEPT rules so a denied host wins over the
+  // allowlist even if it also matches an allowed entry. Mirrors Claude's
+  // `SandboxNetworkConfig.deniedHosts` ("deny wins over allow"). Additive:
+  // undefined/empty leaves the allowlist behavior unchanged.
+  deniedDomains?: string[];
   // When false/omitted (the secure default), the unshare sandbox bind-mounts
   // /dev/null over well-known privileged daemon sockets (Docker/containerd)
   // inside its mount namespace so a sandboxed command cannot reach them — a
   // classic sandbox-escape vector (e.g. `curl --unix-socket /var/run/docker.sock`
   // can launch a privileged container). Set true to opt out of that denial.
   allowUnixSockets?: boolean;
+  // PARITY (per-path socket allow): specific Unix-socket paths to RE-ALLOW (i.e.
+  // NOT bind /dev/null over) even while the blanket socket denial is otherwise
+  // active. Mirrors Claude's `SandboxNetworkConfig.allowUnixSockets: string[]`:
+  // granular control instead of the all-or-nothing `allowUnixSockets` boolean.
+  // A path listed here is removed from the default-denied set. Additive:
+  // undefined/empty keeps every default socket denied.
+  allowedUnixSockets?: string[];
+  // PARITY (filesystem read-deny): absolute paths that must be UNreadable inside
+  // the sandbox. Each is bind-mounted with /dev/null so a read returns empty,
+  // using the same technique as credential file-hiding. Mirrors Claude's
+  // `SandboxFilesystemConfig.denyRead`. Additive: undefined/empty is a no-op.
+  denyReadPaths?: string[];
+  // PARITY (filesystem write-deny): absolute paths that must be read-only inside
+  // the sandbox even if they would otherwise be writable. Each is bind-remounted
+  // read-only, the same technique as `readOnlyPaths`. Mirrors Claude's
+  // `SandboxFilesystemConfig.denyWrite`. Additive: undefined/empty is a no-op.
+  denyWritePaths?: string[];
 }
 
 export function getDefaultMemoryMB(): number {
@@ -233,13 +257,17 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
 
   const escapedCwd = cwd.replace(/'/g, "'\\''");
   const mounts = buildReadOnlyMounts(cfg);
+  const writeDenials = buildWriteDenials(cfg);
+  const readDenials = buildReadDenials(cfg);
   const credentialScrub = buildCredentialScrub(cfg);
   const socketDenial = buildSocketDenial(cfg);
+  // Deny rules are emitted (and thus iptables-appended) BEFORE the allowlist's
+  // accepts/default-drop, so a denied host is DROPped first → deny wins over allow.
   const networkRules =
     !cfg.allowNetwork && hasAllowedDomains
-      ? buildNetworkAllowlist(cfg.allowedDomains!)
+      ? buildDeniedDomainRules(cfg.deniedDomains) + buildNetworkAllowlist(cfg.allowedDomains!)
       : '';
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${credentialScrub}${socketDenial}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${readDenials}${credentialScrub}${socketDenial}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
 }
 
 /**
@@ -256,6 +284,41 @@ function buildReadOnlyMounts(cfg: SandboxConfig): string {
       // to embed inside the already single-quoted `bash -c '...'` body.
       const esc = escapeShell(p).replace(/'/g, "'\\''");
       return `mount --bind ${esc} ${esc} 2>/dev/null && mount -o remount,ro,bind ${esc} 2>/dev/null; `;
+    })
+    .join('');
+}
+
+/**
+ * PARITY (filesystem write-deny): bind-remount each `denyWritePaths` entry
+ * read-only inside the mount namespace so it cannot be written even if it would
+ * otherwise be writable. Reuses the exact bind+remount technique as
+ * {@link buildReadOnlyMounts}; failures are tolerated (`2>/dev/null`). Returns ''
+ * when no denyWritePaths are configured. Mirrors Claude's
+ * `SandboxFilesystemConfig.denyWrite`.
+ */
+export function buildWriteDenials(cfg: SandboxConfig): string {
+  if (!cfg.denyWritePaths || cfg.denyWritePaths.length === 0) return '';
+  return cfg.denyWritePaths
+    .map((p) => {
+      const esc = escapeShell(p).replace(/'/g, "'\\''");
+      return `mount --bind ${esc} ${esc} 2>/dev/null && mount -o remount,ro,bind ${esc} 2>/dev/null; `;
+    })
+    .join('');
+}
+
+/**
+ * PARITY (filesystem read-deny): bind /dev/null over each `denyReadPaths` entry
+ * so a read inside the sandbox returns empty rather than the real contents.
+ * Reuses the same /dev/null-bind technique as the credential file-hiding path;
+ * each bind is best-effort (`2>/dev/null`). Returns '' when none are configured.
+ * Mirrors Claude's `SandboxFilesystemConfig.denyRead`.
+ */
+export function buildReadDenials(cfg: SandboxConfig): string {
+  if (!cfg.denyReadPaths || cfg.denyReadPaths.length === 0) return '';
+  return cfg.denyReadPaths
+    .map((p) => {
+      const esc = p.replace(/'/g, "'\\''");
+      return `mount --bind /dev/null '${esc}' 2>/dev/null; `;
     })
     .join('');
 }
@@ -305,9 +368,39 @@ const DEFAULT_DENIED_SOCKETS = [
  */
 export function buildSocketDenial(cfg: SandboxConfig): string {
   if (cfg.allowUnixSockets) return '';
-  return DEFAULT_DENIED_SOCKETS.map(
-    s => `mount --bind /dev/null '${s}' 2>/dev/null; `,
-  ).join('');
+  // PARITY (per-path socket allow): re-allow any default-denied socket whose path
+  // the operator explicitly listed in `allowedUnixSockets`, leaving the rest
+  // denied — Claude's granular `allowUnixSockets: string[]` instead of the
+  // all-or-nothing boolean. Normalize whitespace so a padded entry still matches.
+  const allowed = new Set(
+    (cfg.allowedUnixSockets ?? []).map(s => s.trim()).filter(s => s.length > 0),
+  );
+  return DEFAULT_DENIED_SOCKETS.filter(s => !allowed.has(s))
+    .map(s => `mount --bind /dev/null '${s}' 2>/dev/null; `)
+    .join('');
+}
+
+/**
+ * PARITY (host denylist): build iptables DROP rules for each denied domain's
+ * resolved IPs. Returns '' for an empty/undefined list. These rules are emitted
+ * (and iptables-appended) BEFORE {@link buildNetworkAllowlist}'s ACCEPT rules so
+ * a denied host is dropped first even if it also appears in / overlaps the
+ * allowlist — "deny wins over allow". Trailing dots are stripped (FQDN
+ * normalization), matching the allowlist builder. Mirrors Claude's
+ * `SandboxNetworkConfig.deniedHosts`.
+ */
+export function buildDeniedDomainRules(domains?: string[]): string {
+  if (!domains || domains.length === 0) return '';
+  let rules = '';
+  for (const raw of domains) {
+    const d = raw.replace(/\.+$/, '');
+    const esc = d.replace(/'/g, "'\\''");
+    rules +=
+      "for ip in $(getent ahosts '" +
+      esc +
+      "' 2>/dev/null | awk '{print $1}' | sort -u); do iptables -A OUTPUT -d $ip -j DROP 2>/dev/null; done; ";
+  }
+  return rules;
 }
 
 /**
