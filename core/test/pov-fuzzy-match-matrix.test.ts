@@ -28,7 +28,7 @@ import { levenshteinDistance, suggestSimilarPaths } from '../src/tools/path-sugg
 // ===========================================================================
 
 describe('STRATEGY_NAMES ordering contract', () => {
-  it('is the exact strictness-ordered 6-tuple', () => {
+  it('is the exact strictness-ordered 7-tuple (block_anchor is the last resort)', () => {
     assert.deepEqual([...STRATEGY_NAMES], [
       'exact',
       'line_trimmed',
@@ -36,6 +36,7 @@ describe('STRATEGY_NAMES ordering contract', () => {
       'indentation_flexible',
       'escape_normalized',
       'desanitize_normalized',
+      'block_anchor',
     ]);
   });
 
