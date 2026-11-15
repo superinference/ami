@@ -1,10 +1,10 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, fsHooks, __resetLoggerForTest } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // getLogPath
@@ -201,5 +201,108 @@ describe('logError', () => {
     const after = fs.readFileSync(getLogPath(), 'utf-8');
     const newContent = after.slice(before.length);
     assert.ok(newContent.includes('ERROR: no context error'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Security / resilience behaviors (hermetic — fs seam mocked, no disk writes)
+// ---------------------------------------------------------------------------
+describe('logger hardening', () => {
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+  });
+
+  it('creates the log dir 0o700 and appends the file with mode 0o600', () => {
+    __resetLoggerForTest();
+    const mkdir = mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    const append = mock.method(fsHooks, 'appendFileSync', () => undefined);
+
+    log('sec', 'hello');
+
+    assert.deepEqual(mkdir.mock.calls[0].arguments[1], { recursive: true, mode: 0o700 });
+    assert.deepEqual(append.mock.calls[0].arguments[2], { mode: 0o600 });
+  });
+
+  it('recreates the directory and retries once when an append fails', () => {
+    __resetLoggerForTest();
+    const mkdir = mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    let appendCalls = 0;
+    const append = mock.method(fsHooks, 'appendFileSync', () => {
+      appendCalls++;
+      if (appendCalls === 1) throw new Error('ENOENT: directory removed');
+    });
+
+    log('heal', 'line after dir disappears');
+
+    // First append throws, directory is recreated, second append succeeds.
+    assert.equal(append.mock.calls.length, 2);
+    // mkdirSync: once in ensureDir, once in the self-heal retry.
+    assert.equal(mkdir.mock.calls.length, 2);
+  });
+
+  it('rotates continuously when the running size would exceed the cap', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    // Seed the in-process counter to exactly the cap (not over), so init does NOT
+    // rotate but the next append pushes it over and must rotate mid-session.
+    mock.method(fsHooks, 'statSync', () => ({ size: 10 * 1024 * 1024 }) as unknown as fs.Stats);
+    const rename = mock.method(fsHooks, 'renameSync', () => undefined);
+    mock.method(fsHooks, 'unlinkSync', () => undefined);
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+
+    log('big', 'this record pushes the file past the size cap');
+
+    assert.equal(rename.mock.calls.length, 1);
+  });
+
+  it('escapes embedded newlines so one record stays one physical line', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    let written = '';
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      written = String(data);
+    });
+
+    log('inj', 'line1\n[2026-01-01T00:00:00.000Z] [forged] injected entry');
+
+    // Exactly one physical newline: the trailing record terminator.
+    assert.equal(written.split('\n').length - 1, 1);
+    assert.ok(written.includes('line1\\n[2026-01-01'));
+  });
+
+  it('redacts credentials before the record touches disk', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    let written = '';
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      written = String(data);
+    });
+
+    const secret = 'sk-ant-' + 'a'.repeat(40);
+    logError('provider', `auth failed with key ${secret}`);
+
+    assert.ok(!written.includes(secret), 'raw secret must not be written');
+    assert.ok(written.includes('[REDACTED]'), 'redaction placeholder expected');
+  });
+
+  it('redacts secrets embedded in tool input/output', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    let written = '';
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      written = String(data);
+    });
+
+    const token = 'ghp_' + 'b'.repeat(36);
+    logToolCall('bash', { command: `curl -H "token: ${token}"` }, `used ${token}`, false, 12);
+
+    assert.ok(!written.includes(token), 'secret in tool input/output must not be written');
+    assert.ok(written.includes('[REDACTED]'));
   });
 });
