@@ -300,11 +300,16 @@ function readConfigRaw(configPath: string): { config?: Record<string, unknown>; 
   } catch {
     return { absent: true };
   }
-  const validation = validateConfigJson(stripJsoncComments(raw));
+  // Strip a leading UTF-8 BOM (e.g. config.json written by PowerShell 5.x or some
+  // editors) before parsing so a BOM-prefixed but otherwise valid config is not
+  // misreported as corrupt (JSON.parse rejects a leading U+FEFF).
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+  const stripped = stripJsoncComments(raw);
+  const validation = validateConfigJson(stripped);
   if (!validation.valid) {
     return { error: validation.error };
   }
-  return { config: JSON.parse(stripJsoncComments(raw)) as Record<string, unknown> };
+  return { config: JSON.parse(stripped) as Record<string, unknown> };
 }
 
 function handleGet(configPath: string, key: string | undefined): ToolResult {
