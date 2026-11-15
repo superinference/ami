@@ -196,3 +196,129 @@ describe('Retriever – noiseLevel getter', () => {
     assert.equal(new Retriever(0.5).noiseLevel, 0.5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Graceful fallback on backing-store failure (gap: error handling / fallback)
+// ---------------------------------------------------------------------------
+
+describe('Retriever – graceful fallback on store error', () => {
+  it('skips a throwing loadMemories but keeps instructions', () => {
+    const retriever = new Retriever(0);
+    const memory = {
+      loadProjectInstructions: () => '# Project Rules',
+      loadMemories: () => {
+        throw new Error('fs blew up');
+      },
+    };
+    const gate = new MemoryGate();
+
+    const result = retriever.retrieve('query', memory as any, gate);
+    assert.ok(result.includes('# Project Rules'));
+    assert.ok(!result.includes('Stored Memories'));
+  });
+
+  it('skips throwing instructions + approved context but keeps memories', () => {
+    const retriever = new Retriever(0);
+    const memory = {
+      loadProjectInstructions: () => {
+        throw new Error('instructions read failed');
+      },
+      loadMemories: () => [
+        { path: 'p', content: 'relevant topic memory', type: 'memory' as const },
+      ],
+    };
+    const gate = {
+      getApprovedContext: () => {
+        throw new Error('gate read failed');
+      },
+    };
+
+    const result = retriever.retrieve('topic', memory as any, gate as any);
+    assert.ok(result.includes('Stored Memories'));
+    assert.ok(result.includes('relevant topic memory'));
+  });
+
+  it('returns empty string when every source throws', () => {
+    const retriever = new Retriever(0);
+    const memory = {
+      loadProjectInstructions: () => {
+        throw new Error('x');
+      },
+      loadMemories: () => {
+        throw new Error('y');
+      },
+    };
+    const gate = {
+      getApprovedContext: () => {
+        throw new Error('z');
+      },
+    };
+
+    const result = retriever.retrieve('q', memory as any, gate as any);
+    assert.equal(result, '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hard cap / top-K on retrieved memories (gap: top-K cap)
+// ---------------------------------------------------------------------------
+
+describe('Retriever – top-K cap', () => {
+  it('injects at most 5 stored memories even when more are relevant', () => {
+    const retriever = new Retriever(0); // no noise — deterministic
+    const memory = createMockMemory({
+      memories: Array.from({ length: 12 }, (_, i) => ({
+        content: `topic memory number ${i}`,
+      })),
+    });
+    const gate = new MemoryGate();
+
+    const result = retriever.retrieve('topic', memory as any, gate);
+    const section = result.split('# Stored Memories')[1] ?? '';
+    const lines = section.split('\n').filter(l => l.includes('topic memory number'));
+    assert.equal(lines.length, 5);
+  });
+
+  it('caps approved-context entries to 5', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory();
+    const gate = new MemoryGate();
+    for (let i = 0; i < 9; i++) {
+      gate.gate(`q${i}`, `approved-result-${i}`, { approved: true, score: 0.9 }, 0.5, i + 1);
+    }
+
+    const result = retriever.retrieve('query', memory as any, gate);
+    const matches = result.match(/approved-result-\d+/g) ?? [];
+    assert.equal(matches.length, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Token-boundary matching (gap: keyword false-positive guard)
+// ---------------------------------------------------------------------------
+
+describe('Retriever – token-boundary relevance', () => {
+  it('does not treat a query token as relevant to a superstring word', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory({
+      memories: [{ content: 'this discusses categories and categorization' }],
+    });
+    const gate = new MemoryGate();
+
+    // "cat" is a substring of "categories" but not a whole token → no match.
+    const result = retriever.retrieve('cat', memory as any, gate);
+    assert.ok(!result.includes('Stored Memories'));
+  });
+
+  it('still matches on whole-token overlap', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory({
+      memories: [{ content: 'the cat sat on the mat' }],
+    });
+    const gate = new MemoryGate();
+
+    const result = retriever.retrieve('cat', memory as any, gate);
+    assert.ok(result.includes('Stored Memories'));
+    assert.ok(result.includes('the cat sat'));
+  });
+});
