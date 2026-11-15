@@ -39,11 +39,26 @@ export const sleepTool: ToolDefinition = {
     const rawDuration = input.duration_ms as number;
     const reason = (input.reason as string) || '';
 
-    if (typeof rawDuration !== 'number' || isNaN(rawDuration) || rawDuration <= 0) {
-      return { output: 'Error: duration_ms must be a positive number.', isError: true };
+    // Parity (functional): reject non-finite durations. `Infinity` / `-Infinity`
+    // are typeof 'number' and not NaN, so the old `isNaN(...) || <= 0` guard let
+    // `Infinity` through — it was then silently clamped to MAX and the tool slept
+    // the full 10 minutes. Treat non-finite as invalid input instead of a request.
+    if (
+      typeof rawDuration !== 'number' ||
+      !Number.isFinite(rawDuration) ||
+      rawDuration <= 0
+    ) {
+      return { output: 'Error: duration_ms must be a positive number (finite, > 0).', isError: true };
     }
 
-    const duration = Math.min(Math.round(rawDuration), MAX_SLEEP_MS);
+    // Parity (functional): clamp to a minimum of 1ms so a sub-millisecond request
+    // (e.g. 0.4) that passes the > 0 check does not round down to a 0ms no-op.
+    const requested = Math.max(1, Math.round(rawDuration));
+    const duration = Math.min(requested, MAX_SLEEP_MS);
+    // Parity (functional): surface when the requested duration exceeded the cap so
+    // the model knows it slept less than it asked for (the old message said only
+    // "Slept for Xs" with no indication the request was truncated).
+    const capped = requested > MAX_SLEEP_MS;
     const start = Date.now();
 
     const interrupted = await new Promise<boolean>((resolve) => {
@@ -73,10 +88,22 @@ export const sleepTool: ToolDefinition = {
 
     const sleptSec = ((Date.now() - start) / 1000).toFixed(1);
     const reasonSuffix = reason ? ` Reason: ${reason}` : '';
+    const cappedSuffix = capped
+      ? ` (requested ${(requested / 1000).toFixed(1)}s was capped to ${(MAX_SLEEP_MS / 1000).toFixed(1)}s)`
+      : '';
     const msg = interrupted
-      ? `Sleep interrupted after ${sleptSec}s (requested ${(duration / 1000).toFixed(1)}s).${reasonSuffix}`
-      : `Slept for ${sleptSec}s.${reasonSuffix}`;
+      ? `Sleep interrupted after ${sleptSec}s (requested ${(duration / 1000).toFixed(1)}s).${cappedSuffix}${reasonSuffix}`
+      : `Slept for ${sleptSec}s.${cappedSuffix}${reasonSuffix}`;
 
-    return { output: msg, metadata: { requestedMs: duration, sleptMs: Date.now() - start, interrupted } };
+    return {
+      output: msg,
+      metadata: {
+        requestedMs: duration,
+        originalRequestedMs: requested,
+        capped,
+        sleptMs: Date.now() - start,
+        interrupted,
+      },
+    };
   },
 };

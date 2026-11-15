@@ -19,6 +19,11 @@ export interface CronJob {
   agentId?: string;
   /** Permanent jobs are exempt from age-based expiry. */
   permanent?: boolean;
+  /** Optional per-job run budget. A recurring job is retired (stops firing and is
+   *  removed) once it has fired `maxRuns` times. Undefined = unlimited. */
+  maxRuns?: number;
+  /** How many times this job has fired. Only tracked when `maxRuns` is set. */
+  runCount?: number;
 }
 
 const MAX_AGE_DAYS = 7;
@@ -27,6 +32,13 @@ const MAX_JOBS = 50;
 const LOCK_STALE_MS = 120_000;
 /** Recurring jobs may not fire more often than once per minute (abuse floor). */
 const MIN_INTERVAL_MS = 60_000;
+/** Minute-resolution scan horizon for next-fire computation. Covers a full leap
+ *  cycle (~4 years) so valid-but-rare schedules like "0 0 29 2 *" (Feb 29) resolve
+ *  instead of being wrongly reported as unsatisfiable when the next leap day is more
+ *  than a year out. Truly impossible dates (e.g. Feb 30) still fall through to null.
+ *  (Century non-leap boundaries like 2100, which make the gap 8 years, are out of
+ *  scope — they'd read as unsatisfiable, the same conservative behavior as before.) */
+const SCAN_HORIZON_MIN = 4 * 366 * 24 * 60;
 
 /** Tunable jitter parameters (recurring forward jitter vs one-shot backward jitter). */
 export interface CronJitterConfig {
@@ -183,7 +195,7 @@ export class CronScheduler {
     this.busyCheck = fn;
   }
 
-  create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean }): CronJob {
+  create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number }): CronJob {
     if (this.jobs.size >= MAX_JOBS) {
       throw new Error(`Maximum of ${MAX_JOBS} cron jobs reached. Delete existing jobs first.`);
     }
@@ -191,6 +203,12 @@ export class CronScheduler {
     const validationError = validateCronExpression(opts.cron);
     if (validationError) {
       throw new Error(`Invalid cron expression: ${validationError}`);
+    }
+    // FUNCTIONAL: validate an optional per-job run budget — must be a positive
+    // integer (a non-positive / fractional budget would retire the job instantly
+    // or never, both of which are silent surprises).
+    if (opts.maxRuns !== undefined && (!Number.isInteger(opts.maxRuns) || opts.maxRuns < 1)) {
+      throw new Error(`maxRuns must be a positive integer (got ${opts.maxRuns}).`);
     }
     const recurring = opts.recurring ?? true;
     // Runaway-schedule guard: a recurring job may not fire more often than the floor.
@@ -203,8 +221,16 @@ export class CronScheduler {
         }
       }
     }
-    const id = `cron_${this.getNextIdNum()}_${Date.now().toString(36)}`;
     const nextRun = this.computeNextRun(opts.cron);
+    // FUNCTIONAL: reject a structurally-valid-but-unsatisfiable schedule at the
+    // engine boundary (e.g. "0 0 30 2 *", "0 0 31 4 *"). Previously such a job was
+    // created with nextRun undefined and silently never fired — a dead job the
+    // caller believed was scheduled. Now every consumer (not only the cron tool)
+    // gets this guarantee.
+    if (nextRun === null) {
+      throw new Error(`Cron expression "${opts.cron}" never matches a real date (unsatisfiable schedule).`);
+    }
+    const id = `cron_${this.getNextIdNum()}_${Date.now().toString(36)}`;
     const job: CronJob = {
       id,
       cron: opts.cron,
@@ -215,9 +241,10 @@ export class CronScheduler {
       // the model never sees a validation error if the gate flips mid-session).
       durable: (opts.durable ?? false) && CronScheduler.isDurableEnabled(),
       createdAt: Date.now(),
-      nextRun: nextRun ?? undefined,
+      nextRun,
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.permanent ? { permanent: true } : {}),
+      ...(opts.maxRuns !== undefined ? { maxRuns: opts.maxRuns, runCount: 0 } : {}),
     };
     this.jobs.set(id, job);
     if (job.durable) this.saveDurable();
@@ -338,11 +365,19 @@ export class CronScheduler {
     if (!job) return;
     job.lastRun = Date.now();
     job.lastFiredAt = Date.now();
-    if (job.recurring) {
+    // FUNCTIONAL: per-job run budget. Count this fire when a budget is set, and
+    // retire the job once the budget is exhausted so a "run N times" schedule stops
+    // firing on its own (kill-switch at the job level, not just the global env).
+    if (job.maxRuns !== undefined) {
+      job.runCount = (job.runCount ?? 0) + 1;
+    }
+    const budgetExhausted = job.maxRuns !== undefined && (job.runCount ?? 0) >= job.maxRuns;
+    if (job.recurring && !budgetExhausted) {
       // Never throw inside the fire loop: a cron that no longer has a future
       // match leaves nextRun undefined (the job simply stops firing).
       job.nextRun = this.safeComputeNextRun(job.cron) ?? undefined;
     } else {
+      // One-shot, or a recurring job that has used up its run budget → remove it.
       this.jobs.delete(id);
     }
     this.saveDurable();
@@ -468,7 +503,7 @@ export class CronScheduler {
     const domRestricted = domSpec !== '*';
     const dowRestricted = dowSpec !== '*';
 
-    for (let i = 0; i < 527040; i++) {
+    for (let i = 0; i < SCAN_HORIZON_MIN; i++) {
       const minMatch = matchField(check.getMinutes(), minSpec, 0, 59);
       const hourMatch = matchField(check.getHours(), hourSpec, 0, 23);
       const monMatch = matchField(check.getMonth() + 1, monSpec, 1, 12);
@@ -488,8 +523,8 @@ export class CronScheduler {
       }
       check.setMinutes(check.getMinutes() + 1);
     }
-    // Structurally valid but no match within ~366 days (e.g. Feb 30): return null
-    // rather than throwing, so the fire loop degrades gracefully.
+    // Structurally valid but no match within the leap-cycle horizon (e.g. Feb 30):
+    // return null rather than throwing, so the fire loop degrades gracefully.
     return null;
   }
 
@@ -583,7 +618,17 @@ export class CronScheduler {
     if (typeof j.recurring !== 'boolean' || typeof j.durable !== 'boolean') return false;
     if (typeof j.createdAt !== 'number') return false;
     if (validateCronExpression(j.cron) !== null) return false; // re-validate the stored cron
+    // Validate the optional run-budget fields so a corrupt on-disk maxRuns/runCount
+    // cannot smuggle in a job that fires forever or is retired with a bogus count.
+    if (j.maxRuns !== undefined && (!Number.isInteger(j.maxRuns) || (j.maxRuns as number) < 1)) return false;
+    if (j.runCount !== undefined && (!Number.isInteger(j.runCount) || (j.runCount as number) < 0)) return false;
     return true;
+  }
+
+  /** Low-level file write seam. Overridable in tests to simulate a crash mid-write
+   *  so the atomic-save guarantee can be verified. Production impl is a plain write. */
+  protected rawWriteFile(filePath: string, data: string): void {
+    fs.writeFileSync(filePath, data, 'utf-8');
   }
 
   private saveDurable(): void {
@@ -592,7 +637,19 @@ export class CronScheduler {
     const data = JSON.stringify(durable, null, 2);
     try {
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.persistPath, data, 'utf-8');
+      // FUNCTIONAL: atomic persistence. Write to a sibling temp file, then rename
+      // it over the target (rename is atomic on the same filesystem). A crash or
+      // disk error mid-write can no longer leave a half-written
+      // scheduled_tasks.json that loadDurable would reject and delete, losing every
+      // durable job. On write failure the temp file is cleaned up and the existing
+      // persisted state is left untouched.
+      const tmp = `${this.persistPath}.${process.pid}.tmp`;
+      try {
+        this.rawWriteFile(tmp, data);
+        fs.renameSync(tmp, this.persistPath);
+      } catch {
+        try { fs.unlinkSync(tmp); } catch { /* temp already gone */ }
+      }
     } catch { /* best effort */ }
   }
 }
@@ -629,8 +686,22 @@ export function matchField(value: number, spec: string, min: number, max: number
       if ((value - start) % step === 0 && value >= start && value <= end) return true;
     } else if (part.includes('-')) {
       let [lo, hi] = part.split('-').map(Number);
-      if (max === 6) { lo = lo % 7; hi = hi % 7; }
       if (isNaN(lo) || isNaN(hi)) continue;
+      if (max === 6) {
+        // FUNCTIONAL: DOW ranges ending at 7 (Sunday ≡ 0 ≡ 7). A span like "0-7"
+        // or "1-7" means "that span through Saturday, plus Sunday" — previously the
+        // raw `%7` collapsed "0-7" to 0-0 (Sunday only), silently dropping every
+        // other day. Handle the Sunday-via-7 span explicitly; leave "7-7" (Sunday
+        // only) and non-7 ranges to the normal path below.
+        const rawLo = lo;
+        const rawHi = hi;
+        lo = lo % 7;
+        hi = hi % 7;
+        if (rawHi === 7 && rawLo < 7) {
+          if (value === 0 || (value >= rawLo && value <= 6)) return true;
+          continue;
+        }
+      }
       if (hi >= lo) {
         if (value >= lo && value <= hi) return true;
       } else {

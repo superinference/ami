@@ -106,7 +106,7 @@ export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabiliti
 export { PERMISSION_MODES, BASH_CLASSIFICATIONS, PERMISSION_UPDATE_DESTINATIONS, SESSION_GRANT_SCOPES, SAFETY_CHECK_KINDS } from './permissions';
 export { detectProvider, listModels, validateModel } from './model-registry';
 export type { ValidateModelResult } from './model-registry';
-export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS } from './config';
+export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS } from './config';
 export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue } from './config';
 export { STRATEGY_NAMES } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
@@ -134,7 +134,7 @@ export {
   displayPath,
   stripTrailingSep,
 } from './utils/path';
-export { generateTitle } from './title-generator';
+export { generateTitle, sanitizeTitle, truncateTitle } from './title-generator';
 export { ProcessManager, TASK_STATUS } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
 
@@ -142,7 +142,7 @@ export { estimateMessageTokens, estimateConversationTokens, estimateToolCallToke
 export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
 export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
-export { Reservoir, percentile as reservoirPercentile, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
+export { Reservoir, percentile as reservoirPercentile, normalizeReservoirSize, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { FILE_IMAGES_KINDS } from './tools/file-read';
 export { MCP_AUTH_STATUS, MCP_AUTH_ERROR_KINDS, redactAuthUrl, classifyMcpAuthError } from './tools/mcp-auth';
@@ -196,11 +196,19 @@ export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateTool
 export type { ToolConflict, RegistrableToolLike } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
 export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
-export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn } from './conversation-summary';
-export type { ConversationMeta } from './conversation-summary';
+export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn, estimateCompactionMessageTokens, dropOrphanedToolResults, selectRecentWithinBudget, buildTruncationMarker } from './conversation-summary';
+export type { ConversationMeta, BudgetSelection } from './conversation-summary';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recoverJsonStringFields } from './tools/input-sanitizer';
-export { isProtectedLogTier, canModifyLog, UILogGuard, LOG_TIERS } from './ui-log-guard';
-export type { LogTier, LogEntry } from './ui-log-guard';
+export {
+  isProtectedLogTier,
+  canModifyLog,
+  UILogGuard,
+  LOG_TIERS,
+  sanitizeLogMessage,
+  DEFAULT_MAX_LOG_LENGTH,
+  SECRET_REDACTION,
+} from './ui-log-guard';
+export type { LogTier, LogEntry, SanitizeLogOptions } from './ui-log-guard';
 export { validateEngineConfig, sanitizeEngineConfig } from './types';
 export { TelemetryBatchSender, sendOtlpBatch, postOtlpBatch, isRetryableStatus, toOtlpLogsPayload, otlpLogsUrl } from './analytics';
 export type { OtlpSendResult, TelemetryBatchSenderOpts } from './analytics';
@@ -218,9 +226,15 @@ export type { SafeModeConfig, BlockedResource } from './safe-mode';
 export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS } from './request-signature';
 export type { RequestSignature, SignatureAlgorithm } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';
-export type { SecurityPattern, SecurityFinding } from './code-security-patterns';
+export type { SecurityPattern, SecurityFinding, SecuritySeverity } from './code-security-patterns';
 export { AMI_VERSION, AMI_CLIENT_NAME, AMI_CLIENT_INFO } from './version';
-export { escapeXmlAttr, escapeXmlText, safeXmlKey } from './xml-escape';
+export {
+  escapeXmlAttr,
+  escapeXmlText,
+  safeXmlKey,
+  stripInvalidXmlChars,
+  unescapeXml,
+} from './xml-escape';
 export {
   LSPClient,
   getLSPClient,

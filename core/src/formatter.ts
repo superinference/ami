@@ -35,6 +35,13 @@ const BUILT_IN_FORMATTERS: FormatterConfig[] = [
 const formatterCache = new Map<string, boolean>();
 
 /**
+ * Custom formatters registered by library consumers via {@link registerFormatter}.
+ * These take precedence over {@link BUILT_IN_FORMATTERS}; the most recently
+ * registered wins for a given extension (prepended on registration).
+ */
+const customFormatters: FormatterConfig[] = [];
+
+/**
  * Mockable exec seam (ESM-safe). Tests replace `execHooks.execSync` via
  * `mock.method` to simulate formatter availability/success/failure
  * deterministically. Defaults to the real child_process.execSync.
@@ -46,8 +53,117 @@ export function __clearFormatterCache(): void {
   formatterCache.clear();
 }
 
+/**
+ * Normalize a file extension for lookup: trims surrounding whitespace,
+ * lowercases, collapses any leading dots to exactly one, and returns `''` for
+ * empty or non-string input. So `'TS'`, `'.ts'`, `'..TS '`, `'ts'` all
+ * normalize to `'.ts'`.
+ *
+ * ADDITIVE (new helper): previously there was no way to canonicalize an
+ * extension, so callers holding a bare `'ts'` or an uppercase `'.TS'` could not
+ * look up the matching formatter.
+ * @public
+ */
+export function normalizeExtension(ext: string): string {
+  if (typeof ext !== 'string') return '';
+  const trimmed = ext.trim().toLowerCase().replace(/^\.+/, '');
+  return trimmed === '' ? '' : `.${trimmed}`;
+}
+
+/**
+ * Lowercased extension of a file path, guarded against non-string/empty input.
+ * Returns `''` instead of throwing (plain `path.extname(undefined)` throws
+ * `ERR_INVALID_ARG_TYPE`).
+ */
+function extensionOfPath(filePath: string): string {
+  if (typeof filePath !== 'string' || filePath === '') return '';
+  return path.extname(filePath).toLowerCase();
+}
+
+/**
+ * Resolve the formatter config that handles `ext` (with or without a leading
+ * dot, any case). Custom registered formatters take precedence over built-ins.
+ * Returns `undefined` when nothing handles it or input is invalid.
+ *
+ * ADDITIVE (new helper + custom-formatter precedence).
+ * @public
+ */
+export function getFormatterForExtension(ext: string): FormatterConfig | undefined {
+  const norm = normalizeExtension(ext);
+  if (norm === '') return undefined;
+  return customFormatters.find(f => f.extensions.includes(norm))
+    ?? BUILT_IN_FORMATTERS.find(f => f.extensions.includes(norm));
+}
+
+/**
+ * True when some built-in or registered formatter claims this file's extension,
+ * regardless of whether the underlying tool is installed. Safe for any input
+ * (returns `false` for invalid/empty paths and extension-less files such as
+ * `Makefile` instead of throwing).
+ *
+ * ADDITIVE (new query helper).
+ * @public
+ */
+export function isFormattableFile(filePath: string): boolean {
+  const ext = extensionOfPath(filePath);
+  return ext !== '' && getFormatterForExtension(ext) !== undefined;
+}
+
+/**
+ * Register a custom formatter for library consumers (wires the previously
+ * dead `@public FormatterConfig` interface — there was no way to contribute a
+ * formatter). Validates shape, normalizes extensions, and gives the entry
+ * precedence over built-ins (and earlier customs) for its extensions.
+ *
+ * ADDITIVE (functional: {@link formatFile} and {@link getAvailableFormatters}
+ * now consult registered customs; with none registered, behavior is unchanged).
+ * Throws `TypeError` on an invalid config (not an object, empty command, or no
+ * valid extension) so misconfiguration surfaces at registration time.
+ * @public
+ */
+export function registerFormatter(config: FormatterConfig): void {
+  if (!config || typeof config !== 'object') {
+    throw new TypeError('registerFormatter: config must be an object');
+  }
+  if (typeof config.command !== 'string' || config.command.trim() === '') {
+    throw new TypeError('registerFormatter: command must be a non-empty string');
+  }
+  if (!Array.isArray(config.extensions)) {
+    throw new TypeError('registerFormatter: extensions must be an array');
+  }
+  const extensions = Array.from(
+    new Set(config.extensions.map(normalizeExtension).filter(e => e !== '')),
+  );
+  if (extensions.length === 0) {
+    throw new TypeError('registerFormatter: at least one valid extension is required');
+  }
+  const args = Array.isArray(config.args) ? config.args.map(a => String(a)) : [];
+  const normalized: FormatterConfig = { extensions, command: config.command, args };
+  if (typeof config.check === 'string' && config.check.trim() !== '') {
+    normalized.check = config.check;
+  }
+  customFormatters.unshift(normalized);
+}
+
+/** Remove all registered custom formatters (lifecycle reset + test seam). @public */
+export function clearCustomFormatters(): void {
+  customFormatters.length = 0;
+}
+
+/**
+ * Defensive snapshot of registered custom formatters (in precedence order).
+ * @public
+ */
+export function listRegisteredFormatters(): FormatterConfig[] {
+  return customFormatters.map(f => ({
+    ...f,
+    extensions: [...f.extensions],
+    args: [...f.args],
+  }));
+}
+
 export function isFormatterAvailable(config: FormatterConfig): boolean {
-  if (!config.check) return false;
+  if (!config || !config.check) return false;
   const key = config.check;
   if (formatterCache.has(key)) return formatterCache.get(key)!;
   try {
@@ -61,8 +177,9 @@ export function isFormatterAvailable(config: FormatterConfig): boolean {
 }
 
 export function formatFile(filePath: string, cwd: string): { formatted: boolean; error?: string } {
-  const ext = path.extname(filePath).toLowerCase();
-  const config = BUILT_IN_FORMATTERS.find(f => f.extensions.includes(ext));
+  const ext = extensionOfPath(filePath);
+  if (ext === '') return { formatted: false };
+  const config = getFormatterForExtension(ext);
   if (!config) return { formatted: false };
   if (!isFormatterAvailable(config)) return { formatted: false };
   try {
@@ -76,7 +193,7 @@ export function formatFile(filePath: string, cwd: string): { formatted: boolean;
 }
 
 export function getAvailableFormatters(_cwd: string): string[] {
-  return BUILT_IN_FORMATTERS
+  return [...customFormatters, ...BUILT_IN_FORMATTERS]
     .filter(f => isFormatterAvailable(f))
     .map(f => `${f.extensions.join(', ')} → ${f.command} ${f.args.join(' ')}`);
 }

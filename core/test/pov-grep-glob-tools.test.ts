@@ -252,9 +252,12 @@ describe('estimateBraceExpansions', () => {
     assert.equal(estimateBraceExpansions(p), expandBraces(p).length);
   });
 
-  it('counts only top-level commas inside a group (nested commas folded)', () => {
-    // Outer group has alternatives "a" and "{b,c}" -> estimate 2 at this level.
-    assert.equal(estimateBraceExpansions('{a,{b,c}}'), 2);
+  it('multiplies groups at every nesting depth as a safe upper bound', () => {
+    // The estimate is a DoS-guard upper bound: it multiplies the alternative
+    // count of EVERY group (not just top-level ones), so a nested pattern can
+    // never slip past the budget. `{a,{b,c}}` has an outer 2-way group and a
+    // nested 2-way group -> 2 * 2 = 4 (>= the true expansion count of 3).
+    assert.equal(estimateBraceExpansions('{a,{b,c}}'), 4);
   });
 
   it('ignores escaped braces when estimating', () => {

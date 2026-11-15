@@ -21,15 +21,29 @@ export const OPENROUTER_PRIVACY_URL = 'https://openrouter.ai/settings/privacy';
  *  with provider.zdr it auto-selects a Zero-Data-Retention endpoint. */
 export const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
 
+/** Normalize a model slug for ZDR matching. [FUNCTIONAL] OpenRouter slugs are
+ *  canonically lowercase, but the /endpoints/zdr feed and AMI-stored ids can carry
+ *  surrounding whitespace or differing case; matching both the parsed set and the
+ *  eligibility query through here (trim + lowercase) makes lookups robust to those
+ *  cosmetic differences instead of silently missing an eligible model. */
+export function normalizeZdrSlug(slug: string): string {
+  return slug.trim().toLowerCase();
+}
+
 /** Parse the /endpoints/zdr response into a Set of ZDR-eligible `model_id` slugs
- *  (the stripped `vendor/model` form). Tolerant of any malformed shape → empty set. */
+ *  (the stripped `vendor/model` form). Tolerant of any malformed shape → empty set.
+ *  [FUNCTIONAL] Each id is normalized (trim + lowercase) so the set matches regardless
+ *  of feed-side casing/whitespace; entries that normalize to empty are dropped. */
 export function parseZdrModelIds(json: unknown): Set<string> {
   const out = new Set<string>();
   const data = (json as { data?: unknown } | null | undefined)?.data;
   if (!Array.isArray(data)) return out;
   for (const entry of data) {
     const id = (entry as { model_id?: unknown })?.model_id;
-    if (typeof id === 'string' && id.length > 0) out.add(id);
+    if (typeof id === 'string') {
+      const norm = normalizeZdrSlug(id);
+      if (norm.length > 0) out.add(norm);
+    }
   }
   return out;
 }
@@ -40,7 +54,9 @@ export function parseZdrModelIds(json: unknown): Set<string> {
  *  bare slug and are treated as NOT individually ZDR-listed (routing-dependent). */
 export function isZdrEligible(model: string, zdr: ReadonlySet<string>): boolean {
   if (zdr.size === 0) return true; // unknown ZDR set → do not filter anything out
-  return zdr.has(stripOpenRouterPrefix(model));
+  // [FUNCTIONAL] Normalize the query the same way parseZdrModelIds normalizes the set,
+  // so case/whitespace differences in the stored id do not cause a false miss.
+  return zdr.has(normalizeZdrSlug(stripOpenRouterPrefix(model)));
 }
 
 /** Filter AMI-namespaced model ids to the ZDR-eligible ones. With an empty/unknown
@@ -59,7 +75,9 @@ export interface ZdrErrorInfo {
  *  actionable guidance. Keyed on the ZDR/data-policy wording + the "endpoint(s)" noun
  *  so a generic 404 is not misclassified. */
 export function classifyZdrError(message: string): ZdrErrorInfo {
-  const m = message || '';
+  // [FUNCTIONAL] Only trust a real string; a non-string runtime value (e.g. an Error
+  // object passed by mistake) must not be regex-coerced into a false ZDR match.
+  const m = typeof message === 'string' ? message : '';
   const mentionsZdr = /\bZDR\b|zero[\s-]?data[\s-]?retention|data policy|guardrail/i.test(m);
   // "0 endpoints" already contains "endpoint", so a single /endpoint/i covers both.
   const mentionsEndpoint = /endpoint/i.test(m);
@@ -80,7 +98,11 @@ export function classifyZdrError(message: string): ZdrErrorInfo {
  *  OpenRouter to route only to Zero-Data-Retention endpoints. */
 export function withZdrProviderExtraBody(extraBody: Record<string, unknown> | undefined): Record<string, unknown> {
   const eb = extraBody ?? {};
-  const existingProvider = (eb.provider && typeof eb.provider === 'object') ? eb.provider as Record<string, unknown> : {};
+  // [FUNCTIONAL] Arrays are also `typeof 'object'`; spreading one would corrupt the
+  // provider routing block into numeric index keys, so treat an array (or any
+  // non-plain-object) provider value as empty — only a real object is merged.
+  const existingProvider = (eb.provider && typeof eb.provider === 'object' && !Array.isArray(eb.provider))
+    ? eb.provider as Record<string, unknown> : {};
   return { ...eb, provider: { ...existingProvider, zdr: true } };
 }
 
@@ -99,12 +121,18 @@ export async function fetchZdrModelIds(
   opts: { apiKey?: string; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<Set<string>> {
   const doFetch = opts.fetchImpl ?? fetch;
+  // [FUNCTIONAL] Guard the timeout: a non-positive / NaN / non-finite value would make
+  // AbortSignal.timeout abort the request immediately (or throw), silently defeating
+  // the fetch. Fall back to the 5s default for any invalid value.
+  const rawTimeout = opts.timeoutMs;
+  const timeoutMs = (typeof rawTimeout === 'number' && Number.isFinite(rawTimeout) && rawTimeout > 0)
+    ? rawTimeout : 5000;
   try {
     const headers: Record<string, string> = {};
     if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
     const res = await doFetch(OPENROUTER_ZDR_ENDPOINT, {
       headers,
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return new Set();
     return parseZdrModelIds(await res.json());

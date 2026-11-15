@@ -206,8 +206,16 @@ function formatWorkspaceSymbolResult(result: SymbolInformation[]): string {
 }
 
 function formatDocumentSymbolResult(result: unknown): string {
-  const arr = result as Array<DocumentSymbol | SymbolInformation>;
-  if (!Array.isArray(arr) || arr.length === 0) return NO_RESULT_MESSAGE.documentSymbol;
+  if (!Array.isArray(result)) return NO_RESULT_MESSAGE.documentSymbol;
+  // FUNCTIONAL PARITY: drop null / non-object entries from a malformed payload
+  // BEFORE the hierarchical-vs-flat shape detection. A null element otherwise
+  // made `'location' in arr[0]` throw a TypeError (surfaced as an "Error
+  // performing documentSymbol"); now it degrades to the actionable empty-result
+  // message, matching Claude Code's defensive result handling.
+  const arr = (result as unknown[]).filter(
+    (x): x is DocumentSymbol | SymbolInformation => x != null && typeof x === 'object',
+  );
+  if (arr.length === 0) return NO_RESULT_MESSAGE.documentSymbol;
   // Per LSP spec, the server may return hierarchical DocumentSymbol[] (has
   // `range`) or flat SymbolInformation[] (has `location`). Detect + delegate.
   if ('location' in arr[0]) return formatWorkspaceSymbolResult(arr as SymbolInformation[]);
@@ -265,8 +273,15 @@ function formatResult(op: LspOperation, result: unknown): string {
       return formatLocationResult(op, result);
     case 'findReferences':
       return formatReferencesResult(result);
-    case 'hover':
-      return formatHover((result as { contents?: unknown } | null | undefined)?.contents);
+    case 'hover': {
+      // FUNCTIONAL PARITY: a hover payload that renders to an empty / whitespace-
+      // only string (e.g. `contents: ''`, `contents: []`, or all-empty array
+      // entries) must fall back to the actionable "no hover information" message
+      // rather than emitting a blank tool output. Matches Claude Code's hover
+      // empty-result handling.
+      const rendered = formatHover((result as { contents?: unknown } | null | undefined)?.contents);
+      return rendered.trim() === '' ? NO_RESULT_MESSAGE.hover : rendered;
+    }
     case 'documentSymbol':
       return formatDocumentSymbolResult(result);
     case 'workspaceSymbol':
@@ -284,7 +299,17 @@ function formatHover(contents: unknown): string {
   if (typeof contents === 'string') return contents;
   if (Array.isArray(contents)) return contents.map(formatHover).join('\n');
   const c = contents as { value?: string; language?: string };
-  if (typeof c.value === 'string') return c.value;
+  if (typeof c.value === 'string') {
+    // FUNCTIONAL PARITY: an LSP `MarkedString` carries a `{ language, value }`
+    // pair whose value is a raw code snippet. Render it as a fenced code block
+    // tagged with the language (as an editor hover popup would) instead of
+    // silently dropping the language. A plain `MarkupContent` `{ kind, value }`
+    // has no `language`, so it still renders as its bare value (unchanged).
+    if (typeof c.language === 'string' && c.language !== '') {
+      return `\`\`\`${c.language}\n${c.value}\n\`\`\``;
+    }
+    return c.value;
+  }
   return JSON.stringify(contents);
 }
 
