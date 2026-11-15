@@ -35,10 +35,49 @@ export interface DockerSandboxConfig {
 }
 
 let _dockerAvailable: boolean | null = null;
+let _dockerProbedAt = 0;
 
-/** True if a Docker daemon is reachable. Cached after the first probe. */
+/**
+ * How long a NEGATIVE availability result is trusted before it is re-probed.
+ *
+ * A positive probe is cached for the whole session — a reachable daemon is
+ * stable, so there is no reason to keep shelling out `docker version`. A
+ * negative probe, however, must be *recoverable*: if the first command runs
+ * before the daemon is up (or the user starts rootless Docker in response to a
+ * fail-closed hint), permanently caching `false` would wedge container mode off
+ * for the rest of the session even though Docker is now reachable. Re-probing a
+ * stale negative result lets a recovered daemon be picked up on the next
+ * command, while the short TTL throttles the 5s probe so a genuinely-absent
+ * daemon is not re-shelled on every call in a tight loop.
+ */
+export const DOCKER_NEGATIVE_PROBE_TTL_MS = 5000;
+
+/**
+ * Test/clock seam so the negative-cache TTL can be exercised deterministically
+ * without real wall-clock waits. Overriding `now` lets a test advance time past
+ * {@link DOCKER_NEGATIVE_PROBE_TTL_MS} to force a re-probe.
+ */
+export const _dockerProbeHooks = { now: (): number => Date.now() };
+
+/**
+ * True if a Docker daemon is reachable.
+ *
+ * A positive result is cached for the session; a negative result is cached only
+ * for {@link DOCKER_NEGATIVE_PROBE_TTL_MS} and then re-probed, so a daemon that
+ * becomes reachable mid-session is recovered automatically (callers that fail
+ * closed on `false` start succeeding again once Docker is back).
+ */
 export function isDockerAvailable(): boolean {
-  if (_dockerAvailable !== null) return _dockerAvailable;
+  // A reachable daemon is stable — cache the positive result for the session.
+  if (_dockerAvailable === true) return true;
+  // Trust a negative result only within the TTL window; past it, re-probe so a
+  // recovered daemon/CLI is picked up instead of staying wedged off.
+  if (
+    _dockerAvailable === false &&
+    _dockerProbeHooks.now() - _dockerProbedAt < DOCKER_NEGATIVE_PROBE_TTL_MS
+  ) {
+    return false;
+  }
   try {
     shellHooks.execSync('docker version --format "{{.Server.Version}}"', {
       stdio: 'pipe',
@@ -47,6 +86,7 @@ export function isDockerAvailable(): boolean {
     _dockerAvailable = true;
   } catch {
     _dockerAvailable = false;
+    _dockerProbedAt = _dockerProbeHooks.now();
   }
   return _dockerAvailable;
 }
@@ -54,6 +94,7 @@ export function isDockerAvailable(): boolean {
 /** Test seam: reset the cached availability probe. */
 export function _resetDockerAvailableCache(): void {
   _dockerAvailable = null;
+  _dockerProbedAt = 0;
 }
 
 /** POSIX single-quote a string for safe inclusion in a `bash -c` host command. */

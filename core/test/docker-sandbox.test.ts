@@ -15,6 +15,8 @@ import {
   isDockerAvailable,
   wrapWithDocker,
   _resetDockerAvailableCache,
+  _dockerProbeHooks,
+  DOCKER_NEGATIVE_PROBE_TTL_MS,
   DEFAULT_DOCKER_IMAGE,
 } from '../src/tools/docker-sandbox';
 import { shellHooks } from '../src/utils/shell';
@@ -55,6 +57,36 @@ describe('isDockerAvailable', () => {
   it('returns false when docker version throws', () => {
     mock.method(shellHooks, 'execSync', () => { throw new Error('daemon unreachable'); });
     assert.equal(isDockerAvailable(), false);
+  });
+
+  it('re-probes a stale NEGATIVE result after the TTL and recovers when the daemon returns', () => {
+    let probes = 0;
+    let clock = 1000;
+    mock.method(_dockerProbeHooks, 'now', () => clock);
+    mock.method(shellHooks, 'execSync', () => {
+      probes++;
+      if (probes === 1) throw new Error('daemon down'); // first probe fails
+      return Buffer.from('29.9.3'); // daemon recovered on the next probe
+    });
+
+    // First probe: daemon down -> cached false (recorded at t=1000).
+    assert.equal(isDockerAvailable(), false);
+    assert.equal(probes, 1);
+
+    // Within the TTL window the negative result is throttled (no re-probe).
+    clock = 1000 + DOCKER_NEGATIVE_PROBE_TTL_MS - 1;
+    assert.equal(isDockerAvailable(), false);
+    assert.equal(probes, 1, 'negative result must be cached within the TTL');
+
+    // Past the TTL the stale negative result is re-probed; daemon is now up.
+    clock = 1000 + DOCKER_NEGATIVE_PROBE_TTL_MS;
+    assert.equal(isDockerAvailable(), true, 'a recovered daemon must be picked up mid-session');
+    assert.equal(probes, 2, 'stale negative result must trigger exactly one re-probe');
+
+    // The positive result is now cached for the session — no further probing.
+    clock += DOCKER_NEGATIVE_PROBE_TTL_MS * 10;
+    assert.equal(isDockerAvailable(), true);
+    assert.equal(probes, 2, 'positive result stays cached, never re-probed');
   });
 });
 
