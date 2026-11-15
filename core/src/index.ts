@@ -135,6 +135,7 @@ export { Reservoir, percentile as reservoirPercentile, DEFAULT_RESERVOIR_SIZE } 
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { FILE_IMAGES_KINDS } from './tools/file-read';
 export { MCP_AUTH_STATUS } from './tools/mcp-auth';
+export { scheduleWakeupTool, clampWakeupDelay, resetLoopPacingState, LOOP_CONTINUE_SENTINEL, NOOP_STREAK_WARN_THRESHOLD, WAKEUP_MIN_DELAY_SECONDS, WAKEUP_MAX_DELAY_SECONDS } from './tools/schedule-wakeup';
 export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite, detectGitInternalWrite, detectPowerShellExecution } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
 export { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE, _resetDockerAvailableCache } from './tools/docker-sandbox';
