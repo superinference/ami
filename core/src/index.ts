@@ -114,6 +114,8 @@ export type { RateLimitBucket, RateLimitStatus } from './rate-limiter';
 export { SELECTION_STRATEGIES } from './credential-pool';
 export type { CredentialEntry, SelectionStrategy } from './credential-pool';
 export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
+export { parseEnvInt, parseEnvFloat, parseEnvBool, resolveEnvVar, parseDotenv, loadDotenv } from './utils/env';
+export type { DotenvParseOptions, LoadDotenvOptions } from './utils/env';
 export { estimateTokens, estimateToolSchemaTokens } from './utils/tokens';
 export {
   atomicWriteFileSync,
