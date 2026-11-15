@@ -142,7 +142,7 @@ export { estimateMessageTokens, estimateConversationTokens, estimateToolCallToke
 export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
 export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
-export { Reservoir, percentile as reservoirPercentile, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
+export { Reservoir, percentile as reservoirPercentile, normalizeReservoirSize, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { FILE_IMAGES_KINDS } from './tools/file-read';
 export { MCP_AUTH_STATUS, MCP_AUTH_ERROR_KINDS, redactAuthUrl, classifyMcpAuthError } from './tools/mcp-auth';
