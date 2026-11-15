@@ -19,6 +19,7 @@ export interface AdmissionEntry {
 export class AdmissionLog {
   private _entries: AdmissionEntry[] = [];
   private _maxEntries: number;
+  private _evicted = 0;
 
   constructor(maxEntries: number = 10_000) {
     this._maxEntries = maxEntries;
@@ -26,8 +27,15 @@ export class AdmissionLog {
 
   record(entry: Omit<AdmissionEntry, 'timestamp'>): AdmissionEntry {
     const full: AdmissionEntry = { ...entry, timestamp: Date.now() };
-    if (this._entries.length < this._maxEntries) {
-      this._entries.push(full);
+    this._entries.push(full);
+    // Bounded FIFO ring buffer: once the cap is reached, evict the OLDEST
+    // entries so the most recent (and most investigation-worthy) admission
+    // decisions are always retained. Dropping the newest would permanently
+    // freeze a full audit log on stale data, hiding the events right before
+    // and after an incident.
+    while (this._entries.length > this._maxEntries) {
+      this._entries.shift();
+      this._evicted++;
     }
     return full;
   }
@@ -74,7 +82,17 @@ export class AdmissionLog {
     return summary;
   }
 
+  /**
+   * Number of oldest entries evicted by the bounded ring buffer since
+   * construction (or the last clear()). A non-zero value signals the log
+   * overflowed its cap and earlier admission decisions are no longer retained.
+   */
+  getEvictedCount(): number {
+    return this._evicted;
+  }
+
   clear(): void {
     this._entries = [];
+    this._evicted = 0;
   }
 }

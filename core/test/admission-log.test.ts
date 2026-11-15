@@ -205,4 +205,41 @@ describe('AdmissionLog', () => {
     log.allowed('tool', 'register', 'bash', 'core');
     assert.equal(log.getEntriesByName('nonexistent').length, 0);
   });
+
+  it('FIFO ring buffer evicts oldest and keeps newest when full', () => {
+    const log = new AdmissionLog(3);
+    log.allowed('tool', 'register', 'a', 'core');
+    log.allowed('tool', 'register', 'b', 'core');
+    log.allowed('tool', 'register', 'c', 'core');
+    // Over cap: oldest ('a') must be evicted, newest ('d') retained.
+    log.allowed('tool', 'register', 'd', 'core');
+    const names = log.getEntries().map(e => e.name);
+    assert.deepEqual(names, ['b', 'c', 'd']);
+    assert.equal(log.getEntries().length, 3);
+  });
+
+  it('full log continues recording newest decisions (drop-newest regression guard)', () => {
+    const log = new AdmissionLog(2);
+    log.allowed('tool', 'register', 'old', 'core');
+    log.allowed('tool', 'register', 'mid', 'core');
+    // A denied decision arriving after the cap must still be recorded — the
+    // most investigation-worthy events must never be silently discarded.
+    log.denied('mcp_server', 'connect', 'attacker', 'user', 'not on allowlist');
+    assert.deepEqual(log.getEntries().map(e => e.name), ['mid', 'attacker']);
+    assert.equal(log.getDeniedCount(), 1);
+    assert.equal(log.getEntriesByName('old').length, 0);
+  });
+
+  it('getEvictedCount reports overflow and resets on clear', () => {
+    const log = new AdmissionLog(2);
+    assert.equal(log.getEvictedCount(), 0);
+    log.allowed('tool', 'register', 'a', 'core');
+    log.allowed('tool', 'register', 'b', 'core');
+    assert.equal(log.getEvictedCount(), 0);
+    log.allowed('tool', 'register', 'c', 'core');
+    log.allowed('tool', 'register', 'd', 'core');
+    assert.equal(log.getEvictedCount(), 2);
+    log.clear();
+    assert.equal(log.getEvictedCount(), 0);
+  });
 });
