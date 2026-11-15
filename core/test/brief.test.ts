@@ -57,4 +57,20 @@ describe('briefTool', () => {
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('unknown parameter'));
   });
+
+  it('falls back to default for a truthy non-string topic (no coercion)', async () => {
+    // A number is truthy, so `(input.topic as string) || default` would coerce it into the
+    // prompt. The typeof guard must reject it and use the default instead.
+    const result = await briefTool.execute!({ topic: 42 as unknown as string }, ctx);
+    assert.ok(result.output.includes('current conversation'));
+    assert.ok(!result.output.includes('42'));
+  });
+
+  it('caps an over-long topic to the maximum length', async () => {
+    const topic = 'a'.repeat(500);
+    const result = await briefTool.execute!({ topic }, ctx);
+    // Capped at 300 chars: the 300-char run is present, the 301-char run is not.
+    assert.ok(result.output.includes('a'.repeat(300)));
+    assert.ok(!result.output.includes('a'.repeat(301)));
+  });
 });
