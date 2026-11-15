@@ -304,7 +304,36 @@ export class WorkflowRuntime extends EventEmitter {
           agentNumber: this._agentCount,
         });
 
-        const result = await this._agentHandler(prompt, opts);
+        let result: unknown;
+        if (opts?.schema) {
+          // [FUNCTIONAL PARITY] Schema-forced StructuredOutput: validate the
+          // handler's output against opts.schema and retry on mismatch (parity
+          // with the reference runtime, which re-asks the agent until it returns conforming
+          // output or attempts are exhausted). A single agent() call still counts
+          // as one agent — retries are internal and hold the same slot.
+          const maxAttempts = schemaMaxAttempts();
+          let validated: unknown | undefined;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const raw = await this._agentHandler(prompt, opts);
+            validated = validateStructuredOutput(raw, opts.schema);
+            if (validated !== undefined) break;
+            if (attempt < maxAttempts) {
+              this.emit('agent-schema-retry', {
+                label: opts?.label,
+                phase,
+                attempt,
+                maxAttempts,
+                agentNumber: this._agentCount,
+              });
+            }
+          }
+          if (validated === undefined) {
+            throw new Error(`Workflow agent output failed schema validation after ${maxAttempts} attempt(s)`);
+          }
+          result = validated;
+        } else {
+          result = await this._agentHandler(prompt, opts);
+        }
 
         this.emit('agent-complete', {
           label: opts?.label,
@@ -455,6 +484,60 @@ export function parseWorkflowMeta(script: string): WorkflowMeta | null {
 }
 
 /**
+ * [FUNCTIONAL PARITY] Validate a (possibly JSON-string) agent output against a
+ * JSON-Schema-like descriptor — parity with the reference schema-forced
+ * StructuredOutput: an `agent(prompt, { schema })` call must return output that
+ * conforms to the schema. The runtime parses + validates it (and, in
+ * {@link WorkflowRuntime}, retries the agent on mismatch).
+ *
+ * Returns the parsed/validated value on success, or `undefined` when the value
+ * does not satisfy the schema (the signal to retry or fail). Validation is
+ * intentionally shallow — type of the root plus `required` top-level keys —
+ * matching the lightweight guarantees the workflow runtime makes without pulling
+ * in a full JSON-Schema engine.
+ */
+export function validateStructuredOutput(value: unknown, schema: Record<string, unknown>): unknown | undefined {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    // Best-effort parse: a string that isn't JSON stays the raw string, so a
+    // `string`/absent-descriptor schema still accepts it while object/array/
+    // number/boolean schemas reject it on the per-type check below.
+    try { parsed = JSON.parse(value); } catch { parsed = value; }
+  }
+  const declaredType = typeof schema.type === 'string' ? (schema.type as string) : undefined;
+  const expectsObject = declaredType === 'object' || (declaredType === undefined && (schema.properties !== undefined || schema.required !== undefined));
+  if (expectsObject) {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const obj = parsed as Record<string, unknown>;
+    const required = Array.isArray(schema.required) ? (schema.required as unknown[]) : [];
+    for (const key of required) {
+      if (typeof key === 'string' && !(key in obj)) return undefined;
+    }
+    return parsed;
+  }
+  if (declaredType === 'array') {
+    return Array.isArray(parsed) ? parsed : undefined;
+  }
+  if (declaredType === 'string') {
+    // For a string schema the raw (unparsed) value is the structured output.
+    return typeof value === 'string' ? value : undefined;
+  }
+  if (declaredType === 'number' || declaredType === 'integer') {
+    return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : undefined;
+  }
+  if (declaredType === 'boolean') {
+    return typeof parsed === 'boolean' ? parsed : undefined;
+  }
+  // Unknown/absent descriptor: accept the parsed value as-is.
+  return parsed;
+}
+
+/** Max attempts for a schema-forced agent() call (1 try + retries). */
+export function schemaMaxAttempts(): number {
+  return Math.max(1, Math.min(10, parseEnvInt(process.env.AMI_WORKFLOW_SCHEMA_MAX_ATTEMPTS, 3)));
+}
+
+/**
  * Scan a workflow script body for sandbox-escaping constructs:
  * dynamic import(), require(), and process/child_process access.
  * Throws if any are found.
@@ -491,6 +574,20 @@ export function validateWorkflowScript(scriptBody: string): void {
   // the global scope, defeating every check above.
   if (/\bFunction\s*\(/g.test(stripped) || /\.\s*constructor\b/g.test(stripped)) {
     throw new Error('Workflow scripts cannot use the Function constructor — this would escape the workflow sandbox');
+  }
+  // [FUNCTIONAL PARITY] Ban non-deterministic global sources. A workflow must be
+  // reproducible/resumable: a resumed run (and the agent-result cache keyed on
+  // the prompt) assumes identical inputs produce identical work. Date.now() and
+  // Math.random() make that false, so the reference workflow runtime forbids
+  // them in script bodies. Matched in dot OR bracket notation
+  // (Date.now / Date['now'], Math.random / Math['random']).
+  // After literal-stripping, `Date['now']`/`Date["now"]`/`Date[`now`]` all become
+  // `Date['']` or `Date[""]`, so one pattern catches dot + bracket forms.
+  if (/\bDate\s*(?:\.\s*now\b|\[\s*(?:""|'')\s*\])/g.test(stripped)) {
+    throw new Error('Workflow scripts cannot use Date.now() — it is non-deterministic and breaks resumable/reproducible execution');
+  }
+  if (/\bMath\s*(?:\.\s*random\b|\[\s*(?:""|'')\s*\])/g.test(stripped)) {
+    throw new Error('Workflow scripts cannot use Math.random() — it is non-deterministic and breaks resumable/reproducible execution');
   }
 }
 

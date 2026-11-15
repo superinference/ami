@@ -177,6 +177,13 @@ export interface PluginBundle {
   commandsDir?: string;
   hooksFile?: string;
   /**
+   * Bundled MCP server config file (Claude parity). A plugin may ship an
+   * `.mcp.json` at its root (or a manifest-declared `mcpServers` path) declaring
+   * MCP servers it contributes. Path-traversal/symlink hardened like every other
+   * component path; `undefined` when the plugin ships none.
+   */
+  mcpServersFile?: string;
+  /**
    * Manifest `defaultEnabled` (Claude parity: a plugin may ship disabled-by-default).
    * Drives the tri-state enablement fallback (managed policy > explicit user marker >
    * `defaultEnabled` > true). `undefined` when the manifest omits it (treated as true).
@@ -277,35 +284,79 @@ function resolvePluginHooksFromManifest(root: string, manifest: Record<string, u
 }
 
 /**
- * Minimal TOML string parser for the simple `key = "value"` format used by
- * command definition files. Handles backslash escapes (\n, \t, \\, \").
+ * Decode the backslash escapes (\n, \t, \\, \") inside a TOML basic-string body.
+ * When `stopAtQuote` is set (single-line basic string) an unescaped `"` ends the
+ * value; otherwise (a multi-line `"""…"""` body, already delimiter-stripped) the
+ * whole input is decoded and inner `"` characters are kept verbatim.
+ */
+function unescapeTomlBasic(value: string, stopAtQuote: boolean): string {
+  let result = '';
+  let escaped = false;
+  for (const ch of value) {
+    if (escaped) {
+      if (ch === 'n') result += '\n';
+      else if (ch === 't') result += '\t';
+      else result += ch;
+      escaped = false;
+    } else if (ch === '\\') {
+      escaped = true;
+    } else if (ch === '"' && stopAtQuote) {
+      return result;
+    } else {
+      result += ch;
+    }
+  }
+  return result; // No closing quote found, return what we have
+}
+
+/**
+ * Minimal TOML string parser for the `key = "value"` format used by command
+ * definition files. Beyond the original single-line basic string it is an
+ * ADDITIVE SUPERSET that matches real TOML / Claude-Code command files:
+ *  - the key must start the line (after optional indentation) so a value is never
+ *    picked up from inside another line;
+ *  - full-line `#` comments are ignored (a commented-out `key = "…"` no longer
+ *    shadows the real assignment below it);
+ *  - multi-line basic strings `key = """ … """` are supported (the newline that
+ *    immediately follows the opening delimiter is trimmed, per the TOML spec),
+ *    so a multi-line `prompt`/`description` is no longer parsed as empty and
+ *    silently dropped.
+ * Backslash escapes (\n, \t, \\, \") are decoded in both forms.
  */
 function parseTomlString(content: string, key: string): string | undefined {
   const lines = content.split('\n');
+  const keyRe = new RegExp(
+    '^\\s*' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=\\s*(.*)$',
+  );
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const prefix = key + ' = "';
-    const idx = line.indexOf(prefix);
-    if (idx !== -1) {
-      const value = line.slice(idx + prefix.length);
-      let result = '';
-      let escaped = false;
-      for (const ch of value) {
-        if (escaped) {
-          if (ch === 'n') result += '\n';
-          else if (ch === 't') result += '\t';
-          else result += ch;
-          escaped = false;
-        } else if (ch === '\\') {
-          escaped = true;
-        } else if (ch === '"') {
-          return result;
-        } else {
-          result += ch;
+    const line = lines[i]!;
+    if (line.trimStart().startsWith('#')) continue; // full-line TOML comment
+    const m = line.match(keyRe);
+    if (!m) continue;
+    const rest = m[1]!;
+    // Multi-line basic string: key = """ … """ (possibly closing on the same line).
+    if (rest.startsWith('"""')) {
+      const opener = rest.slice(3);
+      const sameClose = opener.indexOf('"""');
+      if (sameClose !== -1) return unescapeTomlBasic(opener.slice(0, sameClose), false);
+      const collected: string[] = [];
+      // TOML trims a newline immediately after the opening delimiter; keep any
+      // text that trails """ on the opening line.
+      if (opener !== '') collected.push(opener);
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j]!;
+        const close = l.indexOf('"""');
+        if (close !== -1) {
+          collected.push(l.slice(0, close));
+          return unescapeTomlBasic(collected.join('\n'), false);
         }
+        collected.push(l);
       }
-      return result; // No closing quote found, return what we have
+      return undefined; // unterminated multi-line string → treat as absent
     }
+    // Single-line basic string: key = "value".
+    if (rest.startsWith('"')) return unescapeTomlBasic(rest.slice(1), true);
+    return undefined; // not a quoted-string value
   }
   return undefined;
 }
@@ -423,7 +474,7 @@ export interface PluginValidationResult {
 /** Fields that belong in a marketplace entry, not plugin.json — author confusion. */
 const MARKETPLACE_ONLY_MANIFEST_FIELDS = ['category', 'source', 'tags', 'strict', 'id'];
 /** Optional component-path fields a manifest may declare. */
-const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks'];
+const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'mcpServers'];
 
 /**
  * Validate a parsed plugin manifest object. Checks required `name`/`version`
@@ -541,6 +592,19 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
       JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
     } catch (err) {
       errors.push({ path: path.relative(pluginDir, hooksFile), message: `Invalid hooks JSON: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  // .mcp.json (Claude Code) — bundled MCP servers must be valid JSON; a symlink/..
+  // escape is flagged exactly like the other component paths.
+  const mcpFile = hardenedResolve(pluginDir, '.mcp.json');
+  if (mcpFile === undefined && fs.existsSync(path.join(pluginDir, '.mcp.json'))) {
+    errors.push({ path: '.mcp.json', message: '.mcp.json path escapes the plugin directory (symlink or ..).' });
+  } else if (mcpFile) {
+    try {
+      JSON.parse(fs.readFileSync(mcpFile, 'utf-8'));
+    } catch (err) {
+      errors.push({ path: '.mcp.json', message: `Invalid MCP servers JSON: ${err instanceof Error ? err.message : String(err)}` });
     }
   }
 
@@ -684,6 +748,9 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       // Hooks: a manifest-declared `hooks` file path overrides the convention of
       // <root>/hooks.json OR <root>/hooks/hooks.json (the Claude Code layout).
       hooksFile: resolvePluginHooksFromManifest(root, manifest),
+      // MCP servers: a manifest-declared `mcpServers` file path overrides the
+      // <root>/.mcp.json convention (Claude Code layout). Hardened like the rest.
+      mcpServersFile: resolveComponentDir(root, manifest, 'mcpServers', '.mcp.json'),
     });
   }
   return { bundles, failures };

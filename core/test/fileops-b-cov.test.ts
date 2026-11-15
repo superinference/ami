@@ -549,12 +549,12 @@ describe('fuzzy-match — uncovered paths', () => {
     assert.equal(result, '  A\n    B');
   });
 
-  it('exercises findExact empty-pattern guard while line_trimmed wins on a blank line', () => {
-    // findExact returns [] for an empty pattern (its length guard), so the
-    // search proceeds; line_trimmed then matches the single blank line uniquely.
+  it('rejects an empty old_string up front (parity: empty pattern is an error)', () => {
+    // [parity] An empty old_string is now rejected before any strategy runs,
+    // instead of silently inserting at the first blank line (a surprising,
+    // ambiguous behavior). fuzzy-match surfaces a typed 'old_string is empty'.
     const result = fuzzyFindAndReplace('abc\n\ndef', '', 'INSERTED');
-    assert.equal(result.error, null);
-    assert.ok((result.newContent ?? '').includes('INSERTED'));
+    assert.equal(result.error, 'old_string is empty');
   });
 
   it('maps byte offsets for a line-strategy match that is not the first line', () => {

@@ -192,7 +192,7 @@ describe('test-log', () => {
       '{"Action":"skip","Test":"TestE"}',
     ].join('\n');
     const out = compactTestLog(lines);
-    assert.match(out, /Tests: 3 passed, 1 failed\. Showing failing output only\./);
+    assert.match(out, /Tests: 3 passed, 1 failed, 1 skipped\. Showing failing output only\./);
     assert.match(out, /\[build\] starting/);          // null-action '[' line kept
     assert.match(out, /FAIL: boom/);                  // failing output kept
     assert.match(out, /"Action":"fail"/);             // fail event kept

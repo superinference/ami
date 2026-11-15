@@ -142,13 +142,41 @@ export class ProcessManager extends EventEmitter {
    */
   private _completedBuffer: CompletedTaskEvent[] = [];
 
+  /**
+   * Per-session cap on concurrently RUNNING background processes (parity with
+   * Claude Code's background-shell limit). Defaults to MAX_BACKGROUND_PROCESSES;
+   * exposed as a mutable field so callers/tests can tune the ceiling without
+   * touching the module constant. spawn() enforces it; see atCapacity().
+   */
+  maxBackgroundProcesses: number = MAX_BACKGROUND_PROCESSES;
+
   constructor(cwd: string) {
     super();
     this.tasksDir = projectStateDir(cwd, 'tasks');
     fs.mkdirSync(this.tasksDir, { recursive: true });
   }
 
+  /**
+   * FUNCTIONAL (parity): true when the number of currently-running tasks has
+   * reached `maxBackgroundProcesses`, i.e. a further spawn() would be rejected.
+   * Lets callers pre-check and surface a clean message instead of catching the
+   * throw. Mirrors Claude Code refusing to launch beyond its background limit.
+   */
+  atCapacity(): boolean {
+    return this.runningCount() >= this.maxBackgroundProcesses;
+  }
+
   spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): string {
+    // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
+    // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
+    // session could spawn unbounded detached shells. Claude Code caps concurrent
+    // background shells; refuse (throw) once the running set is full.
+    if (this.atCapacity()) {
+      throw new Error(
+        `too many background processes (limit ${this.maxBackgroundProcesses}); ` +
+        `wait for one to finish or kill one before starting another`,
+      );
+    }
     const taskId = `bg-${crypto.randomBytes(4).toString('hex')}`;
     const outputPath = path.join(this.tasksDir, `${taskId}.output`);
 
@@ -323,18 +351,71 @@ export class ProcessManager extends EventEmitter {
     return this.processes.get(taskId)?.status;
   }
 
-  getOutput(taskId: string, tailLines = 50): { status: string; exitCode: number | null; output: string; elapsedMs: number } | null {
+  /**
+   * FUNCTIONAL (parity): reap a single FINISHED task — drop it from the tracked
+   * map and delete its on-disk output file. Refuses (returns false) for an
+   * unknown task or one that is still running, so a live process is never
+   * untracked out from under its close/error handler. Returns true when a
+   * terminal task was removed. Mirrors Claude Code reaping completed shells so
+   * the session's task table and tasks/ directory don't grow without bound.
+   */
+  removeTask(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry) return false;
+    if (!isTerminalTaskStatus(entry.status)) return false;
+    if (entry.outputFd !== null) {
+      try { fs.closeSync(entry.outputFd); } catch { /* already closed */ }
+      entry.outputFd = null;
+    }
+    if (entry.outputPath) {
+      try { fs.rmSync(entry.outputPath, { force: true }); } catch { /* best-effort */ }
+    }
+    this.processes.delete(taskId);
+    return true;
+  }
+
+  /**
+   * FUNCTIONAL (parity): bulk-reap every terminal task via removeTask(), leaving
+   * only running tasks tracked. Returns the number of tasks reaped. Useful for
+   * periodic orphan cleanup without the caller enumerating the table itself.
+   */
+  pruneTerminal(): number {
+    let removed = 0;
+    for (const taskId of Array.from(this.processes.keys())) {
+      if (this.removeTask(taskId)) removed++;
+    }
+    return removed;
+  }
+
+  getOutput(taskId: string, tailLines = 50, filter?: string | RegExp): { status: string; exitCode: number | null; output: string; elapsedMs: number } | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
+
+    // FUNCTIONAL (parity): optional line filter, mirroring Claude Code's
+    // BashOutput `filter` regex. When supplied, only output lines matching the
+    // pattern are retained; the tail is then applied to the FILTERED set so the
+    // caller sees the last N *matching* lines rather than N raw lines that may
+    // contain no matches. An invalid regex string is treated as "no match".
+    let re: RegExp | undefined;
+    if (filter !== undefined) {
+      try {
+        re = filter instanceof RegExp ? filter : new RegExp(filter);
+      } catch {
+        re = /(?!)/; // never matches — invalid pattern yields empty output
+      }
+    }
 
     let output = '';
     try {
       const content = fs.readFileSync(entry.outputPath, 'utf-8');
+      let lines = content.split('\n');
+      if (re) {
+        lines = lines.filter((line) => re!.test(line));
+      }
       if (tailLines > 0) {
-        const lines = content.split('\n');
         output = lines.slice(-tailLines).join('\n');
       } else {
-        output = content;
+        output = re ? lines.join('\n') : content;
       }
     } catch { /* file may not exist yet */ }
 

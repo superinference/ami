@@ -65,6 +65,64 @@ export function setTaskPersistPath(cwd: string): void {
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'completed']);
 
 /**
+ * Strict task-id parser (PARITY FIX). Claude Code's task tools treat the id as
+ * an opaque identifier and reject anything that is not a clean integer; Node's
+ * `parseInt` is lenient — `parseInt('3abc', 10) === 3` and `parseInt('3.9', 10)
+ * === 3` — so a malformed id silently retargets the call at the WRONG task
+ * (e.g. deleting/claiming #3 when the caller typed "3abc"). We accept only an
+ * optionally-whitespace-padded run of digits and return null otherwise so the
+ * caller surfaces the malformed id instead of mutating an unintended task.
+ */
+export function parseTaskId(raw: unknown): number | null {
+  if (typeof raw === 'number') {
+    return Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+  }
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Normalize an owner/assignee (PARITY FIX): trim surrounding whitespace and
+ * treat a blank or whitespace-only value as "no owner". Mirrors Claude Code's
+ * assignee handling, where "  alice  " and "alice" are the SAME agent and a
+ * blank assignee is unset. Without this, whitespace-variant owners fragment
+ * getAgentStatuses into duplicate rows and a whitespace-only owner makes a task
+ * look claimed while being owned by nobody (so `next` can never surface it).
+ */
+export function normalizeOwner(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  return t.length > 0 ? t : undefined;
+}
+
+/**
+ * Would adding "blockerId must complete before blockedId" (i.e. pushing
+ * blockerId onto blockedId.blockedBy) introduce a dependency cycle? (PARITY
+ * FIX.) A cycle means a task transitively blocks itself, producing a deadlock no
+ * agent can ever claim out of — `next`/`claim` would permanently report every
+ * node in the cycle as blocked. Claude Code rejects such edges; we walk the
+ * existing blockedBy graph from blockerId and report a cycle if blockedId is
+ * reachable (blockerId already depends, directly or transitively, on blockedId).
+ */
+export function wouldCreateCycle(blockerId: number, blockedId: number): boolean {
+  if (blockerId === blockedId) return true;
+  const seen = new Set<number>();
+  const stack = [blockerId];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (cur === blockedId) return true;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    const t = tasks.get(cur);
+    if (t) for (const dep of t.blockedBy) stack.push(dep);
+  }
+  return false;
+}
+
+/**
  * Structural validation of a single persisted task record. A corrupt or
  * partially-written record (hand-edited file, interrupted write, schema drift
  * from an older version) must be dropped rather than poisoning the in-memory
@@ -349,7 +407,7 @@ export const taskTrackerTool: ToolDefinition = {
             description: ((input.description as string) || '').trim(),
             status: 'pending',
             activeForm: (input.activeForm as string) || undefined,
-            owner: (input.owner as string) || undefined,
+            owner: normalizeOwner(input.owner),
             metadata: input.metadata ? { ...(input.metadata as Record<string, unknown>) } : undefined,
             blocks: [],
             blockedBy: [],
@@ -364,8 +422,8 @@ export const taskTrackerTool: ToolDefinition = {
       }
 
       case 'update': {
-        const id = parseInt(input.task_id as string, 10);
-        if (isNaN(id)) {
+        const id = parseTaskId(input.task_id);
+        if (id === null) {
           return { output: 'Error: task_id is required for update action.', isError: true };
         }
         // Validate status before taking the lock so a bad value fails cleanly.
@@ -375,6 +433,8 @@ export const taskTrackerTool: ToolDefinition = {
         let notFound = false;
         let deleted = false;
         let completed = false;
+        let cycleErr = '';
+        let startBlocked: number[] = [];
         const out = await mutate(() => {
           const task = tasks.get(id);
           if (!task) { notFound = true; return ''; }
@@ -387,6 +447,33 @@ export const taskTrackerTool: ToolDefinition = {
             deleted = true;
             return `Task #${id} deleted.`;
           }
+          // --- Atomic pre-validation (PARITY FIX): reject the whole update
+          // before mutating anything, so a bad edge/transition never leaves a
+          // partially-applied (and possibly deadlocked) task.
+          // Dependency-cycle guard for requested edges.
+          if (input.addBlocks) {
+            for (const bid of input.addBlocks as string[]) {
+              const blockId = parseTaskId(bid);
+              if (blockId === null || blockId === id || !tasks.has(blockId)) continue;
+              // "id blocks blockId" => id must finish before blockId.
+              if (wouldCreateCycle(id, blockId)) { cycleErr = `#${id} -> #${blockId}`; return ''; }
+            }
+          }
+          if (input.addBlockedBy) {
+            for (const bid of input.addBlockedBy as string[]) {
+              const blockerId = parseTaskId(bid);
+              if (blockerId === null || blockerId === id || !tasks.has(blockerId)) continue;
+              // "id blocked by blockerId" => blockerId must finish before id.
+              if (wouldCreateCycle(blockerId, id)) { cycleErr = `#${blockerId} -> #${id}`; return ''; }
+            }
+          }
+          // Blocked-task start guard: refuse to move a task to in_progress while
+          // it still has unresolved blockers, mirroring the claim-path guard so
+          // `update` is not a backdoor around dependency ordering.
+          if (input.status === 'in_progress') {
+            const blk = unresolvedBlockers(task);
+            if (blk.length > 0) { startBlocked = blk; return ''; }
+          }
           const prevStatus = task.status;
           if (input.status) {
             task.status = input.status as Task['status'];
@@ -395,7 +482,7 @@ export const taskTrackerTool: ToolDefinition = {
           if (input.subject) task.subject = (input.subject as string).trim();
           if (input.description !== undefined) task.description = ((input.description as string) || '').trim();
           if (input.activeForm !== undefined) task.activeForm = (input.activeForm as string) || undefined;
-          if (input.owner !== undefined) task.owner = (input.owner as string) || undefined;
+          if (input.owner !== undefined) task.owner = normalizeOwner(input.owner);
           if (input.metadata) {
             if (!task.metadata) task.metadata = {};
             for (const [k, v] of Object.entries(input.metadata as Record<string, unknown>)) {
@@ -405,20 +492,20 @@ export const taskTrackerTool: ToolDefinition = {
           }
           if (input.addBlocks) {
             for (const bid of input.addBlocks as string[]) {
-              const blockId = parseInt(bid, 10);
-              if (!isNaN(blockId) && tasks.has(blockId) && blockId !== id) {
+              const blockId = parseTaskId(bid);
+              if (blockId !== null && tasks.has(blockId) && blockId !== id) {
                 if (!task.blocks.includes(blockId)) task.blocks.push(blockId);
-                const blockedTask = tasks.get(blockId)!;
+                const blockedTask: Task = tasks.get(blockId)!;
                 if (!blockedTask.blockedBy.includes(id)) blockedTask.blockedBy.push(id);
               }
             }
           }
           if (input.addBlockedBy) {
             for (const bid of input.addBlockedBy as string[]) {
-              const blockerId = parseInt(bid, 10);
-              if (!isNaN(blockerId) && tasks.has(blockerId) && blockerId !== id) {
+              const blockerId = parseTaskId(bid);
+              if (blockerId !== null && tasks.has(blockerId) && blockerId !== id) {
                 if (!task.blockedBy.includes(blockerId)) task.blockedBy.push(blockerId);
-                const blockerTask = tasks.get(blockerId)!;
+                const blockerTask: Task = tasks.get(blockerId)!;
                 if (!blockerTask.blocks.includes(id)) blockerTask.blocks.push(id);
               }
             }
@@ -430,6 +517,12 @@ export const taskTrackerTool: ToolDefinition = {
         });
         if (notFound) {
           return { output: `Error: task #${id} not found.`, isError: true };
+        }
+        if (cycleErr) {
+          return { output: `Error: adding that dependency would create a cycle (${cycleErr}). [reason: dependency_cycle]`, isError: true };
+        }
+        if (startBlocked.length > 0) {
+          return { output: `Error: task #${id} is blocked by: ${startBlocked.map(b => `#${b}`).join(', ')} — resolve blockers before starting. [reason: blocked]`, isError: true };
         }
         if (completed && context._hookManager) {
           context._hookManager.executeTaskCompleted({ taskId: String(id), subject: tasks.get(id)?.subject ?? '' }).catch(() => {});
@@ -450,8 +543,8 @@ export const taskTrackerTool: ToolDefinition = {
       }
 
       case 'get': {
-        const id = parseInt(input.task_id as string, 10);
-        if (isNaN(id)) {
+        const id = parseTaskId(input.task_id);
+        if (id === null) {
           return { output: 'Error: task_id is required for get action.', isError: true };
         }
         reloadForRead();
@@ -463,8 +556,8 @@ export const taskTrackerTool: ToolDefinition = {
       }
 
       case 'delete': {
-        const id = parseInt(input.task_id as string, 10);
-        if (isNaN(id)) {
+        const id = parseTaskId(input.task_id);
+        if (id === null) {
           return { output: 'Error: task_id is required for delete action.', isError: true };
         }
         let notFound = false;
@@ -483,11 +576,11 @@ export const taskTrackerTool: ToolDefinition = {
       }
 
       case 'claim': {
-        const id = parseInt(input.task_id as string, 10);
-        if (isNaN(id)) {
+        const id = parseTaskId(input.task_id);
+        if (id === null) {
           return { output: 'Error: task_id is required for claim action.', isError: true };
         }
-        const owner = input.owner as string | undefined;
+        const owner = normalizeOwner(input.owner);
         const checkAgentBusy = input.checkAgentBusy === true;
         // Structured claim-failure reasons mirror Claude Code's ClaimTaskResult.
         let reason: 'task_not_found' | 'already_claimed' | 'already_resolved' | 'blocked' | 'agent_busy' | null = null;
