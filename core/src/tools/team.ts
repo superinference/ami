@@ -8,10 +8,26 @@ import { PERMISSION_MODES, normalizePermissionMode, PermissionMode } from '../pe
 /** Max length of a user-supplied team name (mirrors Claude's identifier bounds). */
 const MAX_TEAM_NAME_LEN = 64;
 
+/**
+ * Max length of the free-text team description persisted to disk. Mirrors Claude's
+ * cap on the analogous whenToUse/description field (5000 chars): the description is
+ * written verbatim into team.json, so an unbounded value is an on-disk size/DoS gap.
+ */
+const MAX_TEAM_DESCRIPTION_LEN = 5000;
+
+/**
+ * Validate a user-supplied team name that becomes a directory component. Mirrors
+ * Claude's validateAgentType identifier bounds: a bounded length AND a start/end
+ * alphanumeric requirement, so degenerate names like "-", "_", "-foo" or "bar_"
+ * (which would still be valid path components) are rejected. Returns the name when
+ * valid, or null otherwise.
+ */
 function sanitizeTeamName(name: string): string | null {
   const clean = name.replace(/[^a-zA-Z0-9_-]/g, '');
   if (!clean || clean !== name) return null;
   if (clean.length > MAX_TEAM_NAME_LEN) return null;
+  // Must start and end with an alphanumeric (single-char alphanumeric is allowed).
+  if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(clean)) return null;
   return clean;
 }
 
@@ -116,7 +132,13 @@ export const teamCreateTool: ToolDefinition = {
     if (currentTeam) return { output: `Error: Team "${currentTeam.name}" already exists. Delete it first with team_delete.`, isError: true };
     const rawName = input.team_name as string;
     const base = sanitizeTeamName(rawName);
-    if (!base) return { output: `Error: team_name must contain only alphanumeric characters, hyphens, and underscores, and be at most ${MAX_TEAM_NAME_LEN} characters.`, isError: true };
+    if (!base) return { output: `Error: team_name must contain only alphanumeric characters, hyphens, and underscores, must start and end with an alphanumeric character, and be at most ${MAX_TEAM_NAME_LEN} characters.`, isError: true };
+
+    // Bound the free-text description before it is persisted verbatim to team.json.
+    const description = input.description as string | undefined;
+    if (typeof description === 'string' && description.length > MAX_TEAM_DESCRIPTION_LEN) {
+      return { output: `Error: description must be at most ${MAX_TEAM_DESCRIPTION_LEN} characters (got ${description.length}).`, isError: true };
+    }
 
     // On-disk collision detection with a unique-name fallback: if a directory for
     // this name already exists (e.g. an orphan from a prior session), pick the
@@ -136,7 +158,7 @@ export const teamCreateTool: ToolDefinition = {
     const leadAgentId = leadAgentIdFor(name);
     currentTeam = {
       name,
-      description: input.description as string | undefined,
+      description,
       leadSessionId: context.sessionId,
       leadAgentId,
       teamAllowedPaths: Array.isArray(input.team_allowed_paths) ? (input.team_allowed_paths as string[]) : undefined,
