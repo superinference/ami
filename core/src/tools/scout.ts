@@ -1,11 +1,17 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { projectStateDir } from '../reference-journal';
-import { GIT_NO_PROMPT_ENV, redactSecrets } from './tool-utils';
+import { redactSecrets } from './tool-utils';
+import { GIT_NO_PROMPT_ENV, validateGitSource } from '../plugins';
 import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
 const DEFAULT_CLONE_TIMEOUT_MS = 60000;
+/** Hard caps on how much of each section scout emits. Named so the
+ *  truncation-visibility markers below stay in sync with the slice limits. */
+const FILES_CAP = 50;
+const README_CAP = 3000;
+const GREP_MATCH_CAP = 20;
 
 /** Strip `user:password@` userinfo from any URL so credentials in a repo URL never
  *  leak into an error message or spawned-command echo. */
@@ -77,6 +83,14 @@ export const scoutTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const repo = input.repo as string;
     const query = input.query as string | undefined;
+    // Gate the source through the SAME validator every other git-clone call site uses:
+    // reject transport-helper RCE (`ext::`, `fd::`, `file::…`), argument injection
+    // (sources starting with `-`), NUL bytes, and non-allowlisted URL schemes BEFORE
+    // handing anything to `git clone`. GitHub shorthand and local paths pass through.
+    const sourceCheck = validateGitSource(repo);
+    if (!sourceCheck.ok) {
+      return { output: `Error scouting ${stripUrlCredentials(String(repo))}: ${sourceCheck.reason}`, isError: true };
+    }
     const repoUrl =
       repo.includes('://') || repo.startsWith('/') || repo.startsWith('.')
         ? repo
@@ -114,7 +128,12 @@ export const scoutTool: ToolDefinition = {
         try {
           scoutHooks.execFileSync('git', ['clone', '--depth', '1', repoUrl, localPath], {
             timeout: cloneTimeout,
-            stdio: 'pipe',
+            // Ignore stdin (fd 0) while still capturing stdout/stderr so git can never
+            // block the process waiting on an interactive credential/host-key prompt;
+            // combined with GIT_NO_PROMPT_ENV (terminal prompt off, no askpass, ssh
+            // BatchMode) an unauthenticated source fails fast instead of stalling until
+            // the timeout.
+            stdio: ['ignore', 'pipe', 'pipe'],
             env: { ...process.env, ...GIT_NO_PROMPT_ENV },
           });
         } catch (cloneErr) {
@@ -135,14 +154,26 @@ export const scoutTool: ToolDefinition = {
 
       aborted = abort();
       if (aborted) return aborted;
-      const files = scoutHooks.execSync('find . -type f -not -path "./.git/*" | head -50', {
+      // Ask for one more than the cap so an over-cap listing is detectable, then
+      // emit an explicit marker instead of silently dropping the overflow.
+      const allFiles = scoutHooks.execSync(`find . -type f -not -path "./.git/*" | head -${FILES_CAP + 1}`, {
         cwd: localPath, encoding: 'utf-8', timeout: 5000,
-      }).trim();
+      }).trim().split('\n').filter(Boolean);
+      const filesTruncated = allFiles.length > FILES_CAP;
+      let files = allFiles.slice(0, FILES_CAP).join('\n');
+      if (filesTruncated) {
+        files += `\n… (showing first ${FILES_CAP}; more files exist — explore the cache dir with file_read/grep)`;
+      }
 
       let readme = '';
       for (const f of ['README.md', 'readme.md', 'README.rst', 'README']) {
         const rp = path.join(localPath, f);
-        if (scoutHooks.existsSync(rp)) { readme = (scoutHooks.readFileSync(rp, 'utf-8') as string).slice(0, 3000); break; }
+        if (scoutHooks.existsSync(rp)) {
+          const full = scoutHooks.readFileSync(rp, 'utf-8') as string;
+          readme = full.slice(0, README_CAP);
+          if (full.length > README_CAP) readme += `\n… (README truncated to first ${README_CAP} chars — read the full file with file_read)`;
+          break;
+        }
       }
 
       let searchResults = '';
@@ -154,7 +185,11 @@ export const scoutTool: ToolDefinition = {
             'grep', ['-rn', '--include=*.ts', '--include=*.js', '--include=*.py', '--include=*.go', '--include=*.rs', '--', query, '.'],
             { cwd: localPath, encoding: 'utf-8', timeout: 10000, maxBuffer: 1024 * 1024 },
           );
-          searchResults = grepOut.split('\n').slice(0, 20).join('\n').trim();
+          const matches = grepOut.split('\n').map(l => l.trimEnd()).filter(Boolean);
+          searchResults = matches.slice(0, GREP_MATCH_CAP).join('\n').trim();
+          if (matches.length > GREP_MATCH_CAP) {
+            searchResults += `\n… (showing first ${GREP_MATCH_CAP} of ${matches.length} matches — narrow the query to see more)`;
+          }
         } catch { /* grep returns non-zero when no matches */ }
       }
 
