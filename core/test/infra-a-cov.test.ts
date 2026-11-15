@@ -1327,6 +1327,9 @@ describe('turn-metrics', () => {
       byModel: {},
       activeTimeMs: 0,
       budget: null,
+      totalCostUsd: 0,
+      avgCostPerTurn: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
     });
   });
 

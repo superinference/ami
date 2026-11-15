@@ -125,6 +125,15 @@ export {
 } from './utils/fs-atomic';
 export type { AtomicWriteOptions } from './utils/fs-atomic';
 export { getGitBranch } from './utils/git';
+export {
+  expandPath,
+  isPathSafe,
+  toRelativePath,
+  isPathWithin,
+  abbreviateHome,
+  displayPath,
+  stripTrailingSep,
+} from './utils/path';
 export { generateTitle } from './title-generator';
 export { ProcessManager, TASK_STATUS } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
@@ -139,7 +148,7 @@ export { FILE_IMAGES_KINDS } from './tools/file-read';
 export { MCP_AUTH_STATUS, MCP_AUTH_ERROR_KINDS, redactAuthUrl, classifyMcpAuthError } from './tools/mcp-auth';
 export type { McpAuthStatus, McpAuthErrorKind, McpAuthServerConfig } from './tools/mcp-auth';
 export { scheduleWakeupTool, clampWakeupDelay, resetLoopPacingState, LOOP_CONTINUE_SENTINEL, NOOP_STREAK_WARN_THRESHOLD, WAKEUP_MIN_DELAY_SECONDS, WAKEUP_MAX_DELAY_SECONDS } from './tools/schedule-wakeup';
-export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite, detectGitInternalWrite, detectPowerShellExecution } from './tools/bash-security';
+export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite, detectGitInternalWrite, detectPowerShellExecution, detectArchiveToolExecution } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
 export { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE, _resetDockerAvailableCache } from './tools/docker-sandbox';
 export type { DockerSandboxConfig } from './tools/docker-sandbox';
@@ -149,7 +158,14 @@ export { withExtraHeaders } from './provider';
 export { fetchZdrModelIds, filterZdrModels } from './openrouter-zdr';
 export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, suggestByBasename } from './tools/path-suggest';
 export type { PathSuggestionKind, PathCorrectionOptions, PathCorrectionResult, BasenameSearchOptions } from './tools/path-suggest';
-export type { TurnData, TurnSummary } from './turn-metrics';
+export type {
+  TurnData,
+  TurnSummary,
+  ModelTurnUsage,
+  TurnBudgetStatus,
+  TokenBreakdown,
+  TurnMetricsSnapshot,
+} from './turn-metrics';
 export { TurnMetrics } from './turn-metrics';
 export { isGrepNoMatchExit, stripGrepFlags } from './tools/grep';
 export { expandBraces, estimateBraceExpansions } from './brace-expansion';
@@ -199,8 +215,8 @@ export { containsCredential, redactCredentials, findCredentials, getCredentialLa
 export type { CredentialMatch } from './credential-guard';
 export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, SafeModeGuard, BLOCKED_RESOURCES } from './safe-mode';
 export type { SafeModeConfig, BlockedResource } from './safe-mode';
-export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker } from './request-signature';
-export type { RequestSignature } from './request-signature';
+export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS } from './request-signature';
+export type { RequestSignature, SignatureAlgorithm } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';
 export type { SecurityPattern, SecurityFinding } from './code-security-patterns';
 export { AMI_VERSION, AMI_CLIENT_NAME, AMI_CLIENT_INFO } from './version';
@@ -255,3 +271,7 @@ export type { SubagentRelay, SubagentState, RelayMessage, RelaySendResult, Relay
 export { parseEnvInt, parseEnvFloat, parseEnvBool, resolveEnvVar, parseDotenv, loadDotenv } from './utils/env';
 export type { DotenvParseOptions, LoadDotenvOptions } from './utils/env';
 export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, cyclePermissionMode } from './permissions';
+
+// --- batch #11 additive parity exports ---
+export { cronListTool, isActiveJob, sortJobsForDisplay, CRON_LIST_STATUSES } from './tools/cron-list';
+export type { CronListStatus } from './tools/cron-list';

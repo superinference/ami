@@ -6,6 +6,11 @@ import { ToolDefinition, ToolResult } from '../types';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
+// Strict-input allow-list (parity with exit_worktree's ALLOWED_KEYS): any key
+// outside this set is rejected rather than silently ignored, so a typo'd or
+// hallucinated parameter surfaces loudly instead of being dropped.
+const ALLOWED_KEYS = new Set(['name', 'path', 'base_ref']);
+
 /**
  * Run git with NO SHELL (execFile with an argv array) so a branch name, path, or
  * ref can never be interpreted as a shell metacharacter (command-injection
@@ -92,11 +97,30 @@ export const enterWorktreeTool: ToolDefinition = {
   isReadOnly: false,
 
   async execute(input, context): Promise<ToolResult> {
-    const name = input.name as string | undefined;
+    // Strict input: reject unknown keys up front (parity with exit_worktree) so
+    // a mistyped parameter can never be silently discarded.
+    const unknown = Object.keys(input).filter(k => !ALLOWED_KEYS.has(k));
+    if (unknown.length > 0) {
+      return { output: `Error: unknown parameter(s): ${unknown.join(', ')}.`, isError: true };
+    }
+
+    // Trim surrounding whitespace on the name (consistency with base_ref, which
+    // is already trimmed below). A whitespace-only name collapses to empty and
+    // is then treated as "omitted" → a random name is generated.
+    const rawName = input.name;
+    const name = typeof rawName === 'string' ? (rawName.trim() || undefined) : (rawName as string | undefined);
     const existingPath = input.path as string | undefined;
+    const baseRefProvided = typeof input.base_ref === 'string' && input.base_ref.trim() !== '';
 
     if (name && existingPath) {
       return { output: 'Error: name and path are mutually exclusive.', isError: true };
+    }
+
+    // base_ref only has meaning when CREATING a new worktree; entering an
+    // existing one checks out whatever that worktree already has. Reject the
+    // combination instead of silently ignoring base_ref.
+    if (existingPath && baseRefProvided) {
+      return { output: 'Error: base_ref cannot be combined with path (base_ref only applies when creating a new worktree).', isError: true };
     }
 
     try {
@@ -152,6 +176,25 @@ export const enterWorktreeTool: ToolDefinition = {
       const { cleanupStaleWorktrees } = require('../worktree-manager');
       try { cleanupStaleWorktrees(context.cwd); } catch { /* non-critical */ }
     }
+
+    // Enforce the concurrent-worktree ceiling (wires the exported MAX_WORKTREES
+    // cap into the creation path) AFTER stale cleanup, so reaped worktrees free
+    // up headroom. Refusing here keeps agent worktrees/branches from
+    // proliferating without bound and exhausting disk. The count runs over the
+    // managed .ami/worktrees area only; if it cannot be read, creation proceeds
+    // (fail-open — the cap is a guard rail, not a gate).
+    try {
+      if (fs.existsSync(worktreesBase)) {
+        const { MAX_WORKTREES } = require('../worktree-manager');
+        const existingCount = fs.readdirSync(worktreesBase, { withFileTypes: true }).filter(e => e.isDirectory()).length;
+        if (existingCount >= MAX_WORKTREES) {
+          return {
+            output: `Error: worktree limit reached (${existingCount}/${MAX_WORKTREES}). Remove one with exit_worktree (action:"remove") before creating another.`,
+            isError: true,
+          };
+        }
+      }
+    } catch { /* unreadable worktrees dir — do not block creation */ }
 
     const worktreeDir = path.join(context.cwd, '.ami', 'worktrees', slug);
     if (fs.existsSync(worktreeDir)) {

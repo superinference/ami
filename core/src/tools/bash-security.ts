@@ -62,6 +62,7 @@ const CHECK_IDS = {
   EVAL_LIKE_BUILTIN: 61,
   GIT_CONFIG_RCE: 62,
   INCOMPLETE_COMMAND: 63,
+  ARCHIVE_TOOL_EXECUTION: 64,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1218,6 +1219,16 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // Archive-tool command execution — blocks tar/zip exec hooks (--to-command,
+  // --checkpoint-action=exec, --unzip-command, -TT, …) that run arbitrary shell
+  // commands as a side effect of (un)archiving (GTFOBins RCE primitives).
+  {
+    const archiveExec = detectArchiveToolExecution(command);
+    if (archiveExec.blocked) {
+      return fail(CHECK_IDS.ARCHIVE_TOOL_EXECUTION, archiveExec.reason!);
+    }
+  }
+
   // Network manipulation — blocks ip/ifconfig commands that reconfigure
   // interfaces, IP addresses, routing, or ARP tables. Read-only queries
   // (ip addr show, ifconfig with no set args) are allowed.
@@ -2242,6 +2253,22 @@ const GIT_RCE_CONFIG_KEY = '(?:core\\.(?:pager|sshcommand|editor|fsmonitor|askpa
 const GIT_RCE_CONFIG_INLINE_RE = new RegExp(`\\bgit\\b[^;|&]*\\s-c\\s+${GIT_RCE_CONFIG_KEY}\\s*=`, 'i');
 const GIT_RCE_CONFIG_KEY_RE = new RegExp(GIT_RCE_CONFIG_KEY, 'i');
 
+// Git environment variables whose VALUE git later runs as a shell command. Setting
+// any of these is an RCE vector equivalent to the corresponding config key but via
+// the environment, so it is missed by the `git config` / `git -c` matchers above.
+// Scoped to command-valued vars with no legitimate agent override (GIT_PAGER /
+// GIT_EDITOR are deliberately excluded — `GIT_EDITOR=true` etc. are common and
+// benign — to keep this an additive superset without a false-positive flood).
+const GIT_RCE_ENV_RE =
+  /\bGIT_(?:SSH_COMMAND|SSH|EXTERNAL_DIFF|PROXY_COMMAND|SEQUENCE_EDITOR|ASKPASS)\s*=/;
+// A git alias whose value begins with `!` is run through the shell — `git config
+// alias.x '!cmd'` / `git -c alias.x='!cmd'` is a documented code-execution vector.
+const GIT_ALIAS_RCE_RE = /\balias\.[\w.-]+\s*(?:=|\s)\s*['"]?!/;
+// `--upload-pack=<cmd>` / `--receive-pack=<cmd>` make git execute the given command
+// as the pack helper (for a local/file transport it runs locally) — the HackerOne
+// git-clone RCE vector.
+const GIT_PACK_EXEC_RE = /\bgit\b[^;|&]*\s--(?:upload-pack|receive-pack)[=\s]/;
+
 /**
  * Block git-config mutations that set a key whose value git later runs as a shell
  * command (core.pager / core.sshCommand / core.editor / core.fsmonitor /
@@ -2252,6 +2279,26 @@ const GIT_RCE_CONFIG_KEY_RE = new RegExp(GIT_RCE_CONFIG_KEY, 'i');
 export function detectGitConfigRce(command: string): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
   if (!/\bgit\b/.test(stripped)) return { blocked: false };
+
+  // Git RCE environment variables (GIT_SSH_COMMAND, GIT_EXTERNAL_DIFF, …) — the
+  // value is executed by git as a shell command, bypassing the config matchers.
+  if (GIT_RCE_ENV_RE.test(stripped)) {
+    const m = stripped.match(GIT_RCE_ENV_RE);
+    return { blocked: true, reason: `${m![0].replace(/\s*=$/, '')} env var sets a command git executes — code-execution vector` };
+  }
+
+  // Git alias whose value starts with `!` — run through the shell by git.
+  if (/\bgit\s+config\b/.test(stripped) || /\bgit\b[^;|&]*\s-c\s+alias\./.test(stripped)) {
+    if (GIT_ALIAS_RCE_RE.test(stripped)) {
+      return { blocked: true, reason: 'git alias set to a shell command (value begins with `!`) — code-execution vector' };
+    }
+  }
+
+  // `git --upload-pack=<cmd>` / `--receive-pack=<cmd>` — git runs the value as the
+  // pack-transfer helper; for a local transport it executes on this host.
+  if (GIT_PACK_EXEC_RE.test(stripped)) {
+    return { blocked: true, reason: 'git --upload-pack/--receive-pack can execute an arbitrary command as the pack helper' };
+  }
 
   // Inline `git -c core.pager=<cmd> …` — the value runs immediately.
   if (GIT_RCE_CONFIG_INLINE_RE.test(stripped)) {
@@ -2693,6 +2740,56 @@ export function detectPackageManagerHijack(command: string): { blocked: boolean;
   if (/\bgem\s+install\b/.test(stripped)) {
     if (/\s(?:--install-dir(?:\s+|=)\S+|-i\s+\S+)(?:\s|$)/.test(stripped)) {
       return { blocked: true, reason: 'gem install --install-dir can shadow gems by placing them in a project directory' };
+    }
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Archive-tool command-execution detector — blocks tar/zip flags that run an
+// arbitrary shell command as a side effect of (un)archiving. These are classic
+// GTFOBins RCE primitives that evade command-name allow/deny checks because the
+// payload lives in a flag value, and `tar`/`zip` themselves look benign.
+// ---------------------------------------------------------------------------
+// Blocked (tar):
+//   tar --to-command=<cmd>                 (runs <cmd> for each archived member)
+//   tar --checkpoint-action=exec=<cmd>     (runs <cmd> at a checkpoint)
+//   tar --rmt-command=<cmd>                (arbitrary remote-tape helper)
+//   tar --info-script=<cmd> / -F <cmd>     (runs <cmd> at volume change)
+// Blocked (zip):
+//   zip --unzip-command=<cmd>              (runs <cmd> to test the archive)
+//   zip --test-command=<cmd> / -TT <cmd>   (runs <cmd> to test the archive)
+// Allowed:
+//   tar -czf a.tgz dir   tar -xf a.tar   zip -r a.zip dir   unzip a.zip
+// Note: tar -I/--use-compress-program (custom compressor) is intentionally NOT
+// blocked — `tar -I zstd` is ordinary usage; the exec hooks above have no benign
+// agent use. `--checkpoint-action` values other than `exec` (dot/echo/sleep/…)
+// are inert and stay allowed.
+export function detectArchiveToolExecution(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  if (/\btar\b/.test(stripped)) {
+    if (/\s--to-command[=\s]/.test(stripped)) {
+      return { blocked: true, reason: 'tar --to-command runs an arbitrary shell command per archived file' };
+    }
+    if (/\s--checkpoint-action[=\s]\S*exec/i.test(stripped)) {
+      return { blocked: true, reason: 'tar --checkpoint-action=exec executes an arbitrary command' };
+    }
+    if (/\s--rmt-command[=\s]/.test(stripped)) {
+      return { blocked: true, reason: 'tar --rmt-command runs an arbitrary command as the remote-tape helper' };
+    }
+    if (/\s(?:--info-script|--new-volume-script|-F)[=\s]/.test(stripped)) {
+      return { blocked: true, reason: 'tar --info-script/-F runs an arbitrary script at volume change' };
+    }
+  }
+
+  if (/\bzip\b/.test(stripped)) {
+    if (/\s--unzip-command[=\s]/.test(stripped)) {
+      return { blocked: true, reason: 'zip --unzip-command runs an arbitrary command to test the archive' };
+    }
+    if (/\s(?:--test-command|-TT)[=\s]/.test(stripped)) {
+      return { blocked: true, reason: 'zip -TT/--test-command runs an arbitrary command to test the archive' };
     }
   }
 

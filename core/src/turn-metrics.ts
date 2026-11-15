@@ -6,6 +6,16 @@ export interface TurnData {
   retryDurationMs?: number;
   /** Model that served this turn; enables per-model attribution across /model switches. */
   model?: string;
+  /** PARITY: USD cost of this turn (provider-computed); rolled into cumulative + per-model totals. */
+  costUsd?: number;
+  /** PARITY: input (prompt) tokens — a breakdown of `tokensUsed` matching provider Usage shape. */
+  inputTokens?: number;
+  /** PARITY: output (completion) tokens. */
+  outputTokens?: number;
+  /** PARITY: cache-read tokens (prompt-cache hit). */
+  cacheReadTokens?: number;
+  /** PARITY: cache-creation tokens (prompt-cache write). */
+  cacheCreationTokens?: number;
 }
 
 /** Per-model usage attribution (survives mid-session model switches). */
@@ -14,6 +24,32 @@ export interface ModelTurnUsage {
   toolCalls: number;
   tokens: number;
   durationMs: number;
+  /** PARITY: cumulative USD cost attributed to this model. */
+  costUsd: number;
+}
+
+/** PARITY: breakdown of cumulative token usage by category (mirrors provider Usage). */
+export interface TokenBreakdown {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+/**
+ * PARITY: serializable cumulative state for session persistence / cross-restart
+ * restore. Produced by `snapshot()`, consumed by `restore()`; round-trips 1:1.
+ */
+export interface TurnMetricsSnapshot {
+  turnCount: number;
+  totalToolCalls: number;
+  totalTokens: number;
+  totalDurationMs: number;
+  totalRetryDurationMs: number;
+  longestTurnMs: number;
+  totalCostUsd: number;
+  tokens: TokenBreakdown;
+  byModel: Record<string, ModelTurnUsage>;
 }
 
 /** Per-turn token-budget status (used/limit with a nudge count), or null when no budget is set. */
@@ -45,11 +81,27 @@ export interface TurnSummary {
   activeTimeMs: number;
   /** Per-turn token budget status, or null when no budget was configured. */
   budget: TurnBudgetStatus | null;
+  /** PARITY: cumulative USD cost across all turns. */
+  totalCostUsd: number;
+  /** PARITY: mean USD cost per turn (0 when no turns). */
+  avgCostPerTurn: number;
+  /** PARITY: cumulative token usage split by category. */
+  tokens: TokenBreakdown;
 }
 
 /** Coerce an arbitrary usage field to a finite, non-negative number (missing/NaN/Infinity/neg → 0). */
 function sanitize(x: number | undefined): number {
   return typeof x === 'number' && Number.isFinite(x) && x > 0 ? x : 0;
+}
+
+/**
+ * PARITY: add two non-negative counters without silently losing integer precision.
+ * Repeated large turns can push a raw `+=` past Number.MAX_SAFE_INTEGER, after which
+ * integer arithmetic is lossy; clamp at the ceiling instead of drifting.
+ */
+function addClamped(a: number, b: number): number {
+  const sum = a + b;
+  return sum > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : sum;
 }
 
 export class TurnMetrics {
@@ -60,6 +112,13 @@ export class TurnMetrics {
   private _totalRetryDurationMs = 0;
   private _longestTurnMs = 0;
   private _byModel = new Map<string, ModelTurnUsage>();
+
+  // --- PARITY: cost rollup + token-type breakdown ----------------------------
+  private _totalCostUsd = 0;
+  private _inputTokens = 0;
+  private _outputTokens = 0;
+  private _cacheReadTokens = 0;
+  private _cacheCreationTokens = 0;
 
   // --- Per-turn token budget -------------------------------------------------
   private _budgetLimit = 0;
@@ -78,23 +137,35 @@ export class TurnMetrics {
     const durationMs = sanitize(data.durationMs);
     // retry time can never exceed the turn's own duration
     const retryDurationMs = Math.min(sanitize(data.retryDurationMs), durationMs);
+    // PARITY: cost + token-type breakdown
+    const costUsd = sanitize(data.costUsd);
+    const inputTokens = sanitize(data.inputTokens);
+    const outputTokens = sanitize(data.outputTokens);
+    const cacheReadTokens = sanitize(data.cacheReadTokens);
+    const cacheCreationTokens = sanitize(data.cacheCreationTokens);
 
     this._turnCount++;
-    this._totalToolCalls += toolCalls;
-    this._totalTokens += tokens;
-    this._totalDurationMs += durationMs;
-    this._totalRetryDurationMs += retryDurationMs;
+    this._totalToolCalls = addClamped(this._totalToolCalls, toolCalls);
+    this._totalTokens = addClamped(this._totalTokens, tokens);
+    this._totalDurationMs = addClamped(this._totalDurationMs, durationMs);
+    this._totalRetryDurationMs = addClamped(this._totalRetryDurationMs, retryDurationMs);
+    this._totalCostUsd += costUsd;
+    this._inputTokens = addClamped(this._inputTokens, inputTokens);
+    this._outputTokens = addClamped(this._outputTokens, outputTokens);
+    this._cacheReadTokens = addClamped(this._cacheReadTokens, cacheReadTokens);
+    this._cacheCreationTokens = addClamped(this._cacheCreationTokens, cacheCreationTokens);
     this._lastTurnTokens = tokens;
     if (durationMs > this._longestTurnMs) {
       this._longestTurnMs = durationMs;
     }
 
     if (data.model) {
-      const m = this._byModel.get(data.model) ?? { turnCount: 0, toolCalls: 0, tokens: 0, durationMs: 0 };
+      const m = this._byModel.get(data.model) ?? { turnCount: 0, toolCalls: 0, tokens: 0, durationMs: 0, costUsd: 0 };
       m.turnCount++;
-      m.toolCalls += toolCalls;
-      m.tokens += tokens;
-      m.durationMs += durationMs;
+      m.toolCalls = addClamped(m.toolCalls, toolCalls);
+      m.tokens = addClamped(m.tokens, tokens);
+      m.durationMs = addClamped(m.durationMs, durationMs);
+      m.costUsd += costUsd;
       this._byModel.set(data.model, m);
     }
   }
@@ -157,6 +228,24 @@ export class TurnMetrics {
   get totalDurationMsWithoutRetries(): number { return Math.max(0, this._totalDurationMs - this._totalRetryDurationMs); }
   get longestTurnMs(): number { return this._longestTurnMs; }
 
+  /** PARITY: cumulative USD cost across all turns. */
+  get totalCostUsd(): number { return this._totalCostUsd; }
+
+  /** PARITY: mean USD cost per turn (0 when no turns). */
+  get avgCostPerTurn(): number {
+    return this._turnCount > 0 ? this._totalCostUsd / this._turnCount : 0;
+  }
+
+  /** PARITY: cumulative token usage split by category (mirrors provider Usage shape). */
+  getTokenBreakdown(): TokenBreakdown {
+    return {
+      input: this._inputTokens,
+      output: this._outputTokens,
+      cacheRead: this._cacheReadTokens,
+      cacheCreation: this._cacheCreationTokens,
+    };
+  }
+
   get avgToolCallsPerTurn(): number {
     return this._turnCount > 0 ? this._totalToolCalls / this._turnCount : 0;
   }
@@ -189,7 +278,64 @@ export class TurnMetrics {
       byModel: this.getModelUsage(),
       activeTimeMs: this.getActiveTimeMs(),
       budget: this.getBudgetStatus(),
+      totalCostUsd: this._totalCostUsd,
+      avgCostPerTurn: this.avgCostPerTurn,
+      tokens: this.getTokenBreakdown(),
     };
+  }
+
+  /**
+   * PARITY: capture cumulative session state as a plain serializable object so metrics
+   * survive process restarts / cross-agent persistence. Pair with `restore()`. Excludes
+   * transient live state (open active-time windows, budget config) by design.
+   */
+  snapshot(): TurnMetricsSnapshot {
+    return {
+      turnCount: this._turnCount,
+      totalToolCalls: this._totalToolCalls,
+      totalTokens: this._totalTokens,
+      totalDurationMs: this._totalDurationMs,
+      totalRetryDurationMs: this._totalRetryDurationMs,
+      longestTurnMs: this._longestTurnMs,
+      totalCostUsd: this._totalCostUsd,
+      tokens: this.getTokenBreakdown(),
+      byModel: this.getModelUsage(),
+    };
+  }
+
+  /**
+   * PARITY: reload cumulative state produced by `snapshot()`. Resets everything first,
+   * then applies the snapshot; each numeric field is re-sanitized so a corrupt/partial
+   * persisted blob cannot poison the live totals.
+   */
+  restore(snap: Partial<TurnMetricsSnapshot> | null | undefined): void {
+    this.reset();
+    if (!snap || typeof snap !== 'object') return;
+    this._turnCount = sanitize(snap.turnCount);
+    this._totalToolCalls = sanitize(snap.totalToolCalls);
+    this._totalTokens = sanitize(snap.totalTokens);
+    this._totalDurationMs = sanitize(snap.totalDurationMs);
+    this._totalRetryDurationMs = Math.min(sanitize(snap.totalRetryDurationMs), this._totalDurationMs);
+    this._longestTurnMs = sanitize(snap.longestTurnMs);
+    this._totalCostUsd = sanitize(snap.totalCostUsd);
+    if (snap.tokens && typeof snap.tokens === 'object') {
+      this._inputTokens = sanitize(snap.tokens.input);
+      this._outputTokens = sanitize(snap.tokens.output);
+      this._cacheReadTokens = sanitize(snap.tokens.cacheRead);
+      this._cacheCreationTokens = sanitize(snap.tokens.cacheCreation);
+    }
+    if (snap.byModel && typeof snap.byModel === 'object') {
+      for (const [model, u] of Object.entries(snap.byModel)) {
+        if (!u || typeof u !== 'object') continue;
+        this._byModel.set(model, {
+          turnCount: sanitize(u.turnCount),
+          toolCalls: sanitize(u.toolCalls),
+          tokens: sanitize(u.tokens),
+          durationMs: sanitize(u.durationMs),
+          costUsd: sanitize(u.costUsd),
+        });
+      }
+    }
   }
 
   reset(): void {
@@ -200,6 +346,11 @@ export class TurnMetrics {
     this._totalRetryDurationMs = 0;
     this._longestTurnMs = 0;
     this._byModel.clear();
+    this._totalCostUsd = 0;
+    this._inputTokens = 0;
+    this._outputTokens = 0;
+    this._cacheReadTokens = 0;
+    this._cacheCreationTokens = 0;
     this._budgetLimit = 0;
     this._budgetNudges = 0;
     this._lastTurnTokens = 0;
