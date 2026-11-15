@@ -6,7 +6,9 @@ import {
   isUncPath,
   lspFileSizeBytes,
   MAX_LSP_FILE_SIZE_BYTES,
+  DIAGNOSTIC_SEVERITY_NAMES,
   type DiagnosticFile,
+  type DiagnosticSeverityName,
 } from '../lsp/diagnostic-tracking';
 
 /**
@@ -36,7 +38,107 @@ export interface LspDiagClient {
 /** Max symbol matches returned by find_references (shared with the result cap note). */
 export const SEARCH_SYMBOL_CAP = 30;
 
+/**
+ * PARITY (additive): default wall-clock budget for a single async diagnostics
+ * fetch. A language server that is still indexing (or wedged) can leave
+ * `getDiagnostics` / `getNewDiagnostics` pending indefinitely; without a bound
+ * the `diagnostics` tool would hang the whole agent turn. Claude Code's LSP
+ * surfacing settles diagnostics under a bounded wait, so we race every async
+ * client call against this timeout and report a graceful "still indexing"
+ * message instead of blocking. Stored on `_lspDiagHooks` (mutable) so tests can
+ * shrink it deterministically without real delays.
+ */
+export const DEFAULT_LSP_DIAGNOSTICS_TIMEOUT_MS = 10_000;
+
+/** Sentinel distinct from any DiagnosticFile[] result, returned on timeout. */
+const LSP_TIMEOUT: unique symbol = Symbol('lsp-diagnostics-timeout');
+
+/**
+ * Resolve `p`, or `LSP_TIMEOUT` if it does not settle within `ms`. The timer is
+ * `unref`'d (never keeps the process alive) and always cleared once `p` settles,
+ * so no handle leaks even on the fast path.
+ */
+export async function raceDiagnosticsTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof LSP_TIMEOUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof LSP_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(LSP_TIMEOUT), ms);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function lspTimeoutMessage(filePath: string, ms: number): string {
+  return `LSP diagnostics timed out for ${filePath} after ${ms}ms (the language server may still be indexing); retry shortly.`;
+}
+
+/**
+ * PARITY (additive): accepted `severity` filter aliases → canonical severity.
+ * Lets a caller scope the tool to a minimum severity (e.g. errors-only after a
+ * refactor) the way Claude Code lets you filter the Problems surface. The filter
+ * is a FLOOR: the requested level and everything MORE severe is kept.
+ */
+export const LSP_SEVERITY_ALIASES: Readonly<Record<string, DiagnosticSeverityName>> = {
+  error: 'Error',
+  errors: 'Error',
+  warning: 'Warning',
+  warnings: 'Warning',
+  warn: 'Warning',
+  info: 'Info',
+  information: 'Info',
+  hint: 'Hint',
+  hints: 'Hint',
+};
+
+/** Canonicalize a user-supplied severity filter, or `undefined` if unrecognized. */
+export function normalizeSeverityFilter(raw: string): DiagnosticSeverityName | undefined {
+  return LSP_SEVERITY_ALIASES[raw.trim().toLowerCase()];
+}
+
+/**
+ * Keep only diagnostics at or above `min` severity (Error is most severe). Files
+ * left with no diagnostics are dropped. Input is never mutated.
+ */
+export function filterDiagnosticsBySeverity(files: DiagnosticFile[], min: DiagnosticSeverityName): DiagnosticFile[] {
+  const floor = DIAGNOSTIC_SEVERITY_NAMES.indexOf(min);
+  const out: DiagnosticFile[] = [];
+  for (const file of files) {
+    const kept = file.diagnostics.filter((d) => DIAGNOSTIC_SEVERITY_NAMES.indexOf(d.severity) <= floor);
+    if (kept.length > 0) out.push({ uri: file.uri, diagnostics: kept });
+  }
+  return out;
+}
+
+const SEVERITY_LABELS: Record<DiagnosticSeverityName, [string, string]> = {
+  Error: ['error', 'errors'],
+  Warning: ['warning', 'warnings'],
+  Info: ['info', 'info'],
+  Hint: ['hint', 'hints'],
+};
+
+/**
+ * PARITY (additive): per-severity breakdown string (e.g. "2 errors, 1 warning"),
+ * in severity order, omitting zero counts. Empty string when there is nothing to
+ * report. Mirrors Claude Code's Problems-panel count summary so the model sees
+ * the error/warning mix at a glance, not just a flat total.
+ */
+export function summarizeDiagnosticSeverities(files: DiagnosticFile[]): string {
+  const counts: Record<DiagnosticSeverityName, number> = { Error: 0, Warning: 0, Info: 0, Hint: 0 };
+  for (const file of files) for (const d of file.diagnostics) counts[d.severity]++;
+  const parts: string[] = [];
+  for (const sev of DIAGNOSTIC_SEVERITY_NAMES) {
+    const n = counts[sev];
+    if (n > 0) parts.push(`${n} ${SEVERITY_LABELS[sev][n === 1 ? 0 : 1]}`);
+  }
+  return parts.join(', ');
+}
+
 export const _lspDiagHooks = {
+  /** Per-call async-fetch budget (ms); mutable so tests can shrink it. */
+  diagnosticsTimeoutMs: DEFAULT_LSP_DIAGNOSTICS_TIMEOUT_MS,
   getLSPClient(): LspDiagClient {
     const { getLSPClient } = require('../lsp') as { getLSPClient: () => LspDiagClient };
     return getLSPClient();
@@ -64,6 +166,10 @@ export const lspDiagnosticsTool: ToolDefinition = {
     type: 'object',
     properties: {
       file_path: { type: 'string', description: 'Optional file path. If omitted, returns workspace-wide diagnostics.' },
+      severity: {
+        type: 'string',
+        description: 'Optional minimum severity floor (error | warning | info | hint). Keeps that level and anything more severe.',
+      },
     },
   },
   isReadOnly: true,
@@ -77,6 +183,16 @@ export const lspDiagnosticsTool: ToolDefinition = {
     }
 
     const filePath = input.file_path as string | undefined;
+    // PARITY (additive): optional severity floor. Validate up front and, on an
+    // unrecognized value, echo the valid set so the caller can self-correct.
+    const severityRaw = input.severity as string | undefined;
+    let minSeverity: DiagnosticSeverityName | undefined;
+    if (severityRaw !== undefined) {
+      minSeverity = normalizeSeverityFilter(severityRaw);
+      if (!minSeverity) {
+        return { output: `Invalid severity "${severityRaw}". Valid values: error, warning, info, hint.` };
+      }
+    }
     // SECURITY: skip UNC paths before any filesystem/LSP work (NTLM leak guard).
     if (filePath && isUncPath(filePath)) {
       return { output: `Skipping diagnostics for UNC path "${filePath}" (security: avoids NTLM credential leaks).` };
@@ -88,39 +204,71 @@ export const lspDiagnosticsTool: ToolDefinition = {
         return { output: `File too large for LSP analysis (${Math.ceil(sizeBytes / 1_000_000)}MB exceeds 10MB limit).` };
       }
     }
+    const timeoutMs = _lspDiagHooks.diagnosticsTimeoutMs;
     try {
       if (filePath) {
         // When a pre-edit baseline exists, surface ONLY the diagnostics this
         // edit introduced (the new-vs-baseline delta); otherwise report the
         // file's current diagnostics. Untrusted server output is volume-capped.
         if (client.diagnostics.hasBaseline(filePath)) {
-          const fresh = capDiagnosticVolume(await client.diagnostics.getNewDiagnostics([filePath]));
+          // PARITY (additive): bound the async fetch so a wedged server cannot
+          // hang the turn.
+          const raw = await raceDiagnosticsTimeout(client.diagnostics.getNewDiagnostics([filePath]), timeoutMs);
+          if (raw === LSP_TIMEOUT) {
+            return { output: lspTimeoutMessage(filePath, timeoutMs) };
+          }
+          let fresh = minSeverity ? filterDiagnosticsBySeverity(raw, minSeverity) : raw;
+          fresh = capDiagnosticVolume(fresh);
           if (fresh.length === 0) {
-            return { output: `No new diagnostics introduced in ${filePath}.` };
+            return {
+              output: minSeverity
+                ? `No new ${minSeverity}-level (or higher) diagnostics introduced in ${filePath}.`
+                : `No new diagnostics introduced in ${filePath}.`,
+            };
           }
           return { output: `${formatNewDiagnosticsSummary(fresh)}\n${formatDiagnosticsDetail(fresh)}` };
         }
-        const current = await client.getDiagnostics(filePath);
+        const current = await raceDiagnosticsTimeout(client.getDiagnostics(filePath), timeoutMs);
+        if (current === LSP_TIMEOUT) {
+          return { output: lspTimeoutMessage(filePath, timeoutMs) };
+        }
         if (!current) {
           return { output: `No LSP server available for ${filePath}. Run the relevant linter/compiler manually.` };
         }
         if (current.diagnostics.length === 0) {
           return { output: `No diagnostics for ${filePath}.` };
         }
-        return { output: formatDiagnosticsDetail(capDiagnosticVolume([current])) };
+        // PARITY (additive): apply the severity floor before capping/formatting.
+        const filtered = minSeverity ? filterDiagnosticsBySeverity([current], minSeverity) : [current];
+        const capped = capDiagnosticVolume(filtered);
+        if (capped.length === 0) {
+          // Reachable only when a severity floor removed every diagnostic.
+          return {
+            output: `No ${minSeverity}-level (or higher) diagnostics for ${filePath} (${current.diagnostics.length} lower-severity diagnostic(s) present).`,
+          };
+        }
+        return { output: formatDiagnosticsDetail(capped) };
       }
 
-      const all = capDiagnosticVolume(client.getAllDiagnostics());
+      let workspace = client.getAllDiagnostics();
+      if (minSeverity) workspace = filterDiagnosticsBySeverity(workspace, minSeverity);
+      const all = capDiagnosticVolume(workspace);
       if (all.length === 0) {
+        if (!client.isConnected()) {
+          return { output: 'No LSP server is currently connected; diagnostics appear once a server indexes an opened file.' };
+        }
         return {
-          output: client.isConnected()
-            ? 'No diagnostics reported in the workspace.'
-            : 'No LSP server is currently connected; diagnostics appear once a server indexes an opened file.',
+          output: minSeverity
+            ? `No ${minSeverity}-level (or higher) diagnostics reported in the workspace.`
+            : 'No diagnostics reported in the workspace.',
         };
       }
       const total = all.reduce((sum, f) => sum + f.diagnostics.length, 0);
+      // PARITY (additive): append a per-severity breakdown to the flat total.
+      const breakdown = summarizeDiagnosticSeverities(all);
+      const breakdownSuffix = breakdown ? ` (${breakdown})` : '';
       return {
-        output: `${total} diagnostic issue(s) across ${all.length} file(s):\n${formatDiagnosticsDetail(all)}`,
+        output: `${total} diagnostic issue(s) across ${all.length} file(s)${breakdownSuffix}:\n${formatDiagnosticsDetail(all)}`,
       };
     } catch {
       return { output: 'LSP not available. Run the project linter/compiler manually.' };
