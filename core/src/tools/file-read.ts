@@ -565,7 +565,8 @@ export function parseImageToolOutput(output: string): ImageContent[] | null {
 }
 
 /** Kind of file whose read carried extracted images (drives the engine's note). */
-export type FileImagesKind = 'notebook' | 'pdf';
+export const FILE_IMAGES_KINDS = ['notebook', 'pdf'] as const;
+export type FileImagesKind = (typeof FILE_IMAGES_KINDS)[number];
 
 /**
  * Build a file_read output that carries extracted images (notebook cell outputs,

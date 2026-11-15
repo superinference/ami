@@ -80,7 +80,8 @@ export function validateBackgroundCommand(command: string): { allowed: boolean; 
 }
 
 /** The lifecycle states of a background task/agent. */
-export type TaskStatus = 'running' | 'completed' | 'failed' | 'killed';
+export const TASK_STATUS = ['running', 'completed', 'failed', 'killed'] as const;
+export type TaskStatus = (typeof TASK_STATUS)[number];
 
 /** Terminal states — a task in one of these will never run again. */
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(['completed', 'failed', 'killed']);

@@ -5,7 +5,8 @@ import { redactSecrets } from './tool-utils';
 const OAUTH_TRANSPORTS = new Set(['sse', 'http']);
 
 /** Structured status surfaced to the model via ToolResult.metadata. */
-export type McpAuthStatus = 'ok' | 'unsupported' | 'error';
+export const MCP_AUTH_STATUS = ['ok', 'unsupported', 'error'] as const;
+export type McpAuthStatus = (typeof MCP_AUTH_STATUS)[number];
 
 /** The minimal server config the auth tool needs to reason about OAuth. */
 export interface McpAuthServerConfig {

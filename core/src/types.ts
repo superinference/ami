@@ -552,7 +552,8 @@ export interface StreamChunk {
 /** Per-request API service tier the model call ran under (parity: Claude's usage
  *  `service_tier`, default 'standard'). A throughput/latency class reflected per
  *  request for cost/latency attribution. */
-export type ServiceTier = 'standard' | 'priority' | 'batch';
+export const SERVICE_TIERS = ['standard', 'priority', 'batch'] as const;
+export type ServiceTier = (typeof SERVICE_TIERS)[number];
 
 export interface UsageStats {
   promptTokens: number;
@@ -659,7 +660,8 @@ export interface UserQuestionOption {
 /** Three-state terminal outcome of a (sub)agent/task, distinguishing a clean finish
  *  from an error from a user/abort stop (parity: Claude's task_notification `status`:
  *  'completed' | 'failed' | 'stopped'). Richer than a bare success boolean. */
-export type TaskTerminalStatus = 'completed' | 'failed' | 'stopped';
+export const TASK_TERMINAL_STATUS = ['completed', 'failed', 'stopped'] as const;
+export type TaskTerminalStatus = (typeof TASK_TERMINAL_STATUS)[number];
 
 /** Live machine-readable usage snapshot for a running (sub)agent, carried on progress
  *  and terminal events (parity: Claude's task_progress usage `{ total_tokens, tool_uses,

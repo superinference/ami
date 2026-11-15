@@ -15,7 +15,8 @@
 import * as path from 'path';
 
 /** LSP DiagnosticSeverity enum → human-readable name (1=Error…4=Hint). */
-export type DiagnosticSeverityName = 'Error' | 'Warning' | 'Info' | 'Hint';
+export const DIAGNOSTIC_SEVERITY_NAMES = ['Error', 'Warning', 'Info', 'Hint'] as const;
+export type DiagnosticSeverityName = (typeof DIAGNOSTIC_SEVERITY_NAMES)[number];
 
 export interface DiagnosticPosition {
   line: number;

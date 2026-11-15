@@ -23,6 +23,7 @@ export {
   diagnosticSeveritySymbol,
   formatNewDiagnosticsSummary,
   formatDiagnosticsDetail,
+  DIAGNOSTIC_SEVERITY_NAMES,
 } from './diagnostic-tracking';
 export type {
   Diagnostic,

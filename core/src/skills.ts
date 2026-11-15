@@ -69,7 +69,8 @@ export function isStanceSkill(skill: SkillDefinition): boolean {
  * built-in). Mirrors Claude Code's agent source groups so `/agents` can group and
  * flag shadowed entries instead of silently dropping the loser.
  */
-export type AgentSource = 'built-in' | 'plugin' | 'user' | 'project';
+export const AGENT_SOURCES = ['built-in', 'plugin', 'user', 'project'] as const;
+export type AgentSource = (typeof AGENT_SOURCES)[number];
 
 export interface AgentDefinition {
   name: string;
