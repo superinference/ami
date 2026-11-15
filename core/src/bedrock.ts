@@ -26,15 +26,36 @@ export function getBedrockInferenceProfiles(env: NodeJS.ProcessEnv = process.env
 }
 
 /**
+ * Strip a Bedrock ARN down to its trailing model/inference-profile id.
+ *
+ * Handles the three ARN shapes AWS emits — foundation-model, inference-profile,
+ * and application-inference-profile — by returning the substring after the last
+ * `/` (e.g. `arn:aws:bedrock:us-east-1:123:inference-profile/us.anthropic.
+ * claude-opus-4-6-v1:0` → `us.anthropic.claude-opus-4-6-v1:0`). Inputs that are
+ * not ARNs (no `arn:` prefix) and ARNs without a `/` are returned unchanged, so
+ * a plain model id or first-party id passes through untouched. This mirrors
+ * Claude Code's extractModelIdFromArn boundary handling and lets a model copied
+ * verbatim as an ARN from the AWS console resolve instead of being sent raw to
+ * the gateway.
+ */
+export function extractModelIdFromArn(id: string): string {
+  if (!id.startsWith('arn:')) return id;
+  const slash = id.lastIndexOf('/');
+  return slash === -1 ? id : id.slice(slash + 1);
+}
+
+/**
  * Resolve the Bedrock model/inference-profile id to invoke for a canonical
- * first-party model id. Returns the first profile whose id contains the
- * canonical id (case-insensitive, so `claude-opus-4-6` matches
- * `eu.anthropic.claude-opus-4-6-v1:0`), or the canonical id unchanged when no
+ * first-party model id. A full Bedrock ARN is first normalized to its trailing
+ * id (see `extractModelIdFromArn`). Returns the first profile whose id contains
+ * the normalized id (case-insensitive, so `claude-opus-4-6` matches
+ * `eu.anthropic.claude-opus-4-6-v1:0`), or the normalized id unchanged when no
  * profile matches (or no profiles are configured).
  */
 export function resolveBedrockModelId(canonicalId: string, profiles: string[]): string {
   if (!canonicalId) return canonicalId;
-  const needle = canonicalId.toLowerCase();
+  const id = extractModelIdFromArn(canonicalId);
+  const needle = id.toLowerCase();
   const match = profiles.find(p => p.toLowerCase().includes(needle));
-  return match ?? canonicalId;
+  return match ?? id;
 }
