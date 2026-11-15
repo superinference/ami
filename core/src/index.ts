@@ -171,8 +171,8 @@ export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS, isBypassPermissionsModeDisabled, i
 export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged, formatDangerousSettingsList } from './settings-guard';
 export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';
-export { detectToolConflict, isReservedToolName, ToolRegistryGuard } from './tools/tool-registry-guard';
-export type { ToolConflict } from './tools/tool-registry-guard';
+export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateToolName, validateToolDefinition, filterAvailableTools, TOOL_NAME_PATTERN, MAX_TOOL_NAME_LENGTH } from './tools/tool-registry-guard';
+export type { ToolConflict, RegistrableToolLike } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
 export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
 export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn } from './conversation-summary';
