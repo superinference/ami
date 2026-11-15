@@ -171,7 +171,7 @@ describe('POV/mcp — constant sets (membership + shape)', () => {
   });
 
   it('MCP_SERVER_STATES enumerates the manager lifecycle', () => {
-    assert.deepEqual([...MCP_SERVER_STATES], ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled']);
+    assert.deepEqual([...MCP_SERVER_STATES], ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled', 'needs-auth']);
   });
 
   it('MCP_TERMINAL_ERROR_CODES lists only codes classifyError can produce', () => {

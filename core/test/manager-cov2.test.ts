@@ -439,7 +439,7 @@ describe('callTool / resources / prompts', () => {
     const all = await mgr.listResources();
     assert.equal(all.length, 1);
     assert.equal(all[0].server, 'r');
-    assert.deepEqual(await mgr.listResources('does-not-match'), []);
+    await assert.rejects(() => mgr.listResources('does-not-match'), /not found/);
   });
   it('swallows a non-session-expired error during listResources', async () => {
     mgr.addServer('re', serverConfig({ errorOn: ['resources/list'] }));

@@ -89,7 +89,7 @@ describe('McpManager.callTool — unqualified name, stale tool-cache entry', () 
     await assert.rejects(
       () => mgr.callTool('getThing'),
       (err: unknown) =>
-        err instanceof Error && /MCP server 'srv' not connected/.test(err.message),
+        err instanceof Error && /MCP server 'srv' not (connected|found)/.test(err.message),
     );
 
     // The guard records the per-server last-used timestamp BEFORE discovering the
