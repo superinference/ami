@@ -8,6 +8,60 @@ import { getFileCache } from '../file-cache';
 
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 
+/**
+ * Enforce the edit size ceiling on EVERY edit mode BEFORE the existing file is
+ * read into memory. The single-replace path already stat-guarded, but
+ * writeEntireFile and applySequentialEdits read the file unconditionally and
+ * could OOM on a multi-GB file. Centralize the check so all three modes share
+ * one cap. Returns an error ToolResult when the existing file exceeds the cap;
+ * undefined otherwise (including when the file does not exist yet — a brand-new
+ * write has nothing to over-read, and downstream read handles real IO errors).
+ */
+function checkEditSizeLimit(resolved: string): ToolResult | undefined {
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.size > MAX_EDIT_FILE_SIZE) {
+      return { output: `Error: File size (${(stat.size / 1_073_741_824).toFixed(2)} GiB) exceeds 1 GiB limit. Large files cannot be edited.`, isError: true };
+    }
+  } catch {
+    // File does not exist yet (or cannot be stat'd) — the size cap does not
+    // apply; the subsequent read surfaces any genuine existence/IO error.
+  }
+  return undefined;
+}
+
+function isJsonConfigPath(resolved: string): boolean {
+  return resolved.endsWith('config.json') || resolved.endsWith('settings.json') ||
+    resolved.endsWith('tsconfig.json') || resolved.endsWith('package.json');
+}
+
+/**
+ * Config/settings files (package.json, tsconfig.json, .claude/.ami settings, …)
+ * must stay parseable, and this must hold across EVERY edit mode (single
+ * replace, replace_all, multi-edit, and full overwrite), not only the single
+ * exact-replace path. But only block a valid→invalid transition: if the file was
+ * ALREADY invalid (or brand-new / empty), an edit that leaves it invalid is a
+ * repair-in-progress and is allowed — otherwise a broken config could never be
+ * fixed with the edit tool. Returns an error ToolResult when a previously-valid
+ * config would become invalid JSON; undefined otherwise.
+ */
+function validateJsonEdit(resolved: string, originalContent: string, newContent: string): ToolResult | undefined {
+  if (!isJsonConfigPath(resolved)) return undefined;
+  try {
+    JSON.parse(originalContent);
+  } catch {
+    // Original was not valid JSON (already broken, empty, or a new file) — allow
+    // the edit so the config can be repaired incrementally.
+    return undefined;
+  }
+  try {
+    JSON.parse(newContent);
+  } catch (e) {
+    return { output: `Warning: Edit would create invalid JSON in ${path.basename(resolved)}. Check syntax.\n${(e as Error).message}`, isError: true };
+  }
+  return undefined;
+}
+
 interface SequentialEdit {
   old_string: string;
   new_string: string;
@@ -172,6 +226,11 @@ export async function writeEntireFile(
     }
   } catch {}
 
+  // OOM guard: refuse to read a multi-GB existing file into memory for the
+  // overwrite diff. Applies the same cap as the single-replace path.
+  const sizeErr = checkEditSizeLimit(resolved);
+  if (sizeErr) return sizeErr;
+
   let oldContent = '';
   let fileExists = false;
   let readErrResult: ToolResult | null = null;
@@ -242,6 +301,9 @@ export async function writeEntireFile(
     return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
   }
 
+  const jsonErr = validateJsonEdit(resolved, oldContent, content);
+  if (jsonErr) return jsonErr;
+
   let finalContent = content;
   if (fileExists && oldContent.length > 0) {
     finalContent = convertToLineEnding(content, detectLineEnding(oldContent));
@@ -279,6 +341,11 @@ async function applySequentialEdits(
   edits: SequentialEdit[],
   context: ToolContext,
 ): Promise<ToolResult> {
+  // OOM guard: enforce the size cap before reading the file (parity with the
+  // single-replace and overwrite paths).
+  const sizeErr = checkEditSizeLimit(resolved);
+  if (sizeErr) return sizeErr;
+
   let rawContent: string;
   try {
     const rawBuf = await fs.promises.readFile(resolved);
@@ -366,6 +433,9 @@ async function applySequentialEdits(
   if (secrets.length > 0) {
     return { output: `Warning: Potential secrets detected in edited content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
   }
+
+  const jsonErr = validateJsonEdit(resolved, rawContent, content);
+  if (jsonErr) return jsonErr;
 
   const finalContent = convertToLineEnding(content, originalEnding);
   await trackFileHistory(resolved, rawContent, context.cwd);
@@ -526,14 +596,8 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    try {
-      const stat = fs.statSync(resolved);
-      if (stat.size > MAX_EDIT_FILE_SIZE) {
-        return { output: `Error: File size (${(stat.size / 1_073_741_824).toFixed(2)} GiB) exceeds 1 GiB limit. Large files cannot be edited.`, isError: true };
-      }
-    } catch {
-      // File doesn't exist yet — will be caught by readFile below
-    }
+    const sizeErr = checkEditSizeLimit(resolved);
+    if (sizeErr) return sizeErr;
 
     let rawContent: string;
     try {
@@ -606,6 +670,8 @@ export const fileEditTool: ToolDefinition = {
         if (addedSecrets.length > 0) {
           return { output: `Warning: Potential secrets detected in edited content: ${addedSecrets.join(', ')}. Remove secrets before writing.`, isError: true };
         }
+        const jsonErr = validateJsonEdit(resolved, rawContent, replaced);
+        if (jsonErr) return jsonErr;
         const finalContent = convertToLineEnding(replaced, originalEnding);
         await trackFileHistory(resolved, rawContent, context.cwd);
         const writeErr = commitWrite(resolved, finalContent, normalizeToLf(finalContent), context);
@@ -624,11 +690,8 @@ export const fileEditTool: ToolDefinition = {
     const newContent = convertToLineEnding(result.newContent!, originalEnding);
     const strategy = result.strategy!;
 
-    if (resolved.endsWith('config.json') || resolved.endsWith('settings.json') || resolved.endsWith('tsconfig.json') || resolved.endsWith('package.json')) {
-      try { JSON.parse(newContent); } catch (e) {
-        return { output: `Warning: Edit would create invalid JSON in ${path.basename(resolved)}. Check syntax.\n${(e as Error).message}`, isError: true };
-      }
-    }
+    const jsonErr = validateJsonEdit(resolved, rawContent, newContent);
+    if (jsonErr) return jsonErr;
 
     const secrets = scanAddedSecrets(rawContent, newContent);
     if (secrets.length > 0) {

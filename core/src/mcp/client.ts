@@ -383,6 +383,23 @@ export class McpClient extends EventEmitter {
     return this.connectionStartTime ? Date.now() - this.connectionStartTime : null;
   }
 
+  /**
+   * Resolve how the stdio server process is launched. When
+   * SUPERINFERENCE_MCP_SHELL_PREFIX is set (non-empty), the server is run THROUGH
+   * that wrapper command instead of spawned directly: the prefix becomes the
+   * executable and the whole `command arg1 arg2 …` line is handed to it as a
+   * single argument, so a sandbox/shim (firejail, a seccomp wrapper, a login
+   * shell) can mediate every stdio MCP server without editing each server config.
+   * Absent the env var the configured command + args are spawned verbatim.
+   */
+  private resolveStdioLaunch(): { command: string; args: string[] } {
+    const prefix = process.env.SUPERINFERENCE_MCP_SHELL_PREFIX?.trim();
+    if (prefix) {
+      return { command: prefix, args: [[this.command, ...this.args].join(' ')] };
+    }
+    return { command: this.command, args: this.args };
+  }
+
   async connect(): Promise<void> {
     if (this._state === 'ready') return;
     this._state = 'connecting';
@@ -391,7 +408,8 @@ export class McpClient extends EventEmitter {
     // Scrub secrets (API keys, tokens, …) from the INHERITED environment before
     // handing it to an untrusted MCP server process; the server's own explicitly
     // configured env is intentional and layered on top (H31).
-    this.process = spawn(this.command, this.args, {
+    const { command, args } = this.resolveStdioLaunch();
+    this.process = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...sanitizeEnvForSubprocess(process.env), ...this.env },
     });
@@ -863,6 +881,18 @@ export class McpClient extends EventEmitter {
     return body.includes('"code":-32001') || body.includes('"code": -32001');
   }
 
+  /**
+   * A Streamable-HTTP session rotation tears the transport down, so the pending
+   * tool call rejects with a JSON-RPC -32000 whose message is 'Connection closed'
+   * rather than the original 404/-32001. Classify that shape as session-expiry on
+   * the HTTP/SSE transport so the manager reconnects and retries the call once,
+   * keeping a routine rotation invisible to the model (parity with Claude's
+   * -32000 'Connection closed' → session-expired mapping).
+   */
+  private isConnectionClosedError(code: unknown, message: unknown): boolean {
+    return code === -32000 && typeof message === 'string' && message.toLowerCase().includes('connection closed');
+  }
+
   private assertReady(): void {
     if (this._state !== 'ready') {
       throw new Error(`MCP client not ready (state: ${this._state})`);
@@ -972,7 +1002,7 @@ export class McpClient extends EventEmitter {
             }
             const parsed = JSON.parse(jsonStr);
             if (parsed.error) {
-              if (parsed.error.code === -32001) {
+              if (parsed.error.code === -32001 || this.isConnectionClosedError(parsed.error.code, parsed.error.message)) {
                 this._state = 'error';
                 this.emit('session-expired');
                 reject(new McpSessionExpiredError());

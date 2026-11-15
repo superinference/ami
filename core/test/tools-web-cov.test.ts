@@ -262,7 +262,7 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
 
   it('returns an error when the search endpoint responds >= 400', async () => {
     const h = hooks({ httpGet: mockHttpGet({ [SEARCH]: { body: '', statusCode: 503 } }) });
-    const result = await webSearchTool.execute({ query: 'q' }, ctx({ _webSearchHooks: h }));
+    const result = await webSearchTool.execute({ query: 'qq' }, ctx({ _webSearchHooks: h }));
     assert.equal(result.isError, true);
     assert.match(result.output, /DuckDuckGo returned HTTP 503/);
   });
@@ -279,7 +279,7 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
       httpGet: mockHttpGet({ [SEARCH]: { body: ddg, statusCode: 200 }, '*': { body: '<p>c</p>', statusCode: 200 } }),
     });
     const result = await webSearchTool.execute(
-      { query: 'q', allowed_domains: ['127.0.0.1'] },
+      { query: 'qq', allowed_domains: ['127.0.0.1'] },
       ctx({ _webSearchHooks: h }),
     );
     assert.match(result.output, /Alpha/);
@@ -291,7 +291,7 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
       httpGet: mockHttpGet({ [SEARCH]: { body: ddg, statusCode: 200 }, '*': { body: '<p>c</p>', statusCode: 200 } }),
     });
     const result = await webSearchTool.execute(
-      { query: 'q', blocked_domains: ['127.0.0.1'] },
+      { query: 'qq', blocked_domains: ['127.0.0.1'] },
       ctx({ _webSearchHooks: h }),
     );
     assert.doesNotMatch(result.output, /Alpha/);
@@ -310,7 +310,7 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
       httpGet: mockHttpGet({ [SEARCH]: { body: ddgNamed, statusCode: 200 } }),
     });
     const result = await webSearchTool.execute(
-      { query: 'q', allowed_domains: ['example.com'] },
+      { query: 'qq', allowed_domains: ['example.com'] },
       ctx({ _webSearchHooks: h }),
     );
     assert.match(result.output, /Docs/);
@@ -321,7 +321,7 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
       httpGet: mockHttpGet({ [SEARCH]: { body: ddgNamed, statusCode: 200 } }),
     });
     const result = await webSearchTool.execute(
-      { query: 'q', blocked_domains: ['example.com'] },
+      { query: 'qq', blocked_domains: ['example.com'] },
       ctx({ _webSearchHooks: h }),
     );
     assert.match(result.output, /No results found/);
@@ -332,7 +332,7 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
       validateUrlSafety: (async () => ({ error: 'blocked' })) as typeof validateUrlSafety,
       httpGet: mockHttpGet({ [SEARCH]: { body: ddg, statusCode: 200 } }),
     });
-    const result = await webSearchTool.execute({ query: 'q' }, ctx({ _webSearchHooks: h }));
+    const result = await webSearchTool.execute({ query: 'qq' }, ctx({ _webSearchHooks: h }));
     assert.match(result.output, /Alpha/);
     assert.doesNotMatch(result.output, /--- Content from/);
   });
@@ -341,7 +341,7 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
     const h = hooks({
       httpGet: mockHttpGet({ [SEARCH]: { body: ddg, statusCode: 200 }, [P1]: { body: 'x', statusCode: 404 }, '*': { body: 'x', statusCode: 404 } }),
     });
-    const result = await webSearchTool.execute({ query: 'q' }, ctx({ _webSearchHooks: h }));
+    const result = await webSearchTool.execute({ query: 'qq' }, ctx({ _webSearchHooks: h }));
     assert.match(result.output, /Alpha/);
     assert.doesNotMatch(result.output, /--- Content from/);
   });
@@ -354,23 +354,23 @@ describe('webSearchTool.execute — hook-driven edge paths', () => {
         '*': () => { throw new Error('boom'); },
       }),
     });
-    const result = await webSearchTool.execute({ query: 'q' }, ctx({ _webSearchHooks: h }));
+    const result = await webSearchTool.execute({ query: 'qq' }, ctx({ _webSearchHooks: h }));
     assert.match(result.output, /Alpha/);
     assert.doesNotMatch(result.output, /--- Content from/);
   });
 
   it('returns "Search aborted." when httpGet rejects with Aborted', async () => {
     const h = hooks({ httpGet: (async () => { throw new Error('Aborted'); }) as unknown as typeof httpGet });
-    const result = await webSearchTool.execute({ query: 'q' }, ctx({ _webSearchHooks: h }));
+    const result = await webSearchTool.execute({ query: 'qq' }, ctx({ _webSearchHooks: h }));
     assert.equal(result.isError, true);
     assert.equal(result.output, 'Search aborted.');
   });
 
   it('surfaces a generic fetch error', async () => {
     const h = hooks({ httpGet: (async () => { throw new Error('kaboom'); }) as unknown as typeof httpGet });
-    const result = await webSearchTool.execute({ query: 'q' }, ctx({ _webSearchHooks: h }));
+    const result = await webSearchTool.execute({ query: 'qq' }, ctx({ _webSearchHooks: h }));
     assert.equal(result.isError, true);
-    assert.match(result.output, /Error searching for "q": kaboom/);
+    assert.match(result.output, /Error searching for "qq": kaboom/);
   });
   void P2;
 });
@@ -390,7 +390,7 @@ describe('webSearchTool.execute — budget', () => {
   it('refills the token bucket before counting the request', async () => {
     const budget = { count: 5, max: 10, lastRefillTime: Date.now() - 2 * 3_600_000, refillRate: 3 };
     const result = await webSearchTool.execute(
-      { query: 'q' },
+      { query: 'qq' },
       ctx({ _webSearchHooks: h(), _webSearchBudget: budget }),
     );
     // 2h * 3/h = 6 refilled => count 5->0, then +1 for this request.
@@ -401,7 +401,7 @@ describe('webSearchTool.execute — budget', () => {
   it('blocks once the per-session cap is exceeded', async () => {
     const budget = { count: 10, max: 10 };
     const result = await webSearchTool.execute(
-      { query: 'q' },
+      { query: 'qq' },
       ctx({ _webSearchHooks: h(), _webSearchBudget: budget }),
     );
     assert.equal(result.isError, true);

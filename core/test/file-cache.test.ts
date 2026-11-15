@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { FileCache, getFileCache, MAX_CACHE_BYTES } from '../src/file-cache';
+import { FileCache, getFileCache, MAX_CACHE_BYTES, DEFAULT_MAX_ENTRIES } from '../src/file-cache';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -542,5 +542,223 @@ describe('FileCache — 16 MB eviction', () => {
     cache.set('/a.txt', 'hello', 1);
     cache.set('/b.txt', 'world', 2);
     assert.equal(cache.getStats().files, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configurable byte ceiling (maxSizeBytes constructor param)  [gaps 30/31]
+// ---------------------------------------------------------------------------
+describe('FileCache — configurable maxSizeBytes', () => {
+  it('evicts using the constructor byte ceiling, not the 16 MB default', () => {
+    // With a 100-byte ceiling the second entry must evict the first.
+    // On the pre-change code the constructor arg is ignored (16 MB default)
+    // and both entries survive — this asserts the override takes effect.
+    const cache = new FileCache(100);
+    cache.set('/old.txt', 'x'.repeat(80), 1);
+    cache.set('/new.txt', 'y'.repeat(80), 2);
+    assert.equal(cache.getStats().files, 1);
+    assert.ok(cache.getTotalBytes() <= 100);
+    assert.ok(cache.getStats().entries.includes('/new.txt'));
+    assert.ok(!cache.getStats().entries.includes('/old.txt'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Entry-count ceiling (maxEntries constructor param)  [gaps 27/29/31]
+// ---------------------------------------------------------------------------
+describe('FileCache — entry-count ceiling', () => {
+  it('DEFAULT_MAX_ENTRIES is exported and positive', () => {
+    assert.ok(DEFAULT_MAX_ENTRIES > 0);
+  });
+
+  it('evicts by entry count even when far under the byte ceiling', () => {
+    // Tiny entries never trip the byte budget; without an entry cap the count
+    // would grow unbounded. Cap at 2 and add 3 → one eviction.
+    const cache = new FileCache(MAX_CACHE_BYTES, 2);
+    cache.set('/a.txt', 'a', 1);
+    cache.set('/b.txt', 'b', 2);
+    cache.set('/c.txt', 'c', 3);
+    assert.equal(cache.getStats().files, 2);
+    assert.ok(!cache.getStats().entries.includes('/a.txt')); // oldest evicted
+    assert.ok(cache.getStats().entries.includes('/c.txt'));
+  });
+
+  it('mtime-only (trackMtime) entries also honor the entry cap', () => {
+    const cache = new FileCache(MAX_CACHE_BYTES, 2);
+    cache.trackMtime('/a.txt', 1);
+    cache.trackMtime('/b.txt', 2);
+    cache.trackMtime('/c.txt', 3);
+    assert.equal(cache.getStats().files, 2);
+  });
+
+  it('partial-view entries also honor the entry cap', () => {
+    const cache = new FileCache(MAX_CACHE_BYTES, 2);
+    cache.markPartialView('/a.txt', 1);
+    cache.markPartialView('/b.txt', 2);
+    cache.markPartialView('/c.txt', 3);
+    assert.equal(cache.getStats().files, 2);
+    assert.equal(cache.isPartialView('/c.txt'), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// True LRU eviction (recency-of-access, not insertion-order FIFO)  [gap 15]
+// ---------------------------------------------------------------------------
+describe('FileCache — LRU eviction', () => {
+  it('evicts the least-recently-USED entry, keeping a re-read hot file', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const fa = path.join(tmpDir, 'a.txt');
+      const fb = path.join(tmpDir, 'b.txt');
+      const fc = path.join(tmpDir, 'c.txt');
+      fs.writeFileSync(fa, 'A');
+      fs.writeFileSync(fb, 'B');
+      fs.writeFileSync(fc, 'C');
+
+      const cache = new FileCache(MAX_CACHE_BYTES, 2);
+      cache.set(fa, 'A', fs.statSync(fa).mtimeMs);
+      cache.set(fb, 'B', fs.statSync(fb).mtimeMs);
+
+      // Access A so it becomes most-recently-used. Under FIFO A (inserted first)
+      // would be evicted next; under LRU, B becomes the eviction victim.
+      assert.ok(cache.get(fa));
+
+      cache.set(fc, 'C', fs.statSync(fc).mtimeMs);
+
+      assert.equal(cache.getStats().files, 2);
+      assert.ok(cache.get(fa), 'hot (recently-read) file must survive LRU');
+      assert.equal(cache.get(fb), null, 'least-recently-used file is evicted');
+      assert.ok(cache.get(fc));
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('updating an existing entry refreshes its recency', () => {
+    const cache = new FileCache(MAX_CACHE_BYTES, 2);
+    cache.set('/a.txt', 'a', 1);
+    cache.set('/b.txt', 'b', 2);
+    cache.set('/a.txt', 'a2', 3); // re-set A → A is now most-recently-used
+    cache.set('/c.txt', 'c', 4);  // evicts the LRU, which is now B
+    assert.ok(cache.getStats().entries.includes('/a.txt'));
+    assert.ok(!cache.getStats().entries.includes('/b.txt'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded freshness check: skip hashing files over the byte ceiling  [gap 20]
+// ---------------------------------------------------------------------------
+describe('FileCache — bounded freshness check', () => {
+  it('treats an over-ceiling file as changed without reading it to hash', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'grows.txt');
+      fs.writeFileSync(filePath, 'x'.repeat(50));
+      const stat = fs.statSync(filePath);
+
+      // Byte ceiling of 10; the 50-byte file exceeds it. With a matching mtime
+      // the pre-change code would readFileSync + hash and report unchanged
+      // (false); the size guard reports changed (true) without the unbounded read.
+      const cache = new FileCache(10);
+      cache.set(filePath, 'x'.repeat(50), stat.mtimeMs);
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transient vs permanent FS error in change detection  [gaps 21/36]
+// ---------------------------------------------------------------------------
+describe('FileCache — FS-error classification in hasChanged', () => {
+  it('reports changed for a genuinely deleted file (ENOENT)', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'deleted.txt');
+      fs.writeFileSync(filePath, 'bye');
+      const cache = new FileCache();
+      cache.set(filePath, 'bye', fs.statSync(filePath).mtimeMs);
+      fs.unlinkSync(filePath);
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('keeps the cached entry on a transient (non-ENOENT) read error', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Cache a DIRECTORY path with content + its real mtime. statSync succeeds
+      // (mtime matches) but readFileSync throws EISDIR — a non-ENOENT error.
+      // Pre-change code's blanket `catch { return true }` would report changed;
+      // the classification keeps the entry (returns false) on transient errors.
+      const dirPath = path.join(tmpDir, 'adir');
+      fs.mkdirSync(dirPath);
+      const stat = fs.statSync(dirPath);
+      const cache = new FileCache();
+      cache.set(dirPath, 'pretend-content', stat.mtimeMs);
+      assert.equal(cache.hasChanged(dirPath), false);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Path-key normalization on every access  [gaps 11/28/32/35]
+// ---------------------------------------------------------------------------
+describe('FileCache — path-key normalization', () => {
+  it('collapses aliased spellings of the same path to one entry', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'norm.txt');
+      fs.writeFileSync(filePath, 'canonical');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      // Store under the canonical path.
+      cache.set(filePath, 'canonical', stat.mtimeMs);
+      // Read via an aliased spelling with a redundant /../ segment. Built by
+      // string concat (path.join would pre-normalize) so it stays non-canonical.
+      const alias = path.join(tmpDir, 'sub') + path.sep + '..' + path.sep + 'norm.txt';
+      assert.notEqual(alias, filePath); // genuinely different spelling
+      assert.equal(path.normalize(alias), filePath); // ...of the same file
+      const hit = cache.get(alias);
+      assert.ok(hit, 'aliased spelling must hit the same cache entry');
+      assert.equal(hit!.content, 'canonical');
+      // Still a single entry, keyed canonically.
+      assert.equal(cache.getStats().files, 1);
+      assert.ok(cache.getStats().entries.includes(filePath));
+      // hasChanged and delete also normalize.
+      assert.equal(cache.hasChanged(alias), false);
+      cache.delete(alias);
+      assert.equal(cache.getStats().files, 0);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getStats().entries lists cached path keys  [gaps 25/26]
+// ---------------------------------------------------------------------------
+describe('FileCache — getStats entries list', () => {
+  it('enumerates the cached path keys', () => {
+    const cache = new FileCache();
+    cache.set('/x.txt', 'x', 1);
+    cache.trackMtime('/y.txt', 2);
+    const stats = cache.getStats();
+    assert.ok(Array.isArray(stats.entries));
+    assert.equal(stats.entries.length, 2);
+    assert.ok(stats.entries.includes('/x.txt'));
+    assert.ok(stats.entries.includes('/y.txt'));
+  });
+
+  it('entries matches listPaths()', () => {
+    const cache = new FileCache();
+    cache.set('/a.txt', 'a', 1);
+    cache.set('/b.txt', 'b', 2);
+    assert.deepEqual(cache.getStats().entries, cache.listPaths());
   });
 });

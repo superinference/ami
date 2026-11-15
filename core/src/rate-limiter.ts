@@ -18,11 +18,37 @@ export interface RateLimitStatus {
   warnMessage?: string;
 }
 
+/** Tunable thresholds for a {@link RateLimitTracker}. */
+export interface RateLimitTrackerOptions {
+  /**
+   * Utilization fraction (0–1) at/above which {@link RateLimitTracker.getStatus}
+   * sets `shouldWarn`. Defaults to {@link WARN_THRESHOLD} (0.80). Out-of-range or
+   * non-finite values fall back to the default.
+   */
+  warnThreshold?: number;
+  /**
+   * Utilization fraction (0–1) at/above which the warning severity is `error`
+   * rather than `warning`. Defaults to {@link ERROR_THRESHOLD} (0.95).
+   */
+  errorThreshold?: number;
+}
+
+/** Default utilization at/above which a warning is produced. */
 const WARN_THRESHOLD = 0.80;
-/** Utilization at/above which the warning is an error rather than a warning. */
+/** Default utilization at/above which the warning is an error rather than a warning. */
 const ERROR_THRESHOLD = 0.95;
 /** Never trust a server-supplied reset further than this into the future. */
 const MAX_RESET_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Coerce a caller-supplied threshold to a usable utilization fraction. Undefined
+ * / non-finite values fall back to the default; in-range values are clamped to
+ * [0, 1] so a hostile config can never disable or invert warning logic.
+ */
+function clampFraction(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, value));
+}
 
 // Burn-rate threshold: warn when utilization is high relative to how little of
 // the reset window has elapsed (mirrors Claude's getTimeRelativeEarlyWarning
@@ -41,6 +67,13 @@ export class RateLimitTracker {
   // reset), used to estimate how much of the window has elapsed for burn-rate.
   private requestsWindowMs = 0;
   private tokensWindowMs = 0;
+  private readonly warnThreshold: number;
+  private readonly errorThreshold: number;
+
+  constructor(options: RateLimitTrackerOptions = {}) {
+    this.warnThreshold = clampFraction(options.warnThreshold, WARN_THRESHOLD);
+    this.errorThreshold = clampFraction(options.errorThreshold, ERROR_THRESHOLD);
+  }
 
   update(headers: Record<string, string>): void {
     const info = parseRateLimitHeaders(headers);
@@ -51,10 +84,14 @@ export class RateLimitTracker {
         limit: info.limitRequests,
         remaining: info.remainingRequests,
         // Prefer the shared parser's resetAt; fall back to parseDuration for
-        // ms/m/h/compound formats the parser does not decode.
-        resetAt: info.resetAt
-          ? info.resetAt.getTime()
-          : (reqReset ? Date.now() + this.parseDuration(reqReset) : 0),
+        // ms/m/h/compound formats the parser does not decode. Either way the
+        // absolute instant is clamped so a hostile far-future (or absolute
+        // epoch) reset can't skew burn-rate/status forever.
+        resetAt: this.clampResetAt(
+          info.resetAt
+            ? info.resetAt.getTime()
+            : (reqReset ? Date.now() + this.parseDuration(reqReset) : 0),
+        ),
       };
       this.requestsWindowMs = Math.max(this.requestsWindowMs, this.requests.resetAt - Date.now());
     }
@@ -65,9 +102,11 @@ export class RateLimitTracker {
       this.tokens = {
         limit: info.limitTokens,
         remaining: info.remainingTokens,
-        resetAt: info.resetAtTokens
-          ? info.resetAtTokens.getTime()
-          : (tokReset ? Date.now() + this.parseDuration(tokReset) : 0),
+        resetAt: this.clampResetAt(
+          info.resetAtTokens
+            ? info.resetAtTokens.getTime()
+            : (tokReset ? Date.now() + this.parseDuration(tokReset) : 0),
+        ),
       };
       this.tokensWindowMs = Math.max(this.tokensWindowMs, this.tokens.resetAt - Date.now());
     }
@@ -84,8 +123,8 @@ export class RateLimitTracker {
     const reqBurn = this.burnRateWarns(this.requests, this.requestsWindowMs, reqPct);
     const tokBurn = this.burnRateWarns(this.tokens, this.tokensWindowMs, tokPct);
 
-    const reqWarn = reqPct >= WARN_THRESHOLD || reqBurn;
-    const tokWarn = tokPct >= WARN_THRESHOLD || tokBurn;
+    const reqWarn = reqPct >= this.warnThreshold || reqBurn;
+    const tokWarn = tokPct >= this.warnThreshold || tokBurn;
     const shouldWarn = reqWarn || tokWarn;
 
     const status: RateLimitStatus = {
@@ -102,7 +141,7 @@ export class RateLimitTracker {
       const pct = useReq ? reqPct : tokPct;
       const dimension = useReq ? 'request' : 'token';
       const bucket = useReq ? this.requests : this.tokens;
-      status.severity = pct >= ERROR_THRESHOLD ? 'error' : 'warning';
+      status.severity = pct >= this.errorThreshold ? 'error' : 'warning';
       const resetText = bucket && bucket.resetAt > Date.now()
         ? formatResetTime(Math.floor(bucket.resetAt / 1000))
         : undefined;
@@ -124,6 +163,19 @@ export class RateLimitTracker {
     if (remainingMs <= 0) return false;
     const timeProgress = Math.max(0, Math.min(1, 1 - remainingMs / windowMs));
     return BURN_RATE_THRESHOLDS.some(t => utilization >= t.utilization && timeProgress <= t.timePct);
+  }
+
+  /**
+   * Bound an absolute reset instant (ms epoch). A server (or a parser decoding an
+   * absolute epoch header) can report a reset arbitrarily far in the future; cap
+   * it at MAX_RESET_MS from now so burn-rate windows and status never trust an
+   * unbounded horizon. Past / zero instants are preserved as-is (0 is the
+   * "unknown" sentinel the rest of the class already expects; both upstream
+   * paths — parsed Date and parseDuration — always yield a finite value).
+   */
+  private clampResetAt(resetAtMs: number): number {
+    const now = Date.now();
+    return resetAtMs > now ? Math.min(resetAtMs, now + MAX_RESET_MS) : resetAtMs;
   }
 
   private parseDuration(value: string): number {

@@ -354,11 +354,18 @@ export class SessionManager {
       });
     }
 
-    // Sort by date descending (most recent first)
+    // Sort by date descending (most recent first). FUNCTIONAL: break ties on the
+    // session id so a paginated list() (limit/offset) over sessions sharing a
+    // timestamp returns a stable, deterministic window across calls instead of
+    // one that reflects the underlying readdir/stat order. Session ids embed a
+    // monotonic timestamp+sequence, so the newer id sorts first — matching the
+    // recency ordering callers expect.
     entries.sort((a, b) => {
       const bTime = b.date ? new Date(b.date).getTime() : 0;
       const aTime = a.date ? new Date(a.date).getTime() : 0;
-      return (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+      const byTime = (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+      if (byTime !== 0) return byTime;
+      return String(b.id).localeCompare(String(a.id));
     });
     return entries;
   }
@@ -460,8 +467,19 @@ export class SessionManager {
   // ---------------------------------------------------------------------------
 
   private listFiles(): string[] {
-    if (!fs.existsSync(this.sessionDir)) return [];
-    const entries = fs.readdirSync(this.sessionDir);
+    // FUNCTIONAL: degrade to an empty listing if the session dir can't be read
+    // rather than throwing. readdirSync raises ENOENT when the dir is absent or
+    // was removed between a prior existsSync and here (TOCTOU race under a
+    // concurrent delete), and EACCES on a present-but-non-listable dir — in all
+    // of those cases list()/loadLatest()/--resume must report "no sessions", not
+    // crash the whole resume path. A single try/catch over readdir subsumes the
+    // old existsSync pre-check and closes the race window.
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(this.sessionDir);
+    } catch {
+      return [];
+    }
     return entries
       .filter(e => e.endsWith('.json'))
       .map(e => path.join(this.sessionDir, e));

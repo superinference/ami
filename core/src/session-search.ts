@@ -24,6 +24,11 @@ export const MAX_SNIPPET_CHARS = 300;                     // result snippet budg
 /** Model-only context (system-reminder spans) must not produce phantom search
  *  hits — strip the whole block, open tag to close tag, before matching. */
 const SYSTEM_REMINDER_RE = /<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder>/gi;
+/** Break-guard for an unclosed reminder: once every well-formed span is removed,
+ *  a surviving `<system-reminder …>` (no matching close — e.g. a truncated
+ *  transcript) would otherwise leak its text into the index. Strip it, and
+ *  everything after it, to the end of the string. */
+const SYSTEM_REMINDER_OPEN_RE = /<system-reminder\b[^>]*>[\s\S]*$/i;
 
 /** Parse an ISO timestamp into epoch ms for recency ranking; unknown/invalid -> 0. */
 function recencyMs(timestamp?: string): number {
@@ -58,7 +63,12 @@ export function flattenMessageText(msg: unknown): string {
     }
   }
   // Drop model-only system-reminder spans so they can't generate phantom matches.
-  return parts.filter(Boolean).join(' ').replace(SYSTEM_REMINDER_RE, ' ');
+  // Closed spans first, then any unclosed trailing span (break-guard).
+  return parts
+    .filter(Boolean)
+    .join(' ')
+    .replace(SYSTEM_REMINDER_RE, ' ')
+    .replace(SYSTEM_REMINDER_OPEN_RE, ' ');
 }
 
 /**
@@ -204,13 +214,24 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
  * LLM ranker is supplied by the consumer so this module stays dependency-free
  * and testable.
  */
-export type SessionRankFn = (query: string, candidates: SearchResult[]) => Promise<string[]>;
+export type SessionRankFn = (
+  query: string,
+  candidates: SearchResult[],
+  signal?: AbortSignal,
+) => Promise<string[]>;
 
 /** @public Options for {@link searchSessionsRanked}. */
 export interface RankedSearchOptions {
   limit?: number;
   /** When omitted, no reranking happens: result equals {@link searchSessions} (zero network). */
   rankFn?: SessionRankFn;
+  /**
+   * Optional cancellation token. If already aborted when reranking would start,
+   * the (fast, local) substring order is returned and the ranker is never
+   * invoked; otherwise the signal is threaded into `rankFn` so a consumer can
+   * abort its in-flight LLM rerank (e.g. the user retypes the query).
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -251,14 +272,18 @@ export async function searchSessionsRanked(
   query: string,
   options: RankedSearchOptions = {},
 ): Promise<SearchResult[]> {
-  const { limit = 20, rankFn } = options;
+  const { limit = 20, rankFn, signal } = options;
   const candidates = searchSessions(cwd, query, limit);
   if (!rankFn || candidates.length === 0) return candidates;
+  // Already-cancelled search: skip the (potentially networked) rerank entirely
+  // and hand back the fast local substring order.
+  if (signal?.aborted) return candidates;
   try {
-    const orderedIds = await rankFn(query, candidates);
+    const orderedIds = await rankFn(query, candidates, signal);
     return reorderByIds(candidates, orderedIds);
   } catch {
-    // Ranker failure must never break search: fall back to substring order.
+    // Ranker failure (incl. an abort mid-flight) must never break search: fall
+    // back to substring order.
     return candidates;
   }
 }

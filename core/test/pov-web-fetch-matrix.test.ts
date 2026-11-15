@@ -589,3 +589,103 @@ describe('web_fetch byte-limited cache', () => {
     assert.equal(calls.length, 1, 'second call served from cache');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Parity: redirect-boundary / credential-on-the-wire / contradictory filters /
+// untrusted-content summarizer hardening.
+// ---------------------------------------------------------------------------
+
+describe('web_fetch — contradictory domain filters', () => {
+  it('rejects a request that specifies BOTH allowed_domains and blocked_domains', async () => {
+    const r = await webFetchTool.execute(
+      { url: 'https://example.com/x', allowed_domains: ['example.com'], blocked_domains: ['evil.com'] },
+      ctx({ _allowLocalhostForTesting: true, _webFetchHttpGet: async () => { throw new Error('must not fetch'); } }),
+    );
+    assert.equal(r.isError, true);
+    assert.match(r.output, /Cannot specify both allowed_domains and blocked_domains/);
+  });
+});
+
+describe('web_fetch — credentials are never put on the wire', () => {
+  it('fetches the credential-stripped URL (no user:pass passed to the HTTP getter)', async () => {
+    const calls: string[] = [];
+    // Unique host avoids a cache hit from the credential-redaction suite above.
+    const host = `wire-${Date.now()}.example`;
+    const r = await webFetchTool.execute(
+      { url: `http://alice:s3cr3t@${host}/data` },
+      ctx({ _allowLocalhostForTesting: true, _webFetchHttpGet: mockGet({ body: 'hi', contentType: 'text/plain' }, calls) }),
+    );
+    assert.equal(r.isError, undefined);
+    assert.equal(calls.length, 1);
+    // Pre-fix the ORIGINAL credentialed URL was handed to the getter (Basic auth on
+    // the wire). Post-fix the getter only ever sees the stripped URL.
+    assert.ok(!calls[0].includes('s3cr3t'), `credentials must not reach the getter: ${calls[0]}`);
+    assert.ok(!calls[0].includes('alice'), `username must not reach the getter: ${calls[0]}`);
+    assert.ok(calls[0].includes(host), 'host still fetched');
+  });
+});
+
+describe('web_fetch — redirect-boundary detection', () => {
+  it('keeps content when the redirect only adds/removes a leading www.', async () => {
+    const r = await webFetchTool.execute(
+      { url: 'https://www.example.com/a' },
+      ctx({ _allowLocalhostForTesting: true, _webFetchHttpGet: mockGet({ body: 'same-origin-body', contentType: 'text/plain', finalUrl: 'https://example.com/a' }) }),
+    );
+    assert.equal(r.isError, undefined);
+    assert.doesNotMatch(r.output, /Redirect detected/);
+    assert.ok(r.output.includes('same-origin-body'), 'www-normalized same-origin content is kept');
+  });
+
+  it('flags an https→http protocol downgrade on the same host', async () => {
+    const r = await webFetchTool.execute(
+      { url: 'https://dg.example/a' },
+      ctx({ _allowLocalhostForTesting: true, _webFetchHttpGet: mockGet({ body: 'downgraded-secret', contentType: 'text/plain', finalUrl: 'http://dg.example/a' }) }),
+    );
+    assert.match(r.output, /Redirect detected/);
+    assert.match(r.output, /insecure \(http\) protocol/);
+    assert.ok(!r.output.includes('downgraded-secret'), 'downgraded body is not surfaced');
+  });
+
+  it('flags a port change on the same host', async () => {
+    const r = await webFetchTool.execute(
+      { url: 'https://port.example/a' },
+      ctx({ _allowLocalhostForTesting: true, _webFetchHttpGet: mockGet({ body: 'other-port-secret', contentType: 'text/plain', finalUrl: 'https://port.example:8443/a' }) }),
+    );
+    assert.match(r.output, /Redirect detected/);
+    assert.match(r.output, /different port/);
+    assert.ok(!r.output.includes('other-port-secret'), 'other-port body is not surfaced');
+  });
+
+  it('restates the prompt in the cross-host redirect message', async () => {
+    const r = await webFetchTool.execute(
+      { url: 'https://orig2.example/a', prompt: 'find the pricing' },
+      ctx({ _allowLocalhostForTesting: true, _webFetchHttpGet: mockGet({ body: 'x', contentType: 'text/plain', finalUrl: 'https://elsewhere2.example/a' }) }),
+    );
+    assert.match(r.output, /Redirect detected/);
+    assert.match(r.output, /prompt="find the pricing"/);
+  });
+});
+
+describe('web_fetch — untrusted-content summarizer runs under deny-all', () => {
+  it('creates the summarize sub-engine with permissionMode deny-all (never auto-allow)', async () => {
+    let seenMode: string | undefined;
+    const r = await webFetchTool.execute(
+      { url: 'https://sum.example/a', prompt: 'summarize this' },
+      ctx({
+        _allowLocalhostForTesting: true,
+        _webFetchHttpGet: mockGet({ body: 'untrusted page body', contentType: 'text/plain' }),
+        _providerConfig: {} as any,
+        _engineFactory: ((cfg: any) => {
+          seenMode = cfg.permissionMode;
+          return {
+            async *submit() { yield { type: 'text_delta', text: 'SUMMARY' } as any; },
+            shutdown() {},
+          };
+        }) as any,
+      }),
+    );
+    assert.equal(r.isError, undefined);
+    assert.equal(seenMode, 'deny-all');
+    assert.notEqual(seenMode, 'auto-allow');
+  });
+});

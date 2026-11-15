@@ -506,3 +506,117 @@ describe('file-edit — non-UTF encoding protection', () => {
     assert.ok(fs.readFileSync(file, 'utf-8').includes('地球'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// FUNCTIONAL: OOM size guard applied to EVERY edit mode (not just single-replace)
+// ---------------------------------------------------------------------------
+
+describe('fileEditTool – 1 GiB size guard across all edit modes', () => {
+  function makeHuge(name: string): string {
+    const fp = path.join(tmpDir, name);
+    fs.writeFileSync(fp, 'seed\n');
+    fs.truncateSync(fp, 1024 * 1024 * 1024 + 1); // sparse, no real disk use
+    return fp;
+  }
+
+  it('blocks a full-overwrite (write mode) of an over-limit file', async () => {
+    const fp = makeHuge('huge-write.bin');
+    const res = await fileEditTool.execute(
+      { file_path: fp, new_string: 'small' },
+      ctx(),
+    );
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('exceeds 1 GiB limit'), res.output);
+  });
+
+  it('blocks a multi-edit (edits:[]) of an over-limit file', async () => {
+    const fp = makeHuge('huge-multi.bin');
+    const res = await fileEditTool.execute(
+      { file_path: fp, edits: [{ old_string: 'seed', new_string: 'other' }] },
+      ctx(),
+    );
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('exceeds 1 GiB limit'), res.output);
+  });
+
+  it('blocks a single replace of an over-limit file (unchanged path)', async () => {
+    const fp = makeHuge('huge-single.bin');
+    const res = await fileEditTool.execute(
+      { file_path: fp, old_string: 'seed', new_string: 'other' },
+      ctx(),
+    );
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('exceeds 1 GiB limit'), res.output);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FUNCTIONAL: JSON config validation across all edit modes, only blocking a
+// previously-valid -> invalid transition (repair-in-progress is allowed).
+// ---------------------------------------------------------------------------
+
+describe('fileEditTool – config JSON validity across edit modes', () => {
+  it('blocks a multi-edit that breaks a previously-valid package.json', async () => {
+    const fp = path.join(tmpDir, 'package.json');
+    fs.writeFileSync(fp, '{\n  "name": "x"\n}\n');
+    const res = await fileEditTool.execute(
+      { file_path: fp, edits: [{ old_string: '"name": "x"', new_string: '"name": "x",,' }] },
+      ctx(),
+    );
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('invalid JSON'), res.output);
+  });
+
+  it('blocks a replace_all that breaks a previously-valid tsconfig.json', async () => {
+    const fp = path.join(tmpDir, 'tsconfig.json');
+    fs.writeFileSync(fp, '{\n  "a": 1,\n  "b": 1\n}\n');
+    const res = await fileEditTool.execute(
+      { file_path: fp, old_string: '1', new_string: '1}', replace_all: true },
+      ctx(),
+    );
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('invalid JSON'), res.output);
+  });
+
+  it('blocks a full overwrite that breaks a previously-valid settings.json', async () => {
+    const fp = path.join(tmpDir, 'settings.json');
+    fs.writeFileSync(fp, '{"ok": true}\n');
+    const res = await fileEditTool.execute(
+      { file_path: fp, new_string: '{not json' },
+      ctx(),
+    );
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('invalid JSON'), res.output);
+  });
+
+  it('allows an edit to an ALREADY-invalid config (repair in progress)', async () => {
+    const fp = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(fp, '{ broken json here\n'); // already invalid
+    const res = await fileEditTool.execute(
+      { file_path: fp, old_string: 'broken', new_string: 'still broken' },
+      ctx(),
+    );
+    assert.ok(!res.isError, res.output);
+    assert.ok(fs.readFileSync(fp, 'utf-8').includes('still broken'));
+  });
+
+  it('allows creating a NEW config file even if its JSON is not yet complete', async () => {
+    const fp = path.join(tmpDir, 'package.json');
+    const res = await fileEditTool.execute(
+      { file_path: fp, new_string: '{ "partial":' },
+      ctx(),
+    );
+    assert.ok(!res.isError, res.output);
+  });
+
+  it('allows a valid->valid multi-edit of a config file', async () => {
+    const fp = path.join(tmpDir, 'settings.json');
+    fs.writeFileSync(fp, '{\n  "name": "x"\n}\n');
+    const res = await fileEditTool.execute(
+      { file_path: fp, edits: [{ old_string: '"x"', new_string: '"y"' }] },
+      ctx(),
+    );
+    assert.equal(res.isError, false, res.output);
+    assert.equal(JSON.parse(fs.readFileSync(fp, 'utf-8')).name, 'y');
+  });
+});
