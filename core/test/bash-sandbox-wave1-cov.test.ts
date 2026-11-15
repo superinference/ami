@@ -63,22 +63,22 @@ after(() => {
   fs.rmSync(fakeBinDir, { recursive: true, force: true });
 });
 
-describe('shouldUseSandbox — exemption revealed only after quote-stripping', () => {
-  it('exempts a command whose exempt keyword is split by quotes in the original', () => {
-    // Original: `gi"x"t` is NOT a contiguous `git` token, so the first exempt
-    // check (run on the raw command) does not match, and a `curl` trigger is
-    // present. Quote-stripping removes "x", joining the fragments into `git`,
-    // which the SECOND exempt check matches -> command must be exempted.
-    // If the second exempt check were removed, the surviving `curl` trigger
-    // would (wrongly) force the sandbox, so this test discriminates the branch.
-    const cmd = 'gi"x"t pull && curl https://example.com';
-    // Sanity: the first-layer exempt check (raw command) must NOT match, i.e.
-    // there is no contiguous "git" token in the original.
-    assert.ok(!/\bgit\b/.test(cmd), 'precondition: raw command has no git token');
+describe('shouldUseSandbox — compound command cannot escape via an exempt subcommand', () => {
+  it('sandboxes the curl in `git pull && curl ...` even though git is exempt', () => {
+    // SECURITY: previously the exempt `git` token anywhere in the line (or
+    // revealed by quote-stripping, e.g. `gi"x"t`) suppressed the sandbox for the
+    // whole command, so the trailing `curl` ran UNSANDBOXED. Each top-level
+    // subcommand is now evaluated independently, so the curl trigger forces the
+    // sandbox. RED on revert: the old whole-string exempt match returned false.
     assert.equal(
-      shouldUseSandbox(cmd),
-      false,
-      'quote-stripped exempt keyword must suppress the sandbox despite the curl trigger',
+      shouldUseSandbox('git pull && curl https://example.com'),
+      true,
+      'a trigger subcommand must not be exempted by a sibling exempt subcommand',
+    );
+    assert.equal(
+      shouldUseSandbox('gi"x"t pull && curl https://example.com'),
+      true,
+      'quote-split exempt keyword must not suppress a sibling curl trigger',
     );
   });
 });

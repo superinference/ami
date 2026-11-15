@@ -111,7 +111,18 @@ describe('wrapWithUnshare includes credential scrub', () => {
     const cfg = baseCfg();
     const wrapped = wrapWithUnshare('echo safe', '/tmp', cfg);
     assert.ok(!wrapped.includes('unset '), 'no unset when hiddenEnvVars is not set');
-    assert.ok(!/mount --bind \/dev\/null/.test(wrapped),
-      'no mount --bind /dev/null when hiddenFiles is not set');
+    // The default privileged-socket denial still runs (it is not credential
+    // scrub), but no hiddenFiles mounts are emitted when none are configured.
+    assert.ok(!wrapped.includes("/dev/null '/root"), 'no hiddenFiles mount when unset');
+    assert.ok(!wrapped.includes("/dev/null '/home"), 'no hiddenFiles mount when unset');
+    assert.ok(
+      wrapped.includes("mount --bind /dev/null '/var/run/docker.sock' 2>/dev/null; "),
+      'default unix-socket denial is applied even with no credential scrub',
+    );
+  });
+
+  it('opts out of unix-socket denial when allowUnixSockets is set', () => {
+    const wrapped = wrapWithUnshare('echo safe', '/tmp', baseCfg({ allowUnixSockets: true }));
+    assert.ok(!wrapped.includes('docker.sock'), 'allowUnixSockets disables socket denial');
   });
 });
