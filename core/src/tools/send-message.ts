@@ -32,6 +32,12 @@ export interface ShutdownResponse {
   approve: boolean;
   reason?: string;
 }
+export interface PlanApprovalRequest {
+  type: 'plan_approval_request';
+  requestId: string;
+  planContent: string;
+  planFilePath?: string;
+}
 export interface PlanApprovalResponse {
   type: 'plan_approval_response';
   requestId: string;
@@ -53,17 +59,23 @@ export interface PermissionResponse {
 export type StructuredMessage =
   | ShutdownRequest
   | ShutdownResponse
+  | PlanApprovalRequest
   | PlanApprovalResponse
   | PermissionRequest
   | PermissionResponse;
 
 const STRUCTURED_TYPES = new Set([
-  'shutdown_request', 'shutdown_response', 'plan_approval_response',
-  'permission_request', 'permission_response',
+  'shutdown_request', 'shutdown_response', 'plan_approval_request',
+  'plan_approval_response', 'permission_request', 'permission_response',
 ]);
 
-/** Providers sometimes serialize booleans as strings; accept both. */
-function coerceApprove(v: unknown): boolean {
+/**
+ * Providers sometimes serialize booleans as strings; accept both. The decision
+ * key is read as either `approve` (AMI) or `approved` (Claude Code's field name)
+ * so a response authored to either convention parses identically.
+ */
+function coerceApprove(o: Record<string, unknown>): boolean {
+  const v = o.approve ?? o.approved;
   return v === true || v === 'true';
 }
 
@@ -86,16 +98,20 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
       return { type, requestId, reason: typeof o.reason === 'string' ? o.reason : undefined };
     case 'shutdown_response':
       if (typeof requestId !== 'string') return { error: 'shutdown_response requires a requestId' };
-      return { type, requestId, approve: coerceApprove(o.approve), reason: typeof o.reason === 'string' ? o.reason : undefined };
+      return { type, requestId, approve: coerceApprove(o), reason: typeof o.reason === 'string' ? o.reason : undefined };
+    case 'plan_approval_request':
+      if (typeof requestId !== 'string') return { error: 'plan_approval_request requires a requestId' };
+      if (typeof o.planContent !== 'string' || !o.planContent.trim()) return { error: 'plan_approval_request requires planContent' };
+      return { type, requestId, planContent: o.planContent, planFilePath: typeof o.planFilePath === 'string' ? o.planFilePath : undefined };
     case 'plan_approval_response':
       if (typeof requestId !== 'string') return { error: 'plan_approval_response requires a requestId' };
-      return { type, requestId, approve: coerceApprove(o.approve), feedback: typeof o.feedback === 'string' ? o.feedback : undefined };
+      return { type, requestId, approve: coerceApprove(o), feedback: typeof o.feedback === 'string' ? o.feedback : undefined };
     case 'permission_request':
       if (typeof requestId !== 'string' || typeof o.tool !== 'string') return { error: 'permission_request requires requestId and tool' };
       return { type, requestId, tool: o.tool, description: typeof o.description === 'string' ? o.description : '' };
     case 'permission_response':
       if (typeof requestId !== 'string') return { error: 'permission_response requires a requestId' };
-      return { type, requestId, approve: coerceApprove(o.approve) };
+      return { type, requestId, approve: coerceApprove(o) };
     default:
       return null;
   }
@@ -113,6 +129,16 @@ const mailboxes = new Map<string, AgentMessage[]>();
  * is never lost in practice; it only engages on a pathological backlog.
  */
 export const MAX_MAILBOX = 1000;
+
+/**
+ * Hard upper bound on the size (in characters) of a single message's content.
+ * Complements MAX_MAILBOX: the mailbox cap bounds the *count* of retained
+ * messages, this bounds the *size* of each one, so a single oversized payload
+ * (or a broadcast of one, fanned into every mailbox) cannot exhaust memory.
+ * The limit is generous — far larger than any legitimate coordination message —
+ * so it only engages on a pathological/abusive payload.
+ */
+export const MAX_MESSAGE_CHARS = 100_000;
 
 /**
  * Append to an agent's mailbox, capping retention at MAX_MAILBOX by dropping the
@@ -208,7 +234,9 @@ export const sendMessageTool: ToolDefinition = {
     '\n' +
     'Protocol responses: if you receive a JSON message with type "shutdown_request" or "plan_approval_request", ' +
     'reply with the matching "_response" type, echoing the request_id and setting approve true/false (a ' +
-    'rejection requires a reason/feedback). Approving a shutdown terminates you. The protocol also carries ' +
+    'rejection requires a reason/feedback). Approving a shutdown terminates you — do NOT originate a ' +
+    'shutdown_request unless explicitly asked to. To submit your own plan for review, send a ' +
+    '"plan_approval_request" (with planContent, optional planFilePath) to the reviewer. The protocol also carries ' +
     'permission_request/permission_response for forwarding a worker\'s permission prompt to the lead.',
   inputSchema: {
     type: 'object',
@@ -247,6 +275,12 @@ export const sendMessageTool: ToolDefinition = {
     }
     if (!content || !content.trim()) {
       return { output: 'Error: "content" must not be empty.', isError: true };
+    }
+    if (content.length > MAX_MESSAGE_CHARS) {
+      return {
+        output: `Error: message content is too large (${content.length} chars; max ${MAX_MESSAGE_CHARS}). Send a summary or a file reference instead.`,
+        isError: true,
+      };
     }
     // Bare teammate names only — there is one team per session, so "@" or
     // "team@host" style addresses are rejected (mirrors Claude's validateInput).
@@ -312,12 +346,31 @@ export const sendMessageTool: ToolDefinition = {
           }
           enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content, timestamp: Date.now() });
           if (structured.approve) {
-            // The approving teammate terminates itself: fire its notifier so the
-            // running engine can drain the approval and shut down gracefully.
+            // Approving a shutdown TERMINATES the approving teammate: abort its own
+            // task so the engine loop actually stops, matching Claude Code's
+            // handleShutdownApproval (abortController.abort()). The confirmation is
+            // already queued to the lead above; the notifier lets a listening engine
+            // drain it before the abort unwinds.
             notifyMailbox(from);
-            return { output: `Shutdown approved (id: ${structured.requestId}) — confirmation sent to ${TEAM_LEAD_NAME}; ${from} is exiting.` };
+            let aborted = false;
+            if (context.agentId && context.processManager) {
+              aborted = context.processManager.kill(context.agentId);
+            }
+            return {
+              output: aborted
+                ? `Shutdown approved (id: ${structured.requestId}) — ${from} aborted; confirmation sent to ${TEAM_LEAD_NAME}.`
+                : `Shutdown approved (id: ${structured.requestId}) — confirmation sent to ${TEAM_LEAD_NAME}; ${from} is exiting.`,
+            };
           }
           return { output: `Shutdown rejected (id: ${structured.requestId}): "${structured.reason}" — ${from} continues working.` };
+        }
+        case 'plan_approval_request': {
+          // The request half: a teammate submits a plan to another agent (usually
+          // the lead) for approval. One-way queue like shutdown_request; the
+          // reviewer replies with a plan_approval_response.
+          enqueue(to, { from, to, content, timestamp: Date.now() });
+          const fileTag = structured.planFilePath ? ` (${structured.planFilePath})` : '';
+          return { output: `Plan submitted to ${toRaw} for approval (id: ${structured.requestId})${fileTag} [from: ${from}]` };
         }
         case 'plan_approval_response': {
           // Authorization: only the team lead may approve or reject plans.
@@ -354,11 +407,14 @@ export const sendMessageTool: ToolDefinition = {
     };
 
     if (toRaw === '*') {
-      let sent = 0;
+      const recipients: string[] = [];
       for (const [name, box] of mailboxes) {
-        if (name !== from) { appendCapped(box, msg); notifyMailbox(name); sent++; }
+        if (name !== from) { appendCapped(box, msg); notifyMailbox(name); recipients.push(name); }
       }
-      return { output: `Broadcast sent to ${sent} agents.` };
+      if (recipients.length === 0) {
+        return { output: 'No teammates to broadcast to (no other agents are reachable).' };
+      }
+      return { output: `Broadcast sent to ${recipients.length} agent(s): ${recipients.join(', ')}` };
     }
 
     // Dead-recipient boundary: if other agents are live this session but the
