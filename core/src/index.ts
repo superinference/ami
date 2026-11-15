@@ -102,6 +102,7 @@ export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsys
 export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS } from './types';
 export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, is1mContextDisabled, supportsOneMillionContextBeta, THINKING_LEVELS, REVIEW_EFFORT_LEVELS } from './model-capabilities';
 export { PERMISSION_MODES, BASH_CLASSIFICATIONS, PERMISSION_UPDATE_DESTINATIONS, SESSION_GRANT_SCOPES, SAFETY_CHECK_KINDS } from './permissions';
+export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, cyclePermissionMode } from './permissions';
 export { detectProvider, listModels, validateModel } from './model-registry';
 export type { ValidateModelResult } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS } from './config';
