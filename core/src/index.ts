@@ -178,6 +178,8 @@ export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
 export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn } from './conversation-summary';
 export type { ConversationMeta } from './conversation-summary';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recoverJsonStringFields } from './tools/input-sanitizer';
+export { mapChildToSubagentEvent, summarizeToolInput, createSubagentRelay } from './tools/subagent-relay';
+export type { SubagentRelay, SubagentState, RelayMessage, RelaySendResult, RelayRejectReason, RelayCompletion } from './tools/subagent-relay';
 export { isProtectedLogTier, canModifyLog, UILogGuard, LOG_TIERS } from './ui-log-guard';
 export type { LogTier, LogEntry } from './ui-log-guard';
 export { validateEngineConfig, sanitizeEngineConfig } from './types';
