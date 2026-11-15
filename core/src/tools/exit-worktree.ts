@@ -53,19 +53,22 @@ export const exitWorktreeTool: ToolDefinition = {
   description:
     'Exit a worktree session created by enter_worktree.\n' +
     'Scope: only acts on worktrees under .ami/worktrees/; elsewhere it is an informational no-op (no filesystem change). ' +
-    'When to use: on explicit user request to finish or discard isolated work — not proactively.\n' +
+    'When to use: on explicit user request to finish, merge, or discard isolated work — not proactively.\n' +
     'action "keep" preserves the worktree and its branch on disk (your work stays saved there); ' +
-    'action "remove" deletes the worktree AND its branch. ' +
-    'discard_changes (default false) must be true to remove a worktree that has uncommitted files or unpushed commits — ' +
+    'action "merge" merges the worktree branch back into the original branch, then deletes the worktree AND its branch; ' +
+    'action "remove" deletes the worktree AND its branch WITHOUT merging (discards the isolated work). ' +
+    'discard_changes (default false) must be true to remove a worktree that has uncommitted files or unpushed commits, ' +
+    'and to merge a worktree that still has uncommitted files (uncommitted work is never part of a merge and would be lost) — ' +
     'otherwise the tool refuses and tells you to confirm with the user or use action:"keep". ' +
+    'A merge that would conflict is aborted and the worktree is preserved (never silently discarded). ' +
     'On exit the session returns to the original working directory.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: '"keep" leaves the worktree and branch on disk; "remove" deletes both.',
-        enum: ['keep', 'remove'],
+        description: '"keep" leaves the worktree and branch on disk; "merge" merges the branch back into the original branch then deletes both; "remove" deletes both without merging.',
+        enum: ['keep', 'merge', 'remove'],
       },
       discard_changes: {
         type: 'boolean',
@@ -86,9 +89,10 @@ export const exitWorktreeTool: ToolDefinition = {
     const action = input.action as string;
     const discardChanges = input.discard_changes === true;
 
-    if (action !== 'keep' && action !== 'remove') {
-      return { output: 'Error: action must be "keep" or "remove".', isError: true };
+    if (action !== 'keep' && action !== 'remove' && action !== 'merge') {
+      return { output: 'Error: action must be "keep", "merge", or "remove".', isError: true };
     }
+    const wantMerge = action === 'merge';
 
     try {
       runGit(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
@@ -122,11 +126,19 @@ export const exitWorktreeTool: ToolDefinition = {
       };
     }
 
-    // Resolve the worktree's branch now (used for keep messaging + remove teardown).
-    let branch: string | undefined = existing?.worktreeBranch;
-    if (!branch) {
-      try { branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath }); } catch { /* detached */ }
-    }
+    // Resolve the worktree's branch now (used for keep messaging + merge/remove
+    // teardown). The worktree's own checked-out HEAD is the GROUND TRUTH for the
+    // real branch name — session metadata (worktreeBranch) can diverge from the
+    // branch git actually created (enter_worktree names it "worktree/<slug>" while
+    // the session records "worktree-<slug>"), so trusting the session value alone
+    // would merge/delete the wrong ref and silently leak the real branch. Prefer
+    // the live HEAD; fall back to session metadata only when detached.
+    let branch: string | undefined;
+    try {
+      const head = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath });
+      branch = head === 'HEAD' ? undefined : head; // "HEAD" literal == detached
+    } catch { /* rev-parse failed */ }
+    if (!branch) branch = existing?.worktreeBranch;
     const branchLabel = branch ? ` (branch ${branch})` : '';
 
     if (action === 'keep') {
@@ -148,10 +160,14 @@ export const exitWorktreeTool: ToolDefinition = {
 
     // TOCTOU: re-count change state at execution time.
     const changes = countWorktreeChanges(worktreePath, worktreePath);
+    // What the user will lose if we proceed. For "merge", the committed/unpushed
+    // work is NOT a loss — it is exactly what gets merged — so only uncommitted
+    // files are at risk and require discard_changes. For "remove", both
+    // uncommitted files and unpushed commits are discarded, so both are guarded.
     if (!discardChanges) {
       if (changes === null) {
         return {
-          output: 'Error: could not determine worktree status (git check failed). Set discard_changes=true to force removal, or use action:"keep".',
+          output: `Error: could not determine worktree status (git check failed). Set discard_changes=true to force ${wantMerge ? 'merge' : 'removal'}, or use action:"keep".`,
           isError: true,
         };
       }
@@ -162,14 +178,17 @@ export const exitWorktreeTool: ToolDefinition = {
         const preview = files.length > FILE_PREVIEW_THRESHOLD
           ? `${files.slice(0, FILE_PREVIEW_THRESHOLD).join('\n')}\n… and ${files.length - FILE_PREVIEW_THRESHOLD} more`
           : files.join('\n');
+        const hint = wantMerge
+          ? 'Commit them first so they are included in the merge, set discard_changes=true to discard them and merge only committed work, or use action:"keep".'
+          : 'Set discard_changes=true to force removal (the branch will be deleted), or use action:"keep". Confirm with the user before discarding.';
         return {
-          output: cap(`Error: worktree${branchLabel} has ${pluralize(changes.uncommitted, 'uncommitted file')}:\n${preview}\n\nSet discard_changes=true to force removal (the branch will be deleted), or use action:"keep". Confirm with the user before discarding.`),
+          output: cap(`Error: worktree${branchLabel} has ${pluralize(changes.uncommitted, 'uncommitted file')}:\n${preview}\n\n${hint}`),
           isError: true,
         };
       }
-      if (changes.unpushed > 0) {
+      if (!wantMerge && changes.unpushed > 0) {
         return {
-          output: `Error: worktree${branchLabel} has ${pluralize(changes.unpushed, 'unpushed commit')}.\n\nSet discard_changes=true to force removal (the branch will be deleted), or use action:"keep". Confirm with the user before discarding.`,
+          output: `Error: worktree${branchLabel} has ${pluralize(changes.unpushed, 'unpushed commit')}.\n\nSet discard_changes=true to force removal (the branch will be deleted), use action:"merge" to merge them into the original branch, or use action:"keep". Confirm with the user before discarding.`,
           isError: true,
         };
       }
@@ -180,6 +199,65 @@ export const exitWorktreeTool: ToolDefinition = {
     const discardedCommits = changes?.unpushed ?? 0;
 
     const repoRoot = worktreePath.split('.ami/worktrees/')[0];
+
+    // Merge-back: fold the worktree branch into the original branch BEFORE any
+    // destructive teardown. A failed/conflicting merge is aborted and the
+    // worktree is left fully intact so no committed work is ever lost.
+    let mergedInto: string | undefined;
+    if (wantMerge) {
+      if (!branch) {
+        return {
+          output: 'Error: cannot merge — the worktree is in detached HEAD (no branch to merge). Commit to a branch, or use action:"remove"/"keep".',
+          isError: true,
+        };
+      }
+      // The branch the worktree was based on (recorded at creation).
+      const targetBranch = existing?.originalBranch;
+      if (!targetBranch) {
+        return {
+          output: `Error: cannot merge — the original branch is unknown (the base was detached or the session metadata is missing). Merge ${branch} manually, or use action:"remove"/"keep".`,
+          isError: true,
+        };
+      }
+      if (targetBranch === branch) {
+        return {
+          output: `Error: cannot merge — the worktree branch and the original branch are both "${branch}". Nothing to merge; use action:"remove" or action:"keep".`,
+          isError: true,
+        };
+      }
+      // The target branch must be checked out at the main repo root and its
+      // working tree clean, or an in-place merge would be unsafe. Refuse rather
+      // than touch the user's main checkout unexpectedly.
+      let repoBranch = '';
+      try { repoBranch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }); } catch { /* detached main */ }
+      if (repoBranch !== targetBranch) {
+        return {
+          output: `Error: cannot merge — the main checkout at ${repoRoot} is on "${repoBranch || 'a detached HEAD'}", not the original branch "${targetBranch}". Switch it there first (git checkout ${targetBranch}), or use action:"remove" to discard the worktree.`,
+          isError: true,
+        };
+      }
+      // Only tracked modifications block a safe merge; untracked files (notably
+      // the .ami/worktrees/ container itself) are expected and benign.
+      const repoChanges = countWorktreeChanges(repoRoot, repoRoot, { ignoreUntracked: true });
+      if (repoChanges === null || repoChanges.uncommitted > 0) {
+        return {
+          output: `Error: cannot merge — the main checkout at ${repoRoot} has uncommitted changes. Commit or stash them first, or use action:"remove" to discard the worktree.`,
+          isError: true,
+        };
+      }
+      try {
+        _exitWorktreeHooks.exec(['merge', '--no-edit', branch], { cwd: repoRoot, stdio: 'pipe' });
+      } catch (e) {
+        // Abort any in-progress merge so the main checkout is left clean.
+        try { _exitWorktreeHooks.exec(['merge', '--abort'], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* no merge in progress */ }
+        return {
+          output: cap(`Error: merge of ${branch} into ${targetBranch} failed (likely a conflict) and was aborted — the worktree is preserved at ${worktreePath}. Resolve the conflict manually, or use action:"remove" to discard it.\n${e instanceof Error ? e.message : String(e)}`),
+          isError: true,
+        };
+      }
+      mergedInto = targetBranch;
+    }
+
     try {
       _exitWorktreeHooks.exec(['worktree', 'remove', '--force', worktreePath], { cwd: worktreePath, stdio: 'pipe' });
     } catch (e) {
@@ -211,6 +289,13 @@ export const exitWorktreeTool: ToolDefinition = {
       context._hookManager.executeWorktreeRemove?.({ worktreePath }).catch(() => {});
     }
 
+    if (mergedInto) {
+      // On a merge, the commits are NOT discarded — they were folded into the
+      // original branch. Only forcibly-discarded uncommitted files are a loss.
+      const mergedCommits = discardedCommits > 0 ? ` (${pluralize(discardedCommits, 'commit')} merged)` : '';
+      const lost = discardedFiles > 0 ? ` (discarded ${pluralize(discardedFiles, 'uncommitted file')})` : '';
+      return { output: cap(`Worktree merged into ${mergedInto}${branchLabel}${mergedCommits}${lost} and removed.${returned}`) };
+    }
     const discardSummary = (discardedFiles > 0 || discardedCommits > 0)
       ? ` (discarded ${pluralize(discardedCommits, 'commit')} and ${pluralize(discardedFiles, 'uncommitted file')})`
       : ' (no changes)';
