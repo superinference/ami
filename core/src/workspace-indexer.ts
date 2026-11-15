@@ -156,6 +156,120 @@ async function getGitTrackedFiles(cwd: string): Promise<string[] | null> {
 }
 
 // ---------------------------------------------------------------------------
+// .gitignore honoring for the non-git (glob fallback) discovery branch.
+//
+// When a workspace is NOT a git work tree (or `git` is unavailable), discovery
+// falls back to a raw glob. Without honoring the project's ignore rules, files
+// the author deliberately excluded (secrets, build output, local env dumps)
+// would be read, symbol-indexed, and surfaced in getSummary() — a correctness
+// and information-exposure gap. These helpers translate a `.gitignore` (and
+// `.git/info/exclude`, and nested `.gitignore` files) into tinyglobby `ignore`
+// globs so excluded paths are never read.
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert the contents of a single gitignore-format file into tinyglobby
+ * `ignore` glob patterns (POSIX separators, relative to the index cwd).
+ *
+ * `baseRelDir` is the gitignore file's directory relative to the index root
+ * ('' for the root .gitignore). Patterns in a nested .gitignore are anchored
+ * to that directory, matching git's semantics.
+ *
+ * Supported gitignore semantics (a correct, conservative subset):
+ *  - blank lines and `#` comments are skipped;
+ *  - a leading `!` (negation / un-ignore) line is skipped — we never add an
+ *    exclude for it, so negated paths stay visible (conservative: we under-
+ *    ignore rather than risk hiding a file the author kept);
+ *  - a trailing `/` marks a directory — only its contents are excluded;
+ *  - a leading `/` (or any embedded `/`) anchors the pattern to `baseRelDir`;
+ *  - a bare name (no slash) matches at any depth below `baseRelDir`;
+ *  - `\#` / `\!` escape a literal leading `#` / `!`.
+ * Each pattern yields a file-form glob and a dir-contents-form glob so both a
+ * matching file and a matching directory's descendants are excluded.
+ */
+export function gitignoreToIgnoreGlobs(content: string, baseRelDir = ''): string[] {
+  const prefix = baseRelDir ? baseRelDir.replace(/\\/g, '/').replace(/\/+$/, '') : '';
+  const globs: string[] = [];
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    // Trim trailing whitespace (git ignores it unless backslash-escaped, which
+    // is rare enough to treat as trailing-space-insensitive here); keep leading.
+    let line = rawLine.replace(/\s+$/, '');
+    if (line === '' || line.startsWith('#')) continue;
+    if (line.startsWith('!')) continue; // negation — conservatively un-honored
+    // Unescape a leading escaped '#' or '!'.
+    if (line.startsWith('\\#') || line.startsWith('\\!')) line = line.slice(1);
+
+    const dirOnly = line.endsWith('/');
+    let pat = dirOnly ? line.slice(0, -1) : line;
+    const anchored = pat.startsWith('/');
+    if (anchored) pat = pat.slice(1);
+    if (pat === '') continue;
+
+    const hasSlash = pat.includes('/');
+    // Anchored or path-bearing patterns resolve against baseRelDir; a bare name
+    // matches at any depth below it.
+    let base: string;
+    if (anchored || hasSlash) {
+      base = prefix ? `${prefix}/${pat}` : pat;
+    } else {
+      base = prefix ? `${prefix}/**/${pat}` : `**/${pat}`;
+    }
+
+    if (!dirOnly) globs.push(base);
+    globs.push(`${base}/**`);
+  }
+
+  return globs;
+}
+
+/**
+ * Gather ignore globs from the project's gitignore sources for the glob
+ * fallback branch: the root `.gitignore`, `.git/info/exclude`, and any nested
+ * `.gitignore` files. All IO is best-effort — a missing/unreadable source
+ * simply contributes nothing. Nested discovery uses the same glob seam as the
+ * main scan and is wrapped so a glob failure degrades to "no extra patterns".
+ */
+async function collectGitignoreGlobs(cwd: string, skipGlobs: string[]): Promise<string[]> {
+  const out: string[] = [];
+
+  // Root .gitignore and .git/info/exclude (anchored at the index root).
+  for (const rel of ['.gitignore', path.join('.git', 'info', 'exclude')]) {
+    try {
+      const content = await fsp.readFile(path.join(cwd, rel), 'utf-8');
+      out.push(...gitignoreToIgnoreGlobs(content, ''));
+    } catch { /* absent or unreadable — ignore */ }
+  }
+
+  // Nested .gitignore files (anchored at their own directory).
+  let nested: string[] = [];
+  try {
+    nested = await indexerHooks.glob('**/.gitignore', {
+      cwd,
+      absolute: false,
+      ignore: skipGlobs,
+      dot: true,
+      onlyFiles: true,
+      followSymbolicLinks: false,
+      deep: 10,
+      expandDirectories: false,
+    });
+  } catch { /* glob unavailable/failed — root sources still apply */ }
+
+  for (const relPath of nested) {
+    const posix = relPath.replace(/\\/g, '/');
+    if (posix === '.gitignore') continue; // already handled as a root source
+    const baseRelDir = path.posix.dirname(posix);
+    try {
+      const content = await fsp.readFile(path.join(cwd, relPath), 'utf-8');
+      out.push(...gitignoreToIgnoreGlobs(content, baseRelDir === '.' ? '' : baseRelDir));
+    } catch { /* unreadable — ignore */ }
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // WorkspaceIndexer
 // ---------------------------------------------------------------------------
 
@@ -200,6 +314,11 @@ export class WorkspaceIndexer {
       const extensions = Object.keys(EXT_TO_LANG).map(e => e.slice(1));
       const pattern = `**/*.{${extensions.join(',')}}`;
       const ignorePatterns = Array.from(SKIP_DIRS).map(d => `**/${d}/**`);
+
+      // Honor the project's ignore rules so excluded files (secrets, build
+      // output, local dumps) are never read or exposed via getSummary().
+      const gitignoreGlobs = await collectGitignoreGlobs(this.cwd, ignorePatterns);
+      ignorePatterns.push(...gitignoreGlobs);
 
       try {
         filePaths = await indexerHooks.glob(pattern, {

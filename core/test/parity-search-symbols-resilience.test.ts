@@ -59,6 +59,81 @@ describe('search_symbols – index build timeout', () => {
   });
 });
 
+describe('search_symbols – honors turn cancellation', () => {
+  it('returns promptly without searching when the turn is already aborted', async () => {
+    let searched = false;
+    const base = fakeIndexer({ build: () => Promise.resolve({}) });
+    (base as unknown as { searchSymbols: () => unknown[] }).searchSymbols = () => {
+      searched = true;
+      return [];
+    };
+    indexerHooks.create = () => base;
+
+    const ac = new AbortController();
+    ac.abort();
+    const result = await searchSymbolsTool.execute(
+      { query: 'foo' },
+      { cwd: '/tmp/parity-symbols', abortSignal: ac.signal } as ToolContext,
+    );
+
+    assert.equal(result.isError, true);
+    assert.ok(/aborted/i.test(result.output), result.output);
+    assert.equal(searched, false, 'must not search an aborted turn');
+  });
+
+  it('stops waiting on the build and aborts when the turn is cancelled mid-build', async () => {
+    // Timeout high so only the abort (not the timeout) can end the wait.
+    process.env.AMI_SYMBOL_INDEX_TIMEOUT_MS = '5000';
+    let searched = false;
+    const base = fakeIndexer({ build: () => new Promise(() => { /* never resolves */ }) });
+    (base as unknown as { searchSymbols: () => unknown[] }).searchSymbols = () => {
+      searched = true;
+      return [];
+    };
+    indexerHooks.create = () => base;
+
+    const ac = new AbortController();
+    const started = Date.now();
+    const p = searchSymbolsTool.execute(
+      { query: 'foo' },
+      { cwd: '/tmp/parity-symbols', abortSignal: ac.signal } as ToolContext,
+    );
+    setTimeout(() => ac.abort(), 20);
+    const result = await p;
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed < 2000, `should abort promptly, took ${elapsed}ms`);
+    assert.equal(result.isError, true);
+    assert.ok(/aborted/i.test(result.output), result.output);
+    assert.equal(searched, false, 'must not search after an aborted wait');
+  });
+});
+
+describe('search_symbols – type filter applies after the result cap', () => {
+  it('finds a matching-type symbol ranked past the top-N cap', async () => {
+    // Deterministic ranked master list: 30 functions, then one class ranked 31st.
+    // searchSymbols honors the limit arg, so a pre-filter top-30 slice would hide it.
+    const ranked = [] as Array<{ name: string; type: string; filePath: string; line: number; language: string }>;
+    for (let i = 0; i < 30; i++) {
+      ranked.push({ name: `fn${i}`, type: 'function', filePath: '/tmp/parity-symbols/a.ts', line: i + 1, language: 'ts' });
+    }
+    ranked.push({ name: 'Target', type: 'class', filePath: '/tmp/parity-symbols/a.ts', line: 99, language: 'ts' });
+
+    const base = fakeIndexer({ build: () => Promise.resolve({}) });
+    (base as unknown as { searchSymbols: (q: string, limit: number) => unknown[] }).searchSymbols =
+      (_q: string, limit: number) => ranked.slice(0, limit);
+    (base as unknown as { getStats: () => unknown }).getStats =
+      () => ({ fileCount: 1, symbolCount: ranked.length });
+    indexerHooks.create = () => base;
+
+    const result = await searchSymbolsTool.execute({ query: 'x', type: 'class' }, ctx());
+
+    assert.ok(!result.isError, result.output);
+    assert.ok(result.output.includes('Target'), result.output);
+    assert.ok(result.output.includes('(class)'), result.output);
+  });
+});
+
 describe('search_symbols – build failure is retried', () => {
   it('rebuilds on the next call after a failed build instead of serving a dead index', async () => {
     let calls = 0;

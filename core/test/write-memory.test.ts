@@ -82,6 +82,33 @@ describe('write_memory tool', () => {
     assert.equal(new MemoryManager(tmp).readMemory('leak'), null);
   });
 
+  it('names the detected credential TYPE in the rejection (not just a count, never the value)', async () => {
+    const c = ctx();
+    const r = await writeMemoryTool.execute(
+      { name: 'leak3', content: 'remember this: ghp_abcdefghijklmnopqrstuvwxyz0123456789' },
+      c,
+    );
+    assert.equal(r.isError, true);
+    // The matched rule TYPE (brand-correct label) is surfaced so the model knows
+    // what kind of secret to remove — this discriminates the fix from the old
+    // count-only message ("API key / token / credential").
+    assert.match(String(r.output), /GitHub PAT/);
+    // The secret value itself must still NEVER be echoed.
+    assert.doesNotMatch(String(r.output), /ghp_abcdefghij/);
+    assert.equal(new MemoryManager(tmp).readMemory('leak3'), null);
+  });
+
+  it('lists each distinct credential type for mixed matches', async () => {
+    const c = ctx();
+    const r = await writeMemoryTool.execute(
+      { name: 'leak4', content: 'sk-ant-abcdefghijklmnopqrstuvwxyz0123\nghp_abcdefghijklmnopqrstuvwxyz0123456789' },
+      c,
+    );
+    assert.equal(r.isError, true);
+    assert.match(String(r.output), /Anthropic Key/);
+    assert.match(String(r.output), /GitHub PAT/);
+  });
+
   it('pluralizes the secret count for multiple matches', async () => {
     const c = ctx();
     const r = await writeMemoryTool.execute(

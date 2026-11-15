@@ -82,12 +82,25 @@ export interface ExecCommandOptions {
   onData?: (chunk: string) => void;
   env?: NodeJS.ProcessEnv;
   stallTimeoutMs?: number;
+  /**
+   * Optional string fed to the child process's stdin (then closed). When
+   * omitted, stdin is `'ignore'`d as before. Lets callers pipe a payload into a
+   * command (e.g. `git apply`, `patch`, `gpg`) without shell interpolation.
+   */
+  input?: string;
 }
 
 export interface ExecCommandResult {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  /**
+   * The terminating signal (e.g. `'SIGSEGV'`, `'SIGKILL'`) when the process was
+   * killed by one, else `null`. Lets callers distinguish a signal-kill / crash
+   * from a timeout or clean exit, both of which otherwise surface as
+   * `exitCode: null`.
+   */
+  signal: NodeJS.Signals | null;
 }
 
 /**
@@ -102,12 +115,12 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS } = options;
+  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input } = options;
 
   return new Promise<ExecCommandResult>((resolve) => {
     // If already aborted, short-circuit
     if (abortSignal?.aborted) {
-      resolve({ stdout: '', stderr: 'Aborted', exitCode: null });
+      resolve({ stdout: '', stderr: 'Aborted', exitCode: null, signal: null });
       return;
     }
 
@@ -116,17 +129,33 @@ export function execCommand(
     const shellArgs = isWindows ? ['/c', command] : ['-c', command];
 
     const proc = shellHooks.spawn(shell, shellArgs, {
+      // Pipe stdin only when the caller supplies input; otherwise ignore it so
+      // interactive prompts are still detected-and-killed by stall detection.
+      stdio: [input != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
       detached: !isWindows,
       ...(env ? { env } : {}),
     });
+
+    // Feed the caller-provided payload to the child's stdin, then close it.
+    // `input != null` forces stdio[0]='pipe' above, so proc.stdin is present.
+    if (input != null) {
+      const stdin = proc.stdin!;
+      // A child that exits before reading triggers EPIPE on write/end; swallow
+      // it so a one-shot stdin feed never rejects the exec promise.
+      stdin.on('error', () => { /* EPIPE: child closed stdin early */ });
+      stdin.end(input);
+    }
+
+    // stdio positions 1 and 2 are always 'pipe', so these streams are present.
+    const procStdout = proc.stdout!;
+    const procStderr = proc.stderr!;
 
     const stdoutBuf = createOutputBuffer();
     const stderrBuf = createOutputBuffer();
     let settled = false;
 
-    const finish = (exitCode: number | null): void => {
+    const finish = (exitCode: number | null, signal: NodeJS.Signals | null = null): void => {
       if (settled) return;
       settled = true;
       cleanUp();
@@ -134,6 +163,7 @@ export function execCommand(
         stdout: stdoutBuf.value(),
         stderr: stderrBuf.value(),
         exitCode,
+        signal,
       });
     };
 
@@ -175,7 +205,7 @@ export function execCommand(
     };
 
     // --- Stream stdout ---
-    proc.stdout.on('data', (data: Buffer) => {
+    procStdout.on('data', (data: Buffer) => {
       const chunk = data.toString();
       stdoutBuf.push(chunk);
       lastDataTime = Date.now();
@@ -183,7 +213,7 @@ export function execCommand(
     });
 
     // --- Stream stderr ---
-    proc.stderr.on('data', (data: Buffer) => {
+    procStderr.on('data', (data: Buffer) => {
       const chunk = data.toString();
       stderrBuf.push(chunk);
       lastDataTime = Date.now();
@@ -191,16 +221,19 @@ export function execCommand(
     });
 
     // Swallow EBADF errors on pipe streams (see process-manager.ts for details)
-    proc.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    procStdout.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code !== 'EBADF') { stderrBuf.push(err.message); finish(null); }
     });
-    proc.stderr.on('error', (err: NodeJS.ErrnoException) => {
+    procStderr.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code !== 'EBADF') { stderrBuf.push(err.message); finish(null); }
     });
 
     // --- Process exit ---
-    proc.on('close', (code) => {
-      finish(code);
+    // Node's 'close' passes (code, signal): a signal-killed child reports
+    // code === null with signal set (e.g. 'SIGSEGV'), so we surface the signal
+    // to distinguish a crash from a clean exit or a timeout.
+    proc.on('close', (code, signal) => {
+      finish(code, signal);
     });
 
     proc.on('error', (err) => {
