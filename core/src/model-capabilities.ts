@@ -132,7 +132,29 @@ export function supportsOneMillionContextBeta(modelId: string): boolean {
   return /claude-sonnet-(?:[4-9]|\d{2,})/i.test(modelId);
 }
 
+/**
+ * Operator env-var override that caps the EFFECTIVE context window used for local
+ * decisions (compaction timing, output fitting, model-switch warnings), regardless
+ * of the model's published window or any 1M-beta detection. Set
+ * `SUPERINFERENCE_MAX_CONTEXT_TOKENS` to a positive integer to clamp the window —
+ * useful when the endpoint serves a 1M window but a smaller budget is wanted for
+ * cost/latency control. Returns `undefined` when unset, non-numeric, or <= 0 so the
+ * normal resolution path runs. Read at call time so it can be toggled per
+ * process/test. Mirrors Claude's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` override.
+ */
+export function getContextWindowOverride(): number | undefined {
+  const raw = process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS;
+  if (!raw) return undefined;
+  const parsed = parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
 export function getContextWindow(modelId: string): number {
+  // Operator override takes precedence over all detection (table, 1M marker/beta),
+  // so a smaller local budget can be enforced even on a 1M-capable endpoint.
+  const override = getContextWindowOverride();
+  if (override !== undefined) return override;
   const lower = modelId.toLowerCase();
   // Grant the 1M window either when the id carries an explicit [1m]/-1m marker,
   // OR when the model is one for which the provider unconditionally sends the
@@ -177,6 +199,37 @@ export function readAdvertisedContextWindow(record: Record<string, unknown>): nu
   const sources = [record, ...(nested && typeof nested === 'object' && !Array.isArray(nested) ? [nested as Record<string, unknown>] : [])];
   for (const source of sources) {
     for (const key of ADVERTISED_CONTEXT_KEYS) {
+      const found = positiveTokenCount(source[key]);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Field names a `/models` record may use for the completion (max-output) cap.
+ * Deliberately disjoint from ADVERTISED_CONTEXT_KEYS: `max_tokens` is the output
+ * ceiling (Anthropic/OpenAI), never the context window. OpenRouter/Gemini-style
+ * payloads use `max_output_tokens` / `max_completion_tokens` / `output_token_limit`.
+ */
+const ADVERTISED_OUTPUT_KEYS = [
+  'max_tokens',
+  'max_output_tokens',
+  'max_completion_tokens',
+  'output_token_limit',
+  'outputTokenLimit',
+  'maxOutputTokens',
+] as const;
+
+/**
+ * Read a max-output-token cap from one `/models` record (top-level or nested
+ * `model_info`). Returns undefined when no positive value is advertised.
+ */
+export function readAdvertisedMaxOutputTokens(record: Record<string, unknown>): number | undefined {
+  const nested = record.model_info;
+  const sources = [record, ...(nested && typeof nested === 'object' && !Array.isArray(nested) ? [nested as Record<string, unknown>] : [])];
+  for (const source of sources) {
+    for (const key of ADVERTISED_OUTPUT_KEYS) {
       const found = positiveTokenCount(source[key]);
       if (found !== undefined) return found;
     }
@@ -418,12 +471,22 @@ const REASONING_MODELS: Array<{
 
 const dynamicCapabilities = new Map<string, ModelCapabilities | null>();
 
+/**
+ * Max-output-token caps learned from a live `/models` payload, keyed by the
+ * lowercased full model id. Checked (exact-match) ahead of the static family
+ * table in getMaxOutputTokens so a provider-advertised completion cap overrides
+ * the built-in estimate. Populated by discoverFromModelList; cleared alongside
+ * the dynamic capability registry.
+ */
+const dynamicOutputCaps = new Map<string, number>();
+
 export function registerModelCapabilities(modelId: string, caps: ModelCapabilities | null): void {
   dynamicCapabilities.set(modelId.toLowerCase(), caps);
 }
 
 export function clearDynamicCapabilities(): void {
   dynamicCapabilities.clear();
+  dynamicOutputCaps.clear();
 }
 
 const OPENAI_REASONING_PATTERN = /^o[1-9]($|-)/;
@@ -472,9 +535,11 @@ export function requiresResponsesAPI(modelId: string): boolean {
 export function discoverFromModelList(records: Record<string, unknown>[]): {
   registered: string[];
   contextWindows: Record<string, number>;
+  outputCaps: Record<string, number>;
 } {
   const registered: string[] = [];
   const contextWindows: Record<string, number> = {};
+  const outputCaps: Record<string, number> = {};
   for (const record of records) {
     const id = String(record.id ?? record.name ?? '');
     if (!id) continue;
@@ -483,13 +548,20 @@ export function discoverFromModelList(records: Record<string, unknown>[]): {
       CONTEXT_WINDOWS[id] = window;
       contextWindows[id] = window;
     }
+    // Learn the completion cap from the live payload so fitOutputTokens clamps to
+    // what the endpoint actually accepts, overriding the static family estimate.
+    const outputCap = readAdvertisedMaxOutputTokens(record);
+    if (outputCap !== undefined) {
+      dynamicOutputCaps.set(id.toLowerCase(), outputCap);
+      outputCaps[id] = outputCap;
+    }
     if (!dynamicCapabilities.has(id.toLowerCase())) {
       const caps = classifyOpenAIModel(id);
       dynamicCapabilities.set(id.toLowerCase(), caps);
       registered.push(id);
     }
   }
-  return { registered, contextWindows };
+  return { registered, contextWindows, outputCaps };
 }
 
 export function getModelCapabilities(modelId: string): ModelCapabilities | null {
@@ -594,6 +666,9 @@ export function getMaxOutputTokens(modelId: string): number | undefined {
   const registered = getModelCapabilities(modelId)?.maxOutputTokens;
   if (registered !== undefined && registered > 0) return registered;
   const lower = modelId.toLowerCase();
+  // A cap learned from the live /models payload overrides the static family table.
+  const discovered = dynamicOutputCaps.get(lower);
+  if (discovered !== undefined) return discovered;
   for (const [key, cap] of Object.entries(OUTPUT_TOKEN_CAPS)) {
     if (lower.includes(key)) return cap;
   }
