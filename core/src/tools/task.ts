@@ -17,6 +17,19 @@ const AUTO_BG_MS = 120_000; // eslint-disable-line @typescript-eslint/no-unused-
 
 const SUBAGENT_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
+/**
+ * Parse a positive-integer env value, falling back to `fallback` when the value
+ * is absent, non-numeric, zero, or negative. A bare `parseInt(env) || fallback`
+ * only catches NaN and zero — it lets a NEGATIVE value through unchanged, and a
+ * negative stall timeout makes `setTimeout` fire effectively immediately, so
+ * every subagent would be killed as "stalled" the instant it starts. Rejecting
+ * any non-positive value closes that footgun while keeping the same default.
+ */
+export function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
+  const n = parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 /** Turn budget for a `fork` child when its agent definition sets none (mirrors
  *  Claude Code's FORK_AGENT maxTurns:200 — a context-inheriting clone needs a
  *  generous ceiling because it continues the parent's full task). */
@@ -176,16 +189,22 @@ export const MODEL_ALIASES: Record<string, string> = {
  */
 export function resolveSubagentModel(requested: string | undefined, parentModel: string | undefined): string | undefined {
   if (!requested) return undefined;
+  // Normalize the request for sentinel/alias MATCHING only: a provider tool-call
+  // or an agent-definition `model` field may emit a family alias or the inherit
+  // sentinel in any case and with stray surrounding whitespace ("Opus", " INHERIT ").
+  // A full model name or unknown value is still returned verbatim (the final
+  // branch), so exact provider model IDs are never lower-cased or trimmed away.
+  const normalized = requested.trim().toLowerCase();
   // 'inherit' is an explicit sentinel meaning "run on the SAME model as the main
   // conversation" (Claude's default subagent model). Resolve it to the parent's
   // exact model string — never to a generic alias default — so a parent on
   // claude-opus-4-8 that spawns task({ model: 'inherit' }) keeps the child there.
-  if (requested === INHERIT_MODEL_SENTINEL) return parentModel;
-  const isFamilyAlias = Object.prototype.hasOwnProperty.call(MODEL_ALIASES, requested);
-  if (isFamilyAlias && parentModel && parentModel.toLowerCase().includes(requested.toLowerCase())) {
+  if (normalized === INHERIT_MODEL_SENTINEL) return parentModel;
+  const isFamilyAlias = Object.prototype.hasOwnProperty.call(MODEL_ALIASES, normalized);
+  if (isFamilyAlias && parentModel && parentModel.toLowerCase().includes(normalized)) {
     return parentModel;
   }
-  return MODEL_ALIASES[requested] || requested;
+  return MODEL_ALIASES[normalized] || requested;
 }
 
 /**
@@ -737,7 +756,7 @@ export const taskTool: ToolDefinition = {
         let sawError = false;
         const fd = fs.openSync(outputPath, 'w');
         const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
-        const bgStallMs = parseInt(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS ?? '', 10) || SUBAGENT_STALL_TIMEOUT_MS;
+        const bgStallMs = parsePositiveIntEnv(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS, SUBAGENT_STALL_TIMEOUT_MS);
         let bgStallTimer: ReturnType<typeof setTimeout> | null = null;
         let bgStalled = false;
         const resetBgStall = () => {
@@ -866,7 +885,7 @@ export const taskTool: ToolDefinition = {
     let exitReason: import('../types').ExitReason | undefined;
     let sawAbortError = false;
 
-    const stallTimeoutMs = parseInt(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS ?? '', 10) || SUBAGENT_STALL_TIMEOUT_MS;
+    const stallTimeoutMs = parsePositiveIntEnv(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS, SUBAGENT_STALL_TIMEOUT_MS);
     let stallTimer: ReturnType<typeof setTimeout> | null = null;
     let stalled = false;
     const resetStallTimer = () => {
