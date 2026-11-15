@@ -26,7 +26,13 @@ describe('cronDeleteTool', () => {
   it('has correct name and schema', () => {
     assert.equal(cronDeleteTool.name, 'cron_delete');
     assert.equal(cronDeleteTool.isReadOnly, false);
-    assert.deepEqual(cronDeleteTool.inputSchema.required, ['id']);
+    // id is no longer the single required field: id | ids | all are alternative
+    // selectors validated at runtime, so the schema advertises all four optional props.
+    assert.equal(cronDeleteTool.inputSchema.required, undefined);
+    assert.ok(cronDeleteTool.inputSchema.properties?.id);
+    assert.ok(cronDeleteTool.inputSchema.properties?.ids);
+    assert.ok(cronDeleteTool.inputSchema.properties?.all);
+    assert.ok(cronDeleteTool.inputSchema.properties?.ignoreMissing);
   });
 
   it('returns error when id is empty', async () => {
