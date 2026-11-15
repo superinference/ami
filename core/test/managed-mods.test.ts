@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   isModAllowed,
+  isModBlockedByPolicy,
+  getManagedPluginNames,
   parseModId,
   normalizeModName,
   modNamesMatch,
@@ -110,6 +112,72 @@ describe('isModAllowed', () => {
     };
     const result = isModAllowed(userMod, policy);
     assert.equal(result.allowed, false);
+  });
+});
+
+describe('isModBlockedByPolicy (unconditional org force-disable)', () => {
+  it('returns true when enabledPlugins[id] === false', () => {
+    const policy: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'my-mod@local': false } };
+    assert.equal(isModBlockedByPolicy('my-mod@local', policy), true);
+  });
+
+  it('returns false for a true / allow-array / absent entry', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: false,
+      enabledPlugins: { 'a@m': true, 'b@m': ['owner/repo'] },
+    };
+    assert.equal(isModBlockedByPolicy('a@m', policy), false);
+    assert.equal(isModBlockedByPolicy('b@m', policy), false);
+    assert.equal(isModBlockedByPolicy('missing@m', policy), false);
+  });
+
+  it('returns false for null/undefined policy', () => {
+    assert.equal(isModBlockedByPolicy('x@m', null), false);
+    assert.equal(isModBlockedByPolicy('x@m', undefined), false);
+  });
+
+  it('force-disables via isModAllowed even when allowManagedModsOnly is OFF', () => {
+    const policy: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'my-mod@local': false } };
+    const result = isModAllowed(userMod, policy);
+    assert.equal(result.allowed, false);
+    assert.match(result.reason!, /disabled by your organization's policy/);
+  });
+
+  it('force-disables a builtin/managed mod too (no tier escape)', () => {
+    const policy: ManagedModsPolicy = { allowManagedModsOnly: true, enabledPlugins: { 'org-tool@managed': false } };
+    assert.equal(isModAllowed(managedMod, policy).allowed, false);
+  });
+
+  it('ManagedModsEnforcer.shouldBlock force-disables with allowManagedModsOnly OFF', () => {
+    const policy: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'my-mod@local': false } };
+    const verdict = ManagedModsEnforcer.shouldBlock(userMod, policy);
+    assert.equal(verdict.blocked, true);
+    assert.match(verdict.reason!, /disabled by your organization's policy/);
+  });
+
+  it('ManagedModsEnforcer.shouldBlock still allows a non-listed mod with allowManagedModsOnly OFF', () => {
+    const policy: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'other@m': false } };
+    assert.deepEqual(ManagedModsEnforcer.shouldBlock(userMod, policy), { blocked: false });
+  });
+});
+
+describe('getManagedPluginNames (org-locked name set)', () => {
+  it('collects every boolean (true OR false) entry, excludes allow-arrays', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: false,
+      enabledPlugins: { 'on@m': true, 'off@m': false, 'arr@m': ['owner/repo'] },
+    };
+    const names = getManagedPluginNames(policy);
+    assert.equal(names.has('on@m'), true);
+    assert.equal(names.has('off@m'), true);
+    assert.equal(names.has('arr@m'), false);
+    assert.equal(names.size, 2);
+  });
+
+  it('returns an empty set for null/undefined or empty policy', () => {
+    assert.equal(getManagedPluginNames(null).size, 0);
+    assert.equal(getManagedPluginNames(undefined).size, 0);
+    assert.equal(getManagedPluginNames({ allowManagedModsOnly: false }).size, 0);
   });
 });
 

@@ -13,7 +13,46 @@ export interface ManagedModsPolicy {
   appendPlugins?: string[];
 }
 
+/**
+ * Unconditional org force-disable predicate (Claude parity: `isPluginBlockedByPolicy`).
+ * A managed `enabledPlugins[id] === false` entry force-disables that plugin/mod at
+ * EVERY scope and chokepoint — install, enable, AND load — INDEPENDENT of
+ * `allowManagedModsOnly`. Any other value (`true`, a `string[]` allow-array, or an
+ * absent entry) is NOT a block. `enabledPlugins` is a {@link ManagedModsPolicy} field
+ * sourced only from managed config, so a `false` here provably came from org policy —
+ * the single source of truth consulted at the install/enable/load chokepoints.
+ */
+export function isModBlockedByPolicy(id: string, policy: ManagedModsPolicy | null | undefined): boolean {
+  return policy?.enabledPlugins?.[id] === false;
+}
+
+/**
+ * The set of plugin/mod ids LOCKED by org policy: every `enabledPlugins` entry whose
+ * value is a boolean (`true` OR `false`). A pinned-enabled and a pinned-disabled mod
+ * are equally immutable — the user may not enable/disable/remove either. The legacy
+ * owner/repo ARRAY (allow-array) form is explicitly NOT protected (it vouches for a
+ * source, it does not lock the name). Parity: Claude's `getManagedPluginNames`.
+ */
+export function getManagedPluginNames(policy: ManagedModsPolicy | null | undefined): Set<string> {
+  const names = new Set<string>();
+  if (!policy?.enabledPlugins) return names;
+  for (const [id, value] of Object.entries(policy.enabledPlugins)) {
+    if (typeof value === 'boolean') names.add(id);
+  }
+  return names;
+}
+
 export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed: boolean; reason?: string } {
+  // Unconditional org force-disable (`enabledPlugins[id] === false`) is evaluated
+  // FIRST, before the allow-only short-circuit: an org that explicitly denies ONE
+  // plugin blocks it at every scope even while permitting user mods generally.
+  if (isModBlockedByPolicy(mod.id, policy)) {
+    return {
+      allowed: false,
+      reason: `${mod.name} is disabled by your organization's policy (enabledPlugins["${mod.id}"] = false)`,
+    };
+  }
+
   if (!policy.allowManagedModsOnly) return { allowed: true };
 
   if (mod.tier === 'builtin' || mod.tier === 'managed') {
@@ -101,7 +140,14 @@ export class ManagedModsEnforcer {
   }
 
   static shouldBlock(mod: ModInfo, policy: ManagedModsPolicy | null): { blocked: boolean; reason?: string } {
-    if (!policy || !policy.allowManagedModsOnly) return { blocked: false };
+    if (!policy) return { blocked: false };
+    // Force-disable (`enabledPlugins[id] === false`) blocks even when
+    // allowManagedModsOnly is off — it is the org denylist, honored unconditionally.
+    if (isModBlockedByPolicy(mod.id, policy)) {
+      const result = isModAllowed(mod, policy);
+      return { blocked: true, reason: result.reason };
+    }
+    if (!policy.allowManagedModsOnly) return { blocked: false };
     const result = isModAllowed(mod, policy);
     return { blocked: !result.allowed, reason: result.reason };
   }

@@ -71,6 +71,17 @@ export interface ProjectConfig {
    * Parity: Claude Code's `allowManagedHooksOnly` policy setting.
    */
   allowManagedHooksOnly?: boolean;
+  /**
+   * Managed plugin policy map (Claude parity: `enabledPlugins`). Keyed by plugin id
+   * (`name@marketplace` or a bare name for direct installs). A `false` value FORCE-
+   * DISABLES that plugin at every scope and chokepoint — install, enable, and load —
+   * independent of {@link allowManagedModsOnly}; a `true`/`string[]` value vouches for
+   * it under allow-only mode. A {@link MANAGED_ONLY_KEYS} entry — only a managed/
+   * enterprise config tier can set it; project/local/env/cli can never flip it.
+   */
+  enabledPlugins?: Record<string, boolean | string[]>;
+  /** Managed allow-only mode for plugins/mods (Claude parity: load only vouched mods). */
+  allowManagedModsOnly?: boolean;
   /** MCP allowlist: when non-empty, only these MCP servers may be connected. */
   allowedMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
@@ -615,6 +626,16 @@ export function mergeConfigs(
   }
   if (managedConfig?.allowManagedHooksOnly) {
     merged.allowManagedHooksOnly = true;
+  }
+  // Managed plugin policy is MANAGED-authoritative: the per-field loop above
+  // deliberately omits enabledPlugins/allowManagedModsOnly, so a project/local/env/
+  // cli config can neither force-disable a plugin nor relax the allow-only mode —
+  // managed policy is the sole source. Parity: Claude Code's enabledPlugins policy.
+  if (managedConfig?.enabledPlugins) {
+    merged.enabledPlugins = managedConfig.enabledPlugins;
+  }
+  if (managedConfig?.allowManagedModsOnly) {
+    merged.allowManagedModsOnly = true;
   }
   // Managed MCP allowlist is also authoritative.
   if (managedConfig?.allowedMcpServers) {

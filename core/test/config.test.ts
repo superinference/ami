@@ -560,6 +560,27 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
     const managedOff = mergeConfigs({}, {}, null, null, null, { allowManagedHooksOnly: false });
     assert.equal(managedOff.allowManagedHooksOnly, undefined);
   });
+  it('honors managed enabledPlugins/allowManagedModsOnly and ignores non-managed attempts', () => {
+    // managed sets the plugin policy → merged carries it authoritatively.
+    const managedOn = mergeConfigs({}, {}, null, null, null, {
+      enabledPlugins: { 'evil@m': false, 'ok@m': true },
+      allowManagedModsOnly: true,
+    });
+    assert.deepEqual(managedOn.enabledPlugins, { 'evil@m': false, 'ok@m': true });
+    assert.equal(managedOn.allowManagedModsOnly, true);
+    // A project/local/env/cli config can NEVER set the plugin policy (managed-only keys).
+    const nonManaged = mergeConfigs(
+      { enabledPlugins: { 'x@m': false }, allowManagedModsOnly: true } as Partial<ProjectConfig>, // cli (ignored)
+      { enabledPlugins: { 'x@m': false }, allowManagedModsOnly: true } as Partial<ProjectConfig>, // env (ignored)
+      { enabledPlugins: { 'x@m': false }, allowManagedModsOnly: true },                           // project (ignored)
+      { enabledPlugins: { 'x@m': false }, allowManagedModsOnly: true },                           // global (ignored)
+      { enabledPlugins: { 'x@m': false }, allowManagedModsOnly: true },                           // local (ignored)
+      null,                                                                                       // managed absent
+    );
+    assert.equal(nonManaged.enabledPlugins, undefined,
+      'only the managed tier may set the plugin force-disable policy');
+    assert.equal(nonManaged.allowManagedModsOnly, undefined);
+  });
   it('merges bashOutputMaxChars from project config (overridable)', () => {
     const merged = mergeConfigs({}, {}, { bashOutputMaxChars: 4096 }, null);
     assert.equal(merged.bashOutputMaxChars, 4096);
