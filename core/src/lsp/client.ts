@@ -162,7 +162,15 @@ export class LSPClient implements DiagnosticSource {
       // THEN flip initialized. Matches the LSP spec ordering so servers like
       // gopls/rust-analyzer accept subsequent didOpen/didChange.
       const workspaceFolder = config.workspaceFolder ?? cwd;
-      const result = await this.rawRequest(conn, 'initialize', this.initializeParams(workspaceFolder, config));
+      // Bound the initialize handshake by the server's configured startupTimeout
+      // (falling back to the default request timeout) so a slow/hanging server
+      // start fails within the operator-configured window.
+      const result = await this.rawRequest(
+        conn,
+        'initialize',
+        this.initializeParams(workspaceFolder, config),
+        config.startupTimeout ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      );
       conn.capabilities = (result as { capabilities?: unknown })?.capabilities;
       this.rawNotify(conn, 'initialized', {});
       conn.initialized = true;
@@ -497,6 +505,9 @@ export class LSPClient implements DiagnosticSource {
         entry.reject(new Error(`LSP server for "${language}" exited`));
       }
       conn.pending.clear();
+      // Kill the child so a server that failed to initialize (e.g. handshake
+      // timeout) does not leak as an orphaned process. Harmless if already gone.
+      try { conn.proc.kill(); } catch { /* already dead */ }
     }
     this.servers.delete(language);
     this.clearOpenedForLanguage(language);

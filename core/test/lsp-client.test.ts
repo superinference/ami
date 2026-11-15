@@ -79,9 +79,14 @@ process.stdin.on('data', (c) => {
 
 const CRASH_SERVER = 'process.exit(1);\n';
 
+// Spawns and stays alive but NEVER answers the initialize request — used to prove
+// the configured startupTimeout bounds the handshake.
+const SILENT_SERVER = 'process.stdin.resume(); process.stdin.on("data", () => {});\n';
+
 let dir: string;
 let mockScript: string;
 let crashScript: string;
+let silentScript: string;
 let mockFile: string;
 
 /** A client wired to always pass the `which` check and never actually sleep. */
@@ -98,14 +103,17 @@ before(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-e2e-'));
   mockScript = path.join(dir, 'mock-server.cjs');
   crashScript = path.join(dir, 'crash-server.cjs');
+  silentScript = path.join(dir, 'silent-server.cjs');
   mockFile = path.join(dir, 'sample.mock');
   fs.writeFileSync(mockScript, MOCK_SERVER);
   fs.writeFileSync(crashScript, CRASH_SERVER);
+  fs.writeFileSync(silentScript, SILENT_SERVER);
   fs.writeFileSync(mockFile, 'clean content\n');
   registerLspServers({
     mocklang: { command: process.execPath, args: [mockScript], extensionToLanguage: { '.mock': 'mocklang' } },
     envlang: { command: process.execPath, args: [mockScript], env: { MY_CUSTOM: 'custom-val' }, extensionToLanguage: { '.env1': 'envlang' } },
     crashlang: { command: process.execPath, args: [crashScript], maxRestarts: 1, extensionToLanguage: { '.crash': 'crashlang' } },
+    silentlang: { command: process.execPath, args: [silentScript], startupTimeout: 200, extensionToLanguage: { '.silent': 'silentlang' } },
   });
 });
 
@@ -124,6 +132,18 @@ describe('LSPClient e2e: initialize handshake + request/response round-trip', ()
     assert.equal(ok, true);
     assert.equal(client.isInitialized('mocklang'), true);
     assert.deepEqual(client.getCapabilities('mocklang'), { hoverProvider: true, definitionProvider: true, callHierarchyProvider: true });
+  });
+
+  it('bounds the initialize handshake by the configured startupTimeout', async () => {
+    client = makeClient();
+    const t0 = Date.now();
+    const ok = await client.ensureServer('silentlang', dir);
+    const elapsed = Date.now() - t0;
+    // The silent server never answers initialize; the 200ms startupTimeout must
+    // bound the handshake, so ensureServer fails well within the 15s default.
+    assert.equal(ok, false);
+    assert.equal(client.isInitialized('silentlang'), false);
+    assert.ok(elapsed < 5000, `expected failure within the startupTimeout window, took ${elapsed}ms`);
   });
 
   it('round-trips a request and correlates the result by id', async () => {
