@@ -17,7 +17,10 @@ describe('SECURITY_PATTERNS', () => {
     for (const p of SECURITY_PATTERNS) {
       assert.ok(p.id, 'missing id');
       assert.ok(p.regex, 'missing regex');
-      assert.ok(p.severity === 'high' || p.severity === 'medium', `invalid severity: ${p.severity}`);
+      assert.ok(
+        p.severity === 'high' || p.severity === 'medium' || p.severity === 'low',
+        `invalid severity: ${p.severity}`,
+      );
       assert.ok(p.message, 'missing message');
     }
   });
@@ -277,5 +280,117 @@ describe('scanCodeForSecurityPatterns — no false positives', () => {
   it('does not flag exec.Command without shell in Go', () => {
     const findings = scanCodeForSecurityPatterns('cmd := exec.Command("ls", "-la")', 'main.go');
     assert.ok(!findings.some(f => f.patternId === 'go_exec_shell'));
+  });
+});
+
+describe('scanCodeForSecurityPatterns — hardcoded secrets (parity: Hardcoded secrets / credential detection)', () => {
+  it('detects an AWS access key id', () => {
+    const findings = scanCodeForSecurityPatterns('const k = "AKIAIOSFODNN7EXAMPLE";', 'config.ts');
+    const hit = findings.find(f => f.patternId === 'hardcoded_credential');
+    assert.ok(hit, 'AWS AKIA key must be flagged');
+    assert.equal(hit!.severity, 'high');
+    assert.equal(hit!.category, 'secrets');
+    assert.ok(hit!.remediation && /rotate/i.test(hit!.remediation));
+  });
+
+  it('detects an OpenAI-style sk- key', () => {
+    const findings = scanCodeForSecurityPatterns('key = "sk-abcdefghijklmnopqrstuvwxyz0123"', 'client.py');
+    assert.ok(findings.some(f => f.patternId === 'hardcoded_credential'));
+  });
+
+  it('detects a GitHub personal access token', () => {
+    const findings = scanCodeForSecurityPatterns(
+      'const t = "ghp_0123456789ABCDEFabcdef0123456789ABCD";',
+      'ci.ts',
+    );
+    assert.ok(findings.some(f => f.patternId === 'hardcoded_credential'));
+  });
+
+  it('detects an inline PEM private key header', () => {
+    const findings = scanCodeForSecurityPatterns(
+      'const pem = "-----BEGIN RSA PRIVATE KEY-----";',
+      'keys.ts',
+    );
+    assert.ok(findings.some(f => f.patternId === 'hardcoded_credential'));
+  });
+
+  it('detects a credential-like assignment to a string literal', () => {
+    const findings = scanCodeForSecurityPatterns('const password = "hunter2hunter";', 'auth.ts');
+    const hit = findings.find(f => f.patternId === 'hardcoded_secret');
+    assert.ok(hit, 'password literal must be flagged');
+    assert.equal(hit!.severity, 'high');
+    assert.equal(hit!.category, 'secrets');
+  });
+
+  it('detects an api_key object-literal assignment', () => {
+    const findings = scanCodeForSecurityPatterns("{ api_key: 'a1b2c3d4e5f6g7' }", 'settings.ts');
+    assert.ok(findings.some(f => f.patternId === 'hardcoded_secret'));
+  });
+
+  it('does NOT flag a credential read from an env var (no string literal)', () => {
+    const findings = scanCodeForSecurityPatterns('const token = process.env.TOKEN;', 'env.ts');
+    assert.ok(!findings.some(f => f.patternId === 'hardcoded_secret'));
+  });
+
+  it('does NOT flag an interpolated/templated secret value', () => {
+    const findings = scanCodeForSecurityPatterns('const secret = "${SECRET}";', 'env.ts');
+    assert.ok(!findings.some(f => f.patternId === 'hardcoded_secret'));
+  });
+
+  it('does NOT flag a credential-like assignment in documentation', () => {
+    const findings = scanCodeForSecurityPatterns('password = "example-placeholder"', 'README.md');
+    assert.ok(!findings.some(f => f.patternId === 'hardcoded_secret'));
+  });
+});
+
+describe('scanCodeForSecurityPatterns — low-severity tier (parity: low severity + remediation/category fields)', () => {
+  it('flags MD5 hashing as a low-severity defense-in-depth finding', () => {
+    const findings = scanCodeForSecurityPatterns('h = hashlib.md5(data).hexdigest()', 'hash.py');
+    const hit = findings.find(f => f.patternId === 'weak_hash_algorithm');
+    assert.ok(hit, 'MD5 usage must be flagged');
+    assert.equal(hit!.severity, 'low');
+    assert.equal(hit!.category, 'weak-crypto');
+    assert.ok(hit!.remediation && /argon2|bcrypt|scrypt|SHA-256/i.test(hit!.remediation));
+  });
+
+  it('flags createHash("sha1") as weak', () => {
+    const findings = scanCodeForSecurityPatterns("const d = createHash('sha1').update(x);", 'digest.ts');
+    assert.ok(findings.some(f => f.patternId === 'weak_hash_algorithm'));
+  });
+
+  it('does NOT flag SHA-256 hashing', () => {
+    const findings = scanCodeForSecurityPatterns('h = hashlib.sha256(data)', 'hash.py');
+    assert.ok(!findings.some(f => f.patternId === 'weak_hash_algorithm'));
+  });
+
+  it('exposes the low severity tier through the SECURITY_PATTERNS catalog', () => {
+    assert.ok(SECURITY_PATTERNS.some(p => p.severity === 'low'));
+  });
+});
+
+describe('SecurityFinding — category/remediation propagation', () => {
+  it('copies category and remediation from the pattern into the finding', () => {
+    const findings = scanCodeForSecurityPatterns('const x = eval(userInput);', 'app.ts');
+    const hit = findings.find(f => f.patternId === 'eval_injection');
+    assert.ok(hit);
+    assert.equal(hit!.category, 'code-injection');
+    assert.ok(hit!.remediation && hit!.remediation.length > 0);
+  });
+
+  it('propagates category/remediation through the added-lines scanner too', () => {
+    const before = 'const a = 1;\n';
+    const after = 'const a = 1;\nconst t = "ghp_0123456789ABCDEFabcdef0123456789ABCD";\n';
+    const findings = scanAddedLinesForPatterns(before, after, 'ci.ts');
+    const hit = findings.find(f => f.patternId === 'hardcoded_credential');
+    assert.ok(hit);
+    assert.equal(hit!.category, 'secrets');
+    assert.ok(hit!.remediation && /rotate/i.test(hit!.remediation));
+    assert.equal(hit!.line, 2);
+  });
+
+  it('every pattern carries a category', () => {
+    for (const p of SECURITY_PATTERNS) {
+      assert.ok(p.category, `pattern ${p.id} is missing a category`);
+    }
   });
 });
