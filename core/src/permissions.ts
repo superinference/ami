@@ -251,12 +251,20 @@ const SAFE_COMMANDS = new Set([
 const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean }> = {
   jq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
-    blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L']),
+    blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L', '--library-path']),
   },
   yq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
-    blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L']),
+    blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L', '--library-path']),
   },
+  // `man`: a pager/renderer launcher. `-P <cmd>`/`--pager=<cmd>` runs an arbitrary
+  // program as the pager and `-H[browser]`/`--html[=browser]` launches a browser —
+  // both are arbitrary-command-execution vectors, so they can never be auto-safe.
+  man: { allowed: new Set([]), blocked: new Set(['-P', '--pager', '-H', '--html']) },
+  // `file`: identification is read-only, but `-C`/`--compile` WRITES a compiled
+  // magic database to disk and `-m`/`--magic-file` loads an attacker-controlled
+  // magic file; neither is auto-safe (Claude's `file` safeFlags restriction).
+  file: { allowed: new Set([]), blocked: new Set(['-C', '--compile', '-m', '--magic-file']) },
   xargs: { allowed: new Set(['-n', '-P', '-I', '-0', '-d', '-t', '-p', '-r', '-L', '--max-procs', '--null']), blocked: new Set(['-i', '-e']) },
   ps: { allowed: new Set(['-e', '-f', '-a', '-u', '-x', '--sort', '-o', '--no-headers', '-p']), blocked: new Set(['e']) },
   tree: { allowed: new Set(['-L', '-d', '-f', '-a', '--dirsfirst', '-I', '--prune', '-P', '--charset', '-i']), blocked: new Set(['-R']) },
@@ -306,7 +314,7 @@ function validateCommandFlags(cmd: string, args: string[]): boolean {
  * Blocks `-f`, `--rawfile`, `--slurpfile`, `-L` flags and `system()` calls.
  */
 function isJqDangerous(args: string[]): boolean {
-  const dangerousFlags = ['-f', '--rawfile', '--slurpfile', '-L', '--from-file'];
+  const dangerousFlags = ['-f', '--rawfile', '--slurpfile', '-L', '--library-path', '--from-file'];
   for (const arg of args) {
     if (dangerousFlags.includes(arg)) return true;
   }
@@ -2164,6 +2172,21 @@ export class PermissionManager {
     if (/\bgit\s+stash\s+clear\b/.test(trimmed)) return 'destructive';
     if (/\bgit\s+reset\s+--merge\b/.test(trimmed)) return 'destructive';
     if (/\bgit\s+reset\s+--keep\b/.test(trimmed)) return 'destructive';
+    // A force push can overwrite remote history on ANY branch (not only protected
+    // ones), so it is a distinct destructive boundary above a normal `git push`
+    // (Claude escalates --force/--force-with-lease/-f). A bare `git push` stays
+    // merely 'unsafe' below via UNSAFE_COMMANDS.
+    if (/\bgit\s+push\b[^\n]*?(?:--force\b|--force-with-lease\b|\s-[A-Za-z]*f\b)/.test(trimmed)) return 'destructive';
+    // `git branch -D` / `--delete --force` force-deletes a branch even when it is
+    // unmerged — irreversible local work loss. A plain `-d` refuses to drop an
+    // unmerged branch and stays 'unsafe' (via the git read-only guard).
+    if (/\bgit\s+branch\b[^\n]*(?:\s-[A-Za-z]*D\b|--delete\b[^\n]*--force\b|--force\b[^\n]*--delete\b)/.test(trimmed)) return 'destructive';
+    // `kubectl delete` removes live cluster resources irreversibly. The `delete`
+    // verb may follow global flags (`kubectl -n ns delete …`); a single bounded
+    // character-class scan (no nested quantifier) stays within one segment and
+    // requires `delete` to be its own whitespace-led token so a flag VALUE like
+    // `-l app=delete` does not false-trigger.
+    if (/\bkubectl\b[^;|&\n]*\sdelete\b/.test(trimmed)) return 'destructive';
 
     // A `cd`/`Set-Location` followed by a file-writing redirection resolves the
     // target against the NEW cwd at runtime — a path-desync the validator can't see.

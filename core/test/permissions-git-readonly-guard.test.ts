@@ -25,7 +25,9 @@ test('git branch <name> (ref creation) is not auto-safe', () => {
 test('git branch delete/move/force is not auto-safe', () => {
   const pm = new PermissionManager();
   assert.equal(pm.classifyBashCommand('git branch -d old'), 'unsafe');
-  assert.equal(pm.classifyBashCommand('git branch -D old'), 'unsafe');
+  // `-D` force-deletes even an unmerged branch (irreversible) — a distinct
+  // destructive boundary above the safe `-d` delete (still not auto-safe).
+  assert.equal(pm.classifyBashCommand('git branch -D old'), 'destructive');
   assert.equal(pm.classifyBashCommand('git branch -m a b'), 'unsafe');
 });
 
