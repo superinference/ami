@@ -66,6 +66,7 @@ const CHECK_IDS = {
   PARSE_ABORTED: 65,
   SUBCOMMAND_FANOUT: 66,
   PS4_TRACE_RCE: 67,
+  ARITHMETIC_CONDITIONAL_INJECTION: 68,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1145,8 +1146,14 @@ const MAX_AUTO_APPROVE_LENGTH = 10_000;
 export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
 
 export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean }): SecurityCheckResult {
-  if (command.length > MAX_AUTO_APPROVE_LENGTH) {
-    return fail(CHECK_IDS.COMMAND_TOO_LONG, `Command is ${command.length} characters (limit ${MAX_AUTO_APPROVE_LENGTH}) — too long to auto-approve`);
+  // Measure the UTF-8 BYTE length, not `.length` (UTF-16 code units): a BMP
+  // character (CJK etc.) is one code unit but up to three UTF-8 bytes, so
+  // `.length` under-reports by up to 3× and would let a long multibyte command
+  // slip past the size ceiling. Byte length is the OS-relevant, parity-correct
+  // measure (matches Claude Code's Buffer.byteLength gate).
+  const commandByteLength = Buffer.byteLength(command, 'utf8');
+  if (commandByteLength > MAX_AUTO_APPROVE_LENGTH) {
+    return fail(CHECK_IDS.COMMAND_TOO_LONG, `Command is ${commandByteLength} bytes (limit ${MAX_AUTO_APPROVE_LENGTH}) — too long to auto-approve`);
   }
 
   // Subcommand fanout cap — short-circuit BEFORE running the per-segment
@@ -1407,6 +1414,17 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     const evalLike = detectEvalLikeBuiltins(command);
     if (evalLike.blocked) {
       return fail(CHECK_IDS.EVAL_LIKE_BUILTIN, evalLike.reason!);
+    }
+  }
+
+  // Arithmetic-conditional injection — a `[[ … -eq/… … ]]` arithmetic comparison
+  // whose operand (directly, or via a same-line tainted variable) carries a
+  // subscript / command substitution, which bash evaluates as code. Complements
+  // the existing `$((…))` and `let` arithmetic-evaluator denials.
+  {
+    const arithCond = detectArithmeticConditionalInjection(command);
+    if (arithCond.blocked) {
+      return fail(CHECK_IDS.ARITHMETIC_CONDITIONAL_INJECTION, arithCond.reason!);
     }
   }
 
@@ -2560,6 +2578,24 @@ export function detectPersistenceCommands(command: string): { blocked: boolean; 
     }
   }
 
+  // --- Windows scheduled tasks (schtasks) ---
+  // The Unix cron/at/systemd guards above have a Windows equivalent: `schtasks`
+  // registers or edits a scheduled task that runs an arbitrary program. Both the
+  // `/create`|`/change` (Windows-native) and `-create`|`-change` (getopt-style)
+  // flag prefixes establish/modify persistence; `schtasks /query` (read-only) is
+  // allowed. Match schtasks as a standalone command, not a substring.
+  if (/(?:^|[\s;|&(])schtasks\b/i.test(stripped) &&
+      /[\s;|&(][/-](?:create|change)\b/i.test(stripped)) {
+    return { blocked: true, reason: 'schtasks /create|/change registers or edits a Windows scheduled task — potential persistence vector' };
+  }
+
+  // --- Windows scheduled tasks (ScheduledTask cmdlets) ---
+  // The PowerShell cmdlet family Register-/New-/Set-ScheduledTask is the modern
+  // equivalent of schtasks and likewise installs or modifies persistent tasks.
+  if (/(?:^|[\s;|&(])(?:Register|New|Set)-ScheduledTask\b/i.test(stripped)) {
+    return { blocked: true, reason: 'Register/New/Set-ScheduledTask installs or modifies a Windows scheduled task — potential persistence vector' };
+  }
+
   return { blocked: false };
 }
 
@@ -3387,6 +3423,68 @@ export function detectEvalLikeBuiltins(command: string): { blocked: boolean; rea
   // bind -x '"seq":cmd' → binds a key sequence to execute a command.
   if (new RegExp(`${B}bind\\s+(?:-\\w+\\s+)*-x\\b`).test(stripped)) {
     return { blocked: true, reason: 'bind -x binds a key sequence to execute an arbitrary command' };
+  }
+  // let EXPR → evaluates its argument as a bash arithmetic expression, which is
+  // identical to `$((…))`: bash recursively re-evaluates referenced variable
+  // VALUES as arithmetic, so `x='a[$(cmd)]'; let "z = x"` executes cmd (Vidar
+  // Holen arithmetic injection). AMI already hard-denies every `$((…))`; `let`
+  // is the same evaluator by another name, so it is denied the same way.
+  if (new RegExp(`${B}let\\b`).test(stripped)) {
+    return { blocked: true, reason: 'let evaluates its argument as bash arithmetic, which recursively re-evaluates variable values as code (arithmetic injection — same evaluator as $((…)))' };
+  }
+
+  return { blocked: false };
+}
+
+/**
+ * A value is an arithmetic-injection payload if it carries a command
+ * substitution (`$(…)` / backtick) or an array subscript (`name[…]`): bash
+ * re-evaluates such a value as an arithmetic expression, so `a[$(cmd)]`
+ * executes cmd when the holding variable is used in arithmetic context. The
+ * substitution forms matter because the payload can hide inside SINGLE quotes
+ * (which the command-substitution extractor strips), slipping past that guard.
+ */
+function isArithmeticInjectionPayload(value: string): boolean {
+  return /\$\(|`|[A-Za-z_]\w*\s*\[/.test(value);
+}
+
+/**
+ * Detect arithmetic-injection delivered through the `[[ … -eq/-ne/-lt/-gt/-le/-ge
+ * … ]]` conditional. bash evaluates the operands of those arithmetic comparison
+ * operators AS ARITHMETIC, so a non-numeric operand carrying a subscript /
+ * command substitution — directly, or via a same-line variable whose value is
+ * such a payload — executes code exactly like `$((…))`.
+ *
+ * `x='a[$(cmd)]'; [[ "$x" -eq 0 ]]` runs cmd even though the payload hid in
+ * single quotes (so the command-substitution extractor never saw the `$(`).
+ * Numeric comparisons (`[[ $n -eq 5 ]]`, `[[ 3 -lt 4 ]]`) are left untouched.
+ */
+export function detectArithmeticConditionalInjection(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+
+  // Same-line assignments whose value is an injection payload taint the variable.
+  const tainted = new Set<string>();
+  for (const m of stripped.matchAll(/(?:^|[;|&(\n]\s*)([A-Za-z_]\w*)=('[^']*'|"[^"]*"|[^\s;|&]*)/g)) {
+    const raw = m[2].replace(/^['"]|['"]$/g, '');
+    if (isArithmeticInjectionPayload(raw)) tainted.add(m[1]);
+  }
+
+  for (const m of stripped.matchAll(/\[\[([\s\S]*?)\]\]/g)) {
+    const body = m[1];
+    if (!/-(?:eq|ne|lt|gt|le|ge)\b/.test(body)) continue;
+    for (const tok of body.split(/\s+/)) {
+      if (!tok || /^-(?:eq|ne|lt|gt|le|ge)$/.test(tok)) continue;
+      if (/^-?\d+$/.test(tok)) continue; // bare integer operand is safe
+      // Direct payload in the operand, or a reference to a tainted variable.
+      if (isArithmeticInjectionPayload(tok)) {
+        return { blocked: true, reason: 'arithmetic comparison operand inside [[ … -eq/-ne/-lt/-gt/-le/-ge … ]] contains a subscript or command substitution — bash evaluates it as arithmetic (arithmetic injection)' };
+      }
+      for (const name of tainted) {
+        if (new RegExp(`\\$\\{?${name}\\b`).test(tok)) {
+          return { blocked: true, reason: `arithmetic comparison inside [[ … -eq/-ne/-lt/-gt/-le/-ge … ]] references variable "${name}" whose value contains a subscript or command substitution — bash re-evaluates it as code (arithmetic injection)` };
+        }
+      }
+    }
   }
 
   return { blocked: false };

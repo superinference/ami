@@ -43,10 +43,16 @@ interface RedirectionSpan extends OutputRedirection {
  * {@link withoutOutputRedirections}, and per-node redirection capture during
  * parsing — so there is exactly one place that understands the `>`/`>>` grammar.
  *
- * Handles: `>`/`>>`, an optional noclobber override (`>|`), an optional leading
- * file-descriptor digit (`2>log`), and single/double-quoted + backslash-escaped
- * targets (quotes are stripped from the returned target). Operators that appear
- * inside quotes are ignored. Descriptor-dup forms (`>&1`) yield no redirection.
+ * Handles: `>`/`>>`, an optional noclobber override (`>|`) or zsh force-clobber
+ * (`>!`), an optional leading file-descriptor digit (`2>log`, `2>|`, `2>!`), and
+ * single/double-quoted + backslash-escaped targets (quotes are stripped from the
+ * returned target). Operators that appear inside quotes are ignored.
+ * Descriptor-dup forms (`>&1`) yield no redirection.
+ *
+ * The force-clobber `!` must be consumed as part of the operator (not the
+ * target): the no-space zsh form `>!file` otherwise captures `!file` verbatim,
+ * and a later `path.resolve('!file')` treats it as a relative path, bypassing an
+ * absolute-path / system-dir write guard. See bash-security.collectWriteTargets.
  */
 function scanOutputRedirections(command: string): RedirectionSpan[] {
   const spans: RedirectionSpan[] = [];
@@ -63,7 +69,10 @@ function scanOutputRedirections(command: string): RedirectionSpan[] {
     let operator: '>' | '>>' = '>';
     let opEnd = i;
     if (command[i + 1] === '>') { operator = '>>'; opEnd = i + 1; }
-    if (command[opEnd + 1] === '|') opEnd += 1; // noclobber override `>|`
+    // noclobber override `>|` and zsh force-clobber `>!` both sit between the
+    // redirect operator and its target; consume the extra char so the `!`/`|`
+    // never leaks into the captured target path.
+    if (command[opEnd + 1] === '|' || command[opEnd + 1] === '!') opEnd += 1;
 
     // Skip inter-token whitespace (not newlines) before the target.
     let j = opEnd + 1;
