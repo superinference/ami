@@ -1563,6 +1563,7 @@ export function wildcardMatch(pattern: string, value: string): boolean {
  */
 function globToRegexSource(pattern: string): string {
   let out = '';
+  let unescapedStars = 0;
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]!;
     if (ch === '\\') {
@@ -1571,9 +1572,19 @@ function globToRegexSource(pattern: string): string {
       if (next === '\\') { out += '\\\\'; i++; continue; } // escaped → literal backslash
       out += '\\\\'; continue;                             // lone backslash → literal
     }
-    if (ch === '*') { out += '.*'; continue; }             // wildcard
+    if (ch === '*') { out += '.*'; unescapedStars++; continue; } // wildcard
     if (/[.+^${}()|[\]?]/.test(ch)) { out += '\\' + ch; continue; } // escape other metachars
     out += ch;
+  }
+  // Trailing ` *` prefix semantics: when the ONLY unescaped wildcard is a sole
+  // trailing ` *` (space + wildcard), treat it like a legacy `:*` prefix rule —
+  // `git *` matches the bare `git` command AND `git add`, aligning wildcard rules
+  // with prefix (`git:*`) semantics — by making the trailing segment optional.
+  // Multi-wildcard patterns (e.g. `* run *`) are deliberately excluded so they
+  // keep their strict meaning. Mirrors Claude's shellRuleMatching trailing-
+  // wildcard-optional rewrite.
+  if (unescapedStars === 1 && pattern.endsWith(' *') && out.endsWith(' .*')) {
+    out = out.slice(0, -3) + '( .*)?';
   }
   return out;
 }
@@ -1787,11 +1798,61 @@ export const SUBCOMMAND_AWARE_ROOTS = new Set([
 ]);
 
 /**
- * Two-word scoped prefix ("command subcommand", e.g. `git commit`, `npm run`).
- * Skips leading SAFE_ENV_VARS assignments; returns null if an unsafe env var is
- * seen (so matching falls back to the exact command), if there is no second
- * token, or if the second token is not subcommand-shaped (a flag, path, number
- * or filename). Mirrors Claude's getSimpleCommandPrefix.
+ * Minimal command-spec model for prefix extraction. For a subcommand-aware CLI
+ * it declares the global option flags that CONSUME the following token as their
+ * value (so `git -C /repo status` / `kubectl -n kube-system get pods` skip the
+ * flag+value to reach the real subcommand) and an optional `depth` — how many
+ * words the scoped prefix should extend to (default 2). Mirrors Claude's fig-spec
+ * `options[].args` "does this flag take a value" (utils/shell/specPrefix.ts) and
+ * its `DEPTH_RULES` per-command default depth table (utils/powershell/staticPrefix.ts).
+ *
+ * This is a static, parser-free analogue of Claude's dynamically-imported fig
+ * specs — the specs those builds cannot load at runtime are exactly the ones
+ * Claude hardcodes in DEPTH_RULES, so AMI hardcodes the same shallow table here.
+ */
+export interface BashCommandSpec {
+  /** Global flags (long or short) that consume the next token as their value. */
+  valueFlags: ReadonlySet<string>;
+  /** Scoped-prefix depth in words (command + subcommands). Defaults to 2. */
+  depth?: number;
+}
+
+export const BASH_COMMAND_SPECS: Record<string, BashCommandSpec> = {
+  git: { valueFlags: new Set(['-C', '-c', '--git-dir', '--work-tree', '--exec-path', '--namespace']) },
+  docker: { valueFlags: new Set(['-H', '--host', '--context', '--config', '-l', '--log-level']), depth: 3 },
+  kubectl: {
+    valueFlags: new Set(['-n', '--namespace', '--context', '--kubeconfig', '--cluster', '--user', '--server', '--as']),
+    depth: 3,
+  },
+  helm: { valueFlags: new Set(['-n', '--namespace', '--kube-context', '--kubeconfig']), depth: 3 },
+  aws: { valueFlags: new Set(['--region', '--profile', '--endpoint-url', '--output', '--cli-read-timeout']), depth: 4 },
+  az: { valueFlags: new Set(['--subscription', '--output', '-o']), depth: 4 },
+  gcloud: { valueFlags: new Set(['--project', '--account', '--configuration', '--format', '--verbosity']), depth: 4 },
+  npm: { valueFlags: new Set(['--prefix', '-w', '--workspace', '--registry']) },
+  pnpm: { valueFlags: new Set(['--prefix', '-w', '--workspace', '--filter', '-C', '--dir']) },
+  yarn: { valueFlags: new Set(['--cwd']) },
+  cargo: { valueFlags: new Set(['-Z', '--color', '--config']) },
+};
+
+/** Does `flag` consume the following token as its value, per `spec`? */
+function flagTakesValue(flag: string, spec: BashCommandSpec | undefined): boolean {
+  // Strip an inline `--flag=value` form — that carries its own value.
+  if (flag.includes('=')) return false;
+  return spec?.valueFlags.has(flag) ?? false;
+}
+
+/**
+ * Scoped subcommand prefix ("command subcommand", e.g. `git commit`, `npm run`,
+ * `kubectl get pods`). Skips leading SAFE_ENV_VARS assignments (returns null on
+ * an unsafe env var so matching falls back to the exact command), then — spec
+ * driven — skips leading global flags AND the values they consume (`git -C /repo
+ * status` → `git status`) before resolving the first real subcommand. Extends to
+ * the command's spec `depth` (default 2) so deep CLIs like `docker`/`kubectl`/
+ * `aws` yield a usefully-scoped prefix instead of a bare root. Returns null when
+ * no subcommand-shaped token follows the command (a flag, path, number or
+ * filename), so the caller falls back to the first-word / exact-command rule.
+ * Mirrors Claude's getSimpleCommandPrefix + spec-driven flag-value skipping +
+ * DEPTH_RULES.
  */
 export function getSimpleCommandPrefix(command: string): string | null {
   const tokens = command.trim().split(/\s+/).filter(Boolean);
@@ -1801,10 +1862,27 @@ export function getSimpleCommandPrefix(command: string): string | null {
     if (!SAFE_ENV_VARS.has(tokens[i]!.split('=')[0]!)) return null;
     i++;
   }
-  const remaining = tokens.slice(i);
-  if (remaining.length < 2) return null;
-  if (!SUBCOMMAND_SHAPE_RE.test(remaining[1]!)) return null;
-  return remaining.slice(0, 2).join(' ');
+  const cmd = tokens[i];
+  if (!cmd) return null;
+  const spec = BASH_COMMAND_SPECS[cmd];
+  const depth = spec?.depth ?? 2;
+  const parts = [cmd];
+  i++;
+  // Skip leading global flags (and any value they consume) to reach the subcommand.
+  while (i < tokens.length && tokens[i]!.startsWith('-')) {
+    if (flagTakesValue(tokens[i]!, spec)) i++;
+    i++;
+  }
+  // Collect subcommand-shaped words up to the spec depth; stop at the first flag
+  // or non-subcommand-shaped token once collection has begun.
+  while (parts.length < depth && i < tokens.length) {
+    const tok = tokens[i]!;
+    if (tok.startsWith('-') || !SUBCOMMAND_SHAPE_RE.test(tok)) break;
+    parts.push(tok);
+    i++;
+  }
+  if (parts.length < 2) return null;
+  return parts.join(' ');
 }
 
 /**
