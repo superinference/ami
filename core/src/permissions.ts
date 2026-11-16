@@ -1843,6 +1843,74 @@ export function suggestAllowPrefix(command: string): string | null {
   return null;
 }
 
+/**
+ * Word-aligned longest common prefix of a group of command prefixes.
+ * e.g. ["git fetch", "git worktree add"] → "git";
+ *      ["npm run test", "npm run lint"]  → "npm run".
+ * Returns at least the first word so a group never collapses to "". Mirrors
+ * Claude's `longestCommonPrefix` (utils/bash/prefix.ts).
+ */
+function wordAlignedCommonPrefix(prefixes: string[]): string {
+  if (prefixes.length === 0) return '';
+  if (prefixes.length === 1) return prefixes[0]!;
+  const words = prefixes[0]!.split(' ');
+  let common = words.length;
+  for (let i = 1; i < prefixes.length; i++) {
+    const other = prefixes[i]!.split(' ');
+    let shared = 0;
+    while (shared < common && shared < other.length && words[shared] === other[shared]) shared++;
+    common = shared;
+  }
+  return words.slice(0, Math.max(1, common)).join(' ');
+}
+
+/**
+ * Per-subcommand scoped "allow always" prefixes for a (possibly compound)
+ * command. A single command returns `[prefix]` (or `[]` when no safe prefix can
+ * be derived). A compound command (`cd src && git status && npm test`) is split
+ * into subcommands; each subcommand the caller marks via `excludeSubcommand`
+ * (typically read-only / already-auto-allowed commands such as `cd`/`git
+ * status`) is DROPPED, and a scoped prefix is derived for each remaining one.
+ * Prefixes sharing a root word are collapsed via word-aligned LCP so a chain of
+ * `git fetch && git worktree add` yields a single `git` rule rather than two.
+ *
+ * This is the compound-aware counterpart to {@link suggestAllowPrefix}: callers
+ * seeding "allow always" rules for a compound command MUST use this so a rule is
+ * scoped to each mutating subcommand instead of the misleading two-word prefix of
+ * the whole chain (e.g. `cd src`). Mirrors Claude's
+ * `getCompoundCommandPrefixesStatic` (utils/bash/prefix.ts) + per-subcommand
+ * rule derivation (BashPermissionRequest `subcommandResults`).
+ */
+export function getCompoundCommandPrefixes(
+  command: string,
+  excludeSubcommand?: (subcommand: string) => boolean,
+): string[] {
+  const subcommands = splitCompoundCommand(command);
+  if (subcommands.length <= 1) {
+    const only = suggestAllowPrefix(command.trim());
+    return only ? [only] : [];
+  }
+  const prefixes: string[] = [];
+  for (const sub of subcommands) {
+    const trimmed = sub.trim();
+    if (!trimmed) continue;
+    if (excludeSubcommand?.(trimmed)) continue;
+    const prefix = suggestAllowPrefix(trimmed);
+    if (prefix) prefixes.push(prefix);
+  }
+  if (prefixes.length === 0) return [];
+  const groups = new Map<string, string[]>();
+  for (const prefix of prefixes) {
+    const root = prefix.split(' ')[0]!;
+    const group = groups.get(root);
+    if (group) group.push(prefix);
+    else groups.set(root, [prefix]);
+  }
+  const collapsed: string[] = [];
+  for (const group of groups.values()) collapsed.push(wordAlignedCommonPrefix(group));
+  return collapsed;
+}
+
 // ---------------------------------------------------------------------------
 // Permission-rule string format — `Tool` / `Tool(specifier)`
 // ---------------------------------------------------------------------------
