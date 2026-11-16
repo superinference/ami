@@ -473,7 +473,7 @@ function parseCommandFile(filePath: string, name: string): CommandDefinition | u
   } catch {
     return undefined; // unreadable command file — skip
   }
-  return filePath.endsWith('.md')
+  return hasExt(filePath, '.md')
     ? parseMarkdownCommandFile(content, filePath, name)
     : parseTomlCommandFile(content, filePath, name);
 }
@@ -481,10 +481,21 @@ function parseCommandFile(filePath: string, name: string): CommandDefinition | u
 /** Command file extensions AMI loads: TOML (AMI's original) and Claude's `.md`. */
 const COMMAND_FILE_EXTS = ['.toml', '.md'] as const;
 
-/** Strip a recognized command-file extension from `fileName`, or null if none. */
+/** Case-insensitive `.md`/SKILL.md matching (Claude parity: walkPluginMarkdown
+ *  uses `.toLowerCase().endsWith('.md')` and `/^skill\.md$/i`), so a `Deploy.TOML`
+ *  / `Review.MD` / `skill.md` is discovered the same as its canonical casing. */
+const SKILL_MD_RE = /^skill\.md$/i;
+
+/** True when `name` ends with `ext` (lower-cased) regardless of the on-disk case. */
+function hasExt(name: string, ext: string): boolean {
+  return name.toLowerCase().endsWith(ext);
+}
+
+/** Strip a recognized command-file extension (case-insensitively) from
+ *  `fileName`, preserving the base name's original casing, or null if none. */
 function commandBaseName(fileName: string): string | null {
   for (const ext of COMMAND_FILE_EXTS) {
-    if (fileName.endsWith(ext)) return path.basename(fileName, ext);
+    if (hasExt(fileName, ext)) return fileName.slice(0, fileName.length - ext.length);
   }
   return null;
 }
@@ -665,13 +676,16 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
       let isDir = false;
       try { isDir = fs.statSync(entryPath).isDirectory(); } catch { continue; }
       if (isDir) {
-        const skillMd = path.join(entryPath, 'SKILL.md');
-        if (!fs.existsSync(skillMd)) {
+        // SKILL.md is matched case-insensitively (Claude parity), so a subdir
+        // shipping `skill.md`/`Skill.md` on a case-sensitive filesystem is not
+        // spuriously reported as missing its manifest.
+        const skillMdName = safeReaddir(entryPath).find(f => SKILL_MD_RE.test(f));
+        if (skillMdName === undefined) {
           warnings.push({ path: `skills/${entry}`, message: 'skill subdirectory has no SKILL.md and will be ignored.' });
           continue;
         }
-        validateMarkdownComponent(skillMd, `skills/${entry}/SKILL.md`, true, errors, warnings);
-      } else if (entry.endsWith('.md')) {
+        validateMarkdownComponent(path.join(entryPath, skillMdName), `skills/${entry}/${skillMdName}`, true, errors, warnings);
+      } else if (hasExt(entry, '.md')) {
         validateMarkdownComponent(entryPath, `skills/${entry}`, true, errors, warnings);
       }
     }
@@ -683,7 +697,7 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
     errors.push({ path: 'agents', message: 'agents/ path escapes the plugin directory (symlink or ..).' });
   } else if (agentsDir) {
     for (const entry of safeReaddir(agentsDir)) {
-      if (!entry.endsWith('.md')) continue;
+      if (!hasExt(entry, '.md')) continue;
       validateMarkdownComponent(path.join(agentsDir, entry), `agents/${entry}`, false, errors, warnings);
     }
   }
@@ -694,8 +708,8 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
     errors.push({ path: 'commands', message: 'commands/ path escapes the plugin directory (symlink or ..).' });
   } else if (commandsDir) {
     for (const entry of safeReaddir(commandsDir)) {
-      const isMd = entry.endsWith('.md');
-      if (!entry.endsWith('.toml') && !isMd) continue;
+      const isMd = hasExt(entry, '.md');
+      if (!hasExt(entry, '.toml') && !isMd) continue;
       const file = path.join(commandsDir, entry);
       let content: string;
       try { content = fs.readFileSync(file, 'utf-8'); } catch (err) {
@@ -711,6 +725,13 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
       } else if (!parseTomlString(content, 'description') || !parseTomlString(content, 'prompt')) {
         errors.push({ path: `commands/${entry}`, message: 'command TOML must define both "description" and "prompt".' });
       }
+    }
+    // Affordance warning (Claude parity: loadPluginCommands warns when a commands
+    // directory yields nothing) — a commands/ dir that loads no runnable command
+    // (recursively) is almost always an author mistake, so name the expected
+    // format instead of silently contributing zero commands.
+    if (loadCommands(commandsDir).length === 0) {
+      warnings.push({ path: 'commands', message: 'commands/ directory has no loadable commands — expected .toml or .md command files (optionally nested in subdirectories).' });
     }
   }
 
@@ -764,8 +785,9 @@ function validateMarkdownComponent(
     errors.push({ path: label, message: 'component body is empty.' });
   }
   if (isSkill) {
-    // A subdir SKILL.md can fall back to the dir name, so a missing name is only a warning.
-    if (!frontmatter.name && path.basename(file) !== 'SKILL.md') {
+    // A subdir SKILL.md can fall back to the dir name, so a missing name is only a
+    // warning (SKILL.md matched case-insensitively, Claude parity).
+    if (!frontmatter.name && !SKILL_MD_RE.test(path.basename(file))) {
       warnings.push({ path: label, message: 'skill has no "name" frontmatter; the file name will be used.' });
     }
   } else if (!frontmatter.description?.trim()) {
@@ -774,15 +796,31 @@ function validateMarkdownComponent(
 }
 
 /**
+ * Locate a plugin's `plugin.json` under `root`, in priority order: AMI's
+ * `.ami-plugin/`, then Claude Code's `.claude-plugin/`, then a legacy root-level
+ * `plugin.json` (Claude parity: pluginLoader's `legacyManifestPath`). Returns the
+ * first existing path, or undefined when the directory ships no manifest. SINGLE
+ * source for the lookup order used by both discovery and validation.
+ */
+function resolveManifestPath(root: string): string | undefined {
+  const candidates = [
+    path.join(root, '.ami-plugin', 'plugin.json'),
+    path.join(root, '.claude-plugin', 'plugin.json'),
+    path.join(root, 'plugin.json'),
+  ];
+  return candidates.find(p => fs.existsSync(p));
+}
+
+/**
  * Full plugin validation: manifest + content files. Reads `plugin.json` from the
- * `.ami-plugin`/`.claude-plugin` dir under `pluginDir`, runs
- * {@link validatePluginManifest} and {@link validatePluginContents}, and merges
- * the results. A missing manifest is a hard error.
+ * `.ami-plugin`/`.claude-plugin` dir — or a legacy root-level `plugin.json` —
+ * under `pluginDir`, runs {@link validatePluginManifest} and
+ * {@link validatePluginContents}, and merges the results. A missing manifest is a
+ * hard error.
  */
 export function validatePlugin(pluginDir: string): PluginValidationResult {
-  for (const marker of ['.ami-plugin', '.claude-plugin']) {
-    const manifestPath = path.join(pluginDir, marker, 'plugin.json');
-    if (!fs.existsSync(manifestPath)) continue;
+  const manifestPath = resolveManifestPath(pluginDir);
+  if (manifestPath !== undefined) {
     let manifestResult: PluginValidationResult;
     try {
       manifestResult = validatePluginManifest(JSON.parse(fs.readFileSync(manifestPath, 'utf-8')));
@@ -796,7 +834,7 @@ export function validatePlugin(pluginDir: string): PluginValidationResult {
       warnings: [...manifestResult.warnings, ...contentResult.warnings],
     };
   }
-  return { valid: false, errors: [{ path: pluginDir, message: 'No plugin manifest (.ami-plugin/plugin.json or .claude-plugin/plugin.json).' }], warnings: [] };
+  return { valid: false, errors: [{ path: pluginDir, message: 'No plugin manifest (.ami-plugin/plugin.json, .claude-plugin/plugin.json, or root plugin.json).' }], warnings: [] };
 }
 
 /** A plugin directory that failed to load, with an actionable reason. */
@@ -829,12 +867,12 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       continue;
     }
     if (!isDir) continue;
-    // Claude Code compatibility: check .claude-plugin/plugin.json as fallback
-    let manifestPath = path.join(root, '.ami-plugin', 'plugin.json');
-    if (!fs.existsSync(manifestPath)) {
-      manifestPath = path.join(root, '.claude-plugin', 'plugin.json');
-    }
-    if (!fs.existsSync(manifestPath)) continue; // not a plugin dir — not a failure
+    // Manifest lookup order: AMI's `.ami-plugin/`, then Claude Code's
+    // `.claude-plugin/`, then a legacy root-level `plugin.json` (Claude parity:
+    // pluginLoader's `legacyManifestPath` fallback) so older bundles that ship the
+    // manifest at their root still load.
+    const manifestPath = resolveManifestPath(root);
+    if (manifestPath === undefined) continue; // not a plugin dir — not a failure
     let manifest: Record<string, unknown>;
     try {
       const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as unknown;
