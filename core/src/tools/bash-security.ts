@@ -3409,6 +3409,20 @@ export function detectEvalLikeBuiltins(command: string): { blocked: boolean; rea
   if (new RegExp(`${B}compgen\\b[^;|&]*\\s-[CF]\\b`).test(stripped)) {
     return { blocked: true, reason: 'compgen -C/-F executes an arbitrary command or function' };
   }
+  // complete -C cmd / -F func → registers a completion spec whose -C command or
+  // -F function bash runs to generate completions (mirrors compgen -C/-F).
+  if (new RegExp(`${B}complete\\b[^;|&]*\\s-[CF]\\b`).test(stripped)) {
+    return { blocked: true, reason: 'complete -C/-F runs an arbitrary command or function to generate completions' };
+  }
+  // trap 'cmd' SIGNAL → cmd runs as shell code on the signal; a trap on EXIT
+  // fires at the end of EVERY command invocation, so this is guaranteed
+  // execution of an argument that looks inert to argv/flag validation. The
+  // listing/reset forms (`trap`, `trap -l`, `trap -p`, `trap - SIG`) carry no
+  // handler and are left alone; only a real handler argument (a quoted string
+  // or a non-dash word) is blocked.
+  if (new RegExp(`${B}trap\\s+(?:-\\S+\\s+)*(?:'[^']*'|"[^"]*"|[^\\s;|&-][^\\s;|&]*)`).test(stripped)) {
+    return { blocked: true, reason: 'trap registers a handler that bash runs as shell code on a signal/EXIT (guaranteed execution)' };
+  }
   // coproc [NAME] cmd → spawns an arbitrary command as a background coprocess.
   if (new RegExp(`${B}coproc\\b`).test(stripped)) {
     return { blocked: true, reason: 'coproc spawns an arbitrary command as a background coprocess' };
@@ -3979,6 +3993,27 @@ export function detectGitInternalWrite(command: string): { blocked: boolean; rea
   }
 
   return { blocked: false };
+}
+
+/**
+ * True when ANY segment of a compound/piped command invokes `git` as its base
+ * command (after safe-wrapper + env-assignment stripping, path-stripped) — e.g.
+ * `git status`, `cd x && git log`, `/usr/bin/git fetch`, `echo hi | git clean`.
+ * A bare `git` used only as an ARGUMENT (`echo git`, `grep git file`) is not a
+ * git invocation and is intentionally not matched.
+ *
+ * This is the command-string half of the bare-repository guard: the runtime
+ * cwd probe ({@link isCurrentDirectoryBareGitRepo} in the bash tool) needs fs
+ * access and lives in the tool wiring, while recognizing that a command runs
+ * git is a pure string classification and belongs here beside the other git
+ * guards.
+ */
+export function commandInvokesGit(command: string): boolean {
+  const stripped = stripInvisibleUnicode(command);
+  for (const seg of splitShellSegments(stripped)) {
+    if (segmentBaseCommand(seg) === 'git') return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

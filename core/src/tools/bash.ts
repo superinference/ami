@@ -6,7 +6,7 @@ import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
-import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations } from './bash-security';
+import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import {
   getDockerAvailability,
@@ -115,6 +115,55 @@ function isReadOnlyBashCommand(command: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Bare-repository attack probe (parity with Claude Code's
+ * `isCurrentDirectoryBareGitRepo`). When `cwd` contains bare-repo indicators —
+ * a root-level `HEAD` file, an `objects/` directory, or a `refs/` directory —
+ * WITHOUT a valid `.git/HEAD`, git's `setup_git_directory()` treats `cwd`
+ * itself as a (bare) repository and will execute hook scripts planted in `cwd`.
+ * An attacker seeds `hooks/pre-commit` + `objects/` + `HEAD` and deletes
+ * `.git/HEAD`, so the next allowed `git` command runs arbitrary code.
+ *
+ * This is a runtime filesystem probe (not a string check), complementary to
+ * {@link detectGitInternalWrite} (which blocks WRITING those paths) and to the
+ * sandbox-level `buildBareGitRepoGuard` (which ro-binds markers inside the
+ * sandbox): this probe fires before an UNsandboxed git invocation even when the
+ * markers already exist. fs access goes through `_bashHooks` so tests can drive
+ * it without a real on-disk repo.
+ */
+export function isCurrentDirectoryBareGitRepo(cwd: string | undefined): boolean {
+  if (!cwd) return false;
+  const statSync = _bashHooks.statSync;
+
+  // A valid .git (dir with a regular HEAD file, or a gitfile for worktrees/
+  // submodules) means git will NOT fall back to treating cwd as a bare repo.
+  try {
+    const gitStats = statSync(path.join(cwd, '.git'));
+    if (gitStats.isFile()) return false; // worktree/submodule gitfile
+    if (gitStats.isDirectory()) {
+      try {
+        if (statSync(path.join(cwd, '.git', 'HEAD')).isFile()) return false;
+      } catch {
+        // .git/ exists but has no HEAD — fall through to indicator check
+      }
+    }
+  } catch {
+    // no .git at all — fall through to indicator check
+  }
+
+  // No valid .git/HEAD. Flag if ANY bare-repo indicator exists in cwd.
+  try {
+    if (statSync(path.join(cwd, 'HEAD')).isFile()) return true;
+  } catch { /* no HEAD */ }
+  try {
+    if (statSync(path.join(cwd, 'objects')).isDirectory()) return true;
+  } catch { /* no objects/ */ }
+  try {
+    if (statSync(path.join(cwd, 'refs')).isDirectory()) return true;
+  } catch { /* no refs/ */ }
+  return false;
 }
 
 export function isBashForkExhaustion(stdout: string, stderr: string): boolean {
@@ -935,6 +984,20 @@ export const bashTool: ToolDefinition = {
       if (discard) {
         return { output: `Error: ${discard}`, isError: true };
       }
+    }
+
+    // Bare-repository attack guard: a git invocation in a cwd that carries
+    // bare-repo indicators (HEAD/objects/refs without a valid .git/HEAD) would
+    // let git execute attacker-planted hooks from cwd. Block it before running.
+    if (commandInvokesGit(command) && isCurrentDirectoryBareGitRepo(context.cwd)) {
+      return {
+        output:
+          'Error: refusing to run git — the working directory has bare-repository indicators ' +
+          '(HEAD, objects/, or refs/ present without a valid .git/HEAD). Git would treat this ' +
+          'directory as a bare repo and may execute hook scripts planted here. Remove the stray ' +
+          'bare-repo files or run git from a legitimate repository.',
+        isError: true,
+      };
     }
 
     const selfKill = detectSelfKill(command);
