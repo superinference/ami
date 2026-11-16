@@ -739,6 +739,16 @@ function mergeConfigArray(existing: string[] | undefined, incoming: string[]): s
 
 export type ConfigChangeListener = (config: ProjectConfig, prev: ProjectConfig) => void;
 
+export interface ConfigServiceOptions {
+  /**
+   * Target env object the project config's `env` block is re-applied to when the
+   * watched file changes at runtime (defaults to `process.env`). Injectable so a
+   * test can observe the take-effect-immediately behavior without mutating the
+   * real process environment.
+   */
+  env?: NodeJS.ProcessEnv;
+}
+
 export class ConfigService {
   private config: ProjectConfig;
   private configPath: string;
@@ -746,10 +756,22 @@ export class ConfigService {
   private listeners: ConfigChangeListener[] = [];
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private onConfigChangeCallbacks: Array<(source: string, path: string) => void> = [];
+  private envTarget: NodeJS.ProcessEnv;
+  private lastEnvApplication: ApplyConfigEnvResult | null = null;
 
-  constructor(cwd: string) {
+  constructor(cwd: string, opts: ConfigServiceOptions = {}) {
     this.configPath = path.join(cwd, '.ami', 'config.json');
     this.config = loadConfigFile(this.configPath) ?? {};
+    this.envTarget = opts.env ?? process.env;
+  }
+
+  /**
+   * The env application performed by the most recent change-triggering reload, or
+   * null when no runtime change has re-applied env yet. Introspection surface for
+   * the take-effect-immediately env behavior.
+   */
+  getLastEnvApplication(): ApplyConfigEnvResult | null {
+    return this.lastEnvApplication;
   }
 
   get(): ProjectConfig {
@@ -806,6 +828,18 @@ export class ConfigService {
     const changed = JSON.stringify(prev) !== JSON.stringify(next);
     if (changed) {
       this.config = next;
+      // Take-effect-immediately: re-apply the watched project config's `env`
+      // block to the process environment so a mid-session edit (a changed tuning
+      // knob / model-name default) applies without a restart, instead of being
+      // silently ignored until the next launch. Trust-tiered via applyConfigEnv —
+      // a project-scoped file still only applies the SAFE_ENV_VARS allowlist, so
+      // a committed config can never inject a dangerous var at runtime. Parity:
+      // Claude's onChangeAppState re-applying config-driven env on a settings change.
+      try {
+        this.lastEnvApplication = applyConfigEnv({ project: next }, this.envTarget);
+      } catch (err) {
+        coreLog('config', 'runtime env re-application failed', { error: String(err) });
+      }
       for (const listener of this.listeners) {
         try { listener(next, prev); } catch (err) { coreLog('config', 'config listener error', { error: String(err) }); }
       }
@@ -1018,6 +1052,84 @@ export function applyConfigEnv(
     }
   }
   return { applied, rejected };
+}
+
+// ---------------------------------------------------------------------------
+// Bounded-integer env-var validation (DoS-cap + structured status)
+// ---------------------------------------------------------------------------
+
+/** Outcome kind of a {@link validateBoundedIntEnvVar} parse. */
+export type BoundedIntStatus =
+  /** A valid in-range integer was supplied and used verbatim. */
+  | 'ok'
+  /** No value (absent/empty) was supplied; the default was used. */
+  | 'default'
+  /** The value exceeded `max` and was clamped down to it. */
+  | 'capped'
+  /** The value was non-numeric or below `min`; the default was used. */
+  | 'invalid';
+
+/** Structured result of parsing a bounded-integer env var. */
+export interface BoundedIntResult {
+  /** The value to actually use (always within [min, max]). */
+  effective: number;
+  status: BoundedIntStatus;
+  /** A human/debug diagnostic for the `capped`/`invalid` cases (else undefined). */
+  message?: string;
+}
+
+/** Tuning for {@link validateBoundedIntEnvVar}. `min` defaults to 1 (positive). */
+export interface BoundedIntOptions {
+  /** Fallback used when the value is absent or invalid. */
+  default: number;
+  /** Lowest accepted value (inclusive). Below it the value is rejected. Default 1. */
+  min?: number;
+  /** Highest accepted value (inclusive). Above it the value is CAPPED to this. */
+  max?: number;
+}
+
+/**
+ * Parse a numeric environment variable into a bounded, trustworthy integer —
+ * the single canonical replacement for the ad-hoc `parseInt(env) || DEFAULT` /
+ * `Number(env) || DEFAULT` reads scattered across the codebase, which silently
+ * coerce NaN/0/negative to the default but apply NO upper ceiling, so a mistaken
+ * or hostile `AMI_FIND_MAX_DEPTH=99999999` / `SI_MODEL_LIST_TIMEOUT_MS=huge`
+ * flows through verbatim and enables resource-exhaustion / hang (DoS).
+ *
+ * Returns a structured `{ effective, status, message }` so a caller (and an
+ * operator, via the debug log) learns WHEN a value was capped or rejected
+ * rather than it failing silently:
+ *  - absent/empty            → `{ default }` (no diagnostic);
+ *  - NaN or `< min`          → `{ invalid }`, `effective = default`, logged;
+ *  - `> max`                 → `{ capped }`,  `effective = max`,     logged;
+ *  - otherwise               → `{ ok }`,      `effective = value`.
+ *
+ * Parity: Claude Code's `validateBoundedIntEnvVar` (envValidation.ts) upper-limit
+ * cap + invalid/capped status reporting. When `name` is empty the debug log is
+ * suppressed (the thin {@link parsePositiveIntEnv} wrapper reuses this without a
+ * name), so there is exactly one bounded-int implementation.
+ */
+export function validateBoundedIntEnvVar(
+  name: string,
+  raw: string | undefined,
+  opts: BoundedIntOptions,
+): BoundedIntResult {
+  const min = opts.min ?? 1;
+  if (raw === undefined || raw.trim() === '') {
+    return { effective: opts.default, status: 'default' };
+  }
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < min) {
+    const message = `${name || 'bounded int'}="${raw}" is not an integer >= ${min}; using default ${opts.default}`;
+    if (name) coreLog('config', message);
+    return { effective: opts.default, status: 'invalid', message };
+  }
+  if (opts.max !== undefined && n > opts.max) {
+    const message = `${name || 'bounded int'}=${n} exceeds the maximum ${opts.max}; capped to ${opts.max}`;
+    if (name) coreLog('config', message);
+    return { effective: opts.max, status: 'capped', message };
+  }
+  return { effective: n, status: 'ok' };
 }
 
 // ---------------------------------------------------------------------------

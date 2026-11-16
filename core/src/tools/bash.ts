@@ -8,6 +8,7 @@ import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy } from './bash-sandbox';
+import { validateBoundedIntEnvVar } from '../config';
 import {
   getDockerAvailability,
   describeDockerUnavailable,
@@ -204,7 +205,13 @@ export function injectFindMaxdepth(command: string): string {
       trimmed.startsWith('sudo find ') || trimmed.startsWith('sudo find\t');
     if (!isFindCmd) return seg;
     if (/-maxdepth\b/.test(trimmed)) return seg;
-    const maxDepth = parseInt(process.env.AMI_FIND_MAX_DEPTH ?? '', 10) || DEFAULT_FIND_MAXDEPTH;
+    // Bounded: reject NaN/non-positive (→ default) and cap the depth so a
+    // mistaken/hostile AMI_FIND_MAX_DEPTH=99999999 cannot turn an injected
+    // -maxdepth into an unbounded filesystem traversal (resource exhaustion).
+    const maxDepth = validateBoundedIntEnvVar('AMI_FIND_MAX_DEPTH', process.env.AMI_FIND_MAX_DEPTH, {
+      default: DEFAULT_FIND_MAXDEPTH,
+      max: 100,
+    }).effective;
     const tokens = trimmed.split(/\s+/);
     let insertIdx = 1;
     for (let i = 1; i < tokens.length; i++) {

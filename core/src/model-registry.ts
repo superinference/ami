@@ -7,6 +7,7 @@ import { discoverFromModelList } from './model-capabilities';
 import { redactSecrets } from './tools/tool-utils';
 import { isEssentialTrafficOnly } from './analytics';
 import { log } from './logger';
+import { validateBoundedIntEnvVar } from './config';
 
 /**
  * Pull a human-readable message out of an API error-response body: checks
@@ -32,7 +33,12 @@ export function extractErrorDetail(data: unknown): string | undefined {
 // environments (mirrors SUPERINFERENCE_API_TIMEOUT_MS / HF_ENDPOINT seams).
 // Read at call time (not module load) so an override takes effect post-import.
 function modelListTimeoutMs(): number {
-  return Number(process.env.SI_MODEL_LIST_TIMEOUT_MS) || 10000;
+  // Bounded: reject NaN/non-positive (→ 10s default) and cap at 10 minutes so a
+  // mistaken/hostile SI_MODEL_LIST_TIMEOUT_MS cannot hang model discovery forever.
+  return validateBoundedIntEnvVar('SI_MODEL_LIST_TIMEOUT_MS', process.env.SI_MODEL_LIST_TIMEOUT_MS, {
+    default: 10000,
+    max: 600000,
+  }).effective;
 }
 
 interface ModelInfo {

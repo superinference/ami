@@ -14,6 +14,7 @@ import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
 import { PERMISSION_MODES } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
+import { validateBoundedIntEnvVar } from '../config';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
 const AUTO_BG_MS = 120_000; // eslint-disable-line @typescript-eslint/no-unused-vars
@@ -29,8 +30,10 @@ const SUBAGENT_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
  * any non-positive value closes that footgun while keeping the same default.
  */
 export function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
-  const n = parseInt(raw ?? '', 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  // Delegate to the canonical bounded-int parser (no upper cap, positive-only) so
+  // there is a single implementation of "parse a positive-integer env value" —
+  // the name is omitted so this thin wrapper stays silent (no debug log).
+  return validateBoundedIntEnvVar('', raw, { default: fallback, min: 1 }).effective;
 }
 
 /**
