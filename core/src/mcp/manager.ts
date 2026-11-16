@@ -275,14 +275,46 @@ export function isTransientConnectError(err: unknown): boolean {
 }
 
 /**
+ * Severity of an MCP config diagnostic (Claude-parity `ValidationError.severity`,
+ * McpParsingWarnings.tsx:L210-212). A `fatal` problem means the offending config —
+ * a whole file (parse failure) or a single server entry (invalid shape) — was NOT
+ * loaded; a `warning` problem is recoverable (the server still loads, e.g. an unset
+ * env var or the Windows npx-wrapper footgun).
+ */
+export type McpConfigSeverity = 'fatal' | 'warning';
+
+/**
  * A fatal MCP config diagnostic: a config file that exists but could not be parsed.
- * `severity` is always `'fatal'` for now (parse failures); the shape mirrors the
- * per-scope diagnostics a UI panel renders ("Failed to parse <path>: <message>").
+ * `severity` is `'fatal'` (a parse failure drops every server the file declared);
+ * the shape mirrors the per-scope diagnostics a UI panel renders ("Failed to parse
+ * <path>: <message>").
  */
 export interface McpConfigError {
   path: string;
   message: string;
-  severity: 'fatal';
+  severity: McpConfigSeverity;
+}
+
+/**
+ * A single structured MCP config diagnostic with full per-entry attribution,
+ * mirroring Claude's `ValidationError` + `mcpErrorMetadata` (McpParsingWarnings.tsx
+ * `[Error]/[Warning] [serverName] path: message`). Unlike the coarse
+ * {@link McpConfigError} (whole-file parse failures only), this unifies EVERY config
+ * problem — file parse failures, per-server shape/validation errors (fatal), and
+ * recoverable per-server warnings — into one severity-tagged, server-attributed,
+ * JSON-path-bearing list for a `/mcp` diagnostics view.
+ */
+export interface McpConfigDiagnostic {
+  /** Severity — fatal (config not loaded) or warning (loaded, recoverable). */
+  severity: McpConfigSeverity;
+  /** Originating server name, when the diagnostic is attributable to one entry. */
+  serverName?: string;
+  /** Absolute path of the config file the problem originates from, when known. */
+  path?: string;
+  /** JSON path to the offending value within the config (e.g. `mcpServers.foo`). */
+  jsonPath?: string;
+  /** Human-readable, actionable message. */
+  message: string;
 }
 
 /**
@@ -350,6 +382,24 @@ export interface McpServerStatus {
    * `undefined` for stdio servers (not auth-scoped) and non-ready remotes.
    */
   isAuthenticated?: boolean;
+  /**
+   * True when a remote (sse/http) server is in the `needs-auth` state — its OAuth
+   * consent is required/unavailable so it is not connected. Mirrors Claude's
+   * per-server `needsAuth` auth-status field (MCPAgentServerMenu.tsx:L108-158),
+   * the negative counterpart of {@link isAuthenticated}, so a UI can render a
+   * distinct "needs authentication" affordance. `undefined` when not applicable.
+   */
+  needsAuth?: boolean;
+  /**
+   * The count of consecutive failed reconnect attempts currently in flight for a
+   * dropped server (Claude-parity `reconnectAttempt`, MCPListPanel.tsx:L315-325),
+   * so a status view can render "reconnecting (n/{@link maxReconnectAttempts})…".
+   * `undefined`/absent when no reconnect is in progress.
+   */
+  reconnectAttempt?: number;
+  /** The reconnect-attempt ceiling ({@link MAX_MCP_RECONNECT_ATTEMPTS}); present
+   *  only alongside an in-flight {@link reconnectAttempt} for the "n/max" display. */
+  maxReconnectAttempts?: number;
   /**
    * The config-source scope this server was loaded from (Claude-parity scope
    * grouping). `undefined` only before scope has been recorded. See
@@ -491,6 +541,12 @@ export class McpManager extends EventEmitter {
    * via {@link getConfigValidationErrors} for a /mcp diagnostics view.
    */
   private _configValidationErrors = new Map<string, string>();
+  /**
+   * Source config-file path for each server that produced a validation error
+   * (keyed by server name). A skipped invalid entry is never registered, so its
+   * path cannot live in {@link _serverSources}; this preserves per-entry path
+   * attribution for {@link getConfigDiagnostics}. */
+  private _configValidationSources = new Map<string, string>();
   /**
    * Per-file FATAL config diagnostics — a config file that exists but could not be
    * parsed (invalid JSON). Keyed by the config file path. A MISSING file is NOT an
@@ -675,6 +731,56 @@ export class McpManager extends EventEmitter {
    */
   getConfigValidationErrors(): Record<string, string> {
     return Object.fromEntries(this._configValidationErrors);
+  }
+
+  /**
+   * Unified, severity-tagged, per-entry MCP config diagnostics (Claude-parity
+   * McpParsingWarnings `ValidationError` + `mcpErrorMetadata`): one flat list that
+   * merges every config problem — whole-file PARSE failures and per-server shape
+   * VALIDATION errors (both `fatal`, the config was not loaded) and recoverable
+   * per-server WARNINGS (unset env vars, the Windows npx footgun — the server still
+   * loaded) — each carrying its `severity`, originating `serverName` (when
+   * attributable), config-file `path`, and a `jsonPath` to the offending entry
+   * (`mcpServers.<name>`). Fatal diagnostics are listed before warnings; within a
+   * severity, entries are ordered by server name (file-only parse errors, which have
+   * no server, sort first). This is the single structured surface a `/mcp`
+   * diagnostics view renders as `[Error]/[Warning] [server] path: message`.
+   */
+  getConfigDiagnostics(): McpConfigDiagnostic[] {
+    const fatal: McpConfigDiagnostic[] = [];
+    const warnings: McpConfigDiagnostic[] = [];
+    // Whole-file parse failures (no server attribution).
+    for (const err of this._configErrors.values()) {
+      fatal.push({ severity: 'fatal', path: err.path, message: err.message });
+    }
+    // Per-server shape/validation failures (the entry was skipped).
+    for (const [name, message] of this._configValidationErrors) {
+      fatal.push({
+        severity: 'fatal',
+        serverName: name,
+        path: this._configValidationSources.get(name) ?? this._serverSources.get(name),
+        jsonPath: `mcpServers.${name}`,
+        message,
+      });
+    }
+    // Per-server recoverable warnings (the server still loaded) — one diagnostic
+    // per distinct warning so each is attributable on its own row.
+    for (const [name, list] of this._configWarnings) {
+      for (const message of list) {
+        warnings.push({
+          severity: 'warning',
+          serverName: name,
+          path: this._serverSources.get(name),
+          jsonPath: `mcpServers.${name}`,
+          message,
+        });
+      }
+    }
+    const byServer = (a: McpConfigDiagnostic, b: McpConfigDiagnostic): number =>
+      (a.serverName ?? '').localeCompare(b.serverName ?? '');
+    fatal.sort(byServer);
+    warnings.sort(byServer);
+    return [...fatal, ...warnings];
   }
 
   /** True when a server should be blocked by the denylist (by name, URL, URL
@@ -936,6 +1042,23 @@ export class McpManager extends EventEmitter {
     if (this.nameInSet(this._rejectedServers, name)) return 'rejected';
     if (this._enableAllProjectServers || this.nameInSet(this._approvedServers, name)) return 'approved';
     return 'pending';
+  }
+
+  /**
+   * Workspace-trust boundary for a config-supplied `headersHelper` SCRIPT
+   * (Claude-parity getMcpHeadersFromHelper, services/mcp/headersHelper.ts:L40-57).
+   * A `headersHelper` is an arbitrary shell command the config asks us to EXECUTE at
+   * connect time — from a `project`-scoped (untrusted, cloned-repo) `.mcp.json` that
+   * is an arbitrary-code-execution vector, so we must NOT run it until the project
+   * server's trust is established. A project server is trusted here exactly when it
+   * has been approved (per-server approval OR the blanket enable-all flag), which is
+   * AMI's established project-MCP trust gate; every other scope (user / local /
+   * enterprise / dynamic) is operator-supplied and trusted. Returns true when the
+   * helper for `name` may run.
+   */
+  isHeadersHelperTrusted(name: string): boolean {
+    if (this._serverScopes.get(name) !== 'project') return true;
+    return this.getProjectMcpServerStatus(name) === 'approved';
   }
 
   /**
@@ -1255,6 +1378,10 @@ export class McpManager extends EventEmitter {
         uptime: null,
         imageAvailable: info.imageAvailable,
         containerBacked: !!info.config.containerConfig,
+        // A pending server whose on-demand connect failed with an auth error is
+        // parked in the `needs-auth` state — surface the per-server needsAuth flag.
+        needsAuth: info.state === 'needs-auth' || undefined,
+        ...this.reconnectProgress(name),
         scope: this._serverScopes.get(name),
         sourcePath: this._serverSources.get(name),
         error: info.error || this.serverErrors.get(name),
@@ -1269,6 +1396,19 @@ export class McpManager extends EventEmitter {
   private deriveIsAuthenticated(config: McpServerConfig | undefined, client: McpClient): boolean | undefined {
     if (config?.transport !== 'http' && config?.transport !== 'sse') return undefined;
     return client.state === 'ready' && (client.tools?.length ?? 0) > 0;
+  }
+
+  /**
+   * In-flight reconnect progress for `name` (Claude-parity reconnectAttempt /
+   * maxReconnectAttempts). Returns the attempt count + ceiling ONLY while a
+   * reconnect is actually scheduled (a pending timer with a recorded attempt),
+   * else `{}` — so a healthy server carries no reconnect fields. The first attempt
+   * is reported as 1 (human-facing "1/N"), not the 0-based internal counter.
+   */
+  private reconnectProgress(name: string): { reconnectAttempt?: number; maxReconnectAttempts?: number } {
+    if (!this.reconnectTimers.has(name)) return {};
+    const attempt = this.reconnectAttempts.get(name) ?? 0;
+    return { reconnectAttempt: attempt + 1, maxReconnectAttempts: MAX_MCP_RECONNECT_ATTEMPTS };
   }
 
   private getFullServerStatus(name: string): McpServerStatus {
@@ -1291,6 +1431,7 @@ export class McpManager extends EventEmitter {
       uptime: client.uptime,
       containerBacked: !!config?.containerConfig,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
+      ...this.reconnectProgress(name),
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),
       error: this.serverErrors.get(name),
@@ -1335,9 +1476,24 @@ export class McpManager extends EventEmitter {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         // For http/sse servers with a headersHelper, refresh dynamic auth headers
-        // right before the handshake so rotating/short-lived tokens are current.
+        // right before the handshake so rotating/short-lived tokens are current —
+        // but ONLY when the workspace-trust boundary allows executing the (arbitrary)
+        // helper script (an untrusted project `.mcp.json` must not run code until its
+        // server is approved). When untrusted, skip the helper, record a recoverable
+        // warning diagnostic, and fall back to the static headers already applied at
+        // client creation so the connect still proceeds.
         if (config?.headersHelper && (config.transport === 'http' || config.transport === 'sse')) {
-          client.setHeaders(await resolveMcpServerHeaders(name, config));
+          if (this.isHeadersHelperTrusted(name)) {
+            client.setHeaders(await resolveMcpServerHeaders(name, config));
+          } else {
+            const warning = `headersHelper not executed: the project MCP server "${name}" must be approved before its config-supplied helper script can run (workspace-trust boundary)`;
+            coreLog('mcp', warning);
+            const existing = this._configWarnings.get(name) ?? [];
+            if (!existing.includes(warning)) {
+              this._configWarnings.set(name, [...existing, warning]);
+              this.emit('config-warning', name, [warning]);
+            }
+          }
         }
         if (config?.transport === 'http' && config.url) {
           await client.connectHTTP(config.url);
@@ -1613,6 +1769,7 @@ export class McpManager extends EventEmitter {
       promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
+      ...this.reconnectProgress(name),
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),
     };
@@ -1818,6 +1975,7 @@ export class McpManager extends EventEmitter {
     this._configWarnings.clear();
     this._configErrors.clear();
     this._configValidationErrors.clear();
+    this._configValidationSources.clear();
     for (const name of this.clients.keys()) this._intentionalDisconnect.add(name);
     for (const client of this.clients.values()) {
       client.disconnect();
@@ -1848,8 +2006,27 @@ export class McpManager extends EventEmitter {
       this._configErrors.delete(configPath);
       return;
     }
+    // Read the file first, in its own guard: an UNREADABLE file (a permission
+    // problem, or a directory where a file was expected) is a distinct, actionable
+    // failure from a readable-but-malformed one, so surface each with its own fix.
+    let raw: string;
     try {
-      const raw = fs.readFileSync(configPath, 'utf-8');
+      raw = fs.readFileSync(configPath, 'utf-8');
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      const hint = code === 'EACCES'
+        ? 'Check the file permissions (it is not readable by the current user).'
+        : code === 'EISDIR'
+          ? 'A directory exists at this path where an MCP config file was expected — remove it or point MCP at the file.'
+          : 'Ensure the path is a readable MCP config file.';
+      const message = `Cannot read MCP config "${configPath}"${code ? ` (${code})` : ''}: ${err instanceof Error ? err.message : String(err)}. ${hint}`;
+      const diag: McpConfigError = { path: configPath, message, severity: 'fatal' };
+      this._configErrors.set(configPath, diag);
+      coreLog('mcp', message);
+      this.emit('config-error', diag);
+      return;
+    }
+    try {
       const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
       const config = JSON.parse(stripped);
       // Parsed cleanly — clear any stale parse error for this path.
@@ -1869,10 +2046,15 @@ export class McpManager extends EventEmitter {
       // diagnostic + event instead of silently dropping every server it declared,
       // so the user can see and fix their broken config (vs. a missing file, which
       // is expected and handled above).
-      const message = err instanceof Error ? err.message : String(err);
+      const reason = err instanceof Error ? err.message : String(err);
+      // Actionable guidance for the most common JSON hand-edit mistakes, so the user
+      // can fix the file instead of just seeing a raw parser offset (Claude-parity
+      // readMcpJson actionable error, services/mcp/config.ts:L1438-1468).
+      const message = `Failed to parse MCP config "${configPath}" as JSON: ${reason}. `
+        + 'Check for a trailing comma, an unquoted key, a missing comma between entries, or an unclosed brace/bracket.';
       const diag: McpConfigError = { path: configPath, message, severity: 'fatal' };
       this._configErrors.set(configPath, diag);
-      coreLog('mcp', `Failed to parse MCP config "${configPath}": ${message}`);
+      coreLog('mcp', message);
       this.emit('config-error', diag);
     }
   }
@@ -1903,11 +2085,13 @@ export class McpManager extends EventEmitter {
           if (issues.length > 0) {
             const msg = issues.join('; ');
             this._configValidationErrors.set(name, msg);
+            if (opts.sourcePath) this._configValidationSources.set(name, opts.sourcePath);
             coreLog('mcp', `invalid MCP server "${name}": ${msg}`);
             this.emit('config-invalid', name, issues);
             continue;
           }
           this._configValidationErrors.delete(name);
+          this._configValidationSources.delete(name);
           const cfg = normalized as McpServerConfig;
           if (!cfg.command && !cfg.url) continue;
           const missing = new Set<string>();
@@ -1962,6 +2146,7 @@ export class McpManager extends EventEmitter {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this._configValidationErrors.set(name, message);
+          if (opts.sourcePath) this._configValidationSources.set(name, opts.sourcePath);
           coreLog('mcp', `failed to load MCP server "${name}": ${message}`);
           this.emit('config-invalid', name, [message]);
         }
