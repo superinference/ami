@@ -38,6 +38,18 @@ export interface SkillCatalogEntry {
    * fallback), mirroring Claude Code's `checkBridgeMinVersion` default.
    */
   requires?: string;
+  /**
+   * Optional list of this skill's relative file paths that must be materialized
+   * with an owner-execute bit set — scripts/hooks a skill ships and later runs
+   * (e.g. a `hooks/*.sh` the hook runner invokes with `sh -c "/path/script.sh"`).
+   * Mirrors Claude Code's archive exec-bit preservation (officialMarketplaceGcs
+   * `parseZipModes` → `chmod` when `mode & 0o111`): without it a shipped script
+   * extracts non-executable and fails with EACCES. AMI declares executability
+   * per-file in the catalog because files are fetched individually over HTTP
+   * (there are no archive mode bits to recover). Only entries that ALSO appear
+   * in `files` survive validation; others are dropped with an error.
+   */
+  executable?: string[];
 }
 
 /** Lowercase 64-char hex SHA-256 digest. */
@@ -381,6 +393,30 @@ export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
       }
     }
 
+    // Optional executable-file declarations. Keep only well-formed paths that
+    // correspond to a validated declared file, so a hostile catalog cannot mark
+    // an undeclared/unsafe path executable; duplicates are collapsed.
+    let executable: string[] | undefined;
+    if (entry.executable !== undefined) {
+      if (!Array.isArray(entry.executable)) {
+        errors.push(`skills[${i}] "${entry.name}": "executable" must be an array`);
+      } else {
+        const execPaths: string[] = [];
+        for (const p of entry.executable) {
+          if (typeof p !== 'string') {
+            errors.push(`skills[${i}] "${entry.name}": executable entry must be a string`);
+            continue;
+          }
+          if (!safeFiles.includes(p)) {
+            errors.push(`skills[${i}] "${entry.name}": executable path "${p}" is not a declared file`);
+            continue;
+          }
+          if (!execPaths.includes(p)) execPaths.push(p);
+        }
+        if (execPaths.length > 0) executable = execPaths;
+      }
+    }
+
     // Optional discovery metadata: a free-form category and a tag list. Only
     // well-formed string values are retained; a tag array is filtered to strings
     // and capped so a hostile catalog cannot smuggle a huge/garbage collection.
@@ -401,6 +437,7 @@ export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
       files: safeFiles,
       checksums,
       requires: typeof entry.requires === 'string' ? entry.requires : undefined,
+      executable,
     });
   }
 
