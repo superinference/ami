@@ -114,6 +114,9 @@ export type {
   ImageContent,
   ToolInputSchema,
   ToolResult,
+  ToolGroupKind,
+  ToolGroupCounts,
+  ChannelMessageMeta,
   ToolContext,
   ToolDefinition,
   ProviderConfig,
@@ -303,6 +306,22 @@ export {
   stripInvalidXmlChars,
   unescapeXml,
 } from './xml-escape';
+export {
+  CHANNEL_TAG,
+  SAFE_CHANNEL_META_KEY,
+  wrapChannelMessage,
+  parseChannelMessage,
+  displayChannelServerName,
+  isChannelMessage,
+} from './channel-message';
+export {
+  classifyToolGroupKind,
+  aggregateToolGroupCounts,
+  emptyToolGroupCounts,
+  hasNonMemoryOps,
+  isGitOpBashCommand,
+} from './tool-group-counts';
+export type { ToolGroupClassifyOptions } from './tool-group-counts';
 export {
   LSPClient,
   getLSPClient,

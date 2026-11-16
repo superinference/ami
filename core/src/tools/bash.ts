@@ -451,7 +451,7 @@ function looksLikeHungPrompt(output: string): boolean {
 
 /** Global git options that take a separate value token (so the token after them
  *  is a value, not the subcommand). */
-const GIT_VALUE_OPTS = new Set([
+export const GIT_VALUE_OPTS = new Set([
   '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path',
   '--super-prefix', '--config-env',
 ]);

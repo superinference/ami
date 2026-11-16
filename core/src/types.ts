@@ -280,6 +280,64 @@ export interface ToolResult {
   structuredPatch?: DiffHunk[];
 }
 
+/** The collapse "kind" a single tool call contributes to a consecutive
+ *  read/search group. Parity: Claude's `getToolSearchOrReadInfo` discriminator
+ *  (`utils/collapseReadSearch.ts`). `absorbed` tool calls (e.g. `tool_search`)
+ *  belong to the group visually but increment no count. */
+export type ToolGroupKind =
+  | 'search'
+  | 'read'
+  | 'list'
+  | 'repl'
+  | 'bash'
+  | 'gitOpBash'
+  | 'mcpCall'
+  | 'memoryRead'
+  | 'memorySearch'
+  | 'memoryWrite'
+  | 'absorbed'
+  | 'none';
+
+/** Aggregated per-kind counts for a collapsed run of consecutive read/search
+ *  tool calls, so a frontend can render one summary row ("Read 4 files · Searched
+ *  3×") instead of a wall of individual rows. Parity: Claude's
+ *  `CollapsedReadSearchGroup` schema (`components/messages/CollapsedReadSearchContent.tsx`).
+ *  Built by {@link aggregateToolGroupCounts}. */
+export interface ToolGroupCounts {
+  searchCount: number;
+  readCount: number;
+  listCount: number;
+  replCount: number;
+  bashCount: number;
+  /** Bash commands recognised as git operations (commit/push/branch/PR); surfaced
+   *  separately so they are not double-counted against {@link bashCount}. */
+  gitOpBashCount: number;
+  mcpCallCount: number;
+  memoryReadCount: number;
+  memorySearchCount: number;
+  memoryWriteCount: number;
+  /** Distinct MCP server names seen in the group (leaf names, dedup, first-seen order). */
+  mcpServerNames: string[];
+}
+
+/** Parsed form of a `<channel source="…" user="…" chat_id="…">…</channel>`
+ *  wrapper that an external channel (e.g. a chat/MCP bridge) prepends to an
+ *  inbound user message. Parity: Claude's channel-message schema
+ *  (`components/messages/UserChannelMessage.tsx`, `services/mcp/channelNotification.ts`).
+ *  `source` is mandatory and always written first; every other attribute
+ *  (`user`, `chat_id`, `thread_ts`, …) is optional and carried in {@link attrs}. */
+export interface ChannelMessageMeta {
+  /** Originating channel/server name, e.g. `slack` or `plugin:slack-channel:slack`. */
+  source: string;
+  /** Convenience accessor for the common `user` attribute (also present in {@link attrs}). */
+  user?: string;
+  /** All parsed attributes except `source` (includes `user`, `chat_id`, …). */
+  attrs: Record<string, string>;
+  /** The channel message body (inner text of the wrapper, trimmed of the single
+   *  framing newline on each side). */
+  content: string;
+}
+
 /** Per-host outbound-network allow/deny lists for the sandbox. `deniedHosts`
  *  takes precedence over `allowedHosts`. Proxy ports route the container's
  *  outbound traffic through a host proxy (parity: Claude's SandboxNetworkConfig). */
