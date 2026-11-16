@@ -26,7 +26,8 @@ import { formatTimeoutBackgroundOutput } from '../src/tools/bash';
 describe('formatTimeoutBackgroundOutput — notice content', () => {
   it('embeds the timeout, the task id, and the task_output hint in the notice', () => {
     const out = formatTimeoutBackgroundOutput('', '', 4200, 'task-abc');
-    assert.match(out, /Command timed out after 4200ms\./);
+    // formatDuration renders >=1s human-readably (parity): 4200ms -> "4s".
+    assert.match(out, /Command timed out after 4s\./);
     assert.match(out, /Auto-moved to background as task task-abc\./);
     assert.match(out, /still running in the background/);
     assert.match(out, /use task_output to check progress/);

@@ -304,6 +304,61 @@ export function stripEmptyLines(content: string): string {
   return lines.slice(start, end + 1).join('\n');
 }
 
+/**
+ * Base commands that normally produce NO stdout on success (`mkdir`, `mv`, …).
+ * When a command is composed entirely of these, an empty stdout is expected, so
+ * the UI shows a success affordance instead of a misleading "(no output)".
+ * Parity: Claude Code BashTool BASH_SILENT_COMMANDS.
+ */
+const BASH_SILENT_COMMANDS = new Set([
+  'mv', 'cp', 'rm', 'mkdir', 'rmdir', 'chmod', 'chown', 'chgrp', 'touch', 'ln',
+  'cd', 'export', 'unset', 'wait',
+]);
+
+/**
+ * Commands that carry no semantic weight; after a `||` they are pure fallbacks
+ * (e.g. `rm x || echo "failed"`), so they do not make a silent command noisy.
+ * Parity: Claude Code BashTool BASH_SEMANTIC_NEUTRAL_COMMANDS.
+ */
+const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false', ':']);
+
+/**
+ * True if a bash command is expected to produce no stdout on success — used to
+ * show a "no output expected" affordance instead of a misleading empty result.
+ *
+ * Unlike the old leading-command regex (which only inspected the FIRST command
+ * and a narrow set), this is compound/pipeline-aware: the command is split on
+ * the sequencing operators `&&`, `||`, `;`, `|`, and EVERY non-fallback segment's
+ * base command must be in {@link BASH_SILENT_COMMANDS}. A semantic-neutral
+ * command following `||` (an error-path fallback like `… || echo failed`) is
+ * skipped rather than counted as noisy output. Returns false when any segment is
+ * not silent (e.g. `cp a b && ls`, `rm x | tee log`) or when there is no real
+ * command at all. Parity: Claude Code BashTool isSilentBashCommand.
+ */
+export function isSilentBashCommand(command: string): boolean {
+  // Split while capturing the sequencing operator before each segment so the
+  // `||`-fallback rule can look back at the operator that introduced a segment.
+  const parts = command.split(/\s*(&&|\|\||;|\|)\s*/).map(s => s.trim()).filter(Boolean);
+  if (parts.length === 0) return false;
+  let hasNonFallbackCommand = false;
+  let lastOperator: string | null = null;
+  for (const part of parts) {
+    if (part === '&&' || part === '||' || part === ';' || part === '|') {
+      lastOperator = part;
+      continue;
+    }
+    // The base command is the first whitespace-delimited token; a redirect
+    // target can never be a base command because it is never segment-leading.
+    const baseCommand = part.split(/\s+/)[0];
+    if (!baseCommand) continue;
+    // A neutral command used as a `||` fallback does not make the command noisy.
+    if (lastOperator === '||' && BASH_SEMANTIC_NEUTRAL_COMMANDS.has(baseCommand)) continue;
+    hasNonFallbackCommand = true;
+    if (!BASH_SILENT_COMMANDS.has(baseCommand)) return false;
+  }
+  return hasNonFallbackCommand;
+}
+
 const FILE_READ_COMMANDS = /^\s*(?:cat|head|tail|less|more|bat|batcat|grep|egrep|fgrep|sed\s+-n)\b/;
 const GREP_COMMANDS = /^\s*(?:grep|egrep|fgrep)\b/;
 
@@ -1194,7 +1249,7 @@ export const bashTool: ToolDefinition = {
         };
       }
       return {
-        output: sanitizeToolOutput(formatOutput(presented.stdout, presented.stderr, null, `Command timed out after ${timeout}ms.`)),
+        output: sanitizeToolOutput(formatOutput(presented.stdout, presented.stderr, null, `Command timed out after ${formatDuration(timeout)}.`)),
         isError: true,
       };
     }
@@ -1229,7 +1284,11 @@ export const bashTool: ToolDefinition = {
           })
         : presented.stderr;
 
-    const noOutputExpected = /^\s*(mkdir|touch|mv|cp|rm|chmod|chown)\b/.test(command);
+    // Compound/pipeline-aware silent-command detection (parity): every segment
+    // must be a known no-output command, so a noisy later segment (`cp a b && ls`)
+    // no longer gets a misleading affordance, while a broader silent set
+    // (rmdir/chgrp/ln/…) now does.
+    const noOutputExpected = isSilentBashCommand(command);
     if (noOutputExpected && !stdout.trim() && result.exitCode === 0) {
       stdout = '[Command completed successfully (no output expected)]';
     }
@@ -1434,6 +1493,30 @@ export function interpretExitCode(command: string, exitCode: number): ExitCodeIn
   return null;
 }
 
+/**
+ * Render a millisecond duration as a compact human-readable string for
+ * model/user-facing messages (timeouts). Parity: Claude Code
+ * ShellCommand `Command timed out after ${formatDuration(timeout)}` — e.g.
+ * 120000 → "2m", 90000 → "1m 30s", 3661000 → "1h 1m 1s". As a superset over
+ * Claude's whole-second rendering, a sub-second value keeps ms precision
+ * ("400ms") rather than collapsing to "0s". Non-finite/negative input falls back
+ * to the raw `${ms}ms` form so the message is never silently wrong.
+ */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 1000) return `${ms}ms`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (seconds || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(' ');
+}
+
 export function truncateBashText(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
     return text;
@@ -1508,7 +1591,7 @@ export function formatTimeoutBackgroundOutput(
   taskId: string,
 ): string {
   const notice =
-    `Command timed out after ${timeout}ms. Auto-moved to background as task ${taskId}. ` +
+    `Command timed out after ${formatDuration(timeout)}. Auto-moved to background as task ${taskId}. ` +
     'The command is still running in the background — use task_output to check progress.';
   // Decide "nothing captured" from the raw streams, not by string-comparing
   // formatOutput's result to its '(no output)' sentinel — a command whose real
