@@ -19,6 +19,7 @@ export interface SkillDefinition {
   description: string;
   content: string;        // Markdown body (the skill instructions)
   filePath: string;       // Where the skill file lives ('<builtin>' for built-ins)
+  version?: string;       // Author-declared version string (frontmatter `version`), surfaced in /skills
   whenToUse?: string;     // Hint for auto-activation
   paths?: string[];       // File glob patterns that auto-activate this skill
   model?: string;         // Override model for this skill
