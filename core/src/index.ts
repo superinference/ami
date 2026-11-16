@@ -51,7 +51,13 @@ export {
 } from './permissions';
 export type { PermissionRuleValue } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
-export { SessionMemoryExtractor, selectIncrementalWindow } from './session-memory';
+export {
+  SessionMemoryExtractor,
+  selectIncrementalWindow,
+  substituteMemoryVariables,
+  loadSessionMemoryPromptTemplate,
+  DEFAULT_MEMORY_PROMPT_TEMPLATE,
+} from './session-memory';
 export type { SessionFact, IncrementalWindow } from './session-memory';
 export { AnalyticsTracker, generateToolSummary } from './analytics';
 export type { AnalyticsEvent, AnalyticsTrackerOpts } from './analytics';

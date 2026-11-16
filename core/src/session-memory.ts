@@ -3,9 +3,12 @@
  * and recent conversation context for cross-turn memory persistence.
  */
 
+import { readFile } from 'node:fs/promises';
+import * as path from 'node:path';
 import type { ProviderConfig, Message } from './types';
 import { streamChatCompletion, streamChatCompletionWithRetry } from './provider';
 import { log as coreLog } from './logger';
+import { resolveConfigDir } from './reference-journal';
 
 export interface SessionFact {
   fact: string;
@@ -271,6 +274,57 @@ Categories:
 
 Only include facts that would be genuinely useful in future turns. Be concise. Always convert relative dates (e.g. "today", "yesterday", "Thursday") to absolute calendar dates (YYYY-MM-DD) so facts stay interpretable in later sessions. If an existing-memory listing is provided below, do NOT repeat facts already present — only emit facts that are new or that update one of them. Return ONLY the JSON array, no other text.`;
 
+/**
+ * Default user-content template for a fact-extraction pass. The three `{{…}}`
+ * tokens are substituted by {@link SessionMemoryExtractor.extractFacts}:
+ *   - `{{toolResults}}`       — the (redacted, truncated) tool-result summary
+ *   - `{{recentConversation}}`— the (redacted, truncated) trailing-message summary
+ *   - `{{existingMemory}}`    — the already-persisted-facts manifest (or empty)
+ * A user may override this verbatim via a config file (see
+ * {@link loadSessionMemoryPromptTemplate}); unknown tokens are left intact.
+ */
+export const DEFAULT_MEMORY_PROMPT_TEMPLATE =
+  '## Tool Results\n{{toolResults}}\n\n## Recent Conversation\n{{recentConversation}}{{existingMemory}}';
+
+/**
+ * Single-pass, backreference-safe substitution of `{{name}}` tokens in a prompt
+ * template. A FUNCTION replacer inserts each value LITERALLY, so a value containing
+ * `$&`/`$1`/`$$` (or arbitrary user/tool text) is never reinterpreted as a regex
+ * backreference, and the single pass means a value that itself contains `{{other}}`
+ * is NOT re-expanded (no double-substitution / injection). Unknown tokens are left
+ * untouched. Parity: Claude's SessionMemory `substituteVariables`
+ * (SessionMemory/prompts.ts:L198-212).
+ */
+export function substituteMemoryVariables(template: string, variables: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : match,
+  );
+}
+
+/**
+ * Load the user-overridable fact-extraction prompt template. Reads
+ * `<configDir>/session-memory/config/prompt.md` (configDir defaults to the AMI
+ * config home, `~/.ami`), returning its contents so a user can fully customize the
+ * extraction prompt — including `{{toolResults}}` / `{{recentConversation}}` /
+ * `{{existingMemory}}` substitution tokens. Falls back to
+ * {@link DEFAULT_MEMORY_PROMPT_TEMPLATE} when the file is absent (ENOENT); any other
+ * read error is logged and also falls back, so a malformed config can never break
+ * extraction. Parity: Claude's `loadSessionMemoryPrompt`
+ * (SessionMemory/prompts.ts:L106-129), rehomed under the AMI config dir.
+ */
+export async function loadSessionMemoryPromptTemplate(configDir?: string): Promise<string> {
+  const base = configDir ?? resolveConfigDir();
+  const promptPath = path.join(base, 'session-memory', 'config', 'prompt.md');
+  try {
+    return await readFile(promptPath, { encoding: 'utf-8' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      coreLog('session-memory', 'Failed to read custom extraction prompt; using default', { error: String(err) });
+    }
+    return DEFAULT_MEMORY_PROMPT_TEMPLATE;
+  }
+}
+
 export class SessionMemoryExtractor {
   private provider: ProviderConfig;
   private compactionModel?: string;
@@ -287,6 +341,10 @@ export class SessionMemoryExtractor {
   /** Test seam: the clock used to resolve relative dates in extracted facts.
    *  Defaults to the real wall clock; tests override it for determinism. */
   _now: () => Date = () => new Date();
+  /** Config root under which the user-overridable extraction prompt is looked up
+   *  (`<_configDir>/session-memory/config/prompt.md`). `undefined` → the resolved
+   *  AMI config home (`~/.ami`). Tests point it at a temp dir. */
+  _configDir?: string;
 
   /**
    * Whether session memory has crossed its initialization threshold at least once.
@@ -426,7 +484,15 @@ export class SessionMemoryExtractor {
           .join('\n')}`
       : '';
 
-    const userContent = `## Tool Results\n${toolResultsSummary}\n\n## Recent Conversation\n${messageSummary}${existingManifest}`;
+    // Build the user content from the (possibly user-overridden) prompt template,
+    // substituting the three content variables. The default template reproduces the
+    // original fixed layout exactly; a user prompt.md can reorder/reword it.
+    const promptTemplate = await loadSessionMemoryPromptTemplate(this._configDir);
+    const userContent = substituteMemoryVariables(promptTemplate, {
+      toolResults: toolResultsSummary,
+      recentConversation: messageSummary,
+      existingMemory: existingManifest,
+    });
 
     // Use compaction model if available, otherwise primary model
     const effectiveConfig: ProviderConfig = this.compactionModel
