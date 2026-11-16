@@ -124,7 +124,7 @@ describe('execCommand – output truncation', () => {
       { cwd: process.cwd() },
     );
     assert.ok(result.stdout.length > 110_000);
-    assert.ok(!result.stdout.includes('chars truncated'));
+    assert.ok(!result.stdout.includes('truncated'));
   });
 
   it('keeps the head and the tail past one megabyte', async () => {
@@ -134,7 +134,10 @@ describe('execCommand – output truncation', () => {
     );
     assert.ok(result.stdout.startsWith('HEAD'));
     assert.ok(result.stdout.includes('TAIL'));
-    assert.ok(result.stdout.includes('chars truncated'));
+    // The enriched truncation note reports the kept head/tail bounds, the true
+    // total size, and the dropped count (U049 parity with Claude's size report).
+    assert.ok(result.stdout.includes('truncated'));
+    assert.ok(/kept first \d+ \+ last \d+ of \d+ chars/.test(result.stdout));
     assert.ok(result.stdout.length < 1_200_000);
   });
 });

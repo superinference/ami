@@ -60,7 +60,11 @@ function createOutputBuffer(): { push: (chunk: string) => void; value: () => str
     },
     value() {
       if (dropped === 0) return head + tail;
-      return head + `\n[${dropped} chars truncated]\n` + tail;
+      // Report the magnitude so the caller/model knows the TRUE output size and
+      // how much was kept, not just that some middle was dropped. The total is
+      // the sum of the retained head + tail and the dropped middle.
+      const total = head.length + dropped + tail.length;
+      return head + `\n[kept first ${head.length} + last ${tail.length} of ${total} chars; ${dropped} truncated]\n` + tail;
     },
   };
 }
@@ -360,6 +364,10 @@ export function execCommand(
       stdio: [input != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       cwd: effectiveCwd,
       detached: !isWindows,
+      // Suppress the console window a spawned `cmd /c` would otherwise flash on
+      // Windows. Ignored (no-op) on POSIX platforms, so it is safe to set
+      // unconditionally.
+      windowsHide: true,
       ...(env ? { env } : {}),
     });
 
