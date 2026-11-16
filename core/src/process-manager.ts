@@ -149,6 +149,24 @@ export function classifyExitStatus(code: number | null, signal: NodeJS.Signals |
   return code === 0 ? 'completed' : 'failed';
 }
 
+/**
+ * Compute a background task's elapsed wall-clock duration, mirroring Claude
+ * Code's CoordinatorAgentStatus/useElapsedTime formula:
+ *   Math.max(0, (endTime ?? now) - startTime - totalPausedMs)
+ * i.e. FREEZE at `endTime` once the task is terminal (so viewing a finished task
+ * long after it ended doesn't show an ever-growing figure), SUBTRACT the time the
+ * task's clock was paused (e.g. while blocked on an interactive prompt), and CLAMP
+ * negative skew (clock jumps, paused > wall) to 0. `now` is injectable for tests.
+ */
+export function computeElapsedMs(
+  startTime: number,
+  endTime: number | undefined,
+  totalPausedMs: number,
+  now: number = Date.now(),
+): number {
+  return Math.max(0, (endTime ?? now) - startTime - totalPausedMs);
+}
+
 /** How long after the shell exits to keep the output fd open so the parent's own
  *  buffered stdout/stderr can flush, before finalizing the task regardless of any
  *  grandchildren that inherited the fds (see the 'exit'-not-'close' rationale). */
@@ -199,6 +217,14 @@ export interface BackgroundProcess {
    * completion instead of growing forever; undefined while still running.
    */
   endTime?: number;
+  /**
+   * Cumulative wall-clock time (ms) the task's elapsed clock has been paused — e.g.
+   * while the task sat blocked on an interactive prompt. Subtracted from the
+   * wall-clock by computeElapsedMs so the reported duration reflects active work,
+   * not idle waiting. Mirrors Claude Code's task.totalPausedMs. Undefined ⇒ never
+   * paused (treated as 0).
+   */
+  totalPausedMs?: number;
   /** Cumulative token usage for background agents (undefined for bash tasks). */
   tokenCount?: number;
 }
@@ -222,6 +248,12 @@ interface InternalProcess extends BackgroundProcess {
    *  `kill` is an abort callback. kill() MUST invoke that callback and must NEVER
    *  run `process.kill(-pid)` on it (that targets the app's own process group). */
   _registered?: boolean;
+  /** Wall-clock ms at which the current (open) pause began, or undefined when the
+   *  clock is running. resumeTask() folds (now - _pausedAt) into totalPausedMs. */
+  _pausedAt?: number;
+  /** Latched true once the stall-on-prompt actionable hint has been written, so
+   *  the watchdog notifies the model exactly once per task. */
+  _stallNotified?: boolean;
 }
 
 export class ProcessManager extends EventEmitter {
@@ -335,17 +367,11 @@ export class ProcessManager extends EventEmitter {
     proc.stdout?.on('error', swallowEBADF);
     proc.stderr?.on('error', swallowEBADF);
 
-    // Stall detection for background processes
+    // Stall detection for background processes. Delegated to stallTick() so the
+    // logic is unit-testable without waiting out the 45s interval.
     let lastOutputSize = 0;
     const stallCheck = setInterval(() => {
-      const currentSize = this.getOutputSize(taskId);
-      if (currentSize === lastOutputSize) {
-        const result = this.getOutput(taskId, 10);
-        if (result && this.looksLikePrompt(result.output)) {
-          this.kill(taskId);
-        }
-      }
-      lastOutputSize = currentSize;
+      lastOutputSize = this.stallTick(taskId, lastOutputSize);
     }, 45_000);
 
     let bgTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -373,6 +399,7 @@ export class ProcessManager extends EventEmitter {
         entry.status = classifyExitStatus(code, signal);
       }
       entry.exitCode = resolveExitCode(code, signal);
+      this.settlePause(entry);
       entry.endTime = Date.now();
       try { fs.closeSync(fd); } catch { /* already closed (e.g. after kill) */ }
       entry.outputFd = null;
@@ -402,6 +429,7 @@ export class ProcessManager extends EventEmitter {
       if (bgTimeout) clearTimeout(bgTimeout);
       clearTimeout(exitTimer);
       entry.status = 'failed';
+      this.settlePause(entry);
       entry.endTime = Date.now();
       this.safeWrite(fd, Buffer.from(`\n[process error: ${err.message}]\n`));
       try { fs.closeSync(fd); } catch { /* ignore */ }
@@ -434,6 +462,9 @@ export class ProcessManager extends EventEmitter {
     if (!entry || entry.status !== 'running') return false;
 
     entry.status = 'killed';
+    // Close any open pause window into totalPausedMs before freezing the clock so
+    // a task killed while stalled keeps correct pause accounting.
+    this.settlePause(entry);
     // Freeze the elapsed-time clock at the kill instant. For a real child this is
     // overwritten (with ~the same value) when its 'exit' event fires; for
     // in-process agents / MCP monitors (no exit event) this is the only place the
@@ -471,6 +502,94 @@ export class ProcessManager extends EventEmitter {
     }
 
     return true;
+  }
+
+  /**
+   * FUNCTIONAL (parity): pause a RUNNING task's elapsed-time clock. Idempotent — a
+   * second pause() before a resume() is a no-op (returns false). Used by the stall
+   * watchdog so a task blocked on an interactive prompt doesn't inflate its
+   * active-work duration. Mirrors Claude Code's pause/resume accounting
+   * (task.totalPausedMs). Returns true when the clock transitioned to paused.
+   */
+  pauseTask(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running') return false;
+    if (entry._pausedAt !== undefined) return false; // already paused
+    entry._pausedAt = Date.now();
+    return true;
+  }
+
+  /**
+   * FUNCTIONAL (parity): resume a paused task's clock, folding the elapsed pause
+   * window into totalPausedMs. No-op (returns false) when the task isn't currently
+   * paused. Returns true when a pause window was closed.
+   */
+  resumeTask(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry._pausedAt === undefined) return false;
+    this.settlePause(entry);
+    return true;
+  }
+
+  /** Close any open pause window into totalPausedMs (no-op if not paused). Shared
+   *  by resumeTask() and every terminal transition so no paused time is lost. */
+  private settlePause(entry: InternalProcess): void {
+    if (entry._pausedAt === undefined) return;
+    entry.totalPausedMs = (entry.totalPausedMs ?? 0) + (Date.now() - entry._pausedAt);
+    entry._pausedAt = undefined;
+  }
+
+  /**
+   * One stall-check tick for a running background task (extracted from spawn()'s
+   * 45s interval so it is unit-testable). Mirrors Claude Code's startStallWatchdog:
+   * when the output STOPPED growing AND the tail looks like an interactive prompt,
+   * write an ACTIONABLE hint into the task's own output file (surfaced to the model
+   * via getOutput — the already-wired delivery surface), PAUSE the elapsed clock,
+   * and emit a one-shot 'stalled' event — instead of silently KILLING the task as
+   * before. If output grew since the last tick the task is making progress: resume
+   * the clock if it was paused. Returns the latest observed output size for the
+   * caller to carry into the next tick.
+   */
+  private stallTick(taskId: string, lastSize: number): number {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running') return lastSize;
+    const currentSize = this.getOutputSize(taskId);
+    if (currentSize !== lastSize) {
+      // Output grew — the task is making progress, not stalled.
+      if (entry._pausedAt !== undefined) this.resumeTask(taskId);
+      return currentSize;
+    }
+    if (!entry._stallNotified) {
+      const result = this.getOutput(taskId, 10);
+      if (result && this.looksLikePrompt(result.output)) {
+        entry._stallNotified = true;
+        this.pauseTask(taskId);
+        this.notifyStall(entry, result.output);
+        // Account for the hint bytes just written so the next tick's size
+        // comparison is stable (doesn't read as spurious growth → resume).
+        return this.getOutputSize(taskId);
+      }
+    }
+    return currentSize;
+  }
+
+  /** Write a one-shot actionable stall hint into the task output and emit the
+   *  'stalled' event (mirrors Claude Code's task-notification: tell the model the
+   *  command is likely blocked on an interactive prompt and how to recover). */
+  private notifyStall(entry: InternalProcess, tail: string): void {
+    const hint =
+      `\n[background task "${entry.description}" appears to be waiting for interactive input. ` +
+      `The command is likely blocked on an interactive prompt. Kill this task and re-run ` +
+      `with piped input (e.g. \`echo y | command\`) or a non-interactive flag if one exists.]\n`;
+    if (entry.outputFd !== null) {
+      this.safeWrite(entry.outputFd, Buffer.from(hint));
+    }
+    this.emit('stalled', {
+      taskId: entry.taskId,
+      description: entry.description,
+      outputPath: entry.outputPath,
+      tail,
+    });
   }
 
   /**
@@ -600,9 +719,9 @@ export class ProcessManager extends EventEmitter {
       status: entry.status,
       exitCode: entry.exitCode,
       output,
-      // Freeze elapsed at the terminal timestamp so a finished task reports its
-      // real wall-clock duration instead of a figure that grows forever.
-      elapsedMs: (entry.endTime ?? Date.now()) - entry.startTime,
+      // Freeze at the terminal timestamp, discount paused time, and clamp negative
+      // skew — the shared Claude-parity formula (see computeElapsedMs).
+      elapsedMs: computeElapsedMs(entry.startTime, entry.endTime, entry.totalPausedMs ?? 0),
     };
   }
 
@@ -647,13 +766,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, ...rest } = entry;
     return rest;
   }
 
