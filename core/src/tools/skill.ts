@@ -1,7 +1,8 @@
+import { dirname } from 'node:path';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, type SkillManagerLike, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 import { parseMcpToolName } from './mcp-tool';
@@ -135,6 +136,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set<string>([
   'context',
   'disableModelInvocation',
   'effort',
+  'agent',
   'permissionMode',
   'autoAllowPatterns',
   'mcpServers',
@@ -193,11 +195,53 @@ export interface SkillToolFilterWarning {
 }
 
 /**
- * Normalize a single `allowed-tools`/`disallowed-tools` entry to an AMI tool name.
+ * Coarse tool-class taxonomy (parity with Claude Code's ToolSelector getToolBuckets:
+ * Read-only / Edit / Execution / MCP / Other). Lets a skill/agent allowlist be
+ * authored and reasoned about by tool CLASS ("allow all read-only + edit") instead
+ * of enumerating every tool name. Derived from the tool's own `isMcp`/`isReadOnly`
+ * flags plus a small name set for the edit/execution classes (mutating file tools
+ * and shell/process tools are never read-only, so they can't be auto-classified by
+ * the flags alone) — mirroring Claude's hard-coded bucket membership.
+ */
+export type ToolCategory = 'read-only' | 'edit' | 'execution' | 'mcp' | 'other';
+
+/** Tools that MUTATE files on disk — the "edit" bucket. */
+const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set(['file_edit', 'file_write', 'notebook_edit']);
+/** Tools that EXECUTE shell / processes — the "execution" bucket. */
+const EXECUTION_TOOL_NAMES: ReadonlySet<string> = new Set(['bash', 'bash_output', 'kill_shell']);
+
+/** The category-token spellings accepted in an `allowed-tools`/`disallowed-tools`
+ *  list (case-insensitive). An entry matching one of these selects the whole class
+ *  rather than a single tool by name. */
+export const TOOL_CATEGORY_TOKENS: ReadonlySet<string> = new Set<ToolCategory>([
+  'read-only',
+  'edit',
+  'execution',
+  'mcp',
+  'other',
+]);
+
+/** Classify a tool into its taxonomy bucket (parity with getToolBuckets). */
+export function toolCategory(tool: ToolDefinition): ToolCategory {
+  if (tool.isMcp) return 'mcp';
+  if (EDIT_TOOL_NAMES.has(tool.name)) return 'edit';
+  if (EXECUTION_TOOL_NAMES.has(tool.name)) return 'execution';
+  if (tool.isReadOnly) return 'read-only';
+  return 'other';
+}
+
+/** The parsed form of a single allow/deny list entry: either a tool-CLASS token
+ *  (expands to every tool in that category) or a single normalized tool NAME. */
+type ParsedSkillToolEntry = { category: ToolCategory } | { name: string };
+
+/**
+ * Parse a single `allowed-tools`/`disallowed-tools` entry.
  *
- * Accepts Claude Code's authoring forms and maps them onto AMI's canonical tool
- * names so a skill/command imported verbatim resolves to the right tools instead
- * of silently matching nothing:
+ * Accepts Claude Code's authoring forms and maps them onto AMI concepts so a
+ * skill/command imported verbatim resolves to the right tools instead of silently
+ * matching nothing:
+ * - **Category tokens** (`read-only`, `edit`, `execution`, `mcp`, `other`) → the
+ *   whole tool class (see {@link toolCategory}).
  * - **Scoped command patterns** `Tool(scope:*)` → the tool-name portion (`Tool`).
  *   The scope is a permission concern handled by the permission engine, not the
  *   tool-list filter, so only the name is used for inclusion here.
@@ -205,10 +249,64 @@ export interface SkillToolFilterWarning {
  *   AMI names (`bash`, `file_read`, `file_edit`, `grep`, `list_dir`, …) via the
  *   shared `normalizeToolName` alias map (single source of truth — no local copy).
  */
-function normalizeSkillToolEntry(entry: string): string {
+function parseSkillToolEntry(entry: string): ParsedSkillToolEntry {
   const paren = entry.indexOf('(');
   const base = (paren >= 0 ? entry.slice(0, paren) : entry).trim();
-  return normalizeToolName(base);
+  const lower = base.toLowerCase();
+  if (TOOL_CATEGORY_TOKENS.has(lower)) return { category: lower as ToolCategory };
+  return { name: normalizeToolName(base) };
+}
+
+/** Sentinel `filePath` values that are NOT real on-disk locations (built-ins and
+ *  in-memory/test skills), so no base-directory pointer can be derived from them. */
+function isRealSkillPath(filePath: string | undefined): filePath is string {
+  return !!filePath && !filePath.startsWith('<') && filePath.includes('/');
+}
+
+/**
+ * The directory a disk-based skill lives in — where its sibling reference files
+ * (scripts, templates, docs the SKILL.md refers to) sit — or `null` for a built-in
+ * or in-memory skill that ships no on-disk tree. Parity with Claude's automatic
+ * "Base directory for this skill" pointer. Pure + exported for testability.
+ */
+export function skillBaseDir(skill: SkillDefinition | null | undefined): string | null {
+  const fp = skill?.filePath;
+  if (!isRealSkillPath(fp)) return null;
+  const dir = dirname(fp);
+  return dir && dir !== '.' ? dir : null;
+}
+
+/**
+ * Prepend a "Base directory for this skill: <dir>" pointer to a disk-based skill's
+ * content so the model can Read/Grep the skill's sibling reference files on demand
+ * without the author having to template `${SKILL_DIR}` by hand (parity with Claude
+ * Code's bundled/disk skill base-dir injection). No-op for built-in/in-memory
+ * skills and idempotent (never double-prepends). Pure + exported for testability.
+ */
+export function withSkillBaseDir(content: string, skill: SkillDefinition | null | undefined): string {
+  const dir = skillBaseDir(skill);
+  if (!dir || content.includes('Base directory for this skill:')) return content;
+  return `Base directory for this skill: ${dir}\n\n${content}`;
+}
+
+/**
+ * Build the skill-activation byline, surfacing the sandboxing a skill applies at the
+ * moment it activates (parity with Claude's renderToolResultMessage byline): the
+ * number of tools the skill is scoped to (when it restricts its toolset) and the
+ * model it is pinned to (when non-default). A `·`-joined one-liner; the base message
+ * is always first. Pure + exported for testability.
+ */
+export function skillActivationByline(
+  base: string,
+  allowedToolCount: number | undefined,
+  model: string | undefined,
+): string {
+  const parts = [base];
+  if (allowedToolCount !== undefined) {
+    parts.push(`${allowedToolCount} tool${allowedToolCount === 1 ? '' : 's'} allowed`);
+  }
+  if (model) parts.push(`model ${model}`);
+  return parts.join(' · ');
 }
 
 /**
@@ -220,7 +318,7 @@ function normalizeSkillToolEntry(entry: string): string {
  *    filter (Claude Code's `tools: ['*']` sentinel; AMI's convention of an empty
  *    list already means "all", so `*` is treated identically).
  * 2. If allowedTools is set, whitelist to only those tools (entries normalized via
- *    {@link normalizeSkillToolEntry}, so scoped `Tool(scope:*)` and Claude-cased
+ *    {@link parseSkillToolEntry}, so scoped `Tool(scope:*)` and Claude-cased
  *    names resolve to the correct AMI tool).
  * 3. Otherwise, include all tools minus 'skill'.
  * 4. If disallowedTools is set, remove those tools from the result.
@@ -237,23 +335,36 @@ export function filterToolsForSkill(
   let tools: ToolDefinition[];
 
   const realNames = new Set(allTools.map(t => t.name));
+  const isWildcard = (e: string): boolean => {
+    const p = parseSkillToolEntry(e);
+    return 'name' in p && p.name === '*';
+  };
+  // Resolve one allow/deny entry to concrete tool names: a category token expands
+  // to every tool in that class; a name resolves to itself (warning if it matches
+  // no real tool). Category tokens are valid taxonomy and never warn.
+  const resolveEntry = (entry: string, list: 'allowed' | 'disallowed', into: Set<string>): void => {
+    const parsed = parseSkillToolEntry(entry);
+    if ('category' in parsed) {
+      for (const t of allTools) if (toolCategory(t) === parsed.category) into.add(t.name);
+      return;
+    }
+    into.add(parsed.name);
+    if (!realNames.has(parsed.name)) {
+      onWarning?.({
+        kind: 'unknown-tool',
+        entry,
+        list,
+        message: `${list}-tools entry "${entry}" matches no available tool`,
+      });
+    }
+  };
+
   const allowedEntries = (skill?.allowedTools ?? []).filter(e => e && e.trim().length > 0);
-  const hasWildcard = allowedEntries.some(e => normalizeSkillToolEntry(e) === '*');
+  const hasWildcard = allowedEntries.some(isWildcard);
 
   if (allowedEntries.length > 0 && !hasWildcard) {
     const allowed = new Set<string>();
-    for (const entry of allowedEntries) {
-      const name = normalizeSkillToolEntry(entry);
-      allowed.add(name);
-      if (!realNames.has(name)) {
-        onWarning?.({
-          kind: 'unknown-tool',
-          entry,
-          list: 'allowed',
-          message: `allowed-tools entry "${entry}" matches no available tool`,
-        });
-      }
-    }
+    for (const entry of allowedEntries) resolveEntry(entry, 'allowed', allowed);
     tools = allTools.filter(t => allowed.has(t.name));
   } else {
     tools = allTools.filter(t => t.name !== 'skill');
@@ -262,18 +373,7 @@ export function filterToolsForSkill(
   const disallowedEntries = (skill?.disallowedTools ?? []).filter(e => e && e.trim().length > 0);
   if (disallowedEntries.length > 0) {
     const disallowed = new Set<string>();
-    for (const entry of disallowedEntries) {
-      const name = normalizeSkillToolEntry(entry);
-      disallowed.add(name);
-      if (!realNames.has(name)) {
-        onWarning?.({
-          kind: 'unknown-tool',
-          entry,
-          list: 'disallowed',
-          message: `disallowed-tools entry "${entry}" matches no available tool`,
-        });
-      }
-    }
+    for (const entry of disallowedEntries) resolveEntry(entry, 'disallowed', disallowed);
     tools = tools.filter(t => !disallowed.has(t.name));
   }
 
@@ -480,11 +580,29 @@ export const skillTool: ToolDefinition = {
     const isInline = skill?.context === 'inline' || !skill?.context;
 
     if (isInline && context._engineAddSystemReminder) {
-      context._engineAddSystemReminder(`[Skill: ${resolvedName}]\n${skillContent}`);
+      context._engineAddSystemReminder(`[Skill: ${resolvedName}]\n${withSkillBaseDir(skillContent, skill)}`);
       context._engineSetActiveSkill?.(resolvedName);
+      // Report the skill's effective sandboxing (tool-restriction count + model
+      // override) at activation, instead of a bare "activated inline" sentence, so
+      // the user sees the skill scoped the toolset/model (parity with Claude's
+      // skill-load byline). The count is only computed when the skill declares a
+      // restriction; an unrestricted skill keeps the plain message.
+      const restricts = (skill?.allowedTools?.length ?? 0) > 0 || (skill?.disallowedTools?.length ?? 0) > 0;
+      const inlineToolCount = restricts
+        ? filterToolsForSkill(createDefaultTools(context.cwd).getAll(), skill).length
+        : undefined;
       return {
-        output: `Skill "${resolvedName}" activated inline. Following its instructions.`,
-        metadata: { mode: 'inline', skill: resolvedName, model: skill?.model },
+        output: skillActivationByline(
+          `Skill "${resolvedName}" activated inline. Following its instructions.`,
+          inlineToolCount,
+          skill?.model,
+        ),
+        metadata: {
+          mode: 'inline',
+          skill: resolvedName,
+          model: skill?.model,
+          ...(inlineToolCount !== undefined ? { toolCount: inlineToolCount } : {}),
+        },
       };
     }
     const allTools = createDefaultTools(context.cwd);
@@ -499,6 +617,24 @@ export const skillTool: ToolDefinition = {
     const forwardAbort = () => subAbort.abort();
     context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
 
+    // FUNCTIONAL (parity): a forked skill may target a NAMED agent type
+    // (SkillDefinition.agent, parity with Claude's PromptCommand.agent). When set,
+    // the sub-engine is bound to that agent's system prompt (identity/persona) and
+    // its model/maxTurns are used as a FALLBACK when the skill does not override
+    // them — instead of a generic, agent-agnostic sub-engine. An unknown agent name
+    // is a hard error so a typo never silently degrades to the default persona.
+    let agentDef: AgentDefinition | null = null;
+    if (skill?.agent) {
+      agentDef = context._skillManager.getAgent?.(skill.agent) ?? null;
+      if (!agentDef) {
+        const available = context._skillManager.listAgents?.().map(a => a.name).join(', ') || '(none)';
+        return {
+          output: `Error: skill "${resolvedName}" targets agent "${skill.agent}", which is not registered. Available agents: ${available}.`,
+          isError: true,
+        };
+      }
+    }
+
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };
     if (skill?.model) {
       // Carry the session's [1m] 1M-context marker across the skill model override
@@ -506,12 +642,19 @@ export const skillTool: ToolDefinition = {
       // `opus[1m]` session to the 200k window and trip autocompact. See
       // resolveSkillModelOverride.
       providerConfig.model = resolveSkillModelOverride(skill.model, providerConfig.model || '');
+    } else if (agentDef?.model && agentDef.model !== 'inherit') {
+      // The skill did not pin a model → fall back to the target agent's model.
+      providerConfig.model = resolveSkillModelOverride(agentDef.model, providerConfig.model || '');
     }
 
     const subConfig: EngineConfig = {
       provider: providerConfig,
       cwd: context.cwd,
       tools,
+      // Bind the sub-engine to the target agent's system prompt (its persona), so a
+      // fork carries the agent's identity rather than the generic coding stance.
+      ...(agentDef?.systemPrompt ? { systemPrompt: agentDef.systemPrompt } : {}),
+      ...(agentDef?.maxTurns ? { maxTurns: agentDef.maxTurns } : {}),
       sessionId: SessionManager.newId(),
       // FUNCTIONAL (parity/security): do NOT hard-code 'auto-allow' for the forked
       // sub-engine — that suppressed every permission prompt and let a lower-trust
@@ -539,7 +682,7 @@ export const skillTool: ToolDefinition = {
     let result = '';
 
     try {
-      for await (const event of subEngine.submit(skillContent)) {
+      for await (const event of subEngine.submit(withSkillBaseDir(skillContent, skill))) {
         if (event.type === 'text_delta') {
           result += event.text;
         }
@@ -556,14 +699,15 @@ export const skillTool: ToolDefinition = {
       return {
         output: `Skill execution error: ${err instanceof Error ? err.message : String(err)}${partial}`,
         isError: true,
-        metadata: { mode: 'forked', skill: resolvedName, model: providerConfig.model, toolCount: tools.length },
+        metadata: { mode: 'forked', skill: resolvedName, model: providerConfig.model, toolCount: tools.length, ...(agentDef ? { agent: agentDef.name } : {}) },
       };
     } finally {
       context.abortSignal.removeEventListener('abort', forwardAbort);
       (subEngine as any).shutdown?.();
     }
 
-    const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}]${warningText}`;
+    const agentNote = agentDef ? ` · agent ${agentDef.name}` : '';
+    const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}${agentNote}]${warningText}`;
 
     // FUNCTIONAL (parity/errors): a sub-skill that was aborted mid-run (parent
     // cancel forwarded into subAbort, or the parent signal itself aborted) ended
@@ -580,6 +724,7 @@ export const skillTool: ToolDefinition = {
           model: providerConfig.model,
           toolCount: tools.length,
           cancelled: true,
+          ...(agentDef ? { agent: agentDef.name } : {}),
           ...(toolWarnings.length > 0 ? { toolWarnings } : {}),
         },
       };
@@ -593,6 +738,7 @@ export const skillTool: ToolDefinition = {
         skill: resolvedName,
         model: providerConfig.model,
         toolCount: tools.length,
+        ...(agentDef ? { agent: agentDef.name } : {}),
         ...(toolWarnings.length > 0 ? { toolWarnings } : {}),
       },
     };

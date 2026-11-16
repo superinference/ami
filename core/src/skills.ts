@@ -67,6 +67,13 @@ export interface SkillDefinition {
    *  with the default fallback — via {@link skillProgressMessage}. */
   progressMessage?: string;
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
+  /** Named agent type a FORKED skill runs as (parity with Claude's PromptCommand
+   *  `agent?: string`). When set, the forked sub-engine is bound to this agent's
+   *  system prompt (and its model/maxTurns as a fallback when the skill does not
+   *  override them) instead of a generic agent-agnostic sub-engine — so a fork can
+   *  carry a specific persona/budget. Resolved via {@link SkillManagerLike.getAgent};
+   *  an unknown agent name is a hard error at invocation. Ignored for inline skills. */
+  agent?: string;
   disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
   effort?: string;         // Thinking effort level for sub-engine (e.g., "low", "medium", "high")
   /** Permission mode for this skill's FORKED sub-engine. Absent → the forked run
