@@ -127,7 +127,7 @@ const ZSH_DANGEROUS_COMMANDS = new Set([
 
 const ZSH_PRECOMMAND_MODIFIERS = new Set(['command', 'builtin', 'noglob', 'nocorrect']);
 
-const SAFE_WRAPPERS = new Set(['timeout', 'time', 'nice', 'nohup', 'stdbuf', 'env']);
+const SAFE_WRAPPERS = new Set(['timeout', 'time', 'nice', 'nohup', 'stdbuf', 'env', 'srun']);
 
 function stripSafeWrappers(command: string): string {
   let remaining = command.trim();
@@ -153,6 +153,22 @@ function stripSafeWrappers(command: string): string {
       while (i < tokens.length && tokens[i].startsWith('-')) i++;
       if (first === 'timeout' && i < tokens.length && /^\d/.test(tokens[i])) i++;
       if (first === 'nice' && i < tokens.length && /^\d+$/.test(tokens[i])) i++;
+      if (i < tokens.length) {
+        remaining = tokens.slice(i).join(' ');
+        changed = true;
+      } else {
+        break;
+      }
+    } else if (first === 'srun') {
+      // SLURM launcher: skip flags, consuming the count operand of the value-taking
+      // options (-n/--ntasks/-N/--nodes <count>) so the wrapped job command — not
+      // the count — is what gets re-classified (gap U003).
+      let i = 1;
+      while (i < tokens.length && tokens[i].startsWith('-')) {
+        const flag = tokens[i];
+        i++;
+        if (/^(-n|--ntasks|-N|--nodes)$/.test(flag) && i < tokens.length && /^\d/.test(tokens[i])) i++;
+      }
       if (i < tokens.length) {
         remaining = tokens.slice(i).join(' ');
         changed = true;

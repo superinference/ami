@@ -411,7 +411,7 @@ const FD_ARG_TYPES: Record<string, FlagArgType> = {
   '-g': 'string', '-p': 'string',
 };
 
-const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType>; dangerousArgs?: (args: string[]) => boolean }> = {
+const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType>; dangerousArgs?: (args: string[]) => boolean; respectsDoubleDash?: boolean }> = {
   jq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
     blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L', '--library-path']),
@@ -450,7 +450,11 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
   tree: { allowed: new Set(['-L', '-d', '-f', '-a', '--dirsfirst', '-I', '--prune', '-P', '--charset', '-i']), blocked: new Set(['-R']) },
   fd: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
   fdfind: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
-  find: { allowed: new Set(['-name', '-type', '-maxdepth', '-mindepth', '-path', '-iname', '-size', '-newer', '-print']), blocked: new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']) },
+  // `find` does NOT honor POSIX `--` for its expression primaries — a `--` only
+  // ends the list of starting-point paths, so `find . -- -delete` STILL deletes.
+  // Keep scanning past `--` (respectsDoubleDash:false) so a write/exec primary
+  // cannot be smuggled behind it. Mirrors Claude's per-command respectsDoubleDash.
+  find: { allowed: new Set(['-name', '-type', '-maxdepth', '-mindepth', '-path', '-iname', '-size', '-newer', '-print']), blocked: new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']), respectsDoubleDash: false },
   date: { allowed: new Set(['-u', '--utc', '-d', '--date', '-R', '--rfc-email', '-I', '--iso-8601']), blocked: new Set(['-s', '--set']) },
   netstat: { allowed: new Set(['-t', '-u', '-l', '-n', '-p', '-a', '--tcp', '--udp', '--listening', '--numeric']), blocked: new Set([]) },
   lsof: { allowed: new Set(['-i', '-n', '-P', '-p']), blocked: new Set([]) },
@@ -478,12 +482,27 @@ const SENSITIVE_SAFETY_PATHS = [
   '.vscode/', '.ssh/', '.gnupg/', '.aws/', '.config/',
 ];
 
+/**
+ * Case-fold a path for a security boundary comparison, but ONLY on case-insensitive
+ * filesystems (macOS/Windows), where `/Users/x/.SSH/id_rsa` and `/Users/x/.ssh/id_rsa`
+ * name the SAME file yet differ byte-for-byte. On a case-sensitive FS (Linux) the
+ * casings are genuinely distinct files, so this is a no-op to avoid wrongly merging
+ * them. Mirrors Claude's normalizeCaseForComparison (filesystem.ts L81-92), closing
+ * the fail-open where a differently-cased sensitive path slips a containment/safety
+ * guard on macOS/Windows.
+ */
+export function normalizeCaseForComparison(p: string): string {
+  return (process.platform === 'darwin' || process.platform === 'win32')
+    ? p.toLowerCase()
+    : p;
+}
+
 /** Safe target commands for xargs — only these can follow xargs. */
 const XARGS_SAFE_TARGETS = new Set([
   'echo', 'cat', 'ls', 'grep', 'wc', 'head', 'tail', 'basename', 'dirname',
 ]);
 
-function validateCommandFlags(cmd: string, args: string[]): boolean {
+export function validateCommandFlags(cmd: string, args: string[]): boolean {
   const flagDef = SAFE_COMMAND_FLAGS[cmd];
   if (!flagDef) return true;
   // Custom per-command danger predicate (e.g. ps's BSD `e` environment modifier,
@@ -494,6 +513,9 @@ function validateCommandFlags(cmd: string, args: string[]): boolean {
   // so each flag's VALUE is validated and not mis-read as a positional/target.
   if (flagDef.argTypes) return validateTypedCommandFlags(flagDef, args);
   for (const arg of args) {
+    // POSIX `--` end-of-options: every token after it is a positional, not a flag,
+    // so stop scanning (unless the command ignores `--`, e.g. find — gap U003).
+    if (arg === '--' && flagDef.respectsDoubleDash !== false) break;
     if (arg.startsWith('-')) {
       const flag = arg.replace(/^--?/, '').split('=')[0];
       const dashedFlag = arg.split('=')[0];
@@ -518,13 +540,16 @@ function validateCommandFlags(cmd: string, args: string[]): boolean {
  * Blocked flags always win. Unknown flags fall back to the allowed/strict rules.
  */
 function validateTypedCommandFlags(
-  flagDef: { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType> },
+  flagDef: { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType>; respectsDoubleDash?: boolean },
   args: string[],
 ): boolean {
   const argTypes = flagDef.argTypes!;
   let i = 0;
   while (i < args.length) {
     const token = args[i]!;
+    // POSIX `--` end-of-options: stop treating later tokens as flags (unless the
+    // command ignores `--`). Keeps the typed walker aligned with the real binary.
+    if (token === '--' && flagDef.respectsDoubleDash !== false) break;
     if (!FLAG_PATTERN.test(token)) { i++; continue; } // positional
     const hasEquals = token.includes('=');
     const flag = token.split('=')[0]!;
@@ -770,6 +795,11 @@ const DESTRUCTIVE_COMMANDS = new Set([
 const DESTRUCTIVE_SQL_PATTERNS = [
   /\bDROP\s+TABLE\b/i,
   /\bDROP\s+DATABASE\b/i,
+  // `DROP SCHEMA public CASCADE` destroys an entire schema and everything in it;
+  // Claude's SQL pattern covers DROP of TABLE/DATABASE/SCHEMA alike
+  // (destructiveCommandWarning.ts L71-74). Without this arm a schema drop is not
+  // classified destructive by the SQL branch.
+  /\bDROP\s+SCHEMA\b/i,
   /\bDELETE\s+FROM\b/i,
   /\bTRUNCATE\s+TABLE\b/i,
   /\bTRUNCATE\b/i,
@@ -1157,6 +1187,16 @@ const SHELL_WRAPPERS = new Set([
   // `time <cmd>` measures the inner command's runtime — the SAFETY of the line is
   // the safety of the inner command, so unwrap it (Claude's `time` command spec).
   'time',
+  // `stdbuf [opts] <cmd>` only tweaks the inner command's stdio buffering — the
+  // safety of the line is the inner command's. bash-security's SAFE_WRAPPERS
+  // already unwraps `stdbuf`; add it here too so the two layers agree and the
+  // existing stdbuf operand-skip below becomes reachable.
+  'stdbuf',
+  // `srun [opts] <cmd>` is a SLURM launcher whose trailing operand is itself a
+  // command run on cluster nodes (Claude's srun spec marks that arg isCommand).
+  // Unwrap it so `srun rm -rf /` / `srun mkfs …` classify on the INNER command
+  // rather than the opaque `srun` token.
+  'srun',
   'watch', 'ionice', 'setarch', 'taskset', 'chrt', 'strace', 'ltrace',
 ]);
 
@@ -1287,6 +1327,15 @@ function extractBaseCommands(command: string): string[] {
           commands.push(...extractBaseCommands(innerCmd));
           i = tokens.length;
           break;
+        }
+        // `srun` has value-taking options that consume the NEXT token as a count
+        // (`-n 4`, `--ntasks 4`, `-N 2`, `--nodes 2`). The generic flag skip above
+        // only drops the `-flag` token itself, so without this the count operand
+        // would be mis-read as the wrapped command. Mirrors Claude's srun spec
+        // option model so `srun -n 4 rm -rf /` reaches the inner `rm`.
+        if (wrapper === 'srun' && /^(-n|--ntasks|-N|--nodes)$/.test(flag)
+            && i < tokens.length && /^\d/.test(tokens[i]!)) {
+          i++;
         }
       }
       // Skip a leading duration/priority operand so the WRAPPED command is
@@ -2429,8 +2478,12 @@ export class PermissionManager {
     if (toolName === 'bash' || toolName === 'file_edit' || toolName === 'file_write') {
       const pathArg = (input.file_path || input.command || '');
       if (typeof pathArg === 'string') {
+        // Case-fold on case-insensitive filesystems so a `.SSH/`, `.Ami/`, or
+        // `.AWS/` reference still matches the lowercase safety literals and cannot
+        // fail-open past this blanket-allow guard (gap U003).
+        const foldedArg = normalizeCaseForComparison(pathArg);
         for (const sp of SENSITIVE_SAFETY_PATHS) {
-          if (pathArg.includes(sp)) return true;
+          if (foldedArg.includes(normalizeCaseForComparison(sp))) return true;
         }
       }
     }
@@ -3001,8 +3054,13 @@ export class PermissionManager {
         sensitivePatterns.some(p => p.test(basename))) {
       return true;
     }
+    // Case-fold the directory-prefix comparison on case-insensitive filesystems so
+    // a `/USR/bin` or `/Etc/passwd` reference cannot evade the system-dir guard
+    // (gap U003). On Linux this is a no-op.
+    const fResolved = normalizeCaseForComparison(resolved);
     for (const sysDir of SYSTEM_DIRECTORIES) {
-      if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) return true;
+      const fSysDir = normalizeCaseForComparison(sysDir);
+      if (fResolved === fSysDir || fResolved.startsWith(fSysDir + path.sep)) return true;
     }
     return false;
   }
@@ -3033,7 +3091,12 @@ export class PermissionManager {
   private isWithinWorkspace(resolved: string, cwd: string): boolean {
     // Strip trailing separators so a cwd/root passed as "/ws/" doesn't become "/ws//"
     // (path.normalize preserves a trailing slash), which would break the prefix match.
-    const strip = (p: string) => p.replace(/[/\\]+$/, '') || p;
+    // Case-fold on case-insensitive filesystems (gap U003): on macOS/Windows a
+    // differently-cased-but-identical path (cwd `/Users/foo/Project`, resolved
+    // `/users/foo/project/file`) names the same file and must count as contained;
+    // a raw case-sensitive prefix test would wrongly treat it as outside. On Linux
+    // this is a no-op (distinct casings = distinct files).
+    const strip = (p: string) => normalizeCaseForComparison(p.replace(/[/\\]+$/, '') || p);
     const r = strip(resolved);
     const ncwd = strip(path.normalize(cwd));
     if (r === ncwd || r.startsWith(ncwd + path.sep)) return true;
