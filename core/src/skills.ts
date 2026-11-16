@@ -13,6 +13,8 @@
 
 import type { McpServerConfig } from './mcp/manager';
 import type { ThinkingLevel } from './model-capabilities';
+import { isSafeRelativePath } from './skill-catalog';
+import { estimateTokens } from './utils/tokens';
 
 export interface SkillDefinition {
   name: string;
@@ -47,6 +49,23 @@ export interface SkillDefinition {
   /** Custom help/examples message returned when a {@link requiresArgument} skill is
    *  invoked without an argument. Blank/absent ⇒ a generated usage line. */
   missingArgumentMessage?: string;
+  /** Programmatic dynamic-prompt builder (parity with Claude's bundled-skill
+   *  `getPromptForCommand(args)`, e.g. `/batch`, `/claude-api`). When present, the
+   *  skill body is COMPUTED per invocation from the raw argument string (plus any
+   *  runtime state the builder closes over) instead of the static {@link content}
+   *  markdown — letting a skill validate args, lazy-load large reference material,
+   *  or branch on the environment. May be sync or async. The content resolver
+   *  prefers it over `content`; resolve via {@link resolveSkillPrompt}. */
+  getPromptForCommand?: (args: string) => string | Promise<string>;
+  /** Supporting resource files bundled WITH the skill (parity with Claude's bundled
+   *  `SKILL_FILES`: a map of skill-relative path → inlined file content). The skill
+   *  body may reference these companion docs/examples; read one safely (with
+   *  path-traversal rejection) via {@link getSkillFile}. */
+  files?: Record<string, string>;
+  /** Affordance text shown while the skill is executing (parity with Claude's
+   *  command/skill `progressMessage`, which defaults to `'running'`). Resolved —
+   *  with the default fallback — via {@link skillProgressMessage}. */
+  progressMessage?: string;
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
   effort?: string;         // Thinking effort level for sub-engine (e.g., "low", "medium", "high")
@@ -163,6 +182,13 @@ export interface AgentDefinition {
    *  a standing instruction ahead of the caller's task prompt. Only applied on the
    *  initial spawn, never when resuming an existing agent session. */
   initialPrompt?: string;
+  /** Dynamic/computed system-prompt builder (parity with Claude's agent
+   *  `getSystemPrompt({ toolUseContext })`). When present, the agent's system prompt
+   *  is COMPUTED at spawn time from runtime context (e.g. the live set of custom
+   *  skills/commands/agents/MCP servers) instead of the static {@link systemPrompt}
+   *  string. May be sync or async; resolve via {@link resolveAgentSystemPrompt},
+   *  which falls back to `systemPrompt` when the builder is absent. */
+  getSystemPrompt?: (ctx?: Record<string, unknown>) => string | Promise<string>;
 }
 
 /**
@@ -348,7 +374,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'type', 'progressMessage', 'contentLength', 'content', 'argNames',
   'argumentNames', 'model', 'effort', 'source', 'pluginInfo',
   'disableNonInteractive', 'supportsNonInteractive', 'skillRoot', 'context',
-  'agent', 'getPromptForCommand', 'frontmatterKeys',
+  'agent', 'getPromptForCommand', 'frontmatterKeys', 'files',
   // Base command/skill properties
   'name', 'description', 'hasUserSpecifiedDescription', 'isEnabled', 'isHidden',
   'aliases', 'isMcp', 'argumentHint', 'whenToUse', 'paths', 'version',
@@ -699,4 +725,177 @@ export function validateAgentDefinition(
   }
 
   return { valid: errors.length === 0, errors, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic prompt / companion-file / progress-message resolution — building
+// blocks that let a skill compute its body at invocation time, ship supporting
+// resource files, and advertise an in-progress affordance. Pure core helpers;
+// the SkillManager (common/) and the skill tool wire them into the content path.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a skill's prompt/body for a given argument string (parity with Claude's
+ * bundled-skill `getPromptForCommand(args)`). When the skill declares a
+ * {@link SkillDefinition.getPromptForCommand} builder, it is invoked (awaited) with
+ * the raw `args` string and its return value becomes the body — allowing per-call
+ * validation, lazy content loading, or environment branching. A builder that
+ * returns a non-string (malformed) yields `''`. With no builder, the static
+ * {@link SkillDefinition.content} is returned unchanged.
+ */
+export async function resolveSkillPrompt(
+  skill: Pick<SkillDefinition, 'content' | 'getPromptForCommand'>,
+  args: string = '',
+): Promise<string> {
+  if (typeof skill.getPromptForCommand === 'function') {
+    const out = await skill.getPromptForCommand(args);
+    return typeof out === 'string' ? out : '';
+  }
+  return skill.content;
+}
+
+/**
+ * Safely read a companion file bundled with a skill (parity with Claude's bundled
+ * `SKILL_FILES` lookup). Returns the inlined content for `relPath` when it exists
+ * in {@link SkillDefinition.files}, or `null` when there are no bundled files, the
+ * path is not a string, the path is unsafe (absolute or containing `..`
+ * traversal — rejected via {@link isSafeRelativePath}), or no such entry exists.
+ * Never throws and never resolves outside the declared bundle.
+ */
+export function getSkillFile(
+  skill: Pick<SkillDefinition, 'files'>,
+  relPath: string,
+): string | null {
+  if (!skill.files || typeof relPath !== 'string') return null;
+  const normalized = relPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!isSafeRelativePath(normalized)) return null;
+  const content = skill.files[normalized];
+  return typeof content === 'string' ? content : null;
+}
+
+/** The affordance shown while a skill runs when it declares no custom message
+ *  (parity with Claude's default command `progressMessage` of `'running'`). */
+export const DEFAULT_SKILL_PROGRESS_MESSAGE = 'running';
+
+/**
+ * The progress/affordance message to show while a skill executes (parity with
+ * Claude's command `progressMessage`). Returns the skill's own trimmed
+ * {@link SkillDefinition.progressMessage} when it is a non-empty string, otherwise
+ * {@link DEFAULT_SKILL_PROGRESS_MESSAGE}.
+ */
+export function skillProgressMessage(
+  skill: Pick<SkillDefinition, 'progressMessage'>,
+): string {
+  if (typeof skill.progressMessage === 'string' && skill.progressMessage.trim().length > 0) {
+    return skill.progressMessage.trim();
+  }
+  return DEFAULT_SKILL_PROGRESS_MESSAGE;
+}
+
+/**
+ * Estimate the context-budget cost (in tokens) of a skill's FRONTMATTER only —
+ * name + description + whenToUse (parity with Claude's
+ * `estimateSkillFrontmatterTokens`). The full body is loaded only on invocation,
+ * so the listing cost is just the always-present metadata. Reuses the canonical
+ * {@link estimateTokens} heuristic so there is a single token estimator.
+ */
+export function estimateSkillFrontmatterTokens(
+  skill: Pick<SkillDefinition, 'name' | 'description' | 'whenToUse'>,
+): number {
+  const text = [skill.name, skill.description, skill.whenToUse]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .join(' ');
+  return estimateTokens(text);
+}
+
+/**
+ * Resolve an agent's system prompt for a given runtime context (parity with
+ * Claude's agent `getSystemPrompt({ toolUseContext })`). When the agent declares a
+ * {@link AgentDefinition.getSystemPrompt} builder it is invoked (awaited) with
+ * `ctx` and its return value becomes the prompt; a non-string return yields `''`.
+ * With no builder, the static {@link AgentDefinition.systemPrompt} is returned.
+ */
+export async function resolveAgentSystemPrompt(
+  agent: Pick<AgentDefinition, 'systemPrompt' | 'getSystemPrompt'>,
+  ctx?: Record<string, unknown>,
+): Promise<string> {
+  if (typeof agent.getSystemPrompt === 'function') {
+    const out = await agent.getSystemPrompt(ctx);
+    return typeof out === 'string' ? out : '';
+  }
+  return agent.systemPrompt;
+}
+
+// ---------------------------------------------------------------------------
+// Skill-improvement suggestions — a structured descriptor for applying concrete,
+// section-scoped edits to a named skill (parity with Claude's
+// SkillImprovementSuggestion / SkillUpdate schema). Pure data + validation; the
+// apply/survey flow (model call + file write) lives in the upper layers.
+// ---------------------------------------------------------------------------
+
+/**
+ * One concrete, section-scoped edit to apply to a skill definition (parity with
+ * Claude Code's `SkillUpdate`). `section` names the part of the skill to change,
+ * `change` is the edit to integrate, and `reason` is the (optional) rationale.
+ */
+export interface SkillUpdate {
+  section: string;
+  change: string;
+  reason: string;
+}
+
+/**
+ * A structured suggestion to improve a named skill (parity with Claude Code's
+ * `SkillImprovementSuggestion`): the target skill plus the list of edits to apply.
+ */
+export interface SkillImprovementSuggestion {
+  skillName: string;
+  updates: SkillUpdate[];
+}
+
+/**
+ * Parse/normalize a raw (possibly model-produced or injected) value into a clean
+ * list of {@link SkillUpdate}s. Accepts only an array of objects; each entry must
+ * carry a non-empty `section` AND `change` (both trimmed) to be kept — entries
+ * missing either are dropped so a malformed suggestion can never produce a
+ * no-op/garbage edit. `reason` is optional and defaults to `''`.
+ */
+export function parseSkillUpdates(value: unknown): SkillUpdate[] {
+  if (!Array.isArray(value)) return [];
+  const out: SkillUpdate[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    const section = typeof e.section === 'string' ? e.section.trim() : '';
+    const change = typeof e.change === 'string' ? e.change.trim() : '';
+    if (section.length === 0 || change.length === 0) continue;
+    const reason = typeof e.reason === 'string' ? e.reason.trim() : '';
+    out.push({ section, change, reason });
+  }
+  return out;
+}
+
+/**
+ * True when `value` is a well-formed {@link SkillImprovementSuggestion}: a
+ * non-empty `skillName` and at least one valid {@link SkillUpdate} (as decided by
+ * {@link parseSkillUpdates}). Used to gate whether an improvement survey/apply
+ * flow should run at all.
+ */
+export function isValidSkillImprovement(value: unknown): value is SkillImprovementSuggestion {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  if (typeof v.skillName !== 'string' || v.skillName.trim().length === 0) return false;
+  return parseSkillUpdates(v.updates).length > 0;
+}
+
+/**
+ * Render a list of {@link SkillUpdate}s into the `- <section>: <change>` bullet
+ * list Claude feeds the editor model when applying an improvement
+ * (`applySkillImprovement`). Entries are normalized via {@link parseSkillUpdates}
+ * first so invalid updates are excluded.
+ */
+export function formatSkillUpdates(updates: SkillUpdate[]): string {
+  return parseSkillUpdates(updates)
+    .map((u) => `- ${u.section}: ${u.change}`)
+    .join('\n');
 }
