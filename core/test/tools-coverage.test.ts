@@ -164,8 +164,10 @@ describe('skillTool — validation and error paths', () => {
 
 describe('skillTool — MCP prompt fallback', () => {
   it('falls back to MCP prompts when skill not found locally', async () => {
+    // Parity (U085): MCP prompts resolve only via their namespaced identifier
+    // `mcp__<server>__<prompt>`, not a guessed bare name.
     const r = await skillTool.execute(
-      { skill: 'mcp-prompt', args: 'some args' },
+      { skill: 'mcp__test-srv__mcp-prompt', args: 'some args' },
       ctx({
         _skillManager: {
           getSkill: () => null,

@@ -85,15 +85,19 @@ describe('skillTool — forwardAbort on parent abort', () => {
         }),
       }),
     );
-    assert.ok(!r.isError);
+    // Parity (U085): a sub-skill cancelled mid-run surfaces as an ERROR with its
+    // partial output, not a spurious success.
+    assert.ok(r.isError);
+    assert.ok(r.output.includes('cancelled'));
     assert.ok(r.output.includes('x'));
+    assert.equal((r.metadata as any)?.cancelled, true);
   });
 });
 
 describe('skillTool — MCP prompt resolves to no result', () => {
   it('falls through to not-found when getPrompt yields nothing', async () => {
     const r = await skillTool.execute(
-      { skill: 'mcp-null', args: 'a' },
+      { skill: 'mcp__srv__mcp-null', args: 'a' },
       ctx({
         _skillManager: {
           getSkill: () => null,
@@ -113,7 +117,7 @@ describe('skillTool — MCP prompt resolves to no result', () => {
   it('resolves an MCP prompt invoked without args (empty-args branch)', async () => {
     let seenArgs: any;
     const r = await skillTool.execute(
-      { skill: 'mcp-noargs' },
+      { skill: 'mcp__srv__mcp-noargs' },
       ctx({
         _skillManager: {
           getSkill: () => null,
@@ -136,7 +140,7 @@ describe('skillTool — MCP prompt resolves to no result', () => {
 
   it('falls through when the MCP manager exposes no getPrompt method', async () => {
     const r = await skillTool.execute(
-      { skill: 'mcp-nogetter' },
+      { skill: 'mcp__srv__mcp-nogetter' },
       ctx({
         _skillManager: {
           getSkill: () => null,

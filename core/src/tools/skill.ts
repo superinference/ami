@@ -4,6 +4,7 @@ import { SessionManager } from '../session';
 import { type SkillDefinition, type SkillManagerLike, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
+import { parseMcpToolName } from './mcp-tool';
 
 /**
  * The outcome of resolving a requested skill name against the manager.
@@ -104,6 +105,67 @@ export function evaluateSkillPermission(
     }
   }
   return undefined;
+}
+
+/**
+ * Allowlist of {@link SkillDefinition} property keys that are REVIEWED-SAFE — a
+ * skill carrying only these may auto-run without an extra approval. Mirrors Claude
+ * Code's `SAFE_SKILL_PROPERTIES` fail-closed design (SkillTool.ts:875-908): any
+ * property NOT on this list that carries a meaningful value forces the skill
+ * through the permission gate, so new/injected skill metadata (e.g. an
+ * unreviewed field from an installed URL catalog or plugin bundle that tries to
+ * influence model/effort/tools) can never silently gain auto-run privileges —
+ * it defaults to requiring explicit permission until the property is reviewed and
+ * added here. Kept in sync with the fields declared on {@link SkillDefinition}.
+ */
+export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set<string>([
+  'name',
+  'description',
+  'content',
+  'filePath',
+  'version',
+  'whenToUse',
+  'paths',
+  'model',
+  'userInvocable',
+  'allowedTools',
+  'disallowedTools',
+  'argumentHint',
+  'argumentNames',
+  'context',
+  'disableModelInvocation',
+  'effort',
+  'permissionMode',
+  'autoAllowPatterns',
+  'mcpServers',
+  'mcpAutoAllowPatterns',
+  'mcpToolGuidance',
+  'defaultThinkingLevel',
+]);
+
+/**
+ * Return the skill's property keys that are OUTSIDE {@link SAFE_SKILL_PROPERTIES}
+ * AND carry a meaningful value (not undefined/null, not an empty array/object).
+ * An empty result means the skill uses only reviewed-safe properties and may
+ * auto-run. Mirrors Claude Code's `skillHasOnlySafeProperties` value check.
+ * Pure + exported for testability.
+ */
+export function unsafeSkillProperties(skill: SkillDefinition): string[] {
+  const offending: string[] = [];
+  for (const key of Object.keys(skill)) {
+    if (SAFE_SKILL_PROPERTIES.has(key)) continue;
+    const value = (skill as unknown as Record<string, unknown>)[key];
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
+    offending.push(key);
+  }
+  return offending;
+}
+
+/** True when the skill carries only reviewed-safe properties (auto-run eligible). */
+export function skillHasOnlySafeProperties(skill: SkillDefinition): boolean {
+  return unsafeSkillProperties(skill).length === 0;
 }
 
 /**
@@ -307,22 +369,39 @@ export const skillTool: ToolDefinition = {
         isError: true,
       };
     }
-    if (permDecision === 'ask') {
+
+    // FUNCTIONAL (parity/security): fail-closed safe-property allowlist. A skill
+    // carrying an UNreviewed property (outside SAFE_SKILL_PROPERTIES) with a
+    // meaningful value must not auto-run — it requires explicit approval unless an
+    // operator `allow` rule already cleared it. Mirrors Claude's
+    // skillHasOnlySafeProperties gate so crafted/injected skill metadata (e.g.
+    // from an installed catalog or plugin bundle) defaults to ask, not run.
+    const skillPreCleared = permDecision === 'allow' || !skillDef || skillHasOnlySafeProperties(skillDef);
+    const unreviewedProps = skillPreCleared ? [] : unsafeSkillProperties(skillDef!);
+    const hasUnreviewedProps = unreviewedProps.length > 0;
+
+    if (permDecision === 'ask' || hasUnreviewedProps) {
       const handler = context._permissionPromptHandler;
       if (handler) {
-        const verdict = await handler.showPrompt(
-          'skill',
-          `skill: ${resolvedName}${safeArgs?.ARGUMENTS ? ` ${safeArgs.ARGUMENTS}` : ''}`,
-          undefined,
-          context.abortSignal,
-        );
+        const summary = hasUnreviewedProps
+          ? `skill: ${resolvedName} (unreviewed properties: ${unreviewedProps.join(', ')})`
+          : `skill: ${resolvedName}${safeArgs?.ARGUMENTS ? ` ${safeArgs.ARGUMENTS}` : ''}`;
+        const verdict = await handler.showPrompt('skill', summary, undefined, context.abortSignal);
         if (!verdict.action.startsWith('allow')) {
           return {
             output: `Skill "${resolvedName}" was not approved${verdict.feedback ? `: ${verdict.feedback}` : '.'}`,
             isError: true,
           };
         }
+      } else if (hasUnreviewedProps) {
+        // Fail-closed: no approver available to clear the unreviewed metadata.
+        return {
+          output: `Error: skill "${resolvedName}" carries unreviewed properties (${unreviewedProps.join(', ')}) and requires explicit approval, but no permission handler is available to grant it.`,
+          isError: true,
+        };
       }
+      // An operator `ask` rule with no handler proceeds (the generic skill-tool
+      // gate already applied the default-ask) — behavior unchanged.
     }
 
     if (skillDef && isStanceSkill(skillDef)) {
@@ -351,16 +430,37 @@ export const skillTool: ToolDefinition = {
     const skillContent = context._skillManager.getSkillContent(resolvedName, safeArgs);
 
     if (context._mcpManager && !skillContent) {
-      try {
-        const mcpPrompts = await context._mcpManager.listPrompts?.();
-        const mcpSkill = mcpPrompts?.find((p: any) => p.name === skillName);
-        if (mcpSkill) {
-          const promptResult = await context._mcpManager.getPrompt?.(mcpSkill.server, skillName, safeArgs ?? {});
-          if (promptResult) {
-            return { output: `[MCP Skill: ${skillName}]\n${JSON.stringify(promptResult)}` };
+      // FUNCTIONAL (parity/security): an MCP prompt is reachable via the skill tool
+      // ONLY through its discoverable namespaced identifier `mcp__<server>__<prompt>`
+      // (the same canonical name MCP tools carry) — NOT by guessing a bare prompt
+      // name against every server. This closes the "technically reachable but not
+      // discoverable" hole Claude closed in getAllCommands (only loadedFrom==='mcp'
+      // prompt commands are resolvable), so a non-skill MCP prompt can no longer be
+      // invoked by a guessed bare name.
+      const parsed = parseMcpToolName(skillName);
+      if (parsed?.toolName) {
+        try {
+          const mcpPrompts = await context._mcpManager.listPrompts?.();
+          const mcpSkill = mcpPrompts?.find(
+            (p: any) => p.server === parsed.serverName && p.name === parsed.toolName,
+          );
+          if (mcpSkill) {
+            const promptResult = await context._mcpManager.getPrompt?.(parsed.serverName, parsed.toolName, safeArgs ?? {});
+            if (promptResult) {
+              return { output: `[MCP Skill: ${skillName}]\n${JSON.stringify(promptResult)}` };
+            }
           }
+        } catch (err) {
+          // FUNCTIONAL (parity/errors): surface a transient MCP failure instead of
+          // silently reporting "not found" — a server/list error is distinct from a
+          // genuinely-missing skill and gives the model an actionable signal.
+          // Mirrors Claude's `Failed to load remote skill <slug>: <msg>`.
+          return {
+            output: `Error: failed to load MCP skill "${skillName}": ${err instanceof Error ? err.message : String(err)}`,
+            isError: true,
+          };
         }
-      } catch {}
+      }
     }
 
     if (!skillContent) {
@@ -456,6 +556,27 @@ export const skillTool: ToolDefinition = {
     }
 
     const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}]${warningText}`;
+
+    // FUNCTIONAL (parity/errors): a sub-skill that was aborted mid-run (parent
+    // cancel forwarded into subAbort, or the parent signal itself aborted) ended
+    // the for-await loop with only PARTIAL output. Report it as an ERROR, not a
+    // spurious success — otherwise the model treats truncated/cancelled work as a
+    // completed result. Mirrors Claude's runAgent post-drain abort check.
+    if (subAbort.signal.aborted || context.abortSignal.aborted) {
+      return {
+        output: `${header}\nSkill "${resolvedName}" was cancelled before completion.${result ? `\n\n--- Partial output ---\n${capSkillOutput(result)}` : ''}`,
+        isError: true,
+        metadata: {
+          mode: 'forked',
+          skill: resolvedName,
+          model: providerConfig.model,
+          toolCount: tools.length,
+          cancelled: true,
+          ...(toolWarnings.length > 0 ? { toolWarnings } : {}),
+        },
+      };
+    }
+
     return {
       output: `${header}\n${capSkillOutput(result) || '(skill produced no output)'}`,
       isError: false,
