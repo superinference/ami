@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock } from '../utils/file-lock';
 import { TEAM_LEAD_NAME, clearMailbox } from './send-message';
-import { PERMISSION_MODES, normalizePermissionMode, PermissionMode } from '../permissions';
+import { PERMISSION_MODES, normalizePermissionMode, PermissionMode, PermissionRule } from '../permissions';
 import { unassignTeammateTasks, setTaskPersistPath } from './task-tracker';
 import { sanitizeAgentName } from './task';
 import { log as coreLog } from '../logger';
@@ -119,6 +119,18 @@ export interface TeamSummary {
 }
 
 /**
+ * A declarative team-wide allowed-path entry (mirrors Claude Code's
+ * `teamAllowedPaths` element `{ path, toolName }`). On teammate startup each entry
+ * is converted into a session allow-rule that grants `toolName` under `path`
+ * (see {@link teamAllowedPathsToRules}). `toolName` defaults to `'*'` (every tool)
+ * when the caller supplied a bare path string.
+ */
+export interface TeamAllowedPath {
+  path: string;
+  toolName: string;
+}
+
+/**
  * The persisted team file. 1:1 with a team-scoped task list (the team name is the
  * task-list id). Carries the lead's identity/session plus declarative team-wide
  * tool permissions (teamAllowedPaths).
@@ -128,7 +140,10 @@ export interface TeamFile {
   description?: string;
   leadSessionId?: string;
   leadAgentId: string;
-  teamAllowedPaths?: string[];
+  /** Declarative team-wide allowed paths inherited by every spawned teammate as
+   *  session allow-rules (parity: Claude Code's `teamAllowedPaths`). Stored on the
+   *  team file so a teammate spawned into the team is scoped the same way. */
+  teamAllowedPaths?: TeamAllowedPath[];
   /** Declarative team-wide tool allowlist inherited by every teammate (parity:
    *  Claude Code's per-agent `tools` scoping knob). Stored on the team file so a
    *  teammate spawned into the team can be constrained the same way the lead is. */
@@ -338,6 +353,54 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
   return { members: out };
 }
 
+/**
+ * Parse and validate the optional `team_allowed_paths` roster supplied to
+ * team_create (parity: Claude Code's `teamAllowedPaths` config knob). Each entry
+ * is either a bare path string (grants ALL tools — `toolName: '*'` — under that
+ * path) or an object `{ path, tool_name? }` to scope the grant to a single tool.
+ * An entry without a non-empty `path` is a hard error (returned in `error`) so a
+ * malformed knob fails the create rather than being silently dropped. Returns the
+ * normalized {@link TeamAllowedPath} list, or `undefined` when none were supplied.
+ */
+function parseTeamAllowedPaths(raw: unknown): { paths?: TeamAllowedPath[]; error?: string } {
+  if (raw === undefined || raw === null) return {};
+  if (!Array.isArray(raw)) return { error: 'team_allowed_paths must be an array of path strings or { path, tool_name } objects.' };
+  const out: TeamAllowedPath[] = [];
+  for (const item of raw) {
+    let p: string | undefined;
+    let toolName = '*';
+    if (typeof item === 'string') {
+      p = item;
+    } else if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      p = typeof o.path === 'string' ? o.path : undefined;
+      if (typeof o.tool_name === 'string' && o.tool_name) toolName = o.tool_name;
+    }
+    if (!p) return { error: 'each team_allowed_paths entry must have a non-empty path.' };
+    out.push({ path: p, toolName });
+  }
+  return { paths: out.length > 0 ? out : undefined };
+}
+
+/**
+ * Convert a team's declarative {@link TeamAllowedPath} entries into session
+ * allow-{@link PermissionRule}s (mirrors Claude Code's teammateInit path→rule
+ * conversion). The subtle edge is the pattern shape: an ABSOLUTE path (leading
+ * `/`) becomes `/<path>/**` (the characteristic double-slash — a `//abs/**`
+ * pattern), while a RELATIVE path becomes `<path>/**`. Each rule grants the
+ * entry's `toolName` (`'*'` = every tool). Applied to a teammate's engine on spawn
+ * so every teammate inherits a consistent, team-scoped path allowlist. Returns []
+ * when the team has no allowed paths (defaults to the active team).
+ */
+export function teamAllowedPathsToRules(team: TeamFile | null = currentTeam): PermissionRule[] {
+  if (!team || !team.teamAllowedPaths || team.teamAllowedPaths.length === 0) return [];
+  return team.teamAllowedPaths.map(({ path: p, toolName }): PermissionRule => ({
+    tool: toolName,
+    pattern: p.startsWith('/') ? `/${p}/**` : `${p}/**`,
+    action: 'allow',
+  }));
+}
+
 export const teamCreateTool: ToolDefinition = {
   name: 'team_create',
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
@@ -373,8 +436,19 @@ export const teamCreateTool: ToolDefinition = {
       },
       team_allowed_paths: {
         type: 'array',
-        items: { type: 'string' },
-        description: 'Declarative team-wide allowed paths inherited by all teammates.',
+        description:
+          'Declarative team-wide allowed paths inherited by every spawned teammate as session ' +
+          'allow-rules. Each item is either a path string (grants all tools under that path) or ' +
+          'an object { path, tool_name } to scope the grant to a single tool.',
+        items: {
+          // Union item (parity with Claude's teamAllowedPaths): a bare path string
+          // OR an object { path, tool_name }.
+          type: ['string', 'object'],
+          properties: {
+            path: { type: 'string' },
+            tool_name: { type: 'string' },
+          },
+        },
       },
       allowed_tools: {
         type: 'array',
@@ -435,6 +509,12 @@ export const teamCreateTool: ToolDefinition = {
     const parsedMembers = parseDeclaredMembers(input.members);
     if (parsedMembers.error) return { output: `Error: ${parsedMembers.error}`, isError: true };
 
+    // Parse the declarative team-wide allowed paths (parity: Claude's
+    // teamAllowedPaths). A malformed entry aborts the create so the caller fixes
+    // the knob rather than getting a silently-dropped permission grant.
+    const parsedPaths = parseTeamAllowedPaths(input.team_allowed_paths);
+    if (parsedPaths.error) return { output: `Error: ${parsedPaths.error}`, isError: true };
+
     // On-disk collision detection with a unique-name fallback: if a directory for
     // this name already exists (e.g. an orphan from a prior session), pick the
     // next free "name-N" so we never clobber another team's state.
@@ -477,7 +557,7 @@ export const teamCreateTool: ToolDefinition = {
       description,
       leadSessionId: context.sessionId,
       leadAgentId,
-      teamAllowedPaths: Array.isArray(input.team_allowed_paths) ? (input.team_allowed_paths as string[]) : undefined,
+      teamAllowedPaths: parsedPaths.paths,
       teamAllowedTools: Array.isArray(input.allowed_tools) ? (input.allowed_tools as string[]) : undefined,
       members: [
         {

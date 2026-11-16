@@ -9,7 +9,7 @@ import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
-import { getCurrentTeam, registerTeamMember, setTeamMemberActive } from './team';
+import { getCurrentTeam, registerTeamMember, setTeamMemberActive, teamAllowedPathsToRules } from './team';
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
 import { PERMISSION_MODES } from '../permissions';
@@ -1305,6 +1305,18 @@ export const taskTool: ToolDefinition = {
     // teammate is never told it can/should message its peers.
     if (agentName && getCurrentTeam()) {
       effectivePrompt = `${TEAMMATE_PROMPT_ADDENDUM}\n\n---\n\n${effectivePrompt}`;
+    }
+
+    // PARITY (additive): a named teammate spawned into an active team inherits the
+    // team-wide declarative allowed-path permissions (teamAllowedPaths) as session
+    // allow-rules, mirroring Claude Code's teammateInit path→rule conversion. The
+    // lead sets these when creating the team; each teammate gets them on spawn so
+    // the whole team shares a consistent, team-scoped path allowlist.
+    if (agentName && getCurrentTeam()) {
+      const teamRules = teamAllowedPathsToRules(getCurrentTeam());
+      if (teamRules.length > 0) {
+        subConfig.permissionRules = [...(subConfig.permissionRules ?? []), ...teamRules];
+      }
     }
 
     if (runInBackground) {
