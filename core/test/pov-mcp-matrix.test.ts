@@ -162,8 +162,8 @@ describe('POV/mcp — matchMcpAutoAllow (allow-rule glob matching)', () => {
 });
 
 describe('POV/mcp — constant sets (membership + shape)', () => {
-  it('MCP_TRANSPORTS is exactly the three supported transports', () => {
-    assert.deepEqual([...MCP_TRANSPORTS], ['stdio', 'sse', 'http']);
+  it('MCP_TRANSPORTS is exactly the five supported transports', () => {
+    assert.deepEqual([...MCP_TRANSPORTS], ['stdio', 'sse', 'http', 'ws', 'wss']);
   });
 
   it('MCP_CLIENT_STATES enumerates the client lifecycle', () => {

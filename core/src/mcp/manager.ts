@@ -357,7 +357,7 @@ export interface McpServerConfig {
   requestTimeout?: number;
   connectTimeout?: number;
   autoConnect?: boolean;
-  transport?: 'stdio' | 'sse' | 'http';
+  transport?: 'stdio' | 'sse' | 'http' | 'ws' | 'wss';
   url?: string;
   containerConfig?: ContainerConfig;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
@@ -956,7 +956,7 @@ export class McpManager extends EventEmitter {
       // health-check ping (which skips non-ready clients). Guarded so an intentional
       // teardown (stop/remove/disable) or a replaced client never reconnects.
       const t = this.configs.get(name)?.transport;
-      if ((t === 'http' || t === 'sse')
+      if (isRemoteMcpTransport(t)
         && !this._intentionalDisconnect.has(name)
         && this.clients.get(name) === client
         && !this.isDisabled(name)) {
@@ -1731,6 +1731,8 @@ export class McpManager extends EventEmitter {
           await client.connectHTTP(config.url);
         } else if (config?.transport === 'sse' && config.url) {
           await client.connectSSE(config.url);
+        } else if ((config?.transport === 'ws' || config?.transport === 'wss') && config.url) {
+          await client.connectWebSocket(config.url);
         } else {
           await client.connect();
         }
@@ -1777,7 +1779,7 @@ export class McpManager extends EventEmitter {
     const remote: string[] = [];
     for (const name of this.clients.keys()) {
       const t = this.configs.get(name)?.transport;
-      (t === 'http' || t === 'sse' ? remote : local).push(name);
+      (isRemoteMcpTransport(t) ? remote : local).push(name);
     }
     const connectOne = async (name: string) => {
       try { await this.connectServer(name); results.set(name, null); }
@@ -2109,7 +2111,7 @@ export class McpManager extends EventEmitter {
       if (client.state !== 'ready') continue;
       if (suspended) {
         const transport = this.configs.get(name)?.transport;
-        if (transport === 'http' || transport === 'sse') {
+        if (isRemoteMcpTransport(transport)) {
           forcedReconnects.push(name);
           this.scheduleReconnect(name);
           continue;
@@ -2612,7 +2614,18 @@ export const MCP_RECONNECT_BASE_DELAY_MS = 1000;
 export const MAX_MCP_RECONNECT_DELAY_MS = 30_000;
 
 /** Transport values AMI understands (for config validation / `type` mapping). */
-const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http']);
+const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http', 'ws', 'wss']);
+
+/**
+ * Whether a transport is REMOTE (network-backed) rather than a local process.
+ * Remote transports (http/sse/ws/wss) share dropped-connection recovery: a close
+ * schedules an immediate reconnect, they are grouped under the remote connection
+ * pool, and a detected process-suspension force-reconnects them. Single source of
+ * truth so every remote-vs-local decision stays consistent as transports are added.
+ */
+export function isRemoteMcpTransport(transport: string | undefined): boolean {
+  return transport === 'http' || transport === 'sse' || transport === 'ws' || transport === 'wss';
+}
 
 /**
  * Canonicalize an MCP tool name for verb classification: camelCase and kebab-case
@@ -2648,7 +2661,7 @@ export function normalizeMcpServerEntry(raw: unknown): unknown {
  * it reaches a child-process spawn / HTTP request (Claude-parity schema guard).
  * Returns a list of human-readable problems ([] when valid): `command`/`url` must
  * be strings, `args` a string array, `env`/`headers` string→string objects, and
- * `transport` one of stdio|sse|http. The entry is skipped when non-empty.
+ * `transport` one of stdio|sse|http|ws|wss. The entry is skipped when non-empty.
  */
 export function validateMcpServerConfigShape(cfg: unknown): string[] {
   if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) {
@@ -2670,7 +2683,7 @@ export function validateMcpServerConfigShape(cfg: unknown): string[] {
     }
   }
   if (c.transport !== undefined && !SUPPORTED_MCP_TRANSPORTS.has(String(c.transport))) {
-    issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, or http)`);
+    issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, http, ws, or wss)`);
   }
   return issues;
 }

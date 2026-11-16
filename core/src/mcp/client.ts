@@ -6,8 +6,27 @@ import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { findExecutable } from '../utils/which';
 
-export const MCP_TRANSPORTS = ['stdio', 'sse', 'http'] as const;
+export const MCP_TRANSPORTS = ['stdio', 'sse', 'http', 'ws', 'wss'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
+
+/**
+ * Minimal structural subset of the WHATWG `WebSocket` (shared by Node 20+/Bun's
+ * global `WebSocket` and the `ws` package's instances) that the WebSocket MCP
+ * transport needs — parity with Claude Code's `WebSocketLike` in
+ * `utils/mcpWebSocketTransport.ts`. Modeling the subset (rather than the DOM lib
+ * type) keeps the transport runtime-agnostic and injectable for tests.
+ */
+export interface McpWebSocketLike {
+  readonly readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: string, listener: (ev: unknown) => void): void;
+  removeEventListener(type: string, listener: (ev: unknown) => void): void;
+}
+export type McpWebSocketFactory = (url: string) => McpWebSocketLike;
+
+/** `WebSocket.OPEN` readyState (1) — same numeric value in every runtime. */
+export const MCP_WS_OPEN = 1;
 
 export const DEFAULT_MCP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -564,6 +583,10 @@ export class McpClient extends EventEmitter {
   private _prompts: McpPrompt[] = [];
   private transport: McpTransport = 'stdio';
   private sseUrl: string | null = null;
+  /** The live WebSocket for a `ws`/`wss` transport (null on other transports). */
+  private ws: McpWebSocketLike | null = null;
+  /** Factory for the WebSocket, injectable for tests; defaults to the runtime global. */
+  private readonly webSocketFactory?: McpWebSocketFactory;
   private readonly command: string;
   private readonly args: string[];
   private readonly env: Record<string, string>;
@@ -660,6 +683,12 @@ export class McpClient extends EventEmitter {
      * matching the GET-stream give-up budget.
      */
     reconnectGiveUpMs?: number;
+    /**
+     * Factory for the WebSocket used by the `ws`/`wss` transport. Defaults to the
+     * runtime's global `WebSocket` (Node 20+/Bun/undici). Injectable so tests can
+     * drive the transport without a real socket.
+     */
+    webSocketFactory?: McpWebSocketFactory;
   }) {
     super();
     this.command = options.command;
@@ -672,6 +701,7 @@ export class McpClient extends EventEmitter {
     this.oauth = options.oauth;
     this.httpStreamLivenessTimeout = options.httpStreamLivenessTimeout ?? HTTP_STREAM_LIVENESS_TIMEOUT_MS;
     this.reconnectGiveUpMs = options.reconnectGiveUpMs ?? HTTP_STREAM_RECONNECT_GIVE_UP_MS;
+    this.webSocketFactory = options.webSocketFactory;
   }
 
   /**
@@ -784,6 +814,104 @@ export class McpClient extends EventEmitter {
       this.disconnect();
       throw err;
     }
+  }
+
+  /**
+   * WebSocket transport (`ws://` / `wss://`) — parity with Claude Code's
+   * `WebSocketTransport` (`utils/mcpWebSocketTransport.ts`). Opens a WebSocket via
+   * the injectable factory (defaulting to the runtime global, which exists on
+   * Node 20+/Bun/undici), then runs the standard initialize handshake over it.
+   * Inbound frames (each a complete JSON-RPC message) route through the SAME
+   * dispatcher the stdio/http transports use, so server→client requests and
+   * notifications are handled identically. The `wss://` scheme is driven by the
+   * same code path (TLS is handled by the socket), satisfying dual ws/wss support.
+   */
+  async connectWebSocket(url: string): Promise<void> {
+    if (this._state === 'ready') return;
+    this._state = 'connecting';
+    this.transport = url.startsWith('wss') ? 'wss' : 'ws';
+    this.sseUrl = url;
+    this.hasTriggeredClose = false;
+
+    const factory = this.webSocketFactory
+      ?? (globalThis as { WebSocket?: new (u: string) => McpWebSocketLike }).WebSocket;
+    if (!factory) {
+      this._state = 'error';
+      throw new Error('MCP WebSocket transport unavailable: no global WebSocket in this runtime');
+    }
+    const ws = this.webSocketFactory ? this.webSocketFactory(url) : new (factory as new (u: string) => McpWebSocketLike)(url);
+    this.ws = ws;
+
+    // Phase 1 — wait for the socket to open (bounded by the connect timeout).
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`MCP WebSocket connection timed out after ${this.connectTimeout}ms`));
+      }, this.connectTimeout);
+      timer.unref?.();
+      const onOpen = () => { clearTimeout(timer); cleanup(); resolve(); };
+      const onError = () => { clearTimeout(timer); cleanup(); reject(new Error('MCP WebSocket connection error')); };
+      const cleanup = () => { ws.removeEventListener('open', onOpen); ws.removeEventListener('error', onError); };
+      if (ws.readyState === MCP_WS_OPEN) { clearTimeout(timer); resolve(); return; }
+      ws.addEventListener('open', onOpen);
+      ws.addEventListener('error', onError);
+    }).catch((err) => {
+      this._state = 'error';
+      this.disconnect();
+      throw err;
+    });
+
+    // Attach the persistent message/close handlers before the handshake so the
+    // initialize RESPONSE (which arrives as a ws frame) is routed to the pending
+    // request. A frame-level error is surfaced as a redacted diagnostic that NEVER
+    // echoes the untrusted payload (parity with Claude's logForDiagnosticsNoPII).
+    ws.addEventListener('message', (ev) => this.handleWsMessage((ev as { data?: unknown })?.data));
+    ws.addEventListener('close', () => this.handleWsClose());
+
+    // Phase 2 — run the initialize handshake over the socket, bounded by the same
+    // timeout. The handshake sends/receives through writeMessage/routeMessage.
+    const connectPromise = this.performInitialize();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const t = setTimeout(() => reject(new Error(`MCP WebSocket connection timed out after ${this.connectTimeout}ms`)), this.connectTimeout);
+      t.unref?.();
+    });
+    try {
+      await Promise.race([connectPromise, timeoutPromise]);
+    } catch (err) {
+      this._state = 'error';
+      this.disconnect();
+      throw err;
+    }
+  }
+
+  /** Route one inbound WebSocket frame (a complete JSON-RPC message or batch). */
+  private handleWsMessage(data: unknown): void {
+    const text = typeof data === 'string' ? data : String(data);
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        for (const m of parsed) this.routeMessage(m as JsonRpcResponse | JsonRpcNotification);
+      } else {
+        this.routeMessage(parsed as JsonRpcResponse | JsonRpcNotification);
+      }
+    } catch {
+      // No-PII diagnostic: a malformed frame from an untrusted server is surfaced
+      // as a stable marker WITHOUT echoing the raw payload (parity with Claude
+      // Code's mcpWebSocketTransport logForDiagnosticsNoPII).
+      this.emit('parse-error', '[mcp websocket frame parse error]');
+    }
+  }
+
+  /** Handle an unexpected WebSocket close: reject pending work and emit `close`. */
+  private handleWsClose(): void {
+    if (this.hasTriggeredClose) return;
+    this.hasTriggeredClose = true;
+    const uptimeMs = this.uptime;
+    this._state = 'disconnected';
+    this.ws = null;
+    this.connectionStartTime = null;
+    this.rejectAllPending(new Error('MCP WebSocket closed'));
+    this.emit('close', null, uptimeMs);
   }
 
   /**
@@ -1177,7 +1305,9 @@ export class McpClient extends EventEmitter {
       }
       this.reconnectConnecting = true;
       try {
-        if (this.transport === 'sse' && this.sseUrl) {
+        if ((this.transport === 'ws' || this.transport === 'wss') && this.sseUrl) {
+          await this.connectWebSocket(this.sseUrl);
+        } else if (this.transport === 'sse' && this.sseUrl) {
           await this.connectSSE(this.sseUrl);
         } else if (this.transport === 'http' && this.sseUrl) {
           // HTTP transport must re-establish over HTTP; falling through to
@@ -1247,6 +1377,13 @@ export class McpClient extends EventEmitter {
     const wasConnected = this._state === 'ready' || this._state === 'connecting';
     this.hasTriggeredClose = true;
     this.closeHttpStream();
+
+    // Tear down a WebSocket transport's live socket.
+    if (this.ws) {
+      const sock = this.ws;
+      this.ws = null;
+      try { sock.close(); } catch { /* already closed */ }
+    }
 
     const proc = this.process;
     const pid = this.processPid;
@@ -1885,6 +2022,14 @@ export class McpClient extends EventEmitter {
   }
 
   private writeMessage(msg: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse): void {
+    // WebSocket transport: each message is one discrete frame (no newline framing).
+    if ((this.transport === 'ws' || this.transport === 'wss') && this.ws) {
+      if (this.ws.readyState !== MCP_WS_OPEN) {
+        throw new Error('MCP WebSocket is not open');
+      }
+      this.ws.send(JSON.stringify(msg));
+      return;
+    }
     if (!this.process?.stdin?.writable) {
       throw new Error('MCP server stdin not writable');
     }
@@ -1900,6 +2045,11 @@ export class McpClient extends EventEmitter {
    * the same endpoint. With neither available this is a safe no-op.
    */
   private respondToServerRequest(id: number, payload: { result: unknown } | { error: { code: number; message: string } }): void {
+    // WebSocket: the reply is a frame on the same socket.
+    if ((this.transport === 'ws' || this.transport === 'wss') && this.ws) {
+      try { this.writeMessage({ jsonrpc: '2.0', id, ...payload } as JsonRpcResponse); } catch { /* socket gone */ }
+      return;
+    }
     if (this.process?.stdin?.writable) {
       this.writeMessage({ jsonrpc: '2.0', id, ...payload } as JsonRpcResponse);
       return;

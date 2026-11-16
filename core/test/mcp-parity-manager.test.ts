@@ -266,7 +266,9 @@ describe('loadFromConfig robustness', () => {
   it('validateMcpServerConfigShape flags wrong-typed fields and bad transports', () => {
     assert.deepEqual(validateMcpServerConfigShape({ command: 'echo' }), []);
     assert.ok(validateMcpServerConfigShape({ env: ['x'] }).length > 0);
-    assert.ok(validateMcpServerConfigShape({ transport: 'ws', url: 'ws://x' }).some((m) => /unsupported transport/.test(m)));
+    // ws/wss are now supported transports; a genuinely unknown transport is flagged.
+    assert.deepEqual(validateMcpServerConfigShape({ transport: 'ws', url: 'ws://x' }), []);
+    assert.ok(validateMcpServerConfigShape({ transport: 'sdk', url: 'x' }).some((m) => /unsupported transport/.test(m)));
     assert.deepEqual(validateMcpServerConfigShape(null), ['server config must be a JSON object']);
   });
 

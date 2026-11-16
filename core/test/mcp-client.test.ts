@@ -419,10 +419,12 @@ describe('findMcpConfigPaths', () => {
 });
 
 describe('MCP_TRANSPORTS', () => {
-  it('contains all 3 transport types', () => {
-    assert.equal(MCP_TRANSPORTS.length, 3);
+  it('contains all 5 transport types (stdio, sse, http, ws, wss)', () => {
+    assert.equal(MCP_TRANSPORTS.length, 5);
     assert.ok(MCP_TRANSPORTS.includes('stdio'));
     assert.ok(MCP_TRANSPORTS.includes('sse'));
     assert.ok(MCP_TRANSPORTS.includes('http'));
+    assert.ok(MCP_TRANSPORTS.includes('ws'));
+    assert.ok(MCP_TRANSPORTS.includes('wss'));
   });
 });
