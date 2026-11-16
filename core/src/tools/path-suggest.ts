@@ -1,5 +1,25 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { logError } from '../logger';
+
+// PARITY (error observability): a directory scan that fails with ENOENT is the
+// expected "parent does not exist" case and is swallowed quietly. Any OTHER
+// failure (EACCES permission-denied, ENOTDIR, EMFILE, …) is unexpected and was
+// previously discarded silently, making path-suggestion gaps undiagnosable.
+// Mirrors Claude Code's findSimilarFile (`if (!isENOENT(error)) logError(...)`).
+function isENOENT(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as NodeJS.ErrnoException).code === 'ENOENT'
+  );
+}
+
+function logScanError(component: string, dir: string, err: unknown): void {
+  if (isENOENT(err)) return;
+  const msg = err instanceof Error ? err.message : String(err);
+  logError(component, `directory scan failed: ${dir}: ${msg}`);
+}
 
 export function levenshteinDistance(a: string, b: string): number {
   if (a.length === 0) return b.length;
@@ -50,17 +70,29 @@ export function suggestSimilarPaths(
 
   const dir = path.dirname(abs);
   const base = path.basename(abs);
+  // PARITY (same-stem/different-extension): the basename WITHOUT its extension.
+  const stemLower = path.basename(base, path.extname(base)).toLowerCase();
 
   let entries: string[];
   try {
     entries = fs.readdirSync(dir);
-  } catch {
+  } catch (err) {
+    logScanError('suggestSimilarPaths', dir, err);
     return [];
   }
 
-  const scored: Array<{ name: string; distance: number }> = [];
+  const scored: Array<{ name: string; distance: number; stem: boolean }> = [];
   for (const entry of entries) {
     const dist = levenshteinDistance(base.toLowerCase(), entry.toLowerCase());
+    // PARITY (same-stem suggestion, findSimilarFile): an entry whose basename
+    // stripped of its extension equals the requested stem (e.g. `config.ts`
+    // requested, `config.toml` present) is always a strong "did you mean" — even
+    // when the extensions differ by more than `maxDistance` characters. The old
+    // levenshtein-only filter dropped these. ADDITIVE: surface same-stem matches
+    // regardless of the edit-distance budget, ranked ahead of plain typo hits.
+    const sameStem =
+      entry !== base &&
+      path.basename(entry, path.extname(entry)).toLowerCase() === stemLower;
     if (dist === 0) {
       // PARITY (case correction): a case-only difference (e.g. `README.md`
       // requested as `readme.md` on a case-sensitive filesystem) is one of the
@@ -69,13 +101,20 @@ export function suggestSimilarPaths(
       // the lowest distance so they rank ahead of typo corrections. (An entry
       // whose raw name equals `base` would mean the file exists and we would
       // have returned above, so `entry !== base` is always a true case mismatch.)
-      if (entry !== base) scored.push({ name: entry, distance: 0 });
-    } else if (dist <= budget) {
-      scored.push({ name: entry, distance: dist });
+      if (entry !== base) scored.push({ name: entry, distance: 0, stem: false });
+    } else if (dist <= budget || sameStem) {
+      scored.push({ name: entry, distance: dist, stem: sameStem });
     }
   }
 
-  scored.sort((a, b) => a.distance - b.distance);
+  scored.sort((a, b) => {
+    // Exact-case corrections (distance 0) always rank first.
+    if ((a.distance === 0) !== (b.distance === 0)) return a.distance === 0 ? -1 : 1;
+    // Then same-stem/different-extension matches, independent of edit distance.
+    if (a.stem !== b.stem) return a.stem ? -1 : 1;
+    // Then by edit distance (nearest typo first).
+    return a.distance - b.distance;
+  });
   return scored.slice(0, limit).map(s => path.join(dir, s.name));
 }
 
@@ -255,4 +294,67 @@ export function suggestByBasename(
     if (out.length >= maxResults) break;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// PARITY (suggestPathUnderCwd): recover from the common "dropped repo folder"
+// model error where an absolute path is built as a SIBLING of the project root
+// rather than inside it. Mirrors Claude Code's suggestPathUnderCwd
+// (references/.../utils/file.ts:L228-267) but synchronous — matching this
+// module's fs usage — and takes `cwd` explicitly for testability.
+// ---------------------------------------------------------------------------
+
+/**
+ * PARITY: suggest a corrected path under `cwd` when an absolute path was not
+ * found and matches the "dropped repo folder" pattern.
+ *
+ * Example:
+ *   cwd           = /u/src/currentRepo
+ *   requestedPath = /u/src/foobar            (does not exist)
+ *   returns         /u/src/currentRepo/foobar (when it exists under cwd)
+ *
+ * The requested path's parent is realpath-resolved first (so `/tmp` → `/private/tmp`
+ * style symlinks line up with a realpath-resolved cwd). Only paths that live
+ * under cwd's PARENT but NOT under cwd itself are candidates — anything already
+ * under cwd, equal to cwd, or outside the parent is left alone. Returns the
+ * corrected absolute path if it exists, otherwise `undefined`.
+ */
+export function suggestPathUnderCwd(
+  requestedPath: string,
+  cwd: string,
+): string | undefined {
+  let resolvedCwd = cwd;
+  try {
+    resolvedCwd = fs.realpathSync(cwd);
+  } catch {
+    // cwd not resolvable — fall back to the raw value for the prefix check.
+  }
+  const cwdParent = path.dirname(resolvedCwd);
+
+  // Resolve symlinks in the requested path's PARENT so the prefix comparison
+  // lines up with the realpath-resolved cwd.
+  let resolvedPath = requestedPath;
+  try {
+    const resolvedDir = fs.realpathSync(path.dirname(requestedPath));
+    resolvedPath = path.join(resolvedDir, path.basename(requestedPath));
+  } catch {
+    // Parent directory does not exist — keep the original path.
+  }
+
+  // Only act when the requested path is under cwd's parent but NOT under cwd
+  // itself. When cwdParent is the filesystem root, use it directly to avoid a
+  // double-separator prefix that could never match.
+  const cwdParentPrefix = cwdParent === path.sep ? path.sep : cwdParent + path.sep;
+  if (
+    !resolvedPath.startsWith(cwdParentPrefix) ||
+    resolvedPath.startsWith(resolvedCwd + path.sep) ||
+    resolvedPath === resolvedCwd
+  ) {
+    return undefined;
+  }
+
+  const relFromParent = path.relative(cwdParent, resolvedPath);
+  const correctedPath = path.join(resolvedCwd, relFromParent);
+  if (fs.existsSync(correctedPath)) return correctedPath;
+  return undefined;
 }

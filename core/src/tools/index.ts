@@ -213,7 +213,7 @@ export { endConversationTool, resetEndedConversations, isConversationEnded, coun
 export { isReadOnlyBashCommand, BashResultCache } from './bash-cache';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './command-normalize';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection } from './input-sanitizer';
-export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, suggestByBasename } from './path-suggest';
+export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, suggestByBasename, suggestPathUnderCwd } from './path-suggest';
 export type { PathSuggestionKind, PathCorrectionOptions, PathCorrectionResult, BasenameSearchOptions } from './path-suggest';
 export { detectToolConflict, isReservedToolName, ToolRegistryGuard, RESERVED_TOOL_PREFIXES } from './tool-registry-guard';
 export type { ToolConflict } from './tool-registry-guard';

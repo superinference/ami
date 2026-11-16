@@ -157,7 +157,7 @@ export { withExtraHeaders } from './provider';
 // Consumed by common (/model ZDR listing); the ZDR-error + request-side helpers are
 // used internally by core (error-classifier, provider) so are not re-exported here.
 export { fetchZdrModelIds, filterZdrModels } from './openrouter-zdr';
-export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, suggestByBasename } from './tools/path-suggest';
+export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, suggestByBasename, suggestPathUnderCwd } from './tools/path-suggest';
 export type { PathSuggestionKind, PathCorrectionOptions, PathCorrectionResult, BasenameSearchOptions } from './tools/path-suggest';
 export type {
   TurnData,

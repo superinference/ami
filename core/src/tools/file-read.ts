@@ -9,7 +9,7 @@ import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath, validateF
 import { isCredentialPath } from './bash-security';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
-import { suggestSimilarPaths } from './path-suggest';
+import { suggestSimilarPaths, suggestPathUnderCwd } from './path-suggest';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
@@ -819,6 +819,14 @@ export const fileReadTool: ToolDefinition = {
         let suggestions = '';
         const similar = suggestSimilarPaths(resolved, path.dirname(resolved));
         if (similar.length > 0) suggestions = `\nDid you mean: ${similar.join(', ')}?`;
+        // PARITY (dropped-repo-folder recovery): when the model built an absolute
+        // path as a SIBLING of the project root instead of inside it (reachable
+        // when a broader read root is permitted), surface the corrected path
+        // under cwd. Mirrors Claude Code's suggestPathUnderCwd note.
+        const underCwd = suggestPathUnderCwd(resolved, context.cwd);
+        if (underCwd) {
+          suggestions += `\nNote: your current working directory is ${context.cwd}. Did you mean ${underCwd}?`;
+        }
         return {
           output: `Error: File not found or not readable: ${resolved}${suggestions}`,
           isError: true,
