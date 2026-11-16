@@ -67,7 +67,7 @@ export const ERROR_CATEGORIES = [
   'rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
   'auth_error', 'output_too_large', 'content_filter', 'server_error',
   'network_error', 'ssl_error', 'abort', 'repetition', 'gateway_rejection',
-  'unknown',
+  'tool_pairing', 'unknown',
 ] as const;
 
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
@@ -133,6 +133,21 @@ export function extractNestedErrorMessage(error: unknown): string | null {
 }
 
 /**
+ * Dig a usable error type out of a non-standard provider error envelope that
+ * arrives as a plain object rather than an `Error` — specifically an Amazon
+ * Bedrock routing error, which nests its type under `Output.__type` (e.g.
+ * `{ Output: { __type: 'ThrottlingException' } }`) inside an otherwise
+ * well-formed-looking body. Without this the object stringifies to
+ * `[object Object]` and classifies as a silent `unknown`. Mirrors Claude's
+ * extractUnknownErrorFormat.
+ */
+export function extractUnknownErrorFormat(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const type = (value as { Output?: { __type?: unknown } }).Output?.__type;
+  return typeof type === 'string' && type.length > 0 ? type : undefined;
+}
+
+/**
  * Best human-readable message for any error value: a plain string, an Error's
  * `.message`, or a nested/deserialized API-error shape — always HTML-sanitized.
  */
@@ -144,6 +159,11 @@ export function normalizeErrorMessage(error: unknown): string {
   }
   const nested = extractNestedErrorMessage(error);
   if (nested) return nested;
+  // A non-standard provider envelope (e.g. Bedrock Output.__type) carries its
+  // type here when there is no message — fold it in so classification keywords
+  // can match instead of falling to a meaningless String(error).
+  const envelope = extractUnknownErrorFormat(error);
+  if (envelope) return envelope;
   return String(error ?? '');
 }
 
@@ -226,6 +246,31 @@ export function isGatewayRejection(lowerMsg: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Tool-pairing corruption detection — recoverable only via /rewind
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect the three distinct 400 errors the API returns when the `tool_use` /
+ * `tool_result` blocks in the conversation history are mispaired:
+ *   - `tool_use` ids found without a `tool_result` block immediately after,
+ *   - an unexpected `tool_use_id` in a `tool_result`,
+ *   - duplicate (non-unique) `tool_use` ids.
+ * AMI heals these proactively (provider-transform.ts healOrphanedToolCalls), but
+ * if a corruption still reaches the API, retrying the same history just loops —
+ * the only recovery is to rewind the conversation. Mirrors Claude's reactive
+ * tool-use-concurrency detection. Backtick-tolerant (the API wraps the tokens in
+ * backticks). `lowerMsg` must already be lower-cased.
+ */
+export function isToolPairingError(lowerMsg: string): boolean {
+  const m = typeof lowerMsg === 'string' ? lowerMsg.replace(/`/g, '') : '';
+  return (
+    (m.includes('tool_use') && m.includes('without') && m.includes('tool_result')) ||
+    m.includes('unexpected tool_use_id found in tool_result') ||
+    m.includes('tool_use ids must be unique')
+  );
+}
+
+// ---------------------------------------------------------------------------
 // SDK typed-error fast path — classify by error class + status code
 // ---------------------------------------------------------------------------
 
@@ -281,6 +326,12 @@ function classifySDKError(error: Error): ClassifiedError | null {
       case 413:
         return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false, tokenGap: getPromptTooLongTokenGap(msg) };
       case 400:
+        // 400 from corrupted tool_use/tool_result pairing — retrying the same
+        // history loops; the user must /rewind. Checked before the gateway/
+        // context branches so a pairing message is never mis-bucketed.
+        if (isToolPairingError(lowerMsg)) {
+          return { category: 'tool_pairing', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
+        }
         // 400 from gateway rejecting beta headers (e.g. anthropic-beta)
         if (isGatewayRejection(lowerMsg)) {
           return { category: 'gateway_rejection', message: msg, retryable: true, shouldCompact: false, shouldFallback: false };
@@ -409,19 +460,27 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
     return { category: 'plan_limit', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
+  // Tool-pairing corruption — not retryable; recover via /rewind. Checked before
+  // the broad buckets so a 400 pairing error is never swallowed as 'unknown'.
+  if (isToolPairingError(lower)) {
+    return { category: 'tool_pairing', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
+  }
+
   // Gateway rejection — a proxy/gateway rejected beta headers; retryable without them
   if (isGatewayRejection(lower)) {
     return { category: 'gateway_rejection', message: errorString, retryable: true, shouldCompact: false, shouldFallback: false };
   }
 
-  // Rate limit — retryable after a delay
+  // Rate limit — retryable after a delay. `throttling` covers AWS Bedrock's
+  // ThrottlingException envelope type extracted by extractUnknownErrorFormat.
   if (
     /\bHTTP\s+429\b/i.test(errorString) ||
     lower.includes('rate limit') ||
     lower.includes('rate_limit') ||
     lower.includes('quota') ||
     lower.includes('too many requests') ||
-    lower.includes('throttled')
+    lower.includes('throttled') ||
+    lower.includes('throttling')
   ) {
     return { category: 'rate_limited', message: errorString, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
   }
@@ -547,6 +606,7 @@ const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   network_error: 'Network error — retrying connection.',
   repetition: 'Repetitive output detected.',
   gateway_rejection: 'Gateway rejected beta header — retrying without it.',
+  tool_pairing: 'Conversation history has a tool-call pairing error — run /rewind to recover the conversation.',
 };
 
 /**

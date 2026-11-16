@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 
-import { classifyError, friendlyErrorMessage, findErrorCode, ERROR_CATEGORIES, type ClassifiedError } from '../src/error-classifier';
+import { classifyError, friendlyErrorMessage, findErrorCode, ERROR_CATEGORIES, isToolPairingError, extractUnknownErrorFormat, type ClassifiedError } from '../src/error-classifier';
 
 // ---------------------------------------------------------------------------
 // Helper to assert the full shape of a classified error
@@ -996,11 +996,11 @@ describe('classifyError — Error vs string consistency', () => {
 });
 
 describe('ERROR_CATEGORIES', () => {
-  it('contains all 14 error categories', () => {
-    assert.equal(ERROR_CATEGORIES.length, 14);
+  it('contains all 15 error categories', () => {
+    assert.equal(ERROR_CATEGORIES.length, 15);
     for (const cat of ['rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
       'auth_error', 'output_too_large', 'content_filter', 'server_error',
-      'network_error', 'ssl_error', 'abort', 'repetition', 'gateway_rejection', 'unknown'] as const) {
+      'network_error', 'ssl_error', 'abort', 'repetition', 'gateway_rejection', 'tool_pairing', 'unknown'] as const) {
       assert.ok(ERROR_CATEGORIES.includes(cat), `missing category: ${cat}`);
     }
   });
@@ -1070,5 +1070,98 @@ describe('classifyError folds the nested cause code into classification (G11)', 
       cause: Object.assign(new Error('tls'), { code: 'CERT_HAS_EXPIRED' }),
     });
     assert.equal(classifyError(e).category, 'ssl_error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool-pairing corruption (400) — reactive /rewind recovery
+// ---------------------------------------------------------------------------
+describe('classifyError — tool_pairing (400 tool_use/tool_result corruption)', () => {
+  const expected = { category: 'tool_pairing' as const, retryable: false, shouldCompact: false, shouldFallback: false };
+
+  it('classifies a 400 "tool_use ids without tool_result" error via the SDK fast path', () => {
+    const err = makeAPICallError(400, '`tool_use` ids were found without `tool_result` blocks immediately after: toolu_123');
+    assertClassification(classifyError(err), expected);
+  });
+
+  it('classifies a 400 "unexpected tool_use_id found in tool_result" error', () => {
+    const err = makeAPICallError(400, 'unexpected `tool_use_id` found in `tool_result` blocks: toolu_456');
+    assertClassification(classifyError(err), expected);
+  });
+
+  it('classifies a 400 "tool_use ids must be unique" (duplicate) error', () => {
+    const err = makeAPICallError(400, '`tool_use` ids must be unique');
+    assertClassification(classifyError(err), expected);
+  });
+
+  it('classifies a plain-string tool-pairing message (non-SDK path)', () => {
+    assertClassification(classifyError('tool_use ids were found without tool_result blocks immediately after'), expected);
+  });
+
+  it('is checked before the gateway-rejection 400 branch (no mis-bucketing)', () => {
+    const err = makeAPICallError(400, '`tool_use` ids must be unique');
+    assert.equal(classifyError(err).category, 'tool_pairing');
+    // Regression: a genuine beta-header 400 is still gateway_rejection.
+    const gw = makeAPICallError(400, 'unsupported anthropic-beta header');
+    assert.equal(classifyError(gw).category, 'gateway_rejection');
+  });
+
+  it('surfaces an actionable /rewind affordance in the friendly message', () => {
+    const err = makeAPICallError(400, '`tool_use` ids must be unique');
+    const friendly = friendlyErrorMessage(classifyError(err));
+    assert.match(friendly, /\/rewind/);
+  });
+
+  it('exposes tool_pairing as a known category', () => {
+    assert.ok((ERROR_CATEGORIES as readonly string[]).includes('tool_pairing'));
+  });
+});
+
+describe('isToolPairingError', () => {
+  it('matches the three API pairing-corruption phrases (backtick-tolerant)', () => {
+    assert.equal(isToolPairingError('`tool_use` ids were found without `tool_result` blocks immediately after'.toLowerCase()), true);
+    assert.equal(isToolPairingError('unexpected `tool_use_id` found in `tool_result`'.toLowerCase()), true);
+    assert.equal(isToolPairingError('`tool_use` ids must be unique'.toLowerCase()), true);
+  });
+
+  it('does not match unrelated 400 messages', () => {
+    assert.equal(isToolPairingError('invalid request: bad field value'), false);
+    assert.equal(isToolPairingError('unsupported anthropic-beta header'), false);
+  });
+
+  it('handles a non-string input defensively', () => {
+    assert.equal(isToolPairingError(undefined as unknown as string), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-standard provider error envelope extraction (Bedrock Output.__type)
+// ---------------------------------------------------------------------------
+describe('extractUnknownErrorFormat', () => {
+  it('extracts the Bedrock routing-error type from Output.__type', () => {
+    assert.equal(extractUnknownErrorFormat({ Output: { __type: 'ThrottlingException' } }), 'ThrottlingException');
+  });
+
+  it('returns undefined for shapes without an Output.__type', () => {
+    assert.equal(extractUnknownErrorFormat(null), undefined);
+    assert.equal(extractUnknownErrorFormat('a string'), undefined);
+    assert.equal(extractUnknownErrorFormat({}), undefined);
+    assert.equal(extractUnknownErrorFormat({ Output: {} }), undefined);
+    assert.equal(extractUnknownErrorFormat({ Output: { __type: '' } }), undefined);
+    assert.equal(extractUnknownErrorFormat({ Output: { __type: 42 } }), undefined);
+  });
+});
+
+describe('classifyError — non-standard Bedrock envelope (no top-level message)', () => {
+  it('classifies a ThrottlingException envelope as rate_limited with a meaningful message', () => {
+    const result = classifyError({ Output: { __type: 'ThrottlingException' } });
+    assert.equal(result.category, 'rate_limited');
+    assert.equal(result.message, 'ThrottlingException');
+  });
+
+  it('uses the extracted type as the message instead of [object Object] for an unmapped type', () => {
+    const result = classifyError({ Output: { __type: 'SomeRoutingError' } });
+    assert.equal(result.message, 'SomeRoutingError');
+    assert.notEqual(result.message, '[object Object]');
   });
 });
