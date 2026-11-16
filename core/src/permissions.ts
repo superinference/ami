@@ -1169,6 +1169,37 @@ function allSegmentsKnown(command: string): boolean {
 }
 
 /**
+ * Benign edit-adjacent filesystem-mutation commands that `acceptEdits` mode may
+ * auto-allow, mirroring Claude's ACCEPT_EDITS_ALLOWED_COMMANDS
+ * ([mkdir, touch, rm, rmdir, mv, cp, sed]). AMI DELIBERATELY excludes `rm`/`rmdir`:
+ * its destructive-command safety invariant keeps every deletion gated behind an
+ * explicit prompt even in acceptEdits (an intentional superset divergence —
+ * never regress a delete guard). `sed` is included because `sed -i` is an edit.
+ */
+const ACCEPT_EDITS_FS_COMMANDS = new Set(['mkdir', 'touch', 'mv', 'cp', 'sed']);
+
+/**
+ * True when EVERY sub-command of `command` is a benign filesystem-mutation base
+ * command ({@link ACCEPT_EDITS_FS_COMMANDS}). Used by `acceptEdits` mode to
+ * auto-allow file-edit-adjacent shell work (`mkdir`, `touch`, `mv`, `cp`,
+ * `sed -i`) the way Claude does — without broadening to arbitrary commands.
+ * A command substitution (`$(...)`, backticks, `$VAR`) is rejected outright so it
+ * cannot smuggle a non-fs command into an otherwise-benign invocation.
+ */
+export function isAcceptEditsFilesystemMutation(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  if (containsShellSubstitution(trimmed) || trimmed.includes('`')) return false;
+  const subs = splitCompoundCommand(trimmed);
+  if (subs.length === 0) return false;
+  for (const sub of subs) {
+    const base = stripEnvVarPrefix(sub, /* safeEnvOnly */ false).trim().split(/\s+/)[0];
+    if (!base || !ACCEPT_EDITS_FS_COMMANDS.has(base)) return false;
+  }
+  return true;
+}
+
+/**
  * Git read-only write-guard — shared by the bash classifier AND the bash-result
  * cache (`isReadOnlyBashCommand`) so there is ONE place that knows which git
  * forms actually mutate state. A git subcommand can appear in a "read-only"
@@ -1429,6 +1460,17 @@ function splitCompoundCommand(cmd: string): string[] {
 }
 
 /**
+ * Cap on how many sub-commands a single compound command may fan out into before
+ * the per-subcommand safety analysis (classification + rule matching) is run.
+ * Above the cap we FAIL CLOSED — the command is treated as unsafe and an allow
+ * rule cannot auto-approve it, so it falls back to a prompt. A pathologically
+ * wide `a && b && c && …` chain otherwise runs the full validator set per segment
+ * and can starve the event loop (Claude's MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
+ * CC-643). Fifty is generous — legitimate user commands do not split that wide.
+ */
+export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
+
+/**
  * Extract the inner command string(s) from `$(...)` command substitutions and
  * `` `...` `` backticks, recursively (nested substitutions included).
  *
@@ -1478,28 +1520,32 @@ export function stripEnvVarPrefix(cmd: string, safeEnvOnly = false): string {
   // instead of silently auto-approving. Deny/ask matching strips ALL assignments
   // aggressively so a denied command cannot hide behind any env-var prefix.
   // Mirrors Claude's split (allow = safe-list strip, deny = strip-all).
-  let stripped: string;
   if (safeEnvOnly) {
     // Drop leading assignments one at a time, but STOP at the first non-safe var
     // (it stays, breaking any allow match). The command tail is preserved exactly.
+    // Allow matching is single-pass and never strips wrappers — auto-approving a
+    // wrapped/escalated form (`sudo git status`) must NOT match a `git status`
+    // allow rule — so de-obfuscation can only ever force a prompt, never broaden.
     let s = cmd;
     for (;;) {
       const m = s.match(/^\s*([A-Za-z_]\w*)=(?:"[^"]*"|'[^']*'|\S+)\s+/);
       if (!m || !SAFE_ENV_VARS.has(m[1]!)) break;
       s = s.slice(m[0].length);
     }
-    stripped = s;
-  } else {
-    // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint alternation
-    stripped = cmd.replace(/^(\s*[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
+    return s;
   }
-  // Privilege/shell wrappers (sudo, env, bash -c, eval, …) are stripped ONLY for
-  // deny/ask matching — so a deny rule still catches `sudo python evil.py`. They
-  // are NEVER stripped for allow matching (safeEnvOnly): auto-approving the inner
-  // command would silently grant the escalated/wrapped form (`sudo git status`
-  // must not match an allow rule for `git status`). Mirrors Claude's wrapper
-  // handling (strip-for-deny, keep-for-allow).
-  if (!safeEnvOnly) {
+  // Deny/ask matching: strip ALL leading env assignments AND privilege/shell
+  // wrappers (sudo, env, bash -c, eval, timeout, …), iterating both to a FIXED
+  // POINT so interleaved layers fully reduce. A single pass stops at the first
+  // non-wrapper token, so `timeout 5 FOO=bar curl` would keep the `FOO=bar`
+  // prefix and miss a `curl` deny rule; looping reduces it to `curl` (strip
+  // `timeout 5` → strip `FOO=bar` → `curl`). Mirrors Claude's fixed-point
+  // composition of stripSafeWrappers + stripAllLeadingEnvVars for deny rules.
+  let stripped = cmd;
+  for (;;) {
+    const before = stripped;
+    // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint alternation
+    stripped = stripped.replace(/^(\s*[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
     const tokens = stripped.split(/\s+/);
     let i = 0;
     while (i < tokens.length && SHELL_WRAPPERS.has(tokens[i]!)) {
@@ -1513,6 +1559,7 @@ export function stripEnvVarPrefix(cmd: string, safeEnvOnly = false): string {
       while (i < tokens.length && /^\d+[smhd]?$/.test(tokens[i]!)) i++;
     }
     if (i > 0 && i < tokens.length) stripped = tokens.slice(i).join(' ');
+    if (stripped === before) break;
   }
   return stripped;
 }
@@ -1857,6 +1904,14 @@ function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' 
   const normalized = normalizeLineContinuations(command);
   const subCommands = splitCompoundCommand(normalized);
 
+  // Fail-closed on compound-command fanout above the cap: an allow rule must NOT
+  // auto-approve a pathologically wide chain (it falls through to a prompt).
+  // Deny/ask matching deliberately keeps scanning so a denied command cannot be
+  // hidden by padding a chain past the cap (CC-643).
+  if (ruleAction === 'allow' && subCommands.length > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK) {
+    return false;
+  }
+
   let baseMatch: boolean;
   if (subCommands.length <= 1) {
     // Use the single sub-command (which has been unwrapped from control
@@ -2066,6 +2121,16 @@ export class PermissionManager {
       if (toolName === 'bash' && typeof input.command === 'string') {
         const classification = this.classifyBashCommand(input.command);
         if (classification === 'safe') return 'allow';
+        // acceptEdits also auto-allows benign edit-adjacent filesystem mutations
+        // (mkdir/touch/mv/cp/sed) — Claude's ACCEPT_EDITS_ALLOWED_COMMANDS — but
+        // only when the command is not destructive (rm/rmdir stay gated) and does
+        // not touch a credential or system path (those keep their explicit prompt).
+        if (classification !== 'destructive' &&
+            isAcceptEditsFilesystemMutation(input.command) &&
+            !commandTargetsCredentialPath(input.command) &&
+            !commandTargetsSystemDir(input.command)) {
+          return 'allow';
+        }
       }
     }
 
@@ -2259,6 +2324,14 @@ export class PermissionManager {
     // commands, not the loop/if keywords. The original trimmed is kept
     // for regex checks that need the full command syntax (like rm -rf).
     const unwrapped = unwrapShellControlStructures(trimmed);
+
+    // Fail-closed on pathologically wide compound commands: above the cap we stop
+    // analyzing (each segment would run the full validator set) and treat the
+    // command as unsafe so it prompts rather than being proven safe (CC-643).
+    if (splitCompoundCommand(trimmed).length > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK) {
+      return 'unsafe';
+    }
+
     const bases = extractBaseCommands(trimmed);
 
     // Check destructive first (highest severity wins)

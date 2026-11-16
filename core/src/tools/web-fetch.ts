@@ -120,10 +120,45 @@ function htmlToMarkdown(html: string): string {
     .trim();
 }
 
+/**
+ * Build the secondary (summarizer) model prompt for UNTRUSTED fetched content.
+ * Mirrors Claude's makeSecondaryModelPrompt: a preapproved/trusted domain (one the
+ * caller explicitly allow-listed) gets a permissive "include code/doc excerpts"
+ * instruction, while an untrusted domain gets strict copyright/quote guardrails
+ * (125-char quote cap, no verbatim reproduction, no song lyrics, no legal
+ * commentary) so prompt-injected content on a hostile page cannot coax the
+ * summarizer into reproducing large copyrighted passages.
+ */
+export function makeSecondaryModelPrompt(
+  content: string,
+  prompt: string,
+  isPreapprovedDomain: boolean,
+): string {
+  const guidelines = isPreapprovedDomain
+    ? 'Provide a concise response based on the content above. Include relevant details, code examples, and documentation excerpts as needed.'
+    : [
+        'Provide a concise response based only on the content above. In your response:',
+        ' - Enforce a strict 125-character maximum for quotes from any source document. Open Source Software is ok as long as we respect the license.',
+        ' - Use quotation marks for exact language from articles; any language outside of the quotation should never be word-for-word the same.',
+        ' - You are not a lawyer and never comment on the legality of your own prompts and responses.',
+        ' - Never produce or reproduce exact song lyrics.',
+      ].join('\n');
+  return `Given this web page content, answer the following question/instruction:\n\nQuestion: ${prompt}\n\nContent:\n${content}\n\n${guidelines}`;
+}
+
 export const webFetchTool: ToolDefinition = {
   name: 'web_fetch',
   description:
-    'Fetch content from a URL as text (HTML is auto-stripped). Use for reading documentation, articles, APIs, and web pages. NOT for binary files (zip, tar, images) — use bash with curl -O for binary downloads.',
+    'IMPORTANT: web_fetch WILL FAIL for authenticated or private URLs. Before using it, check whether the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub); if so, prefer a specialized MCP tool that provides authenticated access.\n' +
+    'Fetch content from a URL as text (HTML is auto-stripped) and, when a prompt is given, answer it using a small, fast model.\n' +
+    'Usage notes:\n' +
+    '  - If an MCP-provided web-fetch tool is available, prefer it over this one — it may have fewer restrictions.\n' +
+    '  - HTTP URLs are automatically upgraded to HTTPS.\n' +
+    '  - A self-cleaning 15-minute cache speeds up repeated fetches of the same URL.\n' +
+    '  - Large pages are summarized against the prompt by a small model; the raw content may not be returned verbatim.\n' +
+    '  - If a URL redirects to a different host, protocol, or port, the tool reports the redirect instead of returning the content; re-fetch with the redirect URL to continue.\n' +
+    '  - For GitHub URLs, prefer the gh CLI via Bash (e.g. gh pr view, gh issue view, gh api) instead of fetching.\n' +
+    '  - NOT for binary files (zip, tar, images) — use bash with curl -O for binary downloads.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -150,7 +185,7 @@ export const webFetchTool: ToolDefinition = {
         description: 'Character offset into the page text to start reading from. Use when a previous fetch reported truncated content.',
       },
     },
-    required: ['url'],
+    required: ['url', 'prompt'],
   },
   isReadOnly: true,
   isConcurrencySafe: true,
@@ -238,6 +273,19 @@ export const webFetchTool: ToolDefinition = {
     ) {
       return {
         output: `Error: Unsupported protocol "${parsedUrl.protocol}". Only http and https are supported.`,
+        isError: true,
+      };
+    }
+
+    // Reject non-publicly-resolvable single-label hostnames (e.g. "intranet",
+    // "router") BEFORE any DNS lookup. A hostname with no dot is almost always an
+    // internal short name, never a public site, so refuse it structurally (parity
+    // with Claude's validateURL `parts.length < 2` guard). `localhost` is left to
+    // the SSRF layer (which reports it as a blocked private host), and the whole
+    // check is skipped when localhost is explicitly permitted for testing.
+    if (!context._allowLocalhostForTesting && host !== 'localhost' && !host.includes('.')) {
+      return {
+        output: `Error: Hostname "${host}" is not a publicly-resolvable domain (hostname must contain a dot).`,
         isError: true,
       };
     }
@@ -423,6 +471,16 @@ export const webFetchTool: ToolDefinition = {
 
       // Apply prompt to content via LLM summarization (like Claude's applyPromptToMarkdown)
       if (input.prompt && typeof input.prompt === 'string' && context._engineFactory) {
+        // A domain the caller explicitly allow-listed is treated as preapproved/trusted,
+        // which relaxes the summarizer's copyright/quote guardrails (code-doc excerpts
+        // are fine). Everything else gets the strict guidelines.
+        const isPreapprovedDomain = !!(
+          allowedDomains &&
+          allowedDomains.length > 0 &&
+          allowedDomains.some(d => host === d || host.endsWith('.' + d))
+        );
+        let summary = '';
+        let summarizeFailed = false;
         try {
           // The summarizer processes UNTRUSTED fetched page content. It only needs to
           // emit text, so it runs under deny-all: a prompt-injection payload in the
@@ -434,14 +492,37 @@ export const webFetchTool: ToolDefinition = {
             maxTurns: 1,
             tokenBudget: 8000,
           });
-          let summary = '';
-          const summarizePrompt = `Given this web page content, answer the following question/instruction:\n\nQuestion: ${input.prompt}\n\nContent:\n${summaryWindow(output)}`;
+          const summarizePrompt = makeSecondaryModelPrompt(
+            summaryWindow(output),
+            input.prompt,
+            isPreapprovedDomain,
+          );
           for await (const event of summarizeEngine.submit(summarizePrompt)) {
+            // Honor cancellation/deadline mid-stream: stop consuming the moment the
+            // fetch signal aborts rather than accumulating a partial summary.
+            if (fetchSignal.aborted) break;
             if (event.type === 'text_delta') summary += event.text;
           }
           summarizeEngine.shutdown?.();
-          if (summary.trim()) output = summary.trim();
-        } catch {}
+        } catch {
+          // An engine construction/stream failure must not lose the already-fetched
+          // raw output — fall back to it. Cancellation is surfaced explicitly below.
+          summarizeFailed = true;
+        }
+        // Surface cancellation/deadline during summarization as an error instead of
+        // silently returning the un-summarized raw output (parity with Claude's
+        // applyPromptToMarkdown, which re-checks signal.aborted after the model call
+        // and throws rather than returning partial content).
+        if (fetchSignal.aborted) {
+          if (deadlineSignal.aborted) {
+            return {
+              output: `Error: request exceeded ${Math.round(deadlineMs / 1000)}s overall deadline`,
+              isError: true,
+            };
+          }
+          return { output: 'Fetch aborted.', isError: true };
+        }
+        if (!summarizeFailed && summary.trim()) output = summary.trim();
       }
 
       // Store in cache

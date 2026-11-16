@@ -21,6 +21,36 @@ export const MAX_SESSIONS_TO_SEARCH = 2000;               // newest-first cap on
 export const MAX_MESSAGES_TO_SCAN = 5000;                 // per-session message cap
 export const MAX_SNIPPET_CHARS = 300;                     // result snippet budget (incl. ellipses)
 
+/**
+ * Subsequence (fuzzy) fallback tier. When a short single-token query matches no
+ * session by substring, try a subsequence match ("tststp" ⊂ "test stop") so a
+ * typo/abbreviation still surfaces — ranked STRICTLY below every substring hit.
+ * Gated to a single short token because subsequence over long transcript bodies
+ * is noisy (mirrors the reference's "gate fuzzy for short queries" guidance).
+ */
+export const SUBSEQUENCE_MAX_QUERY_LEN = 32; // longest query eligible for the fuzzy tier
+export const MAX_SUBSEQUENCE_SCAN_CHARS = 50000; // per-session searchable-text cap for the fuzzy scan
+/** Fuzzy score band: strictly below any substring score (min 1/terms.length,
+ *  which for the single-token fuzzy gate is 1.0) so exact always outranks fuzzy. */
+const SUBSEQUENCE_SCORE = 0.05;
+
+/**
+ * Does `query` appear as a (case-insensitive) subsequence of `text` — its
+ * characters in order but not necessarily contiguous? An empty query trivially
+ * matches. The single canonical subsequence primitive: the CLI fuzzy filters
+ * (inspector-actions) import this rather than re-implementing it.
+ */
+export function isSubsequence(text: string, query: string): boolean {
+  if (!query) return true;
+  const t = text.toLowerCase();
+  const q = query.toLowerCase();
+  let i = 0;
+  for (let j = 0; j < t.length && i < q.length; j++) {
+    if (t[j] === q[i]) i++;
+  }
+  return i === q.length;
+}
+
 /** Model-only context (system-reminder spans) must not produce phantom search
  *  hits — strip the whole block, open tag to close tag, before matching. */
 const SYSTEM_REMINDER_RE = /<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder>/gi;
@@ -29,6 +59,17 @@ const SYSTEM_REMINDER_RE = /<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder>/
  *  transcript) would otherwise leak its text into the index. Strip it, and
  *  everything after it, to the end of the string. */
 const SYSTEM_REMINDER_OPEN_RE = /<system-reminder\b[^>]*>[\s\S]*$/i;
+
+/**
+ * Interrupt placeholders written into message content render in the TUI as a
+ * component ("Interrupted by user"/a stopped-tool marker), not as their literal
+ * text — so indexing them produces phantom hits (e.g. a `/interrupted` query
+ * matching text the user never sees). Mirrors the reference's RENDERED_AS_SENTINEL
+ * exclusion. The AMI sentinels are `[Response interrupted by server error]`
+ * (engine) and the `[Tool call interrupted …]` family (provider-transform,
+ * speculation); strip them from the searchable text before matching. */
+const RENDERED_AS_SENTINEL_RE =
+  /\[(?:Response interrupted by server error|Tool call interrupted[^\]]*)\]/g;
 
 /** Parse an ISO timestamp into epoch ms for recency ranking; unknown/invalid -> 0. */
 function recencyMs(timestamp?: string): number {
@@ -68,7 +109,9 @@ export function flattenMessageText(msg: unknown): string {
     .filter(Boolean)
     .join(' ')
     .replace(SYSTEM_REMINDER_RE, ' ')
-    .replace(SYSTEM_REMINDER_OPEN_RE, ' ');
+    .replace(SYSTEM_REMINDER_OPEN_RE, ' ')
+    // Drop render-replaced interrupt sentinels so their raw text can't match.
+    .replace(RENDERED_AS_SENTINEL_RE, ' ');
 }
 
 /**
@@ -122,6 +165,24 @@ function flattenContent(content: unknown): string {
   return out.join(' ');
 }
 
+/**
+ * Newest-first, capped list of session filenames in a sessions dir. A huge
+ * session dir must not make a scan unbounded: sort by mtime desc, take at most
+ * {@link MAX_SESSIONS_TO_SEARCH}. Shared by the literal search and the recent-fill
+ * tier so both apply the same ordering + cap.
+ */
+function sessionFilesByRecency(sessionsDir: string): string[] {
+  const candidates: { file: string; mtimeMs: number }[] = [];
+  for (const file of fs.readdirSync(sessionsDir)) {
+    if (!file.endsWith('.json')) continue;
+    let mtimeMs = 0;
+    try { mtimeMs = fs.statSync(path.join(sessionsDir, file)).mtimeMs; } catch { /* stat race */ }
+    candidates.push({ file, mtimeMs });
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates.slice(0, MAX_SESSIONS_TO_SEARCH).map(c => c.file);
+}
+
 export function searchSessions(cwd: string, query: string, limit: number = 20): SearchResult[] {
   const sessionsDir = projectStateDir(cwd, 'sessions');
   if (!fs.existsSync(sessionsDir)) return [];
@@ -132,18 +193,7 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
 
   const results: SearchResult[] = [];
 
-  // Newest-first, capped file set: a huge session dir must not make search
-  // unbounded. Sort by mtime desc, take at most MAX_SESSIONS_TO_SEARCH.
-  const candidates: { file: string; mtimeMs: number }[] = [];
-  for (const file of fs.readdirSync(sessionsDir)) {
-    if (!file.endsWith('.json')) continue;
-    let mtimeMs = 0;
-    try { mtimeMs = fs.statSync(path.join(sessionsDir, file)).mtimeMs; } catch { /* stat race */ }
-    candidates.push({ file, mtimeMs });
-  }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  for (const { file } of candidates.slice(0, MAX_SESSIONS_TO_SEARCH)) {
+  for (const file of sessionFilesByRecency(sessionsDir)) {
     try {
       const filePath = path.join(sessionsDir, file);
       // OOM guard: skip a session file larger than the read cap rather than
@@ -152,6 +202,15 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
       const raw = fs.readFileSync(filePath, 'utf-8');
       const session = JSON.parse(raw);
       const sessionId = session.id ?? file.replace('.json', '');
+      // A session contributes substring hits first; only if it produced NONE do
+      // we fall back to the subsequence (fuzzy) tier below, so exact always wins.
+      let sessionHadSubstringHit = false;
+      // Accumulate the session's searchable text (capped) for the fuzzy scan.
+      let subsequenceText = '';
+      const addSubsequenceText = (t: string): void => {
+        if (subsequenceText.length >= MAX_SUBSEQUENCE_SCAN_CHARS) return;
+        subsequenceText += (subsequenceText ? ' ' : '') + t;
+      };
       // Session-level metadata (user tag + title + git branch) is searchable in
       // /resume, so a labeled session — or one on a named branch — surfaces even
       // when no message body matches the query. (H13)
@@ -159,9 +218,11 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
         .filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
         .join(' ');
       if (metaText) {
+        addSubsequenceText(metaText);
         const lowerMeta = metaText.toLowerCase();
         const metaMatch = terms.filter(t => lowerMeta.includes(t)).length;
         if (metaMatch > 0) {
+          sessionHadSubstringHit = true;
           const literalBonus = terms.length > 1 && lowerMeta.includes(phrase) ? 1 : 0;
           results.push({
             sessionId,
@@ -180,9 +241,11 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
         // tool_result that a string-only check would miss. (H33)
         const content = flattenMessageText(msg);
         if (!content) continue;
+        addSubsequenceText(content);
         const lower = content.toLowerCase();
         const matchCount = terms.filter(t => lower.includes(t)).length;
         if (matchCount > 0) {
+          sessionHadSubstringHit = true;
           // Hoist literal matches (every token verbatim and contiguous) above
           // scattered-term matches of the same coverage.
           const literalBonus = terms.length > 1 && lower.includes(phrase) ? 1 : 0;
@@ -195,6 +258,24 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
             timestamp: session.createdAt,
           });
         }
+      }
+      // Fuzzy fallback: a short single-token query with no substring hit anywhere
+      // in this session still surfaces via subsequence match, ranked strictly
+      // below every exact hit.
+      if (
+        !sessionHadSubstringHit &&
+        terms.length === 1 &&
+        phrase.length <= SUBSEQUENCE_MAX_QUERY_LEN &&
+        subsequenceText &&
+        isSubsequence(subsequenceText.toLowerCase(), phrase)
+      ) {
+        results.push({
+          sessionId,
+          role: 'fuzzy',
+          content: matchSnippet(subsequenceText, terms, phrase),
+          score: SUBSEQUENCE_SCORE,
+          timestamp: session.createdAt,
+        });
       }
     } catch {
       // Skip malformed session files
@@ -232,6 +313,58 @@ export interface RankedSearchOptions {
    * abort its in-flight LLM rerank (e.g. the user retypes the query).
    */
   signal?: AbortSignal;
+  /**
+   * When true AND a `rankFn` is supplied: if literal matches number fewer than
+   * `limit`, pad the ranker's candidate pool with the most-recent non-matching
+   * sessions (newest first) so a semantic rerank can surface relevant sessions
+   * that lack the literal query term. Off by default — plain literal search stays
+   * zero-network and never fabricates non-matching results. Mirrors the
+   * reference's agentic recent-fill (agenticSessionSearch.ts L161-175).
+   */
+  recentFill?: boolean;
+}
+
+/**
+ * Build context-only {@link SearchResult} entries for the most-recent sessions
+ * (newest `createdAt` first), excluding any `excludeIds`. These carry score 0 —
+ * they rank below every literal/fuzzy hit and exist solely to widen a semantic
+ * reranker's candidate pool. Reads are size-capped like the literal scan.
+ */
+function recentSessionResults(cwd: string, count: number, excludeIds: Set<string>): SearchResult[] {
+  if (count <= 0) return [];
+  const sessionsDir = projectStateDir(cwd, 'sessions');
+  if (!fs.existsSync(sessionsDir)) return [];
+  const out: SearchResult[] = [];
+  for (const file of sessionFilesByRecency(sessionsDir)) {
+    try {
+      const filePath = path.join(sessionsDir, file);
+      if (fs.statSync(filePath).size > MAX_SESSION_SEARCH_BYTES) continue;
+      const session = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const sessionId = session.id ?? file.replace('.json', '');
+      if (excludeIds.has(sessionId)) continue;
+      // A lightweight context snippet: title/tag/branch, else the first non-empty
+      // flattened message — enough for a reranker to judge relevance.
+      let snippet = [session.customTitle, session.aiTitle, session.tag, session.gitBranch]
+        .filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
+        .join(' ');
+      if (!snippet) {
+        const messages = Array.isArray(session.messages) ? session.messages : [];
+        for (const msg of messages) {
+          const t = flattenMessageText(msg);
+          if (t) { snippet = t; break; }
+        }
+      }
+      out.push({
+        sessionId,
+        role: 'recent',
+        content: matchSnippet(snippet, [], ''),
+        score: 0,
+        timestamp: session.createdAt,
+      });
+    } catch { /* skip malformed session files */ }
+  }
+  out.sort((a, b) => recencyMs(b.timestamp) - recencyMs(a.timestamp));
+  return out.slice(0, count);
 }
 
 /**
@@ -272,18 +405,27 @@ export async function searchSessionsRanked(
   query: string,
   options: RankedSearchOptions = {},
 ): Promise<SearchResult[]> {
-  const { limit = 20, rankFn, signal } = options;
+  const { limit = 20, rankFn, signal, recentFill = false } = options;
   const candidates = searchSessions(cwd, query, limit);
-  if (!rankFn || candidates.length === 0) return candidates;
+  if (!rankFn) return candidates;
+  // Fallback-to-recent: when enabled and literal matches under-fill the limit,
+  // widen the ranker's pool with the most-recent non-matching sessions so a
+  // semantic rerank can still surface sessions lacking the literal query term.
+  let pool = candidates;
+  if (recentFill && candidates.length < limit) {
+    const have = new Set(candidates.map(c => c.sessionId));
+    pool = [...candidates, ...recentSessionResults(cwd, limit - candidates.length, have)];
+  }
+  if (pool.length === 0) return pool;
   // Already-cancelled search: skip the (potentially networked) rerank entirely
-  // and hand back the fast local substring order.
-  if (signal?.aborted) return candidates;
+  // and hand back the fast local order.
+  if (signal?.aborted) return pool;
   try {
-    const orderedIds = await rankFn(query, candidates, signal);
-    return reorderByIds(candidates, orderedIds);
+    const orderedIds = await rankFn(query, pool, signal);
+    return reorderByIds(pool, orderedIds);
   } catch {
     // Ranker failure (incl. an abort mid-flight) must never break search: fall
-    // back to substring order.
-    return candidates;
+    // back to the local order.
+    return pool;
   }
 }

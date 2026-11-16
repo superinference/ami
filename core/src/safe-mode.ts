@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { SAFE_ENV_VARS } from './permissions';
 
@@ -188,6 +190,114 @@ export function isTrustedByAncestor(cwd: string, trustedRoots: string[]): boolea
   return false;
 }
 
+/** Settings files (relative to a project cwd) that are honored as project-local
+ *  trust surfaces. Both AMI-native (`.ami`) and Claude-compatible (`.claude`) forms
+ *  and their `.local` overrides are scanned, mirroring Claude's project/local split. */
+export const PROJECT_SETTINGS_SOURCES = [
+  '.ami/settings.json',
+  '.ami/settings.local.json',
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+] as const;
+
+/**
+ * Trust/safe-mode indicators fed into {@link shouldEnableSafeMode}. The caller may
+ * supply these directly OR derive them from a project-settings scan
+ * ({@link scanProjectSettingsForTrust}). Single source of truth for the indicator
+ * shape — the engine factory aliases this rather than re-declaring it.
+ */
+export interface TrustIndicators {
+  untrustedProject?: boolean;
+  clonedFromUnknown?: boolean;
+  hasPromptOverride?: boolean;
+  hasUntrustedMcp?: boolean;
+  /** Project settings flag a config-sourced escalation vector (apiKeyHelper, aws/
+   *  gcp/otel helper, or a non-allowlisted env var) — treat as untrusted. */
+  hasConfigEscalation?: boolean;
+  /** Roots the user has already trusted (e.g. the git-root/original project path).
+   *  If `cwd` is one of these or a descendant, safe mode is NOT forced for the
+   *  trust indicators (inheritance), mirroring computeTrustDialogAccepted. */
+  trustedRoots?: string[];
+}
+
+/** Result of scanning a project's own settings files for trust/escalation signals:
+ *  the per-source risk breakdown (for disclosure), the combined escalation vectors,
+ *  and the derived {@link TrustIndicators} ready to feed the trust gate. */
+export interface SafeModeScanResult {
+  /** Per-source risk breakdown — only sources carrying ≥1 signal (for disclosure). */
+  bySource: Record<string, ConfigRiskSignals>;
+  /** Credential/command-helper keys + `env.<name>` vectors across all sources. */
+  escalationVectors: string[];
+  /** Trust indicators derived from the scan, ready for {@link shouldEnableSafeMode}. */
+  indicators: TrustIndicators;
+}
+
+/** Read + JSON-parse a settings file, returning the plain object or null when the
+ *  file is missing, unreadable, malformed, or not a JSON object. Never throws. */
+function readJsonSettings(file: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pre-flight scan of a project's OWN settings files ({@link PROJECT_SETTINGS_SOURCES})
+ * for the concrete arbitrary-code-execution / secret-exfiltration vectors they
+ * configure, deriving the {@link TrustIndicators} the trust gate consumes. This is
+ * the wiring that turns the per-capability detectors (which previously only ran on
+ * caller-supplied objects) into an effective pre-flight check against the real files,
+ * mirroring Claude's TrustDialog scanning project+local settings before honoring them.
+ *
+ * Only the high-risk secret-exfiltration vectors (credential/command helpers +
+ * non-allowlisted env vars) set `hasConfigEscalation` (which forces safe mode even
+ * inside a trusted root); declared MCP servers set `hasUntrustedMcp`; the remaining
+ * capability signals (hooks, bash-allow rules) are returned in `bySource` for
+ * disclosure without unconditionally forcing safe mode. Pure w.r.t. process state;
+ * reads files side-effect-free and never throws.
+ */
+export function scanProjectSettingsForTrust(cwd: string): SafeModeScanResult {
+  const sources: Record<string, Record<string, unknown> | null> = {};
+  if (cwd) {
+    for (const rel of PROJECT_SETTINGS_SOURCES) {
+      sources[rel] = readJsonSettings(path.join(cwd, ...rel.split('/')));
+    }
+  }
+  const bySource = scanConfigRiskSignalsBySource(sources);
+  const escalationVectors = Array.from(
+    new Set(Object.values(sources).flatMap(s => detectConfigEscalationVectors(s))),
+  );
+  const hasUntrustedMcp = Object.values(bySource).some(sig => sig.mcpServers.length > 0);
+  return {
+    bySource,
+    escalationVectors,
+    indicators: {
+      hasConfigEscalation: escalationVectors.length > 0,
+      hasUntrustedMcp,
+    },
+  };
+}
+
+/**
+ * True when `cwd` resolves to the user's home directory. Running an agent from
+ * $HOME would otherwise grant project-local trust over the entire home tree, so the
+ * home dir is treated as untrusted-by-default (safe mode ON) and its trust is
+ * session-only — never persisted. Parity with Claude Code's TrustDialog home-dir
+ * special case (acceptance kept in memory only, never written to disk). Never throws.
+ */
+export function isHomeDirectory(cwd: string): boolean {
+  if (!cwd) return false;
+  try {
+    return path.resolve(cwd) === os.homedir();
+  } catch {
+    return false;
+  }
+}
+
 export const BLOCKED_RESOURCES = ['prompt_override', 'project_memory', 'project_skills', 'project_config', 'mcp_servers', 'hooks', 'plugins'] as const;
 export type BlockedResource = (typeof BLOCKED_RESOURCES)[number];
 
@@ -212,19 +322,7 @@ export function isPartiallyBlocked(resource: BlockedResource): boolean {
   return PARTIALLY_BLOCKED.has(resource);
 }
 
-export function shouldEnableSafeMode(cwd: string, indicators: {
-  untrustedProject?: boolean;
-  clonedFromUnknown?: boolean;
-  hasPromptOverride?: boolean;
-  hasUntrustedMcp?: boolean;
-  /** Project settings flag a config-sourced escalation vector (apiKeyHelper, aws/
-   *  gcp/otel helper, or a non-allowlisted env var) — treat as untrusted. */
-  hasConfigEscalation?: boolean;
-  /** Roots the user has already trusted (e.g. the git-root/original project path).
-   *  If `cwd` is one of these or a descendant, safe mode is NOT forced for the
-   *  trust indicators (inheritance), mirroring computeTrustDialogAccepted. */
-  trustedRoots?: string[];
-}): boolean {
+export function shouldEnableSafeMode(cwd: string, indicators: TrustIndicators): boolean {
   // Ancestor/git-root trust inheritance: a cwd inside an already-trusted root is
   // not re-flagged as untrusted. Hard escalation signals (prompt-override+MCP,
   // config escalation) still engage safe mode even inside a trusted root.

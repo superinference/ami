@@ -218,6 +218,39 @@ export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   'plan_mode', 'workflow', 'AskUserQuestion', 'task_output', 'task_kill',
 ]);
 
+/**
+ * Explicit allowlist (SOURCE OF TRUTH) of the tools an ASYNC / background
+ * sub-agent (`run_in_background: true`) may use — mirrors Claude Code's
+ * ASYNC_AGENT_ALLOWED_TOOLS (`constants/tools.ts`). A detached background agent
+ * runs with no live parent turn to supervise it, so it is restricted to
+ * self-contained read / search / edit / planning tools and must NOT get:
+ *  - `task` (AgentTool) — a detached agent spawning more detached agents is an
+ *    unsupervised recursion fan-out.
+ *  - lead-only coordination (`task_output` / `task_kill`) — already in the
+ *    universal floor, but listed as blocked here for the same reason: they read /
+ *    terminate the PARENT's process-manager entries.
+ *  - interactive/stateful tools (`plan_mode`, `AskUserQuestion`, `send_message`,
+ *    `workflow`, cron/team/config/memory) that assume a live session or would
+ *    mutate shared state from a background context.
+ * Unlike mode/agent-def filtering this is an INTERSECTION applied last on the
+ * background path: whatever the mode or agent `tools` list resolved to is further
+ * narrowed to this set, so no allowlist (even `['*']`) can widen a background
+ * agent beyond it. `file_write`/`notebook_edit` map to AMI's `file_edit`/
+ * `notebook_edit`; `structured_output` is AMI's synthetic-output tool; the
+ * AMI-native read tools `list_dir`/`search_symbols` are the direct analogs of the
+ * allowed `grep`/`glob`/`file_read` read class, so they are included too.
+ */
+export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
+  'file_read', 'grep', 'glob', 'list_dir', 'search_symbols',
+  'web_search', 'web_fetch',
+  'bash',
+  'file_edit', 'notebook_edit',
+  'todo_write',
+  'skill', 'tool_search',
+  'structured_output',
+  'enter_worktree', 'exit_worktree',
+]);
+
 /** The sentinel a sub-agent model request uses to mean "inherit the parent's model". */
 export const INHERIT_MODEL_SENTINEL = 'inherit';
 
@@ -394,6 +427,19 @@ export function filterToolsForAgent(
   // plan state. Autonomous subagents must never get it.
   return allTools.filter(t =>
     t.name !== 'plan_mode' && (allowNested || t.name !== 'task'));
+}
+
+/**
+ * Narrow an already-resolved tool set to the async/background allowlist
+ * (`ASYNC_AGENT_ALLOWED_TOOLS`). Applied as the LAST filter on the
+ * `run_in_background: true` spawn path so a detached agent — which has no live
+ * parent turn supervising it — cannot use recursion-prone (`task`) or
+ * interactive/stateful tools even when its mode or agent-def `tools` list (incl.
+ * `['*']`) resolved to a wider set. Exported for testing; used internally by the
+ * task tool execute method.
+ */
+export function filterToolsForAsyncAgent(tools: ToolDefinition[]): ToolDefinition[] {
+  return tools.filter(t => ASYNC_AGENT_ALLOWED_TOOLS.has(t.name));
 }
 
 export const taskTool: ToolDefinition = {
@@ -640,6 +686,21 @@ export const taskTool: ToolDefinition = {
     // allowlist (incl. `['*']`) can reintroduce plan_mode or workflow.
     tools = tools.filter(t => !ALL_AGENT_DISALLOWED_TOOLS.has(t.name));
 
+    // Providers often serialize booleans as the STRING "true"/"false" in tool-call
+    // args; coerceBool handles both (a strict `=== true` silently dropped
+    // `run_in_background: "true"` to foreground, serializing a batch the model
+    // meant to run concurrently). Shared with bash.ts for consistent coercion.
+    const runInBackground = coerceBool(input.run_in_background);
+
+    // Async/background allowlist — a detached background agent has no live parent
+    // turn supervising it, so after all mode/agent-def/denylist resolution its tool
+    // set is further INTERSECTED with ASYNC_AGENT_ALLOWED_TOOLS (mirrors Claude's
+    // isAsync → ASYNC_AGENT_ALLOWED_TOOLS gate). This strips recursion-prone (`task`)
+    // and interactive/stateful tools even when a `['*']` allowlist widened the set.
+    if (runInBackground) {
+      tools = filterToolsForAsyncAgent(tools);
+    }
+
     // Boundary guard: a custom agent whose `tools` allowlist resolves to zero
     // available tools — every name offline/typo'd, or an allowlist fully cancelled
     // by its denylist or the universal floor — would otherwise spawn a subagent
@@ -675,11 +736,6 @@ export const taskTool: ToolDefinition = {
     }
 
     const subAbort = new AbortController();
-    // Providers often serialize booleans as the STRING "true"/"false" in tool-call
-    // args; coerceBool handles both (a strict `=== true` silently dropped
-    // `run_in_background: "true"` to foreground, serializing a batch the model
-    // meant to run concurrently). Shared with bash.ts for consistent coercion.
-    const runInBackground = coerceBool(input.run_in_background);
     const forwardAbort = () => subAbort.abort();
     if (!runInBackground) {
       context.abortSignal.addEventListener('abort', forwardAbort, { once: true });

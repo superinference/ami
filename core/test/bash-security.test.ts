@@ -37,6 +37,8 @@ import {
   detectSourceExecution,
   detectGitWorktreeEscape,
   detectNuclearCommand,
+  detectPs4TraceRce,
+  MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
 } from '../src/tools/bash-security';
 import { detectDetachedGitDiscard } from '../src/tools/bash';
 
@@ -3803,5 +3805,110 @@ describe('detectNuclearCommand — suggestion field for rm commands', () => {
     const r = detectNuclearCommand('sudo rm -rf /');
     assert.equal(r.blocked, true);
     assert.ok(r.suggestion, 'sudo rm -rf / should have a suggestion');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subcommand fanout cap (MAX_SUBCOMMANDS_FOR_SECURITY_CHECK) — parity gap U015
+// A maliciously/accidentally wide compound command would otherwise run the full
+// validator battery per segment, starving the event loop (ReDoS / CPU DoS).
+// Above the cap, validateBashSecurity short-circuits to unsafe (safe default).
+// ---------------------------------------------------------------------------
+
+describe('subcommand fanout cap', () => {
+  it('exposes a cap of 50', () => {
+    assert.equal(MAX_SUBCOMMANDS_FOR_SECURITY_CHECK, 50);
+  });
+
+  it('blocks a command that splits into more subcommands than the cap', () => {
+    const wide = Array.from({ length: MAX_SUBCOMMANDS_FOR_SECURITY_CHECK + 5 }, () => 'echo hi').join(' && ');
+    const r = validateBashSecurity(wide);
+    assert.equal(r.safe, false, 'over-cap fanout must be rejected');
+    assert.match(r.message, /subcommands/i);
+  });
+
+  it('blocks over-cap pipe fanout too', () => {
+    const wide = Array.from({ length: MAX_SUBCOMMANDS_FOR_SECURITY_CHECK + 2 }, () => 'cat x').join(' | ');
+    const r = validateBashSecurity(wide);
+    assert.equal(r.safe, false);
+  });
+
+  it('allows a command at/below the cap', () => {
+    const atCap = Array.from({ length: 10 }, () => 'echo hi').join(' && ');
+    const r = validateBashSecurity(atCap);
+    assert.equal(r.safe, true, 'a modest compound command must still pass');
+  });
+
+  it('does not count separators inside quotes toward the cap', () => {
+    // A single sed with many in-pattern `|` delimiters is one segment, not many.
+    const r = validateBashSecurity("echo 'a|b|c|d|e|f|g|h|i|j|k|l|m'");
+    assert.equal(r.safe, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PS4 trace-time RCE via assignment — parity gap U015
+// `PS4='$(id)' && set -x && :` runs `id` at trace time (promptvars re-expands
+// PS4 before every traced command), invisible to argv-based checks. Any PS4
+// assignment whose value carries a command substitution/expansion is blocked.
+// ---------------------------------------------------------------------------
+
+describe('detectPs4TraceRce', () => {
+  it('blocks a single-quoted PS4 command substitution (re-expanded at trace time)', () => {
+    const r = detectPs4TraceRce("PS4='$(id)' && set -x && :");
+    assert.equal(r.blocked, true);
+    assert.match(r.reason!, /PS4/);
+  });
+
+  it('blocks a double-quoted PS4 command substitution', () => {
+    assert.equal(detectPs4TraceRce('PS4="$(whoami)" set -x').blocked, true);
+  });
+
+  it('blocks an unquoted PS4 command substitution', () => {
+    assert.equal(detectPs4TraceRce('PS4=$(id) bash -x script.sh').blocked, true);
+  });
+
+  it('blocks a backtick PS4 value', () => {
+    assert.equal(detectPs4TraceRce('PS4=`id` set -x').blocked, true);
+  });
+
+  it('blocks a PS4 variable-expansion value', () => {
+    assert.equal(detectPs4TraceRce('PS4=${x} set -x').blocked, true);
+  });
+
+  it('blocks the PS4+= append form', () => {
+    assert.equal(detectPs4TraceRce("PS4+='$(id)' set -x").blocked, true);
+  });
+
+  it('blocks export PS4 with an expansion', () => {
+    assert.equal(detectPs4TraceRce("export PS4='$(id)'").blocked, true);
+  });
+
+  it('blocks declare -x PS4 with an expansion', () => {
+    assert.equal(detectPs4TraceRce("declare -x PS4='$(id)'").blocked, true);
+  });
+
+  it('blocks a `for PS4 in` loop-variable assignment', () => {
+    assert.equal(detectPs4TraceRce("for PS4 in '$(id)'; do set -x; :; done").blocked, true);
+  });
+
+  it('blocks an ANSI-C quoted PS4 value (octal $ escape)', () => {
+    assert.equal(detectPs4TraceRce("PS4=$'\\044(id)' set -x").blocked, true);
+  });
+
+  it('allows a literal PS4 value with no expansion', () => {
+    assert.equal(detectPs4TraceRce("PS4='+ '").blocked, false);
+    assert.equal(detectPs4TraceRce('PS4="> " set -x').blocked, false);
+  });
+
+  it('does not misfire on PS4 mentioned as a non-assignment argument', () => {
+    assert.equal(detectPs4TraceRce('echo "PS4=$HOME"').blocked, false);
+    assert.equal(detectPs4TraceRce('grep PS4=foo file.txt').blocked, false);
+  });
+
+  it('is wired into validateBashSecurity', () => {
+    const r = validateBashSecurity("PS4='$(id)' && set -x && :");
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.PS4_TRACE_RCE);
   });
 });

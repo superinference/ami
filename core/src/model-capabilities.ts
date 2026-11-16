@@ -1,6 +1,31 @@
 export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+/**
+ * Human-readable, per-level descriptions of what each reasoning/thinking tier
+ * means, surfaced by `/thinking` (no-arg state, `help`/info args, and invalid
+ * input) so a user can pick a level deliberately instead of guessing. Mirrors
+ * Claude's `/effort help` per-level copy (commands/effort/effort.tsx:L173-L176)
+ * and `getEffortValueDescription` (utils/effort.ts); AMI additionally documents
+ * `off` since its scale includes a disabled tier that Claude's does not.
+ */
+export const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
+  off: 'Thinking disabled — fastest, no extended reasoning',
+  low: 'Quick, straightforward reasoning',
+  medium: 'Balanced reasoning for most tasks',
+  high: 'Comprehensive reasoning for hard problems',
+  max: 'Maximum capability with the deepest reasoning',
+};
+
+/**
+ * The human-readable description for a thinking level, or undefined when the
+ * level is not a recognized {@link ThinkingLevel}. Keeps callers (slash-command
+ * handlers, help text) from re-deriving the copy and drifting out of sync.
+ */
+export function getThinkingLevelDescription(level: string): string | undefined {
+  return (THINKING_LEVEL_DESCRIPTIONS as Record<string, string>)[level];
+}
+
 // The reasoning-EFFORT scale for code review / subagents (distinct from THINKING_LEVELS:
 // no 'off', adds 'xhigh'). Canonical source for /review --effort, the band's effort chip,
 // and the --introspect manifest, so a hardcoded subset can't drift (audit #14).
@@ -166,14 +191,27 @@ export function getContextWindow(modelId: string): number {
   // actually serves a 1M window with no id marker, so the local budget must match
   // or compaction fires far too early. Mirrors Claude's betas+modelSupports1M path.
   const oneMillion = !is1mContextDisabled() && (hasOneMillionMarker(modelId) || supportsOneMillionContextBeta(modelId));
-  for (const [key, tokens] of Object.entries(CONTEXT_WINDOWS)) {
+  const applyBeta = (tokens: number) => (oneMillion ? Math.max(tokens, 1_000_000) : tokens);
+  const entries = Object.entries(CONTEXT_WINDOWS);
+  // 1. Exact id match (case-insensitive) always wins — the most-specific resolution.
+  //    This matters for runtime-discovered ids appended by discoverFromModelList in
+  //    arbitrary order, where a shorter family key could otherwise shadow the full id.
+  //    Mirrors Claude's getModelCapability (exact-match before substring, utils/model/modelCapabilities.ts:L75-L83).
+  for (const [key, tokens] of entries) {
+    if (key.toLowerCase() === lower) return applyBeta(tokens);
+  }
+  // 2. Substring match, most-specific (longest key) first with a stable localeCompare
+  //    tiebreak, so most-specific-wins holds regardless of table/insertion order
+  //    (ref sortForMatching, utils/model/modelCapabilities.ts:L53-L58).
+  const byLength = entries.slice().sort((a, b) => b[0].length - a[0].length || a[0].localeCompare(b[0]));
+  for (const [key, tokens] of byLength) {
     const keyLower = key.toLowerCase();
     const idx = lower.indexOf(keyLower);
     if (idx === -1) continue;
     if (keyLower.length <= 3 && idx > 0 && /[a-zA-Z0-9]/.test(lower[idx - 1])) continue;
-    return oneMillion ? Math.max(tokens, 1_000_000) : tokens;
+    return applyBeta(tokens);
   }
-  return oneMillion ? Math.max(DEFAULT_CONTEXT_WINDOW, 1_000_000) : DEFAULT_CONTEXT_WINDOW;
+  return applyBeta(DEFAULT_CONTEXT_WINDOW);
 }
 
 const ADVERTISED_CONTEXT_KEYS = [
@@ -968,6 +1006,38 @@ export function getModelSwitchWarning(
   }
 
   return `Note: ${targetModel} has a smaller context window (${targetWindow}) than ${currentModel} (${currentWindow}).`;
+}
+
+/**
+ * Deprecated / retiring models and their retirement dates. Keys are matched as
+ * case-insensitive substrings of the model id (so a dated snapshot or a gateway
+ * prefix still matches), newest-retiring handled by first-match. Add an entry
+ * here to warn users off a model before the endpoint starts rejecting it.
+ * Mirrors Claude's DEPRECATED_MODELS registry + getModelDeprecationWarning
+ * (utils/model/deprecation.ts:L28-L101).
+ */
+const DEPRECATED_MODELS: Record<string, { modelName: string; retirementDate: string }> = {
+  'claude-3-opus': { modelName: 'Claude 3 Opus', retirementDate: 'January 5, 2026' },
+  'claude-3-7-sonnet': { modelName: 'Claude 3.7 Sonnet', retirementDate: 'February 19, 2026' },
+  'claude-3-5-haiku': { modelName: 'Claude 3.5 Haiku', retirementDate: 'February 19, 2026' },
+  'claude-3-5-sonnet': { modelName: 'Claude 3.5 Sonnet', retirementDate: 'October 22, 2025' },
+};
+
+/**
+ * A warning that the given model is deprecated and will be retired, or null when
+ * the model is current (or the id is empty/non-string). Returned verbatim by the
+ * `/model` slash command so switching to — or viewing — a retiring model nudges
+ * the user toward a newer one. Mirrors Claude's getModelDeprecationWarning.
+ */
+export function getModelDeprecationWarning(modelId: string | null | undefined): string | null {
+  if (typeof modelId !== 'string' || !modelId) return null;
+  const lower = modelId.toLowerCase();
+  for (const [key, info] of Object.entries(DEPRECATED_MODELS)) {
+    if (lower.includes(key)) {
+      return `${info.modelName} will be retired on ${info.retirementDate}. Consider switching to a newer model.`;
+    }
+  }
+  return null;
 }
 
 /**

@@ -44,8 +44,13 @@ const GIT_CMD_TIMEOUT_MS = 15_000;
  * Run git with the hardening flags, NO SHELL (execFile with an argv array), so
  * branch names / paths / refs can never be interpreted as shell metacharacters
  * (command-injection immune). Returns trimmed stdout.
+ *
+ * Exported so the worktree teardown path (exit_worktree) runs its git reads and
+ * destructive calls through the SAME hardened runner (timeout + GIT_NO_PROMPT_ENV
+ * + hooks/fsmonitor/gpg disabled) instead of a raw, unbounded child_process call
+ * — one canonical hardened git invocation for the whole worktree subsystem.
  */
-function gitExec(args: string[], opts: { cwd: string; timeout?: number; stdio?: 'ignore' | 'pipe' } = { cwd: process.cwd() }): string {
+export function gitExec(args: string[], opts: { cwd: string; timeout?: number; stdio?: 'ignore' | 'pipe' } = { cwd: process.cwd() }): string {
   const env = { ...process.env, ...GIT_NO_PROMPT_ENV };
   const out = execFileSync('git', [...GIT_HARDENING_FLAGS, ...args], {
     cwd: opts.cwd,

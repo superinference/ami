@@ -917,13 +917,95 @@ export function withAnthropicBetaHeader(
 // already honored by Node at startup, so only proxy routing is wired here.
 // ---------------------------------------------------------------------------
 
-function hostMatchesNoProxy(noProxy: string | undefined, hostname: string): boolean {
+/** Parse a dotted-quad IPv4 literal to a 32-bit integer, or null when invalid. */
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let acc = 0;
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p)) return null;
+    const n = Number(p);
+    if (n > 255) return null;
+    acc = acc * 256 + n;
+  }
+  return acc >>> 0;
+}
+
+/** Parse an IPv6 literal (with optional `::` compression) to a BigInt, or null. */
+function ipv6ToBigInt(ip: string): bigint | null {
+  if (!ip.includes(':')) return null;
+  const halves = ip.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(':') : []) : [];
+  const groups = halves.length === 2
+    ? [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail]
+    : head;
+  if (groups.length !== 8) return null;
+  let acc = 0n;
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    acc = (acc << 16n) + BigInt(parseInt(g, 16));
+  }
+  return acc;
+}
+
+/**
+ * True when the literal IP `host` falls inside the CIDR `entry` (e.g.
+ * `10.0.0.0/8`, `fd00::/8`). Returns false for non-IP hosts or malformed CIDRs
+ * so a domain name never matches an IP range.
+ */
+function ipInCidr(host: string, entry: string): boolean {
+  const slash = entry.indexOf('/');
+  const base = entry.slice(0, slash);
+  const prefix = Number(entry.slice(slash + 1));
+  if (!Number.isInteger(prefix) || prefix < 0) return false;
+  if (base.includes(':') || host.includes(':')) {
+    const net = ipv6ToBigInt(base);
+    const addr = ipv6ToBigInt(host);
+    if (net === null || addr === null || prefix > 128) return false;
+    const shift = BigInt(128 - prefix);
+    return (net >> shift) === (addr >> shift);
+  }
+  const net = ipv4ToInt(base);
+  const addr = ipv4ToInt(host);
+  if (net === null || addr === null || prefix > 32) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (net & mask) === (addr & mask);
+}
+
+/**
+ * NO_PROXY matcher supporting wildcard (`*`), exact host, domain suffix
+ * (`.example.com` or bare `example.com`), port-specific entries
+ * (`example.com:8080`, compared against the request host:port), and CIDR /
+ * IP-range entries (`10.0.0.0/8`, `fd00::/8`, matched only when the host is a
+ * literal IP). `port` is the resolved request port (protocol default applied by
+ * the caller).
+ */
+function hostMatchesNoProxy(
+  noProxy: string | undefined,
+  hostname: string,
+  port?: string,
+): boolean {
   if (!noProxy) return false;
-  const host = hostname.toLowerCase();
+  // URL.hostname wraps IPv6 literals in brackets ([fd00::1]); strip them so the
+  // bare address can be compared / range-matched.
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const hostWithPort = port ? `${host}:${port}` : undefined;
   for (const raw of noProxy.split(/[,\s]+/)) {
     const entry = raw.trim().toLowerCase();
     if (!entry) continue;
     if (entry === '*') return true;
+    // CIDR / IP-range entry — only a literal-IP host can match.
+    if (entry.includes('/')) {
+      if (ipInCidr(host, entry)) return true;
+      continue;
+    }
+    // Port-specific entry `host:port` (single colon, not an IPv6 literal).
+    if (hostWithPort && entry.includes(':') && ipv6ToBigInt(entry) === null) {
+      if (hostWithPort === entry) return true;
+      continue;
+    }
     const bare = entry.replace(/^\./, '');
     if (host === bare || host.endsWith('.' + bare)) return true;
   }
@@ -934,7 +1016,8 @@ function hostMatchesNoProxy(noProxy: string | undefined, hostname: string): bool
  * Resolve the proxy URL to use for `url` from the standard proxy env vars, or
  * `undefined` when none applies. An https target prefers `HTTPS_PROXY` (falling
  * back to `HTTP_PROXY`); an http target uses `HTTP_PROXY`. A `NO_PROXY` match
- * (exact host, domain suffix, or `*`) always wins and returns `undefined`.
+ * (exact host, domain suffix, `*`, a `host:port` entry, or a CIDR / IP range)
+ * always wins and returns `undefined`.
  * Pure + exported so it is unit-testable without touching the network.
  */
 export function resolveProxyForUrl(env: NodeJS.ProcessEnv, url: string): string | undefined {
@@ -945,7 +1028,8 @@ export function resolveProxyForUrl(env: NodeJS.ProcessEnv, url: string): string 
     ? (env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy)
     : (env.HTTP_PROXY ?? env.http_proxy);
   if (!proxy) return undefined;
-  if (hostMatchesNoProxy(env.NO_PROXY ?? env.no_proxy, parsed.hostname)) return undefined;
+  const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+  if (hostMatchesNoProxy(env.NO_PROXY ?? env.no_proxy, parsed.hostname, port)) return undefined;
   return proxy;
 }
 
@@ -1075,6 +1159,41 @@ export function withDynamicBoundaryStrip(
   }) as typeof globalThis.fetch;
 }
 
+/** Default Vertex AI region waterfall: CLOUD_ML_REGION → GOOGLE_VERTEX_LOCATION → us-east5. */
+function getDefaultVertexRegion(): string {
+  return process.env.CLOUD_ML_REGION || process.env.GOOGLE_VERTEX_LOCATION || 'us-east5';
+}
+
+// Model prefix → Vertex region override env var. Order matters: more specific
+// prefixes must precede less specific ones (e.g. 'claude-opus-4-1' before
+// 'claude-opus-4') so startsWith resolves the right override first. Mirrors
+// Claude Code's VERTEX_REGION_OVERRIDES (utils/envUtils.ts) — a given Claude
+// model may only be GA in a subset of Vertex regions.
+const VERTEX_REGION_OVERRIDES: ReadonlyArray<readonly [string, string]> = [
+  ['claude-haiku-4-5', 'VERTEX_REGION_CLAUDE_HAIKU_4_5'],
+  ['claude-3-5-haiku', 'VERTEX_REGION_CLAUDE_3_5_HAIKU'],
+  ['claude-3-5-sonnet', 'VERTEX_REGION_CLAUDE_3_5_SONNET'],
+  ['claude-3-7-sonnet', 'VERTEX_REGION_CLAUDE_3_7_SONNET'],
+  ['claude-opus-4-1', 'VERTEX_REGION_CLAUDE_4_1_OPUS'],
+  ['claude-opus-4', 'VERTEX_REGION_CLAUDE_4_0_OPUS'],
+  ['claude-sonnet-4-6', 'VERTEX_REGION_CLAUDE_4_6_SONNET'],
+  ['claude-sonnet-4-5', 'VERTEX_REGION_CLAUDE_4_5_SONNET'],
+  ['claude-sonnet-4', 'VERTEX_REGION_CLAUDE_4_0_SONNET'],
+];
+
+/**
+ * Resolve the Vertex AI region for a specific model: a per-model override env
+ * var (when set) wins, otherwise the default region waterfall. Exported for
+ * direct unit testing; consumed by the anthropic-vertex branch of resolveModel.
+ */
+export function getVertexRegionForModel(model: string | undefined): string {
+  if (model) {
+    const match = VERTEX_REGION_OVERRIDES.find(([prefix]) => model.startsWith(prefix));
+    if (match) return process.env[match[1]] || getDefaultVertexRegion();
+  }
+  return getDefaultVertexRegion();
+}
+
 export function resolveModel(config: ProviderConfig) {
   const { apiKey } = config;
   const fromKey = inferProviderFromApiKey(apiKey);
@@ -1115,7 +1234,7 @@ export function resolveModel(config: ProviderConfig) {
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
     const project = process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.GOOGLE_VERTEX_PROJECT || '';
-    const location = process.env.CLOUD_ML_REGION || process.env.GOOGLE_VERTEX_LOCATION || 'us-east5';
+    const location = getVertexRegionForModel(model);
     // Prompt caching on anthropic-vertex is OFF by default. withVertexAnthropicCache
     // injects cache_control into the raw body and vertex DOES write caches
     // (cache_creation_input_tokens > 0), but it NEVER reads them back
@@ -1984,6 +2103,28 @@ export function isSslError(err: unknown): boolean {
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
 
+/**
+ * Resolve the per-request timeout (ms) from the environment. Prefers AMI's own
+ * SUPERINFERENCE_API_TIMEOUT_MS and falls back to Claude Code's API_TIMEOUT_MS
+ * name for parity. Returns a non-positive value (0 / NaN-coerced) when neither
+ * is a usable number so the caller applies DEFAULT_REQUEST_TIMEOUT_MS.
+ */
+export function envApiTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.SUPERINFERENCE_API_TIMEOUT_MS ?? env.API_TIMEOUT_MS;
+  return Number(raw);
+}
+
+/**
+ * Build the user-facing request-timeout error, naming the configurable env var
+ * and the current limit so the message is actionable (mirrors Claude Code's
+ * "try increasing it" affordance) instead of a bare duration.
+ */
+export function formatTimeoutError(timeoutMs: number, partial: boolean): string {
+  const partialNote = partial ? ' (partial content received)' : '';
+  return `Request timed out after ${timeoutMs}ms${partialNote} `
+    + `(SUPERINFERENCE_API_TIMEOUT_MS=${timeoutMs}ms, try increasing it)`;
+}
+
 export async function* streamChatCompletionWithRetry(
   config: ProviderConfig,
   messages: Message[],
@@ -2004,7 +2145,7 @@ export async function* streamChatCompletionWithRetry(
   // attempt and the recovery can actually succeed. Byte-identical when the env is
   // unset and when the caller already set config.cacheTtl.
   config = { ...config, cacheTtl: resolveCacheTtl(config.cacheTtl) };
-  const envTimeout = Number(process.env.SUPERINFERENCE_API_TIMEOUT_MS);
+  const envTimeout = envApiTimeoutMs(process.env);
   const timeoutMs = options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS);
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
   const baseDelay = options?.baseDelayMs ?? BASE_DELAY_MS;
@@ -2169,7 +2310,7 @@ export async function* streamChatCompletionWithRetry(
 
     if (timedOut) {
       if (contentStarted) {
-        yield { type: 'error', error: `Request timed out after ${timeoutMs}ms (partial content received)` };
+        yield { type: 'error', error: formatTimeoutError(timeoutMs, true) };
         return;
       }
       // No content yet — treat like a retryable error
@@ -2190,7 +2331,7 @@ export async function* streamChatCompletionWithRetry(
         }
         continue;
       }
-      yield { type: 'error', error: `Request timed out after ${timeoutMs}ms` };
+      yield { type: 'error', error: formatTimeoutError(timeoutMs, false) };
       return;
     }
 

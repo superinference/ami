@@ -370,54 +370,87 @@ function parseTomlString(content: string, key: string): string | undefined {
 export const DEFAULT_COMMAND_DESCRIPTION = 'Plugin command';
 
 /**
- * Load TOML command definitions from a plugin's commands/ directory.
- * Each `.toml` file defines a slash command; `prompt` is required (it is what the
- * command runs), while `description` is optional and falls back to
- * {@link DEFAULT_COMMAND_DESCRIPTION} when absent.
+ * Parse a single `.toml` command file into a {@link CommandDefinition} with the
+ * given (already namespaced) `name`, or undefined when the file has no `prompt`
+ * (a command needs a prompt to do anything) or cannot be read. The description is
+ * user-facing only and falls back to {@link DEFAULT_COMMAND_DESCRIPTION}.
+ */
+function parseCommandFile(filePath: string, name: string): CommandDefinition | undefined {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return undefined; // unreadable command file — skip
+  }
+  const desc = parseTomlString(content, 'description');
+  const prompt = parseTomlString(content, 'prompt');
+  // A command needs a prompt to do anything; the description is user-facing
+  // only, so a prompt-only command loads with a labelled fallback description
+  // instead of being silently discarded (Claude parity).
+  if (!prompt) return undefined;
+  const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
+  // Optional behavioral knobs (Claude-parity). Each is omitted when absent.
+  const argumentHint = parseTomlString(content, 'argument-hint');
+  if (argumentHint) cmd.argumentHint = argumentHint;
+  const model = parseTomlString(content, 'model');
+  if (model) cmd.model = model;
+  const effort = parseTomlString(content, 'effort');
+  if (effort) cmd.effort = effort;
+  const whenToUse = parseTomlString(content, 'when-to-use') ?? parseTomlString(content, 'when_to_use');
+  if (whenToUse) cmd.whenToUse = whenToUse;
+  const version = parseTomlString(content, 'version');
+  if (version) cmd.version = version;
+  const allowedTools = parseTomlStringArray(content, 'allowed-tools');
+  if (allowedTools) cmd.allowedTools = allowedTools;
+  const disableModelInvocation = parseTomlBool(content, 'disable-model-invocation');
+  if (disableModelInvocation !== undefined) cmd.disableModelInvocation = disableModelInvocation;
+  const userInvocable = parseTomlBool(content, 'user-invocable');
+  if (userInvocable !== undefined) cmd.userInvocable = userInvocable;
+  return cmd;
+}
+
+/**
+ * Recursively walk a commands directory, collecting every `.toml` command file.
+ * The `namespace` accumulates the sub-path from the commands root to the file
+ * (Claude parity: `walkPluginMarkdown`), so a command at `commands/git/commit.toml`
+ * is namespaced `git:commit` while a top-level `commands/review.toml` keeps its
+ * bare `review` name. Symlinked directories are NOT followed (readdir Dirents
+ * report a symlink as `isDirectory() === false`), which both prevents walk loops
+ * and keeps discovery contained to the plugin's own tree — consistent with the
+ * realpath hardening used everywhere else in this module.
+ */
+function walkCommandDir(dir: string, namespace: string[], out: CommandDefinition[]): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // missing/unreadable dir — nothing to add
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkCommandDir(full, [...namespace, entry.name], out);
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
+    const base = path.basename(entry.name, '.toml');
+    const name = namespace.length > 0 ? `${namespace.join(':')}:${base}` : base;
+    const cmd = parseCommandFile(full, name);
+    if (cmd) out.push(cmd);
+  }
+}
+
+/**
+ * Load TOML command definitions from a plugin's commands/ directory, recursing
+ * into nested subdirectories (Claude parity). Each `.toml` file defines a slash
+ * command; `prompt` is required (it is what the command runs), while
+ * `description` is optional and falls back to {@link DEFAULT_COMMAND_DESCRIPTION}.
+ * A command in a subdirectory is namespaced by its sub-path with `:` separators
+ * (e.g. `commands/git/commit.toml` → `git:commit`).
  */
 export function loadCommands(dir: string): CommandDefinition[] {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir).filter(f => f.endsWith('.toml'));
-  } catch {
-    return [];
-  }
   const commands: CommandDefinition[] = [];
-  for (const file of entries) {
-    const filePath = path.join(dir, file);
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const name = path.basename(file, '.toml');
-      const desc = parseTomlString(content, 'description');
-      const prompt = parseTomlString(content, 'prompt');
-      // A command needs a prompt to do anything; the description is user-facing
-      // only, so a prompt-only command loads with a labelled fallback description
-      // instead of being silently discarded (Claude parity).
-      if (prompt) {
-        const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
-        // Optional behavioral knobs (Claude-parity). Each is omitted when absent.
-        const argumentHint = parseTomlString(content, 'argument-hint');
-        if (argumentHint) cmd.argumentHint = argumentHint;
-        const model = parseTomlString(content, 'model');
-        if (model) cmd.model = model;
-        const effort = parseTomlString(content, 'effort');
-        if (effort) cmd.effort = effort;
-        const whenToUse = parseTomlString(content, 'when-to-use') ?? parseTomlString(content, 'when_to_use');
-        if (whenToUse) cmd.whenToUse = whenToUse;
-        const version = parseTomlString(content, 'version');
-        if (version) cmd.version = version;
-        const allowedTools = parseTomlStringArray(content, 'allowed-tools');
-        if (allowedTools) cmd.allowedTools = allowedTools;
-        const disableModelInvocation = parseTomlBool(content, 'disable-model-invocation');
-        if (disableModelInvocation !== undefined) cmd.disableModelInvocation = disableModelInvocation;
-        const userInvocable = parseTomlBool(content, 'user-invocable');
-        if (userInvocable !== undefined) cmd.userInvocable = userInvocable;
-        commands.push(cmd);
-      }
-    } catch {
-      // Skip malformed command files
-    }
-  }
+  walkCommandDir(dir, [], commands);
   return commands;
 }
 

@@ -18,13 +18,16 @@ function ctx(): ToolContext {
 }
 
 const savedGrace = grepHooks.killGraceMs;
-afterEach(() => { mock.restoreAll(); grepHooks.killGraceMs = savedGrace; });
+const savedPlatform = grepHooks.platform;
+afterEach(() => { mock.restoreAll(); grepHooks.killGraceMs = savedGrace; grepHooks.platform = savedPlatform; });
 
 describe('runSearch – bounded stdout accumulation (DoS cap)', () => {
-  it('cuts the search short, SIGKILLs the child, and flags truncation past the byte cap', async () => {
+  it('cuts the search short, SIGTERMs the child, and flags truncation past the byte cap', async () => {
     const child = makeChild();
     mock.method(grepHooks, 'spawn', () => child as any);
     grepHooks.killGraceMs = 5;
+    // Escalation default (>> grace) means only the graceful SIGTERM is observed.
+    grepHooks.platform = 'linux';
 
     const p = runSearch(['x', '/tmp'], 'rg', ctx());
     // Emit a chunk larger than the cap in one go.
@@ -33,7 +36,7 @@ describe('runSearch – bounded stdout accumulation (DoS cap)', () => {
 
     assert.equal(outcome.outputTruncated, true);
     assert.ok(outcome.output && outcome.output.length > 0);
-    assert.deepEqual(child.killCalls, ['SIGKILL']);
+    assert.deepEqual(child.killCalls, ['SIGTERM']);
   });
 
   it('does not flag truncation for small output', async () => {

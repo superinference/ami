@@ -1103,15 +1103,18 @@ describe('resolveBashTimeout — BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS',
     process.env.BASH_DEFAULT_TIMEOUT_MS = '250';
     try { assert.equal(resolveBashTimeout(undefined), 250); } finally { restore(); }
   });
-  it('clamps a per-call timeout to BASH_MAX_TIMEOUT_MS', () => {
-    delete process.env.BASH_DEFAULT_TIMEOUT_MS;
+  it('clamps a per-call timeout to BASH_MAX_TIMEOUT_MS (max kept >= default)', () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = '100';
     process.env.BASH_MAX_TIMEOUT_MS = '500';
     try { assert.equal(resolveBashTimeout(99999), 500); } finally { restore(); }
   });
-  it('clamps the BASH_DEFAULT_TIMEOUT_MS default down to the max ceiling', () => {
+  // [functional parity] Claude Code floors the effective max UP to the default
+  // (Math.max). A BASH_MAX_TIMEOUT_MS below the default no longer shrinks a
+  // defaulted command's timeout below the configured default.
+  it('floors the effective max up to BASH_DEFAULT_TIMEOUT_MS when max < default', () => {
     process.env.BASH_DEFAULT_TIMEOUT_MS = '99999';
     process.env.BASH_MAX_TIMEOUT_MS = '500';
-    try { assert.equal(resolveBashTimeout(undefined), 500); } finally { restore(); }
+    try { assert.equal(resolveBashTimeout(undefined), 99999); } finally { restore(); }
   });
   it('ignores non-numeric env values', () => {
     process.env.BASH_DEFAULT_TIMEOUT_MS = 'nope'; delete process.env.BASH_MAX_TIMEOUT_MS;

@@ -5,6 +5,31 @@ import * as os from 'os';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
+import { coerceBool, coerceNumber } from '../utils/coerce';
+
+/**
+ * Optional numeric tool-arg: tolerate a model-quoted number ("5") via the shared
+ * `coerceNumber`, but preserve "not supplied" as `undefined` (an absent context /
+ * head-limit knob must stay absent, not collapse to a default). Garbage coerces to
+ * `undefined` rather than injecting a bogus value. Mirrors Claude Code's
+ * semanticNumber tolerance without masking bad input via a bare Number().
+ */
+function optionalNumber(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  const n = coerceNumber(v, Number.NaN);
+  return Number.isNaN(n) ? undefined : n;
+}
+
+/**
+ * Optional boolean tool-arg: tolerate the string literals "true"/"false" (what
+ * providers often serialize) while keeping "not supplied" distinguishable as
+ * `undefined` — `line_numbers` defaults to true ONLY when absent, so it must not
+ * collapse to false. Mirrors Claude Code's semanticBoolean.
+ */
+function optionalBool(v: unknown): boolean | undefined {
+  if (v === undefined || v === null) return undefined;
+  return coerceBool(v);
+}
 
 const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
@@ -38,6 +63,13 @@ export const MAX_SEARCH_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 // Windows and for uninterruptible I/O). Resolve anyway after this grace period so
 // the tool can never hang forever.
 const KILL_GRACE_MS = 2_000;
+// On timeout/abort we first ask the searcher to stop with SIGTERM (which it can
+// flush/clean up on), then escalate to the uncatchable SIGKILL if it is still
+// alive after this delay. SIGTERM alone may not kill ripgrep when it is blocked in
+// uninterruptible I/O (deep filesystem traversal). Kept below KILL_GRACE_MS so the
+// forced kill is attempted before we give up and resolve. Mirrors Claude Code's
+// SIGTERM-before-SIGKILL escalation.
+const SIGKILL_ESCALATION_MS = 1_000;
 
 /**
  * Indirection seam for process spawning and the search timeout. Tests swap
@@ -49,11 +81,15 @@ export const grepHooks: {
   spawn: typeof spawn;
   timeoutMs: number;
   killGraceMs: number;
+  sigkillEscalationMs: number;
+  platform: NodeJS.Platform;
   searchFilesForPattern: typeof searchFilesForPattern;
 } = {
   spawn,
   timeoutMs: grepTimeoutMs(),
   killGraceMs: KILL_GRACE_MS,
+  sigkillEscalationMs: SIGKILL_ESCALATION_MS,
+  platform: process.platform,
   // Hoisted function declaration (defined later in this module).
   searchFilesForPattern,
 };
@@ -120,13 +156,21 @@ export function splitGlobFilter(include: string): string[] {
 export const grepTool: ToolDefinition = {
   name: 'grep',
   description:
-    'Search for a pattern in files. Uses regular expressions. Returns matching lines with file paths and line numbers.',
+    `A powerful search tool built on ripgrep (with graceful grep and in-process fallbacks).
+
+Usage:
+- Supports full regex syntax (e.g. "log.*Error", "function\\s+\\w+").
+- Filter files with the \`glob\`/\`include\` parameter (e.g. "*.js", "**/*.tsx") or the \`type\` parameter (e.g. "js", "py", "rust", "go", "java") — \`type\` is more efficient for standard file types.
+- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default, most token-efficient), "count" shows match counts per file.
+- Pattern syntax uses ripgrep (not basic grep): literal braces need escaping (use "interface\\{\\}" to find "interface{}" in Go code).
+- Multiline matching: by default patterns match within a single line only. For cross-line patterns like "struct \\{[\\s\\S]*?field", pass multiline: true.
+- Prefer this tool over invoking \`grep\`/\`rg\` through the bash tool: it enforces read permissions, VCS exclusions and result caps, and returns matching lines with file paths and line numbers.`,
   inputSchema: {
     type: 'object',
     properties: {
       pattern: {
         type: 'string',
-        description: 'The regex pattern to search for.',
+        description: 'The regex pattern to search for, using ripgrep regex syntax — e.g. "log.*Error" or "function\\s+\\w+". Escape literal regex metacharacters: use "interface\\{\\}" to match the text "interface{}". For patterns that span multiple lines (e.g. "struct \\{[\\s\\S]*?field"), set multiline: true. To match a literal string with no regex interpretation, set fixed_strings: true instead.',
       },
       path: {
         type: 'string',
@@ -205,16 +249,20 @@ export const grepTool: ToolDefinition = {
     // `glob` is Claude Code's canonical name for the file-filter param; accept both.
     const include = (input.include ?? input.glob) as string | undefined;
     const outputMode = (input.output_mode as string) || 'files_with_matches';
-    const fixedStrings = (input.fixed_strings as boolean) ?? false;
-    const lineNumbers = input.line_numbers as boolean | undefined;
-    const caseInsensitive = (input.case_insensitive as boolean) ?? false;
-    const contextLines = input.context_lines as number | undefined;
-    const multiline = (input.multiline as boolean) ?? false;
-    const headLimit = (input.head_limit as number) ?? MAX_LINES;
-    const offset = (input.offset as number) ?? 0;
+    // Numeric/boolean params are coerced from the string literals providers often
+    // serialize (`"true"`, `"5"`) — a model emitting `"head_limit":"5"` must behave
+    // like `5`, and `"case_insensitive":"false"` must be false (not truthy). Mirrors
+    // Claude Code's semanticNumber/semanticBoolean coercion.
+    const fixedStrings = coerceBool(input.fixed_strings);
+    const lineNumbers = optionalBool(input.line_numbers);
+    const caseInsensitive = coerceBool(input.case_insensitive);
+    const contextLines = optionalNumber(input.context_lines);
+    const multiline = coerceBool(input.multiline);
+    const headLimit = optionalNumber(input.head_limit) ?? MAX_LINES;
+    const offset = optionalNumber(input.offset) ?? 0;
     const fileType = input.type as string | undefined;
-    const beforeContext = input.before_context as number | undefined;
-    const afterContext = input.after_context as number | undefined;
+    const beforeContext = optionalNumber(input.before_context);
+    const afterContext = optionalNumber(input.after_context);
     const searchPath = (input.path ?? input.file_path) as string | undefined;
     // UNC-path guard: short-circuit BEFORE any filesystem access (NTLM leak risk).
     if (typeof searchPath === 'string' && isUNCPath(searchPath)) {
@@ -361,10 +409,14 @@ export function searchFilesForPattern(
   const matches: string[] = [];
   const page = opts.headLimit && opts.headLimit > 0 ? opts.headLimit : MAX_LINES;
   const cap = opts.headLimit === 0 ? Number.POSITIVE_INFINITY : (opts.offset ?? 0) + page + 1;
-  let seen = 0;
 
-  const walk = (dir: string): void => {
-    if (matches.length >= cap || seen >= FALLBACK_MAX_FILES) return;
+  // Phase 1: collect candidate files (respecting VCS/skip dirs, the include filter,
+  // and the file-count ceiling), capturing each file's mtime so matches can be
+  // returned newest-first — mirroring the ripgrep path's `--sortr modified` ordering
+  // (a bare directory walk otherwise returns readdir order, which varies by OS/FS).
+  const candidates: { filePath: string; mtimeMs: number; size: number }[] = [];
+  const collect = (dir: string): void => {
+    if (candidates.length >= FALLBACK_MAX_FILES) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -372,10 +424,10 @@ export function searchFilesForPattern(
       return;
     }
     for (const entry of entries) {
-      if (matches.length >= cap || seen >= FALLBACK_MAX_FILES) return;
+      if (candidates.length >= FALLBACK_MAX_FILES) return;
       if (entry.isDirectory()) {
         if (FALLBACK_SKIP_DIRS.has(entry.name)) continue;
-        walk(path.join(dir, entry.name));
+        collect(path.join(dir, entry.name));
         continue;
       }
       if (!entry.isFile()) continue;
@@ -383,22 +435,30 @@ export function searchFilesForPattern(
         continue;
       }
       const filePath = path.join(dir, entry.name);
-      seen++;
-      let text: string;
       try {
         const stat = fs.statSync(filePath);
-        if (stat.size > FALLBACK_MAX_FILE_BYTES) continue;
-        text = fs.readFileSync(filePath, 'utf8');
+        candidates.push({ filePath, mtimeMs: stat.mtimeMs, size: stat.size });
       } catch {
-        continue;
+        // A stat failure (deleted between readdir and stat, permission) sorts last.
+        candidates.push({ filePath, mtimeMs: 0, size: 0 });
       }
-      const rel = path.relative(root, filePath) || entry.name;
-      const fileLines = text.split('\n');
-      for (let i = 0; i < fileLines.length; i++) {
-        if (matches.length >= cap) return;
-        if (re.test(fileLines[i])) {
-          matches.push(`${rel}:${i + 1}:${fileLines[i]}`);
-        }
+    }
+  };
+
+  const searchFile = (filePath: string, size: number): void => {
+    if (size > FALLBACK_MAX_FILE_BYTES) return;
+    let text: string;
+    try {
+      text = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      return;
+    }
+    const rel = path.relative(root, filePath) || path.basename(filePath);
+    const fileLines = text.split('\n');
+    for (let i = 0; i < fileLines.length; i++) {
+      if (matches.length >= cap) return;
+      if (re.test(fileLines[i])) {
+        matches.push(`${rel}:${i + 1}:${fileLines[i]}`);
       }
     }
   };
@@ -417,7 +477,15 @@ export function searchFilesForPattern(
     });
     return matches.join('\n');
   }
-  walk(root);
+  collect(root);
+  // Phase 2: newest-first by mtime, with a filename tiebreak so equal-mtime files
+  // (and the test harness, where files are written in the same instant) are ordered
+  // deterministically.
+  candidates.sort((a, b) => (b.mtimeMs - a.mtimeMs) || a.filePath.localeCompare(b.filePath));
+  for (const c of candidates) {
+    if (matches.length >= cap) break;
+    searchFile(c.filePath, c.size);
+  }
   return matches.join('\n');
 }
 
@@ -558,6 +626,7 @@ export function runSearch(
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
     let settled = false;
     // Resolve exactly once; clear timers and the abort listener. 'close', 'error',
     // timeout and abort all route through here so none can double-resolve or leak.
@@ -567,13 +636,25 @@ export function runSearch(
       settled = true;
       if (timer) clearTimeout(timer);
       if (graceTimer) clearTimeout(graceTimer);
+      if (killTimer) clearTimeout(killTimer);
       if (context.abortSignal) context.abortSignal.removeEventListener('abort', onAbort);
       resolve(outcome);
     };
-    // SIGKILL, then settle after a grace period even if 'close' never fires (a
-    // wedged process may not emit it — the "search never returns" hang).
+    // Graceful SIGTERM first (so the searcher can flush/clean up), escalating to the
+    // uncatchable SIGKILL if it is still alive after sigkillEscalationMs — SIGTERM
+    // alone may not kill ripgrep when it is blocked in uninterruptible I/O. On
+    // Windows SIGTERM throws, so use the default signal there. Either way we settle
+    // after a grace period even if 'close' never fires (a wedged process may not emit
+    // it — the "search never returns" hang). Mirrors Claude Code's escalation.
     const killThenSettle = (outcome: SearchOutcome) => {
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      try {
+        if (grepHooks.platform === 'win32') {
+          child.kill();
+        } else {
+          child.kill('SIGTERM');
+          killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, grepHooks.sigkillEscalationMs);
+        }
+      } catch { /* already gone */ }
       graceTimer = setTimeout(() => settle(outcome), grepHooks.killGraceMs);
     };
     if (timeout && timeout > 0) {

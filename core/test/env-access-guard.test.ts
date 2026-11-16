@@ -8,6 +8,11 @@ import {
   classifyEnvValue,
   classifyEnvName,
   classifyEnvSecret,
+  redactionMarker,
+  redactSecretValue,
+  REDACT_MIN_LENGTH,
+  REDACT_PREVIEW_PREFIX,
+  REDACT_PREVIEW_SUFFIX,
 } from '../src/env-access-guard';
 
 describe('isSensitiveEnvVar', () => {
@@ -152,7 +157,7 @@ describe('EnvAccessGuard', () => {
       const guard = new EnvAccessGuard();
       const result = guard.safeGetEnv('TEST_API_KEY');
       assert.equal(result.redacted, true);
-      assert.equal(result.value, '[REDACTED]');
+      assert.equal(result.value, '[REDACTED_API_KEY]');
       assert.equal(result.redactedAs, 'api_key');
     } finally {
       if (original === undefined) delete process.env.TEST_API_KEY;
@@ -320,7 +325,7 @@ describe('EnvAccessGuard.safeGetEnv — value-shape redaction + typed labels', (
       const guard = new EnvAccessGuard();
       const result = guard.safeGetEnv(name);
       assert.equal(result.redacted, true);
-      assert.equal(result.value, '[REDACTED]');
+      assert.equal(result.value, '[REDACTED_API_KEY]');
       assert.equal(result.redactedAs, 'api_key');
       assert.ok(!String(result.value).includes('sk-ant'), 'secret must not leak');
     } finally {
@@ -336,7 +341,7 @@ describe('EnvAccessGuard.safeGetEnv — value-shape redaction + typed labels', (
     try {
       const guard = new EnvAccessGuard();
       const result = guard.safeGetEnv(name);
-      assert.equal(result.value, '[REDACTED]');
+      assert.equal(result.value, '[REDACTED_AWS_KEY]');
       assert.equal(result.redactedAs, 'aws_key');
     } finally {
       if (original === undefined) delete process.env[name];
@@ -354,6 +359,21 @@ describe('EnvAccessGuard.safeGetEnv — value-shape redaction + typed labels', (
     assert.equal(result.redactedAs, 'token');
   });
 
+  it('emits a typed class-specific marker in the value (gap: typed labels)', () => {
+    const name = `TEST_TYPED_TOKEN_${process.pid}`;
+    const original = process.env[name];
+    process.env[name] = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    try {
+      const guard = new EnvAccessGuard();
+      const result = guard.safeGetEnv(name);
+      assert.equal(result.value, '[REDACTED_TOKEN]');
+      assert.equal(result.redactedAs, 'token');
+    } finally {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    }
+  });
+
   it('passes through a non-secret value unchanged', () => {
     const name = `TEST_PLAIN_${process.pid}`;
     const original = process.env[name];
@@ -364,6 +384,83 @@ describe('EnvAccessGuard.safeGetEnv — value-shape redaction + typed labels', (
       assert.equal(result.redacted, false);
       assert.equal(result.value, 'visible-value');
       assert.equal(result.redactedAs, undefined);
+    } finally {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    }
+  });
+});
+
+describe('redactionMarker — typed, self-describing labels (gap: typed secret labels)', () => {
+  it('maps each class to a [REDACTED_<CLASS>] label matching the reference', () => {
+    assert.equal(redactionMarker('api_key'), '[REDACTED_API_KEY]');
+    assert.equal(redactionMarker('aws_key'), '[REDACTED_AWS_KEY]');
+    assert.equal(redactionMarker('gcp_key'), '[REDACTED_GCP_KEY]');
+    assert.equal(redactionMarker('gcp_service_account'), '[REDACTED_GCP_SERVICE_ACCOUNT]');
+    assert.equal(redactionMarker('token'), '[REDACTED_TOKEN]');
+    assert.equal(redactionMarker('generic'), '[REDACTED_GENERIC]');
+  });
+});
+
+describe('redactSecretValue — threshold + partial-reveal preview (gap: length-threshold params)', () => {
+  it('exposes the reference threshold and slice defaults', () => {
+    assert.equal(REDACT_MIN_LENGTH, 16);
+    assert.equal(REDACT_PREVIEW_PREFIX, 8);
+    assert.equal(REDACT_PREVIEW_SUFFIX, 4);
+  });
+
+  it('full-masks to the typed marker by default (no preview)', () => {
+    assert.equal(
+      redactSecretValue('sk-ant-api03-ABCDEFGHIJKLMNOPQRST', 'api_key'),
+      '[REDACTED_API_KEY]',
+    );
+  });
+
+  it('previews a long value as prefix(8)...suffix(4) without leaking the body', () => {
+    const value = 'sk-ant-api03-ABCDEFGHIJKLMNOPQRST'; // >= REDACT_MIN_LENGTH
+    const preview = redactSecretValue(value, 'api_key', true);
+    assert.equal(preview, 'sk-ant-a...QRST');
+    assert.equal(preview, `${value.slice(0, 8)}...${value.slice(-4)}`);
+    assert.ok(!preview.includes('api03'), 'secret body must not leak');
+  });
+
+  it('full-masks a short value even with preview (too short to reveal safely)', () => {
+    const value = 'short123'; // < REDACT_MIN_LENGTH (8 chars)
+    assert.ok(value.length < REDACT_MIN_LENGTH);
+    assert.equal(redactSecretValue(value, 'token', true), '[REDACTED_TOKEN]');
+  });
+
+  it('full-masks a value exactly one below the threshold with preview', () => {
+    const value = 'a'.repeat(REDACT_MIN_LENGTH - 1);
+    assert.equal(redactSecretValue(value, 'generic', true), '[REDACTED_GENERIC]');
+  });
+});
+
+describe('EnvAccessGuard.safeGetEnv — opt-in preview (gap: partial reveal)', () => {
+  it('returns a prefix...suffix preview when preview is requested', () => {
+    const name = `TEST_PREVIEW_${process.pid}`;
+    const original = process.env[name];
+    const secret = 'sk-ant-api03-ABCDEFGHIJKLMNOPQRST';
+    process.env[name] = secret;
+    try {
+      const guard = new EnvAccessGuard();
+      const result = guard.safeGetEnv(name, { preview: true });
+      assert.equal(result.redacted, true);
+      assert.equal(result.redactedAs, 'api_key');
+      assert.equal(result.value, `${secret.slice(0, 8)}...${secret.slice(-4)}`);
+    } finally {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    }
+  });
+
+  it('keeps full masking as the default when preview is omitted', () => {
+    const name = `TEST_NOPREVIEW_${process.pid}`;
+    const original = process.env[name];
+    process.env[name] = 'sk-ant-api03-ABCDEFGHIJKLMNOPQRST';
+    try {
+      const guard = new EnvAccessGuard();
+      assert.equal(guard.safeGetEnv(name).value, '[REDACTED_API_KEY]');
     } finally {
       if (original === undefined) delete process.env[name];
       else process.env[name] = original;

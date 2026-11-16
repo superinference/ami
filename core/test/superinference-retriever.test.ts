@@ -297,6 +297,153 @@ describe('Retriever – top-K cap', () => {
 // Token-boundary matching (gap: keyword false-positive guard)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cancellation / abort support (gap: cancellation abort support)
+// ---------------------------------------------------------------------------
+
+describe('Retriever – cancellation / abort', () => {
+  it('returns empty string immediately when the signal is already aborted', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory({
+      instructions: '# Instructions',
+      memories: [{ content: 'relevant topic memory' }],
+    });
+    const gate = new MemoryGate();
+    gate.gate('q', 'approved result', { approved: true, score: 0.9 }, 0.5, 1);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = retriever.retrieve('topic', memory as any, gate, {
+      signal: controller.signal,
+    });
+    assert.equal(result, '');
+  });
+
+  it('bails after instructions when aborted before the approved-context stage', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory({
+      instructions: '# Instructions',
+      memories: [{ content: 'relevant topic memory' }],
+    });
+    const gate = new MemoryGate();
+    gate.gate('q', 'approved result', { approved: true, score: 0.9 }, 0.5, 1);
+
+    // aborted flips true on the SECOND read (after instructions, before approved)
+    let reads = 0;
+    const signal = {
+      get aborted() {
+        reads++;
+        return reads >= 2;
+      },
+    } as unknown as AbortSignal;
+
+    const result = retriever.retrieve('topic', memory as any, gate, { signal });
+    assert.ok(result.includes('# Instructions'));
+    assert.ok(!result.includes('Previously Approved Results'));
+    assert.ok(!result.includes('Stored Memories'));
+  });
+
+  it('bails after approved context when aborted before the memories stage', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory({
+      instructions: '# Instructions',
+      memories: [{ content: 'relevant topic memory' }],
+    });
+    const gate = new MemoryGate();
+    gate.gate('q', 'approved result', { approved: true, score: 0.9 }, 0.5, 1);
+
+    // aborted flips true on the THIRD read (after approved, before memories)
+    let reads = 0;
+    const signal = {
+      get aborted() {
+        reads++;
+        return reads >= 3;
+      },
+    } as unknown as AbortSignal;
+
+    const result = retriever.retrieve('topic', memory as any, gate, { signal });
+    assert.ok(result.includes('# Instructions'));
+    assert.ok(result.includes('Previously Approved Results'));
+    assert.ok(!result.includes('Stored Memories'));
+  });
+
+  it('assembles everything when the signal is never aborted', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory({
+      instructions: '# Instructions',
+      memories: [{ content: 'relevant topic memory' }],
+    });
+    const gate = new MemoryGate();
+    gate.gate('q', 'approved result', { approved: true, score: 0.9 }, 0.5, 1);
+
+    const controller = new AbortController();
+    const result = retriever.retrieve('topic', memory as any, gate, {
+      signal: controller.signal,
+    });
+    assert.ok(result.includes('# Instructions'));
+    assert.ok(result.includes('Previously Approved Results'));
+    assert.ok(result.includes('Stored Memories'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-turn dedup of already-surfaced memories (gap: cross-turn dedup)
+// ---------------------------------------------------------------------------
+
+describe('Retriever – cross-turn dedup', () => {
+  it('records surfaced memories and skips them on a later call sharing the ledger', () => {
+    const retriever = new Retriever(0); // no noise — deterministic
+    const memory = createMockMemory({
+      memories: [{ content: 'relevant topic memory' }],
+    });
+    const gate = new MemoryGate();
+    const surfacedMemories = new Set<string>();
+
+    const first = retriever.retrieve('topic', memory as any, gate, { surfacedMemories });
+    assert.ok(first.includes('Stored Memories'));
+    assert.ok(first.includes('relevant topic memory'));
+    assert.ok(surfacedMemories.has('relevant topic memory'));
+
+    // Second call with the same ledger: the only memory is already surfaced,
+    // so it is skipped and no Stored Memories section is produced.
+    const second = retriever.retrieve('topic', memory as any, gate, { surfacedMemories });
+    assert.ok(!second.includes('Stored Memories'));
+  });
+
+  it('still surfaces fresh memories not in the ledger', () => {
+    const retriever = new Retriever(0);
+    const memory = createMockMemory({
+      memories: [
+        { content: 'already shown topic memory' },
+        { content: 'fresh topic memory' },
+      ],
+    });
+    const gate = new MemoryGate();
+    const surfacedMemories = new Set<string>(['already shown topic memory']);
+
+    const result = retriever.retrieve('topic', memory as any, gate, { surfacedMemories });
+    assert.ok(result.includes('Stored Memories'));
+    assert.ok(result.includes('fresh topic memory'));
+    assert.ok(!result.includes('already shown topic memory'));
+    assert.ok(surfacedMemories.has('fresh topic memory'));
+  });
+
+  it('does not record memories dropped by the noise channel', () => {
+    const retriever = new Retriever(1.0); // max noise — every entry dropped
+    const memory = createMockMemory({
+      memories: [{ content: 'relevant topic memory' }],
+    });
+    const gate = new MemoryGate();
+    const surfacedMemories = new Set<string>();
+
+    const result = retriever.retrieve('topic', memory as any, gate, { surfacedMemories });
+    assert.ok(!result.includes('Stored Memories'));
+    // Nothing was actually surfaced, so the ledger stays empty.
+    assert.equal(surfacedMemories.size, 0);
+  });
+});
+
 describe('Retriever – token-boundary relevance', () => {
   it('does not treat a query token as relevant to a superstring word', () => {
     const retriever = new Retriever(0);

@@ -447,7 +447,7 @@ describe('callTool / resources / prompts', () => {
     assert.deepEqual(await mgr.listResources(), []); // error caught, no throw
   });
   it('reads a resource; throws when the server is not connected', async () => {
-    await assert.rejects(() => mgr.readResource('absent', 'file:///a.txt'), /not connected/);
+    await assert.rejects(() => mgr.readResource('absent', 'file:///a.txt'), /not found/);
     mgr.addServer('r', serverConfig());
     await mgr.ensureConnected('r');
     const out = await mgr.readResource('r', 'file:///a.txt') as { contents: unknown[] };

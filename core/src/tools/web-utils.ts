@@ -46,15 +46,105 @@ export function isAllowedScheme(url: string): boolean {
   }
 }
 
+/**
+ * True iff a parsed URL carries userinfo (a `user:password@` or bare `user@`
+ * component). Such URLs must never be fetched or followed: Node turns the
+ * userinfo into a `Authorization: Basic …` header, so the embedded secret is
+ * transmitted on the wire, and the `@` can be used to disguise the real host
+ * (`http://trusted.com@evil.com/`). Shared canonical check so the SSRF validator
+ * and the redirect guard agree on one definition. ADDITIVE.
+ */
+export function urlHasUserinfo(parsed: URL): boolean {
+  return parsed.username !== '' || parsed.password !== '';
+}
+
+/**
+ * Expand an IPv6 literal (optionally with a trailing dotted-decimal IPv4 tail)
+ * into exactly 8 numeric hextet groups. Handles the single `::` compression and
+ * the `::ffff:a.b.c.d` form. Returns null when the address is not a well-formed
+ * 8-group IPv6 literal, so callers can safely fall through to other checks.
+ *
+ * Mirrors Claude Code's ssrfGuard expansion (utils/hooks/ssrfGuard.ts) so an
+ * IPv4-mapped metadata address written in hex/compressed/expanded form is
+ * normalized to the same octets as its dotted-decimal twin.
+ */
+function expandIPv6Groups(addr: string): number[] | null {
+  let tailHextets: number[] = [];
+  // Trailing dotted-decimal IPv4 (e.g. ::ffff:169.254.169.254) → two hextets.
+  if (addr.includes('.')) {
+    const lastColon = addr.lastIndexOf(':');
+    if (lastColon === -1) return null;
+    const v4 = addr.slice(lastColon + 1);
+    addr = addr.slice(0, lastColon);
+    const octets = v4.split('.').map(Number);
+    if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+      return null;
+    }
+    tailHextets = [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]];
+  }
+
+  const dbl = addr.indexOf('::');
+  let head: string[];
+  let tail: string[];
+  if (dbl === -1) {
+    head = addr === '' ? [] : addr.split(':');
+    tail = [];
+  } else {
+    const headStr = addr.slice(0, dbl);
+    const tailStr = addr.slice(dbl + 2);
+    head = headStr === '' ? [] : headStr.split(':');
+    tail = tailStr === '' ? [] : tailStr.split(':');
+  }
+
+  const target = 8 - tailHextets.length;
+  const fill = target - head.length - tail.length;
+  // No `::` means no compression: the groups must fill `target` exactly.
+  // With `::` the fill must stand for at least one zero group.
+  if (dbl === -1) {
+    if (fill !== 0) return null;
+  } else if (fill < 1) {
+    return null;
+  }
+
+  const groups = [...head, ...new Array<string>(Math.max(fill, 0)).fill('0'), ...tail];
+  const nums = groups.map((h) => (/^[0-9a-f]{1,4}$/.test(h) ? parseInt(h, 16) : NaN));
+  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)) return null;
+  const full = [...nums, ...tailHextets];
+  return full.length === 8 ? full : null;
+}
+
+/**
+ * Extract the embedded IPv4 address from an IPv4-mapped IPv6 address
+ * (`::ffff:X.Y`) in ANY representation — dotted (`::ffff:1.2.3.4`), hex
+ * (`::ffff:aabb:ccdd`), or expanded (`0:0:0:0:0:ffff:X:Y`). Returns the
+ * dotted-decimal IPv4 string, or null when `addr` is not IPv4-mapped.
+ */
+function extractMappedIPv4(addr: string): string | null {
+  const g = expandIPv6Groups(addr);
+  if (!g) return null;
+  // IPv4-mapped prefix: first 80 bits zero, next 16 bits 0xffff.
+  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
+    const hi = g[6];
+    const lo = g[7];
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return null;
+}
+
 export function isPrivateIP(ip: string): boolean {
   // Case-insensitive for IPv6 literals: DNS returns lowercase, but a redirect
   // host / caller-supplied address can be uppercase (e.g. "FE80::1"), and the
   // hex-prefix checks below are case-sensitive — normalize so an uppercase
   // link-local/ULA/loopback literal is not silently treated as public.
   ip = ip.toLowerCase();
-  // Strip IPv4-mapped IPv6 prefix and re-check
-  if (ip.startsWith('::ffff:')) {
-    return isPrivateIP(ip.slice(7));
+  // IPv4-mapped IPv6 in ANY representation — dotted (::ffff:1.2.3.4), hex
+  // (::ffff:a9fe:a9fe), or expanded (0:0:0:0:0:ffff:a9fe:a9fe) — is decoded to
+  // its embedded IPv4 and re-checked. Without this, a hex/expanded mapped
+  // metadata address (::ffff:a9fe:a9fe = 169.254.169.254) would bypass the
+  // v4 checks AND the v6 prefix checks and be treated as public (SSRF escape).
+  if (ip.includes(':')) {
+    const mapped = extractMappedIPv4(ip);
+    if (mapped !== null) return isPrivateIP(mapped);
   }
   // IPv6 wildcard
   if (ip === '::' || ip === '0.0.0.0') return true;
@@ -86,6 +176,10 @@ export function isBlockedRedirectTarget(url: string): boolean {
     // must never be followed — that is the classic "redirect to file://" SSRF/LFI
     // escape. Refuse any scheme outside the allowlist. ADDITIVE.
     if (!ALLOWED_URL_SCHEMES.has(parsed.protocol.toLowerCase())) return true;
+    // Never follow a redirect to a credential-bearing target: the userinfo
+    // would be sent as a Basic auth header to the (attacker-chosen) redirect
+    // host, and `http://trusted@evil/` can disguise the real destination.
+    if (urlHasUserinfo(parsed)) return true;
     const hostname = parsed.hostname.toLowerCase();
     if (BLOCKED_HOSTNAMES.has(hostname)) return true;
     // Block obvious private IP patterns in the hostname itself
@@ -125,6 +219,15 @@ export async function validateUrlSafety(
   // http/https (the only schemes the web tools ever pass) are unaffected.
   if (!ALLOWED_URL_SCHEMES.has(parsed.protocol.toLowerCase())) {
     return { error: `Blocked: scheme "${parsed.protocol}" is not allowed (only http/https)` };
+  }
+
+  // Refuse credential-bearing URLs before any DNS/network work. Node would turn
+  // the userinfo into an `Authorization: Basic …` header (secret on the wire),
+  // and `user@host` can mask the true host. The redirect path reaches here via
+  // validateRedirectSafety, so this closes credential-bearing redirect targets
+  // too. ADDITIVE — web_fetch already strips userinfo from the initial URL.
+  if (urlHasUserinfo(parsed)) {
+    return { error: `Blocked: URL must not contain embedded credentials (userinfo)` };
   }
 
   if (BLOCKED_HOSTNAMES.has(hostname) && !(allowLoopback && isLoopbackHost(hostname))) {

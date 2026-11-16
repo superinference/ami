@@ -526,7 +526,7 @@ describe('env-access-guard :: EnvAccessGuard', () => {
     try {
       const r = g.safeGetEnv(name);
       assert.equal(r.redacted, true);
-      assert.equal(r.value, '[REDACTED]');
+      assert.equal(r.value, '[REDACTED_API_KEY]');
     } finally {
       delete process.env[name];
     }

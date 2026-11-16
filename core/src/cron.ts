@@ -154,6 +154,12 @@ export class CronScheduler {
   private jitterConfig: CronJitterConfig;
   /** When set and returning true, the tick defers firing (session is mid-turn). */
   private busyCheck: (() => boolean) | null = null;
+  /** Last session id we logged a "lock held by" contention line for. Suppresses
+   *  repeat diagnostics while passively polling the same live owner every tick. */
+  private lastBlockedBy: string | null = null;
+  /** Bound process-exit release registered while this scheduler owns the lock, so
+   *  an abrupt termination still frees the lock. Null when not registered. */
+  private exitRelease: (() => void) | null = null;
 
   constructor(cwd: string, sessionId?: string, jitterConfig: CronJitterConfig = DEFAULT_CRON_JITTER) {
     this.cwd = cwd;
@@ -459,14 +465,38 @@ export class CronScheduler {
           lock = null; // corrupt/unparseable → treat as stale and reclaim
         }
         if (lock && typeof lock === 'object' && lock.sessionId && typeof lock.timestamp === 'number') {
-          // We already own it.
-          if (lock.sessionId === this.sessionId) return true;
+          // We already own it (idempotent re-acquire). After --resume the sessionId
+          // is restored but the process has a new PID; rewrite the lock with the
+          // live PID so other sessions see a live owner and don't steal the lease.
+          if (lock.sessionId === this.sessionId) {
+            if (lock.pid !== process.pid) {
+              try {
+                fs.writeFileSync(this.lockPath, JSON.stringify({
+                  sessionId: this.sessionId,
+                  pid: process.pid,
+                  timestamp: Date.now(),
+                }));
+                coreLog('cron', `Re-acquired cron lock with new pid ${process.pid} (session ${this.sessionId}, was pid ${lock.pid ?? '?'})`);
+              } catch { /* best effort — we still own the lease */ }
+            }
+            this.lastBlockedBy = null;
+            this.registerExitRelease();
+            return true;
+          }
           // Primary staleness signal: is the owning PID still alive? Fall back to
           // the age window when the pid is unknown.
           const ownerAlive = typeof lock.pid === 'number'
             ? isProcessRunning(lock.pid)
             : Date.now() - lock.timestamp < LOCK_STALE_MS;
-          if (ownerAlive) return false; // live owner — never steal the lease
+          if (ownerAlive) {
+            // Contention diagnostic, de-duplicated: log once per distinct owner so a
+            // passive session polling a live owner every tick does not spam the log.
+            if (this.lastBlockedBy !== lock.sessionId) {
+              this.lastBlockedBy = lock.sessionId;
+              coreLog('cron', `cron lock held by session ${lock.sessionId} (pid ${lock.pid ?? '?'})`);
+            }
+            return false; // live owner — never steal the lease
+          }
           coreLog('cron', `Reclaiming stale lock from dead owner (pid ${lock.pid ?? '?'}, session ${lock.sessionId})`);
         } else {
           coreLog('cron', 'Reclaiming corrupt/unparseable cron lock');
@@ -480,6 +510,8 @@ export class CronScheduler {
         pid: process.pid,
         timestamp: Date.now(),
       }), { flag: 'wx' });
+      this.lastBlockedBy = null;
+      this.registerExitRelease();
       coreLog('cron', `Acquired cron lock (session ${this.sessionId}, pid ${process.pid})`);
       return true;
     } catch {
@@ -487,7 +519,22 @@ export class CronScheduler {
     }
   }
 
+  /** Register a process-exit release for the lock once per acquisition, so an
+   *  abrupt termination (signal/crash) still frees the lock even if stopTicker()
+   *  is never reached. Idempotent while already registered. */
+  private registerExitRelease(): void {
+    if (this.exitRelease) return;
+    this.exitRelease = () => this.releaseLock();
+    activeCronLockReleases.add(this.exitRelease);
+    installCronExitHook();
+  }
+
   private releaseLock(): void {
+    if (this.exitRelease) {
+      activeCronLockReleases.delete(this.exitRelease);
+      this.exitRelease = null;
+    }
+    this.lastBlockedBy = null;
     try {
       if (fs.existsSync(this.lockPath)) {
         const lock = JSON.parse(fs.readFileSync(this.lockPath, 'utf-8'));
@@ -530,25 +577,41 @@ export class CronScheduler {
     const domRestricted = domSpec !== '*';
     const dowRestricted = dowSpec !== '*';
 
-    for (let i = 0; i < SCAN_HORIZON_MIN; i++) {
-      const minMatch = matchField(check.getMinutes(), minSpec, 0, 59);
-      const hourMatch = matchField(check.getHours(), hourSpec, 0, 23);
-      const monMatch = matchField(check.getMonth() + 1, monSpec, 1, 12);
+    // Coarse skip-ahead search. The former implementation walked strictly
+    // minute-by-minute and re-matched all five fields on every candidate, burning
+    // O(minutes-in-the-horizon) iterations for sparse crons (yearly, Feb-29, …).
+    // Instead, when a coarse field fails we jump the whole unmatched unit — to the
+    // first minute of the next month, next day, or next hour — so a yearly cron
+    // converges in a handful of jumps. This is behaviour-preserving: the scan
+    // window is bounded by exactly the former horizon (the last candidate the old
+    // loop examined was firstCandidate + (SCAN_HORIZON_MIN-1) minutes), and a
+    // fully-matching candidate is never skipped, so the earliest match found is
+    // identical. A match beyond the window still reads as unsatisfiable (null).
+    const horizonMs = check.getTime() + (SCAN_HORIZON_MIN - 1) * 60_000;
+    while (check.getTime() <= horizonMs) {
+      if (!matchField(check.getMonth() + 1, monSpec, 1, 12)) {
+        check.setMonth(check.getMonth() + 1, 1);
+        check.setHours(0, 0, 0, 0);
+        continue;
+      }
       const domMatch = matchField(check.getDate(), domSpec, 1, 31);
       const dowMatch = matchField(check.getDay(), dowSpec, 0, 6);
-
       // Standard cron: when BOTH dom and dow are restricted, use OR semantics
-      let dayMatch: boolean;
-      if (domRestricted && dowRestricted) {
-        dayMatch = domMatch || dowMatch;
-      } else {
-        dayMatch = domMatch && dowMatch;
+      const dayMatch = (domRestricted && dowRestricted) ? (domMatch || dowMatch) : (domMatch && dowMatch);
+      if (!dayMatch) {
+        check.setDate(check.getDate() + 1);
+        check.setHours(0, 0, 0, 0);
+        continue;
       }
-
-      if (minMatch && hourMatch && monMatch && dayMatch) {
-        return check.getTime();
+      if (!matchField(check.getHours(), hourSpec, 0, 23)) {
+        check.setHours(check.getHours() + 1, 0, 0, 0);
+        continue;
       }
-      check.setMinutes(check.getMinutes() + 1);
+      if (!matchField(check.getMinutes(), minSpec, 0, 59)) {
+        check.setMinutes(check.getMinutes() + 1, 0, 0);
+        continue;
+      }
+      return check.getTime();
     }
     // Structurally valid but no match within the leap-cycle horizon (e.g. Feb 30):
     // return null rather than throwing, so the fire loop degrades gracefully.
@@ -741,6 +804,25 @@ export function matchField(value: number, spec: string, min: number, max: number
     }
   }
   return false;
+}
+
+// Release handlers for cron locks held by THIS process, run on graceful exit so a
+// lock is freed even if stopTicker() is never reached (signal / crash / forgotten
+// cleanup). Mirrors the session-lock exit-cleanup registry in session.ts.
+const activeCronLockReleases = new Set<() => void>();
+let cronExitHookInstalled = false;
+function installCronExitHook(): void {
+  if (cronExitHookInstalled) return;
+  cronExitHookInstalled = true;
+  process.once('exit', releaseAllCronLocks);
+}
+
+/** Release every cron lock this process still holds. Registered as the
+ *  process-exit cleanup and callable directly (introspection / shutdown). */
+export function releaseAllCronLocks(): void {
+  for (const release of [...activeCronLockReleases]) {
+    try { release(); } catch { /* best effort */ }
+  }
 }
 
 let _scheduler: CronScheduler | null = null;

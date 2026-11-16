@@ -51,21 +51,149 @@ function getMinLogLevel(): LogLevel {
   return DEFAULT_MIN_LEVEL;
 }
 
+// ---------------------------------------------------------------------------
+// Debug component/category filter (AMI's analogue of Claude Code's
+// `--debug=<pattern>` / debugFilter.ts). The `AMI_DEBUG_COMPONENTS` spec is a
+// comma list that selects which log lines reach disk by their component tag and
+// any category heuristically extracted from the message:
+//   - `api,hooks`   → inclusive: show ONLY the `api` and `hooks` categories
+//   - `!1p,!file`   → exclusive: show everything EXCEPT `1p` and `file`
+//   - `*` / empty / undefined / whitespace → no filtering (show all; default)
+//   - a mixed spec (`api,!file`) is invalid and falls back to show-all
+// This mirrors Claude Code's parseDebugFilter/extractDebugCategories/
+// shouldShowDebugCategories so a user can narrow noisy debug output by subsystem.
+// ---------------------------------------------------------------------------
+
+/** Parsed debug-filter configuration. Mirrors Claude Code's `DebugFilter`. */
+export interface DebugFilter {
+  include: string[];
+  exclude: string[];
+  isExclusive: boolean;
+}
+
+// Memoize parsing so repeated per-call lookups of the same spec string are cheap
+// (the spec rarely changes within a session). Keyed by the raw spec string.
+const debugFilterCache = new Map<string, DebugFilter | null>();
+
 /**
- * Optional component allow-filter (AMI's analogue of Claude Code's
- * `--debug=<pattern>`). When `AMI_DEBUG_COMPONENTS` is a comma list of component
- * names, only those components are persisted; the sentinel `*` or an unset/empty
- * value logs everything (the default — no behavior change).
+ * Parse a debug-filter spec string into `{include, exclude, isExclusive}`, or
+ * `null` for "no filtering / show all". Defensive by design:
+ *   - undefined / empty / whitespace-only  → null (show all)
+ *   - the `*` sentinel                      → null (AMI show-all affordance)
+ *   - stray empty tokens (`api,,hooks`)     → dropped
+ *   - mixed inclusive + exclusive tokens    → null (invalid → show all)
+ * Tokens are trimmed and lowercased for case-insensitive matching. Mirrors
+ * Claude Code's `parseDebugFilter`.
  */
-function componentAllowed(component: string): boolean {
-  const spec = process.env.AMI_DEBUG_COMPONENTS?.trim();
-  if (!spec || spec === '*') return true;
-  const names = spec
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (names.length === 0) return true;
-  return names.includes(component.toLowerCase());
+export function parseDebugFilter(filterString?: string): DebugFilter | null {
+  const key = filterString ?? '\u0000undefined';
+  const cached = debugFilterCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const result = ((): DebugFilter | null => {
+    if (!filterString || filterString.trim() === '') return null;
+    // AMI superset affordance: an explicit `*` means "log everything".
+    if (filterString.trim() === '*') return null;
+
+    const filters = filterString
+      .split(',')
+      .map((f) => f.trim())
+      .filter(Boolean);
+    if (filters.length === 0) return null;
+
+    const hasExclusive = filters.some((f) => f.startsWith('!'));
+    const hasInclusive = filters.some((f) => !f.startsWith('!'));
+    // A spec that mixes include and exclude tokens is contradictory; treat it as
+    // invalid and fall back to show-all rather than guessing an intent.
+    if (hasExclusive && hasInclusive) return null;
+
+    const clean = filters.map((f) => f.replace(/^!/, '').toLowerCase());
+    return {
+      include: hasExclusive ? [] : clean,
+      exclude: hasExclusive ? clean : [],
+      isExclusive: hasExclusive,
+    };
+  })();
+
+  debugFilterCache.set(key, result);
+  return result;
+}
+
+/**
+ * Extract lowercase categories from a free-form message, so a filter can match
+ * on content as well as the explicit component tag. Supports `category: msg`,
+ * `[CATEGORY] msg`, `MCP server "name": msg`, and a `1p event:` marker. Heuristic
+ * matches are bounded (secondary category must be <30 chars and contain no space)
+ * to keep pathological input from being treated as a category, and the result is
+ * de-duped. Mirrors Claude Code's `extractDebugCategories`.
+ */
+export function extractDebugCategories(message: string): string[] {
+  const categories: string[] = [];
+
+  // MCP pattern first, to avoid the generic prefix matcher stealing it.
+  const mcpMatch = message.match(/^MCP server ["']([^"']+)["']/);
+  if (mcpMatch && mcpMatch[1]) {
+    categories.push('mcp');
+    categories.push(mcpMatch[1].toLowerCase());
+  } else {
+    const prefixMatch = message.match(/^([^:[]+):/);
+    if (prefixMatch && prefixMatch[1]) {
+      categories.push(prefixMatch[1].trim().toLowerCase());
+    }
+  }
+
+  const bracketMatch = message.match(/^\[([^\]]+)]/);
+  if (bracketMatch && bracketMatch[1]) {
+    categories.push(bracketMatch[1].trim().toLowerCase());
+  }
+
+  if (message.toLowerCase().includes('1p event:')) {
+    categories.push('1p');
+  }
+
+  const secondaryMatch = message.match(/:\s*([^:]+):/);
+  if (secondaryMatch && secondaryMatch[1]) {
+    // Strip a trailing qualifier word so "Installation type: dev" → "installation".
+    // (Done in code rather than in the regex to keep the pattern ReDoS-safe —
+    // star height 1, no quantifier nested under the optional group.)
+    const secondary = secondaryMatch[1].trim().toLowerCase().replace(/\s+(?:type|mode|status|event)$/, '');
+    // Only accept a reasonable category name — reject absurdly long or
+    // whitespace-laden fragments.
+    if (secondary.length < 30 && !secondary.includes(' ')) {
+      categories.push(secondary);
+    }
+  }
+
+  return Array.from(new Set(categories));
+}
+
+/**
+ * Decide whether a line with the given categories passes the filter. Fail-closed:
+ * when a filter is active but no categories were found, the line is dropped in
+ * BOTH modes (uncategorized output is excluded by default when a user has scoped
+ * debugging). Mirrors Claude Code's `shouldShowDebugCategories`.
+ */
+export function shouldShowDebugCategories(categories: string[], filter: DebugFilter | null): boolean {
+  if (!filter) return true;
+  if (categories.length === 0) return false;
+  if (filter.isExclusive) {
+    return !categories.some((cat) => filter.exclude.includes(cat));
+  }
+  return categories.some((cat) => filter.include.includes(cat));
+}
+
+/**
+ * Build the category set for a log line from its explicit component tag plus any
+ * categories heuristically extracted from the message, de-duped. The explicit
+ * component leads so an empty/blank component yields a purely message-derived set
+ * (and an empty set when nothing is extractable — which the fail-closed boundary
+ * then drops under an active filter).
+ */
+function categoriesForLine(component: string, msg: string): string[] {
+  const cats = extractDebugCategories(msg);
+  const c = component.trim().toLowerCase();
+  if (c) cats.unshift(c);
+  return Array.from(new Set(cats));
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +261,7 @@ export function __resetLoggerForTest(): void {
   logDir = DEFAULT_LOG_DIR;
   logFile = path.join(DEFAULT_LOG_DIR, 'engine.log');
   inMemoryErrors = [];
+  debugFilterCache.clear();
 }
 
 /**
@@ -182,9 +311,10 @@ export function log(
   level: LogLevel = 'debug',
 ): void {
   // Verbosity gate: drop records below the active minimum severity, and records
-  // from components not in an explicit allow-filter, before any disk work.
+  // that an active component/category filter excludes, before any disk work.
   if (LEVEL_ORDER[level] < LEVEL_ORDER[getMinLogLevel()]) return;
-  if (!componentAllowed(component)) return;
+  const filter = parseDebugFilter(process.env.AMI_DEBUG_COMPONENTS);
+  if (!shouldShowDebugCategories(categoriesForLine(component, msg), filter)) return;
   ensureDir();
   const ts = new Date().toISOString();
   const dataStr = data ? ' ' + JSON.stringify(data) : '';

@@ -17,8 +17,19 @@ interface SecretRule {
 const SECRET_RULES: SecretRule[] = [
   // Anthropic must precede the generic openai `sk-` rule.
   { type: 'anthropic_key', pattern: /sk-ant-[a-zA-Z0-9-]{20,}/g },
+  // OpenAI project/service/admin keys (new `sk-(proj|svcacct|admin)-…T3BlbkFJ…`
+  // format) must precede the generic `sk-…` rule — the hyphenated prefix is not
+  // matched by openai_key below, so this is the only rule that catches them.
+  {
+    type: 'openai_project_key',
+    pattern:
+      /sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})/g,
+  },
   { type: 'openai_key', pattern: /sk-[a-zA-Z0-9]{20,}/g },
   { type: 'google_key', pattern: /AIza[a-zA-Z0-9_-]{35}/g },
+  // Azure AD client secret — distinctive `…<digit>Q~…` infix (gitleaks
+  // azure-ad-client-secret).
+  { type: 'azure_ad_secret', pattern: /[a-zA-Z0-9_~.]{3}\dQ~[a-zA-Z0-9_~.-]{31,34}/g },
   // GCP / Vertex AI service-account identity (low-entropy structured text the
   // entropy-gated assigned-secret rule cannot catch).
   { type: 'gcp_service_account', pattern: /[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com/g },
@@ -46,8 +57,23 @@ const SECRET_RULES: SecretRule[] = [
   { type: 'shopify_token', pattern: /shp(?:at|ss)_[a-fA-F0-9]{32}/g },
   { type: 'digitalocean_token', pattern: /d(?:op|oo)_v1_[a-f0-9]{64}/g },
   { type: 'huggingface_token', pattern: /hf_[a-zA-Z]{34}/g },
+  // SendGrid API token.
+  { type: 'sendgrid_token', pattern: /SG\.[a-zA-Z0-9=_.-]{66}/g },
+  // PyPI upload token.
+  { type: 'pypi_token', pattern: /pypi-AgEIcHlwaS5vcmc[\w-]{50,1000}/g },
+  // HashiCorp Terraform Cloud API token (`<14 alnum>.atlasv1.<60-70>`).
+  { type: 'hashicorp_token', pattern: /[a-zA-Z0-9]{14}\.atlasv1\.[a-zA-Z0-9_=-]{60,70}/g },
   { type: 'sentry_token', pattern: /sntryu_[a-f0-9]{64}/g },
+  // Sentry organization token (`sntrys_…`).
+  {
+    type: 'sentry_org_token',
+    pattern:
+      /sntrys_eyJpYXQiO[a-zA-Z0-9+/]{10,200}(?:LCJyZWdpb25fdXJs|InJlZ2lvbl91cmwi|cmVnaW9uX3VybCI6)[a-zA-Z0-9+/]{10,200}={0,2}_[a-zA-Z0-9+/]{43}/g,
+  },
+  // Grafana: cloud (`glc_`) + service-account (`glsa_`) + API key (base64
+  // `eyJrIjoi…`).
   { type: 'grafana_token', pattern: /glc_[A-Za-z0-9+/]{32,400}={0,3}|glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}/g },
+  { type: 'grafana_api_key', pattern: /eyJrIjoi[A-Za-z0-9+/]{70,400}={0,3}/g },
   { type: 'databricks_token', pattern: /dapi[a-f0-9]{32}(?:-\d)?/g },
   { type: 'pulumi_token', pattern: /pul-[a-f0-9]{40}/g },
   { type: 'postman_token', pattern: /PMAK-[a-fA-F0-9]{24}-[a-fA-F0-9]{34}/g },

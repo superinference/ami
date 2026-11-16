@@ -23,23 +23,51 @@ export function parseEnvIntInRange(
   return n;
 }
 
+/** One parked acquire(): both settlers so any drain path can resolve it. */
+interface WaitEntry {
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 export class SubagentLimiter {
   private running = 0;
   private totalSpawned = 0;
   // Each queued waiter carries BOTH resolve and reject so the limiter can settle
-  // it from any drain path (slot handoff, lifetime exhaustion, or reset) — a
-  // waiter must never be silently dropped, or its `await acquire()` hangs forever.
-  private waitQueue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
-  readonly maxConcurrent: number;
-  readonly maxDepth: number;
-  readonly maxLifetime: number;
+  // it from any drain path (slot handoff, lifetime exhaustion, reset, or abort) —
+  // a waiter must never be silently dropped, or its `await acquire()` hangs forever.
+  private waitQueue: WaitEntry[] = [];
+
+  // Constructor overrides take precedence over the env vars. When absent, the
+  // limits are resolved LIVE by the getters below so a long-lived limiter honours
+  // runtime env/config changes (matching Claude's per-batch getMaxToolUseConcurrency()).
+  private readonly maxConcurrentOverride?: number;
+  private readonly maxDepthOverride?: number;
+  private readonly maxLifetimeOverride?: number;
 
   constructor(maxConcurrent?: number, maxDepth?: number, maxLifetime?: number) {
-    this.maxConcurrent = maxConcurrent ??
+    this.maxConcurrentOverride = maxConcurrent;
+    this.maxDepthOverride = maxDepth;
+    this.maxLifetimeOverride = maxLifetime;
+  }
+
+  /**
+   * Runtime-reconfigurable limits: an explicit constructor value wins; otherwise
+   * the env var is re-read (and range-validated) on EVERY access, so changing
+   * `CLAUDE_CODE_MAX_*` between turns takes effect on an already-created limiter
+   * without a restart.
+   */
+  get maxConcurrent(): number {
+    return this.maxConcurrentOverride ??
       parseEnvIntInRange(process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS, DEFAULT_MAX_CONCURRENT, MAX_CONCURRENT_BOUNDS);
-    this.maxDepth = maxDepth ??
+  }
+
+  get maxDepth(): number {
+    return this.maxDepthOverride ??
       parseEnvIntInRange(process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, DEFAULT_MAX_DEPTH, MAX_DEPTH_BOUNDS);
-    this.maxLifetime = maxLifetime ??
+  }
+
+  get maxLifetime(): number {
+    return this.maxLifetimeOverride ??
       parseEnvIntInRange(process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION, DEFAULT_MAX_LIFETIME, MAX_LIFETIME_BOUNDS);
   }
 
@@ -61,6 +89,13 @@ export class SubagentLimiter {
     );
   }
 
+  /** Standard abort rejection for a queued acquisition cancelled via AbortSignal. */
+  private abortError(): Error {
+    const err = new Error('Subagent acquisition aborted before a concurrency slot was available.');
+    err.name = 'AbortError';
+    return err;
+  }
+
   canSpawnAtDepth(currentDepth: number): boolean {
     return currentDepth <= this.maxDepth;
   }
@@ -78,7 +113,18 @@ export class SubagentLimiter {
     this.totalSpawned++;
   }
 
-  async acquire(): Promise<void> {
+  /**
+   * FUNCTIONAL CHANGE (additive, abort parity): optional `signal` cancels a
+   * QUEUED (not-yet-started) acquisition. If the signal is already aborted the
+   * call rejects without taking a slot or lifetime budget; if it aborts while
+   * parked, the waiter is spliced out of the queue and its Promise rejected, so
+   * a cancelled spawn can never strand a concurrency slot or hang forever.
+   * Mirrors Claude threading `abortController.signal` through the tool fan-out.
+   */
+  async acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      throw this.abortError();
+    }
     if (this.totalSpawned >= this.maxLifetime) {
       throw this.lifetimeError();
     }
@@ -90,7 +136,20 @@ export class SubagentLimiter {
     // At the concurrency cap: queue the waiter. The lifetime budget is re-checked
     // at drain time by `release()`, since `totalSpawned` can advance while waiting.
     return new Promise<void>((resolve, reject) => {
-      this.waitQueue.push({ resolve, reject });
+      const entry: WaitEntry = { resolve, reject };
+      if (signal) {
+        const onAbort = () => {
+          const i = this.waitQueue.indexOf(entry);
+          if (i >= 0) this.waitQueue.splice(i, 1);
+          reject(this.abortError());
+        };
+        // Settling via any drain path (handoff, lifetime reject, reset) must also
+        // detach the listener so it cannot fire after the Promise is settled.
+        entry.resolve = () => { signal.removeEventListener('abort', onAbort); resolve(); };
+        entry.reject = (err: Error) => { signal.removeEventListener('abort', onAbort); reject(err); };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      this.waitQueue.push(entry);
     });
   }
 
@@ -134,8 +193,8 @@ export class SubagentLimiter {
     return false;
   }
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal);
     try {
       return await fn();
     } finally {

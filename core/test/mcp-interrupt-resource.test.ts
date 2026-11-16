@@ -144,6 +144,7 @@ describe('MCP resource read — manager forwards the abort signal', () => {
     let recordedSignal: AbortSignal | undefined;
     let recordedUri: string | undefined;
     const fakeClient = {
+      serverCapabilities: {},
       async readResource(uri: string, signal?: AbortSignal) {
         recordedUri = uri;
         recordedSignal = signal;

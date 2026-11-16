@@ -4,7 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
-import { coerceBool } from '../utils/coerce';
+import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
 import { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE } from './docker-sandbox';
@@ -52,11 +52,19 @@ export function resolveBashMaxOutput(): number {
  * when no per-call timeout) and BASH_MAX_TIMEOUT_MS (ceiling), matching Claude
  * Code. A per-call `timeout` still wins but is clamped to the max.
  */
-export function resolveBashTimeout(inputTimeout?: number): number {
+export function resolveBashTimeout(inputTimeout?: unknown): number {
   const def = parseEnvMs('BASH_DEFAULT_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS;
-  const max = parseEnvMs('BASH_MAX_TIMEOUT_MS') ?? HARD_MAX_TIMEOUT_MS;
-  const requested = inputTimeout && inputTimeout > 0 ? inputTimeout : def;
-  return Math.min(requested, max);
+  // [functional parity] The effective ceiling must never be below the configured
+  // default. Mirror Claude Code's getMaxBashTimeoutMs, which floors the max UP to
+  // the default via Math.max — a BASH_MAX_TIMEOUT_MS misconfigured below the
+  // default is raised to the default rather than silently shrinking every
+  // command's timeout below the operator's chosen default.
+  const max = Math.max(parseEnvMs('BASH_MAX_TIMEOUT_MS') ?? HARD_MAX_TIMEOUT_MS, def);
+  // [functional parity] semanticNumber coercion: providers routinely serialize a
+  // numeric `timeout` as a STRING ("5000"). Coerce it so a numeric string is
+  // honored and any non-numeric/garbage shape falls back to the default.
+  const requested = coerceNumber(inputTimeout, 0);
+  return Math.min(requested > 0 ? requested : def, max);
 }
 
 let _cachedPermissionManager: InstanceType<typeof import('../permissions').PermissionManager> | null = null;
@@ -736,7 +744,7 @@ export const bashTool: ToolDefinition = {
     if (input.command_description && !input.description) {
       input.description = input.command_description;
     }
-    const timeout = resolveBashTimeout(input.timeout as number | undefined);
+    const timeout = resolveBashTimeout(input.timeout);
 
     if (!command || command.trim().length === 0) {
       return { output: 'Error: command must not be empty.', isError: true };
@@ -902,7 +910,9 @@ export const bashTool: ToolDefinition = {
       const MAX_BG_TIMEOUT_MS = 2 * 60 * 60 * 1000;
       const DEFAULT_BG_TIMEOUT_MS = 30 * 60 * 1000;
       const envBgTimeout = process.env.SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS;
-      const requestedTimeout = typeof input.timeout === 'number' ? input.timeout : undefined;
+      // [functional parity] coerce a numeric-string timeout here too (semanticNumber).
+      const coercedBgTimeout = coerceNumber(input.timeout, 0);
+      const requestedTimeout = coercedBgTimeout > 0 ? coercedBgTimeout : undefined;
       const bgTimeoutMs = Math.min(
         requestedTimeout ?? (envBgTimeout ? parseInt(envBgTimeout, 10) : DEFAULT_BG_TIMEOUT_MS),
         MAX_BG_TIMEOUT_MS,
@@ -1124,6 +1134,7 @@ const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
   { pattern: /fatal: not a git repository/i, hint: 'Not inside a git repository. Check the current directory.' },
   { pattern: /API rate limit exceeded|gh: api rate limit|403.*rate limit/i, hint: 'GitHub API rate limit exceeded. Wait a few minutes before retrying, or authenticate with `gh auth login` for higher limits.' },
   { pattern: /secondary rate limit|abuse detection/i, hint: 'GitHub secondary rate limit triggered. Slow down requests — wait at least 60 seconds before retrying.' },
+  { pattern: /missing required scopes|not been granted the required scopes|Resource not accessible by (?:integration|personal access token)|HTTP 403:.*(?:scope|admin)/i, hint: 'GitHub CLI token is missing required scopes. Run `gh auth refresh -h github.com -s repo,workflow` to grant them, or `gh auth login` to re-authenticate.' },
 ];
 
 export function diagnoseError(output: string): string | null {
@@ -1172,7 +1183,10 @@ export function interpretExitCode(command: string, exitCode: number): ExitCodeIn
     const detail = notes.length ? notes.join(', ') : 'no files needed copying';
     return { message: `(robocopy success — exit ${exitCode}: ${detail})`, isNonError: true };
   }
-  if (exitCode === 1 && (base === 'grep' || base === 'egrep' || base === 'fgrep' || base === 'rg')) return { message: '(no matches found — not an error)', isNonError: true };
+  // grep family: grep/egrep/fgrep/rg (POSIX + ripgrep) and findstr (Windows
+  // native text search) all exit 1 on no-match and >=2 on a real error.
+  const isGrepFamily = base === 'grep' || base === 'egrep' || base === 'fgrep' || base === 'rg' || base.toLowerCase() === 'findstr';
+  if (exitCode === 1 && isGrepFamily) return { message: '(no matches found — not an error)', isNonError: true };
   if (exitCode === 1 && base === 'diff') return { message: '(files differ — not an error)', isNonError: true };
   if (exitCode === 1 && base === 'git') {
     const args = command.trim().split(/\s+/).slice(1);
@@ -1180,7 +1194,7 @@ export function interpretExitCode(command: string, exitCode: number): ExitCodeIn
   }
   if (exitCode === 1 && (base === 'test' || base === '[')) return { message: '(condition is false)', isNonError: true };
   if (exitCode === 1 && base === 'find') return { message: '(some paths were inaccessible)', isNonError: true };
-  if (exitCode === 2 && base === 'grep') return { message: '(error in grep pattern or file access)' };
+  if (exitCode === 2 && isGrepFamily) return { message: '(error in grep pattern or file access)' };
   if (exitCode === 126) return { message: '(permission denied — command not executable)' };
   if (exitCode === 127) return { message: '(command not found)' };
   if (exitCode === 128 + 9) return { message: '(killed by SIGKILL)' };

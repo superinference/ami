@@ -229,8 +229,19 @@ describe('SessionManager', () => {
     assert.equal(entries.length, 1);
   });
 
-  it('preview handles non-string user content', () => {
+  it('preview extracts the text block of a multimodal (array) user message', () => {
+    // Parity (deriveFirstPrompt): an array-content first message yields its first
+    // text block in the picker preview rather than collapsing to a placeholder.
     sm.save(makeSession('arr', [{ role: 'user', content: [{ type: 'text', text: 'hello' }] as any }]));
+    const entries = sm.list();
+    assert.equal(entries[0].preview, 'hello');
+  });
+
+  it('preview falls back to "(no messages)" for an image-only user message', () => {
+    sm.save(makeSession('img-only', [{
+      role: 'user',
+      content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'x' } }] as any,
+    }]));
     const entries = sm.list();
     assert.equal(entries[0].preview, '(no messages)');
   });

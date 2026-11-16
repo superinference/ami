@@ -68,6 +68,14 @@ export const agenticFetchTool: ToolDefinition = {
       provider: context._providerConfig,
       cwd: context.cwd,
       permissionMode: 'auto-allow',
+      // Per-domain permission boundary: the research subagent runs autonomously
+      // (auto-allow) but STILL inherits the parent's permission rules + prompt
+      // handler, so operator deny rules (e.g. a web_fetch/web_search domain
+      // denylist) keep applying to the subagent's fetches — in auto-allow mode an
+      // explicit deny still fires (permissions.ts). Mirrors task.ts's subagent
+      // threading; no parallel permission path.
+      permissionRules: context._parentPermissionRules,
+      permissionPromptHandler: context._permissionPromptHandler,
       maxTurns: 5,
       tokenBudget: 16000,
       abortController: controller,

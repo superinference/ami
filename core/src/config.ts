@@ -569,6 +569,18 @@ export function consumeInternalWrite(
 // Merge
 // ---------------------------------------------------------------------------
 
+/**
+ * Concatenate a lower-layer array with a higher-layer one, de-duplicating while
+ * preserving first-seen order. Parity: Claude's `settingsMergeCustomizer`
+ * (`uniq([...target, ...source])`) so list-valued settings ACCUMULATE across
+ * config layers instead of a higher layer clobbering a lower one. `existing`
+ * (the already-accumulated lower-priority values) comes first so its ordering is
+ * stable and higher layers only append genuinely-new entries.
+ */
+function mergeConfigArray(existing: string[] | undefined, incoming: string[]): string[] {
+  return [...new Set([...(existing ?? []), ...incoming])];
+}
+
 // ---------------------------------------------------------------------------
 // ConfigService — hot-reload config watcher
 // ---------------------------------------------------------------------------
@@ -716,12 +728,17 @@ export function mergeConfigs(
     if (layer.safeMode !== undefined) merged.safeMode = layer.safeMode;
     if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
-    if (layer.alwaysLoadTools !== undefined) merged.alwaysLoadTools = layer.alwaysLoadTools;
-    if (layer.fallbackModels !== undefined) merged.fallbackModels = layer.fallbackModels;
-    if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = layer.allowedMcpServers;
+    // Array-valued settings ACCUMULATE across layers (concat + dedupe), so a
+    // higher layer augments rather than clobbers a lower one — parity with
+    // Claude's settingsMergeCustomizer. Managed-authoritative arrays
+    // (allowedMcpServers / sandboxExcludedCommands when managed owns them) are
+    // still replaced wholesale by the managed override below (AMI superset).
+    if (layer.alwaysLoadTools !== undefined) merged.alwaysLoadTools = mergeConfigArray(merged.alwaysLoadTools, layer.alwaysLoadTools);
+    if (layer.fallbackModels !== undefined) merged.fallbackModels = mergeConfigArray(merged.fallbackModels, layer.fallbackModels);
+    if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = mergeConfigArray(merged.allowedMcpServers, layer.allowedMcpServers);
     if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
     if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
-    if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = layer.sandboxExcludedCommands;
+    if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = mergeConfigArray(merged.sandboxExcludedCommands, layer.sandboxExcludedCommands);
     // env merges key-wise across layers (higher-priority layers override single
     // keys rather than replacing the whole block).
     if (layer.env !== undefined) merged.env = { ...merged.env, ...layer.env };

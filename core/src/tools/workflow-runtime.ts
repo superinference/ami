@@ -16,9 +16,11 @@ export interface WorkflowAgentCache {
 }
 
 /** Stable cache key for an agent call — prompt + semantic opts (label/phase,
- *  which are display-only, are excluded so a relabel does not bust the cache). */
-export function workflowAgentCacheKey(prompt: string, opts?: { schema?: unknown; model?: string; isolation?: string; agentType?: string }): string {
-  const norm = { prompt, schema: opts?.schema ?? null, model: opts?.model ?? null, isolation: opts?.isolation ?? null, agentType: opts?.agentType ?? null };
+ *  which are display-only, are excluded so a relabel does not bust the cache).
+ *  `maxTurns` is a semantic cap on the agent's work, so it participates in the
+ *  key — two calls that differ only by their turn budget are not conflated. */
+export function workflowAgentCacheKey(prompt: string, opts?: { schema?: unknown; model?: string; isolation?: string; agentType?: string; maxTurns?: number }): string {
+  const norm = { prompt, schema: opts?.schema ?? null, model: opts?.model ?? null, isolation: opts?.isolation ?? null, agentType: opts?.agentType ?? null, maxTurns: opts?.maxTurns ?? null };
   return crypto.createHash('sha256').update(JSON.stringify(norm)).digest('hex');
 }
 
@@ -67,6 +69,14 @@ export interface AgentOptions {
   model?: string;
   isolation?: 'worktree';
   agentType?: string;
+  /**
+   * [FUNCTIONAL PARITY] Cap the number of agentic turns this single `agent()`
+   * call may take (parity with the reference per-agent `maxTurns`). It is passed
+   * through to the injected agent handler, which enforces the bound, and it is
+   * part of {@link workflowAgentCacheKey} so two otherwise-identical calls with a
+   * different turn budget are cached separately.
+   */
+  maxTurns?: number;
 }
 
 export interface WorkflowBudget {
@@ -173,6 +183,12 @@ export class WorkflowRuntime extends EventEmitter {
     cache?: WorkflowAgentCache | null;
   }) {
     super();
+    // EventEmitter caps listeners at 10 and emits a MaxListenersExceededWarning
+    // beyond that. A parent workflow registers one 'abort' listener per nested
+    // workflow() call (see createWorkflowCaller), so a legitimate deep fan-out
+    // exceeds 10. Disable the cap — parity with the reference, which calls
+    // setMaxListeners(0) on its long-lived event emitters.
+    this.setMaxListeners(0);
     this._agentHandler = options.agentHandler;
     this._budgetTotal = options.budgetTotal ?? null;
     this._workflowResolver = options.workflowResolver ?? null;
@@ -442,6 +458,130 @@ export class WorkflowRuntime extends EventEmitter {
   }
 }
 
+/**
+ * Parse a restricted JavaScript *data* literal — object / array / string /
+ * number / `true` / `false` / `null` — WITHOUT executing it. Throws on any
+ * identifier, call, operator, template interpolation, or other non-data
+ * construct, and on malformed input.
+ *
+ * Workflow metadata is untrusted content discovered on disk. The previous
+ * `new Function('return (' + literal + ')')` approach EXECUTED that content at
+ * mere discovery/listing time — before {@link validateWorkflowScript} ever ran —
+ * so a crafted `meta` block could run arbitrary code just by being parsed. This
+ * parser accepts only pure data (parity with the reference loader, which
+ * validates parsed metadata as data and never evals it).
+ */
+export function parseDataLiteral(src: string): unknown {
+  let i = 0;
+  const n = src.length;
+  const err = (msg: string): never => { throw new Error(`parseDataLiteral: ${msg} at ${i}`); };
+
+  const skipWs = (): void => {
+    while (i < n) {
+      const c = src[i]!;
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v') { i++; continue; }
+      break;
+    }
+  };
+
+  const parseString = (quote: string): string => {
+    let out = '';
+    while (i < n) {
+      const c = src[i++]!;
+      if (c === '\\') {
+        const e = src[i++];
+        if (e === undefined) return err('unterminated escape');
+        const map: Record<string, string> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
+        out += map[e] ?? e;
+        continue;
+      }
+      if (quote === '`' && c === '$' && src[i] === '{') return err('template interpolation not allowed');
+      if (c === quote) return out;
+      out += c;
+    }
+    return err('unterminated string');
+  };
+
+  const parseNumber = (): number => {
+    const start = i;
+    if (src[i] === '-') i++;
+    while (i < n && src[i]! >= '0' && src[i]! <= '9') i++;
+    if (src[i] === '.') { i++; while (i < n && src[i]! >= '0' && src[i]! <= '9') i++; }
+    if (src[i] === 'e' || src[i] === 'E') {
+      i++;
+      if (src[i] === '+' || src[i] === '-') i++;
+      while (i < n && src[i]! >= '0' && src[i]! <= '9') i++;
+    }
+    const text = src.slice(start, i);
+    const num = Number(text);
+    if (text === '' || text === '-' || !Number.isFinite(num)) return err('invalid number');
+    return num;
+  };
+
+  const parseValue = (): unknown => {
+    skipWs();
+    const c = src[i];
+    if (c === undefined) return err('unexpected end of input');
+    if (c === '{') return parseObject();
+    if (c === '[') return parseArray();
+    if (c === '"' || c === "'" || c === '`') { i++; return parseString(c); }
+    if (c === '-' || c === '.' || (c >= '0' && c <= '9')) return parseNumber();
+    if (src.startsWith('true', i)) { i += 4; return true; }
+    if (src.startsWith('false', i)) { i += 5; return false; }
+    if (src.startsWith('null', i)) { i += 4; return null; }
+    return err(`unexpected token '${c}'`);
+  };
+
+  const parseKey = (): string => {
+    skipWs();
+    const c = src[i];
+    if (c === '"' || c === "'" || c === '`') { i++; return parseString(c); }
+    const start = i;
+    while (i < n && /[A-Za-z0-9_$]/.test(src[i]!)) i++;
+    if (i === start) return err('expected object key');
+    return src.slice(start, i);
+  };
+
+  const parseObject = (): Record<string, unknown> => {
+    i++; // consume '{'
+    const obj: Record<string, unknown> = {};
+    for (;;) {
+      skipWs();
+      if (src[i] === '}') { i++; return obj; } // empty object or trailing comma
+      const key = parseKey();
+      skipWs();
+      if (src[i] !== ':') return err("expected ':'");
+      i++;
+      obj[key] = parseValue();
+      skipWs();
+      const d = src[i];
+      if (d === ',') { i++; continue; }
+      if (d === '}') { i++; return obj; }
+      return err("expected ',' or '}'");
+    }
+  };
+
+  const parseArray = (): unknown[] => {
+    i++; // consume '['
+    const arr: unknown[] = [];
+    for (;;) {
+      skipWs();
+      if (src[i] === ']') { i++; return arr; } // empty array or trailing comma
+      arr.push(parseValue());
+      skipWs();
+      const d = src[i];
+      if (d === ',') { i++; continue; }
+      if (d === ']') { i++; return arr; }
+      return err("expected ',' or ']'");
+    }
+  };
+
+  const value = parseValue();
+  skipWs();
+  if (i !== n) return err('trailing characters after value');
+  return value;
+}
+
 export function parseWorkflowMeta(script: string): WorkflowMeta | null {
   const headerMatch = script.match(/export\s+const\s+meta\s*=\s*\{/);
   if (!headerMatch) return null;
@@ -468,14 +608,16 @@ export function parseWorkflowMeta(script: string): WorkflowMeta | null {
   const metaLiteral = script.slice(braceStart, braceEnd + 1);
 
   try {
-    const factory = new Function(`return (${metaLiteral})`); // eslint-disable-line no-new-func
-    // metaLiteral is a brace-balanced `{...}` slice, so `(…)` always evaluates
-    // to an object; a malformed literal throws and is handled by the catch.
-    const obj = factory();
+    // Parse the metadata as DATA — never execute it (see parseDataLiteral). A
+    // literal that is not a plain object, or that contains any non-data
+    // construct, is rejected.
+    const parsed = parseDataLiteral(metaLiteral);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const obj = parsed as Record<string, unknown>;
     return {
       name: String(obj.name ?? ''),
       description: String(obj.description ?? ''),
-      phases: Array.isArray(obj.phases) ? obj.phases : undefined,
+      phases: Array.isArray(obj.phases) ? (obj.phases as WorkflowMeta['phases']) : undefined,
       whenToUse: obj.whenToUse ? String(obj.whenToUse) : undefined,
     };
   } catch {

@@ -65,6 +65,15 @@ export class CredentialPool {
     if (trimmed.length === 0) {
       throw new Error('CredentialPool.addKey: apiKey must be a non-empty string');
     }
+    // Format guard: a credential is later placed verbatim into an Authorization /
+    // x-api-key HTTP header. A value with internal whitespace or a control
+    // character (newline, CR, tab, NUL, DEL, ...) can never be a valid header
+    // value and is a header-injection / request-corruption risk — reject it
+    // instead of admitting structurally-impossible key material to the store.
+    // eslint-disable-next-line no-control-regex -- intentional control-char match on untrusted key material
+    if (/[\s\u0000-\u001f\u007f]/.test(trimmed)) {
+      throw new Error('CredentialPool.addKey: apiKey contains invalid characters');
+    }
     this.entries.push({
       id: `key-${this.entries.length}`,
       apiKey: trimmed,

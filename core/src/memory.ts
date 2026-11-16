@@ -38,6 +38,140 @@ export function sanitizeMemoryContent(text: string): string {
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 
+/**
+ * Per-type memory taxonomy guidance surfaced in the system prompt. Mirrors Claude
+ * Code's `TYPES_SECTION_INDIVIDUAL` (memdir/memoryTypes.ts): each type carries a
+ * rich <description>, <when_to_save> trigger, <how_to_use> cue, a <body_structure>
+ * scaffold for the save-heavy types, and two eval-validated worked examples. This
+ * replaces the bare 4-line type list — the model needs to recognize WHEN to write
+ * each type and what a good one looks like, not just the type names.
+ */
+const MEMORY_TYPES_GUIDANCE = [
+  'There are several discrete types of memory that you can store in your memory system:',
+  '',
+  '<types>',
+  '<type>',
+  '    <name>user</name>',
+  "    <description>Contain information about the user's role, goals, responsibilities, and knowledge. Great user memories help you tailor your future behavior to the user's preferences and perspective. Your goal in reading and writing these memories is to build up an understanding of who the user is and how you can be most helpful to them specifically. For example, you should collaborate with a senior software engineer differently than a student who is coding for the very first time. Avoid writing memories about the user that could be viewed as a negative judgement or that are not relevant to the work you're trying to accomplish together.</description>",
+  "    <when_to_save>When you learn any details about the user's role, preferences, responsibilities, or knowledge</when_to_save>",
+  '    <how_to_use>When your work should be informed by the user\'s profile or perspective. For example, if the user is asking you to explain a part of the code, answer in a way tailored to the details they will find most valuable or that build on domain knowledge they already have.</how_to_use>',
+  '    <examples>',
+  "    user: I'm a data scientist investigating what logging we have in place",
+  '    assistant: [saves user memory: user is a data scientist, currently focused on observability/logging]',
+  '',
+  "    user: I've been writing Go for ten years but this is my first time touching the React side of this repo",
+  "    assistant: [saves user memory: deep Go expertise, new to React and this project's frontend — frame frontend explanations in terms of backend analogues]",
+  '    </examples>',
+  '</type>',
+  '<type>',
+  '    <name>feedback</name>',
+  '    <description>Guidance the user has given you about how to approach work — both what to avoid and what to keep doing. These let you remain coherent and responsive to how work should be done in the project. Record from failure AND success: if you only save corrections, you will avoid past mistakes but drift away from approaches the user has already validated, and may grow overly cautious.</description>',
+  '    <when_to_save>Any time the user corrects your approach ("no not that", "don\'t", "stop doing X") OR confirms a non-obvious approach worked ("yes exactly", "perfect, keep doing that", accepting an unusual choice without pushback). Corrections are easy to notice; confirmations are quieter — watch for them. Include *why* so you can judge edge cases later.</when_to_save>',
+  '    <how_to_use>Let these memories guide your behavior so the user does not need to offer the same guidance twice.</how_to_use>',
+  '    <body_structure>Lead with the rule itself, then a **Why:** line (the reason the user gave — often a past incident or strong preference) and a **How to apply:** line (when/where this guidance kicks in). Knowing *why* lets you judge edge cases instead of blindly following the rule.</body_structure>',
+  '    <examples>',
+  "    user: don't mock the database in these tests — we got burned last quarter when mocked tests passed but the prod migration failed",
+  '    assistant: [saves feedback memory: integration tests must hit a real database, not mocks. Reason: prior incident where mock/prod divergence masked a broken migration]',
+  '',
+  '    user: stop summarizing what you just did at the end of every response, I can read the diff',
+  '    assistant: [saves feedback memory: this user wants terse responses with no trailing summaries]',
+  '    </examples>',
+  '</type>',
+  '<type>',
+  '    <name>project</name>',
+  '    <description>Information you learn about ongoing work, goals, initiatives, bugs, or incidents within the project that is not otherwise derivable from the code or git history. Project memories help you understand the broader context and motivation behind the work in this working directory.</description>',
+  '    <when_to_save>When you learn who is doing what, why, or by when. These states change relatively quickly so keep your understanding up to date. Always convert relative dates to absolute dates when saving (e.g., "Thursday" → "2026-03-05"), so the memory remains interpretable later.</when_to_save>',
+  "    <how_to_use>Use these memories to more fully understand the details and nuance behind the user's request and make better informed suggestions.</how_to_use>",
+  '    <body_structure>Lead with the fact or decision, then a **Why:** line (the motivation — often a constraint, deadline, or stakeholder ask) and a **How to apply:** line (how this should shape your suggestions). Project memories decay fast, so the why helps future-you judge whether the memory is still load-bearing.</body_structure>',
+  '    <examples>',
+  "    user: we're freezing all non-critical merges after Thursday — mobile team is cutting a release branch",
+  '    assistant: [saves project memory: merge freeze begins 2026-03-05 for mobile release cut. Flag any non-critical PR work scheduled after that date]',
+  '',
+  "    user: the reason we're ripping out the old auth middleware is that legal flagged it for storing session tokens in a way that doesn't meet the new compliance requirements",
+  '    assistant: [saves project memory: auth middleware rewrite is driven by legal/compliance requirements around session token storage, not tech-debt cleanup — scope decisions should favor compliance over ergonomics]',
+  '    </examples>',
+  '</type>',
+  '<type>',
+  '    <name>reference</name>',
+  '    <description>Stores pointers to where information can be found in external systems, so you remember where to look for up-to-date information outside the project directory.</description>',
+  '    <when_to_save>When you learn about resources in external systems and their purpose. For example, that bugs are tracked in a specific Linear project or that feedback lives in a specific Slack channel.</when_to_save>',
+  '    <how_to_use>When the user references an external system or information that may be in an external system.</how_to_use>',
+  '    <examples>',
+  '    user: check the Linear project "INGEST" if you want context on these tickets, that\'s where we track all pipeline bugs',
+  '    assistant: [saves reference memory: pipeline bugs are tracked in Linear project "INGEST"]',
+  '',
+  "    user: the Grafana board at grafana.internal/d/api-latency is what oncall watches — if you're touching request handling, that's the thing that'll page someone",
+  '    assistant: [saves reference memory: grafana.internal/d/api-latency is the oncall latency dashboard — check it when editing request-path code]',
+  '    </examples>',
+  '</type>',
+  '</types>',
+].join('\n');
+
+/**
+ * `### What NOT to save` list with per-item reasons + the eval-validated
+ * explicit-save gate (Claude Code `WHAT_NOT_TO_SAVE_SECTION`). The gate prevents
+ * "save this week's PR list" turning memory into an activity log even when the
+ * user explicitly asks.
+ */
+const WHAT_NOT_TO_SAVE_GUIDANCE = [
+  '### What NOT to save',
+  '- Code patterns, conventions, architecture, file paths, or project structure — these can be derived by reading the current project state.',
+  '- Git history, recent changes, or who-changed-what — `git log` / `git blame` are authoritative.',
+  '- Debugging solutions or fix recipes — the fix is in the code; the commit message has the context.',
+  '- Anything already documented in instruction files (CLAUDE.md / AGENTS.md / SUPERINFERENCE.md).',
+  '- Ephemeral task details: in-progress work, temporary state, current conversation context.',
+  '',
+  'These exclusions apply even when the user explicitly asks you to save. If they ask you to save a PR list or activity summary, ask what was *surprising* or *non-obvious* about it — that is the part worth keeping.',
+].join('\n');
+
+/**
+ * `### When to access memories` block including the eval-validated "ignore
+ * memory" anti-pattern bullet (Claude Code `WHEN_TO_ACCESS_SECTION`): when the
+ * user says to ignore memory, proceed as if the index were empty rather than
+ * acknowledging-then-overriding.
+ */
+const WHEN_TO_ACCESS_GUIDANCE = [
+  '### When to access memories',
+  '- When memories seem relevant, or the user references prior-conversation work.',
+  '- You MUST access memory when the user explicitly asks you to check, recall, or remember.',
+  '- If the user says to *ignore* or *not use* memory: proceed as if MEMORY.md were empty. Do not apply remembered facts, cite, compare against, or mention memory content.',
+].join('\n');
+
+/**
+ * `### Before recommending from memory` verification checklist (Claude Code
+ * `TRUSTING_RECALL_SECTION`): a memory naming a function/file/flag is a claim
+ * about when it was written, not proof it exists now — verify before acting.
+ */
+const BEFORE_RECOMMENDING_GUIDANCE = [
+  '### Before recommending from memory',
+  'A memory that names a specific function, file, or flag is a claim that it existed *when the memory was written*. It may have been renamed, removed, or never merged. Before recommending it:',
+  '- If the memory names a file path: check the file exists.',
+  '- If the memory names a function or flag: grep for it.',
+  '- If the user is about to act on your recommendation (not just asking about history), verify first.',
+  '',
+  '"The memory says X exists" is not the same as "X exists now."',
+  '',
+  'A memory that summarizes repo state (activity logs, architecture snapshots) is frozen in time. If the user asks about *recent* or *current* state, prefer `git log` or reading the code over recalling the snapshot.',
+].join('\n');
+
+/**
+ * Frontmatter example with the body-structure scaffold (Claude Code
+ * `MEMORY_FRONTMATTER_EXAMPLE`) — shows the model the exact shape of a good
+ * saved memory, including the **Why:** / **How to apply:** body scaffolding for
+ * feedback/project types.
+ */
+const MEMORY_FRONTMATTER_EXAMPLE = [
+  '```markdown',
+  '---',
+  'name: {{memory name}}',
+  'description: {{one-line description — used to decide relevance in future conversations, so be specific}}',
+  `type: {{${MEMORY_TYPES.join(', ')}}}`,
+  '---',
+  '',
+  '{{memory content — for feedback/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines}}',
+  '```',
+].join('\n');
+
 export interface MemoryEntry {
   path: string;
   content: string;
@@ -827,16 +961,24 @@ export class MemoryManager {
 ### When to save memories
 - User preferences, corrections, project conventions
 - NOT: code patterns derivable from files, git history, debugging recipes, ephemeral task state
+- Include *why* you are saving so you can judge edge cases later.
+
+${WHAT_NOT_TO_SAVE_GUIDANCE}
 
 ### Memory freshness
 - Verify memories >1 day old against current state before acting
 - Trust observed reality (file contents, git log) over stale memories
 
 ### Memory types
-- user: Private role/goals/knowledge
-- feedback: Corrections about how to work
-- project: Ongoing context not in code/git
-- reference: Pointers to external systems${driftCaveat}`;
+${MEMORY_TYPES_GUIDANCE}
+
+${WHEN_TO_ACCESS_GUIDANCE}
+
+${BEFORE_RECOMMENDING_GUIDANCE}
+
+### Saving a memory
+Lead feedback/project memories with the rule/fact, then a **Why:** line and a **How to apply:** line. Use this frontmatter:
+${MEMORY_FRONTMATTER_EXAMPLE}${driftCaveat}`;
       sections.push(memoryGuidance);
     }
 

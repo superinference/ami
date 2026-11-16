@@ -5,14 +5,17 @@ import { runSearch, grepHooks } from '../src/tools/grep';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// runSearch — SIGKILL-then-grace settle path (killThenSettle).
+// runSearch — SIGTERM-then-grace settle path (killThenSettle).
 //
 // When a search process wedges and never emits 'close' (seen on Windows and for
-// uninterruptible I/O), the tool must still resolve: on timeout OR abort it
-// SIGKILLs the child and then settles after `grepHooks.killGraceMs` even though
-// 'close' never fires. These tests drive that path deterministically via the
-// documented DI seam (grepHooks.spawn / killGraceMs) with a fake child that
-// never closes, so the grace timer is the only thing that can resolve.
+// uninterruptible I/O), the tool must still resolve: on timeout OR abort it first
+// sends a graceful SIGTERM, escalates to SIGKILL after `sigkillEscalationMs`, and
+// settles after `grepHooks.killGraceMs` even though 'close' never fires. With the
+// escalation delay left at its default (well above the tiny grace used here), only
+// SIGTERM is observed before the grace timer resolves — the SIGTERM-first contract.
+// These tests drive that path deterministically via the documented DI seam
+// (grepHooks.spawn / killGraceMs / platform) with a fake child that never closes,
+// so the grace timer is the only thing that can resolve.
 // ---------------------------------------------------------------------------
 
 /**
@@ -43,18 +46,25 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 
 const savedTimeoutMs = grepHooks.timeoutMs;
 const savedKillGraceMs = grepHooks.killGraceMs;
+const savedEscalationMs = grepHooks.sigkillEscalationMs;
+const savedPlatform = grepHooks.platform;
 
 afterEach(() => {
   mock.restoreAll();
   grepHooks.timeoutMs = savedTimeoutMs;
   grepHooks.killGraceMs = savedKillGraceMs;
+  grepHooks.sigkillEscalationMs = savedEscalationMs;
+  grepHooks.platform = savedPlatform;
 });
 
 describe('runSearch – timeout kills the wedged child then settles after the grace period', () => {
-  it('SIGKILLs the child and resolves timedOut once the grace timer fires', async () => {
+  it('SIGTERMs the child and resolves timedOut once the grace timer fires', async () => {
     const child = makeWedgedChild();
     mock.method(grepHooks, 'spawn', () => child as any);
     grepHooks.killGraceMs = 10;
+    // Escalation left at its default (>> grace), so only the graceful SIGTERM is
+    // observed before the grace timer resolves; pin platform for determinism.
+    grepHooks.platform = 'linux';
 
     const start = Date.now();
     // timeout = 10ms triggers the timer -> killThenSettle; child never 'close's,
@@ -65,7 +75,7 @@ describe('runSearch – timeout kills the wedged child then settles after the gr
     assert.equal(outcome.output, null);
     assert.equal(outcome.timedOut, true);
     // The child was SIGKILLed exactly once by killThenSettle.
-    assert.deepEqual(child.killCalls, ['SIGKILL']);
+    assert.deepEqual(child.killCalls, ['SIGTERM']);
     // It genuinely waited for timeout + grace (not an instant 'close' resolve).
     assert.ok(Date.now() - start >= 18, 'should wait for timeout + grace period');
   });
@@ -74,6 +84,9 @@ describe('runSearch – timeout kills the wedged child then settles after the gr
     const child = makeWedgedChild();
     mock.method(grepHooks, 'spawn', () => child as any);
     grepHooks.killGraceMs = 10;
+    // Escalation left at its default (>> grace), so only the graceful SIGTERM is
+    // observed before the grace timer resolves; pin platform for determinism.
+    grepHooks.platform = 'linux';
 
     const p = runSearch(['pattern', '/tmp'], 'rg', ctx(), 20);
     // Feed some output before the timeout fires.
@@ -82,7 +95,7 @@ describe('runSearch – timeout kills the wedged child then settles after the gr
 
     assert.equal(outcome.output, 'file.ts:1:partial\n');
     assert.equal(outcome.timedOut, true);
-    assert.deepEqual(child.killCalls, ['SIGKILL']);
+    assert.deepEqual(child.killCalls, ['SIGTERM']);
   });
 });
 
@@ -91,6 +104,9 @@ describe('runSearch – abort kills the wedged child then settles via the grace 
     const child = makeWedgedChild();
     mock.method(grepHooks, 'spawn', () => child as any);
     grepHooks.killGraceMs = 10;
+    // Escalation left at its default (>> grace), so only the graceful SIGTERM is
+    // observed before the grace timer resolves; pin platform for determinism.
+    grepHooks.platform = 'linux';
 
     const ac = new AbortController();
     // No timeout (0) so ONLY the abort path can reach killThenSettle.
@@ -100,7 +116,7 @@ describe('runSearch – abort kills the wedged child then settles via the grace 
     const outcome = await p;
 
     assert.deepEqual(outcome, { output: '' });
-    assert.deepEqual(child.killCalls, ['SIGKILL']);
+    assert.deepEqual(child.killCalls, ['SIGTERM']);
   });
 });
 
@@ -109,6 +125,9 @@ describe('runSearch – killThenSettle swallows a kill() that throws', () => {
     const child = makeWedgedChild({ killThrows: true });
     mock.method(grepHooks, 'spawn', () => child as any);
     grepHooks.killGraceMs = 10;
+    // Escalation left at its default (>> grace), so only the graceful SIGTERM is
+    // observed before the grace timer resolves; pin platform for determinism.
+    grepHooks.platform = 'linux';
 
     // kill() throwing (already-gone process) must be swallowed; the grace timer
     // still resolves the timed-out search instead of rejecting/hanging.
@@ -116,6 +135,6 @@ describe('runSearch – killThenSettle swallows a kill() that throws', () => {
 
     assert.equal(outcome.timedOut, true);
     assert.equal(outcome.output, null);
-    assert.deepEqual(child.killCalls, ['SIGKILL']);
+    assert.deepEqual(child.killCalls, ['SIGTERM']);
   });
 });

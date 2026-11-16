@@ -13,6 +13,70 @@ const FILES_CAP = 50;
 const README_CAP = 3000;
 const GREP_MATCH_CAP = 20;
 
+/** Default `--include` globs for the in-repo search when the caller gives no
+ *  `glob`/`file_type`. Mirrors scout's original hardcoded extension set. */
+const DEFAULT_SCOUT_INCLUDES = ['*.ts', '*.js', '*.py', '*.go', '*.rs'];
+
+/** Map a language name (Claude's `rg --type`) to its `--include` globs. Keeps a
+ *  scout of a Java/Ruby/C/Markdown repo from silently matching nothing. */
+const FILE_TYPE_GLOBS: Record<string, string[]> = {
+  js: ['*.js', '*.jsx', '*.mjs', '*.cjs'],
+  ts: ['*.ts', '*.tsx'],
+  py: ['*.py'], python: ['*.py'],
+  go: ['*.go'],
+  rust: ['*.rs'], rs: ['*.rs'],
+  java: ['*.java'],
+  c: ['*.c', '*.h'],
+  cpp: ['*.cpp', '*.cc', '*.cxx', '*.hpp', '*.hh'],
+  ruby: ['*.rb'], rb: ['*.rb'],
+  php: ['*.php'],
+  md: ['*.md', '*.markdown'], markdown: ['*.md', '*.markdown'],
+  json: ['*.json'],
+  yaml: ['*.yaml', '*.yml'], yml: ['*.yaml', '*.yml'],
+  sh: ['*.sh', '*.bash'], shell: ['*.sh', '*.bash'],
+};
+
+/**
+ * Build the `grep` argv for scout's in-repo search, honouring the optional
+ * caller filters: `glob` (single `--include` override, Claude's `rg --glob`),
+ * `file_type` (language name → `--include` globs, Claude's `rg --type`), and
+ * `case_insensitive` (`-i`, Claude's `rg -i`). With no filters it falls back to
+ * scout's default extension set. `query` is placed after `--` so it can never be
+ * read as a flag; args are passed to `execFileSync` (no shell), so a glob/type
+ * containing shell metacharacters cannot inject.
+ */
+export function scoutGrepArgs(query: string, input: Record<string, unknown>): string[] {
+  const args = ['-rn'];
+  if (input.case_insensitive === true) args.push('-i');
+  const glob = typeof input.glob === 'string' && input.glob.trim() ? input.glob.trim() : undefined;
+  const fileType =
+    typeof input.file_type === 'string' && input.file_type.trim()
+      ? input.file_type.trim().toLowerCase()
+      : undefined;
+  let includes: string[];
+  if (glob) includes = [glob];
+  else if (fileType) includes = FILE_TYPE_GLOBS[fileType] ?? [`*.${fileType}`];
+  else includes = DEFAULT_SCOUT_INCLUDES;
+  for (const inc of includes) args.push(`--include=${inc}`);
+  args.push('--', query, '.');
+  return args;
+}
+
+/**
+ * Resolve the search result window from the caller's optional `limit`/`offset`
+ * so the model can page past scout's default cap instead of being stuck with a
+ * silent first-20 peek. `limit` defaults to {@link GREP_MATCH_CAP}; `limit: 0`
+ * is the unlimited escape hatch (Claude's `head_limit: 0`). `offset` skips the
+ * first N matches (Claude's `offset`). Mirrors GrepTool's applyHeadLimit knobs.
+ */
+export function scoutSearchWindow(input: Record<string, unknown>): { limit: number; offset: number } {
+  const rawLimit = Number(input.limit);
+  const limit = Number.isFinite(rawLimit) && rawLimit >= 0 ? Math.floor(rawLimit) : GREP_MATCH_CAP;
+  const rawOffset = Number(input.offset);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+  return { limit, offset };
+}
+
 /** Strip `user:password@` userinfo from any URL so credentials in a repo URL never
  *  leak into an error message or spawned-command echo. */
 export function stripUrlCredentials(text: string): string {
@@ -75,6 +139,11 @@ export const scoutTool: ToolDefinition = {
     properties: {
       repo: { type: 'string', description: 'Repository URL or shorthand (e.g., "owner/repo" for GitHub).' },
       query: { type: 'string', description: 'What to look for in the repository.' },
+      glob: { type: 'string', description: 'Glob pattern to restrict the search to (e.g. "*.java", "*.rb"). Overrides the default extension set.' },
+      file_type: { type: 'string', description: 'Language to search (e.g. "java", "ruby", "markdown"). Maps to the matching file extensions.' },
+      case_insensitive: { type: 'boolean', description: 'Match the query case-insensitively (grep -i). Default false.' },
+      limit: { type: 'number', description: 'Max search matches to return (default 20). Pass 0 for unlimited.' },
+      offset: { type: 'number', description: 'Skip the first N search matches before applying limit, to page past earlier results.' },
       timeout_ms: { type: 'number', description: 'Clone timeout in milliseconds (default 60000). Raise for a large repo on a slow link.' },
     },
     required: ['repo'],
@@ -182,13 +251,18 @@ export const scoutTool: ToolDefinition = {
         if (abortedBeforeGrep) return abortedBeforeGrep;
         try {
           const grepOut = scoutHooks.execFileSync(
-            'grep', ['-rn', '--include=*.ts', '--include=*.js', '--include=*.py', '--include=*.go', '--include=*.rs', '--', query, '.'],
+            'grep', scoutGrepArgs(query, input),
             { cwd: localPath, encoding: 'utf-8', timeout: 10000, maxBuffer: 1024 * 1024 },
           );
           const matches = grepOut.split('\n').map(l => l.trimEnd()).filter(Boolean);
-          searchResults = matches.slice(0, GREP_MATCH_CAP).join('\n').trim();
-          if (matches.length > GREP_MATCH_CAP) {
-            searchResults += `\n… (showing first ${GREP_MATCH_CAP} of ${matches.length} matches — narrow the query to see more)`;
+          const { limit, offset } = scoutSearchWindow(input);
+          const windowed = limit === 0 ? matches.slice(offset) : matches.slice(offset, offset + limit);
+          searchResults = windowed.join('\n').trim();
+          const truncated = limit !== 0 && matches.length - offset > limit;
+          if (truncated) {
+            searchResults += offset > 0
+              ? `\n… (showing matches ${offset + 1}-${offset + windowed.length} of ${matches.length} — raise limit or advance offset to see more)`
+              : `\n… (showing first ${windowed.length} of ${matches.length} matches — raise limit or narrow the query to see more)`;
           }
         } catch { /* grep returns non-zero when no matches */ }
       }

@@ -1,0 +1,116 @@
+import { execFileSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Cross-platform executable resolution — a Node-portable analogue of the
+// `which`/`where.exe` probe (and Bun.which fast-path) Claude Code uses. AMI's
+// container-runtime detection previously ran `command -v <cmd>` through a POSIX
+// shell, which silently fails on Windows cmd.exe (the correct probe is
+// `where.exe`) and always spawns a subprocess even though PATH can be scanned
+// directly. This helper:
+//   * special-cases win32 (`where.exe`, PATHEXT) so detection works there;
+//   * uses a NO-SPAWN fast path (scan PATH directly) that avoids a subprocess;
+//   * returns the fully-resolved executable path (not just the bare command).
+
+const DEFAULT_WHICH_TIMEOUT_MS = 10_000;
+
+/** Wall-clock bound for the subprocess fallback so a wedged shell/`where.exe`
+ *  cannot block the thread forever. Overridable via AMI_WHICH_TIMEOUT_MS. */
+function whichTimeoutMs(): number {
+  const n = parseInt(process.env.AMI_WHICH_TIMEOUT_MS ?? '', 10);
+  return n > 0 ? n : DEFAULT_WHICH_TIMEOUT_MS;
+}
+
+function isWindows(): boolean {
+  return process.platform === 'win32';
+}
+
+/** On win32 an executable is identified by its extension (PATHEXT); on POSIX
+ *  there is no extension, so a single empty suffix is used. The empty suffix is
+ *  always included first so an explicit `docker.exe` still matches as-is. */
+function pathExtensions(): string[] {
+  if (!isWindows()) return [''];
+  const exts = (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map((e) => e.trim())
+    .filter(Boolean);
+  return ['', ...exts];
+}
+
+function isExecutableFile(candidate: string): boolean {
+  try {
+    const st = fs.statSync(candidate);
+    if (!st.isFile()) return false;
+    // Windows has no executable bit; the PATHEXT filter already selected an
+    // executable extension, so a regular file is enough.
+    if (isWindows()) return true;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** No-spawn fast path: resolve `command` by scanning PATH (plus PATHEXT on
+ *  win32) directly, or — when `command` already contains a path separator — by
+ *  probing it as a path. Returns the first executable match, else null. */
+function fastPathLookup(command: string): string | null {
+  const exts = pathExtensions();
+  const hasSep = command.includes('/') || (isWindows() && command.includes('\\'));
+  if (hasSep) {
+    for (const ext of exts) {
+      const candidate = path.resolve(command + ext);
+      if (isExecutableFile(candidate)) return candidate;
+    }
+    return null;
+  }
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, command + ext);
+      if (isExecutableFile(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/** Subprocess fallback mirroring the platform-native probe: `where.exe` on
+ *  win32, `command -v` on POSIX. The command name is passed as an ARGUMENT
+ *  (never interpolated into a shell string) so it cannot inject shell
+ *  metacharacters. Bounded by whichTimeoutMs(). */
+function spawnLookup(command: string): string | null {
+  try {
+    if (isWindows()) {
+      const out = execFileSync('where.exe', [command], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: whichTimeoutMs(),
+        killSignal: 'SIGKILL',
+      });
+      // where.exe prints one path per line; take the first.
+      return out.toString().trim().split(/\r?\n/)[0] || null;
+    }
+    const out = execFileSync('sh', ['-c', 'command -v -- "$1"', 'sh', command], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: whichTimeoutMs(),
+      killSignal: 'SIGKILL',
+    });
+    return out.toString().trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Synchronously resolve the full path to an executable, cross-platform.
+ * Tries a no-spawn PATH scan first, then falls back to the platform-native
+ * probe (`where.exe` / `command -v`).
+ *
+ * @param command - the command name (or path) to resolve
+ * @returns the resolved executable path, or null if not found
+ */
+export function whichSync(command: string): string | null {
+  if (!command) return null;
+  return fastPathLookup(command) ?? spawnLookup(command);
+}

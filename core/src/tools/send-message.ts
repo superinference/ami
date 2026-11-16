@@ -37,7 +37,11 @@ export const TEAM_LEAD_NAME = 'main';
 export interface ShutdownRequest {
   type: 'shutdown_request';
   reason?: string;
-  requestId: string;
+  // Optional on the wire: a model may omit it and send_message auto-generates a
+  // structured id (generateRequestId) before queueing so the recipient always
+  // receives one to echo back. Mirrors Claude Code's SendMessageTool, which
+  // never requires the caller to invent a request id for a *request*.
+  requestId?: string;
 }
 export interface ShutdownResponse {
   type: 'shutdown_response';
@@ -47,7 +51,8 @@ export interface ShutdownResponse {
 }
 export interface PlanApprovalRequest {
   type: 'plan_approval_request';
-  requestId: string;
+  // Optional on the wire — auto-generated before queueing when omitted.
+  requestId?: string;
   planContent: string;
   planFilePath?: string;
 }
@@ -59,7 +64,8 @@ export interface PlanApprovalResponse {
 }
 export interface PermissionRequest {
   type: 'permission_request';
-  requestId: string;
+  // Optional on the wire — auto-generated before queueing when omitted.
+  requestId?: string;
   tool: string;
   description: string;
 }
@@ -105,29 +111,123 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
   const type = o.type;
   if (typeof type !== 'string' || !STRUCTURED_TYPES.has(type)) return null;
   const requestId = (o.requestId ?? o.request_id);
+  // Request-type messages may omit requestId — execute() auto-generates a
+  // structured id before queueing (see generateRequestId). Response-type
+  // messages MUST echo the id they are answering, so it stays required there.
+  const optionalReqId = typeof requestId === 'string' ? requestId : undefined;
   switch (type) {
     case 'shutdown_request':
-      if (typeof requestId !== 'string') return { error: 'shutdown_request requires a requestId' };
-      return { type, requestId, reason: typeof o.reason === 'string' ? o.reason : undefined };
+      return { type, requestId: optionalReqId, reason: typeof o.reason === 'string' ? o.reason : undefined };
     case 'shutdown_response':
       if (typeof requestId !== 'string') return { error: 'shutdown_response requires a requestId' };
       return { type, requestId, approve: coerceApprove(o), reason: typeof o.reason === 'string' ? o.reason : undefined };
     case 'plan_approval_request':
-      if (typeof requestId !== 'string') return { error: 'plan_approval_request requires a requestId' };
       if (typeof o.planContent !== 'string' || !o.planContent.trim()) return { error: 'plan_approval_request requires planContent' };
-      return { type, requestId, planContent: o.planContent, planFilePath: typeof o.planFilePath === 'string' ? o.planFilePath : undefined };
+      return { type, requestId: optionalReqId, planContent: o.planContent, planFilePath: typeof o.planFilePath === 'string' ? o.planFilePath : undefined };
     case 'plan_approval_response':
       if (typeof requestId !== 'string') return { error: 'plan_approval_response requires a requestId' };
       return { type, requestId, approve: coerceApprove(o), feedback: typeof o.feedback === 'string' ? o.feedback : undefined };
     case 'permission_request':
-      if (typeof requestId !== 'string' || typeof o.tool !== 'string') return { error: 'permission_request requires requestId and tool' };
-      return { type, requestId, tool: o.tool, description: typeof o.description === 'string' ? o.description : '' };
+      if (typeof o.tool !== 'string') return { error: 'permission_request requires a tool' };
+      return { type, requestId: optionalReqId, tool: o.tool, description: typeof o.description === 'string' ? o.description : '' };
     case 'permission_response':
       if (typeof requestId !== 'string') return { error: 'permission_response requires a requestId' };
       return { type, requestId, approve: coerceApprove(o) };
     default:
       return null;
   }
+}
+
+// --- Structured request identifiers ----------------------------------------
+// A request id is self-describing: `{requestType}-{timestamp}@{agentId}`, e.g.
+// `shutdown-1702500000000@researcher`. It encodes who the request is about and
+// when it was raised, so a response can be correlated back without a side table
+// and a stale/replayed id is detectable. Mirrors Claude Code's utils/agentId.ts
+// (generateRequestId / parseRequestId) so ids are interchangeable across the two
+// implementations.
+
+/** Format a request id as `{requestType}-{timestamp}@{agentId}`. */
+export function generateRequestId(requestType: string, agentId: string): string {
+  return `${requestType}-${Date.now()}@${agentId}`;
+}
+
+/**
+ * Parse a request id back into its parts, with defensive guards: returns null if
+ * the `@` separator is missing, the `{type}-{timestamp}` prefix has no `-`, or
+ * the timestamp is not a number. A caller can therefore trust a non-null result
+ * and treat null as "not one of our ids" rather than crashing on a malformed one.
+ */
+export function parseRequestId(
+  requestId: string,
+): { requestType: string; timestamp: number; agentId: string } | null {
+  const atIndex = requestId.indexOf('@');
+  if (atIndex === -1) return null;
+  const prefix = requestId.slice(0, atIndex);
+  const agentId = requestId.slice(atIndex + 1);
+  const lastDash = prefix.lastIndexOf('-');
+  if (lastDash === -1) return null;
+  const requestType = prefix.slice(0, lastDash);
+  const timestamp = parseInt(prefix.slice(lastDash + 1), 10);
+  if (Number.isNaN(timestamp)) return null;
+  return { requestType, timestamp, agentId };
+}
+
+/**
+ * Build a short " [re: <type> request for <agent>]" annotation for a response
+ * message when its echoed request id is one of our structured ids. Returns ''
+ * for a free-form/foreign id (parseRequestId returns null), so a response that
+ * doesn't carry a self-describing id is simply unannotated rather than rejected.
+ */
+function requestOriginTag(requestId: string): string {
+  const origin = parseRequestId(requestId);
+  return origin ? ` [re: ${origin.requestType} request for ${origin.agentId}]` : '';
+}
+
+// --- Recipient address schemes ---------------------------------------------
+// A `to` value is normally a bare teammate name, but it may be a scheme-qualified
+// cross-session address: `uds:<socket-path>` for a local peer process, or
+// `bridge:<session-id>` for a Remote Control peer. A bare absolute path is a
+// legacy UDS form. Everything else is an in-session teammate name ('other').
+// Mirrors Claude Code's utils/peerAddress.ts parseAddress.
+
+export type PeerAddress = { scheme: 'uds' | 'bridge' | 'other'; target: string };
+
+/** Parse a URI-style recipient address into scheme + target. */
+export function parseAddress(to: string): PeerAddress {
+  if (to.startsWith('uds:')) return { scheme: 'uds', target: to.slice(4) };
+  if (to.startsWith('bridge:')) return { scheme: 'bridge', target: to.slice(7) };
+  // Legacy bare socket path → UDS (so replies to an old-style sender route to
+  // the socket, not into teammate name resolution). No bare-session-id fallback:
+  // a prefix-less id would hijack real teammate names.
+  if (to.startsWith('/')) return { scheme: 'uds', target: to };
+  return { scheme: 'other', target: to };
+}
+
+/**
+ * Deliver a payload to a local peer over a Unix-domain socket (one connect →
+ * write one newline-delimited JSON frame → close). Resolves when the frame is
+ * flushed and the socket closes; rejects on any connection/write error so the
+ * caller can report an out-of-process delivery failure instead of silently
+ * dropping it. Mirrors Claude Code's udsClient.sendToUdsSocket.
+ */
+export function sendToUdsSocket(socketPath: string, payload: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err); else resolve();
+    };
+    // Lazy require keeps `net` out of tool-enumeration import cost.
+    const net = require('net') as typeof import('net');
+    const sock = net.createConnection(socketPath);
+    sock.on('error', (e: Error) => done(e));
+    sock.on('connect', () => {
+      const frame = payload.endsWith('\n') ? payload : payload + '\n';
+      sock.write(frame, () => sock.end());
+    });
+    sock.on('close', () => done());
+  });
 }
 
 const mailboxes = new Map<string, AgentMessage[]>();
@@ -305,7 +405,10 @@ export const sendMessageTool: ToolDefinition = {
     properties: {
       to: {
         type: 'string',
-        description: 'Bare name of the target teammate, or "*" to broadcast. No "@" prefix.',
+        description:
+          'Bare name of the target teammate, "*" to broadcast to the whole team, ' +
+          'or a cross-session peer address: "uds:<socket-path>" for a local peer process ' +
+          '(plain text only). No "@" prefix on a bare teammate name.',
       },
       content: {
         type: 'string',
@@ -352,9 +455,18 @@ export const sendMessageTool: ToolDefinition = {
         isError: true,
       };
     }
+    // Resolve the recipient address scheme. A bare name / "*" is an in-session
+    // teammate ('other'); "uds:<socket-path>" / "bridge:<session-id>" (and a
+    // legacy bare absolute socket path) are cross-session peers delivered
+    // out-of-process. (Mirrors Claude Code's parseAddress.)
+    const addr = parseAddress(toRaw);
+    if (addr.scheme !== 'other' && !addr.target.trim()) {
+      return { output: 'Error: address target must not be empty.', isError: true };
+    }
     // Bare teammate names only — there is one team per session, so "@" or
     // "team@host" style addresses are rejected (mirrors Claude's validateInput).
-    if (toRaw.includes('@')) {
+    // Scheme-qualified addresses are exempt: they use the ":" separator, not "@".
+    if (addr.scheme === 'other' && toRaw.includes('@')) {
       return { output: 'Error: "to" must be a bare teammate name or "*" — do not use "@".', isError: true };
     }
 
@@ -375,6 +487,33 @@ export const sendMessageTool: ToolDefinition = {
       try { return require('./task'); } catch { return { getAgentByName: () => undefined }; }
     })();
     const to = getAgentByName(toRaw) || toRaw;
+
+    // --- Cross-session peers (uds:/bridge:) ------------------------------
+    // Delivered OUT of the in-session mailbox: only plain text crosses a session
+    // boundary (structured control messages are session-local), and the in-session
+    // self-send/terminal/roster guards below do not apply to a remote peer.
+    if (addr.scheme !== 'other') {
+      if (parseStructuredMessage(content) !== null) {
+        return { output: 'Error: structured messages cannot be sent cross-session — only plain text.', isError: true };
+      }
+      if (addr.scheme === 'bridge') {
+        return {
+          output: `Error: cross-session bridge delivery is not available in this build — use a teammate name or a "uds:" peer (target: ${addr.target}).`,
+          isError: true,
+        };
+      }
+      const summaryXS = input.summary as string | undefined;
+      try {
+        await sendToUdsSocket(
+          addr.target,
+          JSON.stringify({ from, text: content, summary: summaryXS || undefined, timestamp: Date.now() }),
+        );
+        const sTag = summaryXS ? ` — "${summaryXS}"` : '';
+        return { output: `Message delivered to local peer "${toRaw}"${sTag} [from: ${from}] (${content.length} chars)` };
+      } catch (e) {
+        return { output: `Error: failed to deliver to local peer "${toRaw}": ${(e as Error).message}`, isError: true };
+      }
+    }
 
     // Self-send guard: addressing your own identity is a no-op that would echo a
     // message into your own mailbox (and, for a sub-agent with a live notifier,
@@ -422,8 +561,13 @@ export const sendMessageTool: ToolDefinition = {
       }
       switch (structured.type) {
         case 'shutdown_request': {
-          enqueue(to, { from, to, content, timestamp: Date.now() });
-          return { output: `Shutdown request sent to ${toRaw} (id: ${structured.requestId}) [from: ${from}]` };
+          // Auto-generate a structured request id when the model omits one, and
+          // rewrite the queued payload so the recipient always receives an id to
+          // echo back in its shutdown_response (mirrors Claude's generateRequestId).
+          const reqId = structured.requestId || generateRequestId('shutdown', toRaw);
+          const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
+          enqueue(to, { from, to, content: wire, timestamp: Date.now() });
+          return { output: `Shutdown request sent to ${toRaw} (id: ${reqId}) [from: ${from}]` };
         }
         case 'shutdown_response': {
           // A shutdown decision is always reported back to the lead.
@@ -433,6 +577,7 @@ export const sendMessageTool: ToolDefinition = {
           if (!structured.approve && (!structured.reason || !structured.reason.trim())) {
             return { output: 'Error: a reason is required when rejecting a shutdown request.', isError: true };
           }
+          const originTag = requestOriginTag(structured.requestId);
           enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content, timestamp: Date.now() });
           if (structured.approve) {
             // Approving a shutdown TERMINATES the approving teammate: abort its own
@@ -447,40 +592,48 @@ export const sendMessageTool: ToolDefinition = {
             }
             return {
               output: aborted
-                ? `Shutdown approved (id: ${structured.requestId}) — ${from} aborted; confirmation sent to ${TEAM_LEAD_NAME}.`
-                : `Shutdown approved (id: ${structured.requestId}) — confirmation sent to ${TEAM_LEAD_NAME}; ${from} is exiting.`,
+                ? `Shutdown approved (id: ${structured.requestId})${originTag} — ${from} aborted; confirmation sent to ${TEAM_LEAD_NAME}.`
+                : `Shutdown approved (id: ${structured.requestId})${originTag} — confirmation sent to ${TEAM_LEAD_NAME}; ${from} is exiting.`,
             };
           }
-          return { output: `Shutdown rejected (id: ${structured.requestId}): "${structured.reason}" — ${from} continues working.` };
+          return { output: `Shutdown rejected (id: ${structured.requestId})${originTag}: "${structured.reason}" — ${from} continues working.` };
         }
         case 'plan_approval_request': {
           // The request half: a teammate submits a plan to another agent (usually
           // the lead) for approval. One-way queue like shutdown_request; the
           // reviewer replies with a plan_approval_response.
-          enqueue(to, { from, to, content, timestamp: Date.now() });
+          const reqId = structured.requestId || generateRequestId('plan', toRaw);
+          const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
+          enqueue(to, { from, to, content: wire, timestamp: Date.now() });
           const fileTag = structured.planFilePath ? ` (${structured.planFilePath})` : '';
-          return { output: `Plan submitted to ${toRaw} for approval (id: ${structured.requestId})${fileTag} [from: ${from}]` };
+          return { output: `Plan submitted to ${toRaw} for approval (id: ${reqId})${fileTag} [from: ${from}]` };
         }
         case 'plan_approval_response': {
           // Authorization: only the team lead may approve or reject plans.
           if (!isSenderLead) {
             return { output: 'Error: only the team lead can approve or reject plans.', isError: true };
           }
+          const originTag = requestOriginTag(structured.requestId);
           enqueue(to, { from, to, content, timestamp: Date.now() });
-          return { output: `Plan ${structured.approve ? 'approved' : 'rejected'} for ${toRaw} (id: ${structured.requestId}) [from: ${from}]` };
+          return { output: `Plan ${structured.approve ? 'approved' : 'rejected'} for ${toRaw} (id: ${structured.requestId})${originTag} [from: ${from}]` };
         }
         case 'permission_request': {
           // A worker forwards a permission prompt up to the lead for a decision.
-          enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content, timestamp: Date.now() });
-          return { output: `Permission request for "${structured.tool}" forwarded to ${TEAM_LEAD_NAME} (id: ${structured.requestId}) [from: ${from}]` };
+          // The request id is keyed on the requester (from): the lead's response
+          // routes back to that worker.
+          const reqId = structured.requestId || generateRequestId('permission', from);
+          const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
+          enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content: wire, timestamp: Date.now() });
+          return { output: `Permission request for "${structured.tool}" forwarded to ${TEAM_LEAD_NAME} (id: ${reqId}) [from: ${from}]` };
         }
         case 'permission_response': {
           // Only the lead may answer a forwarded permission request.
           if (!isSenderLead) {
             return { output: 'Error: only the team lead can answer a permission request.', isError: true };
           }
+          const originTag = requestOriginTag(structured.requestId);
           enqueue(to, { from, to, content, timestamp: Date.now() });
-          return { output: `Permission ${structured.approve ? 'granted' : 'denied'} to ${toRaw} (id: ${structured.requestId})` };
+          return { output: `Permission ${structured.approve ? 'granted' : 'denied'} to ${toRaw} (id: ${structured.requestId})${originTag}` };
         }
       }
     }
@@ -496,9 +649,24 @@ export const sendMessageTool: ToolDefinition = {
     };
 
     if (toRaw === '*') {
+      // Broadcast to the full LIVE roster, not just agents that already own a
+      // mailbox: a teammate that registered an eager-delivery notifier on spawn
+      // but has not yet been messaged must still receive a broadcast (mirrors
+      // Claude enumerating the team-file members, reaching not-yet-contacted
+      // teammates). Union mailbox keys with notifier-registered names, dedup, and
+      // exclude the sender case-insensitively.
+      const fromLc = from.toLowerCase();
+      const roster = new Set<string>();
+      for (const name of mailboxes.keys()) roster.add(name);
+      for (const name of mailboxNotifiers.keys()) roster.add(name);
       const recipients: string[] = [];
-      for (const [name, box] of mailboxes) {
-        if (name !== from) { appendCapped(box, msg); notifyMailbox(name); recipients.push(name); }
+      for (const name of roster) {
+        if (name.toLowerCase() === fromLc) continue;
+        const box = mailboxes.get(name) ?? [];
+        appendCapped(box, msg);
+        mailboxes.set(name, box);
+        notifyMailbox(name);
+        recipients.push(name);
       }
       if (recipients.length === 0) {
         return { output: 'No teammates to broadcast to (no other agents are reachable).' };

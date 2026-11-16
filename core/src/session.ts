@@ -60,6 +60,33 @@ function isSessionBlobRef(v: unknown): v is SessionBlobRef {
   );
 }
 
+/**
+ * Resolve a persisted message's `content` to its plain-text form for title /
+ * preview derivation. A string stays as-is; an offloaded {@link SessionBlobRef}
+ * yields its inline preview; an array of content blocks (e.g. a pasted-image
+ * user message: `[{type:'text',text},{type:'image',…}]`) yields the FIRST text
+ * block's text; anything else (undefined/null/non-text-only array) yields `''`.
+ *
+ * Parity: Claude's deriveFirstPrompt content handling — without this, an array
+ * (multimodal) first message produced an empty title/preview, so a fork or the
+ * /resume picker showed a generic placeholder instead of the user's actual text.
+ */
+export function contentToText(raw: unknown): string {
+  if (isSessionBlobRef(raw)) return raw.preview;
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) {
+    const textBlock = raw.find(
+      (b): b is { type: 'text'; text: string } =>
+        !!b &&
+        typeof b === 'object' &&
+        (b as { type?: unknown }).type === 'text' &&
+        typeof (b as { text?: unknown }).text === 'string',
+    );
+    return textBlock ? textBlock.text : '';
+  }
+  return '';
+}
+
 export interface Session {
   id: SessionId;
   /** A user-set rename. Always wins over {@link aiTitle} and is never
@@ -393,6 +420,46 @@ export class SessionManager {
   }
 
   /**
+   * Session retention: delete persisted sessions whose last on-disk activity is
+   * older than `cleanupPeriodDays` days, returning the number removed. A missing,
+   * non-finite, or non-positive value DISABLES cleanup (returns 0 immediately) —
+   * matching the reference, where `cleanupPeriodDays === 0` keeps everything and
+   * the persistence skip is a separate concern ({@link isSessionPersistenceDisabled}).
+   *
+   * Cheap + best-effort: it relies on the stat-only mtime (set by every
+   * crash-safe {@link save}/resume write) instead of parsing each file, skips a
+   * file that vanishes mid-sweep (concurrent delete race), and routes each
+   * removal through {@link delete} so the content-addressed blob sidecar is
+   * cleaned up alongside the JSON. Parity: Claude's cleanupPeriodDays retention.
+   */
+  cleanupOldSessions(cleanupPeriodDays?: number): number {
+    if (
+      cleanupPeriodDays === undefined ||
+      !Number.isFinite(cleanupPeriodDays) ||
+      cleanupPeriodDays <= 0
+    ) {
+      return 0;
+    }
+    const cutoff = Date.now() - cleanupPeriodDays * 24 * 60 * 60 * 1000;
+    let removed = 0;
+    for (const file of this.listFiles()) {
+      let mtimeMs: number;
+      try {
+        mtimeMs = fs.statSync(file).mtimeMs;
+      } catch {
+        continue; // vanished / stat race — skip
+      }
+      if (mtimeMs >= cutoff) continue; // still within the retention window
+      const safeId = path.basename(file).replace(/\.json$/, '');
+      try {
+        this.delete(safeId);
+        removed++;
+      } catch { /* best effort — one undeletable file must not abort the sweep */ }
+    }
+    return removed;
+  }
+
+  /**
    * Branch a conversation into a NEW session (parity: Claude's forkSession).
    *
    * Every message uuid is remapped to a fresh id while the `parentUuid` threading
@@ -458,7 +525,7 @@ export class SessionManager {
     if (title && title.trim()) return title.trim();
     const firstUser = source.messages.find(m => m.role === 'user' && !m.isSidechain);
     const raw = firstUser && (firstUser as { content?: unknown }).content;
-    const text = isSessionBlobRef(raw) ? raw.preview : typeof raw === 'string' ? raw : '';
+    const text = contentToText(raw);
     const flat = text.replace(/\s+/g, ' ').trim().slice(0, 100);
     return flat || 'Branched conversation';
   }
@@ -574,10 +641,10 @@ export class SessionManager {
   private extractPreview(session: Session): string {
     const firstUser = session.messages.find(m => m.role === 'user');
     if (!firstUser) return '(no messages)';
-    // An over-long first message is stored as a blob ref — use its preview.
+    // An over-long first message is stored as a blob ref — use its preview; a
+    // multimodal (array) message yields its first text block.
     const raw = (firstUser as { content?: unknown }).content;
-    const text = isSessionBlobRef(raw) ? raw.preview : raw;
-    if (typeof text !== 'string') return '(no messages)';
+    const text = contentToText(raw);
     const flat = text.replace(/\n/g, ' ').trim();
     if (!flat) return '(no messages)';
     return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;

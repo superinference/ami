@@ -1,4 +1,6 @@
-import { execSync, execFileSync, spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
+
+import { whichSync } from '../utils/which';
 
 export interface ContainerConfig {
   image: string;
@@ -20,31 +22,20 @@ function probeTimeoutMs(): number {
 }
 
 export function detectRuntime(): string | null {
+  // whichSync() is cross-platform (win32 `where.exe` + PATHEXT) and prefers a
+  // no-spawn PATH scan, so detection works on Windows and avoids a subprocess
+  // on the common path. We return the bare command name (the stable runtime
+  // identity callers log/spawn), not the resolved path.
   for (const cmd of ['podman', 'docker']) {
-    try {
-      execSync(`command -v ${cmd}`, {
-        stdio: 'pipe',
-        timeout: probeTimeoutMs(),
-        killSignal: 'SIGKILL',
-      });
-      return cmd;
-    } catch {}
+    if (whichSync(cmd)) return cmd;
   }
   return null;
 }
 
 export function resolveRuntime(preference?: 'docker' | 'podman' | 'auto'): string | null {
   if (preference && preference !== 'auto') {
-    try {
-      execSync(`command -v ${preference}`, {
-        stdio: 'pipe',
-        timeout: probeTimeoutMs(),
-        killSignal: 'SIGKILL',
-      });
-      return preference;
-    } catch {
-      return null;
-    }
+    if (whichSync(preference)) return preference;
+    return null;
   }
   return detectRuntime();
 }

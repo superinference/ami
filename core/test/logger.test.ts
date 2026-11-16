@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // getLogPath
@@ -581,5 +581,163 @@ describe('in-memory recent-errors ring', () => {
     const first = getInMemoryErrors();
     first.push({ error: 'injected', timestamp: 'x' });
     assert.equal(getInMemoryErrors().length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Debug-filter spec parsing (include / exclude / isExclusive) + edge semantics
+// ---------------------------------------------------------------------------
+describe('parseDebugFilter', () => {
+  beforeEach(() => { __resetLoggerForTest(); });
+
+  it('returns null (show all) for undefined / empty / whitespace / star', () => {
+    assert.equal(parseDebugFilter(undefined), null);
+    assert.equal(parseDebugFilter(''), null);
+    assert.equal(parseDebugFilter('   '), null);
+    assert.equal(parseDebugFilter('*'), null);
+    assert.equal(parseDebugFilter('  *  '), null);
+  });
+
+  it('drops stray empty tokens and returns null when none remain', () => {
+    assert.equal(parseDebugFilter(' , '), null);
+    assert.deepEqual(parseDebugFilter('api,,hooks'), {
+      include: ['api', 'hooks'],
+      exclude: [],
+      isExclusive: false,
+    });
+  });
+
+  it('builds an inclusive filter from a plain comma list (lowercased)', () => {
+    assert.deepEqual(parseDebugFilter('Api, HOOKS'), {
+      include: ['api', 'hooks'],
+      exclude: [],
+      isExclusive: false,
+    });
+  });
+
+  it("builds an exclusive filter from '!'-prefixed tokens", () => {
+    assert.deepEqual(parseDebugFilter('!1p,!file'), {
+      include: [],
+      exclude: ['1p', 'file'],
+      isExclusive: true,
+    });
+  });
+
+  it('falls back to null (show all) for a mixed include/exclude spec', () => {
+    assert.equal(parseDebugFilter('api,!file'), null);
+  });
+
+  it('memoizes repeated lookups of the same spec string', () => {
+    const a = parseDebugFilter('api,hooks');
+    const b = parseDebugFilter('api,hooks');
+    assert.equal(a, b); // same cached object reference
+  });
+});
+
+describe('extractDebugCategories', () => {
+  it("extracts a 'category: message' prefix", () => {
+    assert.deepEqual(extractDebugCategories('API: calling model'), ['api']);
+  });
+
+  it('extracts a [CATEGORY] bracket prefix', () => {
+    assert.deepEqual(extractDebugCategories('[Hooks] ran preToolUse'), ['hooks']);
+  });
+
+  it('extracts MCP server name first, avoiding the generic prefix matcher', () => {
+    assert.deepEqual(extractDebugCategories('MCP server "github": connected'), ['mcp', 'github']);
+  });
+
+  it("recognises the '1p event:' marker", () => {
+    const cats = extractDebugCategories('[ANT-ONLY] 1P event: tengu_timer');
+    assert.ok(cats.includes('ant-only'));
+    assert.ok(cats.includes('1p'));
+  });
+
+  it('bounds the secondary-category heuristic (rejects long / spaced fragments) and de-dupes', () => {
+    // Secondary fragment contains a space → rejected.
+    const spaced = extractDebugCategories('x: has space here: y');
+    assert.ok(!spaced.some((c) => c.includes(' ')));
+    // No colon → no category at all (uncategorized).
+    assert.deepEqual(extractDebugCategories('just a plain message'), []);
+  });
+});
+
+describe('shouldShowDebugCategories', () => {
+  it('shows everything when there is no filter', () => {
+    assert.equal(shouldShowDebugCategories([], null), true);
+    assert.equal(shouldShowDebugCategories(['api'], null), true);
+  });
+
+  it('is fail-closed: uncategorized lines are dropped under any active filter', () => {
+    assert.equal(shouldShowDebugCategories([], { include: ['api'], exclude: [], isExclusive: false }), false);
+    assert.equal(shouldShowDebugCategories([], { include: [], exclude: ['file'], isExclusive: true }), false);
+  });
+
+  it('inclusive mode shows only matching categories', () => {
+    const f = parseDebugFilter('api');
+    assert.equal(shouldShowDebugCategories(['api'], f), true);
+    assert.equal(shouldShowDebugCategories(['memory'], f), false);
+  });
+
+  it('exclusive mode shows everything except excluded categories', () => {
+    const f = parseDebugFilter('!file');
+    assert.equal(shouldShowDebugCategories(['api'], f), true);
+    assert.equal(shouldShowDebugCategories(['file'], f), false);
+  });
+});
+
+// Integration: the filter actually gates disk writes through log().
+describe('debug-filter integration through log()', () => {
+  const ORIG = { ...process.env };
+  function capture(): { written: string[] } {
+    const state = { written: [] as string[] };
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      state.written.push(String(data));
+    });
+    return state;
+  }
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DEBUG_COMPONENTS;
+    process.env = { ...ORIG };
+  });
+
+  it("exclusive '!'-spec drops the excluded component but keeps others", () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = '!memory';
+    const s = capture();
+    log('api', 'kept');
+    log('memory', 'dropped');
+    assert.equal(s.written.length, 1);
+    assert.ok(s.written[0].includes('[api]'));
+  });
+
+  it('matches a category extracted from the message body, not just the component', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = 'mcp';
+    const s = capture();
+    // component 'conn' is not in the include list, but the message yields 'mcp'.
+    log('conn', 'MCP server "github": connected');
+    assert.equal(s.written.length, 1);
+  });
+
+  it('fail-closed: an uncategorized blank-component line is dropped under a filter', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = 'api';
+    const s = capture();
+    log('', 'a plain uncategorized line');
+    assert.equal(s.written.length, 0);
+  });
+
+  it('a mixed include/exclude spec is invalid and logs everything', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = 'api,!memory';
+    const s = capture();
+    log('api', 'kept');
+    log('memory', 'also kept');
+    assert.equal(s.written.length, 2);
   });
 });

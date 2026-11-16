@@ -150,6 +150,28 @@ describe('sanitizeLogMessage — secret redaction (GAP: credential leak)', () =>
     assert.ok(!out.includes('hunter2hunter2'));
   });
 
+  it('redacts AWS environment variable values but keeps the key', () => {
+    const out = sanitizeLogMessage('AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLE');
+    assert.ok(out.startsWith('AWS_SECRET_ACCESS_KEY='));
+    assert.ok(out.includes(SECRET_REDACTION));
+    assert.ok(!out.includes('wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLE'));
+  });
+
+  it('redacts GOOGLE environment variable values but keeps the key', () => {
+    const out = sanitizeLogMessage('GOOGLE_API_KEY=some-sensitive-google-value-123');
+    assert.ok(out.startsWith('GOOGLE_API_KEY='));
+    assert.ok(out.includes(SECRET_REDACTION));
+    assert.ok(!out.includes('some-sensitive-google-value-123'));
+  });
+
+  it('redacts GCP service-account emails', () => {
+    const out = sanitizeLogMessage('runner my-sa@my-project.iam.gserviceaccount.com done');
+    assert.ok(out.includes(SECRET_REDACTION));
+    assert.ok(!out.includes('my-sa@my-project.iam.gserviceaccount.com'));
+    assert.ok(out.startsWith('runner '));
+    assert.ok(out.endsWith(' done'));
+  });
+
   it('does not mangle ordinary prose', () => {
     const msg = 'the secret to good code is tests';
     // "secret to" has no =/: so it is not treated as a key=value pair.

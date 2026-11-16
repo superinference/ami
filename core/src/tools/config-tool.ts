@@ -4,6 +4,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { updateConfigFile, validateConfigJson, stripJsoncComments, type ProjectConfig } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
 import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
+import { listProviders, MODEL_ALIASES, resolveModelAlias } from '../model-registry';
 
 /**
  * Metadata describing a single supported config setting. This registry is the
@@ -45,6 +46,11 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     type: 'string',
     description: 'Override the default model (e.g. "claude-opus-4-8", "gpt-4o").',
     validateOnWrite: nonEmptyString('model'),
+    // An unset model falls back to the built-in default; surface that resolved
+    // state on read instead of a bare `undefined` (mirrors Claude's model
+    // null -> "default" formatting), so a `get model` on a fresh config is
+    // self-explanatory rather than looking empty/broken.
+    formatOnRead: (v: unknown) => (v === undefined || v === null ? 'default' : v),
   },
   provider: {
     type: 'string',
@@ -251,6 +257,59 @@ function coerceValue(type: SettingConfig['type'], value: unknown): { value?: unk
   return { error: 'requires a string.' };
 }
 
+/**
+ * Builds the `## Model` section appended to the tool description, enumerating the
+ * known-good model ids per provider plus the short aliases, so the model has a
+ * concrete list of valid values to pick when it wants to change the `model` key
+ * (mirrors Claude's generateModelSection, which special-cases the model setting
+ * with a per-value listing and a try/catch static fallback). The provider lister
+ * is injected so a registry failure degrades to a static fallback line rather
+ * than breaking the whole tool description. Uses the SYNCHRONOUS static registry
+ * (listProviders) — never a network round-trip — because the description is built
+ * once at module load.
+ */
+export function generateModelSection(
+  listFn: () => Array<{ id: string; models: string[] }> = listProviders,
+): string {
+  try {
+    const providers = listFn();
+    const providerLines = providers
+      .filter((p) => p.models.length > 0)
+      .map((p) => `  - ${p.id}: ${p.models.join(', ')}`);
+    const aliasLines = MODEL_ALIASES.map((a) => {
+      const target = resolveModelAlias(a);
+      return target ? `${a} -> ${target}` : a;
+    });
+    return (
+      '\n\n## Model\n' +
+      'Set the "model" key to a provider model id below, or one of these aliases, ' +
+      'or "default" to use the built-in default.\n' +
+      providerLines.join('\n') +
+      `\nAliases: ${aliasLines.join(', ')}`
+    );
+  } catch {
+    // Registry resolution failed — degrade to a static pointer at /model so the
+    // tool description still renders and the model knows where to find the list.
+    return (
+      '\n\n## Model\n' +
+      'Set the "model" key to any provider model id (run the /model command for the live list), ' +
+      'or "default" to use the built-in default.'
+    );
+  }
+}
+
+function buildExamples(): string {
+  return (
+    '\n\nExamples:\n' +
+    '  - Read all settings: action="get"\n' +
+    '  - Read one setting: action="get" key="model"\n' +
+    '  - Set a model: action="set" key="model" value="claude-opus-4-6"\n' +
+    '  - Enable a boolean: action="set" key="safeMode" value="true"\n' +
+    '  - Set a number: action="set" key="maxTurns" value="40"\n' +
+    '  - Reset to default: action="set" key="model" value="default"'
+  );
+}
+
 function buildDescription(): string {
   const lines = getAllSettingKeys().map((key) => {
     const c = SUPPORTED_SETTINGS[key];
@@ -261,7 +320,9 @@ function buildDescription(): string {
     'Read or update AMI project configuration in .ami/config.json. ' +
     'Use action="get" [key] to read, or action="set" key=<name> value=<value>. ' +
     'Set value to "default" to reset a key to its built-in default. Supported settings:\n' +
-    lines.join('\n')
+    lines.join('\n') +
+    generateModelSection() +
+    buildExamples()
   );
 }
 

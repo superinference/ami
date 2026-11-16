@@ -166,6 +166,33 @@ describe('agenticFetchTool — engine factory config', () => {
     assert.equal(capturedConfig.tokenBudget, 16000);
   });
 
+  it('forwards the parent permission rules + prompt handler so domain deny rules apply', async () => {
+    let capturedConfig: any = null;
+    const factory = (config: any) => {
+      capturedConfig = config;
+      return {
+        submit: async function* () { yield { type: 'text_delta', text: 'ok' } as any; },
+        shutdown: () => {},
+      };
+    };
+    const denyRules = [{ tool: 'web_fetch', pattern: 'evil.example.com', action: 'deny' as const }];
+    const promptHandler = { requestPermission: async () => ({ action: 'deny' as const }) } as any;
+    const ctx: ToolContext = {
+      ...baseCtx(),
+      _engineFactory: factory as any,
+      _providerConfig: { baseUrl: 'http://test', apiKey: 'k', model: 'm' } as any,
+      _parentPermissionRules: denyRules,
+      _permissionPromptHandler: promptHandler,
+    };
+
+    await agenticFetchTool.execute({ query: 'test' }, ctx);
+    // Still autonomous (auto-allow) but inherits the parent's deny rules + handler,
+    // so a per-domain denylist still blocks the subagent's web_fetch/web_search.
+    assert.equal(capturedConfig.permissionMode, 'auto-allow');
+    assert.deepEqual(capturedConfig.permissionRules, denyRules);
+    assert.equal(capturedConfig.permissionPromptHandler, promptHandler);
+  });
+
   it('calls shutdown on the subengine', async () => {
     let shutdownCalled = false;
     const factory = (_config: any) => ({

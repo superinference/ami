@@ -64,6 +64,8 @@ const CHECK_IDS = {
   INCOMPLETE_COMMAND: 63,
   ARCHIVE_TOOL_EXECUTION: 64,
   PARSE_ABORTED: 65,
+  SUBCOMMAND_FANOUT: 66,
+  PS4_TRACE_RCE: 67,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1082,9 +1084,39 @@ function validateASTCommands(command: string, budget?: ParseBudget): SecurityChe
 
 const MAX_AUTO_APPROVE_LENGTH = 10_000;
 
+/**
+ * Upper bound on the number of shell subcommands (pipeline stages / compound
+ * segments) a single command may split into before the full per-segment
+ * validator battery is worth running. A maliciously or accidentally wide
+ * `a && b && c && …` list otherwise drives tree-sitter parsing plus the ~30
+ * regex validators on EVERY segment, starving the event loop at 100% CPU
+ * (a ReDoS / DoS vector). Fifty is generous — legitimate commands never split
+ * this wide — and above it we fail closed (safe default: reject rather than
+ * spend unbounded CPU trying to prove safety). Mirrors Claude Code's
+ * MAX_SUBCOMMANDS_FOR_SECURITY_CHECK.
+ */
+export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
+
 export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean }): SecurityCheckResult {
   if (command.length > MAX_AUTO_APPROVE_LENGTH) {
     return fail(CHECK_IDS.COMMAND_TOO_LONG, `Command is ${command.length} characters (limit ${MAX_AUTO_APPROVE_LENGTH}) — too long to auto-approve`);
+  }
+
+  // Subcommand fanout cap — short-circuit BEFORE running the per-segment
+  // validator battery below. A command that splits into too many segments would
+  // otherwise do unbounded regex/parse work per segment (event-loop starvation).
+  const segmentCount = splitShellSegments(command).length;
+  if (segmentCount > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK) {
+    return fail(CHECK_IDS.SUBCOMMAND_FANOUT, `Command splits into ${segmentCount} subcommands (limit ${MAX_SUBCOMMANDS_FOR_SECURITY_CHECK}) — too many to safety-check individually`);
+  }
+
+  // PS4 trace-time RCE — a PS4 assignment carrying a command substitution runs
+  // the payload at trace time (`set -x`), invisible to argv-based checks.
+  {
+    const ps4 = detectPs4TraceRce(command);
+    if (ps4.blocked) {
+      return fail(CHECK_IDS.PS4_TRACE_RCE, ps4.reason!);
+    }
   }
 
   const detached = options?.detachedMode === true;
@@ -2200,6 +2232,43 @@ export function detectBashArgv0Assignment(command: string): { blocked: boolean; 
 export function detectBashpidAssignment(command: string): { blocked: boolean; reason?: string } {
   if (/\bBASHPID\s*=/.test(command)) {
     return { blocked: true, reason: 'BASHPID assignment with arithmetic expression can execute code — blocked' };
+  }
+  return { blocked: false };
+}
+
+/**
+ * Detect PS4 trace-time RCE. PS4 is re-expanded via promptvars (default on)
+ * before every command traced under `set -x` / `bash -x`, so a PS4 value that
+ * carries a command substitution or expansion runs at trace time:
+ *   PS4='$(id)' && set -x && :        → executes `id`
+ *   for PS4 in '$(id)'; do set -x; …  → same, via the loop variable
+ * The payload is invisible to argv-based checks because it lives in a variable
+ * value. We reject any PS4 *assignment* (plain, `+=`, `export`/`declare -x`/
+ * `local`/`readonly`/`typeset` prefixed, env-prefix form, or a `for PS4` loop)
+ * whose value contains `$` or a backtick — i.e. a substitution/expansion that
+ * promptvars would run. Literal PS4 values (`PS4='+ '`) are allowed, and PS4
+ * mentioned as a non-assignment argument (`echo "PS4=$HOME"`) does not match
+ * because the check is anchored to the assignment position of each segment.
+ */
+export function detectPs4TraceRce(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  const EXPANSION_RE = /[$`]/;
+  // eslint-disable-next-line security/detect-unsafe-regex -- each repeated `-\w+\s+` group starts with a literal `-`, so groups cannot overlap; linear.
+  const PREFIX_RE = /^(?:export\s+|declare\s+(?:-\w+\s+)+|local\s+|readonly\s+|typeset\s+(?:-\w+\s+)*)/;
+  // Value token after `PS4=` / `PS4+=`: ANSI-C `$'…'`, single/double-quoted,
+  // command substitution, backtick, or a bare unquoted run.
+  const VALUE_RE = /^PS4\+?=\s*(\$'(?:[^'\\]|\\.)*'|'[^']*'|"[^"]*"|\$\([^)]*\)|`[^`]*`|[^\s]*)/;
+  for (const seg of splitShellSegments(stripped)) {
+    const trimmed = seg.trim();
+    // `for PS4 in …` assigns PS4 each iteration, bypassing assignment checks.
+    if (/^for\s+PS4\b/.test(trimmed)) {
+      return { blocked: true, reason: 'PS4 loop variable enables trace-time RCE when `set -x` runs — blocked' };
+    }
+    const body = trimmed.replace(PREFIX_RE, '');
+    const m = VALUE_RE.exec(body);
+    if (m && EXPANSION_RE.test(m[1] ?? '')) {
+      return { blocked: true, reason: 'PS4 assignment carrying a command substitution/expansion executes at trace time (`set -x`) — code-execution vector' };
+    }
   }
   return { blocked: false };
 }

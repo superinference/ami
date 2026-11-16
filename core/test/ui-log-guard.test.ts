@@ -104,6 +104,32 @@ describe('UILogGuard', () => {
     assert.equal(guard.getSuppressedCount(), 1);
   });
 
+  it('addLog evicts the OLDEST entry and keeps the NEWEST when full (ring buffer)', () => {
+    // Parity with Claude's addToInMemoryErrorLog (bootstrap/state.ts): when the
+    // bounded buffer is full it shift()s the oldest and push()es the new entry so
+    // the most recent (most diagnostic) logs are retained — never frozen on the
+    // first N. RED on the old drop-newest policy, which kept ['a','b'].
+    const guard = new UILogGuard(2);
+    guard.addLog('a', 'user', 's');
+    guard.addLog('b', 'user', 's');
+    guard.addLog('c', 'user', 's');
+    guard.addLog('d', 'user', 's');
+    const logs = guard.getLogs();
+    assert.equal(logs.length, 2);
+    assert.deepEqual(logs.map(e => e.message), ['c', 'd']);
+    // _suppressed stays a rotated-out counter.
+    assert.equal(guard.getSuppressedCount(), 2);
+  });
+
+  it('addLog returns the freshly stored entry even after eviction', () => {
+    const guard = new UILogGuard(1);
+    guard.addLog('old', 'user', 's');
+    const entry = guard.addLog('new', 'engine', 'sys', 'error');
+    assert.equal(entry.message, 'new');
+    assert.equal(entry.level, 'error');
+    assert.equal(guard.getLogs()[0].message, 'new');
+  });
+
   it('addLog accepts custom level', () => {
     const guard = new UILogGuard();
     const entry = guard.addLog('err', 'engine', 'sys', 'error');

@@ -22,12 +22,27 @@ export class Retriever {
   // Each backing store is read defensively: a failing source (fs error, JSON
   // parse error, etc.) is skipped so retrieval degrades gracefully to the
   // parts that succeeded instead of aborting the whole turn.
+  //
+  // `opts.signal` makes retrieval cancellable: if the signal is already aborted
+  // the parts assembled so far are returned immediately and the remaining
+  // (potentially expensive) stages are skipped, so an interrupt/supersede does
+  // not keep assembling context for a turn that is being torn down.
+  //
+  // `opts.surfacedMemories` is a session-scoped dedup ledger: stored memories
+  // whose content is already in the set are skipped before scoring, and the
+  // memories this call actually surfaces are recorded into it, so the same
+  // memory is not re-injected into the retrieval preview on a later turn.
   retrieve(
     query: string,
     memory: MemoryManager,
     memoryGate: MemoryGate,
+    opts?: { signal?: AbortSignal; surfacedMemories?: Set<string> },
   ): string {
     const parts: string[] = [];
+    const signal = opts?.signal;
+    const surfaced = opts?.surfacedMemories;
+
+    if (signal?.aborted) return '';
 
     try {
       const instructions = memory.loadProjectInstructions();
@@ -38,6 +53,8 @@ export class Retriever {
       // Skip project instructions on error; continue assembling other sources.
     }
 
+    if (signal?.aborted) return parts.join('\n\n');
+
     // Get critic-approved results, cap, then apply noise channel.
     try {
       const approvedContext = memoryGate.getApprovedContext();
@@ -46,7 +63,7 @@ export class Retriever {
           .split('\n\n')
           .filter(Boolean)
           .slice(0, MAX_APPROVED_ENTRIES);
-        const filtered = this.applyNoiseChannel(entries, query);
+        const filtered = this.applyNoiseChannel(entries);
         if (filtered.length > 0) {
           parts.push(`# Previously Approved Results\n\n${filtered.join('\n\n')}`);
         }
@@ -55,21 +72,35 @@ export class Retriever {
       // Skip approved context on error; continue assembling other sources.
     }
 
+    if (signal?.aborted) return parts.join('\n\n');
+
     // Get stored memories, filter by query relevance, cap to top-K, apply noise.
     try {
       const memories = memory.loadMemories();
-      if (memories.length > 0) {
-        const relevant = memories
+      // Cross-turn dedup: drop memories already surfaced in a prior preview so
+      // the top-K budget is spent on fresh candidates (mirrors Claude's
+      // alreadySurfaced filter in findRelevantMemories).
+      const candidates = surfaced
+        ? memories.filter(m => !surfaced.has(m.content))
+        : memories;
+      if (candidates.length > 0) {
+        const relevant = candidates
           .map(m => ({ m, relevance: this.queryRelevance(query, m.content) }))
           .sort((a, b) => b.relevance - a.relevance)
           .filter(s => s.relevance > 0)
           .slice(0, MAX_MEMORIES)
           .map(s => s.m);
 
-        const memEntries = relevant.map(m => m.content.substring(0, 300));
-        const filtered = this.applyNoiseChannel(memEntries, query);
-        if (filtered.length > 0) {
-          parts.push(`# Stored Memories\n\n${filtered.join('\n')}`);
+        // Apply the noise channel to the memory objects so the entries we
+        // actually surface (post-noise survivors) are exactly those recorded
+        // into the dedup ledger.
+        const survivors = this.applyNoiseChannel(relevant);
+        if (survivors.length > 0) {
+          const memEntries = survivors.map(m => m.content.substring(0, 300));
+          parts.push(`# Stored Memories\n\n${memEntries.join('\n')}`);
+          if (surfaced) {
+            for (const m of survivors) surfaced.add(m.content);
+          }
         }
       }
     } catch {
@@ -79,8 +110,10 @@ export class Retriever {
     return parts.join('\n\n');
   }
 
-  // C_η: With probability η, each entry is independently dropped
-  private applyNoiseChannel(entries: string[], _query: string): string[] {
+  // C_η: With probability η, each entry is independently dropped. Generic over
+  // the entry type so both string (approved context) and memory-object
+  // (stored memories) lists share one canonical noise channel.
+  private applyNoiseChannel<T>(entries: T[]): T[] {
     if (this.η <= 0 || entries.length === 0) return entries;
     if (this.η >= 1) return [];
 

@@ -85,7 +85,7 @@ describe('EnvAccessGuard.safeGetEnv — redaction branch arms', () => {
       const guard = new EnvAccessGuard();
       const result = guard.safeGetEnv(name);
       assert.equal(result.redacted, true);
-      assert.equal(result.value, '[REDACTED]');
+      assert.equal(result.value, '[REDACTED_GENERIC]');
       assert.equal(result.redactedAs, 'generic');
       assert.ok(!String(result.value).includes('hunter2'), 'secret must not leak');
     } finally {

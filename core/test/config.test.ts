@@ -244,8 +244,10 @@ describe('mergeConfigs', () => {
     assert.equal(result.safeMode, true, 'local overrides project');
     assert.equal(result.deferTools, true, 'local overrides project');
     assert.equal(result.maxWebSearchesPerSession, 9, 'cli overrides project');
-    assert.deepEqual(result.alwaysLoadTools, ['b'], 'cli overrides project');
-    assert.deepEqual(result.fallbackModels, ['c'], 'cli overrides project');
+    // Array settings ACCUMULATE across layers (project then cli), deduped — the
+    // higher layer augments rather than clobbers the lower one.
+    assert.deepEqual(result.alwaysLoadTools, ['a', 'b'], 'cli accumulates onto project');
+    assert.deepEqual(result.fallbackModels, ['p', 'c'], 'cli accumulates onto project');
   });
 
   it('merges maxBudgetUsd and lets higher-priority layers override it', () => {
@@ -273,8 +275,10 @@ describe('mergeConfigs', () => {
   it('merges sandboxExcludedCommands across layers (audit #4)', () => {
     const project: ProjectConfig = { sandboxExcludedCommands: ['git', 'ls'] };
     assert.deepEqual(mergeConfigs({}, {}, project, null).sandboxExcludedCommands, ['git', 'ls']);
+    // A higher layer ACCUMULATES onto (does not clobber) the lower layer's
+    // exemptions when no managed policy owns the setting.
     const cli: Partial<ProjectConfig> = { sandboxExcludedCommands: ['docker'] };
-    assert.deepEqual(mergeConfigs(cli, {}, project, null).sandboxExcludedCommands, ['docker']);
+    assert.deepEqual(mergeConfigs(cli, {}, project, null).sandboxExcludedCommands, ['git', 'ls', 'docker']);
   });
 
   it('project config overrides global config', () => {
@@ -623,6 +627,98 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
       { env: { B: 'local' } },
     );
     assert.deepEqual(merged.env, { A: 'proj', B: 'local', C: 'global' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mergeConfigs — additive array merge (concat + dedupe across layers)
+// Parity: Claude's settingsMergeCustomizer merges array-valued settings with
+// uniq([...target, ...source]) so allow/deny lists, excluded commands and tool
+// lists ACCUMULATE across sources instead of a higher layer clobbering a lower
+// one. Managed-authoritative arrays still override wholesale (AMI superset).
+// ---------------------------------------------------------------------------
+describe('mergeConfigs — additive array merge', () => {
+  it('accumulates non-managed array keys across layers instead of overwriting', () => {
+    const merged = mergeConfigs(
+      { alwaysLoadTools: ['cli'], fallbackModels: ['cli-m'] },        // cliArgs
+      {},
+      { alwaysLoadTools: ['proj'], fallbackModels: ['proj-m'] },      // projectConfig
+      { alwaysLoadTools: ['glob'], fallbackModels: ['glob-m'] },      // globalConfig
+    );
+    // managed (empty) + global + project + cli, in ascending-priority order.
+    assert.deepEqual(merged.alwaysLoadTools, ['glob', 'proj', 'cli']);
+    assert.deepEqual(merged.fallbackModels, ['glob-m', 'proj-m', 'cli-m']);
+  });
+
+  it('deduplicates repeated values contributed by different layers', () => {
+    const merged = mergeConfigs(
+      { sandboxExcludedCommands: ['git', 'docker'] },                 // cliArgs
+      {},
+      { sandboxExcludedCommands: ['git', 'ls'] },                     // projectConfig
+    );
+    // 'git' appears in both layers but only once in the result; order = first-seen.
+    assert.deepEqual(merged.sandboxExcludedCommands, ['git', 'ls', 'docker']);
+  });
+
+  it('accumulates non-managed allowedMcpServers across layers (no managed layer)', () => {
+    const merged = mergeConfigs(
+      {},
+      {},
+      { allowedMcpServers: ['proj'] },                                // projectConfig
+      null,
+      { allowedMcpServers: ['local'] },                              // localConfig
+    );
+    assert.deepEqual(merged.allowedMcpServers, ['proj', 'local']);
+  });
+
+  it('keeps a managed array authoritative (wholesale override, not concat)', () => {
+    const merged = mergeConfigs(
+      { sandboxExcludedCommands: ['cli-cmd'] },
+      {},
+      { sandboxExcludedCommands: ['proj-cmd'] },
+      null,
+      { sandboxExcludedCommands: ['local-cmd'] },
+      { sandboxExcludedCommands: ['managed-only'] },                 // managedConfig wins
+    );
+    assert.deepEqual(merged.sandboxExcludedCommands, ['managed-only']);
+  });
+
+  it('leaves an array key absent when no layer sets it', () => {
+    const merged = mergeConfigs({}, {}, { model: 'x' }, null);
+    assert.equal(merged.alwaysLoadTools, undefined);
+    assert.equal(merged.fallbackModels, undefined);
+  });
+
+  // Integration: real on-disk config files → loaders → mergeConfigs. Proves the
+  // wired data flow (not just mergeConfigs in isolation) accumulates array
+  // settings across the global and project tiers.
+  it('accumulates array settings loaded from real global + project config files', () => {
+    const projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-arr-proj-'));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-arr-home-'));
+    const prevHome = process.env.HOME;
+    try {
+      fs.mkdirSync(path.join(projDir, '.ami'), { recursive: true });
+      fs.mkdirSync(path.join(homeDir, '.ami'), { recursive: true });
+      fs.writeFileSync(
+        path.join(projDir, '.ami', 'config.json'),
+        JSON.stringify({ allowedMcpServers: ['proj-srv'], alwaysLoadTools: ['proj-tool', 'shared'] }),
+      );
+      fs.writeFileSync(
+        path.join(homeDir, '.ami', 'config.json'),
+        JSON.stringify({ allowedMcpServers: ['glob-srv'], alwaysLoadTools: ['glob-tool', 'shared'] }),
+      );
+      process.env.HOME = homeDir;
+      const project = loadProjectConfig(projDir);
+      const global = loadGlobalConfig();
+      const merged = mergeConfigs({}, {}, project, global);
+      // Global (lower) first, then project (higher); 'shared' deduped once.
+      assert.deepEqual(merged.allowedMcpServers, ['glob-srv', 'proj-srv']);
+      assert.deepEqual(merged.alwaysLoadTools, ['glob-tool', 'shared', 'proj-tool']);
+    } finally {
+      if (prevHome !== undefined) process.env.HOME = prevHome; else delete process.env.HOME;
+      fs.rmSync(projDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
   });
 });
 

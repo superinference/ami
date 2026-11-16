@@ -300,6 +300,17 @@ export interface AnalyticsTrackerOpts {
   /** Telemetry batching knobs threaded into the lazily-created TelemetryBatchSender. */
   telemetryMaxBatchSize?: number;
   telemetryMaxBatchBytes?: number;
+  /**
+   * Cross-batch circuit breaker for the shutdown drain: after this many WHOLE
+   * batches fail to export in a row (each already retried to exhaustion via
+   * {@link otlpMaxAttempts}), {@link flushOtlp} stops draining and requeues the
+   * remainder for the next flush — bounding wasted effort against a persistently
+   * down collector. A single successful send resets the streak. Undefined (default)
+   * keeps the stop-on-first-failure behaviour; when set, the drain ADVANCES past a
+   * dropped batch (with a fresh per-batch budget) until the streak is reached.
+   * Mirrors Claude's SerialBatchEventUploader `maxConsecutiveFailures`.
+   */
+  maxConsecutiveFailures?: number;
   /** Invoked when a fully-retried OTLP batch is permanently dropped (shutdown diagnostics). */
   onBatchDropped?: (eventCount: number, droppedBatchCount: number) => void;
   /**
@@ -327,6 +338,8 @@ export class AnalyticsTracker {
   private _sourceStack: string[] = [];
   private _droppedEvents = 0;
   private _droppedBatches = 0;
+  /** Running streak of whole-batch export failures (reset by any successful send). */
+  private _consecutiveFailures = 0;
   private _sequence = 0;
   private _otlpEndpoint: string | null;
   private _otlpFetch: typeof fetch | undefined;
@@ -340,6 +353,7 @@ export class AnalyticsTracker {
   private _maxBackoffMs: number;
   private _telemetryMaxBatchSize: number | undefined;
   private _telemetryMaxBatchBytes: number | undefined;
+  private _maxConsecutiveFailures: number | undefined;
   private _onBatchDropped: ((eventCount: number, droppedBatchCount: number) => void) | undefined;
   private _otlpHeaders: Record<string, string>;
   private _otlpResourceAttrs: Record<string, string>;
@@ -361,6 +375,9 @@ export class AnalyticsTracker {
     this._maxBackoffMs = Math.max(0, opts?.otlpMaxBackoffMs ?? 30_000);
     this._telemetryMaxBatchSize = opts?.telemetryMaxBatchSize;
     this._telemetryMaxBatchBytes = opts?.telemetryMaxBatchBytes;
+    this._maxConsecutiveFailures = opts?.maxConsecutiveFailures !== undefined
+      ? Math.max(1, Math.floor(opts.maxConsecutiveFailures))
+      : undefined;
     this._onBatchDropped = opts?.onBatchDropped;
     // Headers from OTEL_EXPORTER_OTLP_HEADERS, overridden by any explicit opt.
     this._otlpHeaders = { ...parseOtelHeaders(this._env.OTEL_EXPORTER_OTLP_HEADERS), ...(opts?.otlpHeaders ?? {}) };
@@ -377,6 +394,11 @@ export class AnalyticsTracker {
 
   getDroppedBatchCount(): number {
     return this._droppedBatches;
+  }
+
+  /** Current streak of consecutive whole-batch export failures (0 after a success). */
+  getConsecutiveFailureCount(): number {
+    return this._consecutiveFailures;
   }
 
   setSessionId(sessionId: string): void {
@@ -516,11 +538,22 @@ export class AnalyticsTracker {
     await this._sendChain;
     const batches = this._telemetry.drain();
     if (isTelemetryDisabled(this._env)) return; // opted out: drop without sending
+    const maxCons = this._maxConsecutiveFailures;
     for (let i = 0; i < batches.length; i++) {
       const ok = await this._sendWithRetry(batches[i]);
-      // Endpoint looks down after a fully-retried batch failed — short-circuit the
-      // rest and re-queue them for the next flush (at-least-once, order preserved).
-      if (!ok) {
+      if (ok) {
+        this._consecutiveFailures = 0; // success breaks the failure streak
+        continue;
+      }
+      // Batch was retried to exhaustion and permanently dropped (counted in
+      // _dropBatch). Extend the failure streak.
+      this._consecutiveFailures++;
+      // Default (no circuit breaker): the endpoint looks down after the first
+      // fully-retried failure — short-circuit and re-queue the rest for the next
+      // flush (at-least-once, order preserved). With maxConsecutiveFailures set,
+      // keep ADVANCING past dropped batches (fresh per-batch budget) until that
+      // many fail in a row, then give up this flush and requeue the remainder.
+      if (maxCons === undefined || this._consecutiveFailures >= maxCons) {
         this._telemetry.requeueFront(batches.slice(i + 1));
         break;
       }

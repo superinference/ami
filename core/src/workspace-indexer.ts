@@ -230,7 +230,7 @@ export function gitignoreToIgnoreGlobs(content: string, baseRelDir = ''): string
  * simply contributes nothing. Nested discovery uses the same glob seam as the
  * main scan and is wrapped so a glob failure degrades to "no extra patterns".
  */
-async function collectGitignoreGlobs(cwd: string, skipGlobs: string[]): Promise<string[]> {
+export async function collectGitignoreGlobs(cwd: string, skipGlobs: string[]): Promise<string[]> {
   const out: string[] = [];
 
   // Root .gitignore and .git/info/exclude (anchored at the index root).

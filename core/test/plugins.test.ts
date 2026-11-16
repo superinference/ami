@@ -442,6 +442,63 @@ describe('loadCommands', () => {
     assert.equal(cmds.length, 1);
     assert.equal(cmds[0]!.name, 'my-custom-command');
   });
+
+  it('discovers commands in a nested subdirectory and namespaces by sub-path (Claude parity)', () => {
+    const dir = path.join(tmpDir, 'nested-cmds');
+    fs.mkdirSync(path.join(dir, 'git'), { recursive: true });
+    // Top-level command keeps its bare name.
+    fs.writeFileSync(path.join(dir, 'review.toml'), [
+      'description = "Review"',
+      'prompt = "Review changes"',
+    ].join('\n'));
+    // Subdirectory command is namespaced by its directory path with ':'.
+    fs.writeFileSync(path.join(dir, 'git', 'commit.toml'), [
+      'description = "Commit helper"',
+      'prompt = "Write a commit"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    const byName = new Map(cmds.map(c => [c.name, c]));
+    assert.equal(cmds.length, 2);
+    assert.ok(byName.has('review'), 'top-level command keeps bare name');
+    assert.ok(byName.has('git:commit'), 'nested command is namespaced git:commit');
+    assert.equal(byName.get('git:commit')!.prompt, 'Write a commit');
+    assert.equal(byName.get('git:commit')!.filePath, path.join(dir, 'git', 'commit.toml'));
+  });
+
+  it('namespaces deeply nested commands by the full sub-path joined with ":"', () => {
+    const dir = path.join(tmpDir, 'deep-cmds');
+    fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a', 'b', 'deep.toml'), [
+      'description = "Deep"',
+      'prompt = "Go deep"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.name, 'a:b:deep');
+  });
+
+  it('does not follow a symlinked subdirectory when walking commands', () => {
+    const dir = path.join(tmpDir, 'symlink-cmds');
+    const outside = path.join(tmpDir, 'symlink-cmds-outside');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, 'sneaky.toml'), [
+      'description = "Sneaky"',
+      'prompt = "Should not load"',
+    ].join('\n'));
+    try {
+      fs.symlinkSync(outside, path.join(dir, 'linked'), 'dir');
+    } catch {
+      return; // platform without symlink support — skip
+    }
+    fs.writeFileSync(path.join(dir, 'real.toml'), [
+      'description = "Real"',
+      'prompt = "Load me"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    const names = cmds.map(c => c.name);
+    assert.deepEqual(names, ['real'], 'symlinked dir is not traversed');
+  });
 });
 
 describe('CommandDefinition shape', () => {

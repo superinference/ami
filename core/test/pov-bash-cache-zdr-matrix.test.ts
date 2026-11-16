@@ -33,10 +33,10 @@ describe('isReadOnlyBashCommand — behavioral matrix', () => {
     ['absolute-path binary resolves to base', '/usr/bin/ls -l'],
     ['empty string has no command segment', ''],
     ['whitespace only', '   '],
-    // Quirk preserved: a leading `cat`/`grep` suppresses the write-indicator guard,
-    // so a redirect after `cat` is still classified read-only (observed behavior).
-    ['cat with redirect is treated read-only (leading-cat quirk)', 'cat a > b'],
-    ['grep with redirect is treated read-only (leading-grep quirk)', 'grep x f > out'],
+    // A `>` inside quotes is literal data, not a redirect, so the command stays
+    // read-only (the quote-aware redirect scan ignores quoted `>`).
+    ['quoted > is literal, stays read-only', "grep '>' file"],
+    ['awk comparison > inside program is literal', "awk '$1 > 5' file"],
   ];
 
   const WRITES: Array<[string, string]> = [
@@ -45,6 +45,13 @@ describe('isReadOnlyBashCommand — behavioral matrix', () => {
     ['cp', 'cp a b'],
     ['redirect to file', 'echo hi > out.txt'],
     ['append redirect', 'echo hi >> out.txt'],
+    // Leading `cat`/`grep` no longer suppresses redirect detection: a redirect
+    // after a read-only command still WRITES a file and must not be cached.
+    ['cat with redirect writes a file', 'cat a > b'],
+    ['grep with redirect writes a file', 'grep x f > out'],
+    ['fd-qualified stderr redirect writes a file', 'ls 2>errors.txt'],
+    ['fd-qualified append redirect writes a file', 'ls 1>>log.txt'],
+    ['clobber-override redirect writes a file', 'echo x >| out.txt'],
     ['pipe into tee', 'ls | tee out.txt'],
     ['pipe into dd', 'cat x | dd of=y'],
     ['unknown binary', 'frobnicate --do-it'],
@@ -146,6 +153,8 @@ describe('isReadOnlyBashCommand — per-command dangerous flags', () => {
     ['awk system()', 'awk \'BEGIN{system("rm -rf x")}\''],
     ['xargs runs rm', 'find . -type f | xargs rm'],
     ['xargs -I runs mv', 'ls | xargs -I {} mv {} /tmp'],
+    ['tree -o writes a file', 'tree -o out.html'],
+    ['tree --output writes a file', 'tree --output listing.txt src'],
   ];
   const READS: Array<[string, string]> = [
     ['find read-only actions', 'find . -name "*.ts" -type f'],
@@ -154,6 +163,7 @@ describe('isReadOnlyBashCommand — per-command dangerous flags', () => {
     ['awk plain program', "awk '{print $1}' file"],
     ['xargs runs read-only grep', 'ls | xargs grep foo'],
     ['bare xargs defaults to echo', 'ls | xargs'],
+    ['tree display/filter flags stay read-only', 'tree -L 2 -a src'],
   ];
   for (const [label, cmd] of WRITES) {
     it(`write flag: ${label}`, () => {

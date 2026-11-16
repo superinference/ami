@@ -152,6 +152,12 @@ export const askUserQuestionTool: ToolDefinition = {
 export const ASK_USER_UNIQUENESS_MESSAGE =
   'Question texts must be unique, option labels must be unique within each question';
 
+/** Cardinality bounds (parity with Claude's zod `.min(1).max(4)` on questions and `.min(2).max(4)` on options). */
+export const ASK_USER_MIN_QUESTIONS = 1;
+export const ASK_USER_MAX_QUESTIONS = 4;
+export const ASK_USER_MIN_OPTIONS = 2;
+export const ASK_USER_MAX_OPTIONS = 4;
+
 interface AskUserOptionLike {
   label?: string;
   description?: string;
@@ -195,17 +201,37 @@ export function validateHtmlPreview(preview: string | undefined): string | null 
 /**
  * Validate a parsed AskUserQuestion tool input. Returns a model-facing error
  * string when the input is invalid, or null when it is acceptable. Enforces:
+ *   - cardinality bounds: 1-4 questions, each with 2-4 options (parity with
+ *     Claude's zod `.min/.max`; providers do not reliably enforce JSON-Schema
+ *     `minItems`/`maxItems`, so the engine must fail-closed here),
  *   - unique question texts across the call,
  *   - unique option labels within each question,
  *   - HTML-fragment safety for previews when previewFormat === 'html'.
  * Accepts both the multi-question (`questions[]`) and single-question shorthand
- * (`question`/`options`) shapes the engine supports.
+ * (`question`/`options`) shapes the engine supports. An absent `options` array
+ * falls back to the engine's default choices, so cardinality is only enforced
+ * when the model actually supplies an options array.
  */
 export function validateAskUserQuestionInput(input: AskUserQuestionInputLike): string | null {
   const qList: AskUserQuestionLike[] =
     input.questions && input.questions.length > 0
       ? input.questions
       : [{ question: input.question, options: input.options, previewFormat: input.previewFormat }];
+
+  // Cardinality: too many questions. (min 1 is always satisfied — the shorthand
+  // fallback yields a single question — so only the upper bound can be violated.)
+  if (qList.length > ASK_USER_MAX_QUESTIONS) {
+    return `Provide ${ASK_USER_MIN_QUESTIONS}-${ASK_USER_MAX_QUESTIONS} questions (got ${qList.length}).`;
+  }
+
+  for (const q of qList) {
+    if (
+      Array.isArray(q.options) &&
+      (q.options.length < ASK_USER_MIN_OPTIONS || q.options.length > ASK_USER_MAX_OPTIONS)
+    ) {
+      return `Question "${q.question ?? ''}" must have ${ASK_USER_MIN_OPTIONS}-${ASK_USER_MAX_OPTIONS} options (got ${q.options.length}).`;
+    }
+  }
 
   const texts = qList
     .map(q => q.question)

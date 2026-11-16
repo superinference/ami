@@ -187,7 +187,7 @@ describe('server-not-found error lists available servers', () => {
   it('readResource on an unknown server lists the valid ones', async () => {
     await assert.rejects(
       () => mgr.readResource('gamma', 'file:///x'),
-      /not connected\. Available servers: alpha, beta/,
+      /not found\. Available servers: alpha, beta/,
     );
   });
 

@@ -4,9 +4,22 @@ import { redactSecrets } from './tool-utils';
 /** Transports that can carry an OAuth browser-consent flow. */
 const OAUTH_TRANSPORTS = new Set(['sse', 'http']);
 
-/** Structured status surfaced to the model via ToolResult.metadata. */
-export const MCP_AUTH_STATUS = ['ok', 'unsupported', 'error'] as const;
+/**
+ * Structured status surfaced to the model via ToolResult.metadata.
+ *
+ * - `ok`         — the server is (re)connected and its tools are available.
+ * - `auth_url`   — interactive consent is still required; `metadata.auth_url`
+ *                  carries the (secret-scrubbed) authorization URL to relay to
+ *                  the user so a detached/headless run can complete auth out of
+ *                  band (mirrors Claude Code's `McpAuthOutput.status:'auth_url'`).
+ * - `unsupported`— the server's transport cannot carry an OAuth flow.
+ * - `error`      — the attempt failed; see `metadata.error_kind`.
+ */
+export const MCP_AUTH_STATUS = ['ok', 'auth_url', 'unsupported', 'error'] as const;
 export type McpAuthStatus = (typeof MCP_AUTH_STATUS)[number];
+
+/** Run `/mcp` to manage, authenticate, or reconnect MCP servers interactively. */
+const MCP_COMMAND_HINT = 'run /mcp to manage and authenticate MCP servers interactively';
 
 /**
  * Coarse classification of a failed authentication attempt, surfaced via
@@ -100,7 +113,9 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
       `Call this when the server's tools report that authentication is required. ` +
       `Only http/SSE servers support OAuth; stdio servers do not. A browser window ` +
       `opens for consent (with a manual callback-URL paste fallback for headless shells); ` +
-      `once complete the server's tools become available.`,
+      `once complete the server's tools become available. In a detached/headless run ` +
+      `where no browser is available, this returns the authorization URL in its result ` +
+      `(status "auth_url") so you can share it with the user to complete consent out of band.`,
     inputSchema: { type: 'object', properties: {} },
     isReadOnly: false,
     isConcurrencySafe: false,
@@ -119,7 +134,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
       if (!OAUTH_TRANSPORTS.has(transport)) {
         return {
           output: `MCP server "${serverName}" uses the "${transport}" transport, which does not support OAuth authentication. ` +
-            `OAuth is only available for http/SSE servers. Configure credentials directly (e.g. env vars in .ami/mcp.json) instead.`,
+            `OAuth is only available for http/SSE servers. Configure credentials directly (e.g. env vars in .ami/mcp.json), or ${MCP_COMMAND_HINT}.`,
           isError: true,
           metadata: { status: 'unsupported' satisfies McpAuthStatus, transport },
         };
@@ -138,8 +153,8 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
         const rawAuthUrl = mcpManager.getPendingAuthUrl?.(serverName);
         const authUrl = rawAuthUrl ? redactAuthUrl(rawAuthUrl) : undefined;
         const urlLine = authUrl
-          ? ` To authorize, open this URL in a browser and complete consent, then re-run authenticate:\n${authUrl}`
-          : ` If a browser did not open, re-run and paste the callback URL when prompted, or check the server's OAuth config in .ami/mcp.json.`;
+          ? ` To authorize, open this URL in a browser and complete consent, then re-run authenticate (or ${MCP_COMMAND_HINT}):\n${authUrl}`
+          : ` If a browser did not open, re-run and paste the callback URL when prompted, check the server's OAuth config in .ami/mcp.json, or ${MCP_COMMAND_HINT}.`;
         // Kind-specific, actionable lead-in so the model picks the right next step.
         const kindHint =
           errorKind === 'auth'
@@ -155,8 +170,27 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
           metadata: { status: 'error' satisfies McpAuthStatus, error_kind: errorKind, transport, ...(authUrl ? { auth_url: authUrl } : {}) },
         };
       }
+      // Tri-state post-reconnect reporting (connected / needs-auth / failed):
+      // reconnect() returned without throwing, but the server may still require
+      // interactive consent — e.g. a headless authorizer captured an
+      // authorization URL without completing the browser leg. In that case we
+      // surface the URL (status "auth_url") instead of claiming a false success,
+      // mirroring Claude Code's auth_url result and the "report success only when
+      // auth actually happens" guarantee.
       const after = mcpManager.getServerStatus?.(serverName)?.state;
+      if (after !== 'ready') {
+        const rawAuthUrl = mcpManager.getPendingAuthUrl?.(serverName);
+        const authUrl = rawAuthUrl ? redactAuthUrl(rawAuthUrl) : undefined;
+        if (authUrl) {
+          return {
+            output: `Authorization required for "${serverName}". Open this URL in a browser to complete consent, then re-run authenticate (or ${MCP_COMMAND_HINT}):\n${authUrl}`,
+            metadata: { status: 'auth_url' satisfies McpAuthStatus, transport, auth_url: authUrl },
+          };
+        }
+      }
       const reconnected = after === 'ready' && before !== 'ready';
+      // Distinct completion messages for a URL-less silent (cached-token) auth
+      // vs the already-connected no-op, so the model can tell them apart.
       return {
         output: reconnected
           ? `Authentication completed for "${serverName}"; its tools are now available.`

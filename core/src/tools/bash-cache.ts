@@ -16,8 +16,6 @@ const GIT_READ_ONLY = new Set([
   'ls-files', 'ls-tree', 'cat-file', 'config',
 ]);
 
-const WRITE_INDICATORS = /[>|].*\b(tee|dd|install|cp|mv|rm)\b|>\s*\S|>>\s*\S/;
-
 // Top-level shell control/compound operators. A command joined by any of these
 // is a sequence of sub-commands: it is read-only ONLY if EVERY sub-command is
 // read-only. Splitting on these (in addition to the pipe) can only make the
@@ -77,6 +75,32 @@ function containsRuntimeExpansion(s: string): boolean {
   return false;
 }
 
+// True if the command segment contains an OUTPUT redirection operator outside
+// of quotes. This covers every write-capable redirect form the old single
+// hand-rolled `WRITE_INDICATORS` regex missed — fd-qualified (`2>f`, `1>>f`),
+// combined stdout+stderr (`&>f`, `&>>f`), clobber-override (`>|f`), and plain
+// `>`/`>>` — with no space required after the operator and no `startsWith('cat')`
+// /`startsWith('grep')` escape hatch (which let `grep foo > out` be cached as a
+// read even though it writes a file). A `>` inside single/double quotes (e.g.
+// `grep '>' file`, `awk '$1 > 5'`) is literal data, not a redirect, so it is
+// ignored. Input redirects (`<`, `<<`, `<<<`) are reads and are NOT flagged.
+// Fail-closed: any unquoted output redirect disqualifies caching, so a
+// result-mutating redirect is never served from / stored into the read-only
+// cache and never skips cwd invalidation.
+function hasOutputRedirect(s: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && !inSingle) { i++; continue; } // escape next char (not in '')
+    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (inSingle || inDouble) continue;
+    if (c === '>') return true;
+  }
+  return false;
+}
+
 // Locate the command `xargs` will execute (its first positional argument),
 // skipping xargs' own flags and their values. Returns null for a bare `xargs`
 // (which defaults to echo — read-only).
@@ -106,6 +130,12 @@ function commandWritesViaFlags(base: string, tokens: string[]): boolean {
       return args.some((a) => a === '-i' || a.startsWith('-i') || a === '--in-place' || a.startsWith('--in-place'));
     case 'sort':
       return args.some((a) => a === '-o' || a === '--output' || a.startsWith('--output='));
+    case 'tree':
+      // `tree -o <file>` / `--output <file>` writes the listing to a file. All
+      // other tree flags are display/filter options (mirrors Claude's tree
+      // safeFlags, which deliberately omit -o). `-o` must disqualify caching so
+      // the written file does not go uninvalidated.
+      return args.some((a) => a === '-o' || a === '--output' || a.startsWith('--output='));
     case 'awk':
       // File-redirect writes inside awk programs (`print > "f"`) are already
       // caught by WRITE_INDICATORS; this closes the `system(...)` escape.
@@ -131,16 +161,15 @@ export function isReadOnlyBashCommand(command: string): boolean {
   // a sound cache key for a runtime-expanded, possibly side-effectful command.
   if (containsRuntimeExpansion(trimmed)) return false;
 
-  if (WRITE_INDICATORS.test(trimmed) && !trimmed.startsWith('cat') && !trimmed.startsWith('grep')) {
-    if (/>\s*\S|>>\s*\S/.test(trimmed)) return false;
-    if (/\|\s*(tee|dd)\b/.test(trimmed)) return false;
-  }
-
   // Split on the pipe AND every top-level compound separator (;, &&, ||, &,
   // newline). `ls && rm -rf foo` becomes [`ls`, `rm -rf foo`]; the writing
   // sub-command disqualifies the whole command.
   const segments = trimmed.split(COMPOUND_SEPARATORS);
   for (const seg of segments) {
+    // An output redirection (`>`, `>>`, `2>`, `&>`, `>|`, …) in this sub-command
+    // writes a file regardless of which binary runs it — disqualify caching.
+    if (hasOutputRedirect(seg)) return false;
+
     const tokens = seg.trim().split(/\s+/);
     const cmd = tokens[0];
     if (!cmd) continue;

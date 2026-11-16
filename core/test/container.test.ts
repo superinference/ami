@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import {
@@ -70,8 +71,20 @@ describe('detectRuntime', () => {
     assert.ok(podmanIdx < dockerIdx, 'podman must be checked before docker');
   });
 
-  it('uses "command -v" to probe for each runtime', () => {
-    assert.ok(SRC.includes('command -v ${cmd}'));
+  it('resolves a runtime that is present on PATH (no-spawn fast path)', () => {
+    // Behavioral: a fake `podman` executable placed on PATH must be detected
+    // via the cross-platform whichSync() fast path (no `command -v` subprocess).
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'which-detect-'));
+    const saved = process.env.PATH;
+    try {
+      fs.writeFileSync(path.join(bin, 'podman'), '#!/bin/sh\n');
+      fs.chmodSync(path.join(bin, 'podman'), 0o755);
+      process.env.PATH = bin;
+      assert.equal(detectRuntime(), 'podman');
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   it('returns null when no runtime is found (source check)', () => {
@@ -133,11 +146,20 @@ describe('resolveRuntime', () => {
   });
 
   it('tries only the preferred runtime when preference is specific', () => {
-    const fnBody = SRC.slice(
-      SRC.indexOf('function resolveRuntime'),
-      SRC.indexOf('\n}\n', SRC.indexOf('function resolveRuntime')) + 3,
-    );
-    assert.ok(fnBody.includes('command -v ${preference}'));
+    // Behavioral: with only `docker` on PATH, a `podman` preference must NOT
+    // fall back to docker (returns null), while a `docker` preference resolves.
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'which-pref-'));
+    const saved = process.env.PATH;
+    try {
+      fs.writeFileSync(path.join(bin, 'docker'), '#!/bin/sh\n');
+      fs.chmodSync(path.join(bin, 'docker'), 0o755);
+      process.env.PATH = bin;
+      assert.equal(resolveRuntime('podman'), null);
+      assert.equal(resolveRuntime('docker'), 'docker');
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   it('returns null when the preferred runtime is not installed', () => {

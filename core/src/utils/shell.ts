@@ -1,18 +1,24 @@
 import * as child_process from 'child_process';
+import * as fs from 'fs';
 import * as os from 'os';
 
 /**
  * Mockable seam (ESM-safe). Tests replace these via
  * `mock.method(shellHooks, 'name', ...)` to drive platform-specific branches
  * (Windows taskkill), inject a fake child process (deterministic
- * stdout/stderr/error/close events), and simulate process-tree kills without a
- * real subprocess. Behavior-preserving: production routes every platform/spawn/
- * kill call through this object, which defaults to the real implementations.
+ * stdout/stderr/error/close events), simulate process-tree kills without a
+ * real subprocess, and force shell-resolution / cwd-recovery branches
+ * (`accessSync`/`execFileSync`/`existsSync`). Behavior-preserving: production
+ * routes every platform/spawn/kill/probe call through this object, which
+ * defaults to the real implementations.
  */
 export const shellHooks = {
   platform: ((): NodeJS.Platform => os.platform()) as () => NodeJS.Platform,
   spawn: child_process.spawn as typeof child_process.spawn,
   execSync: child_process.execSync as typeof child_process.execSync,
+  execFileSync: child_process.execFileSync as typeof child_process.execFileSync,
+  accessSync: fs.accessSync as typeof fs.accessSync,
+  existsSync: fs.existsSync as typeof fs.existsSync,
   kill: ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); }),
 };
 
@@ -21,6 +27,9 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const HEAD_CHARS = 670_000;
 const TAIL_CHARS = 330_000;
 const DEFAULT_STALL_TIMEOUT_MS = 45_000;
+
+/** Candidate directories probed for a POSIX shell when resolving one. */
+const SHELL_SEARCH_PATHS = ['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'];
 
 function createOutputBuffer(): { push: (chunk: string) => void; value: () => string } {
   let head = '';
@@ -75,6 +84,95 @@ function looksLikePrompt(output: string): boolean {
   return PROMPT_PATTERNS.some(p => p.test(lastLine));
 }
 
+/**
+ * POSIX single-quote a string so it survives one round of shell word-splitting
+ * unchanged. Embedded single quotes are closed, escaped, and reopened
+ * (`'\''`). Used by {@link formatShellPrefixCommand}.
+ */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Wrap `command` with a user-configured shell prefix (the executable and its
+ * args that should run the command), quoting each component so a path with
+ * spaces is safe.
+ *
+ * - `"bash"`            → `'bash' 'command'`
+ * - `"/usr/bin/bash -c"`→ `'/usr/bin/bash' -c 'command'`
+ * - `"/Program Files/bash.exe -c"` → `'/Program Files/bash.exe' -c 'command'`
+ *
+ * The executable (everything before the last ` -<flag>`) is quoted as one unit;
+ * the flags are passed through verbatim; the command is quoted as one argument.
+ * Honored from the `AMI_SHELL_PREFIX` env var by {@link execCommand}.
+ */
+export function formatShellPrefixCommand(prefix: string, command: string): string {
+  const spaceBeforeDash = prefix.lastIndexOf(' -');
+  if (spaceBeforeDash > 0) {
+    const execPath = prefix.substring(0, spaceBeforeDash);
+    const args = prefix.substring(spaceBeforeDash + 1);
+    return `${shQuote(execPath)} ${args} ${shQuote(command)}`;
+  }
+  return `${shQuote(prefix)} ${shQuote(command)}`;
+}
+
+/** True when `shellPath` can be executed (X_OK, or `--version` as a fallback). */
+function isExecutable(shellPath: string): boolean {
+  try {
+    shellHooks.accessSync(shellPath, fs.constants.X_OK);
+    return true;
+  } catch {
+    // Fallback for Nix and other environments where the X_OK check misreports:
+    // run the shell with `--version`, which exits quickly, to confirm it works.
+    try {
+      shellHooks.execFileSync(shellPath, ['--version'], { timeout: 1000, stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// Memoize the resolved shell per (platform, override, SHELL) tuple so probing
+// only happens once per session for a given environment, while still
+// re-resolving when the relevant env changes (e.g. in tests).
+const shellResolutionCache = new Map<string, string | null>();
+
+function resolveShell(override: string, envShell: string): string | null {
+  // 1. Explicit override (AMI_SHELL / CLAUDE_CODE_SHELL) wins when it names a
+  //    supported shell type and is actually executable.
+  if (override) {
+    const supported = override.includes('bash') || override.includes('zsh');
+    if (supported && isExecutable(override)) return override;
+  }
+  // 2. Prefer the user's login shell type; probe standard install locations.
+  const preferBash = envShell.includes('bash');
+  const isEnvSupported = envShell.includes('bash') || envShell.includes('zsh');
+  const order = preferBash ? ['bash', 'zsh'] : ['zsh', 'bash'];
+  const candidates = order.flatMap(sh => SHELL_SEARCH_PATHS.map(p => `${p}/${sh}`));
+  // 3. Always try the SHELL env var first when it is a supported, runnable shell.
+  if (isEnvSupported && isExecutable(envShell)) candidates.unshift(envShell);
+  return candidates.find(c => isExecutable(c)) ?? null;
+}
+
+/**
+ * Resolve the best available POSIX shell (non-Windows), honoring the
+ * `AMI_SHELL` / `CLAUDE_CODE_SHELL` override and the `SHELL` preference, then
+ * probing `/bin`, `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin` for
+ * `bash`/`zsh` with an executability check. Returns `null` when no suitable
+ * shell exists (callers surface an actionable error). Memoized per session.
+ */
+export function findSuitableShell(): string | null {
+  const override = process.env.AMI_SHELL || process.env.CLAUDE_CODE_SHELL || '';
+  const envShell = process.env.SHELL || '';
+  const key = `${shellHooks.platform()}|${override}|${envShell}`;
+  const cached = shellResolutionCache.get(key);
+  if (cached !== undefined) return cached;
+  const resolved = resolveShell(override, envShell);
+  shellResolutionCache.set(key, resolved);
+  return resolved;
+}
+
 export interface ExecCommandOptions {
   cwd: string;
   timeout?: number;
@@ -104,11 +202,21 @@ export interface ExecCommandResult {
 }
 
 /**
- * Executes a shell command using `bash -c` (or `cmd /c` on Windows), streaming
- * output through an optional `onData` callback.
+ * Executes a shell command using the resolved POSIX shell (bash/zsh, see
+ * {@link findSuitableShell}) via `-c`, or `cmd /c` on Windows, streaming output
+ * through an optional `onData` callback.
+ *
+ * Environment knobs (introspectable; apply to every `execCommand` caller):
+ * - `AMI_SHELL` / `CLAUDE_CODE_SHELL` — explicit shell path override.
+ * - `AMI_LOGIN_SHELL` — when set, spawn the shell as a login shell (`-l`) so
+ *   the user's profile/rc files are sourced.
+ * - `AMI_SHELL_PREFIX` — an executable+args that wraps the command, quoted per
+ *   component (see {@link formatShellPrefixCommand}).
  *
  * - Respects timeout (default 120 000 ms) and abort signal.
  * - Kills the entire process tree on timeout or abort.
+ * - Recovers if the working directory no longer exists (falls back to a
+ *   known-good root; fails with a clear message when none is available).
  * - Keeps the first 670k and last 330k characters of stdout and stderr.
  */
 export function execCommand(
@@ -125,14 +233,63 @@ export function execCommand(
     }
 
     const isWindows = shellHooks.platform() === 'win32';
-    const shell = isWindows ? 'cmd' : 'bash';
-    const shellArgs = isWindows ? ['/c', command] : ['-c', command];
+
+    const stdoutBuf = createOutputBuffer();
+    const stderrBuf = createOutputBuffer();
+
+    // --- Working-directory recovery ---
+    // A command (or a prior one) may delete its own CWD. Rather than failing to
+    // spawn, recover to a known-good root and tell the model what happened.
+    let effectiveCwd = cwd;
+    if (!shellHooks.existsSync(effectiveCwd)) {
+      let fallback: string | null = null;
+      for (const candidate of [process.cwd(), os.homedir()]) {
+        if (shellHooks.existsSync(candidate)) { fallback = candidate; break; }
+      }
+      if (fallback === null) {
+        resolve({
+          stdout: '',
+          stderr: `Working directory "${cwd}" no longer exists and no fallback directory is available.`,
+          exitCode: null,
+          signal: null,
+        });
+        return;
+      }
+      stderrBuf.push(`[Working directory "${cwd}" no longer exists; recovered to "${fallback}"]\n`);
+      effectiveCwd = fallback;
+    }
+
+    // --- Shell resolution ---
+    let shell: string;
+    if (isWindows) {
+      shell = 'cmd';
+    } else {
+      const resolved = findSuitableShell();
+      if (resolved === null) {
+        resolve({
+          stdout: stdoutBuf.value(),
+          stderr: stderrBuf.value() + 'No suitable shell found. AMI requires a POSIX shell: install bash or zsh, or set AMI_SHELL to its path.',
+          exitCode: null,
+          signal: null,
+        });
+        return;
+      }
+      shell = resolved;
+    }
+
+    // Optional command wrapping via a configured shell prefix.
+    const prefix = process.env.AMI_SHELL_PREFIX;
+    const finalCommand = prefix ? formatShellPrefixCommand(prefix, command) : command;
+
+    // Login-shell flag sources profile/rc files when requested.
+    const loginArgs = !isWindows && process.env.AMI_LOGIN_SHELL ? ['-l'] : [];
+    const shellArgs = isWindows ? ['/c', finalCommand] : [...loginArgs, '-c', finalCommand];
 
     const proc = shellHooks.spawn(shell, shellArgs, {
       // Pipe stdin only when the caller supplies input; otherwise ignore it so
       // interactive prompts are still detected-and-killed by stall detection.
       stdio: [input != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-      cwd,
+      cwd: effectiveCwd,
       detached: !isWindows,
       ...(env ? { env } : {}),
     });
@@ -151,8 +308,6 @@ export function execCommand(
     const procStdout = proc.stdout!;
     const procStderr = proc.stderr!;
 
-    const stdoutBuf = createOutputBuffer();
-    const stderrBuf = createOutputBuffer();
     let settled = false;
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null = null): void => {
@@ -236,8 +391,14 @@ export function execCommand(
       finish(code, signal);
     });
 
-    proc.on('error', (err) => {
-      stderrBuf.push(err.message);
+    proc.on('error', (err: NodeJS.ErrnoException) => {
+      // Map the common "can't start the process at all" failure to actionable
+      // guidance naming the shell + cwd, instead of the raw errno message.
+      if (err.code === 'ENOENT') {
+        stderrBuf.push(`Failed to start command: shell "${shell}" or working directory "${effectiveCwd}" could not be found (${err.message}).`);
+      } else {
+        stderrBuf.push(err.message);
+      }
       finish(null);
     });
   });
@@ -280,4 +441,3 @@ function killTree(proc: child_process.ChildProcess): void {
     }
   }
 }
-

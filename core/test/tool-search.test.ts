@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { toolSearchTool, setSearchableTools } from '../src/tools/tool-search';
+import { toolSearchTool, setSearchableTools, TOOL_SEARCH_MAX_RESULT_CHARS } from '../src/tools/tool-search';
 import type { ToolDefinition, ToolContext } from '../src/types';
 import type { SkillDefinition, SkillManagerLike } from '../src/skills';
 
@@ -590,5 +590,114 @@ describe('tool_search — parity enhancements', () => {
     // "read" should NOT match "already" via word boundary; name has no match either.
     const result = await toolSearchTool.execute({ query: 'read' }, ctx);
     assert.ok(result.output.includes('No tools or skills matched'));
+  });
+
+  // ---- Pending-MCP-server reporting (retry/fallback affordance) ----
+  const pendingMgr = (servers: Array<{ name: string; state: string }>) =>
+    ({ listAllServers: () => servers }) as any;
+
+  it('empty keyword results name the pending/connecting MCP servers', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'zzznotathing' },
+      { ...ctx, _mcpManager: pendingMgr([
+        { name: 'kali', state: 'connecting' },
+        { name: 'github', state: 'ready' },
+        { name: 'slack', state: 'pending' },
+      ]) },
+    );
+    assert.ok(result.output.includes('MCP servers may still be connecting'));
+    assert.ok(result.output.includes('kali'));
+    assert.ok(result.output.includes('slack'));
+    assert.ok(!result.output.includes('github')); // ready → not pending
+    assert.deepEqual(result.metadata?.pending_mcp_servers, ['kali', 'slack']);
+  });
+
+  it('keeps the generic hint (no names) when no servers are pending', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'zzznotathing' },
+      { ...ctx, _mcpManager: pendingMgr([{ name: 'github', state: 'ready' }]) },
+    );
+    assert.ok(result.output.includes('MCP servers may still be connecting'));
+    assert.equal(result.metadata?.pending_mcp_servers, undefined);
+  });
+
+  it('select: not-found surfaces pending MCP servers + metadata', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'select:nope' },
+      { ...ctx, _mcpManager: pendingMgr([{ name: 'kali', state: 'connecting' }]) },
+    );
+    assert.ok(result.isError);
+    assert.ok(result.output.includes('kali'));
+    assert.deepEqual(result.metadata?.pending_mcp_servers, ['kali']);
+  });
+
+  it('multi-select all-missing surfaces pending MCP servers', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'select:nope1, nope2' },
+      { ...ctx, _mcpManager: pendingMgr([{ name: 'slack', state: 'pending' }]) },
+    );
+    assert.ok(result.isError);
+    assert.ok(result.output.includes('slack'));
+    assert.deepEqual(result.metadata?.pending_mcp_servers, ['slack']);
+  });
+
+  it('tolerates an MCP manager without listAllServers', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'zzznotathing' },
+      { ...ctx, _mcpManager: {} as any },
+    );
+    assert.ok(result.output.includes('MCP servers may still be connecting'));
+    assert.equal(result.metadata?.pending_mcp_servers, undefined);
+  });
+
+  it('tolerates a throwing listAllServers', async () => {
+    const result = await toolSearchTool.execute(
+      { query: 'zzznotathing' },
+      { ...ctx, _mcpManager: { listAllServers: () => { throw new Error('boom'); } } as any },
+    );
+    assert.ok(result.output.includes('MCP servers may still be connecting'));
+    assert.equal(result.metadata?.pending_mcp_servers, undefined);
+  });
+
+  // ---- MCP-aware tokenization + weighting ----
+  it('weights MCP exact-part matches above equivalent regular tools', async () => {
+    setSearchableTools([
+      { name: 'scan_ports', description: 'd1', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+      { name: 'mcp__nmap__scan', description: 'd2', isMcp: true, inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    const r = await toolSearchTool.execute({ query: 'scan' }, ctx);
+    assert.ok(
+      r.output.indexOf('mcp__nmap__scan') < r.output.indexOf('scan_ports'),
+      `expected MCP tool ranked first:\n${r.output}`,
+    );
+  });
+
+  it('tokenizes mcp__server__action by stripping the mcp__ prefix (server part matches)', async () => {
+    setSearchableTools([
+      { name: 'mcp__slack__send_message', description: 'deliver', isMcp: true, inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    const r = await toolSearchTool.execute({ query: 'slack' }, ctx);
+    assert.ok(r.output.includes('mcp__slack__send_message'));
+  });
+
+  // ---- Bounded output (maxResultSizeChars parity) ----
+  it('bounds a pathologically large result with a truncation marker', async () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({
+      name: `scan_${'x'.repeat(4000)}_${i}`,
+      description: 'scanner',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      isReadOnly: true,
+      execute: async () => ({ output: '', isError: false }),
+    }));
+    setSearchableTools(many as any);
+    const result = await toolSearchTool.execute({ query: 'scan', max_results: 50 }, ctx);
+    assert.ok(result.output.length <= TOOL_SEARCH_MAX_RESULT_CHARS + 120);
+    assert.ok(result.output.includes('truncated'));
+  });
+
+  it('does not truncate normal-sized results', async () => {
+    setSearchableTools(mockTools);
+    const result = await toolSearchTool.execute({ query: 'file' }, ctx);
+    assert.ok(!result.output.includes('truncated'));
   });
 });

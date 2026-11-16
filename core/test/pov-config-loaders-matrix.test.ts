@@ -281,14 +281,17 @@ describe('mergeConfigs', () => {
     assert.deepEqual(merged.superinference, { enforcing: true });
   });
 
-  it('array fields are replaced wholesale by the higher layer', () => {
+  it('array fields accumulate (concat + dedupe) across layers', () => {
+    // Parity: Claude's settingsMergeCustomizer merges arrays additively, so a
+    // higher layer augments rather than clobbers a lower one. Lower layer
+    // (global) first, then higher (project), deduped.
     const merged = mergeConfigs(
       {},
       {},
       { fallbackModels: ['p1', 'p2'] },
       { fallbackModels: ['g1'] },
     );
-    assert.deepEqual(merged.fallbackModels, ['p1', 'p2']);
+    assert.deepEqual(merged.fallbackModels, ['g1', 'p1', 'p2']);
   });
 
   it('managed enforceAvailableModels is authoritative and NOT overridable by cli/env/project', () => {
@@ -316,7 +319,9 @@ describe('mergeConfigs', () => {
     assert.deepEqual(merged.managedMcpServers, { s: { on: true } });
   });
 
-  it('without a managed layer, allowedMcpServers follows normal precedence', () => {
+  it('without a managed layer, allowedMcpServers accumulates across layers', () => {
+    // No managed layer owns the setting, so project + local allowlists compose
+    // additively (concat + dedupe) instead of the higher layer clobbering.
     const merged = mergeConfigs(
       {},
       {},
@@ -324,7 +329,7 @@ describe('mergeConfigs', () => {
       null,
       { allowedMcpServers: ['local'] },
     );
-    assert.deepEqual(merged.allowedMcpServers, ['local']);
+    assert.deepEqual(merged.allowedMcpServers, ['proj', 'local']);
   });
 
   it('merges many distinct scalar keys across layers simultaneously', () => {

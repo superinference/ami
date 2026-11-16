@@ -21,11 +21,13 @@ describe('send_message additions', () => {
   afterEach(() => { resetAllMailboxes(); resetAgentRegistry(); });
 
   describe('plan_approval_request (request half)', () => {
-    it('parses and requires requestId + planContent', () => {
+    it('parses planContent (required) and allows an omitted requestId (auto-generated at send)', () => {
       const ok = parseStructuredMessage('{"type":"plan_approval_request","requestId":"p1","planContent":"do X","planFilePath":"/tmp/plan.md"}');
       assert.deepEqual(ok, { type: 'plan_approval_request', requestId: 'p1', planContent: 'do X', planFilePath: '/tmp/plan.md' });
+      // requestId is optional on the wire for a *request* — it is auto-generated
+      // before queueing (parity with Claude's generateRequestId).
       const noId = parseStructuredMessage('{"type":"plan_approval_request","planContent":"x"}');
-      assert.ok(noId && 'error' in noId && /requestId/.test(noId.error));
+      assert.deepEqual(noId, { type: 'plan_approval_request', requestId: undefined, planContent: 'x', planFilePath: undefined });
       const noPlan = parseStructuredMessage('{"type":"plan_approval_request","requestId":"p1"}');
       assert.ok(noPlan && 'error' in noPlan && /planContent/.test(noPlan.error));
       const blankPlan = parseStructuredMessage('{"type":"plan_approval_request","requestId":"p1","planContent":"  "}');

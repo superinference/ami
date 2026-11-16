@@ -1533,7 +1533,7 @@ describe('McpManager — readResource', () => {
     manager = new McpManager();
     await assert.rejects(
       () => manager.readResource('unknown', 'file:///a.txt'),
-      /not connected/
+      /not found/
     );
   });
 });

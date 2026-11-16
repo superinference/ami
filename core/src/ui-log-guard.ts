@@ -56,8 +56,13 @@ const SECRET_RULES: readonly SecretRule[] = [
   { re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
   { re: /\bAIza[A-Za-z0-9_-]{20,}\b/g },
   { re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g }, // JWT
+  // GCP / Vertex AI service-account emails (…@….iam.gserviceaccount.com).
+  { re: /\b[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com\b/gi },
   // Authorization: Bearer / Basic <token>
   { re: /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, keepGroup: true },
+  // Cloud-provider environment variables (AWS_*, GOOGLE_*) → redact the value.
+  { re: /\b(AWS[_-][A-Za-z0-9_]+\s*[=:]\s*)["']?[^"',\s)}\]]+["']?/gi, keepGroup: true },
+  { re: /\b(GOOGLE[_-][A-Za-z0-9_]+\s*[=:]\s*)["']?[^"',\s)}\]]+["']?/gi, keepGroup: true },
   // key = value / key: value for sensitive key names.
   {
     re: /\b((?:api[_-]?key|secret|password|passwd|pwd|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[=:]\s*)["']?[A-Za-z0-9._~+/=-]{6,}["']?/gi,
@@ -164,11 +169,16 @@ export class UILogGuard {
       ? sanitizeLogMessage(source, { ...this._sanitizeOpts, allowNewlines: false, redactSecrets: false })
       : source;
     const entry: LogEntry = { message: safeMessage, tier, source: safeSource, timestamp: Date.now(), level };
-    if (this._logs.length < this._maxLogs) {
-      this._logs.push(entry);
-    } else {
+    // FUNCTIONAL FIX (parity with Claude's addToInMemoryErrorLog): ring-buffer
+    // eviction of the OLDEST entry when full, rather than dropping the incoming
+    // one. The newest (most diagnostically relevant) logs are always retained;
+    // a long-running session keeps recording instead of freezing on the first N.
+    // `_suppressed` becomes a rotated-out counter.
+    if (this._logs.length >= this._maxLogs) {
+      this._logs.shift();
       this._suppressed++;
     }
+    this._logs.push(entry);
     return entry;
   }
 

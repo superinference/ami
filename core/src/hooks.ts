@@ -462,6 +462,54 @@ export function validateHookTimeout(timeoutMs: number): number {
  */
 export const DEFAULT_HOOK_SHELL = 'bash';
 
+/** Interpreter selectors a command hook (or the default-shell override) may name. */
+const HOOK_SHELL_SELECTORS: ReadonlySet<string> = new Set(['bash', 'sh', 'powershell', 'pwsh']);
+
+/**
+ * Resolve the DEFAULT command-hook interpreter when a hook sets no `shell`.
+ * Honors the `SUPERINFERENCE_HOOK_SHELL` env override (bash | sh | powershell |
+ * pwsh) so a deployment can change the default interpreter (Claude Code's
+ * configurable DEFAULT_HOOK_SHELL) — e.g. a Windows host that wants `pwsh` by
+ * default. An unset/unrecognized value falls back to DEFAULT_HOOK_SHELL.
+ */
+export function resolveDefaultHookShell(env: Record<string, string | undefined> = process.env): string {
+  const raw = (env.SUPERINFERENCE_HOOK_SHELL ?? '').trim().toLowerCase();
+  return HOOK_SHELL_SELECTORS.has(raw) ? raw : DEFAULT_HOOK_SHELL;
+}
+
+/**
+ * POSIX single-quote a string so it embeds safely as one argument inside a
+ * `sh -c` / `bash -c` command line (any embedded single quote is closed,
+ * escaped, and reopened).
+ */
+export function posixSingleQuote(s: string): string {
+  return `'` + s.split(`'`).join(`'\\''`) + `'`;
+}
+
+/**
+ * Wrap a hook command with an outer shell prefix (Claude Code's
+ * formatShellPrefixCommand / CLAUDE_CODE_SHELL_PREFIX). The prefix may carry a
+ * trailing `-flag` run (split on the last ` -`); the executable and the wrapped
+ * command are POSIX-quoted so neither can break out of the prefix invocation.
+ *   "firejail"            + "echo hi" → 'firejail' 'echo hi'
+ *   "/usr/bin/env -i"     + "echo hi" → '/usr/bin/env' -i 'echo hi'
+ */
+export function formatShellPrefixCommand(prefix: string, command: string): string {
+  const spaceBeforeDash = prefix.lastIndexOf(' -');
+  if (spaceBeforeDash > 0) {
+    const execPath = prefix.substring(0, spaceBeforeDash);
+    const args = prefix.substring(spaceBeforeDash + 1);
+    return `${posixSingleQuote(execPath)} ${args} ${posixSingleQuote(command)}`;
+  }
+  return `${posixSingleQuote(prefix)} ${posixSingleQuote(command)}`;
+}
+
+/** Options for resolveHookShell — injectable env/platform for testability. */
+export interface ResolveHookShellOpts {
+  env?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+}
+
 /**
  * Resolve a command hook's `shell` selector to a concrete spawn descriptor
  * (Claude Code's per-hook shell selection: `hook.shell ?? DEFAULT_HOOK_SHELL`).
@@ -469,14 +517,37 @@ export const DEFAULT_HOOK_SHELL = 'bash';
  * (non-interactive, no profile — matching the reference), every POSIX shell
  * uses `<shell> -c <command>`. Single source of truth so command execution
  * never hard-codes `bash`.
+ *
+ * Two Claude-Code command-construction behaviors are applied for POSIX shells:
+ *  - Windows `.sh` fallback: on win32 a bare `.sh` script won't execute without
+ *    an explicit interpreter, so `bash ` is auto-prepended.
+ *  - `CLAUDE_CODE_SHELL_PREFIX`: when set, the command is wrapped by the prefix
+ *    (POSIX-quoted). PowerShell ignores the prefix (its quoting differs), matching
+ *    the reference.
  */
-export function resolveHookShell(command: string, shell: string | undefined): { file: string; args: string[] } {
-  const sel = (shell ?? DEFAULT_HOOK_SHELL).toLowerCase();
+export function resolveHookShell(
+  command: string,
+  shell: string | undefined,
+  opts: ResolveHookShellOpts = {},
+): { file: string; args: string[] } {
+  const env = opts.env ?? process.env;
+  const platform = opts.platform ?? process.platform;
+  const sel = (shell ?? resolveDefaultHookShell(env)).toLowerCase();
   if (sel === 'powershell' || sel === 'pwsh') {
     return { file: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', command] };
   }
   const file = sel === 'sh' ? 'sh' : 'bash';
-  return { file, args: ['-c', command] };
+  let finalCommand = command;
+  // Windows (bash) fallback: auto-prepend `bash ` for a .sh script so it
+  // executes instead of opening in the default file handler (Claude Code).
+  if (platform === 'win32' && /\.sh(\s|$|")/.test(command.trim()) && !command.trim().startsWith('bash ')) {
+    finalCommand = `bash ${command}`;
+  }
+  // CLAUDE_CODE_SHELL_PREFIX wraps the command via POSIX quoting (not applied to
+  // PowerShell above — its quoting model differs; matches the reference).
+  const prefix = env.CLAUDE_CODE_SHELL_PREFIX;
+  if (prefix) finalCommand = formatShellPrefixCommand(prefix, finalCommand);
+  return { file, args: ['-c', finalCommand] };
 }
 
 /**
@@ -621,6 +692,31 @@ export function unwrapHookSpecificOutput(parsed: unknown): HookDecisionOutput {
     if (merged[key] === undefined) merged[key] = v;
   }
   return merged as HookDecisionOutput;
+}
+
+/**
+ * hookEventName spoof check (Claude Code's parseHookOutput validation): when a
+ * hook's `hookSpecificOutput.hookEventName` is present it MUST equal the event
+ * the hook actually fired for. A mismatch means the hook is trying to act as a
+ * different event (e.g. a SessionStart hook claiming PreToolUse to inject a
+ * permission decision) — reject it. Returns a human-readable validation message
+ * on mismatch, or undefined when it matches / is absent / has no expected event.
+ * `expectedPascalEvent` is the PascalCase event name (e.g. 'PreToolUse').
+ */
+export function hookEventNameMismatch(
+  parsed: unknown,
+  expectedPascalEvent: string | undefined,
+): string | undefined {
+  if (!expectedPascalEvent) return undefined;
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const inner = (parsed as Record<string, unknown>).hookSpecificOutput;
+  if (!inner || typeof inner !== 'object') return undefined;
+  const name = (inner as Record<string, unknown>).hookEventName;
+  if (typeof name !== 'string' || name.length === 0) return undefined;
+  if (name !== expectedPascalEvent) {
+    return `Hook returned incorrect event name: expected '${expectedPascalEvent}' but got '${name}'.`;
+  }
+  return undefined;
 }
 
 /**
@@ -2557,13 +2653,31 @@ export class HookManager extends EventEmitter {
           }
           const trimmed = stdout.trim();
           try {
-            const parsed: HookDecisionOutput = unwrapHookSpecificOutput(JSON.parse(trimmed));
+            const rawParsed = JSON.parse(trimmed);
+            // hookEventName spoof check: a hook whose hookSpecificOutput names a
+            // DIFFERENT event than the one it fired for is rejected (not acted
+            // on) and surfaced as a validation error — a failed run, so a `once`
+            // hook retries (Claude Code parity).
+            const spoof = hookEventNameMismatch(
+              rawParsed,
+              (() => { try { return JSON.parse(eventData).hook_event_name; } catch { return undefined; } })(),
+            );
+            if (spoof) {
+              if (outcome) outcome.success = false;
+              return `SYSTEM:${sanitizeHookOutput(spoof)}`;
+            }
+            const parsed: HookDecisionOutput = unwrapHookSpecificOutput(rawParsed);
             if (parsed.decision === 'block' || parsed.decision === 'deny') return `DENY:${parsed.reason ?? 'Hook blocked'}`;
             if (parsed.decision === 'ask' || parsed.permissionDecision === 'ask') return `ASK:${parsed.reason ?? ''}`;
             if (parsed.continue === false) return `DENY:${parsed.stopReason ?? 'Hook requested stop'}`;
             if (parsed.updatedInput) return `MODIFY:${JSON.stringify(parsed.updatedInput)}`;
             if (parsed.additionalContext) return `MODIFY:${JSON.stringify({ additionalContext: parsed.additionalContext })}`;
             if (parsed.systemMessage) return `SYSTEM:${parsed.systemMessage}`;
+            // suppressOutput: a JSON hook result with suppressOutput:true hides
+            // the plain-text success surface — return '' instead of echoing the
+            // (otherwise decision-less) JSON back as a system message. Explicit
+            // decision/systemMessage results above take precedence (Claude Code).
+            if (parsed.suppressOutput) return '';
           } catch (parseErr) {
             // A hook that emitted text starting with `{` intended to return a
             // JSON decision; a parse failure is malformed output surfaced to the

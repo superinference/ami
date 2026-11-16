@@ -52,6 +52,8 @@ export interface ModelCostUsage {
   totalTokens: number;
   cost: number;
   requestCount: number;
+  /** Server-side web_search requests billed against THIS model (for a per-model breakdown). */
+  webSearchRequests: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +196,7 @@ function ensurePricingFetch(): void {
 // Pricing lookup
 // ---------------------------------------------------------------------------
 
-function matchPricing(model: string): PricingEntry {
+function matchPricing(model: string, fallbackModel?: string): PricingEntry {
   const table = livePricing ?? FALLBACK_PRICING;
 
   if (table[model]) return table[model];
@@ -203,6 +205,14 @@ function matchPricing(model: string): PricingEntry {
   const sortedKeys = Object.keys(table).sort((a, b) => b.length - a.length);
   for (const key of sortedKeys) {
     if (model.includes(key)) return table[key];
+  }
+  // Unknown model: before using the generic DEFAULT_PRICING, fall back to the
+  // user's configured default (main-loop) model's REAL tier when one was supplied
+  // and is itself priced — mirroring Claude's getModelCosts(), which prices an
+  // unknown model at MODEL_COSTS[defaultMainLoopModel] rather than a flat constant.
+  // The caller still flags the request 'estimated' (isPricedModel is false for it).
+  if (fallbackModel && fallbackModel !== model && isPricedModel(fallbackModel)) {
+    return matchPricing(fallbackModel);
   }
   return DEFAULT_PRICING;
 }
@@ -318,7 +328,7 @@ export class CostTracker {
       cacheCreationTokens,
       completionTokens: usage.completionTokens,
       webSearchRequests,
-    });
+    }, this.model);
     this.stats.totalCost += cost;
     this.stats.requestCount++;
 
@@ -331,6 +341,7 @@ export class CostTracker {
     const m = this._byModel.get(activeModel) ?? {
       promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0,
       cacheCreationTokens: 0, totalTokens: 0, cost: 0, requestCount: 0,
+      webSearchRequests: 0,
     };
     m.promptTokens += usage.promptTokens;
     m.completionTokens += usage.completionTokens;
@@ -339,13 +350,14 @@ export class CostTracker {
     m.totalTokens += usage.promptTokens + usage.completionTokens;
     m.cost += cost;
     m.requestCount++;
+    m.webSearchRequests += webSearchRequests;
     this._byModel.set(activeModel, m);
 
     // Flag models we couldn't price precisely so the live display can warn.
     if (activeModel && !isPricedModel(activeModel)) this._unknownModels.add(activeModel);
 
     if (cachedTokens > 0) {
-      const [inputPPM, , cachedPPM] = matchPricing(activeModel);
+      const [inputPPM, , cachedPPM] = matchPricing(activeModel, this.model);
       const fullPriceCost = (cachedTokens / 1_000_000) * inputPPM;
       const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
       const cachedCost = (cachedTokens / 1_000_000) * actualCachedPPM;
@@ -444,8 +456,14 @@ export function estimateUsageCost(
     /** Count of server-side web_search requests in this usage record. */
     webSearchRequests?: number;
   },
+  /**
+   * Configured default (main-loop) model whose REAL pricing tier is used when `model`
+   * itself is unknown, instead of the generic DEFAULT_PRICING constant — mirrors Claude's
+   * unknown-model fallback to the default model's cost. Omit to keep the generic fallback.
+   */
+  fallbackModel?: string,
 ): number {
-  const [inputPPM, outputPPM, cachedPPM, cacheWritePPM] = matchPricing(model);
+  const [inputPPM, outputPPM, cachedPPM, cacheWritePPM] = matchPricing(model, fallbackModel);
   const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
   // Prefer a model-specific cache-write price; fall back to the global 1.25x ratio.
   const actualCacheWritePPM = cacheWritePPM ?? inputPPM * CACHE_WRITE_PRICE_RATIO;
@@ -551,6 +569,16 @@ export function diffStringLists(
   };
 }
 
+/**
+ * Models excluded from cache-break detection. Some models' server-side prompt-cache
+ * semantics differ enough (e.g. Anthropic Haiku) that a cache-read drop is NOT a
+ * comparable break signal, so scoring them produces false-positive break notifications.
+ * Mirrors Claude's isExcludedModel (promptCacheBreakDetection.ts).
+ */
+export function isExcludedModel(model: string): boolean {
+  return /haiku/i.test(model);
+}
+
 export function fingerprint(input: string): string {
   const len = input.length;
   const head = input.slice(0, 100);
@@ -595,6 +623,17 @@ export class CacheMissDiagnostics {
     const req = this._pendingRequest;
     if (!req) return;
     this._pendingRequest = null;
+
+    // Excluded models (e.g. haiku) have different server-side caching semantics, so a
+    // cache-read drop isn't a comparable break signal — skip scoring to avoid false
+    // positives, but still advance the baseline so a later switch to a tracked model
+    // compares against fresh state.
+    if (isExcludedModel(req.model)) {
+      this._lastDelta = { added: [], removed: [], changed: [] };
+      this._lastCauses = [];
+      this._advanceBaseline(req, cacheReadTokens);
+      return;
+    }
 
     // An EXPECTED drop (after a compaction / cache-deletion) is a legitimate cache
     // shrink, not a break — swallow it and re-baseline so it isn't mis-attributed.

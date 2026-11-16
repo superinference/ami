@@ -1,37 +1,28 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as child_process from 'child_process';
 import { ToolDefinition, ToolResult } from '../types';
+import { gitExec } from '../worktree-manager';
 
 /**
- * Run git with NO SHELL (execFile with an argv array) so a worktree path or
- * branch name can never be interpreted as a shell metacharacter
- * (command-injection immune — parity with worktree-manager's gitExec and
- * Claude's execFileNoThrowWithCwd). Returns trimmed stdout.
+ * Every git call in the exit path — reads AND the destructive teardown — runs
+ * through worktree-manager's hardened `gitExec`: NO SHELL (execFile with an argv
+ * array, so a worktree path / branch name can never be a shell metacharacter),
+ * a hard command timeout, GIT_NO_PROMPT_ENV, and core.hooksPath/fsmonitor/gpg
+ * disabled. A wedged git (credential prompt, hanging hook, fsmonitor daemon)
+ * can therefore never hang the exit. This is the single canonical hardened git
+ * runner for the whole worktree subsystem (no parallel, unbounded execSync).
  */
-function runGit(
-  args: string[],
-  opts: { cwd: string; stdio?: 'ignore' | 'pipe' } = { cwd: process.cwd() },
-): string {
-  const out = child_process.execFileSync('git', args, {
-    cwd: opts.cwd,
-    encoding: 'utf-8',
-    stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
-  });
-  return typeof out === 'string' ? out.trim() : '';
-}
 
 /**
  * Dependency seam for tests (mirrors `_enterWorktreeHooks`). The destructive
  * teardown git calls (worktree remove / prune / branch -D) route through this
  * object so tests can inject a `git worktree remove` failure to exercise the
  * fs.rmSync + prune fallback deterministically, without depending on the host
- * git version's removal behaviour. `exec` takes an argv array (no shell). The
- * defaults are the real no-shell git / fs ops, so production behaviour is
- * unchanged.
+ * git version's removal behaviour. `exec` is the hardened no-shell git runner,
+ * so production behaviour is unchanged.
  */
 export const _exitWorktreeHooks = {
-  exec: runGit,
+  exec: gitExec,
   existsSync: fs.existsSync as typeof fs.existsSync,
   rmSync: fs.rmSync as typeof fs.rmSync,
 };
@@ -95,7 +86,7 @@ export const exitWorktreeTool: ToolDefinition = {
     const wantMerge = action === 'merge';
 
     try {
-      runGit(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
+      gitExec(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
     } catch {
       return {
         output: 'Error: not inside a git repository. For non-git VCS, configure WorktreeCreate/WorktreeRemove hooks.',
@@ -105,7 +96,7 @@ export const exitWorktreeTool: ToolDefinition = {
 
     let worktreePath: string;
     try {
-      worktreePath = runGit(['rev-parse', '--show-toplevel'], { cwd: context.cwd }).normalize('NFC');
+      worktreePath = gitExec(['rev-parse', '--show-toplevel'], { cwd: context.cwd }).normalize('NFC');
     } catch {
       return { output: 'Error: could not determine worktree path.', isError: true };
     }
@@ -135,7 +126,7 @@ export const exitWorktreeTool: ToolDefinition = {
     // the live HEAD; fall back to session metadata only when detached.
     let branch: string | undefined;
     try {
-      const head = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath });
+      const head = gitExec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath });
       branch = head === 'HEAD' ? undefined : head; // "HEAD" literal == detached
     } catch { /* rev-parse failed */ }
     if (!branch) branch = existing?.worktreeBranch;
@@ -174,24 +165,36 @@ export const exitWorktreeTool: ToolDefinition = {
           isError: true,
         };
       }
-      if (changes.uncommitted > 0) {
-        let status = '';
-        try { status = runGit(['status', '--porcelain'], { cwd: worktreePath }); } catch { /* best effort */ }
-        const files = status ? status.split('\n') : [];
-        const preview = files.length > FILE_PREVIEW_THRESHOLD
-          ? `${files.slice(0, FILE_PREVIEW_THRESHOLD).join('\n')}\n… and ${files.length - FILE_PREVIEW_THRESHOLD} more`
-          : files.join('\n');
+      if (changes.uncommitted > 0 || (!wantMerge && changes.unpushed > 0)) {
+        // Single consequence-explaining summary up front (parity with Claude's
+        // WorktreeExitDialog): classify EVERY at-risk state together — "N
+        // uncommitted files and M commits on <branch>" — so the model/user sees
+        // the full cost of removal before confirming, instead of a sequence of
+        // one-state-at-a-time refusals that hide the second loss. For "merge",
+        // committed work is NOT a loss (it is exactly what gets merged), so only
+        // uncommitted files are counted and commits are excluded.
+        const parts: string[] = [];
+        let preview = '';
+        if (changes.uncommitted > 0) {
+          parts.push(pluralize(changes.uncommitted, 'uncommitted file'));
+          let status = '';
+          try { status = gitExec(['status', '--porcelain'], { cwd: worktreePath }); } catch { /* best effort */ }
+          const files = status ? status.split('\n') : [];
+          preview = '\n' + (files.length > FILE_PREVIEW_THRESHOLD
+            ? `${files.slice(0, FILE_PREVIEW_THRESHOLD).join('\n')}\n… and ${files.length - FILE_PREVIEW_THRESHOLD} more`
+            : files.join('\n'));
+        }
+        if (!wantMerge && changes.unpushed > 0) {
+          parts.push(`${pluralize(changes.unpushed, 'unpushed commit')}${branch ? ` on ${branch}` : ''}`);
+        }
+        const consequence = wantMerge
+          ? 'These uncommitted changes are not part of a merge and will be lost.'
+          : 'Removing will discard this work permanently (the branch will be deleted too).';
         const hint = wantMerge
           ? 'Commit them first so they are included in the merge, set discard_changes=true to discard them and merge only committed work, or use action:"keep".'
-          : 'Set discard_changes=true to force removal (the branch will be deleted), or use action:"keep". Confirm with the user before discarding.';
+          : 'Set discard_changes=true to force removal, use action:"merge" to merge committed work into the original branch, or use action:"keep". Confirm with the user before discarding.';
         return {
-          output: cap(`Error: worktree${branchLabel} has ${pluralize(changes.uncommitted, 'uncommitted file')}:\n${preview}\n\n${hint}`),
-          isError: true,
-        };
-      }
-      if (!wantMerge && changes.unpushed > 0) {
-        return {
-          output: `Error: worktree${branchLabel} has ${pluralize(changes.unpushed, 'unpushed commit')}.\n\nSet discard_changes=true to force removal (the branch will be deleted), use action:"merge" to merge them into the original branch, or use action:"keep". Confirm with the user before discarding.`,
+          output: cap(`Error: worktree${branchLabel} has ${parts.join(' and ')}. ${consequence}${preview}\n\n${hint}`),
           isError: true,
         };
       }
@@ -232,7 +235,7 @@ export const exitWorktreeTool: ToolDefinition = {
       // working tree clean, or an in-place merge would be unsafe. Refuse rather
       // than touch the user's main checkout unexpectedly.
       let repoBranch = '';
-      try { repoBranch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }); } catch { /* detached main */ }
+      try { repoBranch = gitExec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }); } catch { /* detached main */ }
       if (repoBranch !== targetBranch) {
         return {
           output: `Error: cannot merge — the main checkout at ${repoRoot} is on "${repoBranch || 'a detached HEAD'}", not the original branch "${targetBranch}". Switch it there first (git checkout ${targetBranch}), or use action:"remove" to discard the worktree.`,

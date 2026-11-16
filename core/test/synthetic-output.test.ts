@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 
 import {
   syntheticOutputTool,
+  createSyntheticOutputTool,
   validateAgainstSchema,
   MAX_RESULT_SIZE_CHARS,
   ndjsonSafeStringify,
@@ -130,6 +131,91 @@ describe('syntheticOutputTool', () => {
 
     it('ndjsonSafeStringify returns undefined for non-serializable input (passthrough)', () => {
       assert.equal(ndjsonSafeStringify(undefined), undefined);
+    });
+  });
+
+  describe('createSyntheticOutputTool factory (schema-bound variant)', () => {
+    const schema = {
+      type: 'object',
+      required: ['name', 'count'],
+      additionalProperties: false,
+      properties: { name: { type: 'string' }, count: { type: 'integer' } },
+    };
+
+    it('returns a tool whose inputSchema is the caller-supplied JSON schema', () => {
+      const created = createSyntheticOutputTool(schema);
+      assert.ok('tool' in created);
+      if (!('tool' in created)) return;
+      // The model sees the real required fields / types, not the generic wrapper.
+      assert.equal(created.tool.name, 'structured_output');
+      assert.ok(created.tool.isReadOnly);
+      assert.deepEqual(created.tool.inputSchema as unknown, schema);
+    });
+
+    it('validates the call input against the bound schema and serializes on success', async () => {
+      const created = createSyntheticOutputTool(schema);
+      assert.ok('tool' in created);
+      if (!('tool' in created)) return;
+      const result = await created.tool.execute({ name: 'ok', count: 2 }, {} as any);
+      assert.ok(!result.isError);
+      assert.deepEqual(JSON.parse(result.output), { name: 'ok', count: 2 });
+    });
+
+    it('rejects a non-conforming call input with a descriptive per-path error', async () => {
+      const created = createSyntheticOutputTool(schema);
+      assert.ok('tool' in created);
+      if (!('tool' in created)) return;
+      const result = await created.tool.execute({ count: 1.5, extra: true } as any, {} as any);
+      assert.equal(result.isError, true);
+      assert.match(result.output, /Output does not match required schema/);
+      assert.match(result.output, /data\.name is required/);
+      assert.match(result.output, /data\.count should be integer/);
+      assert.match(result.output, /data\.extra is not an allowed property/);
+    });
+
+    it('enforces the result-size cap on the schema-bound variant', async () => {
+      const strSchema = { type: 'object', properties: { big: { type: 'string' } } };
+      const created = createSyntheticOutputTool(strSchema);
+      assert.ok('tool' in created);
+      if (!('tool' in created)) return;
+      const result = await created.tool.execute({ big: 'x'.repeat(MAX_RESULT_SIZE_CHARS + 100) }, {} as any);
+      assert.equal(result.isError, true);
+      assert.match(result.output, /truncated at/);
+    });
+
+    it('returns {error} with a diagnostic when the supplied schema is itself malformed', () => {
+      const bad = createSyntheticOutputTool({ type: 'nonsense' });
+      assert.ok('error' in bad);
+      if (!('error' in bad)) return;
+      assert.match(bad.error, /nonsense|type/i);
+
+      const badProps = createSyntheticOutputTool({ type: 'object', properties: 'not-an-object' as unknown as Record<string, unknown> });
+      assert.ok('error' in badProps);
+
+      const badRequired = createSyntheticOutputTool({ type: 'object', required: [1, 2] as unknown as string[] });
+      assert.ok('error' in badRequired);
+    });
+
+    it('memoizes the compiled result by schema object identity (WeakMap cache)', () => {
+      const s = { type: 'object', properties: { a: { type: 'string' } } };
+      const first = createSyntheticOutputTool(s);
+      const second = createSyntheticOutputTool(s);
+      // Same object reference -> exact same cached result (no recompile).
+      assert.strictEqual(first, second);
+      // A different (even deep-equal) object -> a distinct result.
+      const other = createSyntheticOutputTool({ type: 'object', properties: { a: { type: 'string' } } });
+      assert.notStrictEqual(first, other);
+    });
+  });
+
+  describe('syntheticOutputTool delegates to the schema-bound factory', () => {
+    it('rejects a malformed caller schema instead of silently accepting output', async () => {
+      const result = await syntheticOutputTool.execute!(
+        { data: { x: 1 }, schema: { type: 'nonsense' } },
+        {} as any,
+      );
+      assert.equal(result.isError, true);
+      assert.match(result.output, /schema is invalid/i);
     });
   });
 

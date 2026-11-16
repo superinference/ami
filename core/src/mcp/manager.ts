@@ -94,6 +94,26 @@ export function matchMcpAutoAllow(toolName: string, patterns: string[]): boolean
   return false;
 }
 
+/**
+ * Produce an MCP server base URL that is SAFE to write to a log/analytics sink:
+ * the query string is dropped (it can carry access tokens, e.g. a `?token=...`
+ * SSE URL) and the trailing slash is normalized away. Returns undefined for a
+ * stdio server (no `url`) or a config whose `url` does not parse — so a caller can
+ * simply omit the URL from a log line when this returns undefined. Mirrors Claude's
+ * `getLoggingSafeMcpBaseUrl`; reuses no state, so it is a pure helper the manager
+ * routes every logged server URL through.
+ */
+export function getLoggingSafeMcpBaseUrl(config: McpServerConfig | undefined): string | undefined {
+  if (!config || typeof config.url !== 'string') return undefined;
+  try {
+    const url = new URL(config.url);
+    url.search = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
+  }
+}
+
 const TRANSIENT_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']);
 /**
  * Normalize an MCP upstream URL for denylist comparison: `protocol//host/path`
@@ -506,6 +526,12 @@ export class McpManager extends EventEmitter {
   _pullImage: typeof pullImage = pullImage;
   /** MCP client factory seam (see {@link McpClientFactory}). */
   _createClient: McpClientFactory = (options) => new McpClient(options);
+  /**
+   * Host platform used for platform-specific config diagnostics (the Windows
+   * npx-wrapper warning). Defaults to `process.platform`; overridable in tests so
+   * the win32-only diagnostic path is exercisable on any CI host.
+   */
+  _platform: NodeJS.Platform = process.platform;
 
   /** Engine-injected resolver for server elicitation requests (server name + request → user's answer). */
   private _elicitationHandler: ((serverName: string, request: McpElicitationRequest) => Promise<McpElicitationResult>) | null = null;
@@ -1206,18 +1232,47 @@ export class McpManager extends EventEmitter {
     for (const [name, client] of this.clients) {
       if (serverFilter && name !== serverFilter) continue;
       try {
-        const resources = await client.listResources();
+        const resources = await this.listResourcesWithReconnect(name, client);
         for (const r of resources) {
           results.push({ ...r, server: name });
         }
       } catch (err) {
-        if (err instanceof McpSessionExpiredError) {
-          coreLog('mcp', `Session expired for ${name} during listResources, scheduling reconnect`);
-          this.emit('session-expired', name);
-        }
+        // Isolate per-server failures (one server's error must not sink the whole
+        // aggregate) AND log EVERY failure — not only session-expiry — so a server
+        // that consistently errors on resources/list is observable instead of being
+        // silently swallowed (Claude-parity ListMcpResourcesTool). The URL goes
+        // through getLoggingSafeMcpBaseUrl so a token-bearing query string is never
+        // written to the log.
+        const safeUrl = getLoggingSafeMcpBaseUrl(this.configs.get(name));
+        const msg = err instanceof Error ? err.message : String(err);
+        coreLog('mcp', `listResources failed for ${name}${safeUrl ? ` (${safeUrl})` : ''}: ${msg}`);
       }
     }
     return results;
+  }
+
+  /**
+   * List a single server's resources, reconnecting-and-retrying ONCE in-call when
+   * the session has expired / the transport was closed (Claude-parity
+   * `ensureConnectedClient` before fetch): a server whose streamable-HTTP session
+   * rotated mid-listing still returns its resources within the same call instead of
+   * being dropped and only recovered on the next async health tick. A non-session
+   * error (or a failure of the retry itself) propagates to the per-server catch.
+   */
+  private async listResourcesWithReconnect(name: string, client: McpClient): Promise<McpResource[]> {
+    try {
+      return await client.listResources();
+    } catch (err) {
+      if (err instanceof McpSessionExpiredError) {
+        coreLog('mcp', `Session expired for ${name} during listResources, reconnecting and retrying once`);
+        this.invalidateToolCache(name);
+        this.emit('session-expired', name);
+        await client.reconnect();
+        await this.refreshToolsForServer(name);
+        return await client.listResources();
+      }
+      throw err;
+    }
   }
 
   /** Comma-separated list of currently-connected server names (for error hints). */
@@ -1227,7 +1282,25 @@ export class McpManager extends EventEmitter {
 
   async readResource(serverName: string, uri: string, options?: { signal?: AbortSignal }): Promise<unknown> {
     const client = this.clients.get(serverName);
-    if (!client) throw new Error(`MCP server "${serverName}" not connected. Available servers: ${this.availableServerNames()}`);
+    if (!client) {
+      // Pre-flight validation with distinct, self-correcting errors (Claude-parity
+      // ReadMcpResourceTool): a name that was never registered is "not found" and
+      // enumerates the valid servers so the model can self-correct; a name that is
+      // known (configured/pending) but has no live client is "not connected".
+      if (this.configs.has(serverName) || this.pendingServers.has(serverName)) {
+        throw new Error(`MCP server "${serverName}" is not connected`);
+      }
+      throw new Error(`MCP server "${serverName}" not found. Available servers: ${this.availableServerNames()}`);
+    }
+    // Upfront resources-capability check: when the server declared a capability set
+    // that does NOT include `resources`, fail fast with an actionable error instead
+    // of issuing a guaranteed-to-be-rejected `resources/read`. A server that declared
+    // no capabilities at all is left to answer for itself (we only hard-block on
+    // positive evidence of non-support).
+    const caps = client.serverCapabilities;
+    if (Object.keys(caps).length > 0 && !client.hasCapability('resources')) {
+      throw new Error(`MCP server "${serverName}" does not support resources`);
+    }
     try {
       return await client.readResource(uri, options?.signal);
     } catch (err) {
@@ -1619,13 +1692,24 @@ export class McpManager extends EventEmitter {
           if (!cfg.command && !cfg.url) continue;
           const missing = new Set<string>();
           const expanded = this.expandConfigEnv(cfg, missing);
-          // Surface (don't silently blank) env vars a server config references but
-          // that are unset — a common cause of a server failing to start (H35).
+          // Collect non-fatal, recoverable config warnings for this server (the
+          // server is still registered): (a) env vars referenced but unset — a common
+          // cause of a server failing to start (H35); (b) the Windows npx-without-cmd
+          // wrapper footgun (platform-specific, Claude-parity).
+          const warnings: string[] = [];
           if (missing.size > 0) {
             const list = [...missing];
-            this._configWarnings.set(name, list);
             coreLog('mcp', `MCP server "${name}" references unset env var(s): ${list.join(', ')}`);
-            this.emit('config-warning', name, list);
+            warnings.push(...list);
+          }
+          const npxWarning = detectWindowsNpxWrapperWarning(expanded, this._platform);
+          if (npxWarning) {
+            coreLog('mcp', `MCP server "${name}": ${npxWarning}`);
+            warnings.push(npxWarning);
+          }
+          if (warnings.length > 0) {
+            this._configWarnings.set(name, warnings);
+            this.emit('config-warning', name, warnings);
           } else {
             this._configWarnings.delete(name);
           }
@@ -1835,6 +1919,31 @@ export function validateMcpServerConfigShape(cfg: unknown): string[] {
     issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, or http)`);
   }
   return issues;
+}
+
+/**
+ * Detect the common Windows footgun where a stdio MCP server's `command` is `npx`
+ * (bare, or ending in `\npx` / `/npx`) WITHOUT the required `cmd /c` wrapper — on
+ * Windows such a server fails to spawn with an opaque error. Returns an actionable
+ * warning string (with the concrete fix) on win32, else null (no-op on every other
+ * platform). Non-stdio entries (those carrying a `url`) are never flagged. This is a
+ * recoverable WARNING, not a fatal error: the server is still registered; the hint
+ * is surfaced via {@link McpManager.getConfigWarnings}. Mirrors Claude's
+ * parseMcpConfig npx check.
+ */
+export function detectWindowsNpxWrapperWarning(
+  config: McpServerConfig,
+  platform: NodeJS.Platform,
+): string | null {
+  if (platform !== 'win32') return null;
+  if (config.transport && config.transport !== 'stdio') return null;
+  if (config.url) return null;
+  const cmd = config.command;
+  if (!cmd) return null;
+  if (cmd === 'npx' || cmd.endsWith('\\npx') || cmd.endsWith('/npx')) {
+    return 'Windows requires a \'cmd /c\' wrapper to execute npx: change command to "cmd" with args ["/c", "npx", ...]';
+  }
+  return null;
 }
 
 const ALLOWED_SCHEMA_KEYS = new Set([

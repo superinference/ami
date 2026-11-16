@@ -8,6 +8,7 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 import { isEagainStderr } from './grep';
+import { collectGitignoreGlobs } from '../workspace-indexer';
 
 const MAX_RESULTS = 100;
 // Cap the total joined output so a huge match set can't blow the context window.
@@ -49,6 +50,40 @@ export const GLOB_RIPGREP_ENV = 'AMI_GLOB_RG';
 export function isRipgrepGlobEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = (env[GLOB_RIPGREP_ENV] ?? '').trim().toLowerCase();
   return v !== '' && v !== '0' && v !== 'false' && v !== 'no' && v !== 'off';
+}
+
+/**
+ * Parse an env flag whose default is TRUE: unset or empty → true; only an
+ * explicit falsey token ('0'/'false'/'no'/'off') flips it to false. Mirrors
+ * Claude Code's `isEnvTruthy(env || 'true')` convention for its glob toggles
+ * (so an empty string counts as unset, not as "false").
+ */
+function envFlagDefaultTrue(raw: string | undefined): boolean {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '') return true;
+  return v !== '0' && v !== 'false' && v !== 'no' && v !== 'off';
+}
+
+/**
+ * Env toggle for including hidden (dot) files in glob results. Defaults ON
+ * (matching the prior always-`dot:true` behavior and Claude Code's default).
+ * Set AMI_GLOB_HIDDEN=false to exclude dotfiles. Mirrors CLAUDE_CODE_GLOB_HIDDEN.
+ */
+export const GLOB_HIDDEN_ENV = 'AMI_GLOB_HIDDEN';
+export function globIncludesHidden(env: NodeJS.ProcessEnv = process.env): boolean {
+  return envFlagDefaultTrue(env[GLOB_HIDDEN_ENV]);
+}
+
+/**
+ * Env toggle controlling whether glob RESPECTS the project's .gitignore. The
+ * flag is AMI_GLOB_NO_IGNORE and defaults ON (true = do NOT respect .gitignore),
+ * preserving the prior behavior and matching Claude Code's CLAUDE_CODE_GLOB_NO_IGNORE
+ * default. Set AMI_GLOB_NO_IGNORE=false to honor .gitignore (nested + .git/info/exclude).
+ * Returns true when results should be filtered through .gitignore.
+ */
+export const GLOB_NO_IGNORE_ENV = 'AMI_GLOB_NO_IGNORE';
+export function globRespectsGitignore(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !envFlagDefaultTrue(env[GLOB_NO_IGNORE_ENV]);
 }
 
 /**
@@ -102,7 +137,13 @@ function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal): Pro
 }
 
 async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], signal?: AbortSignal): Promise<string[] | null> {
-  const args = ['--files', '--no-ignore', '--hidden', '-g', pattern];
+  // --no-ignore: don't respect .gitignore (default; AMI_GLOB_NO_IGNORE=false lets
+  // ripgrep honor it natively). --hidden: include dotfiles (AMI_GLOB_HIDDEN=false
+  // excludes them). Mirrors Claude Code's rg flag assembly.
+  const args = ['--files'];
+  if (!globRespectsGitignore()) args.push('--no-ignore');
+  if (globIncludesHidden()) args.push('--hidden');
+  args.push('-g', pattern);
   for (const ig of ignore) { args.push('-g', `!${ig}`); }
   let r = await runRipgrepFiles(args, cwd, signal);
   // Thread-spawn exhaustion (EAGAIN): retry once single-threaded before giving up.
@@ -131,7 +172,10 @@ export const globHooks: {
 export const globTool: ToolDefinition = {
   name: 'glob',
   description:
-    'Find files matching a glob pattern. Returns matching file paths relative to the working directory.',
+    'Find files matching a glob pattern. Returns matching file paths relative to the working directory, ' +
+    'sorted by modification time (most recently modified first). ' +
+    'When you are doing an open-ended search that may require multiple rounds of globbing and grepping, ' +
+    'use the `task` tool to delegate it to a sub-agent instead.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -142,7 +186,9 @@ export const globTool: ToolDefinition = {
       path: {
         type: 'string',
         description:
-          'Base directory to search in. Defaults to the current working directory.',
+          'The directory to search in. If not specified, the current working directory is used. ' +
+          'IMPORTANT: Omit this field to use the default directory. Do NOT enter "undefined" or "null" - ' +
+          'simply omit it for the default behavior. Must be a valid directory path if provided.',
       },
       offset: {
         type: 'number',
@@ -212,6 +258,15 @@ export const globTool: ToolDefinition = {
     if (!pattern.includes('node_modules')) ignore.push('**/node_modules/**');
     if (!pattern.includes('.git')) ignore.push('**/.git/**');
 
+    // .gitignore respect (opt-in via AMI_GLOB_NO_IGNORE=false). Translate the
+    // project's ignore sources into tinyglobby excludes so deliberately-excluded
+    // files (secrets, build output) are never enumerated. The ripgrep route also
+    // honors them natively (it drops --no-ignore); these explicit excludes cover
+    // the in-process tinyglobby walk. Best-effort — a missing .gitignore adds none.
+    if (globRespectsGitignore()) {
+      ignore.push(...await collectGitignoreGlobs(resolved, ignore));
+    }
+
     try {
       // G5: opt-in ripgrep route (fast parallel walk); falls back to tinyglobby when
       // rg is unavailable/errors so results are always produced.
@@ -230,7 +285,8 @@ export const globTool: ToolDefinition = {
         const walked = globHooks.glob(pattern, {
           cwd: resolved,
           ignore,
-          dot: true,
+          // Hidden (dot) files are included by default; AMI_GLOB_HIDDEN=false excludes them.
+          dot: globIncludesHidden(),
           onlyFiles: true,
           absolute: false,
           expandDirectories: false,
@@ -302,10 +358,15 @@ export const globTool: ToolDefinition = {
 
       const summary = `[${total} files${truncated ? ' (truncated)' : ''}]`;
       let output = `${summary}\n${shown.join('\n')}`;
+      // When the result set was cut off, tell the model HOW to recover (narrow the
+      // search) rather than just that it was truncated — mirrors Claude Code's
+      // "Consider using a more specific path or pattern." affordance.
+      const narrowHint = ' Consider using a more specific path or pattern to narrow the search.';
       if (offset > 0) {
         output += `\n\n... showing ${offset + 1}-${offset + shown.length} of ${total} matches`;
+        if (truncated) output += `.${narrowHint}`;
       } else if (truncated) {
-        output += `\n\n... truncated (showing ${shown.length} of ${total} matches)`;
+        output += `\n\n... truncated (showing ${shown.length} of ${total} matches).${narrowHint}`;
       }
 
       return { output };

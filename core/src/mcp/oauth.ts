@@ -169,6 +169,19 @@ export interface AuthServerMetadata {
   /** Non-standard `default_scope` string some providers advertise. */
   defaultScope?: string;
   codeChallengeMethodsSupported?: string[];
+  /**
+   * RFC 8414 `grant_types_supported`. When advertised, the client verifies the
+   * authorization server can actually perform the `authorization_code` grant
+   * before driving a consent flow it could never complete.
+   */
+  grantTypesSupported?: string[];
+  /**
+   * RFC 8414 `token_endpoint_auth_methods_supported`. Used to pick the
+   * `token_endpoint_auth_method` a dynamically-registered client declares, so a
+   * server that does not accept public (`none`) clients still gets a usable
+   * registration (`client_secret_post` / `client_secret_basic`).
+   */
+  tokenEndpointAuthMethodsSupported?: string[];
 }
 
 export interface OAuthTokens {
@@ -333,6 +346,15 @@ export function resolveScopeFromMetadata(meta: AuthServerMetadata | null | undef
  * (`https://host/tenant1`) discovers at `https://host/.well-known/<suffix>/tenant1`.
  * A pathless issuer is unchanged (`https://host/.well-known/<suffix>`).
  */
+/**
+ * True when a URL carries a non-empty path component (ignoring a trailing slash).
+ * Used to gate the path-aware RFC 8414 fallback: a root URL's well-known probe is
+ * identical to the primary one, so only a path-bearing server URL warrants a retry.
+ */
+export function hasUrlPath(url: string): boolean {
+  try { return new URL(url).pathname.replace(/\/+$/, '') !== ''; } catch { return false; }
+}
+
 export function wellKnown(baseUrl: string, suffix: string): string {
   const u = new URL(baseUrl);
   const base = `${u.protocol}//${u.host}`;
@@ -343,7 +365,29 @@ export function wellKnown(baseUrl: string, suffix: string): string {
 async function getJson(fetchImpl: FetchLike, url: string): Promise<Record<string, unknown>> {
   const res = await fetchImpl(url, { headers: { Accept: 'application/json' } });
   if (!res.ok) throw new Error(`OAuth discovery failed (${res.status}) for ${url}`);
-  return (await res.json()) as Record<string, unknown>;
+  // A captive portal or intercepting proxy answers 200 with an HTML interstitial;
+  // parsing it as JSON throws an opaque SyntaxError mid-auth. Diagnose it so the
+  // user knows the NETWORK — not the auth server — is the problem.
+  try {
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new Error(`OAuth discovery returned a non-JSON response from ${url} (captive portal or proxy?)`);
+  }
+}
+
+/**
+ * Pick the `token_endpoint_auth_method` a dynamically-registered client should
+ * declare, given the server's advertised `token_endpoint_auth_methods_supported`.
+ * AMI registers public (PKCE) clients, so `none` is preferred; but a server that
+ * omits `none` from its list would reject such a registration, so fall back to a
+ * confidential method it does advertise. With no advertised list, default to `none`.
+ */
+export function pickRegistrationAuthMethod(supported?: string[]): string {
+  if (!supported || supported.length === 0) return 'none';
+  if (supported.includes('none')) return 'none';
+  if (supported.includes('client_secret_post')) return 'client_secret_post';
+  if (supported.includes('client_secret_basic')) return 'client_secret_basic';
+  return 'none';
 }
 
 /** RFC 9728 — fetch the resource server's protected-resource metadata. */
@@ -406,6 +450,10 @@ export async function discoverAuthServer(
     defaultScope: typeof doc.default_scope === 'string' ? doc.default_scope : undefined,
     codeChallengeMethodsSupported: Array.isArray(doc.code_challenge_methods_supported)
       ? (doc.code_challenge_methods_supported as string[]) : undefined,
+    grantTypesSupported: Array.isArray(doc.grant_types_supported)
+      ? (doc.grant_types_supported as string[]) : undefined,
+    tokenEndpointAuthMethodsSupported: Array.isArray(doc.token_endpoint_auth_methods_supported)
+      ? (doc.token_endpoint_auth_methods_supported as string[]) : undefined,
   };
 }
 
@@ -415,6 +463,7 @@ export async function registerClient(
   registrationEndpoint: string,
   redirectUris: string[],
   clientName = 'SuperInference AMI',
+  supportedAuthMethods?: string[],
 ): Promise<{ clientId: string; clientSecret?: string }> {
   const res = await fetchImpl(registrationEndpoint, {
     method: 'POST',
@@ -424,7 +473,10 @@ export async function registerClient(
       redirect_uris: redirectUris,
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      token_endpoint_auth_method: 'none',
+      // Honor the server's advertised token_endpoint_auth_methods_supported: a
+      // server that does not accept public (`none`) clients still gets a usable
+      // registration instead of a rejected one.
+      token_endpoint_auth_method: pickRegistrationAuthMethod(supportedAuthMethods),
     }),
   });
   if (!res.ok) throw new Error(`dynamic client registration failed (${res.status})`);
@@ -460,9 +512,29 @@ export function buildAuthorizationUrl(params: {
   return u.toString();
 }
 
+/**
+ * Coerce a token response's `expires_in` to a finite number of seconds, tolerating
+ * the numeric-string form some non-conformant IdPs send (`"3600"`). Returns
+ * undefined for a missing / empty / non-numeric value so the caller can fall back
+ * to the JWT `exp` claim or the default lifetime.
+ */
+export function coerceExpiresIn(raw: unknown): number | undefined {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : undefined;
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
 function toTokens(doc: Record<string, unknown>, now: number): OAuthTokens {
   if (typeof doc.access_token !== 'string') throw new Error('token response missing access_token');
-  const expiresIn = typeof doc.expires_in === 'number' ? doc.expires_in : undefined;
+  // Tolerate a numeric-string `expires_in` (common from PHP-backed IdPs) the same
+  // way z.coerce.number() would: a bare number is used as-is, a finite numeric
+  // string is coerced, anything else (missing / empty / non-numeric) is dropped so
+  // expiry falls back to the JWT `exp` claim or DEFAULT_TOKEN_LIFETIME_SEC rather
+  // than being treated as never-expiring.
+  const expiresIn = coerceExpiresIn(doc.expires_in);
   // Expiry resolution, in precedence order:
   //   1. the server-supplied `expires_in`;
   //   2. else the access token's own JWT `exp` claim (a JWT that omits expires_in
@@ -496,8 +568,15 @@ async function postForm(
   // Some non-compliant servers return HTTP 200 with an `error` body, so inspect
   // the payload even on a 2xx and normalise the code before deciding.
   let doc: Record<string, unknown> = {};
-  try { doc = (await res.json()) as Record<string, unknown>; } catch { doc = {}; }
+  let parseFailed = false;
+  try { doc = (await res.json()) as Record<string, unknown>; } catch { parseFailed = true; }
   if (!res.ok || typeof doc.error === 'string') throw normalizeTokenError(res.status, doc);
+  // A 2xx with a body that did not parse as JSON is almost always a captive
+  // portal / intercepting proxy answering with HTML — surface that instead of an
+  // opaque "missing access_token".
+  if (parseFailed) {
+    throw new Error(`OAuth token endpoint returned a non-JSON response from ${tokenEndpoint} (captive portal or proxy?)`);
+  }
   return toTokens(doc, now);
 }
 
@@ -763,16 +842,21 @@ export class McpOAuthSession implements McpOAuthProvider {
   }
 
   /**
-   * Shared consent flow for 401 (re)authorization and 403 step-up: discover the
-   * auth server, (dynamically register if needed), run interactive consent + PKCE
-   * code exchange, and cache the resulting tokens. `requiredScope` (from a 403
-   * challenge) is unioned with the configured/advertised scope so the new grant
-   * covers what the resource demanded.
+   * Resolve the authorization server for this MCP server, setting `this.authMeta`
+   * and `this.resource`. The primary path is RFC 9728 (protected-resource
+   * metadata) → RFC 8414 (authorization-server metadata). If that chain fails
+   * (non-200, missing authorization_servers, schema/network error) AND no metadata
+   * URL is pinned AND the server URL carries a path component, it falls back to a
+   * path-aware RFC 8414 probe directly against the MCP server URL — covering legacy
+   * servers that co-host AS metadata at `/.well-known/oauth-authorization-server/{path}`
+   * without implementing RFC 9728. For a root (pathless) server URL the primary
+   * well-known probe already covered the same endpoint, so the original error is
+   * rethrown rather than retried.
    */
-  private async performAuthorization(wwwAuthenticate: string | null, requiredScope?: string): Promise<boolean> {
+  private async discoverAuthorizationServer(wwwAuthenticate: string | null): Promise<{ prmScopes?: string[] }> {
+    const parsed = parseWwwAuthenticate(wwwAuthenticate);
+    const metadataUrl = parsed.resourceMetadata ?? wellKnown(this.opts.serverUrl, 'oauth-protected-resource');
     try {
-      const parsed = parseWwwAuthenticate(wwwAuthenticate);
-      const metadataUrl = parsed.resourceMetadata ?? wellKnown(this.opts.serverUrl, 'oauth-protected-resource');
       const prm = await discoverProtectedResource(this.fetch, metadataUrl);
       // RFC 9728 §3.3 mix-up protection: the resource the PRM describes must be
       // the server we are actually talking to (same origin). Reject a PRM that
@@ -782,11 +866,44 @@ export class McpOAuthSession implements McpOAuthProvider {
       const issuer = prm.authorizationServers[0];
       assertSecureUrl(issuer, 'authorization server issuer');
       this.authMeta = await discoverAuthServer(this.fetch, issuer, this.opts.authServerMetadataUrl);
+      return { prmScopes: prm.scopesSupported };
+    } catch (prmError) {
+      if (this.opts.authServerMetadataUrl === undefined && hasUrlPath(this.opts.serverUrl)) {
+        assertSecureUrl(this.opts.serverUrl, 'authorization server issuer');
+        this.authMeta = await discoverAuthServer(this.fetch, this.opts.serverUrl);
+        this.resource = this.opts.serverUrl;
+        return {};
+      }
+      throw prmError;
+    }
+  }
+
+  /**
+   * Shared consent flow for 401 (re)authorization and 403 step-up: discover the
+   * auth server, (dynamically register if needed), run interactive consent + PKCE
+   * code exchange, and cache the resulting tokens. `requiredScope` (from a 403
+   * challenge) is unioned with the configured/advertised scope so the new grant
+   * covers what the resource demanded.
+   */
+  private async performAuthorization(wwwAuthenticate: string | null, requiredScope?: string): Promise<boolean> {
+    try {
+      const { prmScopes } = await this.discoverAuthorizationServer(wwwAuthenticate);
+      const authMeta = this.authMeta!;
+      // RFC 8414 grant-type capability check: if the server advertises its
+      // supported grants, refuse to drive an authorization_code consent flow
+      // against one that cannot perform it (it could never complete).
+      if (authMeta.grantTypesSupported && !authMeta.grantTypesSupported.includes('authorization_code')) {
+        throw new Error('authorization server does not advertise the authorization_code grant');
+      }
 
       const redirectUri = await this.getRedirectUri();
       if (!this.effectiveClientId) {
-        if (!this.authMeta.registrationEndpoint) throw new Error('no client_id and no registration endpoint');
-        const reg = await registerClient(this.fetch, this.authMeta.registrationEndpoint, [redirectUri]);
+        if (!authMeta.registrationEndpoint) throw new Error('no client_id and no registration endpoint');
+        // Register with an auth method the server actually accepts (per its
+        // advertised token_endpoint_auth_methods_supported), not an assumed `none`.
+        const reg = await registerClient(
+          this.fetch, authMeta.registrationEndpoint, [redirectUri], undefined, authMeta.tokenEndpointAuthMethodsSupported,
+        );
         this.effectiveClientId = reg.clientId;
         // A confidential client registered dynamically returns its secret once.
         if (reg.clientSecret) this.effectiveClientSecret = reg.clientSecret;
@@ -799,11 +916,11 @@ export class McpOAuthSession implements McpOAuthProvider {
       // else fall back to the protected-resource metadata's advertised scopes. Any
       // 403 step-up `requiredScope` is unioned in so re-consent covers it.
       const scope = unionScopes(
-        this.opts.scope ?? resolveScopeFromMetadata(this.authMeta) ?? prm.scopesSupported?.join(' '),
+        this.opts.scope ?? resolveScopeFromMetadata(authMeta) ?? prmScopes?.join(' '),
         requiredScope,
       );
       const authorizationUrl = buildAuthorizationUrl({
-        authorizationEndpoint: this.authMeta.authorizationEndpoint,
+        authorizationEndpoint: authMeta.authorizationEndpoint,
         clientId: this.effectiveClientId,
         redirectUri,
         resource: this.resource,
@@ -821,7 +938,7 @@ export class McpOAuthSession implements McpOAuthProvider {
       }
       const code = authResult.code;
       const tokens = await exchangeCode(this.fetch, {
-        tokenEndpoint: this.authMeta.tokenEndpoint,
+        tokenEndpoint: authMeta.tokenEndpoint,
         code,
         verifier: pkce.verifier,
         clientId: this.effectiveClientId,
