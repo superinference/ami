@@ -141,6 +141,14 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set<string>([
   'mcpAutoAllowPatterns',
   'mcpToolGuidance',
   'defaultThinkingLevel',
+  // U023 skill-metadata properties (parity): secondary-name aliases, a
+  // runtime availability predicate, and required-argument declarations. These
+  // are declarative metadata consumed by the loader/skill tool, not code the
+  // catalog can inject to auto-run — safe to allow without explicit approval.
+  'aliases',
+  'isEnabled',
+  'requiresArgument',
+  'missingArgumentMessage',
 ]);
 
 /**
