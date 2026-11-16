@@ -4,6 +4,30 @@ import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock, FileLockOptions } from '../utils/file-lock';
 
+/**
+ * Emit a live `task_updated` child event (PARITY): mirrors Claude Code's
+ * reactive task signal + auto-expand-task-view affordance — every mutating
+ * action (create/update/claim/release/delete) surfaces the change to the
+ * frontend so a live task panel reflects it immediately, instead of the state
+ * being visible only through the tool's text output. The `task_updated`
+ * EngineEvent is already declared in types.ts and handled by
+ * event-processor.ts / repl.ts / detached-runner.ts; this is the producer that
+ * was missing. Fire-and-forget: a frontend that provides no `_emitChild` is a
+ * no-op and a listener must never be able to fail the mutation.
+ */
+function emitTaskUpdated(
+  context: ToolContext,
+  taskId: number,
+  status: string,
+  subject: string,
+): void {
+  try {
+    context._emitChild?.({ type: 'task_updated', taskId, status, subject });
+  } catch {
+    /* a frontend listener failure must never fail the mutation */
+  }
+}
+
 interface Task {
   id: number;
   subject: string;
@@ -456,7 +480,7 @@ export const taskTrackerTool: ToolDefinition = {
     'Prefer tasks in id order (lowest id first). Check the list first to avoid creating duplicate tasks. ' +
     'Pull-based teammates: call "next" (optionally with owner) to get the next pending/unowned/unblocked task, then "claim" it, work it, mark it completed, and repeat. If you claim a task but cannot start it, "release" it so another teammate can pick it up. ' +
     'Staleness: in shared/multi-owner task lists others may change a task between your reads — re-read the latest state with action "get" before you "update" or "claim" a task you did not just create, so you do not act on stale data. ' +
-    'Never mark a task completed on failure or error — leave it in_progress and fix the root cause first; if blocked, create a blocker task instead of closing.',
+    'Completion discipline: only mark a task completed when the work is FULLY accomplished and verified. Never mark a task completed if tests are failing, the implementation is partial, you hit unresolved errors, or you could not find required files or dependencies — leave it in_progress and fix the root cause first; if blocked, create a new blocker task describing what must be resolved instead of closing.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -546,6 +570,7 @@ export const taskTrackerTool: ToolDefinition = {
         if (context._hookManager) {
           context._hookManager.executeTaskCreated({ taskId: String(result.id), subject: result.subject, description: result.description }).catch(() => {});
         }
+        emitTaskUpdated(context, result.id, result.status, result.subject);
         return { output: capOutput(`Task #${result.id} created successfully: ${result.subject} [pending]`), isError: false };
       }
 
@@ -583,10 +608,14 @@ export const taskTrackerTool: ToolDefinition = {
         let deleted = false;
         let cycleErr = '';
         let startBlocked: number[] = [];
+        let emitStatus = '';
+        let emitSubject = '';
         const out = await mutate(() => {
           const task = tasks.get(id);
           if (!task) { notFound = true; return ''; }
           if (input.status === 'deleted') {
+            emitStatus = 'deleted';
+            emitSubject = task.subject;
             tasks.delete(id);
             for (const t of tasks.values()) {
               t.blocks = t.blocks.filter(bid => bid !== id);
@@ -681,6 +710,8 @@ export const taskTrackerTool: ToolDefinition = {
           if (input.metadata) changedFields.push('metadata');
           if (blocksBefore !== task.blocks.length) changedFields.push('blocks');
           if (blockedByBefore !== task.blockedBy.length) changedFields.push('blockedBy');
+          emitStatus = task.status;
+          emitSubject = task.subject;
           const didComplete = prevStatus !== 'completed' && task.status === 'completed';
           const fieldsLine = changedFields.length > 0
             ? `Updated task #${id} (fields: ${changedFields.join(', ')}).\n`
@@ -700,6 +731,7 @@ export const taskTrackerTool: ToolDefinition = {
           return { output: `Error: task #${id} is blocked by: ${startBlocked.map(b => `#${b}`).join(', ')} — resolve blockers before starting. [reason: blocked]`, isError: true };
         }
         void deleted;
+        emitTaskUpdated(context, id, emitStatus, emitSubject);
         return { output: capOutput(out), isError: false };
       }
 
@@ -738,8 +770,11 @@ export const taskTrackerTool: ToolDefinition = {
           return { output: 'Error: task_id is required for delete action.', isError: true };
         }
         let notFound = false;
+        let deletedSubject = '';
         await mutate(() => {
-          if (!tasks.has(id)) { notFound = true; return; }
+          const existing = tasks.get(id);
+          if (!existing) { notFound = true; return; }
+          deletedSubject = existing.subject;
           tasks.delete(id);
           for (const t of tasks.values()) {
             t.blocks = t.blocks.filter(bid => bid !== id);
@@ -749,6 +784,7 @@ export const taskTrackerTool: ToolDefinition = {
         if (notFound) {
           return { output: `Error: task #${id} not found.`, isError: true };
         }
+        emitTaskUpdated(context, id, 'deleted', deletedSubject);
         return { output: `Task #${id} deleted.`, isError: false };
       }
 
@@ -762,6 +798,7 @@ export const taskTrackerTool: ToolDefinition = {
         // Structured claim-failure reasons mirror Claude Code's ClaimTaskResult.
         let reason: 'task_not_found' | 'already_claimed' | 'already_resolved' | 'blocked' | 'agent_busy' | null = null;
         let detail = '';
+        let claimedSubject = '';
         const out = await mutate(() => {
           const task = tasks.get(id);
           if (!task) { reason = 'task_not_found'; return ''; }
@@ -788,6 +825,7 @@ export const taskTrackerTool: ToolDefinition = {
             }
           }
           task.status = 'in_progress';
+          claimedSubject = task.subject;
           // Explicit owner wins; otherwise auto-assign the acting agent identity
           // to an unowned task (PARITY: a teammate claiming without naming itself
           // still becomes the owner, so status/next attribute the work correctly).
@@ -803,6 +841,7 @@ export const taskTrackerTool: ToolDefinition = {
         if (reason === 'already_resolved') return { output: `Error: task #${id} is already completed. [reason: already_resolved]`, isError: true };
         if (reason === 'blocked') return { output: `Error: task #${id} is blocked by: ${detail} [reason: blocked]`, isError: true };
         if (reason === 'agent_busy') return { output: `Error: "${owner}" is already busy with: ${detail} [reason: agent_busy]`, isError: true };
+        emitTaskUpdated(context, id, 'in_progress', claimedSubject);
         return { output: capOutput(out), isError: false };
       }
 
@@ -819,6 +858,8 @@ export const taskTrackerTool: ToolDefinition = {
         }
         let notFound = false;
         let alreadyCompleted = false;
+        let releasedStatus = '';
+        let releasedSubject = '';
         const out = await mutate(() => {
           const task = tasks.get(id);
           if (!task) { notFound = true; return ''; }
@@ -827,6 +868,8 @@ export const taskTrackerTool: ToolDefinition = {
           const wasInProgress = task.status === 'in_progress';
           task.owner = undefined;
           if (wasInProgress) task.status = 'pending';
+          releasedStatus = task.status;
+          releasedSubject = task.subject;
           const changed: string[] = [];
           if (hadOwner) changed.push('owner cleared');
           if (wasInProgress) changed.push('reverted in_progress -> pending');
@@ -839,6 +882,7 @@ export const taskTrackerTool: ToolDefinition = {
         if (alreadyCompleted) {
           return { output: `Error: task #${id} is already completed — nothing to release. [reason: already_resolved]`, isError: true };
         }
+        emitTaskUpdated(context, id, releasedStatus, releasedSubject);
         return { output: capOutput(out), isError: false };
       }
 
