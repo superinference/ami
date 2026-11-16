@@ -122,6 +122,18 @@ export interface ProjectConfig {
 // ---------------------------------------------------------------------------
 
 /**
+ * Strip a leading UTF-8 byte-order mark (U+FEFF) so `JSON.parse` does not throw a
+ * cryptic "Unexpected token" on a BOM-prefixed file. PowerShell 5.x (Out-File /
+ * Set-Content), Notepad and various Windows editors write config/settings JSON
+ * WITH a BOM; without this the whole file reads as corrupt. Shared by EVERY path
+ * that parses AMI's own JSON config (user, local, global, AND managed) so the
+ * robustness is one source. Parity: Claude Code's `stripBOM` leaf.
+ */
+export function stripBom(input: string): string {
+  return input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
+}
+
+/**
  * Strip single-line (//) and block comments from a JSONC string so that
  * it can be parsed by the standard JSON.parse.
  *
@@ -273,7 +285,7 @@ function parseManagedFile(configPath: string): ProjectConfig {
   assertTrustedManagedFile(configPath);
   try {
     const raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
-    return JSON.parse(stripJsoncComments(raw)) as ProjectConfig;
+    return JSON.parse(stripJsoncComments(stripBom(raw))) as ProjectConfig;
   } catch (err) {
     // A broken enterprise policy must fail closed, not be silently ignored.
     throw new ManagedConfigError(`Managed config at ${configPath} failed to parse: ${err instanceof Error ? err.message : String(err)}`);
@@ -568,7 +580,7 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
   // Strip a leading UTF-8 BOM (e.g. config.json written by PowerShell 5.x or some
   // editors) before parsing — JSON.parse rejects a leading U+FEFF, which would
   // otherwise misreport an otherwise-valid file as corrupt.
-  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+  raw = stripBom(raw);
   let parsed: unknown;
   try {
     parsed = JSON.parse(stripJsoncComments(raw));
@@ -997,6 +1009,7 @@ export const fsHooks = {
   watch: fs.watch as typeof fs.watch,
   readdirSync: fs.readdirSync as typeof fs.readdirSync,
   lstatSync: fs.lstatSync as typeof fs.lstatSync,
+  readlinkSync: fs.readlinkSync as typeof fs.readlinkSync,
 };
 
 /**
@@ -1018,22 +1031,130 @@ export function validateConfigJson(content: string): { valid: boolean; error?: s
   return { valid: true };
 }
 
-export function safeWriteConfig(filePath: string, data: Record<string, unknown>): void {
-  const tmpPath = filePath + '.tmp';
-  const json = JSON.stringify(data, null, 2) + '\n';
-  // Attribute the imminent write to AMI so the config watcher does not reload +
-  // re-notify on its own echo (parity: changeDetector markInternalWrite).
-  markInternalWrite(filePath);
+// ---------------------------------------------------------------------------
+// Symlink write-through + pre-write backup rotation
+// ---------------------------------------------------------------------------
+
+/** The infix tagging a timestamped pre-write backup (distinct from `.corrupt-`). */
+const CONFIG_BACKUP_INFIX = '.backup-';
+
+/** Keep at most this many pre-write backups per config file (parity: Claude's MAX_BACKUPS). */
+export const MAX_CONFIG_BACKUPS = 5;
+
+/**
+ * Minimum spacing (ms) between pre-write backups of the same file (parity: Claude's
+ * MIN_BACKUP_INTERVAL_MS). During startup many `/config` / status-line writes can fire
+ * within milliseconds; without this, each would spawn a backup file and spam disk.
+ */
+export const CONFIG_BACKUP_MIN_INTERVAL_MS = 60_000;
+
+/** The epoch-ms timestamp encoded in a `<file>.backup-<ms>` name, or null if unparseable. */
+function backupTimestamp(backupPath: string): number | null {
+  const idx = backupPath.lastIndexOf(CONFIG_BACKUP_INFIX);
+  if (idx < 0) return null;
+  const n = Number(backupPath.slice(idx + CONFIG_BACKUP_INFIX.length));
+  return Number.isFinite(n) ? n : null;
+}
+
+/** All `<file>.backup-*` snapshots beside `filePath`, newest (largest ts) first. */
+function listConfigBackups(filePath: string): string[] {
   try {
     const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    return (fsHooks.readdirSync(dir) as string[])
+      .filter(e => e.startsWith(`${base}${CONFIG_BACKUP_INFIX}`))
+      .map(e => path.join(dir, e))
+      .sort((a, b) => (backupTimestamp(b) ?? 0) - (backupTimestamp(a) ?? 0));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve the REAL file a config write must land on: when `filePath` is a symlink
+ * (e.g. a dotfile-managed `~/.ami/config.json` stow/chezmoi link), return its
+ * target so the write updates the target IN PLACE and preserves the symlink —
+ * instead of a tmp+rename replacing the link with a regular file. A non-symlink
+ * or absent path resolves to itself. Parity: Claude Code's "if settings.json is a
+ * symlink, update the target file instead".
+ */
+export function resolveConfigWriteTarget(filePath: string): string {
+  try {
+    if (fsHooks.lstatSync(filePath).isSymbolicLink()) {
+      const dest = fsHooks.readlinkSync(filePath) as string;
+      return path.resolve(path.dirname(filePath), dest);
+    }
+  } catch {
+    // Not present / not inspectable → write the given path directly.
+  }
+  return filePath;
+}
+
+/**
+ * Snapshot the CURRENT on-disk content of `filePath` to a timestamped
+ * `<file>.backup-<ms>` before it is overwritten, so a logically-bad (but
+ * byte-valid) write — a merge bug, a reset, a truncated payload — stays
+ * recoverable even though the file was never "corrupt" at the byte level.
+ *
+ * Throttled to one backup per {@link CONFIG_BACKUP_MIN_INTERVAL_MS} (no backup
+ * storm during startup bursts) and pruned to the {@link MAX_CONFIG_BACKUPS}
+ * newest. Best-effort: a missing file or any backup/prune failure is swallowed —
+ * a backup must never block or break the write it protects. Returns the backup
+ * path written, or null. Parity: Claude's saveConfigWithLock backup rotation.
+ */
+export function backupConfigBeforeWrite(filePath: string, now: number = Date.now()): string | null {
+  let content: string;
+  try {
+    if (!fsHooks.existsSync(filePath)) return null;
+    content = fsHooks.readFileSync(filePath, 'utf-8') as string;
+  } catch {
+    return null; // nothing readable to back up
+  }
+  try {
+    // Throttle: skip when a backup already exists within the interval.
+    const existing = listConfigBackups(filePath);
+    const newestTs = existing.length > 0 ? backupTimestamp(existing[0]!) : null;
+    if (newestTs !== null && now - newestTs < CONFIG_BACKUP_MIN_INTERVAL_MS) return null;
+
+    const backupPath = `${filePath}${CONFIG_BACKUP_INFIX}${now}`;
+    fsHooks.writeFileSync(backupPath, content, 'utf-8');
+    coreLog('config', `backed up ${filePath} to ${backupPath}`);
+
+    // Prune to the newest MAX_CONFIG_BACKUPS (the just-written one included).
+    for (const stale of listConfigBackups(filePath).slice(MAX_CONFIG_BACKUPS)) {
+      try { fsHooks.unlinkSync(stale); } catch { /* best effort */ }
+    }
+    return backupPath;
+  } catch {
+    return null; // backup is best-effort; never surface it to the caller
+  }
+}
+
+export function safeWriteConfig(filePath: string, data: Record<string, unknown>): void {
+  // Write THROUGH a symlinked config path to its target so a dotfile-managed
+  // settings symlink is updated in place rather than clobbered by a regular file
+  // (parity: Claude's "if settings.json is a symlink, update the target file").
+  const target = resolveConfigWriteTarget(filePath);
+  const tmpPath = target + '.tmp';
+  const json = JSON.stringify(data, null, 2) + '\n';
+  // Snapshot the prior good content before overwriting it (throttled + rotated),
+  // so a logically-bad write stays recoverable.
+  backupConfigBeforeWrite(target);
+  // Attribute the imminent write to AMI so the config watcher does not reload +
+  // re-notify on its own echo (parity: changeDetector markInternalWrite). Mark
+  // both the logical path and the resolved target (symlink case).
+  markInternalWrite(filePath);
+  if (target !== filePath) markInternalWrite(target);
+  try {
+    const dir = path.dirname(target);
     if (!fsHooks.existsSync(dir)) {
       fsHooks.mkdirSync(dir, { recursive: true });
     }
     fsHooks.writeFileSync(tmpPath, json, 'utf-8');
     try {
-      fsHooks.renameSync(tmpPath, filePath);
+      fsHooks.renameSync(tmpPath, target);
     } catch {
-      fsHooks.writeFileSync(filePath, json, 'utf-8');
+      fsHooks.writeFileSync(target, json, 'utf-8');
       try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     }
   } catch (err) {
