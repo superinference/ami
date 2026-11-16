@@ -32,6 +32,16 @@ interface AgentMessage {
    * automatically — a caller never supplies it.
    */
   source?: MessageSource;
+  /**
+   * The sender's assigned display color, resolved from the trusted team roster at
+   * the single canonical delivery site (enqueue) — NOT model-supplied. Lets a
+   * consumer render an incoming teammate/peer message in that teammate's own color
+   * so concurrent agents stay visually distinguishable. Mirrors Claude Code's
+   * per-message `color` (teammateMailbox TeammateMessage.color / UserTeammateMessage),
+   * sourced from the same round-robin palette team.ts assigns on spawn. Undefined
+   * when the sender is not a colored roster member (e.g. the bare lead session).
+   */
+  color?: string;
 }
 
 /**
@@ -900,12 +910,40 @@ export function classifyMessageSource(content: string, from: string): MessageSou
   return from === TEAM_LEAD_NAME ? 'user' : 'teammate';
 }
 
+/**
+ * Resolve the sender's assigned display color from the trusted team roster (by
+ * name or agentId). Returns undefined when there is no team, the sender is not a
+ * roster member, or the team module is unavailable — the color is a best-effort
+ * display hint, never required for delivery. Keyed off the SAME color team.ts
+ * assigns on spawn (round-robin palette), so an incoming message can be rendered
+ * in its sender's color. Never model-supplied.
+ */
+function resolveSenderColor(from: string): string | undefined {
+  try {
+    const { getCurrentTeam } = require('./team');
+    const team = getCurrentTeam();
+    if (!team || !Array.isArray(team.members)) return undefined;
+    const member = team.members.find(
+      (m: { name: string; agentId?: string; color?: string }) => m.name === from || m.agentId === from,
+    );
+    return member?.color;
+  } catch { return undefined; }
+}
+
 function enqueue(to: string, msg: AgentMessage): void {
   // Stamp the origin category once, at the canonical delivery site, so every
   // queued OR waiter-handed-off message carries a typed `source` a consumer can
   // route on. Idempotent: a broadcast reuses one object across mailboxes and the
   // classification depends only on content+from, so re-entry is a no-op.
   if (!msg.source) { msg.source = classifyMessageSource(msg.content, msg.from); }
+  // Stamp the sender's trusted display color once, at the same canonical site, so
+  // every delivered message (direct, structured, broadcast, waiter hand-off)
+  // carries it for distinct per-teammate rendering. Resolved from the roster, not
+  // the model; absent when the sender is not a colored member. Idempotent.
+  if (msg.color === undefined) {
+    const c = resolveSenderColor(msg.from);
+    if (c) { msg.color = c; }
+  }
   // Every delivery bumps the recipient's monotonic revision — whether it is
   // handed to a waiter or queued — so a reactive consumer sees the change.
   mailboxRevisions.set(to, (mailboxRevisions.get(to) || 0) + 1);
