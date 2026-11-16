@@ -22,7 +22,28 @@ interface AgentMessage {
   content: string;
   summary?: string;
   timestamp: number;
+  /**
+   * Origin category of the message, classified at the single canonical delivery
+   * site (enqueue) so every queued/handed-off message carries it. Lets a consumer
+   * filter/route by where a message came from (e.g. relay 'teammate' chatter but
+   * drain 'system'/'task' control traffic differently) without re-parsing the
+   * content. Mirrors Claude Code's mailbox `Message.source` (MessageSource). Set
+   * automatically — a caller never supplies it.
+   */
+  source?: MessageSource;
 }
+
+/**
+ * The origin category of a mailbox message. Mirrors Claude Code's
+ * utils/mailbox.ts `MessageSource`:
+ * - `user`     — authored by the user-facing lead/main session.
+ * - `teammate` — plain conversational text from another agent.
+ * - `system`   — a structured control-plane message (shutdown/plan/permission/mode).
+ * - `task`     — a work-lifecycle control message (task_assignment / idle_notification).
+ * - `tick`     — reserved for timer/heartbeat-injected messages (not produced by
+ *                send_message itself; kept for schema parity with consumers).
+ */
+export type MessageSource = 'user' | 'teammate' | 'system' | 'tick' | 'task';
 
 /**
  * The canonical name of the team lead / main session. Control messages
@@ -617,7 +638,31 @@ export function markMailboxDelivered(agentName: string, ids: string[]): number {
   return removed;
 }
 
+/**
+ * Classify the origin category of a message from its content + sender, for the
+ * typed `source` field. A structured control message is 'task' for a work-
+ * lifecycle type (task_assignment / idle_notification) and 'system' for every
+ * other control type (shutdown/plan/permission/mode); plain text is 'user' when
+ * it comes from the lead/main session and 'teammate' otherwise. Mirrors Claude
+ * Code's MessageSource discrimination. ('tick' is reserved for timer-injected
+ * messages, which do not flow through send_message.)
+ */
+export function classifyMessageSource(content: string, from: string): MessageSource {
+  const parsed = parseStructuredMessage(content);
+  if (parsed && !('error' in parsed)) {
+    return parsed.type === 'task_assignment' || parsed.type === 'idle_notification'
+      ? 'task'
+      : 'system';
+  }
+  return from === TEAM_LEAD_NAME ? 'user' : 'teammate';
+}
+
 function enqueue(to: string, msg: AgentMessage): void {
+  // Stamp the origin category once, at the canonical delivery site, so every
+  // queued OR waiter-handed-off message carries a typed `source` a consumer can
+  // route on. Idempotent: a broadcast reuses one object across mailboxes and the
+  // classification depends only on content+from, so re-entry is a no-op.
+  if (!msg.source) { msg.source = classifyMessageSource(msg.content, msg.from); }
   // Every delivery bumps the recipient's monotonic revision — whether it is
   // handed to a waiter or queued — so a reactive consumer sees the change.
   mailboxRevisions.set(to, (mailboxRevisions.get(to) || 0) + 1);
