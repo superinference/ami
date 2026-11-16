@@ -8,6 +8,7 @@ import {
   resetTodos,
   formatTodoReadOutput,
   validateInProgressActiveForm,
+  TODO_MAX_RESULT_CHARS,
 } from '../src/tools/todo-write';
 import { createDefaultTools } from '../src/tools/index';
 import { PermissionManager } from '../src/permissions';
@@ -293,5 +294,72 @@ describe('U091 — todo-write parity additions', () => {
   it('description reinforces the always-provide-both-forms contract', () => {
     assert.match(todoWriteTool.description, /ALWAYS provide both forms/);
     assert.match(todoWriteTool.description, /REQUIRED for any item whose status is in_progress/);
+  });
+
+  // --- Gap: uniform quoted-boolean coercion of the `merge` arg ---------------
+  // Parity: Claude's semanticBoolean applied to every boolean tool input. A model
+  // that serializes merge as the STRING "false" must REPLACE, not merge (a naive
+  // `(input.merge as boolean)` treats the non-empty string "false" as truthy).
+  describe('merge arg quoted-boolean coercion (parity: semanticBoolean)', () => {
+    it('the STRING "false" replaces (does NOT merge) the stored list', async () => {
+      const w = ctx({ sessionId: 's1' });
+      await todoWriteTool.execute({
+        todos: [{ id: 'a', content: 'first', status: 'pending' }],
+      }, w.context);
+      // merge:"false" must behave like no merge → list is replaced, 'first' gone.
+      await todoWriteTool.execute({
+        todos: [{ id: 'b', content: 'second', status: 'pending' }],
+        merge: 'false',
+      }, w.context);
+      const ids = getTodos('s1:').map(t => t.id);
+      assert.deepEqual(ids, ['b'], 'merge:"false" must replace, not merge');
+    });
+
+    it('the STRING "true" merges by id', async () => {
+      const w = ctx({ sessionId: 's1' });
+      await todoWriteTool.execute({
+        todos: [{ id: 'a', content: 'first', status: 'pending' }],
+      }, w.context);
+      await todoWriteTool.execute({
+        todos: [{ id: 'b', content: 'second', status: 'pending' }],
+        merge: 'true',
+      }, w.context);
+      const ids = getTodos('s1:').map(t => t.id).sort();
+      assert.deepEqual(ids, ['a', 'b'], 'merge:"true" must merge/append');
+    });
+
+    it('a real boolean true still merges', async () => {
+      const w = ctx({ sessionId: 's1' });
+      await todoWriteTool.execute({
+        todos: [{ id: 'a', content: 'first', status: 'pending' }],
+      }, w.context);
+      await todoWriteTool.execute({
+        todos: [{ id: 'a', content: 'updated', status: 'in_progress', activeForm: 'Updating' }],
+        merge: true,
+      }, w.context);
+      const items = getTodos('s1:');
+      assert.equal(items.length, 1);
+      assert.equal(items[0].content, 'updated');
+    });
+  });
+
+  // --- Gap: per-tool maxResultSizeChars config knob -------------------------
+  describe('maxResultSizeChars declarative knob (parity: TodoWriteTool.maxResultSizeChars)', () => {
+    it('todo_write declares the cap on its ToolDefinition', () => {
+      assert.equal(todoWriteTool.maxResultSizeChars, TODO_MAX_RESULT_CHARS);
+    });
+
+    it('todo_read declares the same cap', () => {
+      assert.equal(todoReadTool.maxResultSizeChars, TODO_MAX_RESULT_CHARS);
+    });
+
+    it('the declared knob bounds the echoed-back write summary', async () => {
+      const w = ctx({ sessionId: 's1' });
+      const r = await todoWriteTool.execute({
+        todos: [{ id: '1', content: 'Z'.repeat(TODO_MAX_RESULT_CHARS + 5_000), status: 'pending' }],
+      }, w.context);
+      assert.ok(r.output.length <= TODO_MAX_RESULT_CHARS + 40, 'output bounded by the knob');
+      assert.match(r.output, /todo result truncated/);
+    });
   });
 });

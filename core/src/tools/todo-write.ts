@@ -1,4 +1,5 @@
 import { ToolContext, ToolDefinition, ToolResult, TodoItemView } from '../types';
+import { coerceBool } from '../utils/coerce';
 
 type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 
@@ -185,6 +186,11 @@ export const todoWriteTool: ToolDefinition = {
     required: ['todos'],
   },
   isReadOnly: false,
+  // Declarative per-tool result-size cap (parity: Claude's TodoWriteTool
+  // `maxResultSizeChars: 100_000`). execute() reads this field so the knob is the
+  // single authoritative bound on the echoed-back summary, matching todoReadTool
+  // and the mcp-resources tools.
+  maxResultSizeChars: TODO_MAX_RESULT_CHARS,
   async execute(input: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> {
     const validationError = validateTodoInput(input);
     if (validationError) return { output: `Error: ${validationError}`, isError: true };
@@ -201,7 +207,11 @@ export const todoWriteTool: ToolDefinition = {
       if (it.metadata !== undefined) item.metadata = it.metadata;
       return item;
     });
-    const merge = (input.merge as boolean) ?? false;
+    // Parity: route the boolean `merge` arg through coerceBool so a model/provider
+    // that serializes it as the STRING "false" (or "true") is handled correctly — a
+    // naive `(input.merge as boolean)` treats the non-empty string "false" as truthy
+    // and wrongly merges. (Claude's semanticBoolean wrapper applied uniformly.)
+    const merge = coerceBool(input.merge);
     const existing = sessionTodos.get(key) ?? [];
     const oldTodos = [...existing];
 
@@ -259,8 +269,9 @@ export const todoWriteTool: ToolDefinition = {
     // Persistent forward-looking affordance so the model keeps using the list.
     const affordance = '\n\nTodos have been updated. Continue to use the todo list to track progress; proceed with the current tasks.';
     let output = `Todos updated (${visible.length} items, ${changed.length} changed):\n${summary}${affordance}`;
-    if (output.length > TODO_MAX_RESULT_CHARS) {
-      output = output.slice(0, TODO_MAX_RESULT_CHARS) + '\n[... todo result truncated ...]';
+    const cap = todoWriteTool.maxResultSizeChars ?? TODO_MAX_RESULT_CHARS;
+    if (output.length > cap) {
+      output = output.slice(0, cap) + '\n[... todo result truncated ...]';
     }
     const result: ToolResult = {
       output,
@@ -313,8 +324,9 @@ export const todoReadTool: ToolDefinition = {
   maxResultSizeChars: TODO_MAX_RESULT_CHARS,
   async execute(_input: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> {
     let output = formatTodoReadOutput(keyFor(context));
-    if (output.length > TODO_MAX_RESULT_CHARS) {
-      output = output.slice(0, TODO_MAX_RESULT_CHARS) + '\n[... todo result truncated ...]';
+    const cap = todoReadTool.maxResultSizeChars ?? TODO_MAX_RESULT_CHARS;
+    if (output.length > cap) {
+      output = output.slice(0, cap) + '\n[... todo result truncated ...]';
     }
     return { output };
   },
