@@ -9,7 +9,7 @@ export type { SkillResolution } from './tools/skill';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
 export type { MemoryEntry, MemoryType, InstructionSource, MemoryPathScope } from './memory';
 export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV, VALID_INSTALL_SCOPES, isENOENT, sanitizePluginIdSegment, generatePluginId, COMMAND_SOURCES, COMMAND_TYPES } from './plugins';
-export type { PluginBundle, CommandDefinition, GitSourceValidation, PluginValidationResult, PluginValidationIssue, PluginLoadFailure, CommandSource, CommandType, PluginIdPrefix } from './plugins';
+export type { PluginBundle, CommandDefinition, CommandMetadata, PluginCommandsMetadataContext, GitSourceValidation, PluginValidationResult, PluginValidationIssue, PluginLoadFailure, CommandSource, CommandType, PluginIdPrefix } from './plugins';
 // Skill/agent TYPES + arg-safety live in core (bare building blocks). The
 // SkillManager (management) lives in common/src/skill-manager.ts.
 export type { SkillDefinition, AgentDefinition, SkillManagerLike, EffortLevel, AgentValidationResult, AgentColorName, AgentMemoryScope, AgentIsolationMode, SkillUpdate, SkillImprovementSuggestion, PreloadedSkillsResult } from './skills';

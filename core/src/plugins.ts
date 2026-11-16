@@ -209,6 +209,15 @@ export interface PluginBundle {
    */
   skillsPaths?: string[];
   /**
+   * Per-command metadata declared by the manifest `commandsMetadata` object-mapping
+   * (Claude parity: PluginManifestCommandsSchema's object form). Maps a command key
+   * to either a `source` file-path override (with description/argumentHint/model/
+   * allowedTools overrides applied to the discovered command) OR inline `content`
+   * that IS the command (no source file). `undefined` when the manifest declares
+   * none or every entry is malformed.
+   */
+  commandsMetadata?: Record<string, CommandMetadata>;
+  /**
    * Manifest `defaultEnabled` (Claude parity: a plugin may ship disabled-by-default).
    * Drives the tri-state enablement fallback (managed policy > explicit user marker >
    * `defaultEnabled` > true). `undefined` when the manifest omits it (treated as true).
@@ -315,6 +324,39 @@ export interface CommandDefinition {
    * unless the file opts out with `supports-non-interactive = false`.
    */
   supportsNonInteractive?: boolean;
+}
+
+/**
+ * Per-command metadata an author may declare in a plugin manifest's
+ * `commandsMetadata` object-mapping (Claude parity: CommandMetadataSchema,
+ * utils/plugins/schemas.ts L385-416). An entry either points at a command file via
+ * `source` OR carries inline markdown `content` — EXACTLY ONE (the schema `.refine`
+ * rejects both/neither) — and may override the command's user-facing description /
+ * argument hint / model / allowed-tools.
+ */
+export interface CommandMetadata {
+  /** Relative path (to the plugin root) of the command file this entry overrides. */
+  source?: string;
+  /** Inline markdown that IS the command (frontmatter + body), when there is no file. */
+  content?: string;
+  /** Description override for the command. */
+  description?: string;
+  /** Argument-hint override for the command. */
+  argumentHint?: string;
+  /** Model override for the command. */
+  model?: string;
+  /** Allowed-tools override for the command. */
+  allowedTools?: string[];
+}
+
+/**
+ * Context for applying a manifest's {@link CommandMetadata} record while loading
+ * commands: the plugin `root` (to resolve each entry's relative `source` against)
+ * and the `entries` record itself (command key → metadata).
+ */
+export interface PluginCommandsMetadataContext {
+  root: string;
+  entries: Record<string, CommandMetadata>;
 }
 
 /** Provenance of a command definition (Claude parity: Command.source). */
@@ -706,7 +748,7 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
  * the same namespacing rules. They are loaded AFTER `dir` so a duplicate name from
  * an extra path does not shadow the canonical command (callers dedup by name).
  */
-export function loadCommands(dir: string, pluginName?: string, extraPaths?: string[]): CommandDefinition[] {
+export function loadCommands(dir: string, pluginName?: string, extraPaths?: string[], metadata?: PluginCommandsMetadataContext): CommandDefinition[] {
   const commands: CommandDefinition[] = [];
   const plugin = pluginName && pluginName.trim() !== '' ? pluginName.trim() : undefined;
   walkCommandDir(dir, [], plugin, commands);
@@ -730,7 +772,61 @@ export function loadCommands(dir: string, pluginName?: string, extraPaths?: stri
       }
     }
   }
+  if (metadata) applyCommandsMetadata(commands, metadata);
   return commands;
+}
+
+/**
+ * Copy the overridable fields of a {@link CommandMetadata} entry onto `cmd`
+ * (Claude parity: the metadata-override frontmatter merge in loadPluginCommands).
+ * Each override is applied only when it is a non-empty string / non-empty array so
+ * a blank override never blanks out the command's own value.
+ */
+function applyCommandMetadataOverride(cmd: CommandDefinition, meta: CommandMetadata): void {
+  if (typeof meta.description === 'string' && meta.description.trim() !== '') cmd.description = meta.description;
+  if (typeof meta.argumentHint === 'string' && meta.argumentHint.trim() !== '') cmd.argumentHint = meta.argumentHint;
+  if (typeof meta.model === 'string' && meta.model.trim() !== '') cmd.model = meta.model;
+  if (Array.isArray(meta.allowedTools) && meta.allowedTools.length > 0) cmd.allowedTools = meta.allowedTools;
+}
+
+/**
+ * Apply a plugin manifest's `commandsMetadata` object-mapping to an already-walked
+ * command list (Claude parity: loadPluginCommands L516-668). Each entry is keyed by
+ * the command name it defines and carries EXACTLY ONE of `source`/`content`:
+ *  - `source`: resolve the file path (relative to the plugin root, hardened against
+ *    `..`/symlink escape), match the discovered command loaded from it, rename that
+ *    command to the metadata key, and apply the field overrides.
+ *  - `content`: parse the inline markdown as a brand-new `'prompt'` command under the
+ *    metadata key (no source file) and apply the field overrides.
+ * An entry with both or neither of source/content is skipped (the schema rejects it).
+ */
+function applyCommandsMetadata(commands: CommandDefinition[], ctx: PluginCommandsMetadataContext): void {
+  for (const [key, meta] of Object.entries(ctx.entries)) {
+    if (!meta || typeof meta !== 'object') continue;
+    const hasSource = typeof meta.source === 'string' && meta.source.trim() !== '';
+    const hasContent = typeof meta.content === 'string' && meta.content.trim() !== '';
+    if (hasSource === hasContent) continue; // XOR (parity: CommandMetadataSchema.refine)
+    if (hasSource) {
+      const abs = hardenedResolve(ctx.root, meta.source!);
+      if (abs === undefined) continue; // source escapes the root / does not exist
+      const match = commands.find(c => path.resolve(c.filePath) === path.resolve(abs));
+      if (match) {
+        match.name = key;
+        match.namespace = [];
+        applyCommandMetadataOverride(match, meta);
+      }
+    } else {
+      // Inline-content command: the markdown IS the command (Claude parity). A
+      // virtual filePath marks it as having no on-disk source.
+      const cmd = parseMarkdownCommandFile(meta.content!, `<inline:${key}>`, key);
+      if (cmd) {
+        cmd.namespace = [];
+        cmd.source = 'plugin';
+        applyCommandMetadataOverride(cmd, meta);
+        commands.push(cmd);
+      }
+    }
+  }
 }
 
 /** Parse a TOML `key = true|false` boolean, or undefined when absent/other. */
@@ -940,6 +1036,45 @@ function validateManifestDependencies(deps: unknown, errors: PluginValidationIss
 }
 
 /**
+ * Validate a manifest's optional `commandsMetadata` object-mapping (Claude parity:
+ * CommandMetadataSchema, utils/plugins/schemas.ts L385-416). Each value must be an
+ * object carrying EXACTLY ONE of `source` (a relative, non-escaping command-file
+ * path) or `content` (inline markdown) — the schema `.refine` rejects both/neither —
+ * plus optional string `description`/`argumentHint`/`model` and a string-array
+ * `allowedTools`. Each message carries the corrective example wording so an author
+ * can self-correct.
+ */
+function validateCommandsMetadata(val: unknown, errors: PluginValidationIssue[]): void {
+  if (val === undefined) return;
+  if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+    errors.push({ path: 'commandsMetadata', message: 'Plugin "commandsMetadata" must be an object mapping a command name to its { source | content, ... } metadata.' });
+    return;
+  }
+  for (const [key, meta] of Object.entries(val as Record<string, unknown>)) {
+    const label = `commandsMetadata.${key}`;
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
+      errors.push({ path: label, message: 'Command metadata must be an object with either a "source" (file path) or "content" (inline markdown).' });
+      continue;
+    }
+    const m = meta as Record<string, unknown>;
+    const hasSource = typeof m.source === 'string' && m.source.trim() !== '';
+    const hasContent = typeof m.content === 'string' && m.content.trim() !== '';
+    if (hasSource === hasContent) {
+      errors.push({ path: label, message: 'Command must have either "source" (file path) or "content" (inline markdown), but not both.' });
+    }
+    if (typeof m.source === 'string') validateComponentPathString(`${label}.source`, m.source, errors);
+    for (const field of ['description', 'argumentHint', 'model'] as const) {
+      if (m[field] !== undefined && typeof m[field] !== 'string') {
+        errors.push({ path: `${label}.${field}`, message: `Command metadata "${field}" must be a string.` });
+      }
+    }
+    if (m.allowedTools !== undefined && (!Array.isArray(m.allowedTools) || !m.allowedTools.every(t => typeof t === 'string'))) {
+      errors.push({ path: `${label}.allowedTools`, message: 'Command metadata "allowedTools" must be an array of strings (e.g., ["Bash", "Read"]).' });
+    }
+  }
+}
+
+/**
  * Validate a parsed plugin manifest object. Checks required `name`/`version`
  * strings (with a kebab-case name refinement), validates the optional metadata
  * fields (description/author/homepage/repository/license/keywords) via
@@ -972,6 +1107,7 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   }
 
   validateManifestMetadata(obj, errors);
+  validateCommandsMetadata(obj.commandsMetadata, errors);
 
   for (const field of COMPONENT_PATH_FIELDS) {
     validateComponentPathField(field, obj[field], errors);
@@ -1399,6 +1535,39 @@ function resolveManifestPathList(root: string, manifest: Record<string, unknown>
 }
 
 /**
+ * Parse a manifest's `commandsMetadata` object-mapping into a normalized
+ * {@link CommandMetadata} record, keeping only well-formed entries (Claude parity).
+ * An entry is kept when it is an object carrying EXACTLY ONE of `source`/`content`;
+ * `argument-hint` is accepted as an alias for `argumentHint` (TOML/Claude frontmatter
+ * spelling). Returns undefined when the field is absent or no entry survives, so the
+ * bundle carries a value only when it actually contributes command metadata.
+ */
+function parseCommandsMetadata(manifest: Record<string, unknown>): Record<string, CommandMetadata> | undefined {
+  const raw = manifest.commandsMetadata;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, CommandMetadata> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) continue;
+    const v = val as Record<string, unknown>;
+    const entry: CommandMetadata = {};
+    if (typeof v.source === 'string') entry.source = v.source;
+    if (typeof v.content === 'string') entry.content = v.content;
+    if (typeof v.description === 'string') entry.description = v.description;
+    const argHint = v.argumentHint ?? v['argument-hint'];
+    if (typeof argHint === 'string') entry.argumentHint = argHint;
+    if (typeof v.model === 'string') entry.model = v.model;
+    if (Array.isArray(v.allowedTools) && v.allowedTools.every(t => typeof t === 'string')) {
+      entry.allowedTools = v.allowedTools as string[];
+    }
+    const hasSource = entry.source !== undefined && entry.source.trim() !== '';
+    const hasContent = entry.content !== undefined && entry.content.trim() !== '';
+    if (hasSource === hasContent) continue; // XOR: skip malformed entries at discovery
+    out[key] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
  * Discover local plugin bundles under `dir`, ALSO returning structured load
  * failures (invalid JSON / failed manifest validation) so callers can surface
  * actionable guidance instead of silently dropping a broken plugin. A directory
@@ -1496,6 +1665,9 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       // hardened (Claude parity: commandsPaths / skillsPaths).
       commandsPaths: resolveManifestPathList(root, manifest, 'commandsPaths'),
       skillsPaths: resolveManifestPathList(root, manifest, 'skillsPaths'),
+      // Per-command metadata object-mapping (Claude parity: commandsMetadata) — kept
+      // only when it carries at least one well-formed entry.
+      commandsMetadata: parseCommandsMetadata(manifest),
     });
   }
   return { bundles, failures };
