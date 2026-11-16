@@ -16,12 +16,34 @@ const execFileAsync = promisify(execFile);
  * seam so the glob-failure fallback can be exercised without a pathological
  * filesystem. The `execFileAsync` seam exists so the git-subprocess timeout /
  * failure fallback in getGitTrackedFiles can be exercised deterministically.
+ * The `yieldToEventLoop` seam exists so the cooperative-yield path in the
+ * chunked async build can be observed deterministically in tests.
  * Production behavior is identical to calling `tinyglobby.glob` /
- * `child_process.execFile`.
+ * `child_process.execFile` / `setImmediate`.
  */
-export const indexerHooks: { glob: typeof glob; execFileAsync: typeof execFileAsync } = {
+export const indexerHooks: {
+  glob: typeof glob;
+  execFileAsync: typeof execFileAsync;
+  yieldToEventLoop: () => Promise<void>;
+} = {
   glob,
   execFileAsync,
+  yieldToEventLoop: () => new Promise<void>(resolve => { setImmediate(resolve); }),
+};
+
+/**
+ * Tunable knobs for the chunked async index build (mirrors Claude Code's
+ * file-index `CHUNK_MS`). The build parses files in a tight await-loop but
+ * yields to the event loop on a WALL-CLOCK time budget — not a fixed file
+ * count — because a count that is ~2ms on fast hardware can be 15ms+ on older
+ * machines, which would stall the main thread. `chunkMs` is the budget; the
+ * elapsed check runs only every `chunkCheckInterval` files to amortize the
+ * `performance.now()` overhead. Exposed as a mutable object so the cadence is
+ * tunable and deterministically testable.
+ */
+export const indexBuildConfig: { chunkMs: number; chunkCheckInterval: number } = {
+  chunkMs: 4,
+  chunkCheckInterval: 256,
 };
 
 // ---------------------------------------------------------------------------
@@ -498,20 +520,71 @@ export class WorkspaceIndexer {
   // Build the full index
   // -------------------------------------------------------------------------
 
+  /**
+   * Build the full index and resolve when the WHOLE index is ready. Thin
+   * wrapper over {@link buildIndexAsync}; consumers that don't need progressive
+   * queryability await the `done` promise. The underlying build is chunked and
+   * cooperatively yields to the event loop (see {@link indexBuildConfig}), so a
+   * large repo no longer blocks the main thread for the full parse.
+   */
   async buildIndex(): Promise<BuildIndexResult> {
-    const start = Date.now();
+    return this.buildIndexAsync().done;
+  }
 
+  /**
+   * Progressive, cooperatively-yielding index build. Returns two promises:
+   *   - `queryable` resolves as soon as the FIRST chunk is indexed, so
+   *     {@link searchSymbols} / {@link getSummary} can serve partial results
+   *     against the already-indexed prefix while the build continues (graceful
+   *     degradation on a huge repo — mirrors Claude Code's
+   *     `loadFromFileListAsync` { queryable, done } contract);
+   *   - `done` resolves with the full {@link BuildIndexResult} when the entire
+   *     index is built.
+   * `queryable` is always settled (even on a build error or a cached no-op) so
+   * a consumer awaiting it never hangs.
+   */
+  buildIndexAsync(): { queryable: Promise<void>; done: Promise<BuildIndexResult> } {
+    let markQueryable: () => void = () => {};
+    const queryable = new Promise<void>(resolve => { markQueryable = resolve; });
+    // Guarantee `queryable` settles even if the build throws or is a cached
+    // no-op that never reaches the first chunk boundary.
+    const done = this.runChunkedBuild(markQueryable).finally(() => { markQueryable(); });
+    return { queryable, done };
+  }
+
+  /**
+   * Resolve the discovery/cache plan for a build: find the project root, apply
+   * the change-detection fast paths (git-index mtime, then path-list
+   * signature), run git/glob discovery, filter generated files and cap to
+   * MAX_FILES. Returns a ready-made {@link BuildIndexResult} when the build is a
+   * skip or a cache hit, otherwise the file list + metadata to parse. Shared by
+   * the sync and chunked build paths so discovery logic lives in one place.
+   */
+  private async resolveBuildPlan(start: number): Promise<
+    | { ready: true; result: BuildIndexResult }
+    | {
+        ready: false;
+        filePaths: string[];
+        discovery: 'git' | 'glob';
+        discoveryMs: number;
+        maxFilesCapped: boolean;
+        signature: string;
+      }
+  > {
     const projectRoot = findProjectRoot(this.cwd);
     if (!projectRoot) {
       return {
-        fileCount: 0,
-        symbolCount: 0,
-        duration: Date.now() - start,
-        skippedReason: 'no project root found',
-        discovery: 'none',
-        cached: false,
-        maxFilesCapped: false,
-        stages: { discoveryMs: 0, parseMs: 0 },
+        ready: true,
+        result: {
+          fileCount: 0,
+          symbolCount: 0,
+          duration: Date.now() - start,
+          skippedReason: 'no project root found',
+          discovery: 'none',
+          cached: false,
+          maxFilesCapped: false,
+          stages: { discoveryMs: 0, parseMs: 0 },
+        },
       };
     }
 
@@ -521,13 +594,16 @@ export class WorkspaceIndexer {
     const idxMtime = gitIndexMtime(projectRoot);
     if (this.files.size > 0 && idxMtime !== null && this.lastIndexSignature === `git:${idxMtime}`) {
       return {
-        fileCount: this.files.size,
-        symbolCount: this.getStats().symbolCount,
-        duration: Date.now() - start,
-        discovery: 'git',
-        cached: true,
-        maxFilesCapped: false,
-        stages: { discoveryMs: 0, parseMs: 0 },
+        ready: true,
+        result: {
+          fileCount: this.files.size,
+          symbolCount: this.getStats().symbolCount,
+          duration: Date.now() - start,
+          discovery: 'git',
+          cached: true,
+          maxFilesCapped: false,
+          stages: { discoveryMs: 0, parseMs: 0 },
+        },
       };
     }
 
@@ -595,36 +671,67 @@ export class WorkspaceIndexer {
     // would reproduce the same index, so skip the re-parse.
     if (this.files.size > 0 && this.lastIndexSignature === signature) {
       return {
-        fileCount: this.files.size,
-        symbolCount: this.getStats().symbolCount,
-        duration: Date.now() - start,
-        discovery,
-        cached: true,
-        maxFilesCapped,
-        stages: { discoveryMs, parseMs: 0 },
+        ready: true,
+        result: {
+          fileCount: this.files.size,
+          symbolCount: this.getStats().symbolCount,
+          duration: Date.now() - start,
+          discovery,
+          cached: true,
+          maxFilesCapped,
+          stages: { discoveryMs, parseMs: 0 },
+        },
       };
     }
 
+    return { ready: false, filePaths, discovery, discoveryMs, maxFilesCapped, signature };
+  }
+
+  /**
+   * Parse the planned file list, yielding to the event loop on a wall-clock
+   * time budget (see {@link indexBuildConfig}) so a large repo stays
+   * responsive. `markQueryable` is invoked at the first yield point so a waiting
+   * consumer can search the partial index.
+   */
+  private async runChunkedBuild(markQueryable: () => void): Promise<BuildIndexResult> {
+    const start = Date.now();
+    const plan = await this.resolveBuildPlan(start);
+    if (plan.ready) return plan.result;
+
+    const { chunkMs, chunkCheckInterval } = indexBuildConfig;
     const parseStart = Date.now();
     let symbolCount = 0;
-    for (const fp of filePaths) {
-      const entry = await this.indexFile(fp);
+    let chunkStart = performance.now();
+    let firstChunk = true;
+    for (let i = 0; i < plan.filePaths.length; i++) {
+      const entry = await this.indexFile(plan.filePaths[i]!);
       if (entry) {
         symbolCount += entry.symbols.length;
+      }
+      // Time-based cooperative yield: re-measure only every `chunkCheckInterval`
+      // files (amortizing performance.now()), and yield when the wall-clock
+      // budget is exceeded. The first yield marks the partial index queryable.
+      if ((i + 1) % chunkCheckInterval === 0 && performance.now() - chunkStart > chunkMs) {
+        if (firstChunk) {
+          markQueryable();
+          firstChunk = false;
+        }
+        await indexerHooks.yieldToEventLoop();
+        chunkStart = performance.now();
       }
     }
     const parseMs = Date.now() - parseStart;
 
-    this.lastIndexSignature = signature;
+    this.lastIndexSignature = plan.signature;
 
     return {
       fileCount: this.files.size,
       symbolCount,
       duration: Date.now() - start,
-      discovery,
+      discovery: plan.discovery,
       cached: false,
-      maxFilesCapped,
-      stages: { discoveryMs, parseMs },
+      maxFilesCapped: plan.maxFilesCapped,
+      stages: { discoveryMs: plan.discoveryMs, parseMs },
     };
   }
 

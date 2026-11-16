@@ -17,6 +17,15 @@ function fakeIndexer(opts: { build: () => Promise<unknown>; cwd?: string }): Wor
   return {
     cwd: opts.cwd ?? '/tmp/parity-symbols',
     buildIndex: opts.build,
+    // Mirror the real buildIndexAsync contract: `done` is the build promise,
+    // and `queryable` settles once the build settles (mirrors the real
+    // indexer's finally-marked queryable), so a never-resolving build also has a
+    // never-resolving queryable (exercising the timeout path).
+    buildIndexAsync: () => {
+      const done = opts.build();
+      const queryable = Promise.resolve(done).then(() => {}, () => {});
+      return { queryable, done };
+    },
     searchSymbols: () => [],
     getStats: () => ({ fileCount: 0, symbolCount: 0 }),
   } as unknown as WorkspaceIndexer;

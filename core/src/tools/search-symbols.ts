@@ -9,6 +9,10 @@ import { extractQuery } from './tool-utils';
 
 let _indexer: WorkspaceIndexer | null = null;
 let _buildPromise: Promise<void> | null = null;
+/** Resolves as soon as the background build has indexed its first chunk, so a
+ *  tool call can search the partial index while the full build continues
+ *  (progressive queryability — see WorkspaceIndexer.buildIndexAsync). */
+let _queryablePromise: Promise<void> | null = null;
 /** Set when the last background index build rejected, so the next call retries
  *  instead of permanently serving an empty index (a transient fs/git error at
  *  startup would otherwise never recover). Mirrors Claude Code's tracked
@@ -41,10 +45,14 @@ export function getWorkspaceIndexer(cwd: string): WorkspaceIndexer {
   if (!_indexer || _indexer.cwd !== cwd || _buildFailed) {
     _indexer = indexerHooks.create(cwd);
     _buildFailed = false;
-    // Fire-and-forget: start building the index in the background. A rejected
-    // build records the failure so the next call rebuilds rather than hanging on
-    // (or silently serving) a never-completed index.
-    _buildPromise = _indexer.buildIndex()
+    // Fire-and-forget: start building the index in the background. The chunked
+    // async build exposes a `queryable` signal (partial index ready) so a tool
+    // call doesn't have to wait for the FULL build on a large repo, and a `done`
+    // signal for completion. A rejected build records the failure so the next
+    // call rebuilds rather than hanging on (or silently serving) a dead index.
+    const { queryable, done } = _indexer.buildIndexAsync();
+    _queryablePromise = queryable;
+    _buildPromise = done
       .then(() => { _buildPromise = null; })
       .catch(() => { _buildPromise = null; _buildFailed = true; });
   }
@@ -57,11 +65,16 @@ export function getWorkspaceIndexer(cwd: string): WorkspaceIndexer {
  *  turn is aborted, so a cancelled call doesn't keep blocking on the build. */
 async function ensureBuilt(cwd: string, abortSignal: AbortSignal): Promise<WorkspaceIndexer> {
   const indexer = getWorkspaceIndexer(cwd);
-  if (_buildPromise && !abortSignal.aborted) {
+  // Wait only until the index is QUERYABLE (first chunk ready), not until the
+  // full build completes: on a large repo this returns partial results quickly
+  // while the background build fills in the rest, instead of blocking the whole
+  // parse. For a small repo `queryable` and `done` settle together, so there is
+  // no behavior change. Bounded by the timeout and stopped early on abort.
+  if (_queryablePromise && !abortSignal.aborted) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
     await Promise.race([
-      _buildPromise,
+      _queryablePromise,
       new Promise<void>(resolve => { timer = setTimeout(resolve, indexBuildTimeoutMs()); }),
       new Promise<void>(resolve => {
         onAbort = () => resolve();
@@ -78,6 +91,7 @@ async function ensureBuilt(cwd: string, abortSignal: AbortSignal): Promise<Works
 export function _resetIndexer(): void {
   _indexer = null;
   _buildPromise = null;
+  _queryablePromise = null;
   _buildFailed = false;
 }
 
