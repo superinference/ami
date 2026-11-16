@@ -92,6 +92,11 @@ export interface HookContext {
   lastAssistantMessage?: AssistantMessage;
   toolResults?: Array<{ toolName: string; output: string; isError: boolean }>;
   turnCount: number;
+  /** Whether this Stop hook is firing as a RE-ENTRANT continuation (a previous
+   *  Stop hook blocked turn-end and the engine re-entered the loop), serialized
+   *  into the Stop hook stdin as `stop_hook_active` so a hook can detect — and
+   *  break — a block→retry recursion (Claude Code's StopHookInput.stop_hook_active). */
+  stopHookActive?: boolean;
   /** Parent cancellation signal (user Ctrl-C / turn abort). Threaded into
    *  command/http/prompt/agent hook execution so a long-running hook is torn
    *  down when the surrounding operation is cancelled, combined with the
@@ -2270,8 +2275,16 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'stop': {
-          const fn: StopHookFn = async () => {
-            const eventData = serializeHookEvent({ event: 'stop' });
+          const fn: StopHookFn = async (ctx) => {
+            // Claude Code parity: a Stop hook reads `stop_hook_active` (to break a
+            // block→retry recursion) and `last_assistant_message` (the final model
+            // text) from its stdin without reading the transcript file.
+            const lastText = ctx.lastAssistantMessage?.content?.trim() || undefined;
+            const eventData = serializeHookEvent({
+              event: 'stop',
+              stop_hook_active: ctx.stopHookActive ?? false,
+              ...(lastText ? { last_assistant_message: lastText } : {}),
+            });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.stopHooks, fn, 'stop');
             const blockingError = extractHookBlockingError(result);
             if (blockingError) return { blockingError };
