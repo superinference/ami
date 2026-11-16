@@ -1,5 +1,10 @@
 import * as fs from 'fs';
-import { projectStateDir, canonicalGitRoot } from './reference-journal';
+import {
+  projectStateDir,
+  canonicalGitRoot,
+  expandConfigDir,
+  isDangerousStorageRoot,
+} from './reference-journal';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -198,6 +203,14 @@ const MEMORY_FRONTMATTER_EXAMPLE = [
   '```',
 ].join('\n');
 
+/** An on-disk memory file whose size exceeds {@link MAX_MEMORY_CHARACTER_COUNT}. */
+export interface LargeMemoryFile {
+  /** Absolute path to the oversized memory file. */
+  path: string;
+  /** Character length of the file's raw content. */
+  chars: number;
+}
+
 export interface MemoryEntry {
   path: string;
   content: string;
@@ -257,6 +270,44 @@ const MAX_INSTRUCTION_FILE_SIZE = 10_240;
  */
 export const MAX_ENTRYPOINT_LINES = 200;
 export const MAX_ENTRYPOINT_BYTES = 25_000;
+
+/**
+ * Recommended maximum character count for a single memory file (parity with
+ * Claude Code's `MAX_MEMORY_CHARACTER_COUNT`, utils/claudemd.ts). Files over this
+ * are not silently clipped — {@link MemoryManager.getLargeMemoryFiles} surfaces
+ * them and {@link MemoryManager.getMemoryContext} emits a visible performance
+ * warning so the user can split/trim rather than having context silently crowded.
+ */
+export const MAX_MEMORY_CHARACTER_COUNT = 40_000;
+
+/**
+ * Environment variable that redirects the ENTIRE auto-memory directory to an
+ * explicit absolute path, bypassing the computed `{config}/projects/{slug}/memory`
+ * location. Parity with Claude Code's full-path memory override
+ * (`CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` / `CLAUDE_CODE_REMOTE_MEMORY_DIR`,
+ * memdir/paths.ts): lets an SDK/host mount memory on a space-scoped volume where
+ * the per-session cwd would otherwise fragment the project key. The value is
+ * tilde-expanded and boundary-validated (shared {@link isDangerousStorageRoot})
+ * so a near-root / relative / UNC / NUL path can never silently redirect every
+ * memory write; a rejected value falls through to the default location.
+ */
+const MEMORY_DIR_OVERRIDE_ENV = 'AMI_MEMORY_DIR';
+
+/**
+ * Resolve the validated full memory-dir override from the environment, or null
+ * when unset/empty/dangerous. A dangerous value is logged and skipped so it is
+ * never silently honored.
+ */
+export function resolveMemoryDirOverride(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env[MEMORY_DIR_OVERRIDE_ENV];
+  if (!raw || !raw.trim()) return null;
+  const expanded = expandConfigDir(raw, env);
+  if (isDangerousStorageRoot(expanded)) {
+    coreLog('memory', `rejecting dangerous ${MEMORY_DIR_OVERRIDE_ENV} override: ${raw}`);
+    return null;
+  }
+  return expanded.normalize('NFC');
+}
 
 /**
  * Truncate MEMORY.md entrypoint content to the line/byte caps, appending a
@@ -787,10 +838,20 @@ export class MemoryManager {
     let files: string[];
 
     try {
-      // Exclude the MEMORY.md index — it is a table of contents loaded via
-      // readMemoryIndex, not a memory body — so it isn't double-counted as a memory.
-      files = fs.readdirSync(memoryDir)
-        .filter(f => f.endsWith('.md') && f !== MEMORY_INDEX_FILENAME);
+      // RECURSIVE scan (parity: Claude Code memdir/memoryScan.ts `readdir(dir,
+      // { recursive: true })`) so memories organized into topic SUBDIRECTORIES are
+      // discovered, not just the flat top level. Returned paths are relative to
+      // memoryDir and may contain a subdir segment. Exclusions:
+      //  - the MEMORY.md index (ANY level) — it is a table of contents loaded via
+      //    readMemoryIndex, never a memory body, so it isn't double-counted;
+      //  - the `team/` subtree — team memories are loaded + rendered separately by
+      //    loadTeamMemories(), so recursing into them here would duplicate them.
+      files = (fs.readdirSync(memoryDir, { recursive: true }) as string[])
+        .filter(f =>
+          typeof f === 'string' &&
+          f.endsWith('.md') &&
+          path.basename(f) !== MEMORY_INDEX_FILENAME &&
+          f.split(/[\\/]/)[0] !== 'team');
     } catch {
       // Directory doesn't exist yet — no memories
       return [];
@@ -838,6 +899,40 @@ export class MemoryManager {
     // Cap AFTER the recency sort so the newest memories are kept, not an
     // arbitrary alphabetical (chronological-ascending) prefix of the dir.
     return entries.slice(0, MAX_MEMORY_FILES);
+  }
+
+  /**
+   * Return the stored memory files whose raw content exceeds the recommended
+   * {@link MAX_MEMORY_CHARACTER_COUNT} limit. Parity with Claude Code's
+   * `getLargeMemoryFiles` (utils/claudemd.ts): an oversized memory file is
+   * SURFACED (see {@link getMemoryContext}) rather than silently clipped, so the
+   * user can split or trim it before it degrades performance / crowds the context
+   * window. Scans the memory directory recursively (same traversal as
+   * {@link loadMemories}), including the MEMORY.md index (a runaway index is just
+   * as expensive) and excluding the separately-rendered `team/` subtree.
+   */
+  getLargeMemoryFiles(): LargeMemoryFile[] {
+    const memoryDir = this.getMemoryDir();
+    let files: string[];
+    try {
+      files = (fs.readdirSync(memoryDir, { recursive: true }) as string[])
+        .filter(f => typeof f === 'string' && f.endsWith('.md') && f.split(/[\\/]/)[0] !== 'team');
+    } catch {
+      return [];
+    }
+    const large: LargeMemoryFile[] = [];
+    for (const file of files) {
+      const filePath = path.join(memoryDir, file);
+      try {
+        if (!this._statSync(filePath).isFile()) continue;
+        const chars = fs.readFileSync(filePath, 'utf-8').length;
+        if (chars > MAX_MEMORY_CHARACTER_COUNT) large.push({ path: filePath, chars });
+      } catch {
+        // Unreadable file — skip (it cannot be a context-bloat source if it can't load).
+      }
+    }
+    large.sort((a, b) => b.chars - a.chars);
+    return large;
   }
 
   /**
@@ -984,6 +1079,19 @@ export class MemoryManager {
     const teamMemories = this.loadTeamMemories().map(sanitizeMemoryContent);
     if (teamMemories.length > 0) {
       sections.push(`## Team Memories\n\n${teamMemories.join('\n\n')}`);
+    }
+
+    // Oversized-memory-file diagnostic: flag (never silently clip) any stored
+    // memory file over the recommended cap so the user can split/trim it.
+    const large = this.getLargeMemoryFiles();
+    if (large.length > 0) {
+      const lines = large.map(f => `- ${path.basename(f.path)} — ${f.chars} chars`);
+      sections.push(
+        `## Memory Health Warning\n` +
+        `The following memory file(s) exceed the recommended ${MAX_MEMORY_CHARACTER_COUNT}-character limit ` +
+        `and may degrade performance or crowd out context. Consider splitting or trimming them (use /memory to edit):\n` +
+        `${lines.join('\n')}`,
+      );
     }
 
     if (memories.length > 0 || teamMemories.length > 0) {
@@ -1135,6 +1243,10 @@ ${MEMORY_FRONTMATTER_EXAMPLE}${driftCaveat}`;
    * Returns the absolute path to the memory directory.
    */
   getMemoryDir(): string {
+    // Full-path override (AMI_MEMORY_DIR) wins when set + valid: an SDK/host can pin
+    // memory to an explicit mount regardless of cwd/project key.
+    const override = resolveMemoryDirOverride();
+    if (override) return override;
     // Auto-memory lives GLOBALLY under ~/.ami/projects/<slug>/memory (like Claude Code's
     // ~/.claude/projects/<slug>/memory). The slug is keyed on the CANONICAL git root,
     // not the raw cwd, so every worktree and subdirectory of one repo shares a single

@@ -57,7 +57,7 @@ export function resolveHome(env: NodeJS.ProcessEnv = process.env, homedir?: stri
  * so existing precedence/behaviour is unchanged. Home is resolved via
  * {@link resolveHome} so a redirected `$HOME` is honored.
  */
-function expandConfigDir(value: string, env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
+export function expandConfigDir(value: string, env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
   if (value === '~' || value.startsWith('~/') || value.startsWith('~\\')) {
     return path.join(resolveHome(env, homedir), value.slice(1));
   }
@@ -76,7 +76,7 @@ function expandConfigDir(value: string, env: NodeJS.ProcessEnv = process.env, ho
  *  - UNC / network path ("\\\\server", "//server") — opaque trust boundary
  *  - embedded NUL (survives `normalize()`, can truncate in syscalls)
  */
-function isDangerousStorageRoot(p: string): boolean {
+export function isDangerousStorageRoot(p: string): boolean {
   // UNC/network prefixes and NUL are checked on the RAW value too: POSIX
   // `path.normalize` collapses a leading `//` to `/`, which would otherwise let a
   // UNC path slip past the normalized check.
