@@ -4,12 +4,13 @@ import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName, mcpCredentialKe
 import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
-import { getMcpToolTimeout, normalizeMcpNameSegment } from '../tools/mcp-tool';
+import { getMcpToolTimeout, normalizeMcpNameSegment, qualifiedMcpToolName } from '../tools/mcp-tool';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
 import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
@@ -597,6 +598,30 @@ export class McpManager extends EventEmitter {
    * one decision. Seeded via {@link setEnableAllProjectServers}.
    */
   private _enableAllProjectServers = false;
+  /**
+   * When true, every spawned stdio MCP server is told — via an env var in its
+   * child process ({@link MCP_BYPASS_PERMISSION_ENV}={@link MCP_BYPASS_PERMISSION_VALUE})
+   * — that the host session runs in a bypass / auto-allow permission mode, so a
+   * server that gates its own tool invocations can skip its in-server prompts and
+   * stay non-interactive (Claude-parity: CLAUDE_CHROME_PERMISSION_MODE=
+   * 'skip_all_permission_checks' is injected into the MCP server env when the session
+   * is in bypass mode). Off by default; set by the integrator from the resolved
+   * session permission mode. Only stdio (process-spawning) servers receive it — a
+   * remote http/sse server has no child env to carry it.
+   */
+  private _bypassPermissions = false;
+  /**
+   * Names of MCP servers that have successfully connected at least once this
+   * install (Claude-parity `claudeAiMcpEverConnected`). This gates startup
+   * connectivity notifications: a server that worked before and is now failed is a
+   * state change worth surfacing, whereas one that has NEVER connected (e.g.
+   * needs-auth since it first appeared) is one the user has demonstrably not set up
+   * and should not nag about. Seeded from a persisted store by the integrator
+   * ({@link setEverConnectedServers}) and extended automatically on the first
+   * successful connect of each server. NOT cleared on {@link disconnectAll} — it is
+   * install-scoped history, not live transport state.
+   */
+  private _everConnected = new Set<string>();
 
   /** Timestamp (ms) of the last tool call per server name. */
   _lastUsedAt = new Map<string, number>();
@@ -833,9 +858,18 @@ export class McpManager extends EventEmitter {
     }
 
     this.configs.set(name, config);
+    // A stdio (process-spawning) server is one with no upstream `url` — a remote
+    // http/sse server has no child env to carry the bypass signal.
+    const isStdioServer = !config.url;
     const enrichedEnv = {
       ...config.env,
       ...(this.rootPaths[0] ? { SUPERINFERENCE_PROJECT_DIR: this.rootPaths[0] } : {}),
+      // Tell a spawned stdio MCP server the host session is in bypass/auto-allow
+      // mode so it can skip its own in-server permission prompts (Claude-parity
+      // CLAUDE_CHROME_PERMISSION_MODE injection).
+      ...(this._bypassPermissions && isStdioServer
+        ? { [MCP_BYPASS_PERMISSION_ENV]: MCP_BYPASS_PERMISSION_VALUE }
+        : {}),
     };
     // OAuth 2.1 (2025-06-18): for an http/sse server that opts in, give the client
     // a session that discovers the auth server on 401, drives consent, and manages
@@ -930,7 +964,12 @@ export class McpManager extends EventEmitter {
         this.scheduleReconnect(name);
       }
     });
-    client.on('ready', () => this.emit('server-ready', name));
+    client.on('ready', () => {
+      // Record the first-ever successful connect (gates startup connectivity
+      // notifications — a server that has NEVER connected is not nagged about).
+      this.markEverConnected(name);
+      this.emit('server-ready', name);
+    });
     // An unrecoverable auth failure on a live tool call flips the client to the
     // `needs-auth` state — surface it as a server-state change so the /mcp view can
     // prompt a re-auth (parity with Claude Code flipping a client to needs-auth on
@@ -1069,6 +1108,131 @@ export class McpManager extends EventEmitter {
   /** M14 (U018) — current blanket project-trust flag (for persistence). */
   getEnableAllProjectServers(): boolean {
     return this._enableAllProjectServers;
+  }
+
+  /**
+   * Propagate the host session's bypass / auto-allow permission mode into spawned
+   * stdio MCP servers (see {@link _bypassPermissions}). The integrator calls this
+   * with `true` when the session is in `--yolo` / `bypassPermissions` /
+   * `auto-allow` so an MCP server that runs its own permission layer can skip its
+   * prompts and stay non-interactive, matching the host. Read at connect time, so
+   * it applies to servers already registered as well as future ones. Idempotent.
+   */
+  setBypassPermissions(on: boolean): void {
+    this._bypassPermissions = on;
+  }
+
+  /** Current bypass-permission propagation flag (introspection / persistence). */
+  getBypassPermissions(): boolean {
+    return this._bypassPermissions;
+  }
+
+  /**
+   * Seed the set of servers that have EVER connected (Claude-parity
+   * `claudeAiMcpEverConnected`). The integrator loads this from a persisted store
+   * before connecting so a server that worked in a previous session is recognized
+   * as a state-change (not a first-appearance) when it now fails. Replaces any
+   * previous set.
+   */
+  setEverConnectedServers(names: string[]): void {
+    this._everConnected = new Set(names);
+  }
+
+  /** Current ever-connected server names (for the integrator to persist). */
+  getEverConnectedServers(): string[] {
+    return [...this._everConnected];
+  }
+
+  /** True when the named server has successfully connected at least once (this
+   *  session or seeded from persistence). */
+  hasEverConnected(name: string): boolean {
+    return this._everConnected.has(name);
+  }
+
+  /**
+   * Record that `name` has successfully connected. Idempotent: the first time a
+   * server is marked it emits `ever-connected` (so a persistence layer can save the
+   * new entry); a repeat mark is a no-op. Returns true only on the first mark.
+   */
+  private markEverConnected(name: string): boolean {
+    if (this._everConnected.has(name)) return false;
+    this._everConnected.add(name);
+    this.emit('ever-connected', name);
+    return true;
+  }
+
+  /**
+   * Import MCP servers from a desktop MCP client's config file (Claude-parity
+   * `readClaudeDesktopMcpServers` one-shot migration). Reads the platform-resolved
+   * `claude_desktop_config.json` (macOS / WSL only; see
+   * {@link resolveDesktopMcpConfigPath}), validates each declared stdio server
+   * through the same shape guard as a config file ({@link validateMcpServerConfigShape},
+   * skipping malformed entries per-entry), resolves name collisions against the
+   * ALREADY-registered servers with numbered `(2)`/`(3)` suffixes (see
+   * {@link resolveMcpServerNameCollision}) so an import never clobbers an existing
+   * server nor produces two tools with the same normalized `mcp__…` name, registers
+   * the survivors under the `user` scope through the normal load path, and returns
+   * the imported (collision-resolved) names. A no-op returning `[]` on an
+   * unsupported platform or a missing/empty/unreadable config. The fs/platform
+   * seams are injectable for testing.
+   */
+  importDesktopServers(opts?: {
+    env?: DesktopImportEnv;
+    readFile?: (configPath: string) => string;
+  }): string[] {
+    const discovered = readDesktopMcpServers(opts);
+    const baseNames = Object.keys(discovered);
+    if (baseNames.length === 0) return [];
+    // Seed the used-normalized set with every currently-registered server so an
+    // import de-dups against live servers, not just within the imported batch.
+    const used = new Set<string>();
+    for (const existing of this.configs.keys()) used.add(normalizeMcpNameSegment(existing));
+    const toLoad: Record<string, unknown> = {};
+    const imported: string[] = [];
+    for (const base of baseNames) {
+      const { name, normalized } = resolveMcpServerNameCollision(base, used);
+      used.add(normalized);
+      toLoad[name] = discovered[base];
+      imported.push(name);
+    }
+    this.loadServerEntries(toLoad, { scope: 'user' });
+    return imported;
+  }
+
+  /**
+   * Introspection map from each live MCP tool's MODEL-FACING (normalized, qualified
+   * `mcp__<server>__<tool>`) name back to its ORIGINAL server-side name + server
+   * (Claude-parity `SerializedTool.originalToolName` / `MCPCliState.normalizedNames`).
+   * Normalization sanitizes, hyphen-preserves, collapses, and (when overlong)
+   * truncates+hashes a tool name, so the name the model calls can differ from the
+   * real server-side tool; this lets a `/mcp` view or an error message trace a
+   * sanitized name back to the tool the server actually exposes. Built from the live
+   * tool cache; empty until servers have connected and listed their tools.
+   */
+  getToolNameMapping(): Array<{ server: string; originalName: string; normalizedName: string }> {
+    const out: Array<{ server: string; originalName: string; normalizedName: string }> = [];
+    for (const entry of this._allTools.values()) {
+      out.push({
+        server: entry.serverName,
+        originalName: entry.schema.name,
+        normalizedName: qualifiedMcpToolName(entry.serverName, entry.schema.name),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Reverse of {@link getToolNameMapping}: the original server-side tool name + its
+   * server for a model-facing normalized `mcp__<server>__<tool>` name, or undefined
+   * when no live tool maps to it.
+   */
+  getOriginalToolName(normalizedName: string): { server: string; originalName: string } | undefined {
+    for (const entry of this._allTools.values()) {
+      if (qualifiedMcpToolName(entry.serverName, entry.schema.name) === normalizedName) {
+        return { server: entry.serverName, originalName: entry.schema.name };
+      }
+    }
+    return undefined;
   }
 
   /** True when `name` matches any entry in `set` under MCP name normalization
@@ -2714,4 +2878,173 @@ export function findMcpConfigScopes(cwd: string): Array<{ path: string; scope: M
 
 export function findMcpConfigPaths(cwd: string): string[] {
   return findMcpConfigScopes(cwd).map((e) => e.path);
+}
+
+/**
+ * Env var (and its value) injected into a spawned stdio MCP server's child process
+ * when the host session runs in a bypass / auto-allow permission mode, so a server
+ * with its own permission layer can skip its prompts and stay non-interactive.
+ * Mirrors Claude Code's `CLAUDE_CHROME_PERMISSION_MODE='skip_all_permission_checks'`
+ * injection; the value is kept identical for cross-framework interop with servers
+ * that already recognize that sentinel. See {@link McpManager.setBypassPermissions}.
+ */
+export const MCP_BYPASS_PERMISSION_ENV = 'MCP_PERMISSION_MODE';
+export const MCP_BYPASS_PERMISSION_VALUE = 'skip_all_permission_checks';
+
+/**
+ * Resolve a non-colliding MCP server name against a set of already-used NORMALIZED
+ * names (Claude-parity numbered-suffix dedup, claudeai.ts:L92-L119). Tries the base
+ * name first, then appends ` (2)`, ` (3)`, … until the FINAL normalized name
+ * (suffix included) is unused — the subtle edge case is that the SUFFIXED name is
+ * what gets normalized+checked, so a suffix that itself collides with another
+ * server's base name is still caught. Returns the chosen display `name` and its
+ * `normalized` form; normalization is {@link normalizeMcpNameSegment} (the same
+ * transform the qualified `mcp__…` tool name uses), so two servers can never
+ * produce the same model-facing tool prefix. Does NOT mutate `usedNormalizedNames`
+ * — the caller adds the returned `normalized` before resolving the next name.
+ */
+export function resolveMcpServerNameCollision(
+  baseName: string,
+  usedNormalizedNames: Set<string>,
+): { name: string; normalized: string } {
+  let name = baseName;
+  let normalized = normalizeMcpNameSegment(name);
+  let count = 1;
+  while (usedNormalizedNames.has(normalized)) {
+    count++;
+    name = `${baseName} (${count})`;
+    normalized = normalizeMcpNameSegment(name);
+  }
+  return { name, normalized };
+}
+
+/**
+ * Injectable platform / filesystem seams for desktop-config import (see
+ * {@link resolveDesktopMcpConfigPath} / {@link readDesktopMcpServers}). Mirrors the
+ * ambient inputs Claude's `getClaudeDesktopConfigPath` reads (platform, USERPROFILE,
+ * home dir, file/dir existence), split out so the WSL path-resolution branches are
+ * testable on any CI host without a real Windows mount.
+ */
+export interface DesktopImportEnv {
+  /** `process.platform` — only `darwin` (macOS) and `linux`+WSL are supported. */
+  platform: NodeJS.Platform;
+  /** True when running under WSL (a Windows filesystem is reachable at /mnt/c). */
+  isWsl: boolean;
+  /** Environment (read for `USERPROFILE` on WSL). */
+  env: NodeJS.ProcessEnv;
+  /** The current user's home directory (macOS config lives under it). */
+  homedir: string;
+  /** True when a path exists (defaults to `fs.existsSync`). */
+  exists: (p: string) => boolean;
+  /** Directory entry names (defaults to `fs.readdirSync`); may throw → treated as empty. */
+  readdir: (p: string) => string[];
+}
+
+/** True when the current process is running inside WSL (Windows Subsystem for
+ *  Linux): WSL sets `WSL_DISTRO_NAME`, and the kernel release string carries a
+ *  `microsoft`/`WSL` marker. Used to decide whether a Windows desktop config under
+ *  `/mnt/c` is reachable. */
+function detectWsl(): boolean {
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+  try {
+    return /microsoft|wsl/i.test(os.release());
+  } catch {
+    return false;
+  }
+}
+
+/** Build the default {@link DesktopImportEnv} from the real process + filesystem. */
+function defaultDesktopImportEnv(): DesktopImportEnv {
+  return {
+    platform: process.platform,
+    isWsl: detectWsl(),
+    env: process.env,
+    homedir: os.homedir(),
+    exists: (p) => fs.existsSync(p),
+    readdir: (p) => fs.readdirSync(p),
+  };
+}
+
+/** The Windows directory names that are not real user profiles (skipped when
+ *  scanning /mnt/c/Users for a desktop config). Mirrors Claude's skip list. */
+const WSL_NON_USER_DIRS = new Set(['Public', 'Default', 'Default User', 'All Users']);
+
+/**
+ * Resolve the path to a desktop MCP client's `claude_desktop_config.json`
+ * (Claude-parity `getClaudeDesktopConfigPath`), or `null` when the platform is
+ * unsupported or no config file can be located:
+ *  - macOS → `~/Library/Application Support/Claude/claude_desktop_config.json`;
+ *  - WSL → first `${USERPROFILE}` (backslashes→slashes, drive-letter stripped) mapped
+ *    to `/mnt/c<path>/AppData/Roaming/Claude/…` if it exists, else a scan of
+ *    `/mnt/c/Users/<user>/AppData/Roaming/Claude/…` skipping system profiles;
+ *  - every other platform → `null` (Claude throws; AMI returns null so an importer
+ *    can simply report "nothing to import").
+ */
+export function resolveDesktopMcpConfigPath(e: DesktopImportEnv = defaultDesktopImportEnv()): string | null {
+  if (e.platform === 'darwin') {
+    return path.join(e.homedir, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  }
+  if (e.platform === 'linux' && e.isWsl) {
+    const profile = e.env.USERPROFILE ? e.env.USERPROFILE.replace(/\\/g, '/') : null;
+    if (profile) {
+      const wslPath = profile.replace(/^[A-Za-z]:/, '');
+      const candidate = `/mnt/c${wslPath}/AppData/Roaming/Claude/claude_desktop_config.json`;
+      if (e.exists(candidate)) return candidate;
+    }
+    let names: string[] = [];
+    try { names = e.readdir('/mnt/c/Users'); } catch { names = []; }
+    for (const user of names) {
+      if (WSL_NON_USER_DIRS.has(user)) continue;
+      const candidate = path.join('/mnt/c/Users', user, 'AppData', 'Roaming', 'Claude', 'claude_desktop_config.json');
+      if (e.exists(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Read + validate the MCP servers declared in a desktop client's
+ * `claude_desktop_config.json` (Claude-parity `readClaudeDesktopMcpServers`), as a
+ * `{ name: config }` map. Every value goes through the same
+ * {@link normalizeMcpServerEntry}/{@link validateMcpServerConfigShape} guard used for
+ * a config file (a malformed entry is skipped per-entry, not fatal), and only stdio
+ * servers (those with a `command`) are returned — the desktop app only persists
+ * stdio servers. A missing / unreadable / malformed file, or an unsupported
+ * platform, yields `{}` (never throws). The fs/platform seams are injectable for
+ * testing.
+ */
+export function readDesktopMcpServers(opts?: {
+  env?: DesktopImportEnv;
+  readFile?: (configPath: string) => string;
+}): Record<string, McpServerConfig> {
+  const env = opts?.env ?? defaultDesktopImportEnv();
+  const readFile = opts?.readFile ?? ((p: string) => fs.readFileSync(p, 'utf-8'));
+  const configPath = resolveDesktopMcpConfigPath(env);
+  if (!configPath) return {};
+  let raw: string;
+  try {
+    raw = readFile(configPath);
+  } catch {
+    return {};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonBom(raw).replace(/^\s*\/\/.*$/gm, ''));
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const mcpServers = (parsed as Record<string, unknown>).mcpServers;
+  if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) return {};
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, serverConfig] of Object.entries(mcpServers as Record<string, unknown>)) {
+    const normalized = normalizeMcpServerEntry(serverConfig);
+    if (validateMcpServerConfigShape(normalized).length > 0) continue;
+    const cfg = normalized as McpServerConfig;
+    // The desktop app persists stdio servers (a `command`); a remote entry with no
+    // command is not a desktop-importable server.
+    if (!cfg.command) continue;
+    out[name] = cfg;
+  }
+  return out;
 }
