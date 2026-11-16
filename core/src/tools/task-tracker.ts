@@ -474,10 +474,13 @@ const ALLOWED_INPUT_KEYS = new Set([
 export const taskTrackerTool: ToolDefinition = {
   name: 'task_tracker',
   description:
-    'Create and manage tasks to track progress on complex work. ' +
+    'Create and manage tasks to track progress on complex work. This demonstrates thoroughness to the user and helps the user understand the progress of their requests, so keep the list honest and up to date. ' +
     'Actions: "create" (new task), "update" (change status/details), "list" (show all), "get" (single task), "delete" (remove), "claim" (atomically assign and start), "release" (give up a claim: clear owner and revert in_progress back to pending), "next" (find the next available task to work on), "status" (per-owner idle/busy introspection). ' +
     'Supports task dependencies via addBlocks/addBlockedBy to express ordering constraints. ' +
     'Prefer tasks in id order (lowest id first). Check the list first to avoid creating duplicate tasks. ' +
+    'Authoring for teammates: tasks are created with status "pending" and no owner — assign one with "update"/"claim" using the owner parameter. Include enough detail in the description for another agent to understand and complete the task on its own. ' +
+    'When to "list": to see available work (pending, unowned, unblocked), check overall progress, find blocked tasks, and after completing a task to surface newly unblocked work. A task whose blockedBy is non-empty cannot be claimed until those dependencies complete. ' +
+    'When to "get": to read the full details before starting a task — it returns the fields subject, description, status, blocks (tasks waiting on this one) and blockedBy (tasks that must complete first); verify blockedBy is empty before you begin, and use "list" to see all tasks in summary form. ' +
     'Pull-based teammates: call "next" (optionally with owner) to get the next pending/unowned/unblocked task, then "claim" it, work it, mark it completed, and repeat. If you claim a task but cannot start it, "release" it so another teammate can pick it up. ' +
     'Staleness: in shared/multi-owner task lists others may change a task between your reads — re-read the latest state with action "get" before you "update" or "claim" a task you did not just create, so you do not act on stale data. ' +
     'Completion discipline: only mark a task completed when the work is FULLY accomplished and verified. Never mark a task completed if tests are failing, the implementation is partial, you hit unresolved errors, or you could not find required files or dependencies — leave it in_progress and fix the root cause first; if blocked, create a new blocker task describing what must be resolved instead of closing.',
