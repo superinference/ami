@@ -2,11 +2,26 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, stripTrailingWhitespace, isMarkdownPath } from './tool-utils';
 import { coerceBool } from '../utils/coerce';
 import { getFileCache } from '../file-cache';
 
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
+
+/**
+ * Every parameter the file_edit tool understands, including the accepted aliases
+ * for the target path (`path`) and the write-mode content (`content`,
+ * `file_text`, `file_content`). Any key outside this set is rejected up front —
+ * mirroring Claude Code's strict input schema — so a hallucinated/typo'd
+ * parameter (e.g. `filepath`, `newText`) fails loudly instead of being silently
+ * dropped and producing a confusing "file not found" / no-op later.
+ */
+const ALLOWED_EDIT_KEYS = new Set([
+  'file_path', 'path',
+  'old_string', 'new_string',
+  'content', 'file_text', 'file_content',
+  'replace_all', 'edits',
+]);
 
 /**
  * Enforce the edit size ceiling on EVERY edit mode BEFORE the existing file is
@@ -376,6 +391,9 @@ async function applySequentialEdits(
 
   const originalEnding = detectLineEnding(rawContent);
   let content = normalizeToLf(rawContent);
+  // Markdown (.md/.mdx) uses two trailing spaces as a hard line break, so the
+  // trailing-whitespace normalization of the replacement text is skipped there.
+  const stripWs = !isMarkdownPath(resolved);
 
   const applied: string[] = [];
   const failed: string[] = [];
@@ -394,7 +412,8 @@ async function applySequentialEdits(
     }
 
     const normalizedOld = normalizeToLf(old_string);
-    const normalizedNew = normalizeToLf(new_string ?? '');
+    const normalizedNew = normalizeToLf(stripWs ? stripTrailingWhitespace(new_string ?? '') : (new_string ?? ''));
+
     const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 
     if (result.error) {
@@ -471,7 +490,7 @@ export const fileEditTool: ToolDefinition = {
       },
       new_string: {
         type: 'string',
-        description: 'Replacement text, or the full file contents when old_string is empty/omitted.',
+        description: 'Replacement text (must be different from old_string), or the full file contents when old_string is empty/omitted.',
       },
       content: {
         type: 'string',
@@ -479,7 +498,7 @@ export const fileEditTool: ToolDefinition = {
       },
       replace_all: {
         type: 'boolean',
-        description: 'Replace all occurrences of old_string instead of requiring uniqueness. Default false.',
+        description: 'Replace all occurrences of old_string instead of requiring uniqueness (useful to rename a variable). Default false.',
         default: false,
       },
       edits: {
@@ -489,7 +508,7 @@ export const fileEditTool: ToolDefinition = {
           type: 'object',
           properties: {
             old_string: { type: 'string', description: 'The exact string to find.' },
-            new_string: { type: 'string', description: 'The replacement string.' },
+            new_string: { type: 'string', description: 'The replacement string (must be different from old_string).' },
             replace_all: { type: 'boolean', description: 'Replace every occurrence of this old_string.' },
           },
           required: ['old_string', 'new_string'],
@@ -510,6 +529,15 @@ export const fileEditTool: ToolDefinition = {
 
     if (!filePath || filePath.trim().length === 0) {
       return { output: 'Error: file_path must not be empty.', isError: true };
+    }
+
+    // Strict schema: reject unknown parameters instead of silently ignoring them.
+    const unknownKeys = Object.keys(input).filter(k => !ALLOWED_EDIT_KEYS.has(k));
+    if (unknownKeys.length > 0) {
+      return {
+        output: `Error: Unknown parameter(s): ${unknownKeys.join(', ')}. Allowed: file_path, old_string, new_string, content, replace_all, edits.`,
+        isError: true,
+      };
     }
 
     const nullCheck = validateFilePath(filePath);
@@ -555,6 +583,10 @@ export const fileEditTool: ToolDefinition = {
     // Capture a pre-edit diagnostics baseline so the post-edit delta is accurate.
     captureLspBaseline(resolved, context);
 
+    // Markdown (.md/.mdx) treats two trailing spaces as a hard line break, so the
+    // trailing-whitespace normalization of inserted/written text is skipped there.
+    const stripWs = !isMarkdownPath(resolved);
+
     if (editsInput !== undefined) {
       if (!Array.isArray(editsInput) || editsInput.length === 0) {
         return { output: 'Error: edits must be a non-empty array.', isError: true };
@@ -582,7 +614,7 @@ export const fileEditTool: ToolDefinition = {
       if (newString === undefined || newString === null) {
         return { output: 'Error: new_string (or content) must be provided to create or overwrite a file.', isError: true };
       }
-      return writeEntireFile(resolved, newString, context);
+      return writeEntireFile(resolved, stripWs ? stripTrailingWhitespace(newString) : newString, context);
     }
 
     if (newString === undefined || newString === null) {
@@ -641,7 +673,7 @@ export const fileEditTool: ToolDefinition = {
     const originalEnding = detectLineEnding(rawContent);
     const content = normalizeToLf(rawContent);
     const normalizedOld = normalizeToLf(oldString);
-    const normalizedNew = normalizeToLf(newString);
+    const normalizedNew = normalizeToLf(stripWs ? stripTrailingWhitespace(newString) : newString);
 
     const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 

@@ -785,6 +785,34 @@ export function convertToLineEnding(text: string, ending: '\r\n' | '\n'): string
 }
 
 /**
+ * Strip trailing spaces/tabs from each line while PRESERVING the exact line
+ * endings (CRLF / LF / CR). Splitting on a capturing EOL regex keeps the
+ * terminators as odd-indexed segments so only the even-indexed line CONTENT is
+ * trimmed; a blank/whitespace-only line collapses to empty but its newline is
+ * kept. Single source for the edit/write content normalization so no call site
+ * re-implements it. Markdown is handled by the caller via {@link isMarkdownPath}
+ * (two trailing spaces are a hard line break there, so stripping is skipped).
+ */
+export function stripTrailingWhitespace(text: string): string {
+  const parts = text.split(/(\r\n|\n|\r)/);
+  let result = '';
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === undefined) continue;
+    result += i % 2 === 0 ? part.replace(/[ \t]+$/, '') : part;
+  }
+  return result;
+}
+
+/**
+ * Markdown files (.md/.mdx) use two trailing spaces as a hard line break, so
+ * trailing-whitespace stripping must be skipped for them. Case-insensitive.
+ */
+export function isMarkdownPath(filePath: string): boolean {
+  return /\.(md|mdx)$/i.test(filePath);
+}
+
+/**
  * Extract a Node.js errno string (e.g. 'ENOENT', 'EACCES', 'ELOOP', 'EIO') from
  * an unknown thrown value, or undefined when none is present. Single source for
  * classifying filesystem errors so call sites can distinguish "absent" (ENOENT)
