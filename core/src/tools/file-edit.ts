@@ -1,8 +1,11 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, countLinesChanged, stripTrailingWhitespace, isMarkdownPath } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { suggestPathUnderCwd } from './path-suggest';
+import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { coerceBool } from '../utils/coerce';
 import { getFileCache } from '../file-cache';
 
@@ -55,8 +58,79 @@ function checkEditSizeLimit(resolved: string): ToolResult | undefined {
 }
 
 function isJsonConfigPath(resolved: string): boolean {
-  return resolved.endsWith('config.json') || resolved.endsWith('settings.json') ||
+  return resolved.endsWith('config.json') || resolved.endsWith('config.local.json') ||
+    resolved.endsWith('settings.json') ||
     resolved.endsWith('tsconfig.json') || resolved.endsWith('package.json');
+}
+
+/**
+ * True when `resolved` is an AMI settings/config file governed by the
+ * {@link ProjectConfig} schema — a `config.json` / `config.local.json` under an
+ * `.ami` directory, or the managed/system config path. These files drive
+ * security-governing behavior (permission mode, hooks, env, spend caps), so an
+ * edit must keep them schema-valid, not merely JSON-parseable. tsconfig.json /
+ * package.json match {@link isJsonConfigPath} for the syntax check but are NOT
+ * AMI settings, so they are excluded here.
+ */
+function isAmiSettingsConfigPath(resolved: string): boolean {
+  const base = path.basename(resolved);
+  if (base !== 'config.json' && base !== 'config.local.json') return false;
+  if (path.basename(path.dirname(resolved)) === '.ami') return true;
+  try {
+    if (path.resolve(resolved) === path.resolve(getManagedConfigPath())) return true;
+  } catch { /* managed path not resolvable — fall through */ }
+  return false;
+}
+
+/**
+ * Schema-validate an edit to an AMI settings file (parity with Claude Code's
+ * `validateInputForSettingsFileEdit`): a JSON-syntactically-valid edit can still
+ * corrupt the security-governing config by introducing a wrong-typed value, an
+ * out-of-enum value, or an unrecognized (typo'd) key. Simulate the post-edit
+ * content and, ONLY when the file was schema-valid before the edit, block an edit
+ * that would make it schema-invalid — reusing the ONE canonical config validator
+ * ({@link validateProjectConfigValues} / {@link findUnknownConfigKeys}), never a
+ * parallel schema. A file that was already schema-invalid (or not an object) is
+ * left editable so a repair-in-progress is never blocked. Returns an error
+ * ToolResult when a previously-valid settings file would become schema-invalid;
+ * undefined otherwise.
+ */
+function validateAmiSettingsSchema(resolved: string, originalContent: string, parsedNew: unknown): ToolResult | undefined {
+  if (!isAmiSettingsConfigPath(resolved)) return undefined;
+  if (parsedNew === null || typeof parsedNew !== 'object' || Array.isArray(parsedNew)) return undefined;
+
+  let parsedOld: unknown;
+  try { parsedOld = JSON.parse(originalContent); } catch { return undefined; }
+  const oldWasValidObject = parsedOld !== null && typeof parsedOld === 'object' && !Array.isArray(parsedOld);
+  // Only guard a valid→invalid transition: an already-broken baseline is a repair.
+  if (!oldWasValidObject) return undefined;
+  const oldConfig = parsedOld as Parameters<typeof validateProjectConfigValues>[0];
+  if (validateProjectConfigValues(oldConfig).length > 0 || findUnknownConfigKeys(oldConfig).length > 0) {
+    return undefined;
+  }
+
+  const newConfig = parsedNew as Parameters<typeof validateProjectConfigValues>[0];
+  const valueIssues = validateProjectConfigValues(newConfig);
+  const unknownKeys = findUnknownConfigKeys(newConfig);
+  if (valueIssues.length === 0 && unknownKeys.length === 0) return undefined;
+
+  const lines = [
+    `Warning: Edit would make ${path.basename(resolved)} violate the settings schema (it was valid before this edit). Fix the issues below:`,
+  ];
+  for (const issue of valueIssues) {
+    lines.push(`  - ${issue.field}: ${issue.message}`);
+  }
+  for (const key of unknownKeys) {
+    const suggestion = suggestKnownConfigKey(key);
+    lines.push(`  - unknown key "${key}"${suggestion ? ` — did you mean "${suggestion}"?` : ''}`);
+  }
+  // env-protection hint: the env block feeds process environment and is shared
+  // with collaborators; warn against touching it unless explicitly instructed.
+  if (Object.prototype.hasOwnProperty.call(newConfig, 'env')) {
+    lines.push('  Note: do not modify the "env" block unless explicitly instructed — it affects process environment and is shared with collaborators.');
+  }
+  lines.push(`  Recognized settings keys: ${[...KNOWN_CONFIG_KEYS].sort().join(', ')}`);
+  return { output: lines.join('\n'), isError: true };
 }
 
 /**
@@ -78,12 +152,14 @@ function validateJsonEdit(resolved: string, originalContent: string, newContent:
     // the edit so the config can be repaired incrementally.
     return undefined;
   }
+  let parsedNew: unknown;
   try {
-    JSON.parse(newContent);
+    parsedNew = JSON.parse(newContent);
   } catch (e) {
     return { output: `Warning: Edit would create invalid JSON in ${path.basename(resolved)}. Check syntax.\n${(e as Error).message}`, isError: true };
   }
-  return undefined;
+  // Beyond JSON syntax, an AMI settings file must stay schema-valid.
+  return validateAmiSettingsSchema(resolved, originalContent, parsedNew);
 }
 
 interface SequentialEdit {
@@ -328,10 +404,12 @@ export async function writeEntireFile(
   const jsonErr = validateJsonEdit(resolved, oldContent, content);
   if (jsonErr) return jsonErr;
 
-  let finalContent = content;
-  if (fileExists && oldContent.length > 0) {
-    finalContent = convertToLineEnding(content, detectLineEnding(oldContent));
-  }
+  // A full-content write is a deliberate replacement: honor the line endings the
+  // model sent in `content` instead of re-converting to the old file's EOL.
+  // Re-converting silently corrupted files whose intended EOL differs from the
+  // old one (e.g. rewriting a CRLF file to an LF shell script) — parity with
+  // Claude Code's FileWriteTool, which removed that preservation for this reason.
+  const finalContent = content;
 
   if (fileExists && oldContent.length > 0) {
     await trackFileHistory(resolved, oldContent, context.cwd);
@@ -341,14 +419,18 @@ export async function writeEntireFile(
   if (writeErr) return { output: writeErr, isError: true };
 
   const lines = content.split('\n');
-  const lineCount = lines.length;
+  // Trailing-newline-aware count: a file ending in '\n' is N lines, not N+1 —
+  // the empty element after the final newline is a terminator, not a line.
+  const lineCount = countContentLines(content);
   if (isNew) {
     const preview = lines.slice(0, 20);
-    const diffLines = preview.map(l => `+${l}`);
-    const truncNote = lineCount > 20 ? `\n... (+${lineCount - 20} more lines)` : '';
+    // Empty-write sentinel: a zero-length write renders a visible '(No content)'
+    // marker instead of a bare '+' line / blank preview region.
+    const body = content.length === 0 ? '(No content)' : preview.map(l => `+${l}`).join('\n');
+    const truncNote = content.length > 0 && lineCount > 20 ? `\n... (+${lineCount - 20} more lines)` : '';
     const createdLabel = !fileExists ? 'Created new file' : 'Populated empty file';
     return {
-      output: `${createdLabel}: ${resolved}\nSuccessfully wrote ${resolved} (new file, ${lineCount} lines)\n\n--- /dev/null\n+++ ${resolved}\n@@ -0,0 +1,${lineCount} @@\n${diffLines.join('\n')}${truncNote}`,
+      output: `${createdLabel}: ${resolved}\nSuccessfully wrote ${resolved} (new file, ${lineCount} lines)\n\n--- /dev/null\n+++ ${resolved}\n@@ -0,0 +1,${lineCount} @@\n${body}${truncNote}`,
     };
   }
 
@@ -555,7 +637,7 @@ export const fileEditTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const filePath = (input.file_path ?? input.path) as string;
+    let filePath = (input.file_path ?? input.path) as string;
     const replaceAll = coerceBool(input.replace_all);
     const editsInput = input.edits;
 
@@ -574,6 +656,30 @@ export const fileEditTool: ToolDefinition = {
 
     const nullCheck = validateFilePath(filePath);
     if (nullCheck) return nullCheck;
+
+    // Glob patterns are never valid as a write/edit target — the tool uses the
+    // path literally, so a `*`/`?` wildcard can only be a model mistake that would
+    // either create a literally-named file or silently miss the intended one.
+    // Reject with an actionable, self-correcting message (parity with Claude
+    // Code's write-path glob guard). Only the unambiguous wildcards `*`/`?` are
+    // flagged so legitimate bracket/brace filenames (e.g. Next.js `[id].tsx`,
+    // `{a,b}.ts`) stay editable — an intentional superset divergence from
+    // Claude's broader `[*?[]{}]` set to avoid breaking real filenames.
+    if (/[*?]/.test(filePath)) {
+      return {
+        output: `Error: Glob patterns are not allowed in write operations. Please specify an exact file path (got "${filePath}").`,
+        isError: true,
+      };
+    }
+
+    // Expand a leading `~` to the home directory BEFORE path resolution so the
+    // tool writes to the SAME canonical path the permission layer checks (which
+    // also expands `~`). Otherwise `~/notes.txt` would resolve to a literal `~`
+    // directory under cwd while the permission allowlist was evaluated against
+    // <home>/notes.txt — a bypass. Parity: Claude Code's expandPath-before-write.
+    if (filePath === '~' || filePath.startsWith('~/') || filePath.startsWith('~\\')) {
+      filePath = path.join(os.homedir(), filePath.slice(1));
+    }
 
     if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
       return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${filePath}`, isError: true };
@@ -682,7 +788,13 @@ export const fileEditTool: ToolDefinition = {
           const files = fs.readdirSync(dir).filter(f => f.includes(base.slice(0, 3)) || base.includes(f.slice(0, 3)));
           if (files.length > 0) suggestions = `\nDid you mean: ${files.slice(0, 5).join(', ')}?`;
         } catch {}
-        return { output: `Error: File not found: ${resolved}${suggestions}`, isError: true };
+        // "Dropped repo folder" correction: when the model built an absolute path
+        // missing the repo-directory segment, point it at the real path under cwd.
+        const underCwd = suggestPathUnderCwd(resolved, context.cwd);
+        if (underCwd) suggestions += `\nDid you mean "${underCwd}" (under the working directory)?`;
+        // Working-directory note so the model can resolve relative-vs-absolute
+        // path confusion from the boundary context it was operating in.
+        return { output: `Error: File not found: ${resolved}${suggestions}\n${FILE_NOT_FOUND_CWD_NOTE} ${context.cwd}`, isError: true };
       }
       const message = err instanceof Error ? err.message : String(err);
       return {

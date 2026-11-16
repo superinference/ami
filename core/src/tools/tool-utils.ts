@@ -1099,3 +1099,25 @@ export function countLinesChanged(
   }
   return { additions, removals };
 }
+
+/**
+ * Count the lines in a blob the way an editor numbers them: a trailing newline
+ * is a line TERMINATOR, not the start of a new empty line. `"a\nb\n"` is 2 lines,
+ * `"a\nb"` is 2 lines, `""` is 0 lines. Mirrors Claude Code's `countLines`
+ * (`content.endsWith(EOL) ? parts.length - 1 : parts.length`) so a "wrote N lines"
+ * display matches editor line numbering instead of over-counting a normal
+ * newline-terminated file by one.
+ */
+export function countContentLines(content: string): number {
+  if (content.length === 0) return 0;
+  const parts = content.split('\n');
+  return content.endsWith('\n') ? parts.length - 1 : parts.length;
+}
+
+/**
+ * Marker included in file-not-found error messages that carry a working-directory
+ * note, so the model can self-correct relative-vs-absolute path confusion and a
+ * renderer can detect the "file not found" shape. Parity: Claude Code's
+ * `FILE_NOT_FOUND_CWD_NOTE`.
+ */
+export const FILE_NOT_FOUND_CWD_NOTE = 'Note: your current working directory is';
