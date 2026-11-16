@@ -69,6 +69,14 @@ export interface DockerSandboxConfig {
    * listed here are bind-mounted in. Only existing sockets are applied.
    */
   allowUnixSockets?: string[];
+  /**
+   * PARITY (custom seccomp syscall filter — Claude's `sandbox.seccomp.bpfPath` /
+   * `applyPath`): absolute path to a Docker seccomp JSON profile. When set it is
+   * passed as `--security-opt seccomp=<path>`, REPLACING Docker's default profile
+   * with the operator-supplied one (on top of the always-applied
+   * {@link DOCKER_SECURITY_OPTS}). Unset keeps Docker's hardened default profile.
+   */
+  seccompProfilePath?: string;
 }
 
 /**
@@ -461,6 +469,16 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
   // --security-opt flags to EVERY container (no-new-privileges), on top of the
   // kept-default seccomp syscall filter. See {@link DOCKER_SECURITY_OPTS}.
   for (const opt of DOCKER_SECURITY_OPTS) parts.push('--security-opt', opt);
+
+  // PARITY (custom seccomp profile): when the operator points the policy at a
+  // Docker seccomp JSON profile, apply it via `--security-opt seccomp=<path>`,
+  // replacing Docker's default syscall filter with the supplied one. Added AFTER
+  // the hardened defaults so it narrows (or customizes) the syscall surface; the
+  // no-new-privileges flag above still stands.
+  const seccompProfile = cfg.seccompProfilePath?.trim();
+  if (seccompProfile) {
+    parts.push('--security-opt', shSingleQuote(`seccomp=${path.resolve(seccompProfile)}`));
+  }
 
   // PARITY (write-deny carve-outs): bind-remount each privileged-autoload default
   // (settings/skills/commands/agents) PLUS any operator-configured denyWrite path

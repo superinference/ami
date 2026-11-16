@@ -1111,6 +1111,9 @@ export const bashTool: ToolDefinition = {
         denyReadPaths: context.sandbox.filesystem?.denyRead,
         allowWritePaths: context.sandbox.filesystem?.allowWrite,
         allowUnixSockets: context.sandbox.network?.allowUnixSockets,
+        // PARITY (custom seccomp profile): thread the operator-supplied Docker
+        // seccomp JSON profile into the container backend.
+        seccompProfilePath: context.sandbox.seccomp?.profilePath,
       });
     } else {
       // coerceBool: providers serialize booleans as strings; a strict `=== true`

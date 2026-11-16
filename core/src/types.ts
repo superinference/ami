@@ -276,6 +276,21 @@ export interface SandboxFilesystemConfig {
   allowRead?: string[];
 }
 
+/** Custom seccomp syscall-filter configuration for the sandbox backend.
+ *  Parity: Claude's `sandbox.seccomp.bpfPath` / `sandbox.seccomp.applyPath`
+ *  (bubblewrap sandbox-runtime). AMI sandboxes via Docker, so the ADDITIVE,
+ *  architecture-native analog is a Docker seccomp JSON profile: when
+ *  {@link profilePath} is set it is passed to the container as
+ *  `--security-opt seccomp=<path>`, replacing Docker's default profile with the
+ *  operator-supplied one for tighter (or custom) syscall filtering. Unset keeps
+ *  Docker's hardened default profile. */
+export interface SandboxSeccompConfig {
+  /** Absolute path to a Docker seccomp JSON profile applied to every sandbox
+   *  container via `--security-opt seccomp=<path>`. Unset → Docker's default
+   *  seccomp profile is kept. */
+  profilePath?: string;
+}
+
 /** Policy controlling whether/how bash commands run inside an isolation backend.
  *  `mode: 'container'` forces every bash command through a container whose only
  *  writable mount is the project dir; the host filesystem is unreachable. When
@@ -294,6 +309,8 @@ export interface SandboxPolicy {
   network?: SandboxNetworkConfig;
   /** Granular filesystem read/write carve-outs. */
   filesystem?: SandboxFilesystemConfig;
+  /** Custom seccomp syscall-filter profile for the container backend. */
+  seccomp?: SandboxSeccompConfig;
   /** OPT-IN: auto-approve the bash tool (skip the permission prompt) in the
    *  prompt-driven modes (ask/acceptEdits) when `mode === 'container'`, because the
    *  container — not the prompt — is the safety boundary (the host filesystem is not
@@ -1251,6 +1268,12 @@ function validateSandboxPolicy(sandbox: SandboxPolicy, warnings: string[]): bool
       }
     }
   }
+  if (sandbox.seccomp?.profilePath !== undefined) {
+    if (typeof sandbox.seccomp.profilePath !== 'string' || sandbox.seccomp.profilePath.trim() === '') {
+      warnings.push('sandbox.seccomp.profilePath must be a non-empty path');
+      valid = false;
+    }
+  }
   if (sandbox.failIfUnavailable && sandbox.mode === 'off') {
     warnings.push('sandbox.failIfUnavailable has no effect when sandbox.mode is off');
   }
@@ -1343,6 +1366,10 @@ function sanitizeSandboxPolicy(sandbox: SandboxPolicy): SandboxPolicy {
     fsc.denyRead = cleanList(fsc.denyRead);
     fsc.allowRead = cleanList(fsc.allowRead);
     out.filesystem = fsc;
+  }
+  if (sandbox.seccomp) {
+    const profilePath = typeof sandbox.seccomp.profilePath === 'string' ? sandbox.seccomp.profilePath.trim() : '';
+    out.seccomp = profilePath ? { profilePath } : {};
   }
   if (sandbox.enabledPlatforms) out.enabledPlatforms = cleanList(sandbox.enabledPlatforms);
   return out;
