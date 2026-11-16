@@ -239,6 +239,11 @@ export interface TaskEventContext {
   subject: string;
   status?: string;
   description?: string;
+  /** Abort/cancellation boundary (Claude Code parity): the surrounding tool call's
+   *  AbortSignal, forwarded so a long-running task-event hook is cancellable when the
+   *  turn is aborted. When already aborted, the hook loop short-circuits and runs no
+   *  further hooks. Optional so non-tool callers may omit it. */
+  signal?: AbortSignal;
 }
 
 export interface UserPromptContext {
@@ -302,7 +307,12 @@ export type CompactHookFn = (context: CompactContext) => Promise<void>;
  *  user-facing display message (Claude Code parity). */
 export type PreCompactHookFn = (context: CompactContext) => Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void>;
 export type PermissionHookFn = (context: PermissionContext) => Promise<{ action?: 'allow' | 'deny'; reason?: string } | void>;
-export type TaskEventHookFn = (context: TaskEventContext) => Promise<void>;
+/** TaskCreated hook: like a TaskCompleted hook, a blocking TaskCreated hook can
+ *  VETO a just-created task by returning a blockingError; the task tool then rolls
+ *  back the created task and surfaces the reason (Claude Code parity —
+ *  TaskCreateTool's taskCreated-hook blockingError + compensating deleteTask). A
+ *  plain void return is the non-blocking case. */
+export type TaskEventHookFn = (context: TaskEventContext) => Promise<{ blockingError?: string } | void>;
 /** TaskCompleted hook: a blocking hook can veto a status→completed transition
  *  by returning a blockingError (Claude Code parity). */
 export type TaskCompletedHookFn = (context: TaskEventContext) => Promise<{ blockingError?: string } | void>;
@@ -2225,7 +2235,11 @@ export class HookManager extends EventEmitter {
         case 'taskCreated': {
           const fn: TaskEventHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'taskCreated', taskId: ctx.taskId, subject: ctx.subject });
-            await this.runArmHook(hookConfig, cwd, eventData, undefined, this.taskCreatedHooks, fn, 'taskCreated');
+            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.taskCreatedHooks, fn, 'taskCreated');
+            // A blocking taskCreated hook VETOES creation (the task tool rolls back).
+            const blockingError = extractHookBlockingError(result);
+            if (blockingError) return { blockingError };
+            return undefined;
           };
           this.onTaskCreated(fn);
           break;
@@ -2714,11 +2728,23 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeTaskCreated(ctx: TaskEventContext): Promise<void> {
-    return this.withConcurrencyGate('taskCreated', async () => {
+  /**
+   * Execute TaskCreated hooks. A blocking hook can VETO a just-created task; the
+   * aggregated blockingErrors are returned so the task tool can roll the task back
+   * and surface the reason (Claude Code parity). If the forwarded AbortSignal is
+   * already aborted the loop short-circuits (cancellation boundary).
+   */
+  async executeTaskCreated(ctx: TaskEventContext): Promise<{ blockingErrors: string[] } | void> {
+    return this.withConcurrencyGate('taskCreated', async (): Promise<{ blockingErrors: string[] } | void> => {
+      const blockingErrors: string[] = [];
       for (const hook of this.taskCreatedHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        if (ctx.signal?.aborted) break;
+        try {
+          const r = await hook(ctx);
+          if (r?.blockingError) blockingErrors.push(r.blockingError);
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      if (blockingErrors.length > 0) return { blockingErrors };
     });
   }
 

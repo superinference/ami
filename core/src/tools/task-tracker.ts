@@ -567,8 +567,30 @@ export const taskTrackerTool: ToolDefinition = {
           tasks.set(task.id, task);
           return task;
         });
+        // Blocking TaskCreated hooks can VETO a just-created task (PARITY): await
+        // the hook, and if any hook returns a blockingError perform a compensating
+        // rollback — delete the task we just created — and surface the error instead
+        // of reporting a phantom success. The surrounding call's abortSignal is
+        // forwarded so a long-running hook is cancellable with the turn. A throwing
+        // hook never blocks (best-effort), mirroring the TaskCompleted path.
         if (context._hookManager) {
-          context._hookManager.executeTaskCreated({ taskId: String(result.id), subject: result.subject, description: result.description }).catch(() => {});
+          let blocking: string[] = [];
+          try {
+            const r = await context._hookManager.executeTaskCreated({
+              taskId: String(result.id),
+              subject: result.subject,
+              description: result.description,
+              signal: context.abortSignal,
+            });
+            const errs = (r as { blockingErrors?: unknown } | void)?.blockingErrors;
+            if (Array.isArray(errs)) blocking = errs.filter((e): e is string => typeof e === 'string');
+          } catch {
+            /* a throwing taskCreated hook must not block creation */
+          }
+          if (blocking.length > 0) {
+            await mutate(() => { tasks.delete(result.id); });
+            return { output: `Error: creation of task #${result.id} blocked by hook: ${blocking.join('; ')} [reason: creation_blocked]`, isError: true };
+          }
         }
         emitTaskUpdated(context, result.id, result.status, result.subject);
         return { output: capOutput(`Task #${result.id} created successfully: ${result.subject} [pending]`), isError: false };
