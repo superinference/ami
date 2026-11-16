@@ -107,6 +107,36 @@ function sanitizeTeamName(name: string): string | null {
 }
 
 /**
+ * Teammate execution backend (parity: Claude Code's swarm `BackendType`): the
+ * mechanism a teammate runs under. `tmux`/`iterm2` are terminal-pane backends;
+ * `in-process` runs a teammate inside the same Node process with an isolated
+ * context. Persisted per-member so a resumed session knows how each teammate runs.
+ */
+export type BackendType = 'tmux' | 'iterm2' | 'in-process';
+
+const BACKEND_TYPES: readonly BackendType[] = ['tmux', 'iterm2', 'in-process'];
+
+/**
+ * Type guard for a valid {@link BackendType} (parity: Claude validates persisted
+ * backend fields against a known set when deserializing a team file). Any value
+ * outside the known set — including `undefined`, a number, or a stale enum name —
+ * returns false so the caller can coerce it away rather than trust bad data.
+ */
+export function isBackendType(v: unknown): v is BackendType {
+  return typeof v === 'string' && (BACKEND_TYPES as readonly string[]).includes(v);
+}
+
+/**
+ * Type guard for a PANE-based backend only (parity: Claude Code's `isPaneBackend`,
+ * used when projecting a teammate's status — a non-pane or unknown backend yields
+ * `undefined` rather than a bogus pane backend). `in-process` is deliberately NOT a
+ * pane backend.
+ */
+export function isPaneBackend(v: unknown): v is 'tmux' | 'iterm2' {
+  return v === 'tmux' || v === 'iterm2';
+}
+
+/**
  * A rich per-member record in the team file, mirroring Claude Code's team config
  * member schema: a stable identity plus the operating knobs a teammate runs
  * under (model, working dir, subscriptions, per-teammate permission mode) and an
@@ -129,6 +159,10 @@ export interface TeamMember {
    *  into a dedicated worktree. Removed on team_delete (parity: Claude Code's
    *  cleanupTeamDirectories tears down per-teammate worktrees, not just dirs). */
   worktreePath?: string;
+  /** Execution backend this teammate runs under (parity: Claude's per-member
+   *  `backendType`). Validated against {@link BackendType} on read; an unknown
+   *  persisted value is coerced to undefined. */
+  backendType?: BackendType;
   joinedAt: string;
   /** false => idle/finished/crashed; undefined/true => active. */
   isActive?: boolean;
@@ -152,6 +186,10 @@ export interface TeammateStatus {
   /** Display color for this teammate (parity: Claude's TeammateStatus.color),
    *  surfaced so a roster/renderer can tint each agent consistently. */
   color?: AgentColorName;
+  /** The teammate's execution backend, limited to a PANE backend (parity: Claude's
+   *  TeammateStatus.backendType, built via isPaneBackend — a non-pane/unknown
+   *  backend is surfaced as undefined). */
+  backendType?: 'tmux' | 'iterm2';
   idleSince?: string;
 }
 
@@ -203,6 +241,52 @@ export interface TeamFile {
 
 let currentTeam: TeamFile | null = null;
 let currentTeamDir: string | null = null;
+
+/**
+ * This process's own agent identity within a team (parity: Claude Code's
+ * per-session teammate identity — agentId + agentName — resolved from
+ * AsyncLocalStorage/CLI args). The leader session binds this to the lead's id on
+ * create/reconnect; a spawned teammate process binds its own. Used by
+ * {@link isLeader} to tell leader from teammate and surfaced as an introspection
+ * field so "who am I?" is answerable at runtime. Cleared on team teardown.
+ */
+interface SelfIdentity { agentId: string; agentName: string; }
+let selfIdentity: SelfIdentity | null = null;
+
+/** Bind this process's agent identity within the active team. */
+export function setSelfIdentity(agentId: string, agentName: string): void {
+  selfIdentity = { agentId, agentName };
+}
+
+/** This process's bound agent id, or undefined when unset (parity: getAgentId). */
+export function getSelfAgentId(): string | undefined {
+  return selfIdentity?.agentId;
+}
+
+/** This process's bound agent name, or undefined when unset (parity: getAgentName). */
+export function getSelfAgentName(): string | undefined {
+  return selfIdentity?.agentName;
+}
+
+/** Clear the bound self identity (team teardown / reset). */
+export function clearSelfIdentity(): void {
+  selfIdentity = null;
+}
+
+/**
+ * Whether THIS process is the team's lead (parity: Claude Code's `isTeamLead`).
+ * A session is the lead when the team has a `leadAgentId` AND either our bound
+ * self id matches it, OR no self id is bound (backwards compat: the original
+ * session that created the team before an agent id was assigned). Returns false
+ * when there is no team / no lead id, or our id is a non-lead teammate's.
+ */
+export function isLeader(team: TeamFile | null = currentTeam): boolean {
+  if (!team?.leadAgentId) return false;
+  const myId = getSelfAgentId();
+  if (myId === team.leadAgentId) return true;
+  if (!myId) return true; // backwards compat: the original creator session
+  return false;
+}
 
 /**
  * Deterministic, reproducible lead agent id derived from the team name. Uses the
@@ -313,6 +397,20 @@ export function readTeamFile(dir: string): TeamFile | null {
   const t = parsed as Partial<TeamFile>;
   if (typeof t.name !== 'string' || typeof t.leadAgentId !== 'string' || !Array.isArray(t.members)) {
     return null; // wrong shape
+  }
+  // Boundary validation of persisted enum fields (parity: Claude validates
+  // backendType via isPaneBackend and coerces unknown values when deserializing).
+  // A stale/foreign file may carry an invalid permissionMode or backendType; coerce
+  // each bad value to undefined in place rather than trusting it downstream.
+  for (const raw of t.members as unknown[]) {
+    if (!raw || typeof raw !== 'object') continue;
+    const member = raw as TeamMember;
+    if (member.permissionMode !== undefined && !normalizePermissionMode(member.permissionMode)) {
+      member.permissionMode = undefined;
+    }
+    if (member.backendType !== undefined && !isBackendType(member.backendType)) {
+      member.backendType = undefined;
+    }
   }
   return t as TeamFile;
 }
@@ -531,6 +629,10 @@ export const teamCreateTool: ToolDefinition = {
       },
     },
     required: ['team_name'],
+    // Strict schema (parity: Claude Code's team tools use z.strictObject): reject
+    // unexpected keys so a typo'd/invented knob fails loudly instead of being
+    // silently ignored.
+    additionalProperties: false,
   },
   isReadOnly: false,
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -588,6 +690,9 @@ export const teamCreateTool: ToolDefinition = {
     if (existing && existing.team.leadSessionId === context.sessionId
         && findTeamMemberByName(existing.team, TEAM_LEAD_NAME)) {
       restoreTeam(existing.team, existing.dir);
+      // Rebind this process's self identity to the lead on reconnect so isLeader()
+      // and the whoami introspection resolve correctly after a restart.
+      setSelfIdentity(existing.team.leadAgentId, TEAM_LEAD_NAME);
       // Re-bind the shared, team-scoped task list so task_tracker resolves to this
       // team's tasks (parity: Team = Project = TaskList) after the restart too.
       setTaskPersistPath(context.cwd, existing.team.name);
@@ -662,6 +767,10 @@ export const teamCreateTool: ToolDefinition = {
 
     currentTeam = team;
     currentTeamDir = teamDir;
+    // Bind this process's self identity to the lead: the creator IS the team lead
+    // (parity: isTeamLead resolves true for the creating session). isLeader() and
+    // the whoami introspection read this.
+    setSelfIdentity(leadAgentId, TEAM_LEAD_NAME);
     // Bind the shared, team-scoped task list (parity: Team = Project = TaskList) so
     // task_tracker calls persist to this team's own tasks file.
     setTaskPersistPath(context.cwd, name);
@@ -670,8 +779,9 @@ export const teamCreateTool: ToolDefinition = {
     const declaredNote = parsedMembers.members.length > 0
       ? ` ${parsedMembers.members.length} teammate(s) pre-declared: ${parsedMembers.members.map(m => m.name).join(', ')}.`
       : '';
+    const roleNote = ` You are the ${isLeader() ? 'team lead' : 'teammate'} (self: ${getSelfAgentName()}).`;
     return {
-      output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}.${declaredNote} ` +
+      output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}.${declaredNote}${roleNote} ` +
         `Spawn teammates with task({ name: "<teammate>" }) to add members.`,
     };
   },
@@ -682,12 +792,22 @@ export const teamDeleteTool: ToolDefinition = {
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
   isEnabled: () => isTeammatesEnabled(),
   description:
-    'Disband the current team and clean up its directories. Refuses while any teammate is still active — ' +
-    'gracefully shut teammates down first (send a shutdown_request via send_message).',
-  inputSchema: { type: 'object', properties: {} },
+    'Disband the current team and clean up its resources when the swarm work is complete. This removes the ' +
+    "team directory (.ami/teams/<name>/ and its shared memory dir), tears down each teammate's git worktree, " +
+    'removes the team-scoped task list, flushes queued inbox messages, and clears the team context from this ' +
+    'session.\n' +
+    '\n' +
+    'IMPORTANT: it refuses while any teammate is still active — gracefully shut teammates down first (send a ' +
+    'shutdown_request via send_message), then call team_delete once all have exited. Calling it with no active ' +
+    'team is a no-op that reports there was nothing to clean up.',
+  // Strict, empty schema (parity: Claude's team_delete uses z.strictObject({})):
+  // it takes no arguments and rejects any supplied key.
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   isReadOnly: false,
   async execute(_input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    if (!currentTeam) return { output: 'Error: No active team.', isError: true };
+    // No active team: graceful non-error result (parity: Claude returns
+    // success=true, "nothing to clean up") so an idempotent teardown is not an error.
+    if (!currentTeam) return { output: 'No active team — nothing to clean up.' };
     const name = currentTeam.name;
 
     // Active-member guard: never disband a team with live (non-lead) members —
@@ -737,6 +857,9 @@ export const teamDeleteTool: ToolDefinition = {
     // Reset the round-robin color palette so the next team starts fresh (parity:
     // clearTeammateColors is called during team cleanup).
     clearTeammateColors();
+    // Drop this process's bound self identity now that the team is gone (parity:
+    // team context is cleared on disband).
+    clearSelfIdentity();
     // Unbind the team-scoped task list: subsequent task_tracker calls fall back to
     // the default list now that the team (and its 1:1 task list) is gone.
     setTaskPersistPath(context.cwd);
@@ -744,7 +867,9 @@ export const teamDeleteTool: ToolDefinition = {
       ? ` and ${worktreesRemoved} worktree${worktreesRemoved === 1 ? '' : 's'}`
       : '';
     const tasksNote = tasksRemoved ? ', task list removed' : '';
-    return { output: `Team "${name}" deleted (directories${wtNote} cleaned up${tasksNote}).` };
+    // State exactly what was removed (parity: Claude's delete result names the
+    // cleaned-up team): include the removed team directory path.
+    return { output: `Team "${name}" deleted: removed ${teamDir} (directories${wtNote} cleaned up${tasksNote}).` };
   },
 };
 
@@ -755,6 +880,8 @@ export function resetTeam(): void {
   currentTeamDir = null;
   // Reset the color palette so a fresh team starts assignment from the top.
   clearTeammateColors();
+  // Drop any bound self identity so a fresh team/session starts clean.
+  clearSelfIdentity();
 }
 
 /**
@@ -973,6 +1100,9 @@ export function getTeammateStatuses(team: TeamFile | null = currentTeam): Teamma
       // Prefer the persisted member color; fall back to any live round-robin
       // assignment keyed by the member's agentId.
       color: m.color ?? getTeammateColor(m.agentId),
+      // Surface a PANE backend only (parity: Claude builds status.backendType via
+      // isPaneBackend — an in-process/unknown backend projects to undefined).
+      backendType: isPaneBackend(m.backendType) ? m.backendType : undefined,
       idleSince: running ? undefined : m.idleSince,
     });
   }

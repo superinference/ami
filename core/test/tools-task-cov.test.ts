@@ -1066,10 +1066,11 @@ describe('teamCreateTool / teamDeleteTool', () => {
     assert.ok(r.output.includes('alphanumeric'));
   });
 
-  it('delete errors when there is no active team', async () => {
+  it('delete is a graceful no-op when there is no active team', async () => {
     const r = await teamDeleteTool.execute({}, ctx({ cwd: tmp }));
-    assert.ok(r.isError);
-    assert.ok(r.output.includes('No active team'));
+    // Parity: Claude returns a non-error "nothing to clean up" result.
+    assert.ok(!r.isError);
+    assert.ok(r.output.includes('nothing to clean up'));
   });
 
   it('deletes the active team and removes its directory', async () => {

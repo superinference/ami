@@ -136,9 +136,7 @@ export const askUserQuestionTool: ToolDefinition = {
     },
     required: [],
     // Strict input object: reject unknown top-level keys (parity with Claude's
-    // z.strictObject). `ToolInputSchema` does not yet declare this field, so the
-    // runtime schema carries it while the rest of the literal stays type-checked.
-    // @ts-expect-error -- additionalProperties is a valid JSON Schema keyword here.
+    // z.strictObject). `ToolInputSchema.additionalProperties` now declares this.
     additionalProperties: false,
   },
   isReadOnly: true,

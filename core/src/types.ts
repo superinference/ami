@@ -245,6 +245,9 @@ export interface ToolInputSchema {
   type: 'object';
   properties: Record<string, JsonSchemaProperty>;
   required?: string[];
+  /** When false, the schema rejects keys not declared in {@link properties}
+   *  (parity: Claude Code's `z.strictObject`). Omitted => permissive, as before. */
+  additionalProperties?: boolean;
 }
 
 /** One hunk of a structured diff (parity: Claude's FileEdit `structuredPatch`),

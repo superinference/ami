@@ -1005,10 +1005,11 @@ describe('teamCreateTool and teamDeleteTool', () => {
     assert.ok(!fs.existsSync(teamDir));
   });
 
-  it('teamDeleteTool errors when no active team', async () => {
+  it('teamDeleteTool is a graceful no-op when no active team', async () => {
     const r = await teamDeleteTool.execute({}, ctx({ cwd: tmpDir }));
-    assert.ok(r.isError);
-    assert.ok(r.output.includes('No active team'));
+    // Parity: Claude returns success + "nothing to clean up" (non-error).
+    assert.ok(!r.isError);
+    assert.ok(r.output.includes('nothing to clean up'));
   });
 
   it('resetTeam clears current team', async () => {
