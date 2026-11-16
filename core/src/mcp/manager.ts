@@ -967,6 +967,10 @@ export class McpManager extends EventEmitter {
 
     client.on('log', (msg: McpLogMessage) => this.emit('server-log', name, msg));
     client.on('resource-updated', (uri: string) => this.emit('resource-updated', name, uri));
+    // Live per-tool-call progress (server notifications/progress for an in-flight
+    // tools/call) surfaced on the manager's public event bus so a frontend can
+    // render a progress bar (Claude-parity per-tool-call onProgress).
+    client.on('tool-progress', (p: { name: string; percent?: number; message?: string }) => this.emit('tool-progress', name, p));
     client.on('pagination-capped', (method: string, count: number) => {
       coreLog('mcp', `Pagination cap hit for ${name} on ${method} (${count} items)`);
       this.emit('pagination-capped', name, method, count);

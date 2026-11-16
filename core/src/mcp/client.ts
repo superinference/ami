@@ -593,12 +593,24 @@ export class McpClient extends EventEmitter {
    * disconnect/stopServer (which must abort the loop).
    */
   private reconnectConnecting = false;
+  /**
+   * The resolver + timer of the reconnect loop's in-flight backoff sleep, so an
+   * EXTERNAL {@link disconnect}/stopServer landing mid-backoff can wake it
+   * immediately ({@link wakeReconnectSleep}) instead of the loop burning the full
+   * (up to {@link HTTP_STREAM_RECONNECT_MAX_MS}) delay before noticing the abort.
+   * Parity with Claude Code's wakePollLoop cancelling an in-flight at-capacity
+   * sleep so a queued fault/reconnect can proceed at once (bridge/bridgeDebug.ts).
+   */
+  private reconnectSleepWake: (() => void) | null = null;
+  private reconnectSleepTimer: ReturnType<typeof setTimeout> | null = null;
   private hasTriggeredClose = false;
   private connectionStartTime: number | null = null;
   /** Rolling tail of the last {@link MCP_STDERR_TAIL_LINES} stdio-server stderr lines. */
   private _stderrTail: string[] = [];
 
   private progressCallbacks = new Map<string, (progress: { percent?: number; message?: string }) => void>();
+  /** Monotonic source for a per-tool-call `_meta.progressToken` (see {@link callTool}). */
+  private progressTokenSeq = 0;
   /** URIs this client has an active resources/subscribe for. */
   private subscribedResources = new Set<string>();
 
@@ -993,6 +1005,16 @@ export class McpClient extends EventEmitter {
     }, getMcpToolHeartbeatIntervalMs());
     // Never let the heartbeat timer keep the event loop alive on its own.
     heartbeat.unref?.();
+    // Attach a unique `_meta.progressToken` to the call so the server can push
+    // `notifications/progress` for THIS tool call; route those to a `tool-progress`
+    // event carrying the determinate percent (when the server sends total) and any
+    // message, so a frontend can render a live progress bar for the in-flight call
+    // (parity with Claude Code's per-tool-call onProgress / progressToken). Cleared
+    // the instant the call settles so the token map stays bounded.
+    const progressToken = `mcp-${++this.progressTokenSeq}`;
+    this.progressCallbacks.set(progressToken, (progress) => {
+      this.emit('tool-progress', { name, percent: progress.percent, message: progress.message });
+    });
     try {
       // URL-elicitation-required (-32042) retry loop: a server can refuse a tool
       // call until the user opens one or more URLs, returning the elicitations in
@@ -1002,7 +1024,7 @@ export class McpClient extends EventEmitter {
       // Claude Code's callMCPToolWithUrlElicitationRetry).
       for (let attempt = 0; ; attempt++) {
         try {
-          const result = await this.sendRequestAuto('tools/call', { name, arguments: args }, options?.signal, options?.timeoutMs);
+          const result = await this.sendRequestAuto('tools/call', { name, arguments: args, _meta: { progressToken } }, options?.signal, options?.timeoutMs);
           // Sanitize untrusted tool result content before it reaches the model (H26).
           return recursivelySanitizeUnicode(result);
         } catch (err) {
@@ -1021,6 +1043,7 @@ export class McpClient extends EventEmitter {
       }
     } finally {
       clearInterval(heartbeat);
+      this.progressCallbacks.delete(progressToken);
     }
   }
 
@@ -1143,7 +1166,7 @@ export class McpClient extends EventEmitter {
     this.reconnectAborted = false;
     const startTime = Date.now();
     while (this.reconnectAttempts < this.maxReconnectAttempts) {
-      await new Promise(r => setTimeout(r, this.reconnectDelay(this.reconnectAttempts)));
+      await this.reconnectBackoffSleep(this.reconnectDelay(this.reconnectAttempts));
       // A disconnect()/stopServer landed while we were sleeping — abort gracefully
       // instead of continuing to retry a server the caller no longer wants.
       if (this.reconnectAborted) return;
@@ -1207,7 +1230,12 @@ export class McpClient extends EventEmitter {
     // sleeping aborts it. Invalidate the warm resource cache so a reconnected
     // client re-fetches rather than serving a list captured before the outage
     // (parity with Claude Code's onclose cache invalidation).
-    if (!this.reconnectConnecting) this.reconnectAborted = true;
+    if (!this.reconnectConnecting) {
+      this.reconnectAborted = true;
+      // Wake an in-flight backoff sleep so the loop sees the abort at once instead
+      // of waiting out the remaining (up to 30s) delay.
+      this.wakeReconnectSleep();
+    }
     this._resources = [];
     if (this.hasTriggeredClose && !this.process) return;
     const wasConnected = this._state === 'ready' || this._state === 'connecting';
@@ -1749,6 +1777,43 @@ export class McpClient extends EventEmitter {
    * Streamable-HTTP GET-stream {@link scheduleHttpStreamReconnect} — so a shared
    * outage does not make every client retry in lockstep (thundering herd).
    */
+  /**
+   * A reconnect-loop backoff sleep that can be woken early. Stores its resolver +
+   * timer so an external {@link disconnect} landing mid-backoff can resolve it at
+   * once via {@link wakeReconnectSleep} (the loop then sees `reconnectAborted` and
+   * returns), instead of waiting out a delay that can be as long as
+   * {@link HTTP_STREAM_RECONNECT_MAX_MS}. The timer is unref'd so it never keeps
+   * the event loop alive on its own.
+   */
+  private reconnectBackoffSleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.reconnectSleepWake = resolve;
+      const timer = setTimeout(() => {
+        this.reconnectSleepTimer = null;
+        this.reconnectSleepWake = null;
+        resolve();
+      }, ms);
+      timer.unref?.();
+      this.reconnectSleepTimer = timer;
+    });
+  }
+
+  /**
+   * Wake an in-flight {@link reconnectBackoffSleep} immediately. Called from
+   * {@link disconnect} when it aborts the reconnect loop so a queued stop/reconnect
+   * proceeds without burning the remaining backoff. A no-op when no backoff sleep
+   * is pending.
+   */
+  private wakeReconnectSleep(): void {
+    if (this.reconnectSleepTimer) {
+      clearTimeout(this.reconnectSleepTimer);
+      this.reconnectSleepTimer = null;
+    }
+    const wake = this.reconnectSleepWake;
+    this.reconnectSleepWake = null;
+    if (wake) wake();
+  }
+
   private reconnectDelay(attempt: number): number {
     const base = Math.min(HTTP_STREAM_RECONNECT_BASE_MS * Math.pow(2, attempt), HTTP_STREAM_RECONNECT_MAX_MS);
     const jitter = base * RECONNECT_JITTER_FRAC * (2 * Math.random() - 1);
