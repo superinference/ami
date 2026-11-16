@@ -755,6 +755,10 @@ export const fileReadTool: ToolDefinition = {
         type: 'boolean',
         description: 'Read a text file past the usual 256KB size limit in one call. Still subject to the token budget.',
       },
+      cell_id: {
+        type: 'string',
+        description: 'For Jupyter notebooks (.ipynb) only: read just the single cell whose id matches (either the cell\'s own id or its synthetic "cell-N" index id). Overrides offset/limit cell windowing and includes that cell\'s full outputs.',
+      },
     },
     required: ['file_path'],
   },
@@ -1033,26 +1037,49 @@ export const fileReadTool: ToolDefinition = {
       try {
         const raw = await fs.promises.readFile(resolved, 'utf-8');
         const nb = JSON.parse(raw);
-        const cells: Array<{ cell_type: string; source: string[]; outputs?: any[]; id?: string }> =
+        const cells: Array<{ cell_type: string; source: string[]; outputs?: any[]; id?: string; execution_count?: number | null }> =
           nb.cells || [];
         const parts: string[] = [];
         const kernelName = nb.metadata?.kernelspec?.display_name || nb.metadata?.kernelspec?.name || 'unknown';
+        // Per-cell code language comes from the notebook's language_info.name
+        // (defaulting to 'python'), mirroring Claude Code's readNotebook. It is
+        // only annotated on code cells, and only when it is not the default.
+        const codeLanguage: string = nb.metadata?.language_info?.name || 'python';
         parts.push(`File: ${resolved} (Jupyter Notebook, ${cells.length} cells, kernel: ${kernelName})`);
 
-        // Paginate by CELL index: offset = starting cell (0-based, AMI convention),
-        // limit = number of cells to render. When both are omitted, render all cells
-        // (preserving prior behavior, subject to the token cap below).
-        const hasCellWindow = input.offset !== undefined || input.limit !== undefined;
-        const startCell = Math.max(0, Math.min(offset, cells.length));
-        const endCell = hasCellWindow
-          ? Math.min(startCell + limit, cells.length)
-          : cells.length;
-        if (hasCellWindow) {
-          parts.push(
-            endCell > startCell
-              ? `Cells ${startCell}-${endCell - 1} of ${cells.length}`
-              : `Cells (none shown) of ${cells.length}`,
-          );
+        // Single-cell read by id: `cell_id` selects exactly one cell (its explicit
+        // id, or its synthetic `cell-N` index id) and includes that cell's full
+        // outputs regardless of the large-output guard. Mirrors Claude Code's
+        // readNotebook(path, cellId). Overrides offset/limit windowing.
+        const cellIdArg = input.cell_id !== undefined ? String(input.cell_id) : undefined;
+        let indices: number[];
+        let bypassLargeOutputGuard = false;
+        if (cellIdArg !== undefined) {
+          const foundIdx = cells.findIndex((c, i) => (c.id || `cell-${i}`) === cellIdArg);
+          if (foundIdx === -1) {
+            return { output: `Error: Cell with ID "${cellIdArg}" not found in notebook`, isError: true };
+          }
+          indices = [foundIdx];
+          bypassLargeOutputGuard = true;
+          parts.push(`Cell ${foundIdx} (id: ${cellIdArg}) of ${cells.length}`);
+        } else {
+          // Paginate by CELL index: offset = starting cell (0-based, AMI convention),
+          // limit = number of cells to render. When both are omitted, render all cells
+          // (preserving prior behavior, subject to the token cap below).
+          const hasCellWindow = input.offset !== undefined || input.limit !== undefined;
+          const startCell = Math.max(0, Math.min(offset, cells.length));
+          const endCell = hasCellWindow
+            ? Math.min(startCell + limit, cells.length)
+            : cells.length;
+          if (hasCellWindow) {
+            parts.push(
+              endCell > startCell
+                ? `Cells ${startCell}-${endCell - 1} of ${cells.length}`
+                : `Cells (none shown) of ${cells.length}`,
+            );
+          }
+          indices = [];
+          for (let i = startCell; i < endCell; i++) indices.push(i);
         }
         parts.push('');
 
@@ -1060,11 +1087,21 @@ export const fileReadTool: ToolDefinition = {
         // real multimodal blocks alongside the text so a vision model can see plots/
         // figures. Mirrors Claude Code's notebook image-output extraction.
         const notebookImages: ImageContent[] = [];
-        for (let idx = startCell; idx < endCell; idx++) {
+        for (const idx of indices) {
           const cell = cells[idx];
           const cellId = cell.id || `cell-${idx}`;
           const src = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
-          parts.push(`--- Cell ${idx} [${cell.cell_type}] (id: ${cellId}) ---`);
+          // Code cells carry two extra metadata fields in the header: the kernel
+          // execution_count (when present) and the code language (only when it is
+          // not the default 'python'). Mirrors Claude Code's per-cell metadata.
+          const isCode = cell.cell_type === 'code';
+          const execNote = isCode && typeof cell.execution_count === 'number'
+            ? ` [exec: ${cell.execution_count}]`
+            : '';
+          const langNote = isCode && codeLanguage !== 'python'
+            ? ` [lang: ${codeLanguage}]`
+            : '';
+          parts.push(`--- Cell ${idx} [${cell.cell_type}] (id: ${cellId})${execNote}${langNote} ---`);
           parts.push(src);
           if (cell.outputs && cell.outputs.length > 0) {
             // Per-cell large-output guard: sum text + image payload sizes; when a cell's
@@ -1079,7 +1116,7 @@ export const fileReadTool: ToolDefinition = {
               const imgStr = Array.isArray(img) ? img.join('') : (img ? String(img) : '');
               outSize += t.length + tpStr.length + imgStr.length;
             }
-            if (outSize > NOTEBOOK_LARGE_OUTPUT_THRESHOLD) {
+            if (!bypassLargeOutputGuard && outSize > NOTEBOOK_LARGE_OUTPUT_THRESHOLD) {
               parts.push(`[output] Outputs are too large to include. Use bash with: cat <notebook_path> | jq '.cells[${idx}].outputs'`);
             } else {
               for (const out of cell.outputs) {
