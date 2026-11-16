@@ -435,15 +435,25 @@ function realpathSafe(p: string): string {
 }
 
 /**
- * True when `execPath` resolves to the current working directory — a planted
- * `pwsh`/`powershell` in the CWD that could hijack execution. Parity with Claude
- * Code's `where.exe` cwd-shadowing security filter (windowsPaths.ts): a candidate
- * sitting directly in the CWD is rejected so a malicious binary dropped alongside
- * the project files is never run in place of the real shell.
+ * True when `execPath` resolves inside the current working directory subtree — a
+ * planted `pwsh`/`powershell`/`git.exe`/`git.bat` in (or under) the CWD that
+ * could hijack execution. Parity with Claude Code's `where.exe` cwd-shadowing
+ * security filter (windowsPaths.ts:L65: `pathDir === cwd ||
+ * normalizedPath.startsWith(cwd + sep)`): a candidate sitting directly in the CWD
+ * OR under one of its subdirectories is rejected so a malicious binary dropped
+ * alongside the project files is never run in place of the real shell/tool.
  */
 function isCwdShadowed(execPath: string): boolean {
-  const resolved = path.resolve(execPath);
-  return path.dirname(resolved) === path.resolve(process.cwd());
+  // Use the host's native path flavor so Windows-style (drive-letter / UNC) and
+  // POSIX paths are each classified correctly: a Windows absolute path like
+  // `C:\...` must NOT be mistaken for a cwd-relative path on a non-Windows host.
+  const p = shellHooks.platform() === 'win32' ? path.win32 : path.posix;
+  const cwd = p.resolve(process.cwd());
+  const resolved = p.resolve(execPath);
+  // An empty relative path means `resolved === cwd`; a relative path that is
+  // neither absolute nor `..`-prefixed means `resolved` is within the cwd tree.
+  const rel = p.relative(cwd, resolved);
+  return rel === '' || (!rel.startsWith('..') && !p.isAbsolute(rel));
 }
 
 /** Locate `cmd` on PATH (sync), returning the first hit or `null`. */
@@ -512,6 +522,101 @@ export function resetPowerShellCache(): void {
   cachedPowerShellPath = undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Windows git-bash resolution (trusted bash.exe discovery)
+//
+// On Windows AMI runs user bash commands through git-bash's `bash.exe` — the
+// same POSIX semantics the bash security guards assume — NOT `cmd`. Parity with
+// Claude Code's windowsPaths.ts (findExecutable + findGitBashPath): an explicit
+// AMI_GIT_BASH_PATH / CLAUDE_CODE_GIT_BASH_PATH override wins, else git's default
+// install locations are probed, else `where.exe` resolves `git` with a
+// cwd-shadow security filter and `bash.exe` is derived from it. Unlike Claude
+// (which `process.exit(1)`s when none is found), AMI returns `null` so
+// {@link execCommand} surfaces an actionable launch failure instead of killing
+// the whole process — a library-safe divergence.
+// ---------------------------------------------------------------------------
+
+/** Env knobs naming an explicit git-bash `bash.exe` path (overrides discovery). */
+const GIT_BASH_PATH_ENV = ['AMI_GIT_BASH_PATH', 'CLAUDE_CODE_GIT_BASH_PATH'] as const;
+
+/**
+ * Default git-for-Windows install locations probed before `where.exe` (64-bit
+ * before 32-bit). The `cmd\git.exe` entry is used — not `mingw64\bin\git.exe`,
+ * whose directory is the "raw" tools without the environment setup git-bash
+ * expects. Parity with Claude Code's `findExecutable` default locations.
+ */
+const GIT_DEFAULT_LOCATIONS = [
+  'C:\\Program Files\\Git\\cmd\\git.exe',
+  'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+];
+
+/**
+ * Resolve a TRUSTED executable path on Windows. For `git`, well-known install
+ * locations are probed first; otherwise `where.exe` is consulted and every
+ * candidate that resolves inside the current working directory tree is rejected
+ * ({@link isCwdShadowed}) so a `git.exe`/`git.bat` planted alongside the project
+ * can never be run in place of the real tool. Returns the first trusted hit, or
+ * `null`. Parity with Claude Code's `findExecutable` (windowsPaths.ts:L29-80).
+ */
+export function findExecutable(executable: string): string | null {
+  if (executable === 'git') {
+    for (const loc of GIT_DEFAULT_LOCATIONS) {
+      if (shellHooks.existsSync(loc)) return loc;
+    }
+  }
+  try {
+    const out = shellHooks.execFileSync('where.exe', [executable], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).toString();
+    const candidates = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    // SECURITY: skip any candidate inside the cwd tree (a planted git.exe/.bat).
+    return candidates.find(c => !isCwdShadowed(c)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve git-bash's `bash.exe` on Windows (uncached). An explicit
+ * `AMI_GIT_BASH_PATH` / `CLAUDE_CODE_GIT_BASH_PATH` override wins when it names
+ * an existing file; otherwise the real `git.exe` is located
+ * ({@link findExecutable}) and `<git>/cmd/git.exe` is mapped to its sibling
+ * `<git>/bin/bash.exe`. Returns `null` when no trusted bash can be found
+ * (callers surface an actionable error). Parity with Claude Code's
+ * `findGitBashPath` (windowsPaths.ts:L98-125), except AMI returns `null` instead
+ * of exiting the process.
+ */
+export function findGitBashPath(): string | null {
+  const override = GIT_BASH_PATH_ENV.map(k => (process.env[k] || '').trim()).find(Boolean);
+  if (override) return shellHooks.existsSync(override) ? override : null;
+
+  const gitPath = findExecutable('git');
+  if (gitPath) {
+    // <git>/cmd/git.exe → <git>/bin/bash.exe
+    const bashPath = path.win32.join(gitPath, '..', '..', 'bin', 'bash.exe');
+    if (shellHooks.existsSync(bashPath)) return bashPath;
+  }
+  return null;
+}
+
+let cachedGitBashPath: string | null | undefined;
+
+/**
+ * Memoized {@link findGitBashPath}. Discovery shells out to `where.exe`, so it
+ * runs once per session. Parity with Claude Code's `memoize(findGitBashPath)`.
+ */
+export function getCachedGitBashPath(): string | null {
+  if (cachedGitBashPath === undefined) cachedGitBashPath = findGitBashPath();
+  return cachedGitBashPath;
+}
+
+/** Reset the memoized git-bash path (tests / after a PATH or env change). */
+export function resetGitBashCache(): void {
+  cachedGitBashPath = undefined;
+}
+
 export interface ExecCommandOptions {
   cwd: string;
   timeout?: number;
@@ -578,8 +683,10 @@ export interface ExecCommandResult {
 
 /**
  * Executes a shell command using the resolved POSIX shell (bash/zsh, see
- * {@link findSuitableShell}) via `-c`, or `cmd /c` on Windows, streaming output
- * through an optional `onData` callback.
+ * {@link findSuitableShell}) via `-c`. On Windows the command runs through
+ * git-bash's `bash.exe` (see {@link findGitBashPath}), NOT `cmd`, so POSIX bash
+ * semantics hold on every platform. Streams output through an optional `onData`
+ * callback.
  *
  * Environment knobs (introspectable; apply to every `execCommand` caller):
  * - `AMI_DEFAULT_SHELL` / `CLAUDE_CODE_SHELL_TYPE` — default shell family
@@ -588,6 +695,8 @@ export interface ExecCommandResult {
  * - `AMI_POWERSHELL_PATH` / `CLAUDE_CODE_POWERSHELL_PATH` — explicit PowerShell
  *   executable path, overriding `pwsh`/`powershell` detection (see {@link findPowerShell}).
  * - `AMI_SHELL` / `CLAUDE_CODE_SHELL` — explicit shell path override.
+ * - `AMI_GIT_BASH_PATH` / `CLAUDE_CODE_GIT_BASH_PATH` — explicit git-bash
+ *   `bash.exe` path on Windows, overriding discovery (see {@link findGitBashPath}).
  * - `AMI_LOGIN_SHELL` — when set, spawn the shell as a login shell (`-l`) so
  *   the user's profile/rc files are sourced.
  * - `AMI_SHELL_PREFIX` / `CLAUDE_CODE_SHELL_PREFIX` — an executable+args that
@@ -680,10 +789,24 @@ export function execCommand(
       // uses `$null` and would never create a literal `nul` file.
       shellArgs = buildPowerShellArgs(withPowerShellExitCode(command));
     } else {
+      // Resolve the bash executable. On Windows that means git-bash's `bash.exe`
+      // (trusted discovery with a cwd-shadow filter) — AMI runs user commands
+      // through bash, NOT `cmd`, so the bash security guards' POSIX assumptions
+      // hold on every platform. On POSIX, probe for bash/zsh.
+      let resolved: string | null;
       if (isWindows) {
-        shell = explicitShellPath || 'cmd';
+        resolved = explicitShellPath || getCachedGitBashPath();
+        if (resolved === null || resolved === '') {
+          resolve({
+            stdout: stdoutBuf.value(),
+            stderr: stderrBuf.value() + 'No git-bash found. AMI runs commands through bash on Windows: install git-bash (https://git-scm.com/downloads/win), or set AMI_GIT_BASH_PATH to its bash.exe.',
+            exitCode: SPAWN_FAILURE_EXIT_CODE,
+            signal: null,
+          });
+          return;
+        }
       } else {
-        const resolved = explicitShellPath || findSuitableShell();
+        resolved = explicitShellPath || findSuitableShell();
         if (resolved === null) {
           resolve({
             stdout: stdoutBuf.value(),
@@ -693,22 +816,22 @@ export function execCommand(
           });
           return;
         }
-        shell = resolved;
       }
+      shell = resolved;
 
-      // On the POSIX spawn path, repair hallucinated Windows `>nul` redirects so
-      // they discard output via `/dev/null` instead of creating a literal `nul`
-      // file. On Windows (cmd), `>nul` is the correct native form — leave it.
-      const normalizedCommand = isWindows ? command : rewriteWindowsNullRedirect(command);
+      // bash is a POSIX shell on BOTH platforms (git-bash on Windows), so repair
+      // hallucinated Windows `>nul` redirects to `/dev/null` everywhere — under
+      // bash `2>nul` would otherwise create a literal `nul` file in the cwd.
+      const normalizedCommand = rewriteWindowsNullRedirect(command);
 
       // Optional command wrapping via a configured shell prefix. The Claude-Code
       // name (CLAUDE_CODE_SHELL_PREFIX) is accepted as a fallback for parity.
       const prefix = process.env.AMI_SHELL_PREFIX || process.env.CLAUDE_CODE_SHELL_PREFIX;
       const finalCommand = prefix ? formatShellPrefixCommand(prefix, normalizedCommand) : normalizedCommand;
 
-      // Login-shell flag sources profile/rc files when requested.
-      const loginArgs = !isWindows && process.env.AMI_LOGIN_SHELL ? ['-l'] : [];
-      shellArgs = isWindows ? ['/c', finalCommand] : [...loginArgs, '-c', finalCommand];
+      // Login-shell flag sources profile/rc files when requested (POSIX + git-bash).
+      const loginArgs = process.env.AMI_LOGIN_SHELL ? ['-l'] : [];
+      shellArgs = [...loginArgs, '-c', finalCommand];
     }
 
     const proc = shellHooks.spawn(shell, shellArgs, {
