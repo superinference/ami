@@ -1,5 +1,11 @@
 export { LSPClient, getLSPClient } from './client';
-export type { NotificationHandler, RequestHandler } from './client';
+export type {
+  NotificationHandler,
+  RequestHandler,
+  LspServerState,
+  LspServerStatus,
+  LspInitializationStatus,
+} from './client';
 export {
   DEFAULT_LSP_SERVERS,
   getAllLspServers,

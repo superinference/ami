@@ -188,9 +188,12 @@ describe('LSPClient e2e: initialize handshake + request/response round-trip', ()
     await assert.rejects(() => client.sendRequest('mocklang', 'test/neverResponds', {}, 300), /timed out/);
   });
 
-  it('throws when the language server is not initialized', async () => {
+  it('throws a contextual error naming the server + state when it is not initialized', async () => {
     client = makeClient();
-    await assert.rejects(() => client.sendRequest('mocklang', 'textDocument/hover', {}), /not initialized/);
+    await assert.rejects(
+      () => client.sendRequest('mocklang', 'textDocument/hover', {}),
+      /Cannot send request to LSP server "mocklang": server is stopped/,
+    );
   });
 });
 

@@ -23,6 +23,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { retryWithBackoff } from '../mcp/oauth';
+import { log, logError } from '../logger';
 import {
   assertNoAutoFetch,
   getAllLspServers,
@@ -61,6 +62,44 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1000;
  */
 const EXIT_GRACE_MS = 50;
 
+/**
+ * Lifecycle state of a single language server, mirroring Claude Code's
+ * `LspServerState` (services/lsp/LSPServerInstance.ts). `error` is retained after
+ * a crash so the failure reason stays attributable once the live process is gone.
+ */
+export type LspServerState = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
+
+/**
+ * Introspection snapshot of one language server's lifecycle — the AMI analogue of
+ * Claude's `LSPServerInstance` readonly getters (`state`, `startTime`, `lastError`,
+ * `restartCount`) plus the `isHealthy` predicate and the last `exitCode`. Surfaced
+ * by `getServerStatus`/`getAllServerStatus` and rendered in `/doctor`.
+ */
+export interface LspServerStatus {
+  language: string;
+  state: LspServerState;
+  startTime?: number;
+  /** Message of the last error this server hit (crash, spawn failure, …). */
+  lastError?: string;
+  /** Number of times this language's server has been (re)spawned after a crash. */
+  restartCount: number;
+  /** Process exit code of the last exit, when it exited (null = killed by signal). */
+  exitCode?: number | null;
+  /** True only when the server is running AND its handshake completed. */
+  isHealthy: boolean;
+}
+
+/**
+ * Client-wide initialization status, mirroring Claude Code's manager-level
+ * `getInitializationStatus()` discriminated union — lets a UI/tool report WHY LSP
+ * is (un)available instead of a bare boolean.
+ */
+export type LspInitializationStatus =
+  | { status: 'not-started' }
+  | { status: 'pending' }
+  | { status: 'success' }
+  | { status: 'failed'; error: string };
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -68,6 +107,8 @@ type PendingRequest = {
 };
 
 interface ServerConn {
+  /** The language this connection serves — carried for log/error context. */
+  language: string;
   proc: child_process.ChildProcess;
   buffer: Buffer;
   nextId: number;
@@ -87,6 +128,14 @@ export class LSPClient implements DiagnosticSource {
   private documentVersions: Map<string, number> = new Map();
   /** Per-language crash-recovery counter (reset to 0 on a successful init). */
   private crashCounts: Map<string, number> = new Map();
+  /**
+   * Retained per-language lifecycle status. Unlike the live `servers` map (which a
+   * crash removes), this survives a crash so the failure state + reason stay
+   * attributable — the AMI analogue of Claude's per-`LSPServerInstance` state.
+   */
+  private serverStatus: Map<string, LspServerStatus> = new Map();
+  /** Number of ensureServer handshakes currently in flight (drives init 'pending'). */
+  private pendingInits = 0;
   /** Latest diagnostics per normalized path, from publishDiagnostics. */
   private diagnosticsByUri: Map<string, DiagnosticFile> = new Map();
   /** One-shot waiters resolved when the next publishDiagnostics for a path arrives. */
@@ -182,13 +231,27 @@ export class LSPClient implements DiagnosticSource {
       return false;
     }
 
-    // Crash-recovery cap: refuse to respawn a persistently crashing server.
+    // Crash-recovery cap: refuse to respawn a persistently crashing server. The
+    // crash counter doubles as Claude's `restartCount` — each respawn after a
+    // crash bumps it, and exceeding `maxRestarts` leaves the server in `error`.
     const maxRestarts = config.maxRestarts ?? DEFAULT_MAX_RESTARTS;
-    if ((this.crashCounts.get(language) ?? 0) > maxRestarts) return false;
+    const restartCount = this.crashCounts.get(language) ?? 0;
+    if (restartCount > maxRestarts) {
+      this.recordError(
+        language,
+        `LSP server "${language}" exceeded max crash recovery attempts (${maxRestarts})`,
+      );
+      return false;
+    }
 
+    this.pendingInits++;
+    this.setStatus(language, { state: 'starting', startTime: Date.now(), restartCount });
     try {
       const which = this._spawnSync('which', [config.command], { timeout: 2000, stdio: 'pipe' });
-      if (which.status !== 0) return false;
+      if (which.status !== 0) {
+        this.recordError(language, `LSP server "${language}" command not found: ${config.command}`);
+        return false;
+      }
 
       const proc = this._spawn(config.command, config.args ?? [], {
         cwd: config.workspaceFolder ?? cwd,
@@ -200,17 +263,43 @@ export class LSPClient implements DiagnosticSource {
         env: { ...sanitizeEnvForSubprocess({ ...process.env }), ...config.env },
       });
 
-      const onGone = () => {
+      // Exit handler: distinguish an intentional stop (gracefulStop removes these
+      // listeners first) from a real crash. On a non-zero/non-null exit code we
+      // build a `crashed with exit code N` error, log it, and retain it as the
+      // server's lastError so the crash reason survives the connection teardown.
+      const onExit = (code: number | null) => {
         this.crashCounts.set(language, (this.crashCounts.get(language) ?? 0) + 1);
+        const crashed = code !== 0 && code !== null;
+        const message = crashed
+          ? `LSP server "${language}" crashed with exit code ${code}`
+          : `LSP server "${language}" exited`;
+        this.recordError(language, message, code);
         this.clearServer(language);
       };
-      proc.on('error', onGone);
-      proc.on('exit', onGone);
+      // Spawn-time failure (ENOENT/EACCES surfacing after spawn) — record as the
+      // start failure, not a crash. `awaitSpawn` also rejects so the handshake bails.
+      const onError = (err: Error) => {
+        this.crashCounts.set(language, (this.crashCounts.get(language) ?? 0) + 1);
+        this.recordError(language, `LSP server "${language}" failed to start: ${err.message}`);
+        this.clearServer(language);
+      };
+      proc.on('error', onError);
+      proc.on('exit', onExit);
       proc.stdin?.on('error', () => {});
-      proc.stderr?.on('data', () => {});
-      if (!proc.pid) return false;
+      // Surface the language-server's own stderr as a named diagnostic log line
+      // (`[LSP SERVER <language>] …`) instead of swallowing it — a misbehaving
+      // server's error text (missing deps, config errors) becomes diagnosable.
+      proc.stderr?.on('data', (data: Buffer) => {
+        const output = data.toString().trim();
+        if (output) log('lsp', `[LSP SERVER ${language}] ${output}`);
+      });
+      if (!proc.pid) {
+        this.recordError(language, `LSP server "${language}" failed to spawn`);
+        return false;
+      }
 
       const conn: ServerConn = {
+        language,
         proc,
         buffer: Buffer.alloc(0),
         nextId: 0,
@@ -234,6 +323,7 @@ export class LSPClient implements DiagnosticSource {
       // just block until the request timeout, so bail out fast instead. `onGone`
       // (exit/error) has already bumped the crash counter and dropped the server.
       if (this.servers.get(language) !== conn || proc.exitCode !== null || proc.signalCode !== null) {
+        this.recordError(language, `LSP server "${language}" exited during startup`);
         this.clearServer(language);
         return false;
       }
@@ -255,11 +345,48 @@ export class LSPClient implements DiagnosticSource {
       this.rawNotify(conn, 'initialized', {});
       conn.initialized = true;
       this.crashCounts.set(language, 0);
+      // Successful handshake: reset restartCount and mark the server running.
+      this.setStatus(language, { state: 'running', startTime: Date.now(), restartCount: 0, lastError: undefined, exitCode: undefined });
+      log('lsp', `LSP server "${language}" initialized`);
       return true;
-    } catch {
+    } catch (e) {
+      // Don't clobber a more specific error already recorded by the exit handler
+      // (e.g. "crashed with exit code N") — the generic init-failure wrapper here
+      // fires second when a crash rejected the in-flight initialize request.
+      if (this.serverStatus.get(language)?.state !== 'error') {
+        this.recordError(language, `LSP server "${language}" initialize failed: ${(e as Error).message}`);
+      }
       this.clearServer(language);
       return false;
+    } finally {
+      this.pendingInits = Math.max(0, this.pendingInits - 1);
     }
+  }
+
+  /** Merge a partial status update into the retained per-language status record. */
+  private setStatus(language: string, patch: Partial<LspServerStatus>): void {
+    const prev = this.serverStatus.get(language);
+    const next: LspServerStatus = {
+      language,
+      state: patch.state ?? prev?.state ?? 'stopped',
+      startTime: 'startTime' in patch ? patch.startTime : prev?.startTime,
+      lastError: 'lastError' in patch ? patch.lastError : prev?.lastError,
+      restartCount: patch.restartCount ?? prev?.restartCount ?? 0,
+      exitCode: 'exitCode' in patch ? patch.exitCode : prev?.exitCode,
+      isHealthy: false,
+    };
+    next.isHealthy = next.state === 'running' && this.servers.get(language)?.initialized === true;
+    this.serverStatus.set(language, next);
+  }
+
+  /**
+   * Record a server error: flip the retained status to `error`, keep the message
+   * as `lastError`, and surface it through the shared logger (which also captures
+   * it in the in-memory error ring that `/doctor` reads).
+   */
+  private recordError(language: string, message: string, exitCode?: number | null): void {
+    this.setStatus(language, { state: 'error', lastError: message, exitCode });
+    logError('lsp', message);
   }
 
   private initializeParams(workspaceFolder: string, config: LspServerConfig): unknown {
@@ -320,6 +447,51 @@ export class LSPClient implements DiagnosticSource {
       if (conn.initialized) return true;
     }
     return false;
+  }
+
+  /**
+   * Health predicate for a single language server, mirroring Claude's
+   * `LSPServerInstance.isHealthy()`: true only when the server is running AND its
+   * initialize handshake completed. Used to gate requests with a clear error.
+   */
+  isHealthy(language: string): boolean {
+    const status = this.serverStatus.get(language);
+    return status?.state === 'running' && this.servers.get(language)?.initialized === true;
+  }
+
+  /**
+   * Introspection snapshot for one language server, or `undefined` if no server
+   * for that language has ever been attempted. Mirrors Claude's per-instance
+   * readonly getters (state/startTime/lastError/restartCount) + isHealthy.
+   */
+  getServerStatus(language: string): LspServerStatus | undefined {
+    const status = this.serverStatus.get(language);
+    if (!status) return undefined;
+    // `isHealthy` is derived live so it reflects the current connection, not a
+    // snapshot taken when the status was last written.
+    return { ...status, isHealthy: this.isHealthy(language) };
+  }
+
+  /** Introspection snapshot for every language server attempted this session. */
+  getAllServerStatus(): LspServerStatus[] {
+    return [...this.serverStatus.keys()].map((lang) => this.getServerStatus(lang)!);
+  }
+
+  /**
+   * Client-wide initialization status, mirroring Claude's manager-level
+   * `getInitializationStatus()`: `pending` while a handshake is in flight,
+   * `success` once any server is connected, `failed` (with the captured error)
+   * when the last attempt(s) failed and none is connected, else `not-started`.
+   */
+  getInitializationStatus(): LspInitializationStatus {
+    if (this.isConnected()) return { status: 'success' };
+    if (this.pendingInits > 0) return { status: 'pending' };
+    let error: string | undefined;
+    for (const status of this.serverStatus.values()) {
+      if (status.state === 'error' && status.lastError) error = status.lastError;
+    }
+    if (error) return { status: 'failed', error };
+    return { status: 'not-started' };
   }
 
   // ---- inbound message framing / dispatch -------------------------------
@@ -441,6 +613,9 @@ export class LSPClient implements DiagnosticSource {
   private rawRequest<T = unknown>(conn: ServerConn, method: string, params: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
     const id = ++conn.nextId;
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    // JSON-RPC protocol trace (verbose; filtered out by default), mirroring
+    // Claude's `[LSP PROTOCOL <name>]` tracing hook for deep debugging.
+    log('lsp', `[LSP PROTOCOL ${conn.language}] → request #${id} ${method}`, undefined, 'verbose');
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         conn.pending.delete(id);
@@ -460,9 +635,14 @@ export class LSPClient implements DiagnosticSource {
 
   private rawNotify(conn: ServerConn, method: string, params: unknown): void {
     const body = JSON.stringify({ jsonrpc: '2.0', method, params });
+    log('lsp', `[LSP PROTOCOL ${conn.language}] → notify ${method}`, undefined, 'verbose');
     try {
       conn.proc.stdin?.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
-    } catch { /* server gone */ }
+    } catch (e) {
+      // Notifications are fire-and-forget, but a write failure (server gone mid-sync)
+      // is still worth a contextual debug line instead of a silent swallow.
+      log('lsp', `LSP server "${conn.language}" notification "${method}" failed: ${(e as Error).message}`);
+    }
   }
 
   /**
@@ -473,14 +653,29 @@ export class LSPClient implements DiagnosticSource {
   async sendRequest<T = unknown>(language: string, method: string, params: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
     const conn = this.servers.get(language);
     if (!conn || !conn.initialized) {
-      throw new Error(`LSP server for "${language}" is not initialized`);
+      // Contextual, Claude-parity wording: name the server, its current lifecycle
+      // state, and its retained lastError so the failure is attributable.
+      const status = this.serverStatus.get(language);
+      const state = status?.state ?? 'stopped';
+      const lastError = status?.lastError ? `, last error: ${status.lastError}` : '';
+      const message = `Cannot send request to LSP server "${language}": server is ${state}${lastError}`;
+      logError('lsp', message);
+      throw new Error(message);
     }
-    return retryWithBackoff<T>(() => this.rawRequest<T>(conn, method, params, timeoutMs), {
-      retries: 3,
-      baseMs: 500,
-      sleep: this._sleep,
-      isRetryable: (e) => (e as { code?: number }).code === LSP_CONTENT_MODIFIED,
-    });
+    try {
+      return await retryWithBackoff<T>(() => this.rawRequest<T>(conn, method, params, timeoutMs), {
+        retries: 3,
+        baseMs: 500,
+        sleep: this._sleep,
+        isRetryable: (e) => (e as { code?: number }).code === LSP_CONTENT_MODIFIED,
+      });
+    } catch (e) {
+      // Wrap the server/timeout error with the server name + method for context,
+      // matching Claude's `LSP server <name> request <method> failed: <msg>`.
+      const message = `LSP server "${language}" request "${method}" failed: ${(e as Error).message}`;
+      logError('lsp', message);
+      throw new Error(message);
+    }
   }
 
   /**
@@ -641,6 +836,8 @@ export class LSPClient implements DiagnosticSource {
     this.openedDocuments.clear();
     this.documentVersions.clear();
     this.crashCounts.clear();
+    this.serverStatus.clear();
+    this.pendingInits = 0;
     this.diagnosticsByUri.clear();
     this.diagnosticWaiters.clear();
     this.diagnostics.reset();
@@ -660,9 +857,13 @@ export class LSPClient implements DiagnosticSource {
     // Flip initialized off first so `isConnected()` is false immediately and no
     // new request races the teardown.
     conn.initialized = false;
+    // Mark the lifecycle `stopping`; `detach()` flips it to `stopped`. An intentional
+    // stop must never land in `error` state — the crash listeners are removed below.
+    this.setStatus(language, { state: 'stopping' });
 
     const detach = (): void => {
       this.servers.delete(language);
+      this.setStatus(language, { state: 'stopped' });
       for (const [, entry] of conn.pending) clearTimeout(entry.timer);
       conn.pending.clear();
       // Drop the crash listeners so the server's OWN graceful exit (prompted by the
