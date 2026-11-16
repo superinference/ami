@@ -952,6 +952,66 @@ export async function resolveAgentSystemPrompt(
 }
 
 // ---------------------------------------------------------------------------
+// Agent skill preloading — assemble the system-prompt block for the skills an
+// agent definition declares via its `skills` allowlist (parity with Claude's
+// runAgent skill preloading: inline each named skill's body into the spawned
+// agent's context AND report which skills loaded vs. which names could not be
+// resolved). Pure core helper; the task tool (core) wires it into the spawn path.
+// ---------------------------------------------------------------------------
+
+/** Heading introducing the inlined bodies of an agent's preloaded skills. */
+export const PRELOADED_SKILLS_HEADING = '# Preloaded Skills';
+
+/** Outcome of {@link buildPreloadedSkillsBlock}. */
+export interface PreloadedSkillsResult {
+  /** The assembled system-prompt block to append to the agent's prompt, or `''`
+   *  when no requested skill resolved to enabled, non-empty content. */
+  block: string;
+  /** Canonical names of the skills that were preloaded, in request order (the
+   *  "which skill is loading" metadata). */
+  loaded: string[];
+  /** Requested skill names that did NOT resolve to an enabled, non-empty skill
+   *  (missing, disabled via {@link isSkillEnabled}, or blank-bodied) — surfaced as
+   *  a load/spawn warning instead of silently dropped. */
+  missing: string[];
+}
+
+/**
+ * Build the preloaded-skills prompt block for an agent's `skills` allowlist
+ * (parity with Claude's runAgent skill preloading). For each requested name,
+ * `resolve` is consulted (the SkillManager's name/alias lookup); a skill that
+ * resolves, is {@link isSkillEnabled}, and has a non-empty body is inlined under a
+ * `## <name>` sub-heading, and its canonical name recorded in `loaded`. Any name
+ * that does not resolve to such a skill is recorded in `missing`. The returned
+ * `block` is empty when nothing loaded so the caller appends nothing. Duplicate
+ * requested names resolve once each (the caller's allowlist is already de-duped by
+ * {@link parseAgentSkills}); a skill is never inlined twice for the same request.
+ */
+export function buildPreloadedSkillsBlock(
+  skillNames: readonly string[],
+  resolve: (name: string) => SkillDefinition | null,
+): PreloadedSkillsResult {
+  const loaded: string[] = [];
+  const missing: string[] = [];
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const name of skillNames) {
+    const skill = resolve(name);
+    const body = typeof skill?.content === 'string' ? skill.content.trim() : '';
+    if (skill && isSkillEnabled(skill) && body.length > 0) {
+      if (seen.has(skill.name)) continue; // never inline the same skill twice
+      seen.add(skill.name);
+      loaded.push(skill.name);
+      parts.push(`## ${skill.name}\n\n${body}`);
+    } else {
+      missing.push(name);
+    }
+  }
+  const block = parts.length > 0 ? `${PRELOADED_SKILLS_HEADING}\n\n${parts.join('\n\n')}` : '';
+  return { block, loaded, missing };
+}
+
+// ---------------------------------------------------------------------------
 // Skill-improvement suggestions — a structured descriptor for applying concrete,
 // section-scoped edits to a named skill (parity with Claude's
 // SkillImprovementSuggestion / SkillUpdate schema). Pure data + validation; the
