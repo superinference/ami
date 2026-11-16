@@ -68,6 +68,7 @@ const CHECK_IDS = {
   SUBCOMMAND_FANOUT: 66,
   PS4_TRACE_RCE: 67,
   ARITHMETIC_CONDITIONAL_INJECTION: 68,
+  DESTRUCTIVE_TMUX: 69,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1455,6 +1456,15 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // Destructive tmux — blocks `tmux kill-server`/`kill-session`, which would
+  // tear down the user's own tmux sessions (AMI shares the default socket).
+  {
+    const tmuxCheck = detectDestructiveTmux(command);
+    if (tmuxCheck.blocked) {
+      return fail(CHECK_IDS.DESTRUCTIVE_TMUX, tmuxCheck.reason!);
+    }
+  }
+
   // Data exfiltration — blocks curl/wget commands that post or upload
   // sensitive files (credentials, SSH keys, /etc/passwd, etc.) to remote
   // servers, plus bulk file-read-to-network pipes, recursive scp/rsync
@@ -2533,6 +2543,20 @@ export function detectGitCredentialTheft(command: string): { blocked: boolean; r
 const GIT_RCE_CONFIG_KEY = '(?:core\\.(?:pager|sshcommand|editor|fsmonitor|askpass)|sequence\\.editor|diff\\.external|uploadpack\\.packobjectshook)';
 const GIT_RCE_CONFIG_INLINE_RE = new RegExp(`\\bgit\\b[^;|&]*\\s-c\\s+${GIT_RCE_CONFIG_KEY}\\s*=`, 'i');
 const GIT_RCE_CONFIG_KEY_RE = new RegExp(GIT_RCE_CONFIG_KEY, 'i');
+// Attached-form `-c<key>=<cmd>` (no space between `-c` and the key) — git parses
+// `-ccore.pager=sh` exactly like `-c core.pager=sh`, but the space-requiring
+// GIT_RCE_CONFIG_INLINE_RE above misses it (a parser differential). Match the
+// RCE-bearing key glued directly onto `-c`.
+const GIT_RCE_CONFIG_ATTACHED_RE = new RegExp(`\\bgit\\b[^;|&]*\\s-c${GIT_RCE_CONFIG_KEY}\\s*=`, 'i');
+// `--config-env=<key>=<ENVVAR>` sets a config key from an environment variable;
+// pointing an RCE-bearing key at an env var git then executes is the env-indirect
+// form of `-c <key>=<cmd>`.
+const GIT_RCE_CONFIG_ENV_RE = new RegExp(`\\bgit\\b[^;|&]*\\s--config-env(?:=|\\s+)${GIT_RCE_CONFIG_KEY}=`, 'i');
+// `--exec-path[=<dir>]` makes git resolve its `git-*` subcommand binaries from the
+// given directory — an attacker-controlled path turns any subsequent subcommand
+// into arbitrary code execution. The bare `--exec-path` (query) form is harmless,
+// so only block the value-bearing `=<dir>` / ` <dir>` forms.
+const GIT_EXEC_PATH_RE = /\bgit\b[^;|&]*\s--exec-path(?:=|\s+)\S/;
 
 // Git environment variables whose VALUE git later runs as a shell command. Setting
 // any of these is an RCE vector equivalent to the corresponding config key but via
@@ -2581,9 +2605,22 @@ export function detectGitConfigRce(command: string): { blocked: boolean; reason?
     return { blocked: true, reason: 'git --upload-pack/--receive-pack can execute an arbitrary command as the pack helper' };
   }
 
-  // Inline `git -c core.pager=<cmd> …` — the value runs immediately.
-  if (GIT_RCE_CONFIG_INLINE_RE.test(stripped)) {
+  // Inline `git -c core.pager=<cmd> …` — the value runs immediately. Both the
+  // spaced (`-c core.pager=`) and attached (`-ccore.pager=`) forms are RCE.
+  if (GIT_RCE_CONFIG_INLINE_RE.test(stripped) || GIT_RCE_CONFIG_ATTACHED_RE.test(stripped)) {
     return { blocked: true, reason: 'git -c <key>=<cmd> can set a config key whose value git executes as a shell command' };
+  }
+
+  // `git --config-env=core.pager=ENVVAR …` — sets an RCE-bearing config key from
+  // an environment variable whose value git then executes.
+  if (GIT_RCE_CONFIG_ENV_RE.test(stripped)) {
+    return { blocked: true, reason: 'git --config-env=<key>=<env> can set a config key whose value git executes as a shell command' };
+  }
+
+  // `git --exec-path=<dir> …` — git loads its subcommand binaries from <dir>, so
+  // an attacker-controlled path yields arbitrary code execution.
+  if (GIT_EXEC_PATH_RE.test(stripped)) {
+    return { blocked: true, reason: 'git --exec-path=<dir> makes git run its subcommand binaries from an arbitrary directory — code-execution vector' };
   }
 
   // `git config <key> <value>` writes.
@@ -3042,6 +3079,50 @@ export function detectPackageManagerHijack(command: string): { blocked: boolean;
     }
   }
 
+  // --- registry / index redirection (dependency-confusion / supply-chain) ---
+  // Redirecting a package manager's registry/index to an attacker-controlled host
+  // lets a malicious server substitute a trojanned package (dependency confusion).
+  // Claude Code hardens its own installs by running from $HOME so a project-level
+  // pip.conf/.npmrc cannot redirect the registry; the command-string analog is to
+  // block an install that redirects the index/registry to a URL on the CLI.
+  // pip: --index-url / --extra-index-url / -i <url>
+  if (/\bpip[3]?\s+install\b/.test(stripped) &&
+      /\s(?:--index-url|--extra-index-url|-i)(?:\s+|=)(?:https?|ftp|file):\/\/\S+/.test(stripped)) {
+    return { blocked: true, reason: 'pip install --index-url/--extra-index-url redirects the package index to an arbitrary host — dependency-confusion / supply-chain risk' };
+  }
+  // npm / yarn / pnpm / bun: --registry <url>
+  if (/\b(?:npm|yarn|pnpm|bun)\b/.test(stripped) && /\b(?:install|add|i|ci)\b/.test(stripped) &&
+      /\s--registry(?:\s+|=)(?:https?|ftp|file):\/\/\S+/.test(stripped)) {
+    return { blocked: true, reason: 'package install --registry redirects the registry to an arbitrary host — dependency-confusion / supply-chain risk' };
+  }
+
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Destructive tmux command detector
+// ---------------------------------------------------------------------------
+// Claude Code isolates its tmux operations onto a private socket (tmuxSocket.ts)
+// precisely so an agent-issued `tmux kill-server` / `kill-session` cannot destroy
+// the user's own tmux sessions (which, if Claude was launched from inside tmux,
+// share the default socket). AMI has no tmux-socket isolation, so the command-
+// string guard is to block the server-/session-wide destructive subcommands
+// outright. Per-pane/window operations and all read-only/attach subcommands
+// (ls, list-sessions, new-session, send-keys, attach, …) stay allowed.
+// Blocked:   tmux kill-server, tmux kill-session, tmux kill-server -t x
+// Allowed:   tmux ls, tmux list-sessions, tmux new-session, tmux send-keys …
+// Allow any intervening option/value tokens between `tmux` and the kill
+// subcommand (e.g. `tmux -L default kill-server`) but stop at a command
+// separator so a later unrelated segment is not swept in.
+// eslint-disable-next-line security/detect-unsafe-regex -- lazy token class is separator-bounded, linear on short command strings
+const DESTRUCTIVE_TMUX_RE = /(?:^|[\s;|&(])tmux\s+(?:[^\s;|&]+\s+)*?kill-(?:server|session)\b/;
+
+export function detectDestructiveTmux(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  if (!/\btmux\b/.test(stripped)) return { blocked: false };
+  if (DESTRUCTIVE_TMUX_RE.test(stripped)) {
+    return { blocked: true, reason: 'tmux kill-server/kill-session can destroy the user’s tmux sessions — blocked (AMI does not isolate tmux onto a private socket)' };
+  }
   return { blocked: false };
 }
 
