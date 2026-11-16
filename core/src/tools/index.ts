@@ -43,15 +43,30 @@ import { agenticFetchTool } from './agentic-fetch';
 import { scoutTool } from './scout';
 import { endConversationTool } from './end-conversation';
 
+/** Sources whose tools form the cache-stable BUILT-IN prefix partition. Everything
+ *  else (MCP, installed plugins, user tools) sorts into the suffix partition. */
+const BUILTIN_TOOL_SOURCES = new Set(['core', 'builtin']);
+
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
+  /** Registration source per tool name, used to partition the cache-stable pool. */
+  private sources: Map<string, string> = new Map();
   private _guard = new ToolRegistryGuard();
 
   register(tool: ToolDefinition, source = 'core'): void {
     // Pass the tool's declared aliases so the guard both collision-checks them and
     // can resolve a legacy/renamed name back to the canonical tool (parity: aliases).
-    this._guard.register(tool.name, source, tool.aliases);
+    // PARITY (additive): built-ins-win on a CROSS-source name collision. Mirrors
+    // Claude Code's `uniqBy([...builtIns, ...mcp], 'name')` precedence in
+    // tools.ts:assembleToolPool — a plugin/MCP tool must never silently overwrite
+    // an incumbent built-in of the same name. The guard returns a ToolConflict for a
+    // cross-source duplicate (and for an invalid name/alias); in that case we keep the
+    // incumbent and skip the newcomer. A SAME-source re-registration is not a conflict,
+    // so it still updates the tool (legit hot-swap of a tool by its own owner).
+    const conflict = this._guard.register(tool.name, source, tool.aliases);
+    if (conflict) return;
     this.tools.set(tool.name, tool);
+    this.sources.set(tool.name, source);
   }
 
   get(name: string): ToolDefinition | undefined {
@@ -62,6 +77,31 @@ export class ToolRegistry {
 
   getAll(): ToolDefinition[] {
     return Array.from(this.tools.values());
+  }
+
+  /**
+   * PARITY (additive): cache-stable assembly of the full tool pool, mirroring
+   * Claude Code's `tools.ts:assembleToolPool`. Built-in tools (registered under the
+   * `core`/`builtin` sources) are sorted by name into a contiguous PREFIX; MCP /
+   * installed-plugin / user tools are sorted by name into a SUFFIX partition.
+   *
+   * The provider's system-prompt cache places a breakpoint after the last built-in
+   * tool; keeping built-ins as a sorted contiguous prefix means adding or reordering
+   * an MCP tool can never interleave into the built-in region and invalidate the
+   * downstream cache keys. The result is deterministic regardless of registration
+   * order, so the advertised tool list is prompt-cache stable across sessions/users.
+   */
+  assembleToolPool(): ToolDefinition[] {
+    const builtIns: ToolDefinition[] = [];
+    const extended: ToolDefinition[] = [];
+    for (const tool of this.tools.values()) {
+      const source = this.sources.get(tool.name) ?? 'core';
+      (BUILTIN_TOOL_SOURCES.has(source) ? builtIns : extended).push(tool);
+    }
+    const byName = (a: ToolDefinition, b: ToolDefinition) => a.name.localeCompare(b.name);
+    builtIns.sort(byName);
+    extended.sort(byName);
+    return [...builtIns, ...extended];
   }
 
   getConflicts(): readonly ToolConflict[] {
@@ -76,7 +116,9 @@ export class ToolRegistry {
       parameters: ToolInputSchema;
     };
   }> {
-    return this.getAll().map((tool) => ({
+    // Advertise the model-facing tool list in cache-stable order (built-ins sorted
+    // prefix, MCP/installed sorted suffix) so the provider's prompt cache holds.
+    return this.assembleToolPool().map((tool) => ({
       type: 'function' as const,
       function: {
         name: tool.name,
