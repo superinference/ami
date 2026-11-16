@@ -41,6 +41,30 @@ export interface SandboxConfig {
   // read-only, the same technique as `readOnlyPaths`. Mirrors Claude's
   // `SandboxFilesystemConfig.denyWrite`. Additive: undefined/empty is a no-op.
   denyWritePaths?: string[];
+  // PARITY (config-rewrite / privilege-escalation escape): when true, the
+  // sandbox bind-remounts the agent's own settings/config files AND the
+  // auto-loaded skills/commands/agents directories (under the command's cwd)
+  // read-only, so a sandboxed command cannot rewrite the trusted config to
+  // weaken the sandbox, nor plant an auto-discovered skill/command/agent that
+  // would later run with full capabilities. Mirrors Claude Code's
+  // sandbox-adapter unconditional `denyWrite` of settings.json files and
+  // `.claude/skills`/commands/agents. Additive: undefined/false is a no-op.
+  denyConfigWrites?: boolean;
+  // PARITY (bare-repo .git-file poisoning defense): when true, the sandbox
+  // bind-remounts read-only the files git's `is_git_directory()` keys on
+  // (HEAD, objects, refs, hooks, config) under cwd, so a sandboxed command
+  // cannot alter a planted/pre-existing bare-repo marker (e.g. a `config` with
+  // `core.fsmonitor`) that a later UNsandboxed `git` run would execute. Mirrors
+  // Claude Code's sandbox-adapter bare-repo guard. Additive: undefined/false is
+  // a no-op.
+  denyBareGitPoisoning?: boolean;
+  // PARITY (fail-closed hard gate): when true, an unavailable sandbox is a
+  // FATAL startup error rather than a silent degrade-to-unsandboxed. Consumed
+  // by callers via {@link validateSandboxEnabled}'s `fatal` flag. Intended for
+  // managed deployments that require sandboxing. Mirrors Claude Code's
+  // `SandboxSettings.failIfUnavailable`. Additive: undefined/false preserves the
+  // warn-and-run-unsandboxed default.
+  failIfUnavailable?: boolean;
 }
 
 export function getDefaultMemoryMB(): number {
@@ -440,6 +464,8 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
   const escapedCwd = cwd.replace(/'/g, "'\\''");
   const mounts = buildReadOnlyMounts(cfg);
   const writeDenials = buildWriteDenials(cfg);
+  const configGuard = buildConfigWriteGuard(cwd, cfg);
+  const gitGuard = buildBareGitRepoGuard(cwd, cfg);
   const readDenials = buildReadDenials(cfg);
   const credentialScrub = buildCredentialScrub(cfg);
   const socketDenial = buildSocketDenial(cfg);
@@ -449,7 +475,84 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
     !cfg.allowNetwork && hasAllowedDomains
       ? buildDeniedDomainRules(cfg.deniedDomains) + buildNetworkAllowlist(cfg.allowedDomains!)
       : '';
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${readDenials}${credentialScrub}${socketDenial}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${configGuard}${gitGuard}${readDenials}${credentialScrub}${socketDenial}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
+}
+
+/** Join a sandbox cwd and a relative path, normalizing a trailing slash so the
+ * segment never contains a doubled separator. */
+function joinUnderCwd(cwd: string, rel: string): string {
+  return cwd.replace(/\/+$/, '') + '/' + rel;
+}
+
+/**
+ * Bind-remount each path onto itself read-only, but ONLY when it exists — a
+ * missing path is skipped so no 0-byte stub is left behind (which would both
+ * pollute the host and break tools like git). Reuses the exact bind+remount
+ * technique as {@link buildReadOnlyMounts} / {@link buildWriteDenials}; every
+ * step is best-effort (`2>/dev/null`). Shared by the config-write and bare-git
+ * guards so the ro-bind logic exists in one place (No-Duplication Rule).
+ */
+function roBindExistingPaths(paths: string[]): string {
+  return paths
+    .map((p) => {
+      const esc = escapeShell(p).replace(/'/g, "'\\''");
+      return `if [ -e ${esc} ]; then mount --bind ${esc} ${esc} 2>/dev/null && mount -o remount,ro,bind ${esc} 2>/dev/null; fi; `;
+    })
+    .join('');
+}
+
+/**
+ * Relative paths (under the command's cwd) that, if writable inside the
+ * sandbox, let a sandboxed command rewrite the agent's own trusted config
+ * (settings-rewrite sandbox escape) or plant an auto-discovered skill / command
+ * / agent that would later run with full capabilities (privilege escalation).
+ * Covers both the Claude-compatible `.claude/` tree and AMI's `.ami/` tree.
+ */
+const CONFIG_ESCAPE_RELPATHS = [
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.ami/config.json',
+  '.ami/settings.json',
+  '.ami/settings.local.json',
+  '.claude/skills',
+  '.claude/commands',
+  '.claude/agents',
+  '.ami/skills',
+  '.ami/commands',
+  '.ami/agents',
+];
+
+/**
+ * PARITY (config-rewrite / privilege-escalation escape): ro-bind the agent's own
+ * settings/config files and auto-loaded skills/commands/agents directories
+ * (under cwd) so a sandboxed command can neither weaken the sandbox by editing
+ * trusted config nor plant an auto-loaded skill/command/agent. Returns '' when
+ * `denyConfigWrites` is off. Mirrors Claude Code's sandbox-adapter unconditional
+ * `denyWrite` of settings files + `.claude/skills`/commands/agents.
+ */
+export function buildConfigWriteGuard(cwd: string, cfg: SandboxConfig): string {
+  if (!cfg.denyConfigWrites) return '';
+  return roBindExistingPaths(CONFIG_ESCAPE_RELPATHS.map((rel) => joinUnderCwd(cwd, rel)));
+}
+
+/**
+ * The files git's `is_git_directory()` keys on: a dir containing HEAD +
+ * objects/ + refs/ is treated as a (bare) repo, and a planted `config`/`hooks`
+ * can run code when an UNsandboxed git later runs there.
+ */
+const BARE_GIT_REPO_FILES = ['HEAD', 'objects', 'refs', 'hooks', 'config'];
+
+/**
+ * PARITY (bare-repo .git-file poisoning defense): ro-bind any existing bare-repo
+ * marker files under cwd so a sandboxed command cannot modify a planted/pre-
+ * existing HEAD/objects/refs/hooks/config that a later unsandboxed `git` would
+ * honor. Returns '' when `denyBareGitPoisoning` is off. Existence-guarded so a
+ * non-existent marker is never stubbed (matching Claude Code's avoidance of
+ * 0-byte stubs that break `git`). Mirrors Claude Code's sandbox-adapter guard.
+ */
+export function buildBareGitRepoGuard(cwd: string, cfg: SandboxConfig): string {
+  if (!cfg.denyBareGitPoisoning) return '';
+  return roBindExistingPaths(BARE_GIT_REPO_FILES.map((f) => joinUnderCwd(cwd, f)));
 }
 
 /**
@@ -646,12 +749,26 @@ export interface SandboxValidation {
   valid: boolean;
   error?: string;
   method?: string;
+  // PARITY (fail-closed gate): when the sandbox is NOT valid, `fatal` tells the
+  // caller whether to abort (true → the `failIfUnavailable` hard gate was set)
+  // or degrade to running unsandboxed with a warning (false → the default).
+  // Always false/absent on the valid path. Mirrors Claude Code's
+  // `SandboxSettings.failIfUnavailable` semantics.
+  fatal?: boolean;
 }
 
-export function validateSandboxEnabled(): SandboxValidation {
+/**
+ * Validate that the host bash sandbox can actually start. When it cannot, the
+ * `fatal` flag reflects the caller's `failIfUnavailable` policy: a managed
+ * deployment that passes `{ failIfUnavailable: true }` gets `fatal: true` (abort
+ * at startup) while the default gets `fatal: false` (warn + run unsandboxed).
+ */
+export function validateSandboxEnabled(opts?: { failIfUnavailable?: boolean }): SandboxValidation {
+  const fatal = !!opts?.failIfUnavailable;
   if (process.platform !== 'linux') {
     return {
       valid: false,
+      fatal,
       error: 'Sandbox mode requires Linux with namespace support (unshare). ' +
         `Current platform is ${process.platform}. ` +
         'Set sandbox.enabled to false or run on Linux.',
@@ -660,6 +777,7 @@ export function validateSandboxEnabled(): SandboxValidation {
   if (!isUnshareAvailable()) {
     return {
       valid: false,
+      fatal,
       error: 'Sandbox mode is enabled but the unshare command is not available or lacks permissions. ' +
         'Install util-linux and ensure user namespaces are enabled (sysctl kernel.unprivileged_userns_clone=1), ' +
         'or set sandbox.enabled to false.',
