@@ -150,6 +150,25 @@ export function classifyExitStatus(code: number | null, signal: NodeJS.Signals |
 }
 
 /**
+ * FUNCTIONAL (parity): build the single aggregate "stopped by the user"
+ * model-facing notification shown after the user kills background agents,
+ * mirroring Claude Code's useCancelRequest.killAllAgentsAndNotify (which
+ * enqueues ONE notification rather than a per-agent spam). Returns:
+ *   - `null`                 when nothing was stopped (0 descriptions)
+ *   - `Background agent "X" was stopped by the user.`              (exactly 1)
+ *   - `N background agents were stopped by the user: "a", "b".`    (N > 1)
+ * Pure/side-effect-free so it is reusable and unit-testable in isolation.
+ */
+export function formatStoppedByUserNotification(descriptions: string[]): string | null {
+  if (descriptions.length === 0) return null;
+  if (descriptions.length === 1) {
+    return `Background agent "${descriptions[0]}" was stopped by the user.`;
+  }
+  const list = descriptions.map((d) => `"${d}"`).join(', ');
+  return `${descriptions.length} background agents were stopped by the user: ${list}.`;
+}
+
+/**
  * Compute a background task's elapsed wall-clock duration, mirroring Claude
  * Code's CoordinatorAgentStatus/useElapsedTime formula:
  *   Math.max(0, (endTime ?? now) - startTime - totalPausedMs)
@@ -502,6 +521,33 @@ export class ProcessManager extends EventEmitter {
     }
 
     return true;
+  }
+
+  /**
+   * FUNCTIONAL (parity): single-shot stop of EVERY running in-process agent
+   * (ESC/kill-all cancellation), returning the killed agents plus ONE aggregate
+   * model-facing notification. Mirrors Claude Code's useCancelRequest
+   * killAllAgentsAndNotify: it filters to `local_agent` tasks that are still
+   * running, kills them all, and enqueues a single "stopped by the user" summary
+   * rather than a per-agent notification storm. Only {@link registerAgent}-backed
+   * tasks (taskType === 'agent') are targeted — background bash shells and MCP
+   * monitors are left running, matching Claude's type filter. The returned
+   * `notification` is null when nothing was running so callers can skip the
+   * enqueue. kill() already freezes each task's elapsed clock and closes its fd.
+   */
+  killAllAgents(): { stopped: BackgroundProcess[]; notification: string | null } {
+    const stopped: BackgroundProcess[] = [];
+    for (const taskId of Array.from(this.processes.keys())) {
+      const entry = this.processes.get(taskId);
+      if (!entry || entry.status !== 'running') continue;
+      if (this.taskType(taskId) !== 'agent') continue;
+      if (this.kill(taskId)) {
+        const snapshot = this.get(taskId);
+        if (snapshot) stopped.push(snapshot);
+      }
+    }
+    const notification = formatStoppedByUserNotification(stopped.map((s) => s.description));
+    return { stopped, notification };
   }
 
   /**
