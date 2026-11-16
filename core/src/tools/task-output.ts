@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { coerceBool, coerceNumber } from '../utils/coerce';
+import { formatSize } from './spill-output';
 
 /** Default cap on how long task_output({wait:true}) blocks for a task to finish. */
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -27,6 +28,38 @@ function filterAndTail(chunk: string, re: RegExp | undefined, tail: number): str
   if (re) lines = lines.filter((line) => re.test(line));
   if (tail > 0) lines = lines.slice(-tail);
   return lines.join('\n');
+}
+
+/**
+ * PARITY (additive): truncation / total-size indicator with a full-output pointer.
+ * Claude Code's shell-detail view detects that the shown tail is only a window into
+ * a larger file (`bytesTotal > content.length`) and renders "Showing N lines of
+ * <size>". We do the same for the tool result: when the process manager can report
+ * the total bytes written and the emitted tail is smaller than that total, append
+ * a quantitative "showing N lines of <total>, <omitted> of earlier output omitted"
+ * line plus the on-disk output path so the model knows the view is incomplete and
+ * can Read the full log. Skipped when a filter is active (the shown set is a
+ * deliberate subset, not a truncation) or when the manager can't introspect size.
+ */
+function truncationIndicator(
+  context: ToolContext,
+  taskId: string,
+  shownBody: string,
+  filtered: boolean,
+): string | undefined {
+  if (filtered) return undefined;
+  const pm = context.processManager;
+  if (!pm || typeof pm.getOutputSize !== 'function') return undefined;
+  const bytesTotal = pm.getOutputSize(taskId);
+  const shownBytes = Buffer.byteLength(shownBody, 'utf-8');
+  if (!(bytesTotal > shownBytes)) return undefined;
+  const trimmedBody = shownBody.replace(/\n+$/, '');
+  const shownLines = trimmedBody === '' ? 0 : trimmedBody.split('\n').length;
+  const omitted = bytesTotal - shownBytes;
+  let msg = `Showing ${shownLines} lines (${formatSize(shownBytes)}) of ${formatSize(bytesTotal)} total — tail only, ${formatSize(omitted)} of earlier output omitted`;
+  const outputPath = typeof pm.get === 'function' ? pm.get(taskId)?.outputPath : undefined;
+  if (outputPath) msg += `; read ${outputPath} for the full log`;
+  return msg + '.';
 }
 
 export const taskOutputTool: ToolDefinition = {
@@ -70,7 +103,13 @@ export const taskOutputTool: ToolDefinition = {
       },
       timeout_ms: {
         type: 'number',
-        description: 'Max time to block when wait:true (default 600000 = 10 min).',
+        // PARITY: mirror Claude Code's `timeout: z.number().min(0).max(600000)`
+        // schema bound. The runtime also clamps to this ceiling, but advertising
+        // the bound lets the provider/validator reject an out-of-range value up
+        // front instead of silently honoring an unbounded wait.
+        minimum: 0,
+        maximum: MAX_WAIT_TIMEOUT_MS,
+        description: 'Max time to block when wait:true (default 600000 = 10 min). Clamped to a hard ceiling of 600000ms.',
       },
     },
     required: ['task_id'],
@@ -130,10 +169,11 @@ export const taskOutputTool: ToolDefinition = {
     // spends ONE tool call instead of a multi-turn poll loop (each parent turn is
     // a full model round-trip). task_output is read-only, so several wait calls in
     // one turn run concurrently and all settle when their tasks finish.
+    let waitAborted = false;
     if (wait && result.status === 'running') {
       const deadline = Date.now() + waitTimeoutMs;
       while (result && result.status === 'running' && Date.now() < deadline) {
-        if (context.abortSignal?.aborted) break;
+        if (context.abortSignal?.aborted) { waitAborted = true; break; }
         // Live progress while blocking so the TUI shows the wait isn't a hang
         // (mirrors Claude's "waiting for task" progress line). Emitted each poll
         // with the task id, status, and elapsed time.
@@ -163,10 +203,15 @@ export const taskOutputTool: ToolDefinition = {
       lines.push(`Filter: ${filterRe} (matching lines only)`);
     }
 
-    // Distinct retrieval status: a wait that returned while still running means the
-    // timeout elapsed (not that the task is ready) — call that out explicitly so
-    // the model doesn't mistake it for a completed result.
-    if (wait && result.status === 'running') {
+    // Distinct retrieval status. A wait that returned while still running is NOT a
+    // ready result — discriminate the two non-ready causes so the model doesn't
+    // mistake a partial read for a completed result:
+    //   - aborted: the wait was interrupted (abort signal) before the task finished
+    //     (mirrors Claude Code throwing AbortError from waitForTaskCompletion);
+    //   - timed out: the wait deadline elapsed while the task kept running.
+    if (waitAborted) {
+      lines.push('Retrieval: wait aborted — interrupted before the task reached a terminal state (task still running; output below is a partial snapshot).');
+    } else if (wait && result.status === 'running') {
       lines.push(`Retrieval: wait timed out after ${waitTimeoutMs}ms — task still running (call task_output again to keep waiting).`);
     }
 
@@ -206,6 +251,8 @@ export const taskOutputTool: ToolDefinition = {
     if (result.output.trim()) {
       const body = capBody(result.output.trim());
       lines.push('', `--- Output (${tailLabel}) ---`, body);
+      const indicator = truncationIndicator(context, taskId, result.output, filterRe !== undefined);
+      if (indicator) lines.push(indicator);
     } else {
       lines.push('', filterRe ? '(no output matching filter yet)' : '(no output yet)');
     }
