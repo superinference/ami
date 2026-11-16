@@ -1,4 +1,4 @@
-import { parseBashAST, extractCommands, extractDeclaredAssignments, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes } from './bash-parser';
+import { parseBashAST, extractCommands, extractDeclaredAssignments, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes, analyzeCommandStructure } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powershell-security';
 import { redactCredentials } from '../credential-guard';
@@ -1188,8 +1188,16 @@ function validateASTCommands(command: string, budget?: ParseBudget): SecurityChe
     return PASS;
   }
 
-  const depthResult = checkSubshellDepth(ast, ast.type === 'subshell' ? 1 : 0);
-  if (!depthResult.safe) return depthResult;
+  // Short-circuit the subshell-depth walk using the unified command-structure
+  // analysis: depth can only exceed the cap when a subshell `(...)` or a command
+  // substitution `$(...)`/backtick (the only depth-incrementing AST node kinds)
+  // is present. When neither is, the walk is guaranteed to return PASS, so skip
+  // it. Behavior-preserving; also makes analyzeCommandStructure a real consumer.
+  const structure = analyzeCommandStructure(command, ast);
+  if (structure.compoundStructure.hasSubshell || structure.dangerousPatterns.hasCommandSubstitution) {
+    const depthResult = checkSubshellDepth(ast, ast.type === 'subshell' ? 1 : 0);
+    if (!depthResult.safe) return depthResult;
+  }
 
   return PASS;
 }

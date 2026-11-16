@@ -779,3 +779,152 @@ export function hasActualOperatorNodes(node: CommandNode): boolean {
   if (node.type === 'list' || node.type === 'pipeline') return true;
   return (node.children ?? []).some(hasActualOperatorNodes);
 }
+
+/**
+ * Dangerous textual features of a bash command, as reusable boolean fields.
+ * Mirrors Claude Code's `DangerousPatterns`
+ * (utils/bash/treeSitterAnalysis.ts L45-L52): one struct consumers read instead
+ * of each re-scanning the raw string for `$()`/`${}`/`<()`/heredoc/comment.
+ */
+export interface DangerousPatterns {
+  /** `$(...)` or backtick command substitution (suppressed inside single quotes). */
+  hasCommandSubstitution: boolean;
+  /** `<(...)` / `>(...)` process substitution. */
+  hasProcessSubstitution: boolean;
+  /** `${...}` parameter expansion (suppressed inside single quotes). */
+  hasParameterExpansion: boolean;
+  /** `<<` / `<<-` heredoc operator. */
+  hasHeredoc: boolean;
+  /** An unquoted `#` comment at a word boundary. */
+  hasComment: boolean;
+}
+
+/**
+ * Compound shape of a bash command, as reusable boolean fields + the control
+ * operators and top-level segments. Mirrors Claude Code's `CompoundStructure`
+ * (utils/bash/treeSitterAnalysis.ts L54-L64).
+ */
+export interface CompoundStructure {
+  /** `&&`, `||`, `;`, or `&` list operators present. */
+  hasCompoundOperators: boolean;
+  /** `|` pipeline present. */
+  hasPipeline: boolean;
+  /** `(...)` subshell present. */
+  hasSubshell: boolean;
+  /** `{ ...; }` brace command group present (NOT brace expansion `{a,b}`). */
+  hasCommandGroup: boolean;
+  /** Control operators in source order (`&&`, `||`, `;`, `&`, `|`). */
+  operators: string[];
+  /** Raw text of each top-level pipeline/list segment. */
+  segments: string[];
+}
+
+/** Unified structured analysis of a bash command. Mirrors Claude's `TreeSitterAnalysis`. */
+export interface CommandStructureAnalysis {
+  dangerousPatterns: DangerousPatterns;
+  compoundStructure: CompoundStructure;
+}
+
+/**
+ * Quote-aware scan for a command's dangerous textual features. Single quotes
+ * suppress ALL expansion; double quotes still allow `$(`/`${`/backtick. The
+ * backslash escape skips the next char (outside single quotes). This is the one
+ * place that understands this textual grammar, consumed by
+ * {@link analyzeCommandStructure}.
+ */
+function scanDangerousPatterns(command: string): DangerousPatterns {
+  const p: DangerousPatterns = {
+    hasCommandSubstitution: false,
+    hasProcessSubstitution: false,
+    hasParameterExpansion: false,
+    hasHeredoc: false,
+    hasComment: false,
+  };
+  let inS = false;
+  let inD = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === '\\' && !inS) { i++; continue; }
+    if (c === "'" && !inD) { inS = !inS; continue; }
+    if (c === '"' && !inS) { inD = !inD; continue; }
+    if (inS) continue; // single quotes suppress every expansion/operator below
+    if (c === '`') { p.hasCommandSubstitution = true; continue; }
+    if (c === '$' && command[i + 1] === '(') { p.hasCommandSubstitution = true; i++; continue; }
+    if (c === '$' && command[i + 1] === '{') { p.hasParameterExpansion = true; i++; continue; }
+    if (inD) continue; // the rest (process sub / heredoc / comment) need an unquoted context
+    if ((c === '<' || c === '>') && command[i + 1] === '(') { p.hasProcessSubstitution = true; i++; continue; }
+    if (c === '<' && command[i + 1] === '<') { p.hasHeredoc = true; i++; continue; }
+    if (c === '#' && (i === 0 || /\s/.test(command[i - 1]))) { p.hasComment = true; }
+  }
+  return p;
+}
+
+/**
+ * Detect a brace COMMAND GROUP `{ …; }` (distinct from brace EXPANSION `{a,b}`).
+ * bash requires a `{` that is its own token — at a command boundary and followed
+ * by whitespace — so that word-boundary + trailing-space test discriminates the
+ * two forms without a full grammar.
+ */
+function hasCommandGroupToken(command: string): boolean {
+  let inS = false;
+  let inD = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === '\\' && !inS) { i++; continue; }
+    if (c === "'" && !inD) { inS = !inS; continue; }
+    if (c === '"' && !inS) { inD = !inD; continue; }
+    if (inS || inD) continue;
+    if (c === '{') {
+      const prev = command[i - 1];
+      const next = command[i + 1];
+      const atBoundary = i === 0 || /[\s;&|(]/.test(prev);
+      if (atBoundary && (next === ' ' || next === '\t' || next === '\n')) return true;
+    }
+  }
+  return false;
+}
+
+/** Collect compound operators / pipeline / subshell presence from the AST. */
+function collectCompound(n: CommandNode, out: CompoundStructure): void {
+  if (n.type === 'list') {
+    out.hasCompoundOperators = true;
+    for (const op of (n.operator ?? '').split(',')) if (op) out.operators.push(op);
+  } else if (n.type === 'pipeline') {
+    out.hasPipeline = true;
+    for (let i = 1; i < (n.children?.length ?? 0); i++) out.operators.push('|');
+  } else if (n.type === 'subshell') {
+    out.hasSubshell = true;
+  }
+  n.children?.forEach(c => collectCompound(c, out));
+}
+
+/**
+ * Produce the unified {@link CommandStructureAnalysis} for a bash command: the
+ * textual {@link DangerousPatterns} (scanned from `command`) plus the structural
+ * {@link CompoundStructure} (walked from the AST — pass a pre-parsed `node` to
+ * avoid re-parsing on the security hot path; `null`/{@link PARSE_ABORTED} yield
+ * empty structural fields). Mirrors Claude Code's `analyzeCommand`
+ * (utils/bash/treeSitterAnalysis.ts), giving consumers one struct of reusable
+ * boolean fields instead of each re-scanning the string.
+ */
+export function analyzeCommandStructure(
+  command: string,
+  node?: CommandNode | null | typeof PARSE_ABORTED,
+): CommandStructureAnalysis {
+  const ast = node === undefined ? parseBashAST(command) : node;
+  const compoundStructure: CompoundStructure = {
+    hasCompoundOperators: false,
+    hasPipeline: false,
+    hasSubshell: false,
+    hasCommandGroup: hasCommandGroupToken(command),
+    operators: [],
+    segments: [],
+  };
+  if (ast && ast !== PARSE_ABORTED) {
+    collectCompound(ast, compoundStructure);
+    compoundStructure.segments = (ast.type === 'list' || ast.type === 'pipeline')
+      ? (ast.children ?? []).map(c => c.raw)
+      : [ast.raw];
+  }
+  return { dangerousPatterns: scanDangerousPatterns(command), compoundStructure };
+}
