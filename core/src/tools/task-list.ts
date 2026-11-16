@@ -153,7 +153,9 @@ export const taskListTool: ToolDefinition = {
     });
 
     const lines = sorted.map(t => {
-      const time = formatElapsed(Date.now() - t.startTime);
+      // Freeze elapsed at completion for terminal tasks so finished rows show a
+      // stable duration instead of an ever-growing one.
+      const time = formatElapsed((t.endTime ?? Date.now()) - t.startTime);
       const status = formatTaskStatus(t);
       const parts = [t.taskId, `PID ${t.pid}`, status, time];
 

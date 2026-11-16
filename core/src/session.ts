@@ -134,6 +134,12 @@ function sanitizeSessionId(id: string): string {
   return id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
 }
 
+/** Escape a literal string for safe embedding in a RegExp source (used when a
+ *  user-supplied title becomes the base of a fork-name collision pattern). */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export class SessionManager {
   private sessionDir: string;
   private cwd: string;
@@ -397,9 +403,16 @@ export class SessionManager {
    * operation. A `parentUuid` that pointed outside the kept prefix is dropped so
    * the first retained message becomes a root. The forked session is persisted and
    * returned.
+   *
+   * Subagent sidechain messages are excluded so the fork carries only the main
+   * conversation (parity: Claude's createFork filters `isSidechain` entries). The
+   * fork is given a unique `"<base> (Branch)"` title — deduped with a numbered
+   * suffix on collision (`(Branch 2)`, `(Branch 3)`, …) — from `opts.title`, else
+   * the source title, else its first user prompt (parity: getUniqueForkName).
    */
-  fork(source: Session, opts: { upToMessageId?: string } = {}): Session {
-    let msgs = source.messages;
+  fork(source: Session, opts: { upToMessageId?: string; title?: string } = {}): Session {
+    // Branch only the main conversation — subagent sidechains are their own trees.
+    let msgs = source.messages.filter(m => !m.isSidechain);
     if (opts.upToMessageId !== undefined) {
       const cut = msgs.findIndex(m => m.uuid === opts.upToMessageId);
       if (cut === -1) {
@@ -423,15 +436,70 @@ export class SessionManager {
       return next;
     });
     const now = new Date().toISOString();
+    const baseName = (opts.title && opts.title.trim()) || this.deriveForkBaseName(source);
     const forked: Session = {
       ...source,
       id: SessionManager.newId(),
+      // A distinct, collision-free branch title so /resume and the picker can tell
+      // a fork apart from its source (and from other forks of the same base).
+      customTitle: this.getUniqueBranchName(baseName),
       messages: remapped,
       createdAt: now,
       updatedAt: now,
     };
     this.save(forked);
     return forked;
+  }
+
+  /** Base name for a fork title: the source's display title, else its first user
+   *  prompt (whitespace-collapsed, 100-char capped), else a generic fallback. */
+  private deriveForkBaseName(source: Session): string {
+    const title = resolveSessionTitle(source);
+    if (title && title.trim()) return title.trim();
+    const firstUser = source.messages.find(m => m.role === 'user' && !m.isSidechain);
+    const raw = firstUser && (firstUser as { content?: unknown }).content;
+    const text = isSessionBlobRef(raw) ? raw.preview : typeof raw === 'string' ? raw : '';
+    const flat = text.replace(/\s+/g, ' ').trim().slice(0, 100);
+    return flat || 'Branched conversation';
+  }
+
+  /**
+   * Find persisted sessions by their user-set {@link Session.customTitle}: exact
+   * match when `exact` is set, otherwise a prefix match. Only inline JSON is read
+   * (no blob rehydration) so a collision scan over a large store stays cheap.
+   * Backs {@link getUniqueBranchName} (parity: searchSessionsByCustomTitle).
+   */
+  searchByTitle(query: string, opts: { exact?: boolean } = {}): Session[] {
+    const out: Session[] = [];
+    for (const file of this.listFiles()) {
+      const s = this.readSessionFile(file, false);
+      if (!s || typeof s.customTitle !== 'string') continue;
+      if (opts.exact ? s.customTitle === query : s.customTitle.startsWith(query)) {
+        out.push(s);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Generate a unique fork title: `"<base> (Branch)"`, or `"<base> (Branch N)"`
+   * when that collides — the smallest N≥2 not already taken by an existing fork of
+   * the same base. Exact + prefix search over persisted customTitles with a
+   * regex-escaped base (parity: Claude's getUniqueForkName).
+   */
+  getUniqueBranchName(baseName: string): string {
+    const candidate = `${baseName} (Branch)`;
+    if (this.searchByTitle(candidate, { exact: true }).length === 0) return candidate;
+    // Collision — scan every existing "<base> (Branch...)" and claim the first gap.
+    const used = new Set<number>([1]); // "(Branch)" with no number counts as 1.
+    const pattern = new RegExp(`^${escapeRegExp(baseName)} \\(Branch(?: (\\d+))?\\)$`);
+    for (const s of this.searchByTitle(`${baseName} (Branch`)) {
+      const m = s.customTitle?.match(pattern);
+      if (m) used.add(m[1] ? parseInt(m[1], 10) : 1);
+    }
+    let next = 2;
+    while (used.has(next)) next++;
+    return `${baseName} (Branch ${next})`;
   }
 
   /**

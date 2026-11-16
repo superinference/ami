@@ -57,13 +57,13 @@ export type { AnalyticsEvent, AnalyticsTrackerOpts } from './analytics';
 export {
   getPrivacyLevel, isTelemetryDisabled, isEssentialTrafficOnly, isEnvTruthy,
   sanitizeToolNameForAnalytics, sanitizeAnalyticsData, sanitizeAnalyticsValue,
-  shouldSampleEvent, resolveSampleRate, trySerialize, MAX_ANALYTICS_STRING_LEN,
+  shouldSampleEvent, resolveSampleRate, trySerialize, markAnalyticsSafe, MAX_ANALYTICS_STRING_LEN,
   truncateContent, MAX_OTLP_ATTR_BYTES, shouldIncludeTelemetryAttr, buildTelemetryResourceAttrs,
   OTEL_CARDINALITY_DEFAULTS, parseOtelHeaders,
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName, MAX_FILE_EXTENSION_LENGTH,
 } from './analytics';
 export { PRIVACY_LEVELS } from './analytics';
-export type { PrivacyLevel, SanitizeOpts } from './analytics';
+export type { PrivacyLevel, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';
 export { Profiler, FpsTracker } from './profiler';
 export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming } from './profiler';

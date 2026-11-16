@@ -14,6 +14,12 @@ export interface FileState {
    *  safe basis for a full overwrite — file_edit's write path requires a full
    *  Read first when this is set, to avoid clobbering content never seen. */
   isPartialView?: boolean;
+  /** Line `offset` of the most recent RANGE read (offset/limit), when the last
+   *  read was a windowed read rather than a full read. Enables deduping an
+   *  identical repeat range read on an unchanged file. Undefined for full reads. */
+  offset?: number;
+  /** Line `limit` (window size) of the most recent RANGE read — see `offset`. */
+  limit?: number;
 }
 
 function hashContent(content: string): string {
@@ -206,6 +212,36 @@ export class FileCache {
   /** True when the cached view of this file is only partial (see markPartialView). */
   isPartialView(path: string): boolean {
     return this.cache.get(this.norm(path))?.isPartialView === true;
+  }
+
+  /**
+   * Record that the model's most recent read of this file was a specific line
+   * RANGE (offset/limit). Preserves any already-cached full content (so a later
+   * full re-read still dedups) while stamping the window + mtime, so an identical
+   * repeat range read on an unchanged file can be short-circuited. Mirrors Claude
+   * Code's readFileState range tracking.
+   */
+  markRangeRead(path: string, mtime: number, offset: number, limit: number): void {
+    const key = this.norm(path);
+    const existing = this.cache.get(key);
+    this.cache.delete(key);
+    this.cache.set(key, existing
+      ? { ...existing, path: key, mtime, offset, limit }
+      : { path: key, content: '', mtime, contentHash: '', tokenEstimate: 0, offset, limit });
+    this.evict(key);
+  }
+
+  /**
+   * True when the file's most recent read was an IDENTICAL range (same offset AND
+   * limit), it was not a partial view, and the file is unchanged on disk since —
+   * i.e. a repeat ranged read can be served from the "unchanged" stub instead of
+   * re-streaming the same window. Mirrors Claude Code's range dedup short-circuit.
+   */
+  isRangeUnchanged(path: string, offset: number, limit: number): boolean {
+    const cached = this.cache.get(this.norm(path));
+    if (!cached || cached.isPartialView) return false;
+    if (cached.offset !== offset || cached.limit !== limit) return false;
+    return !this.hasChanged(path);
   }
 
   /**

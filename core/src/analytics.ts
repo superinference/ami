@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials } from './credential-guard';
+import { ndjsonSafeStringify } from './reference-journal';
 
 export interface AnalyticsEvent {
   timestamp: string;
@@ -183,6 +184,31 @@ export interface SanitizeOpts {
 }
 
 /**
+ * Compile-time brand marking a metadata record that has passed the canonical
+ * analytics redaction / data-minimization pass — AMI's counterpart of Claude's
+ * `AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS` guard. The brand is
+ * produced ONLY by {@link sanitizeAnalyticsData} (the single redactor) or the
+ * explicit {@link markAnalyticsSafe} escape hatch, and the telemetry egress sink
+ * accepts ONLY branded data — so raw, unverified metadata containing code or file
+ * paths cannot reach the on-disk JSONL / OTLP export by construction (it is a type
+ * error), complementing the runtime stripping the pass already performs.
+ */
+declare const ANALYTICS_SAFE: unique symbol;
+export type AnalyticsSafeMetadata = Record<string, unknown> & { readonly [ANALYTICS_SAFE]: true };
+
+/**
+ * Brand a metadata record as analytics-safe WITHOUT running the redaction pass —
+ * the escape hatch for data the caller has already verified contains no code, file
+ * paths, or secrets (e.g. a fixed-vocabulary enum such as a slash-command source).
+ * Mirrors Claude's `value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS`
+ * cast at trusted call sites. Prefer {@link sanitizeAnalyticsData} whenever the
+ * data derives from user or tool input.
+ */
+export function markAnalyticsSafe(data: Record<string, unknown>): AnalyticsSafeMetadata {
+  return data as AnalyticsSafeMetadata;
+}
+
+/**
  * Data-minimization pass applied to every event payload before it is persisted
  * to disk or exported off-machine:
  *  - internal marker keys (`_*`) are dropped
@@ -191,7 +217,7 @@ export interface SanitizeOpts {
  *    OTEL_LOG_USER_PROMPTS / SUPERINFERENCE_LOG_USER_PROMPTS opts in
  *  - all remaining string values are credential-redacted and length-capped
  */
-export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: SanitizeOpts = {}): Record<string, unknown> {
+export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: SanitizeOpts = {}): AnalyticsSafeMetadata {
   const env = opts.env ?? process.env;
   const logUserPrompts = opts.logUserPrompts ?? (isEnvTruthy(env.OTEL_LOG_USER_PROMPTS) || isEnvTruthy(env.SUPERINFERENCE_LOG_USER_PROMPTS));
   const logToolDetails = opts.logToolDetails ?? toolDetailsEnabled(env);
@@ -211,7 +237,7 @@ export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: Sanit
     }
     out[key] = sanitizeAnalyticsValue(value, 0);
   }
-  return out;
+  return out as AnalyticsSafeMetadata;
 }
 
 /** Decide whether to keep an event given a 0..1 sample rate (0 drops all, >=1 keeps all). */
@@ -411,7 +437,11 @@ export class AnalyticsTracker {
       this.events = this.events.slice(-MAX_IN_MEMORY_EVENTS);
     }
 
-    const egressData = this._redact ? sanitizeAnalyticsData(recordData, { env: this._env }) : recordData;
+    // Branded so only redaction-verified (or explicitly-marked) metadata can reach
+    // the disk/OTLP egress sinks; the redact=false path opts out via the escape hatch.
+    const egressData: AnalyticsSafeMetadata = this._redact
+      ? sanitizeAnalyticsData(recordData, { env: this._env })
+      : markAnalyticsSafe(recordData);
 
     // Mirror into the OTLP batch sender when an endpoint is configured AND the
     // user has not opted out of telemetry. Lazily created so the batch carries
@@ -430,17 +460,29 @@ export class AnalyticsTracker {
       this._telemetry.enqueue(type, egressData, event.sequence);
     }
 
-    if (this.logFile) {
-      try {
-        if (!this.dirInitialized) {
-          fs.mkdirSync(path.dirname(this.logFile), { recursive: true });
-          this.dirInitialized = true;
-        }
-        const egressEvent = { ...event, data: egressData };
-        fs.appendFileSync(this.logFile, JSON.stringify(egressEvent) + '\n');
-      } catch {
-        /* best effort */
+    this._appendEgress(event, egressData);
+  }
+
+  /**
+   * Append one redaction-verified event to the JSONL log. Requires branded
+   * {@link AnalyticsSafeMetadata} so unredacted metadata cannot reach disk by
+   * construction. The line is NDJSON-safe (U+2028/U+2029 escaped so a
+   * line-splitting reader can't truncate it) and the file is created with a
+   * restrictive 0o600 mode (dir 0o700) — the log holds session telemetry and must
+   * not be world-readable. Best-effort: never throws; a poison (unserializable)
+   * event is skipped rather than crashing the writer.
+   */
+  private _appendEgress(event: AnalyticsEvent, egressData: AnalyticsSafeMetadata): void {
+    if (!this.logFile) return;
+    try {
+      if (!this.dirInitialized) {
+        fs.mkdirSync(path.dirname(this.logFile), { recursive: true, mode: 0o700 });
+        this.dirInitialized = true;
       }
+      const line = ndjsonSafeStringify({ ...event, data: egressData });
+      fs.appendFileSync(this.logFile, line + '\n', { mode: 0o600 });
+    } catch {
+      /* best effort */
     }
   }
 

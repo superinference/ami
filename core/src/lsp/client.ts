@@ -50,6 +50,16 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 const DEFAULT_DIAGNOSTICS_TIMEOUT_MS = 2000;
 /** Default crash-recovery cap (matches Claude's maxRestarts default). */
 const DEFAULT_MAX_RESTARTS = 3;
+/**
+ * Bounded wait for a server's reply to the graceful `shutdown` request before we
+ * send `exit` and kill anyway. Teardown must never hang on an unresponsive server.
+ */
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1000;
+/**
+ * Grace window after the `exit` notification before we force-kill a server that
+ * has not shut itself down. Keeps teardown a clean LSP shutdown in the common case.
+ */
+const EXIT_GRACE_MS = 50;
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -89,6 +99,20 @@ export class LSPClient implements DiagnosticSource {
   /** Baseline/diff tracker reading diagnostics from this client. */
   readonly diagnostics = new DiagnosticTracker(this);
 
+  constructor() {
+    // Default responder for the server→client `workspace/configuration` request.
+    // We advertise `workspace.configuration: false` so conformant servers never
+    // ask, but some (e.g. older gopls / misconfigured servers) request it anyway
+    // and will HANG waiting for a reply. Return `null` per requested item (the
+    // LSP-sanctioned "no configuration" answer) so the server proceeds instead of
+    // stalling. A caller's explicit `onRequest('workspace/configuration', …)`
+    // overrides this default.
+    this.requestHandlers.set('workspace/configuration', (params) => {
+      const items = (params as { items?: unknown[] } | undefined)?.items;
+      return Array.isArray(items) ? items.map(() => null) : [];
+    });
+  }
+
   // Process-spawn hooks (overridable in tests). Production behavior is identical
   // to calling child_process directly.
   _spawnSync: typeof child_process.spawnSync = child_process.spawnSync;
@@ -124,6 +148,26 @@ export class LSPClient implements DiagnosticSource {
    */
   private fileUri(filePath: string): string {
     return pathToFileURL(filePath).href;
+  }
+
+  /**
+   * Resolve once the child has successfully spawned; reject if it fails to spawn.
+   * Listeners are one-shot and mutually cleaned up so neither leaks. A child that
+   * exits immediately after a successful spawn still resolves here — the `spawn`
+   * event always precedes `exit`, and the crash is handled by the `exit`/`error`
+   * handlers wired by the caller.
+   */
+  private awaitSpawn(proc: child_process.ChildProcess): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = (): void => {
+        proc.removeListener('spawn', onSpawn);
+        proc.removeListener('error', onError);
+      };
+      const onSpawn = (): void => { cleanup(); resolve(); };
+      const onError = (err: Error): void => { cleanup(); reject(err); };
+      proc.once('spawn', onSpawn);
+      proc.once('error', onError);
+    });
   }
 
   async ensureServer(language: string, cwd: string): Promise<boolean> {
@@ -176,6 +220,23 @@ export class LSPClient implements DiagnosticSource {
       };
       proc.stdout?.on('data', (chunk: Buffer) => this.onData(language, chunk));
       this.servers.set(language, conn);
+
+      // Await the child's `spawn` event (racing it against the async `error`
+      // event) BEFORE writing to its stdio. `_spawn` returns synchronously, but a
+      // spawn failure (ENOENT for a missing binary, EACCES, …) surfaces later on
+      // the `error` event; writing the initialize frame before spawn is confirmed
+      // races that failure and produces writes to a stream that is about to error.
+      // Waiting here deterministically catches spawn failure as a start error.
+      await this.awaitSpawn(proc);
+
+      // The child may have died the instant after it spawned (a server that
+      // crashes on startup). Writing the initialize frame into a dead stream would
+      // just block until the request timeout, so bail out fast instead. `onGone`
+      // (exit/error) has already bumped the crash counter and dropped the server.
+      if (this.servers.get(language) !== conn || proc.exitCode !== null || proc.signalCode !== null) {
+        this.clearServer(language);
+        return false;
+      }
 
       // Handshake: await initialize, capture capabilities, send `initialized`,
       // THEN flip initialized. Matches the LSP spec ordering so servers like
@@ -569,17 +630,76 @@ export class LSPClient implements DiagnosticSource {
   }
 
   shutdown(): void {
-    for (const [language] of this.servers) {
-      const conn = this.servers.get(language);
-      try { conn?.proc.kill(); } catch { /* already dead */ }
+    // Snapshot the open documents before we clear them — gracefulStop needs them
+    // to emit `textDocument/didClose` for each server it is tearing down.
+    const openUris = [...this.openedDocuments];
+    for (const [language, conn] of this.servers) {
+      this.gracefulStop(language, conn, openUris);
     }
-    this.servers.clear();
+    // Client-level state clears synchronously so `isConnected()` et al. reflect the
+    // stop immediately; each server entry is removed as its graceful stop settles.
     this.openedDocuments.clear();
     this.documentVersions.clear();
     this.crashCounts.clear();
     this.diagnosticsByUri.clear();
     this.diagnosticWaiters.clear();
     this.diagnostics.reset();
+  }
+
+  /**
+   * Gracefully stop one server: for an initialized connection, send a `didClose`
+   * for each of its open documents (so a later session can cleanly reopen them),
+   * then run the LSP shutdown handshake — a bounded `shutdown` request followed by
+   * the `exit` notification — before killing the process and removing listeners.
+   * Teardown never blocks on the server: the map state is cleared by the caller
+   * synchronously, and the handshake proceeds to `exit`+kill whether the `shutdown`
+   * request succeeds, errors, or times out. A never-initialized server (handshake
+   * never completed) is just killed.
+   */
+  private gracefulStop(language: string, conn: ServerConn, openUris: string[]): void {
+    // Flip initialized off first so `isConnected()` is false immediately and no
+    // new request races the teardown.
+    conn.initialized = false;
+
+    const detach = (): void => {
+      this.servers.delete(language);
+      for (const [, entry] of conn.pending) clearTimeout(entry.timer);
+      conn.pending.clear();
+      // Drop the crash listeners so the server's OWN graceful exit (prompted by the
+      // `exit` notification) is not mis-counted as a crash.
+      if (typeof conn.proc.removeAllListeners === 'function') {
+        conn.proc.removeAllListeners('exit');
+        conn.proc.removeAllListeners('error');
+      }
+    };
+
+    if (!conn.proc.pid) {
+      detach();
+      try { conn.proc.kill(); } catch { /* already dead */ }
+      return;
+    }
+
+    // didClose each open document that belongs to this language (reopen tracking).
+    for (const uri of openUris) {
+      if (resolveLanguageForExtension(path.extname(uriToPath(uri))) === language) {
+        this.rawNotify(conn, 'textDocument/didClose', { textDocument: { uri } });
+      }
+    }
+
+    // Graceful handshake: bounded `shutdown` request, then `exit`, then let the
+    // server shut itself down — force-killing only as a safety net after a short
+    // grace window (kill happens regardless of whether the server answered the
+    // shutdown request). The grace lets the `exit` notification flush and be acted
+    // on before SIGTERM, so teardown is a clean LSP shutdown, not an abrupt kill.
+    const finish = (): void => {
+      detach();
+      this.rawNotify(conn, 'exit', null);
+      const timer = setTimeout(() => {
+        try { conn.proc.kill(); } catch { /* already dead */ }
+      }, EXIT_GRACE_MS);
+      if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
+    };
+    this.rawRequest(conn, 'shutdown', null, DEFAULT_SHUTDOWN_TIMEOUT_MS).then(finish, finish);
   }
 }
 

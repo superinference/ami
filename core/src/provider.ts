@@ -24,6 +24,7 @@ import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-li
 import { isGatewayRejection, findErrorCode } from './error-classifier';
 import { getMTLSConfig, getTLSConnectOptions } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
+import { isEnvTruthy } from './analytics';
 
 /**
  * Retry-After from response headers, in SECONDS. Delegates to the shared
@@ -763,7 +764,7 @@ export function withVertexAnthropicCache(
       const body = injectAnthropicCacheControl(init.body, cc);
       const headers = new Headers(init.headers as Record<string, string> | undefined);
       if (cacheTtl === '1h' && !headers.has('anthropic-beta')) {
-        headers.set('anthropic-beta', 'extended-cache-ttl-2025-04-11');
+        headers.set('anthropic-beta', EXTENDED_CACHE_TTL_BETA);
       }
       init = { ...init, body, headers };
     }
@@ -804,6 +805,94 @@ export function getExtraAnthropicBetas(): string[] {
     .split(',')
     .map(t => t.trim())
     .filter(Boolean);
+}
+
+/** Anthropic beta token for 1h extended prompt-cache TTL. */
+export const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11';
+
+/**
+ * Anthropic beta token that lets the model interleave `thinking` blocks between
+ * tool calls within a single turn (Claude 4+ families). Mirrors Claude Code's
+ * `INTERLEAVED_THINKING_BETA_HEADER`.
+ */
+export const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
+
+/**
+ * Anthropic beta token for token-efficient tool-call encoding — a cost knob that
+ * reduces input/output tokens spent on tool calls. Mirrors Claude Code's
+ * `TOKEN_EFFICIENT_TOOLS_BETA_HEADER`. Opt-in (experimental).
+ */
+export const TOKEN_EFFICIENT_TOOLS_BETA = 'token-efficient-tools-2026-03-28';
+
+/**
+ * Interleaved thinking is served on the Claude 4+ Opus/Sonnet families. Mirrors
+ * Claude Code's `modelSupportsISP` (which gates on the opus-4/sonnet-4 canonical
+ * families); AMI applies the same family match, open-ended for future 4x/5x+ ids.
+ */
+export function supportsInterleavedThinking(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  return /claude-(?:opus|sonnet)-(?:[4-9]|\d{2,})/i.test(modelId);
+}
+
+/**
+ * Proactive user kill switch for experimental/first-party-only Anthropic betas.
+ * A user hitting a proxy/gateway that 400s on unknown `anthropic-beta` tokens can
+ * strip them all at once instead of relying on reactive error-retry. Mirrors
+ * Claude Code's `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`; the AMI-native
+ * `SUPERINFERENCE_DISABLE_EXPERIMENTAL_BETAS` is honored too.
+ */
+export function experimentalBetasDisabled(): boolean {
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS) ||
+    isEnvTruthy(process.env.SUPERINFERENCE_DISABLE_EXPERIMENTAL_BETAS)
+  );
+}
+
+/** Interleaved-thinking opt-out (Claude parity `DISABLE_INTERLEAVED_THINKING`). */
+function interleavedThinkingDisabled(): boolean {
+  return (
+    isEnvTruthy(process.env.DISABLE_INTERLEAVED_THINKING) ||
+    isEnvTruthy(process.env.SUPERINFERENCE_DISABLE_INTERLEAVED_THINKING)
+  );
+}
+
+/** Token-efficient-tools opt-in (experimental; stripped by the kill switch). */
+function tokenEfficientToolsEnabled(): boolean {
+  return (
+    isEnvTruthy(process.env.SUPERINFERENCE_TOKEN_EFFICIENT_TOOLS) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_TOKEN_EFFICIENT_TOOLS)
+  );
+}
+
+/**
+ * The single canonical source of truth for the outgoing `anthropic-beta` token
+ * set, used by BOTH the native Anthropic and the anthropic-on-vertex provider
+ * paths (never computed inline twice). Returns a deduped, order-stable list:
+ *
+ * - **Always-on** (never stripped): `extended-cache-ttl` (1h TTL, native path
+ *   only — vertex injects it separately) and `context-1m` when the model serves
+ *   a 1M window.
+ * - **Experimental** (stripped by {@link experimentalBetasDisabled}):
+ *   interleaved-thinking (model-gated, opt-out via env) and token-efficient-tools
+ *   (explicit opt-in).
+ * - **User escape hatch**: `ANTHROPIC_BETAS` tokens, appended unconditionally
+ *   (bypasses the kill switch, mirroring Claude Code).
+ */
+export function computeAnthropicBetas(
+  modelId: string,
+  opts: { cacheTtl?: '5m' | '1h'; includeCacheTtlBeta?: boolean } = {},
+): string[] {
+  const betas: string[] = [];
+  if (opts.includeCacheTtlBeta && opts.cacheTtl === '1h') betas.push(EXTENDED_CACHE_TTL_BETA);
+  if (supportsOneMillionContextBeta(modelId)) betas.push(ONE_MILLION_CONTEXT_BETA);
+  if (!experimentalBetasDisabled()) {
+    if (supportsInterleavedThinking(modelId) && !interleavedThinkingDisabled()) {
+      betas.push(INTERLEAVED_THINKING_BETA);
+    }
+    if (tokenEfficientToolsEnabled()) betas.push(TOKEN_EFFICIENT_TOOLS_BETA);
+  }
+  betas.push(...getExtraAnthropicBetas());
+  return [...new Set(betas)];
 }
 
 /**
@@ -1035,12 +1124,10 @@ export function resolveModel(config: ProviderConfig) {
     // cost-NEGATIVE (1.25x write premium, no read discount), so it is gated behind
     // AMI_VERTEX_PROMPT_CACHE=1 for re-testing when the vertex/SDK read path works.
     // See UI issue #10. Native Anthropic (below) caches normally.
-    // 1M-context beta header (R2-M31) must also ride on the vertex path, where
-    // it cannot be passed to the SDK constructor — inject it at the fetch layer.
-    const wantsOneM = supportsOneMillionContextBeta(model);
-    // 1M-context beta (when applicable) plus any user ANTHROPIC_BETAS, injected at
-    // the fetch layer (the vertex SDK constructor can't carry the header).
-    const vertexBetas = [...(wantsOneM ? [ONE_MILLION_CONTEXT_BETA] : []), ...getExtraAnthropicBetas()];
+    // Beta headers must also ride on the vertex path, where they cannot be passed to
+    // the SDK constructor — inject them at the fetch layer. Same canonical source as the
+    // native path, minus extended-cache (withVertexAnthropicCache injects that separately).
+    const vertexBetas = computeAnthropicBetas(model, { includeCacheTtlBeta: false });
     const hasVertexBetas = vertexBetas.length > 0;
     const vertexBase = hasVertexBetas
       ? withAnthropicBetaHeader(headerFetch ?? proxyFetch, vertexBetas)
@@ -1057,14 +1144,10 @@ export function resolveModel(config: ProviderConfig) {
 
   // Native Anthropic SDK
   if (provider === 'anthropic' || model.startsWith('claude') || baseUrl.includes('anthropic.com')) {
-    // Combine beta tokens: extended-cache (1h TTL) + 1M-context (R2-M31). Both
-    // ride the single comma-separated anthropic-beta header; never duplicated.
-    const anthropicBetas: string[] = [];
-    if (config.cacheTtl === '1h') anthropicBetas.push('extended-cache-ttl-2025-04-11');
-    if (supportsOneMillionContextBeta(model)) anthropicBetas.push(ONE_MILLION_CONTEXT_BETA);
-    // User escape-hatch betas (ANTHROPIC_BETAS) are appended regardless of model.
-    anthropicBetas.push(...getExtraAnthropicBetas());
-    const uniqueBetas = [...new Set(anthropicBetas)];
+    // Beta tokens for the native path, from the single canonical source: extended-cache
+    // (1h TTL) + 1M-context + interleaved-thinking / token-efficient-tools (experimental,
+    // kill-switchable) + any ANTHROPIC_BETAS. All ride one comma-separated header; deduped.
+    const uniqueBetas = computeAnthropicBetas(model, { cacheTtl: config.cacheTtl, includeCacheTtlBeta: true });
     return createAnthropic({
       apiKey,
       baseURL: baseUrl || undefined,

@@ -43,6 +43,26 @@ export const procHooks: {
   kill: (pid, signal) => { process.kill(pid, signal); },
 };
 
+/**
+ * DI seam for the synchronous task-output write syscall. The retry-on-transient-
+ * error path (EMFILE on busy CI, EPERM on Windows pending-delete) routes through
+ * here so tests can make the first write throw and assert the single retry
+ * without racing a real full disk. Defaults to the real `fs.writeSync`.
+ */
+export const fsHooks: { writeSync: (fd: number, buf: Buffer) => void } = {
+  writeSync: (fd, buf) => { fs.writeSync(fd, buf); },
+};
+
+/**
+ * DI seam for diagnostics when a background-output write fails. A transient write
+ * error used to be swallowed silently (`catch { }`), losing a chunk with no trace.
+ * We now log through this hook (default no-op; the CLI can wire a real logger) on
+ * both the pre-retry and give-up paths so lost output is never invisible.
+ */
+export const pmLogHooks: { onWriteError: (err: NodeJS.ErrnoException, willRetry: boolean) => void } = {
+  onWriteError: () => { /* default: no-op — frontends may attach a logger */ },
+};
+
 export async function forceKillAfterTimeout(pid: number, timeoutMs: number = GRACEFUL_SHUTDOWN_MS): Promise<boolean> {
   if (!procHooks.isAlive(pid)) return false;
   try { procHooks.kill(pid, 'SIGTERM'); } catch { return false; }
@@ -95,6 +115,75 @@ export function isTerminalTaskStatus(status: string | undefined): boolean {
   return !!status && TERMINAL_TASK_STATUSES.has(status as TaskStatus);
 }
 
+/**
+ * POSIX convention for a process killed by a signal: exit status 128 + signal
+ * number. Lets callers tell a SIGTERM timeout (143) from a SIGKILL (137) from a
+ * still-undecided task (null), instead of collapsing every signal death to null.
+ * Mirrors Claude Code's #exitHandler synthesising a code from the signal.
+ */
+export function signalToExitCode(signal: NodeJS.Signals): number {
+  const signo = os.constants.signals[signal];
+  return 128 + (typeof signo === 'number' ? signo : 0);
+}
+
+/**
+ * Resolve the exit code recorded for a terminated child. A real numeric code
+ * wins; when the child died from a signal (code === null) we synthesise 128+signo
+ * so the termination reason survives; otherwise null (no code yet / unknown).
+ */
+export function resolveExitCode(code: number | null, signal: NodeJS.Signals | null): number | null {
+  if (code !== null) return code;
+  if (signal) return signalToExitCode(signal);
+  return null;
+}
+
+/**
+ * Classify a child's terminal status from its (code, signal). An EXTERNAL
+ * SIGTERM/SIGINT (a deliberate interruption the model should not read as a crash)
+ * maps to 'killed'; exit 0 is 'completed'; any other non-zero code is 'failed'.
+ * Mirrors Claude Code's sessionRunner signal-aware close handler. Self-initiated
+ * kills are already flagged 'killed' by kill() before the exit event fires.
+ */
+export function classifyExitStatus(code: number | null, signal: NodeJS.Signals | null): TaskStatus {
+  if (signal === 'SIGTERM' || signal === 'SIGINT') return 'killed';
+  return code === 0 ? 'completed' : 'failed';
+}
+
+/** How long after the shell exits to keep the output fd open so the parent's own
+ *  buffered stdout/stderr can flush, before finalizing the task regardless of any
+ *  grandchildren that inherited the fds (see the 'exit'-not-'close' rationale). */
+export const OUTPUT_FLUSH_MS = 50;
+
+/**
+ * SECURITY (parity with Claude Code's diskOutput): flags for creating a task
+ * output file. O_EXCL fails if anything already exists at the path (so an
+ * attacker-planted file/symlink can't be truncated-through) and O_NOFOLLOW
+ * refuses to follow a planted symlink. Windows lacks both numerically; its 'wx'
+ * string flag is O_WRONLY|O_CREAT|O_EXCL and the sandbox symlink vector is
+ * Unix-only, so the string form is the correct fallback there.
+ */
+function secureWriteFlags(): number | string {
+  if (osHooks.platform() === 'win32') return 'wx';
+  return fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+}
+
+/** SECURITY: open a task-output file for reading without following symlinks. */
+function secureReadFlags(): number | string {
+  if (osHooks.platform() === 'win32') return 'r';
+  return fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
+}
+
+/** Read a task-output file with O_NOFOLLOW so a planted symlink can't redirect
+ *  the read to an arbitrary host file. Returns '' if the file is absent. */
+function readOutputFileNoFollow(outputPath: string): string {
+  const fd = fs.openSync(outputPath, secureReadFlags());
+  try {
+    return fs.readFileSync(fd, 'utf-8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export interface BackgroundProcess {
   taskId: string;
   pid: number;
@@ -104,6 +193,12 @@ export interface BackgroundProcess {
   exitCode: number | null;
   outputPath: string;
   startTime: number;
+  /**
+   * Wall-clock time (ms) at which the task reached a terminal state. Set once on
+   * the first terminal transition so elapsed-time readers freeze the duration at
+   * completion instead of growing forever; undefined while still running.
+   */
+  endTime?: number;
   /** Cumulative token usage for background agents (undefined for bash tasks). */
   tokenCount?: number;
 }
@@ -184,14 +279,23 @@ export class ProcessManager extends EventEmitter {
     const shell = isWindows ? 'cmd' : 'bash';
     const shellArgs = isWindows ? ['/c', command] : ['-c', command];
 
-    const proc = child_process.spawn(shell, shellArgs, {
-      cwd: opts.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: !isWindows,
-      ...(opts.env ? { env: opts.env } : {}),
-    });
+    // Open the output file FIRST with fail-closed secure flags: if a symlink/file
+    // was planted at outputPath the open throws (O_EXCL) before any child is
+    // spawned, so we never leak a process we can't capture output for.
+    const fd = fs.openSync(outputPath, secureWriteFlags());
 
-    const fd = fs.openSync(outputPath, 'w');
+    let proc: child_process.ChildProcess;
+    try {
+      proc = child_process.spawn(shell, shellArgs, {
+        cwd: opts.cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: !isWindows,
+        ...(opts.env ? { env: opts.env } : {}),
+      });
+    } catch (err) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      throw err;
+    }
 
     const entry: InternalProcess = {
       taskId,
@@ -213,13 +317,11 @@ export class ProcessManager extends EventEmitter {
       if (entry.bytesWritten >= MAX_OUTPUT_BYTES) return;
       const remaining = MAX_OUTPUT_BYTES - entry.bytesWritten;
       const chunk = data.length <= remaining ? data : data.subarray(0, remaining);
-      try {
-        fs.writeSync(fd, chunk);
-        entry.bytesWritten += chunk.length;
-        if (entry.bytesWritten >= MAX_OUTPUT_BYTES) {
-          fs.writeSync(fd, Buffer.from('\n[output truncated: exceeded 5MB disk cap]\n'));
-        }
-      } catch { /* fd may be closed */ }
+      if (!this.safeWrite(fd, chunk)) return;
+      entry.bytesWritten += chunk.length;
+      if (entry.bytesWritten >= MAX_OUTPUT_BYTES) {
+        this.safeWrite(fd, Buffer.from('\n[output truncated: exceeded 5MB disk cap]\n'));
+      }
     };
 
     proc.stdout?.on('data', writeChunk);
@@ -256,25 +358,53 @@ export class ProcessManager extends EventEmitter {
       }, opts.timeoutMs);
     }
 
-    proc.on('close', (code) => {
+    // Finalize exactly once: record the terminal status/code/endTime, close the
+    // fd, and surface the completion. Guarded so the 'close'/'exit'/'error' races
+    // below can all point here without double-reporting.
+    let finalized = false;
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    const finalize = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (finalized) return;
+      finalized = true;
       clearInterval(stallCheck);
       if (bgTimeout) clearTimeout(bgTimeout);
+      clearTimeout(exitTimer);
       if (entry.status !== 'killed') {
-        entry.status = code === 0 ? 'completed' : 'failed';
+        entry.status = classifyExitStatus(code, signal);
       }
-      entry.exitCode = code;
-      try { fs.closeSync(fd); } catch { /* already closed */ }
+      entry.exitCode = resolveExitCode(code, signal);
+      entry.endTime = Date.now();
+      try { fs.closeSync(fd); } catch { /* already closed (e.g. after kill) */ }
       entry.outputFd = null;
-      this.emitComplete({ taskId, exitCode: code, command: entry.command, description: entry.description, outputPath: entry.outputPath });
+      this.emitComplete({ taskId, exitCode: entry.exitCode, command: entry.command, description: entry.description, outputPath: entry.outputPath });
+    };
+
+    // 'close' is the normal completion signal: it fires once all stdio pipes have
+    // drained, so the output file is complete when we finalize from it.
+    proc.on('close', (code, signal) => finalize(code, signal));
+
+    // 'close', however, waits for EVERY inherited stdio fd to close — including
+    // grandchildren the command backgrounded (e.g. `sleep 30 &`), which could
+    // wedge a finished task in 'running' indefinitely. 'exit' fires when the shell
+    // itself exits; we arm a bounded timer off it so a lingering grandchild can't
+    // hold the task open: if 'close' hasn't finalized within OUTPUT_FLUSH_MS we
+    // finalize anyway. In the common (no-grandchild) case 'close' wins first and
+    // the timer is cleared, so there is no added latency and no output is lost.
+    proc.on('exit', (code, signal) => {
+      exitTimer = setTimeout(() => finalize(code, signal), OUTPUT_FLUSH_MS);
+      exitTimer.unref();
     });
 
     proc.on('error', (err) => {
+      if (finalized) return;
+      finalized = true;
       clearInterval(stallCheck);
+      if (bgTimeout) clearTimeout(bgTimeout);
+      clearTimeout(exitTimer);
       entry.status = 'failed';
-      try {
-        fs.writeSync(fd, Buffer.from(`\n[process error: ${err.message}]\n`));
-        fs.closeSync(fd);
-      } catch { /* ignore */ }
+      entry.endTime = Date.now();
+      this.safeWrite(fd, Buffer.from(`\n[process error: ${err.message}]\n`));
+      try { fs.closeSync(fd); } catch { /* ignore */ }
       entry.outputFd = null;
       this.emitComplete({ taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath });
     });
@@ -304,6 +434,11 @@ export class ProcessManager extends EventEmitter {
     if (!entry || entry.status !== 'running') return false;
 
     entry.status = 'killed';
+    // Freeze the elapsed-time clock at the kill instant. For a real child this is
+    // overwritten (with ~the same value) when its 'exit' event fires; for
+    // in-process agents / MCP monitors (no exit event) this is the only place the
+    // terminal timestamp is set.
+    entry.endTime = Date.now();
     if (entry._intervalHandle) {
       clearInterval(entry._intervalHandle);
       entry._intervalHandle = undefined;
@@ -336,6 +471,33 @@ export class ProcessManager extends EventEmitter {
     }
 
     return true;
+  }
+
+  /**
+   * Write a chunk to the task-output fd, surviving a transient fs error. A write
+   * can fail transiently under load — EMFILE on a busy CI box, EPERM on a Windows
+   * pending-delete — and the old `catch {}` dropped the chunk silently, leaving
+   * callers an empty output file with no diagnostic. We now distinguish a fatal
+   * closed fd (EBADF — nothing to retry) from a transient error: log it, retry
+   * the write ONCE, and only then give up (logging again). Mirrors Claude Code's
+   * #drain retry-once. Returns true if the bytes were written, false if dropped.
+   */
+  private safeWrite(fd: number, buf: Buffer): boolean {
+    try {
+      fsHooks.writeSync(fd, buf);
+      return true;
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'EBADF') return false; // fd closed — retry is pointless
+      pmLogHooks.onWriteError(e, true);
+      try {
+        fsHooks.writeSync(fd, buf);
+        return true;
+      } catch (err2) {
+        pmLogHooks.onWriteError(err2 as NodeJS.ErrnoException, false);
+        return false;
+      }
+    }
   }
 
   private destroyStreams(proc: child_process.ChildProcess): void {
@@ -407,7 +569,7 @@ export class ProcessManager extends EventEmitter {
 
     let output = '';
     try {
-      const content = fs.readFileSync(entry.outputPath, 'utf-8');
+      const content = readOutputFileNoFollow(entry.outputPath);
       let lines = content.split('\n');
       if (re) {
         lines = lines.filter((line) => re!.test(line));
@@ -423,7 +585,9 @@ export class ProcessManager extends EventEmitter {
       status: entry.status,
       exitCode: entry.exitCode,
       output,
-      elapsedMs: Date.now() - entry.startTime,
+      // Freeze elapsed at the terminal timestamp so a finished task reports its
+      // real wall-clock duration instead of a figure that grows forever.
+      elapsedMs: (entry.endTime ?? Date.now()) - entry.startTime,
     };
   }
 
@@ -450,7 +614,7 @@ export class ProcessManager extends EventEmitter {
       if (start >= size) {
         return { output: '', offset: size, reset };
       }
-      const fd = fs.openSync(entry.outputPath, 'r');
+      const fd = fs.openSync(entry.outputPath, secureReadFlags());
       let output = '';
       try {
         const length = size - start;
@@ -534,7 +698,15 @@ export class ProcessManager extends EventEmitter {
   updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount'>>): void {
     const entry = this.processes.get(taskId);
     if (!entry) return;
-    if (updates.status !== undefined) entry.status = updates.status;
+    if (updates.status !== undefined) {
+      entry.status = updates.status;
+      // Freeze the elapsed clock when an in-process agent reaches a terminal
+      // state via updateEntry (its only terminal transition — there is no 'exit'
+      // event). Keep the first terminal timestamp if one was already recorded.
+      if (isTerminalTaskStatus(updates.status) && entry.endTime === undefined) {
+        entry.endTime = Date.now();
+      }
+    }
     if (updates.exitCode !== undefined) entry.exitCode = updates.exitCode;
     if (updates.tokenCount !== undefined) entry.tokenCount = updates.tokenCount;
   }

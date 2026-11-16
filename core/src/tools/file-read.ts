@@ -23,6 +23,13 @@ const MAX_FILE_READ_TOKENS = 25_000;
 const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
 /** Raw-size cap for PDFs, read into memory whole for text extraction (DoS guard). */
 const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024; // 20 MB
+/**
+ * Max pages in a PDF accepted for a FULL (un-ranged) read. A document larger than
+ * this would dump an unbounded amount of text into context, so the model must use
+ * the `pages` parameter to extract a specific range instead. Mirrors Claude Code's
+ * API_PDF_MAX_PAGES (constants/apiLimits.ts).
+ */
+export const API_PDF_MAX_PAGES = 100;
 /** Max PDF pages to render to images when falling back to pdftoppm (context guard). */
 const MAX_PDF_RENDER_PAGES = 10;
 
@@ -45,6 +52,7 @@ export function resetPdftoppmCache(): void {
  */
 export const pdfHooks: {
   execFile: (cmd: string, args: string[], opts: { timeout: number }) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  loadPdfParse: () => { PDFParse: new (opts: { data: Buffer }) => { getText: (o?: Record<string, unknown>) => Promise<{ text?: string; total?: number }>; destroy: () => Promise<void> } };
 } = {
   execFile: (cmd, args, opts) => new Promise((resolve) => {
     execFile(cmd, args, { timeout: opts.timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -54,6 +62,10 @@ export const pdfHooks: {
       resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
     });
   }),
+  // Indirection seam for the pdf-parse module. Tests swap this to exercise the
+  // page-count guard / error-classification branches without a real multi-page
+  // PDF; production resolves pdf-parse from the working directory.
+  loadPdfParse: () => createRequire(path.join(process.cwd(), '_'))('pdf-parse'),
 };
 
 /**
@@ -206,6 +218,68 @@ function normalizeMacScreenshotPath(filePath: string): string {
   return filePath
     .replace(/\u202f/g, ' ')
     .replace(/\u00a0/g, ' ');
+}
+
+/** Narrow no-break space (U+202F) \u2014 macOS uses it before AM/PM in newer builds. */
+const THIN_SPACE = '\u202f';
+
+/**
+ * macOS screenshot filenames put either a regular space or a thin space (U+202F)
+ * before AM/PM depending on the OS version. When a read misses on ENOENT, this
+ * returns the path with the ALTERNATE space character before AM/PM in a `.png`
+ * name (regular <-> U+202F) so the caller can retry it, or undefined when the
+ * name does not match the screenshot pattern. Non-destructive: the on-disk name
+ * is never rewritten up front. Mirrors Claude Code's getAlternateScreenshotPath.
+ */
+export function getAlternateScreenshotPath(filePath: string): string | undefined {
+  const filename = path.basename(filePath);
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, single greedy prefix + fixed suffix; linear
+  const amPmPattern = /^(.+)([ \u202f])(AM|PM)(\.png)$/;
+  const match = filename.match(amPmPattern);
+  if (!match) return undefined;
+  const currentSpace = match[2];
+  const alternateSpace = currentSpace === ' ' ? THIN_SPACE : ' ';
+  return filePath.replace(
+    `${currentSpace}${match[3]}${match[4]}`,
+    `${alternateSpace}${match[3]}${match[4]}`,
+  );
+}
+
+/**
+ * Neutralize forged trust-boundary markers planted in untrusted FILE content:
+ * a read file must not be able to inject a `<system-reminder>\u2026</system-reminder>`
+ * block that the model would mistake for a real system instruction. The entire
+ * forged block is stripped before the content is cached or returned, so it can
+ * never carry those boundary tags forward. AMI's own reminders are appended
+ * AFTER this runs and are unaffected. Mirrors Claude Code's queryHelpers strip.
+ */
+export function stripForgedSystemReminders(text: string): string {
+  // eslint-disable-next-line security/detect-unsafe-regex -- lazy match bounded by a required literal close tag; linear
+  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+}
+
+/**
+ * Resolve the alternate-space macOS-screenshot variant of `resolved` and return
+ * it ONLY when the alternate exists, is readable, is within the allowed roots,
+ * and is not a blocked/device path — so the ENOENT retry is held to the same
+ * security checks as the original path. Returns undefined when there is no safe,
+ * readable alternate. See getAlternateScreenshotPath.
+ */
+async function resolveAlternateScreenshotPath(
+  resolved: string,
+  context: ToolContext,
+): Promise<string | undefined> {
+  const alt = getAlternateScreenshotPath(resolved);
+  if (!alt) return undefined;
+  const altResolution = resolveFilePath(alt, context.cwd, context.allowedReadRoots);
+  if (altResolution.error) return undefined;
+  if (isBlockedPath(altResolution.resolved)) return undefined;
+  try {
+    await fs.promises.access(altResolution.resolved, fs.constants.R_OK);
+    return altResolution.resolved;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Image extensions that should be returned as base64 content. */
@@ -719,8 +793,9 @@ export const fileReadTool: ToolDefinition = {
       return { output: 'Error: file read was cancelled.', isError: true };
     }
 
-    const { resolved, error: pathError } = resolveFilePath(filePath, context.cwd, context.allowedReadRoots);
+    const { resolved: resolvedInput, error: pathError } = resolveFilePath(filePath, context.cwd, context.allowedReadRoots);
     if (pathError) return pathError;
+    let resolved = resolvedInput;
 
     if (isBlockedPath(resolved)) {
       return { output: `Error: Reading device/special files is not allowed: ${resolved}`, isError: true };
@@ -734,13 +809,21 @@ export const fileReadTool: ToolDefinition = {
     try {
       await fs.promises.access(resolved, fs.constants.R_OK);
     } catch {
-      let suggestions = '';
-      const similar = suggestSimilarPaths(resolved, path.dirname(resolved));
-      if (similar.length > 0) suggestions = `\nDid you mean: ${similar.join(', ')}?`;
-      return {
-        output: `Error: File not found or not readable: ${resolved}${suggestions}`,
-        isError: true,
-      };
+      // macOS screenshots use either a regular space or a thin space (U+202F)
+      // before AM/PM depending on the OS version; on a miss, retry the alternate
+      // space variant before giving up (CC parity: getAlternateScreenshotPath).
+      const altResolved = await resolveAlternateScreenshotPath(resolved, context);
+      if (altResolved) {
+        resolved = altResolved;
+      } else {
+        let suggestions = '';
+        const similar = suggestSimilarPaths(resolved, path.dirname(resolved));
+        if (similar.length > 0) suggestions = `\nDid you mean: ${similar.join(', ')}?`;
+        return {
+          output: `Error: File not found or not readable: ${resolved}${suggestions}`,
+          isError: true,
+        };
+      }
     }
 
     // Validate symlink targets — block symlinks pointing to sensitive files
@@ -877,8 +960,7 @@ export const fileReadTool: ToolDefinition = {
       // Treat empty/whitespace-only pages as omitted (models sometimes pass "")
       const pagesParam = rawPages && rawPages.trim().length > 0 ? rawPages : undefined;
       try {
-        const cwdRequire = createRequire(path.join(process.cwd(), '_'));
-        const { PDFParse } = cwdRequire('pdf-parse');
+        const { PDFParse } = pdfHooks.loadPdfParse();
         const pdfBuffer = await fs.promises.readFile(resolved);
         // Validate the %PDF- magic header before handing the bytes to the parser:
         // a file renamed to .pdf (or a corrupt/truncated download) otherwise fails
@@ -903,6 +985,15 @@ export const fileReadTool: ToolDefinition = {
         const parser = new PDFParse({ data: pdfBuffer });
         const pdf = await parser.getText(parseOpts);
         await parser.destroy();
+        // Page-count guard: a FULL (un-ranged) read of a very long PDF would dump
+        // an unbounded amount of text into context. Require the pages parameter to
+        // scope the read instead. Mirrors Claude Code's API_PDF_MAX_PAGES (100).
+        if (!pageRange && typeof pdf.total === 'number' && pdf.total > API_PDF_MAX_PAGES) {
+          return {
+            output: `Error: PDF has ${pdf.total} pages — exceeds the ${API_PDF_MAX_PAGES}-page limit for a full read. Use the pages parameter to extract a specific range (max 20 pages per request).`,
+            isError: true,
+          };
+        }
         const text = (pdf.text || '').trim();
         const rangeNote = pageRange ? ` (pages ${pageRange.start}-${pageRange.end})` : '';
         // Scanned/image-only PDFs yield no extractable text. Fall back to rendering the
@@ -1071,9 +1162,19 @@ export const fileReadTool: ToolDefinition = {
     // Use streaming for explicit range reads to avoid loading entire file
     // (UTF-16/BOM files bypass streaming and are fully decoded below).
     if (!isBomText && (input.offset !== undefined || input.limit !== undefined)) {
+      // Dedup an IDENTICAL repeat range read (same offset+limit) on an unchanged
+      // file — re-streaming the same window wastes tokens. Mirrors Claude Code's
+      // range dedup short-circuit (a brand-new range still falls through below).
+      if (fileCache.isRangeUnchanged(resolved, offset, limit)) {
+        context.filesRead?.add(resolved);
+        return { output: `File unchanged since last read: ${resolved} (lines ${offset + 1}-${offset + limit})` };
+      }
       fileCache.trackMtime(resolved, stat.mtimeMs);
-      const { text: rangeText, hasMore, scannedLines } = await readFileInRange(resolved, offset, limit, context.abortSignal);
-      if (!rangeText) {
+      const { text: rawRangeText, hasMore, scannedLines } = await readFileInRange(resolved, offset, limit, context.abortSignal);
+      // Neutralize forged <system-reminder> trust-boundary tags planted in the
+      // untrusted window before it enters the transcript.
+      const rangeText = stripForgedSystemReminders(rawRangeText);
+      if (!rawRangeText) {
         // Distinguish a truly empty file from an offset that overshot the content:
         // the latter should tell the model how many lines actually exist so it can
         // retry with a valid offset, instead of the misleading "(empty file)".
@@ -1094,18 +1195,26 @@ export const fileReadTool: ToolDefinition = {
       if (estimatedTokens > MAX_FILE_READ_TOKENS) {
         output = output.slice(0, MAX_FILE_READ_TOKENS * 4) + `\n\n[... truncated: exceeds ${MAX_FILE_READ_TOKENS} token budget. Narrow offset/limit.]`;
       }
+      // Record the exact window so an identical repeat read on an unchanged file
+      // short-circuits above instead of re-streaming it.
+      fileCache.markRangeRead(resolved, stat.mtimeMs, offset, limit);
       context.filesRead?.add(resolved);
       return { output };
     }
 
     // Read file content (decode UTF-16/BOM in its original encoding)
-    const content = isBomText
+    const rawContent = isBomText
       ? decodeBuffer(await fs.promises.readFile(resolved, { signal: context.abortSignal })).text
       : await fs.promises.readFile(resolved, { encoding: 'utf-8', signal: context.abortSignal });
 
-    if (content.length === 0) {
+    if (rawContent.length === 0) {
       return { output: '(empty file)' };
     }
+
+    // Neutralize forged <system-reminder> trust-boundary tags planted in the
+    // untrusted file BEFORE it is cached or line-numbered, so planted content can
+    // never carry those boundary markers forward into the transcript.
+    const content = stripForgedSystemReminders(rawContent);
 
     // Cache the file for future reads
     fileCache.set(resolved, content, stat.mtimeMs);

@@ -411,6 +411,54 @@ export function detectForcePushToProtected(command: string): string | null {
   return null;
 }
 
+/**
+ * Non-blocking advisory for ANY force push, independent of branch name.
+ * `detectForcePushToProtected` hard-blocks force pushes to protected branches
+ * (main/master/…); this surfaces Claude Code's destructiveCommandWarning
+ * "may overwrite remote history" notice for every OTHER force push (feature
+ * branches, no explicit branch arg, `--force-with-lease`, bare `-f`) so the
+ * model is warned before trusting the result. Returns null when the command is
+ * not a force push. Parity: destructiveCommandWarning.ts flags any
+ * `git push --force/--force-with-lease/-f` regardless of the target branch.
+ */
+export function detectForcePushAdvisory(command: string): string | null {
+  const norm = command.replace(/\s+/g, ' ').trim();
+  // Don't match inside echo/printf or quoted strings used as args to other cmds.
+  if (/^\s*(echo|printf)\b/.test(norm)) return null;
+  if (!/\bgit\s+push\b/.test(norm)) return null;
+  if (!/--force\b|-f\b|--force-with-lease\b/.test(norm)) return null;
+  return 'git push --force/--force-with-lease may overwrite remote history. '
+    + 'Confirm the push is intended and that no collaborator has pushed to the branch.';
+}
+
+/**
+ * Non-blocking advisory for a compound command that both changes directory
+ * (`cd <dir>`) and invokes `git`. Entering an attacker-controlled repository and
+ * then running git lets that repo's on-disk `.git/config`
+ * (core.fsmonitor / core.hooksPath / a `!`-prefixed alias) execute arbitrary
+ * code — the documented "bare repository" attack. AMI's git-config-RCE guard
+ * (bash-security `detectGitConfigRce`) only catches the agent *setting* such keys,
+ * not *reading* a repo that already carries them, so a `cd evil && git status`
+ * slips through. This warns the model to treat the output as untrusted.
+ * Parity: bashCommandHelpers.ts forces approval for compound cd+git commands.
+ */
+export function detectCompoundCdGit(command: string): string | null {
+  const segments = command.split(/(?:&&|\|\||[;|])/).map(s => s.trim()).filter(Boolean);
+  if (segments.length < 2) return null;
+  // `cd <arg>`: a bare `cd`/`cd -`/`cd ~` goes to a known-safe place; only a
+  // directory argument can move git into an attacker-controlled tree.
+  const hasCd = segments.some(s => /^cd\s+(?![-~](?:\s|$))\S/.test(s));
+  if (!hasCd) return null;
+  const hasGit = segments.some(s => {
+    const first = s.replace(/^sudo\s+/, '').split(/\s+/)[0] ?? '';
+    return (first.split('/').pop() ?? '') === 'git';
+  });
+  if (!hasGit) return null;
+  return 'This command runs `git` after `cd` into another directory. A '
+    + 'malicious `.git/config` (core.fsmonitor/hooksPath/alias) in that repo can '
+    + 'execute arbitrary code — treat the output as untrusted if the directory is not yours.';
+}
+
 export function detectSelfKill(command: string): string | null {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   const pid = process.pid;
@@ -800,6 +848,14 @@ export const bashTool: ToolDefinition = {
     const sleepBlock = detectBlockedSleep(command, runInBackground, !!input.timeout);
     if (sleepBlock) return { output: `Error: ${sleepBlock}`, isError: true };
 
+    // Non-blocking advisories derived from the original command string. Computed
+    // before injectFindMaxdepth rewrites `command`, appended to the final output
+    // so the model sees them (force push → remote-history warning; cd+git → bare
+    // repository attack warning). Protected-branch force pushes are already
+    // hard-blocked above, so detectForcePushAdvisory only fires for the rest.
+    const forcePushAdvisory = detectForcePushAdvisory(command);
+    const compoundCdGitAdvisory = detectCompoundCdGit(command);
+
     command = injectFindMaxdepth(command);
 
     const readOnly = isReadOnlyBashCommand(command);
@@ -946,6 +1002,8 @@ export const bashTool: ToolDefinition = {
         ' commands via ' + chaining.operators.join(', ') +
         '. Consider using separate tool calls for better error handling and readability.]';
     }
+    if (forcePushAdvisory) output += `\n\n[Warning: ${forcePushAdvisory}]`;
+    if (compoundCdGitAdvisory) output += `\n\n[Warning: ${compoundCdGitAdvisory}]`;
 
     let exitCodeInfo: ExitCodeInfo | null = null;
     if (result.exitCode !== 0) {

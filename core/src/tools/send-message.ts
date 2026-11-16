@@ -2,6 +2,19 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { isTerminalTaskStatus } from '../process-manager';
 
 interface AgentMessage {
+  /**
+   * Stable per-message identifier, assigned at enqueue. It is the ack handle for
+   * crash-safe at-least-once delivery: a consumer peeks (reads without removing),
+   * processes, then acks by id (markMailboxDelivered). An unacked message is NOT
+   * removed, so it is redelivered on the next peek — a consumer that crashes mid-
+   * processing never drops the message, and acking by id (not index) is immune to
+   * a concurrent enqueue arriving between the peek and the ack.
+   *
+   * Optional only at the type level: the single canonical append site
+   * (appendCapped) assigns one when absent, so every message actually sitting in a
+   * mailbox always has an id.
+   */
+  id?: string;
   from: string;
   to: string;
   content: string;
@@ -120,6 +133,16 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
 const mailboxes = new Map<string, AgentMessage[]>();
 
 /**
+ * Monotonic sequence behind every message id. Combined with a base-36 timestamp
+ * it yields a short, collision-free handle that is stable for the lifetime of the
+ * message. Reset by resetAllMailboxes() so tests start from a known state.
+ */
+let messageSeq = 0;
+function nextMessageId(): string {
+  return `m${++messageSeq}-${Date.now().toString(36)}`;
+}
+
+/**
  * Hard upper bound on how many undelivered messages a single agent's mailbox may
  * retain. Without a cap a never-draining (crashed/evicted) recipient that keeps
  * being written to grows the buffer without limit — a memory-exhaustion DoS.
@@ -147,6 +170,11 @@ export const MAX_MESSAGE_CHARS = 100_000;
  * through here so the cap is impossible to bypass.
  */
 function appendCapped(box: AgentMessage[], msg: AgentMessage): void {
+  // Every queued message carries a stable id — the canonical append site assigns
+  // one when absent so no enqueue path (direct, structured, or broadcast) can
+  // queue an un-ackable message. A broadcast reuses one object across mailboxes;
+  // the shared id is fine because acks remove entries per-mailbox by id.
+  if (!msg.id) { msg.id = nextMessageId(); }
   box.push(msg);
   if (box.length > MAX_MAILBOX) {
     box.splice(0, box.length - MAX_MAILBOX);
@@ -187,6 +215,7 @@ export function clearMailbox(agentName: string): void {
 export function resetAllMailboxes(): void {
   mailboxes.clear();
   mailboxNotifiers.clear();
+  messageSeq = 0;
 }
 
 export function pollMailbox(agentName: string): AgentMessage[] {
@@ -195,6 +224,39 @@ export function pollMailbox(agentName: string): AgentMessage[] {
     mailboxes.set(agentName, []);
   }
   return messages;
+}
+
+/**
+ * Read an agent's pending messages WITHOUT removing them (the "read" half of the
+ * crash-safe at-least-once protocol — mirrors Claude Code's readUnreadMessages).
+ * Returns a snapshot copy so a caller mutating the returned array cannot corrupt
+ * the live mailbox. Because nothing is cleared, a consumer that crashes before it
+ * acks (markMailboxDelivered) will see the same messages again on its next peek —
+ * at-least-once delivery, never at-most-once loss.
+ */
+export function peekMailbox(agentName: string): AgentMessage[] {
+  return (mailboxes.get(agentName) || []).slice();
+}
+
+/**
+ * Ack the "mark-as-read" half of the protocol: remove the messages whose ids were
+ * successfully processed, leaving every other message queued (an unacked message
+ * is requeued automatically — it simply stays). Removal is BY ID, not by index or
+ * wholesale clear, so a message enqueued (e.g. via the eager notifier) between a
+ * peek and this ack is never silently dropped. Returns the number removed. Mirrors
+ * Claude Code's markMessagesAsRead.
+ */
+export function markMailboxDelivered(agentName: string, ids: string[]): number {
+  const box = mailboxes.get(agentName);
+  if (!box || box.length === 0 || ids.length === 0) return 0;
+  const acked = new Set(ids);
+  let removed = 0;
+  const kept = box.filter(m => {
+    if (m.id !== undefined && acked.has(m.id)) { removed++; return false; }
+    return true;
+  });
+  mailboxes.set(agentName, kept);
+  return removed;
 }
 
 function enqueue(to: string, msg: AgentMessage): void {

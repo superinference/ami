@@ -242,3 +242,25 @@ describe('task_list parity — exported helpers', () => {
     assert.equal(counts.killed, 0);
   });
 });
+
+describe('task_list parity — frozen elapsed for terminal tasks (endTime)', () => {
+  it('renders a terminal task\'s duration from endTime, not the growing wall clock', async () => {
+    const now = Date.now();
+    const task: BackgroundProcess = {
+      taskId: 'bg-frozen01',
+      pid: 4242,
+      command: 'echo done',
+      description: 'quick echo',
+      status: 'completed',
+      exitCode: 0,
+      outputPath: '/tmp/out',
+      startTime: now - 100_000, // started 100s ago
+      endTime: now - 70_000,    // but finished after only 30s
+    };
+    const r = await taskListTool.execute({}, ctx([task]));
+    assert.ok(!r.isError);
+    // 30s elapsed should render as "30s"; the un-frozen value (~100s) would be "1.7m".
+    assert.ok(r.output.includes('30s'), `expected frozen 30s duration, got: ${r.output}`);
+    assert.ok(!r.output.includes('1.7m'), 'must not report the ever-growing wall-clock duration');
+  });
+});
