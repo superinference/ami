@@ -370,14 +370,17 @@ describe('validateZshDangerousCommands', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateBackslashEscapedOperators', () => {
-  it('rejects \\; outside quotes', () => {
-    const r = validateBackslashEscapedOperators('cmd \\; evil');
+  // An escaped operator can only HIDE command structure when the command ALSO
+  // has real control operators; the AST gate runs the scan only then. These
+  // inputs carry a genuine `&&`/`|` so the escaped `\;`/`\|` is still caught.
+  it('rejects \\; when a real operator is also present', () => {
+    const r = validateBackslashEscapedOperators('echo a && cmd \\; evil');
     assert.equal(r.safe, false);
     assert.equal(r.checkId, CHECK_IDS.BACKSLASH_ESCAPED_OPERATORS);
   });
 
-  it('rejects \\| outside quotes', () => {
-    assert.equal(validateBackslashEscapedOperators('cmd \\| evil').safe, false);
+  it('rejects \\| when a real operator is also present', () => {
+    assert.equal(validateBackslashEscapedOperators('echo a && cmd \\| evil').safe, false);
   });
 
   it('allows operators inside single quotes', () => {
@@ -386,6 +389,16 @@ describe('validateBackslashEscapedOperators', () => {
 
   it('allows normal commands', () => {
     assert.equal(validateBackslashEscapedOperators('ls -la').safe, true);
+  });
+
+  // Parity (GH false-positive fix): in a command with NO real operator nodes, an
+  // escaped `\;`/`\|` is a literal word argument (e.g. the POSIX find terminator),
+  // not hidden structure — it must NOT be blocked. `cmd \; evil` runs `cmd` with
+  // literal `;` and `evil` arguments; it does not chain `evil`.
+  it('allows an escaped operator in a simple command (find -exec \\; idiom)', () => {
+    assert.equal(validateBackslashEscapedOperators('find . -type f -exec rm {} \\;').safe, true);
+    assert.equal(validateBackslashEscapedOperators('cmd \\; evil').safe, true);
+    assert.equal(validateBackslashEscapedOperators('cmd \\| evil').safe, true);
   });
 });
 

@@ -551,23 +551,44 @@ function parseBashASTInternal(input: string, depth: number, state: ParseState): 
  * `budget` tunes the per-call resource caps (defaults {@link PARSE_TIMEOUT_MS} /
  * {@link MAX_NODES}; pass `{ timeoutMs: Infinity }` to disable the wall-clock cap).
  */
+/**
+ * Size-1 memo of the most recent SUCCESSFUL parse (a `CommandNode` or a
+ * deterministic `null` for empty/over-length input), keyed on the input plus the
+ * budget knobs that affect the outcome. The same command is now parsed more than
+ * once per security evaluation — `validateASTCommands` and the
+ * `validateBackslashEscapedOperators` AST gate both call {@link parseBashAST}, and
+ * a permission preflight re-checks the same command the execution gate later
+ * validates — so caching the last parse elides the duplicate work. `PARSE_ABORTED`
+ * is deliberately NOT cached: wall-clock aborts are time-dependent and must be
+ * re-evaluated. The cached AST is treated as IMMUTABLE by all consumers
+ * (`extractCommands` / `hasActualOperatorNodes` / `getOutputRedirections` only
+ * read it). Mirrors Claude Code's size-1 last-command parse cache.
+ */
+let lastParse: { key: string; result: CommandNode | null } | null = null;
+
 export function parseBashAST(
   input: string,
   budget?: ParseBudget,
 ): CommandNode | null | typeof PARSE_ABORTED {
+  const key = `${input}\u0000${budget?.timeoutMs ?? ''}\u0000${budget?.maxNodes ?? ''}`;
+  if (lastParse && lastParse.key === key) return lastParse.result;
+
   const state: ParseState = {
     nodeCount: 0,
     maxNodes: budget?.maxNodes ?? MAX_NODES,
     deadline: performance.now() + (budget?.timeoutMs ?? PARSE_TIMEOUT_MS),
   };
+  let result: CommandNode | null;
   try {
-    return parseBashASTInternal(input, 0, state);
+    result = parseBashASTInternal(input, 0, state);
   } catch {
     // Budget exhausted OR any unexpected parser throw on adversarial input:
     // fail CLOSED with the sentinel so the security gate blocks rather than
-    // silently passing an un-analyzable command.
+    // silently passing an un-analyzable command. Not cached (time-dependent).
     return PARSE_ABORTED;
   }
+  lastParse = { key, result };
+  return result;
 }
 
 /**
@@ -618,4 +639,27 @@ export function extractCommandsFromString(input: string, budget?: ParseBudget): 
   // gate (validateCompoundCommand), not here, so extraction stays total.
   if (!ast || ast === PARSE_ABORTED) return [];
   return extractCommands(ast);
+}
+
+/**
+ * Does the parsed AST contain a REAL control operator — a `list` (`;`/`&&`/`||`/`&`)
+ * or a `pipeline` (`|`) node — anywhere in the tree (including inside subshells /
+ * command substitutions)?
+ *
+ * This is the primitive that eliminates the `find -exec … \;` false positive: a
+ * backslash-escaped operator such as `\;` is parsed as part of a *word* (an
+ * argument to `find`), NOT as a `;` operator, so a command whose only "operator"
+ * is an escaped one parses to a single `simple` node and returns `false` here.
+ * Security consumers use that to tell a literal escaped operator (benign word
+ * argument) from one that is actually chaining commands — mirroring Claude Code's
+ * `hasActualOperatorNodes` (utils/bash/treeSitterAnalysis.ts).
+ *
+ * NOTE: a *dangling* trailing operator (`cmd &&`, `cmd ;`) also parses to a lone
+ * `simple` node (there is no second operand to form a list), so this returns
+ * `false` for those — dangling-operator detection must therefore use escaped-char
+ * analysis, not this helper.
+ */
+export function hasActualOperatorNodes(node: CommandNode): boolean {
+  if (node.type === 'list' || node.type === 'pipeline') return true;
+  return (node.children ?? []).some(hasActualOperatorNodes);
 }

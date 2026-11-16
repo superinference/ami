@@ -684,16 +684,19 @@ describe('validateBackslashEscapedOperators -- extra', () => {
     assert.equal(validateBackslashEscapedOperators('"test\\;ok"').safe, true);
   });
 
-  it('rejects backslash-& outside quotes', () => {
-    assert.equal(validateBackslashEscapedOperators('cmd \\& evil').safe, false);
+  // An escaped operator is only structure-hiding when a real control operator
+  // co-occurs (AST gate, Claude `hasActualOperatorNodes` parity); the leading
+  // `echo a &&` supplies that real operator so the escaped `\&`/`\<`/`\>` blocks.
+  it('rejects backslash-& when a real operator is also present', () => {
+    assert.equal(validateBackslashEscapedOperators('echo a && cmd \\& evil').safe, false);
   });
 
-  it('rejects backslash-< outside quotes', () => {
-    assert.equal(validateBackslashEscapedOperators('cmd \\< file').safe, false);
+  it('rejects backslash-< when a real operator is also present', () => {
+    assert.equal(validateBackslashEscapedOperators('echo a && cmd \\< file').safe, false);
   });
 
-  it('rejects backslash-> outside quotes', () => {
-    assert.equal(validateBackslashEscapedOperators('cmd \\> file').safe, false);
+  it('rejects backslash-> when a real operator is also present', () => {
+    assert.equal(validateBackslashEscapedOperators('echo a && cmd \\> file').safe, false);
   });
 });
 

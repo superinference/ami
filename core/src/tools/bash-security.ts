@@ -1,4 +1,4 @@
-import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments } from './bash-parser';
+import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { redactCredentials } from '../credential-guard';
 
@@ -270,10 +270,19 @@ function validateProcEnvironAccess(command: string): SecurityCheckResult {
 
 function validateDanglingOperator(command: string): SecurityCheckResult {
   const trimmed = command.trimEnd();
-  if (/(?:&&|\|\||[;|])\s*$/.test(trimmed)) {
-    return fail(CHECK_IDS.DANGLING_OPERATOR, 'Blocked: command ends with a dangling operator (&&, ||, ;, |) — the next command could be injected');
+  const m = /(&&|\|\||[;|])$/.exec(trimmed);
+  if (!m) return PASS;
+  // A backslash-escaped trailing single-char operator (`\;`, `\|`) is a literal
+  // word argument, NOT a dangling operator — this is the standard POSIX
+  // `find … -exec cmd {} \;` terminator. Only skip when the `;`/`|` is preceded
+  // by an ODD number of backslashes (genuinely escaped); an even count means the
+  // backslashes are themselves literal and the operator still dangles.
+  if (m[1] === ';' || m[1] === '|') {
+    let backslashes = 0;
+    for (let k = m.index - 1; k >= 0 && trimmed[k] === '\\'; k--) backslashes++;
+    if (backslashes % 2 === 1) return PASS;
   }
-  return PASS;
+  return fail(CHECK_IDS.DANGLING_OPERATOR, 'Blocked: command ends with a dangling operator (&&, ||, ;, |) — the next command could be injected');
 }
 
 function validateIncompleteCommand(command: string): SecurityCheckResult {
@@ -444,12 +453,14 @@ function validateBackslashEscapedOperators(command: string): SecurityCheckResult
   let inDoubleQuote = false;
   const operators = new Set([';', '|', '&', '<', '>']);
 
+  let foundEscapedOperator = false;
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
     if (c === '\\' && !inSingleQuote) {
       i++; // skip next char unconditionally (even inside double quotes for correct parity)
       if (i < command.length && !inDoubleQuote && operators.has(command[i])) {
-        return fail(CHECK_IDS.BACKSLASH_ESCAPED_OPERATORS, 'Command contains backslash before a shell operator — can hide command structure');
+        foundEscapedOperator = true;
+        break;
       }
       continue;
     }
@@ -462,7 +473,20 @@ function validateBackslashEscapedOperators(command: string): SecurityCheckResult
       continue;
     }
   }
-  return PASS;
+
+  if (!foundEscapedOperator) return PASS;
+
+  // AST gate (parity: Claude Code `hasActualOperatorNodes`): a backslash-escaped
+  // operator can only HIDE command structure if the command actually HAS real
+  // control operators. When the command parses to a tree with no `list`/`pipeline`
+  // node, the escaped `\;`/`\|`/`\&` is necessarily a literal word argument (e.g.
+  // the POSIX `find … -exec cmd {} \;` terminator), so blocking it here would be a
+  // false positive — allow it. A null/aborted parse does NOT clear the finding
+  // (fail-closed: if we cannot prove the command is operator-free, keep blocking).
+  const ast = parseBashAST(command);
+  if (ast && ast !== PARSE_ABORTED && !hasActualOperatorNodes(ast)) return PASS;
+
+  return fail(CHECK_IDS.BACKSLASH_ESCAPED_OPERATORS, 'Command contains backslash before a shell operator — can hide command structure');
 }
 
 /**
@@ -743,9 +767,16 @@ function validateJqDangerous(command: string): SecurityCheckResult {
 }
 
 function validateShellMetacharsInCommands(command: string): SecurityCheckResult {
+  // Drop backslash-escaped characters first: a `\;`/`\&`/`` \` ``/`\$` is a literal
+  // word argument, not a live shell metacharacter — most notably the standard POSIX
+  // `find … -exec cmd {} \;` terminator. Scanning the escape-stripped view keeps
+  // genuine injection (`find . ; rm`, `` find `id` ``) blocked while clearing the
+  // find/grep/xargs escaped-terminator false positive (parity: Claude treats `\;`
+  // as part of a word node, not an operator).
+  const stripped = command.replace(/\\./g, '');
   // Exclude | (pipe) — piping to/from find/grep/xargs is normal shell usage
-  if (/\b(find|grep|xargs)\b/.test(command) && /[;&`$]/.test(command)) {
-    const hasQuoted = /(['"]).*[;&`$].*\1/.test(command);
+  if (/\b(find|grep|xargs)\b/.test(stripped) && /[;&`$]/.test(stripped)) {
+    const hasQuoted = /(['"]).*[;&`$].*\1/.test(stripped);
     if (!hasQuoted) return fail(CHECK_IDS.SHELL_METACHARS_IN_COMMANDS, 'Unquoted shell metacharacters in find/grep/xargs command');
   }
   return PASS;

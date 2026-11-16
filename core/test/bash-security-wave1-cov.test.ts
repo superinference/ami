@@ -84,8 +84,10 @@ describe('validateBraceExpansion — obfuscation branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateBackslashEscapedOperators — quote handling', () => {
-  it('blocks a backslash-escaped operator outside quotes', () => {
-    const r = validateBackslashEscapedOperators('ls \\; rm x');
+  it('blocks a backslash-escaped operator outside quotes (real operator co-occurs)', () => {
+    // A real `&&` makes the escaped `\;` structure-hiding, so the AST gate keeps
+    // the block (a lone `ls \; rm x` is a benign literal-arg case — see below).
+    const r = validateBackslashEscapedOperators('echo a && ls \\; rm x');
     assert.equal(r.safe, false);
     assert.match(r.message, /backslash before a shell operator/);
   });
@@ -1049,7 +1051,9 @@ describe('validateBashSecurity — more full-pipeline validator returns', () => 
     ['malformed token', "echo '; rm", 35],
     ['obfuscated flags', "ls $'x'", 4],
     ['dangerous variable in pipe', 'cat $X | grep y', 6],
-    ['backslash-escaped operator', 'ls \\; rm', 21],
+    // Escaped operator is only structure-hiding when a real operator co-occurs
+    // (AST gate); `echo a &&` supplies the real operator so `\;` routes to #21.
+    ['backslash-escaped operator', 'echo a && ls \\; rm', 21],
     ["comment quote desync", "ls # it's here", 26],
   ];
   for (const [label, cmd, id] of cases) {
