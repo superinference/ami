@@ -1,4 +1,4 @@
-import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget } from './bash-parser';
+import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { redactCredentials } from '../credential-guard';
 
@@ -1648,10 +1648,10 @@ function collectWriteTargets(command: string): string[] {
   const writeIntent = /\b(rm|cp|mv|tee|install|ln|dd|truncate|chmod|chown)\b|\bsed\b[^|]*\s-i\b|>>?\s*\S/;
   if (!writeIntent.test(command)) return [];
   const targets: string[] = [];
-  // Redirect targets, incl. the `>|` noclobber-override form.
-  for (const m of command.matchAll(/>>?\|?\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
-    targets.push(m[1] ?? m[2] ?? m[3]);
-  }
+  // Redirect targets (incl. `>>` append and the `>|` noclobber-override form),
+  // via the canonical quote-aware AST redirect scanner — one grammar, shared
+  // with the bash-parser's getOutputRedirections accessor.
+  for (const r of getOutputRedirections(command)) targets.push(r.target);
   for (const m of command.matchAll(/\bof=(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g)) {
     targets.push(m[1] ?? m[2] ?? m[3]);
   }
@@ -1983,12 +1983,15 @@ export function detectDataExfiltration(command: string): { blocked: boolean; rea
   const stripped = stripInvisibleUnicode(command);
   const norm = normalizeCommand(stripped);
 
-  // 1. Pipe: file-read | network-send
+  // 1. Pipe: file-read | network-send. Split quote-aware on the real pipe `|`
+  // only (not `||` or a quoted `|`), and strip each stage's file-output
+  // redirections first so a redirect target that merely *contains* a command
+  // name (e.g. `> /tmp/curl.log`) cannot create a false file-read→network match.
   if (PIPE_OR_REDIRECT.test(norm)) {
-    const segments = norm.split(/\|/);
+    const segments = getPipeSegments(norm).map(s => withoutOutputRedirections(s));
     for (let i = 0; i < segments.length - 1; i++) {
-      const left = segments[i].trim();
-      const right = segments.slice(i + 1).join('|').trim();
+      const left = segments[i];
+      const right = segments.slice(i + 1).join('|');
       if (FILE_READ_CMDS.test(left) && NETWORK_SEND_CMDS.test(right)) {
         return { blocked: true, reason: 'bulk file data piped to a network command' };
       }

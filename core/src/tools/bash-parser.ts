@@ -9,7 +9,165 @@ export interface CommandNode {
   args?: string[];
   children?: CommandNode[];
   operator?: string;
+  /**
+   * Output (file) redirections this simple command performs, in source order.
+   * Only present on `simple` nodes that actually redirect stdout/stderr to a
+   * file (`>`/`>>`). Captured so security consumers can read redirect targets
+   * from the AST (write-target collection) and distinguish truncate from append.
+   * Mirrors Claude Code's `OutputRedirection[]` on a parsed command.
+   */
+  redirections?: OutputRedirection[];
   raw: string;
+}
+
+/**
+ * A single file-output redirection: the destination path and whether it
+ * truncates (`>`) or appends (`>>`). Dup/merge forms (`2>&1`, `>&2`) are NOT
+ * output redirections and are excluded. Mirrors Claude Code's
+ * `OutputRedirection` (utils/bash/ParsedCommand.ts).
+ */
+export interface OutputRedirection {
+  target: string;
+  operator: '>' | '>>';
+}
+
+/** An {@link OutputRedirection} plus its byte span in the scanned source. */
+interface RedirectionSpan extends OutputRedirection {
+  start: number;
+  end: number;
+}
+
+/**
+ * Quote-aware scan of a command string for file-output redirections. This is the
+ * single canonical redirect detector shared by {@link getOutputRedirections},
+ * {@link withoutOutputRedirections}, and per-node redirection capture during
+ * parsing — so there is exactly one place that understands the `>`/`>>` grammar.
+ *
+ * Handles: `>`/`>>`, an optional noclobber override (`>|`), an optional leading
+ * file-descriptor digit (`2>log`), and single/double-quoted + backslash-escaped
+ * targets (quotes are stripped from the returned target). Operators that appear
+ * inside quotes are ignored. Descriptor-dup forms (`>&1`) yield no redirection.
+ */
+function scanOutputRedirections(command: string): RedirectionSpan[] {
+  const spans: RedirectionSpan[] = [];
+  let inS = false;
+  let inD = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === '\\' && !inS) { i++; continue; }
+    if (c === "'" && !inD) { inS = !inS; continue; }
+    if (c === '"' && !inS) { inD = !inD; continue; }
+    if (inS || inD) continue;
+    if (c !== '>') continue;
+
+    let operator: '>' | '>>' = '>';
+    let opEnd = i;
+    if (command[i + 1] === '>') { operator = '>>'; opEnd = i + 1; }
+    if (command[opEnd + 1] === '|') opEnd += 1; // noclobber override `>|`
+
+    // Skip inter-token whitespace (not newlines) before the target.
+    let j = opEnd + 1;
+    while (j < command.length && command[j] !== '\n' && /\s/.test(command[j])) j++;
+
+    // `>&1` / `>&` is a descriptor dup, not a file redirection.
+    if (command[j] === '&') { i = opEnd; continue; }
+
+    let target = '';
+    let tS = false;
+    let tD = false;
+    while (j < command.length) {
+      const ch = command[j];
+      if (ch === '\\' && !tS) { target += command[j + 1] ?? ''; j += 2; continue; }
+      if (ch === "'" && !tD) { tS = !tS; j++; continue; }
+      if (ch === '"' && !tS) { tD = !tD; j++; continue; }
+      if (!tS && !tD && (/\s/.test(ch) || ';|&()<>'.includes(ch))) break;
+      target += ch; j++;
+    }
+
+    if (!target) { i = opEnd; continue; }
+
+    // Pull a leading fd descriptor (`2>file`) into the removed span so
+    // withoutOutputRedirections drops the whole redirection, not a stray `2`.
+    let start = i;
+    if (/\d/.test(command[start - 1] ?? '')) {
+      let k = start - 1;
+      while (k > 0 && /\d/.test(command[k - 1])) k--;
+      if (k === 0 || /[\s;|&(]/.test(command[k - 1])) start = k;
+    }
+
+    spans.push({ start, end: j, target, operator });
+    i = j - 1;
+  }
+  return spans;
+}
+
+/**
+ * Structured accessor for a command's output redirections. Accepts either a raw
+ * command string (scanned directly) or an already-parsed {@link CommandNode}
+ * (walked, collecting redirections from every simple node incl. nested
+ * subshells / command substitutions). Returns each redirect's `target` +
+ * `operator`. Mirrors Claude Code's `IParsedCommand.getOutputRedirections()`.
+ */
+export function getOutputRedirections(input: string | CommandNode): OutputRedirection[] {
+  if (typeof input === 'string') {
+    return scanOutputRedirections(input).map(({ target, operator }) => ({ target, operator }));
+  }
+  const out: OutputRedirection[] = [];
+  const walk = (n: CommandNode): void => {
+    if (n.redirections) out.push(...n.redirections);
+    n.children?.forEach(walk);
+  };
+  walk(input);
+  return out;
+}
+
+/**
+ * Return `command` with ALL file-output redirections removed and whitespace
+ * collapsed — e.g. `echo hi > out.txt 2>>err` → `echo hi`. Built on the single
+ * {@link scanOutputRedirections} detector so it stays consistent with
+ * {@link getOutputRedirections}. Mirrors Claude Code's
+ * `IParsedCommand.withoutOutputRedirections()`.
+ */
+export function withoutOutputRedirections(command: string): string {
+  const spans = scanOutputRedirections(command);
+  if (spans.length === 0) return command;
+  let result = command;
+  for (const s of [...spans].sort((a, b) => b.start - a.start)) {
+    result = result.slice(0, s.start) + result.slice(s.end);
+  }
+  return result.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * Split a command into its pipe-separated segments (quote-aware). Only the real
+ * pipe operator `|` splits; `||` (logical OR) and quoted `|` do not. Each
+ * segment is trimmed; a command with no pipe yields a single-element array.
+ * Mirrors Claude Code's `IParsedCommand.getPipeSegments()`.
+ */
+export function getPipeSegments(command: string): string[] {
+  const segments: string[] = [];
+  let cur = '';
+  let inS = false;
+  let inD = false;
+  let esc = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (esc) { cur += c; esc = false; continue; }
+    if (c === '\\' && !inS) { cur += c; esc = true; continue; }
+    if (c === "'" && !inD) { inS = !inS; cur += c; continue; }
+    if (c === '"' && !inS) { inD = !inD; cur += c; continue; }
+    if (!inS && !inD && c === '|') {
+      if (command[i + 1] === '|') { cur += '||'; i++; continue; } // `||` is not a pipe
+      const t = cur.trim();
+      if (t) segments.push(t);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  const last = cur.trim();
+  if (last) segments.push(last);
+  return segments.length > 0 ? segments : [command.trim()];
 }
 
 /**
@@ -210,6 +368,7 @@ class BashLexer {
 
   getPosition(): number { return this.pos; }
   getRemaining(): string { return this.input.slice(this.pos); }
+  slice(start: number, end: number): string { return this.input.slice(start, end); }
 }
 
 function parseSimpleCommand(lexer: BashLexer, depth: number, state: ParseState): CommandNode | null {
@@ -273,10 +432,18 @@ function parseSimpleCommand(lexer: BashLexer, depth: number, state: ParseState):
   const command = words[cmdIdx] || '';
   const args = words.slice(cmdIdx + 1);
 
+  // Capture file-output redirections from this simple command's source span so
+  // AST consumers (getOutputRedirections) see redirect targets + the truncate/
+  // append operator. Uses the single canonical scanner — no second grammar.
+  const redirections = scanOutputRedirections(lexer.slice(startPos, lexer.getPosition()));
+
   return {
     type: 'simple',
     command: command || (envVars.length > 0 ? envVars[0] : ''),
     args,
+    redirections: redirections.length > 0
+      ? redirections.map(({ target, operator }) => ({ target, operator }))
+      : undefined,
     raw: lexer.getRemaining().length < startPos ? command : words.join(' '),
   };
 }
