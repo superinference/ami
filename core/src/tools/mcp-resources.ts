@@ -5,17 +5,45 @@ import * as path from 'path';
 import * as os from 'os';
 import { createHash } from 'crypto';
 
-/** Minimal mime → file-extension map for persisting binary resource blobs. */
+/**
+ * Conservative mime → file-extension allowlist for persisting binary resource
+ * blobs, mirroring Claude's `extensionForMimeType`. Known types get their proper
+ * extension (the extension matters because the Read tool dispatches on it — PDFs,
+ * images, office docs, etc. need the right ext); EVERYTHING else is forced to
+ * `bin`. We never derive an extension from an untrusted mimeType subtype, which
+ * would both leak garbage (`vndopenxmlformats…`) and let the server influence the
+ * on-disk filename extension.
+ */
 const MIME_EXT: Record<string, string> = {
-  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
-  'application/pdf': 'pdf', 'application/zip': 'zip', 'application/json': 'json', 'application/octet-stream': 'bin',
-  'text/plain': 'txt', 'text/csv': 'csv', 'text/html': 'html',
+  'application/pdf': 'pdf',
+  'application/json': 'json',
+  'text/csv': 'csv',
+  'text/plain': 'txt',
+  'text/html': 'html',
+  'text/markdown': 'md',
+  'application/zip': 'zip',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'application/msword': 'doc',
+  'application/vnd.ms-excel': 'xls',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/ogg': 'ogg',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
 };
 
 function extForMime(mimeType: string | undefined): string {
   if (!mimeType) return 'bin';
-  const base = mimeType.split(';')[0].trim().toLowerCase();
-  return MIME_EXT[base] ?? (base.includes('/') ? base.split('/')[1].replace(/[^a-z0-9]/g, '') || 'bin' : 'bin');
+  // Strip any charset/boundary parameter before matching the allowlist.
+  const base = (mimeType.split(';')[0] ?? '').trim().toLowerCase();
+  return MIME_EXT[base] ?? 'bin';
 }
 
 /** A single normalized entry of a resource read (text OR a persisted blob path). */
