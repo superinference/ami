@@ -180,22 +180,22 @@ describe('shouldUseSandbox — configurable excludedCommands (M11)', () => {
 });
 
 describe('buildSandboxExemptPatterns (M11)', () => {
-  it('returns the defaults when no options supplied', () => {
+  it('returns the hardcoded defaults when no options supplied', () => {
     const patterns = buildSandboxExemptPatterns();
     assert.ok(patterns.some(p => p.test('git status')));
     assert.ok(patterns.some(p => p.test('npm test')));
   });
 
-  it('appends custom entries by default', () => {
+  it('keeps the hardcoded defaults regardless of custom excludedCommands', () => {
+    // User excludedCommands are now matched as structured rules (NOT folded into
+    // the hardcoded default regex set), so this returns only the defaults.
     const patterns = buildSandboxExemptPatterns({ excludedCommands: ['docker'] });
     assert.ok(patterns.some(p => p.test('git status')), 'defaults retained');
-    assert.ok(patterns.some(p => p.test('docker build')), 'custom entry added');
   });
 
-  it('replaces defaults when overrideDefaults is true', () => {
+  it('drops the hardcoded defaults when overrideDefaults is true', () => {
     const patterns = buildSandboxExemptPatterns({ excludedCommands: ['docker'], overrideDefaults: true });
-    assert.ok(!patterns.some(p => p.test('git status')), 'defaults dropped');
-    assert.ok(patterns.some(p => p.test('docker build')), 'custom entry present');
+    assert.equal(patterns.length, 0, 'only structured user rules apply under override');
   });
 });
 

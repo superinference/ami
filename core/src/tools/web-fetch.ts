@@ -5,7 +5,7 @@ import { URL } from 'url';
 import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES } from './web-utils';
-import { spillToolText } from './spill-output';
+import { spillToolText, formatSize, spillErrorReason } from './spill-output';
 
 const MAX_RESPONSE_LENGTH = 50000;
 export const MAX_FETCH_DEADLINE_MS = 300_000;
@@ -65,6 +65,44 @@ export function setCache(url: string, content: string): void {
   }
   fetchCache.set(url, { content, timestamp: Date.now(), sizeBytes });
   cacheTotalBytes += sizeBytes;
+}
+
+/**
+ * Map a server-supplied Content-Type to a safe, fixed-vocabulary file extension.
+ * The subtype of an attacker-controlled Content-Type header must NEVER be used
+ * verbatim to name a file on disk — it can carry path separators, '..', or other
+ * garbage that corrupts the spill filename. This whitelist returns a known-safe
+ * extension and falls back to 'bin' for anything unrecognized (parity with
+ * Claude's extensionForMimeType).
+ */
+export function extensionForMimeType(mimeType: string | undefined): string {
+  if (!mimeType) return 'bin';
+  const mt = (mimeType.split(';')[0] ?? '').trim().toLowerCase();
+  const MAP: Record<string, string> = {
+    'application/pdf': 'pdf',
+    'application/json': 'json',
+    'text/csv': 'csv',
+    'text/plain': 'txt',
+    'text/html': 'html',
+    'text/markdown': 'md',
+    'application/zip': 'zip',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+    'application/msword': 'doc',
+    'application/vnd.ms-excel': 'xls',
+    'audio/mpeg': 'mp3',
+    'audio/wav': 'wav',
+    'audio/ogg': 'ogg',
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/svg+xml': 'svg',
+  };
+  return MAP[mt] ?? 'bin';
 }
 
 function htmlToMarkdown(html: string): string {
@@ -271,8 +309,12 @@ export const webFetchTool: ToolDefinition = {
       // Handle PDF responses — extract text from the PDF
       if (contentType.includes('application/pdf') || body.startsWith('%PDF')) {
         try {
-          const cwdRequire = createRequire(path.join(process.cwd(), '_'));
-          const { PDFParse } = cwdRequire('pdf-parse');
+          // Resolve pdf-parse from OUR OWN install location, never from the
+          // (untrusted) process.cwd(): a cloned repo could ship a malicious
+          // node_modules/pdf-parse that would otherwise execute the instant
+          // web_fetch retrieves any PDF (arbitrary code execution).
+          const ownRequire = createRequire(import.meta.url);
+          const { PDFParse } = ownRequire('pdf-parse');
           const pdfBuffer = bodyBuffer ?? Buffer.from(body, 'binary');
           const parser = new PDFParse({ data: pdfBuffer });
           const pdf = await parser.getText();
@@ -317,14 +359,28 @@ export const webFetchTool: ToolDefinition = {
 
       const binaryTypes = ['image/', 'application/zip', 'application/octet-stream'];
       if (binaryTypes.some(t => contentType?.includes(t))) {
-        const ext = contentType?.split('/').pop()?.split(';')[0] || 'bin';
-        const spillDir = projectStateDir(context.cwd, 'tool-results');
-        fs.mkdirSync(spillDir, { recursive: true });
-        const spillFile = path.join(spillDir, `fetch-${Date.now()}.${ext}`);
+        // Derive the extension from a fixed-vocabulary whitelist so a hostile
+        // Content-Type header can never inject path separators / garbage into
+        // the on-disk filename.
+        const ext = extensionForMimeType(contentType);
         // Write the raw bytes, not the lossy UTF-8 string, so the saved file is intact.
         const outBytes = bodyBuffer ?? Buffer.from(body, 'binary');
-        fs.writeFileSync(spillFile, outBytes);
-        return { output: `[Binary content (${contentType}, ${outBytes.length} bytes) saved to ${spillFile}]` };
+        try {
+          const spillDir = projectStateDir(context.cwd, 'tool-results');
+          fs.mkdirSync(spillDir, { recursive: true });
+          const spillFile = path.join(spillDir, `fetch-${Date.now()}.${ext}`);
+          fs.writeFileSync(spillFile, outBytes);
+          return { output: `[Binary content (${contentType}, ${formatSize(outBytes.length)}) saved to ${spillFile}]` };
+        } catch (writeErr: unknown) {
+          // A disk/permission failure persisting the bytes is surfaced as a clear
+          // tool error instead of a generic fetch failure, so the model knows the
+          // content was retrieved but could not be saved.
+          const reason = spillErrorReason((writeErr as NodeJS.ErrnoException)?.code);
+          return {
+            output: `Error: could not save binary content (${contentType}, ${formatSize(outBytes.length)}) to disk: ${reason}.`,
+            isError: true,
+          };
+        }
       }
 
       // Convert HTML to markdown, leave other content types as-is

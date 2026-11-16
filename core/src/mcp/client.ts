@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import { AMI_CLIENT_INFO } from '../version';
+import { AMI_CLIENT_INFO, AMI_CLIENT_NAME, AMI_VERSION } from '../version';
 import type { McpOAuthProvider } from './oauth';
 import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
@@ -21,6 +21,32 @@ export const MCP_PROTOCOL_VERSION = '2025-06-18';
 
 const MIN_MCP_BUFFER = 1024;            // 1 KB
 const MAX_MCP_BUFFER = 100 * 1024 * 1024; // 100 MB
+
+/** Fallback connection timeout (ms) when no explicit value and no env override are given. */
+export const DEFAULT_MCP_CONNECT_TIMEOUT_MS = 10000;
+
+/**
+ * Resolve the default MCP connection timeout. A single global override —
+ * `MCP_TIMEOUT` (milliseconds, matching Claude Code's `getConnectionTimeoutMs`) —
+ * lets an operator widen the connect window for slow-to-start servers without
+ * editing each server's config. An explicit `connectTimeout` option still wins;
+ * an absent/invalid/non-positive env value falls back to
+ * {@link DEFAULT_MCP_CONNECT_TIMEOUT_MS}. `MCP_TIMEOUT` is already allow-listed in
+ * SAFE_ENV_VARS (tuning knob, no trust boundary crossed).
+ */
+export function getMcpConnectTimeout(): number {
+  const n = parseInt(process.env.MCP_TIMEOUT ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MCP_CONNECT_TIMEOUT_MS;
+}
+
+/**
+ * Self-identifying `User-Agent` for MCP HTTP/SSE transport requests (parity with
+ * Claude Code's `getMCPUserAgent`). Lets server operators recognize/allowlist AMI
+ * traffic. A caller-supplied `User-Agent` header still overrides this default.
+ */
+export function getMcpUserAgent(): string {
+  return `${AMI_CLIENT_NAME}/${AMI_VERSION}`;
+}
 
 /**
  * Hard cap on the stdio read buffer (L31). A stdio MCP server streams
@@ -355,7 +381,7 @@ export class McpClient extends EventEmitter {
     this.env = options.env ?? {};
     this.headers = options.headers ?? {};
     this.requestTimeout = options.requestTimeout ?? 30000;
-    this.connectTimeout = options.connectTimeout ?? 10000;
+    this.connectTimeout = options.connectTimeout ?? getMcpConnectTimeout();
     this.rootPaths = options.rootPaths ?? [];
     this.oauth = options.oauth;
   }
@@ -532,6 +558,7 @@ export class McpClient extends EventEmitter {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json, text/event-stream',
+          'User-Agent': getMcpUserAgent(),
           ...this.headers,
         },
         timeout: this.requestTimeout,
@@ -925,6 +952,7 @@ export class McpClient extends EventEmitter {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
+        'User-Agent': getMcpUserAgent(),
         ...this.headers,
       };
       // 2025-06-18: every HTTP request after the initialize handshake MUST carry
@@ -1034,7 +1062,7 @@ export class McpClient extends EventEmitter {
         }
         reject(err);
       });
-      req.on('timeout', () => { req.destroy(); reject(new Error(`MCP SSE request '${method}' timed out`)); });
+      req.on('timeout', () => { req.destroy(); reject(new Error(this.formatTimeoutMessage(method, params, timeoutMs ?? this.requestTimeout))); });
       req.write(body);
       req.end();
     });
@@ -1089,7 +1117,7 @@ export class McpClient extends EventEmitter {
   /** Shared header builder for the GET stream + POSTed server-request responses. */
   private async buildStreamHeaders(accept: string): Promise<Record<string, string>> {
     const authHeader = this.oauth ? await this.oauth.authorizationHeader() : null;
-    const headers: Record<string, string> = { Accept: accept, ...this.headers };
+    const headers: Record<string, string> = { Accept: accept, 'User-Agent': getMcpUserAgent(), ...this.headers };
     if (this._protocolVersion) headers['MCP-Protocol-Version'] = this._protocolVersion;
     if (this.httpSessionId) headers['Mcp-Session-Id'] = this.httpSessionId;
     if (authHeader && !headers.Authorization && !headers.authorization) headers.Authorization = authHeader;
@@ -1169,6 +1197,21 @@ export class McpClient extends EventEmitter {
     }).catch(() => { /* best-effort */ });
   }
 
+  /**
+   * Human-facing timeout message. For a `tools/call` it names the server and the
+   * tool and uses whole seconds — `MCP server "<name>" tool "<tool>" timed out
+   * after Ns` — so the model/user sees which MCP tool stalled (parity with Claude
+   * Code's tool-timeout wording). Non-tool requests keep the generic method/ms form.
+   */
+  private formatTimeoutMessage(method: string, params: Record<string, unknown>, timeoutMs: number): string {
+    if (method === 'tools/call') {
+      const server = this._serverInfo?.name ?? 'unknown';
+      const tool = typeof params.name === 'string' ? params.name : 'unknown';
+      return `MCP server "${server}" tool "${tool}" timed out after ${Math.max(1, Math.floor(timeoutMs / 1000))}s`;
+    }
+    return `MCP request '${method}' timed out after ${timeoutMs}ms`;
+  }
+
   private sendRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
@@ -1187,7 +1230,7 @@ export class McpClient extends EventEmitter {
       const effectiveTimeout = timeoutMs ?? this.requestTimeout;
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error(`MCP request '${method}' timed out after ${effectiveTimeout}ms`));
+        reject(new Error(this.formatTimeoutMessage(method, params, effectiveTimeout)));
       }, effectiveTimeout);
 
       let abortHandler: (() => void) | undefined;

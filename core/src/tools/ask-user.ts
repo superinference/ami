@@ -137,3 +137,100 @@ export const askUserQuestionTool: ToolDefinition = {
     return { output: 'AskUserQuestion is handled by the engine directly.', isError: false };
   },
 };
+
+// ---------------------------------------------------------------------------
+// Input validation (parity with Claude's AskUserQuestionTool refine + validateInput)
+//
+// The schema's minItems/maxItems/additionalProperties are advisory — many
+// providers do not enforce JSON-Schema array bounds or refinements, so the
+// engine must fail-closed on untrusted, model-generated input before surfacing
+// it to the user. These helpers are the canonical validation the engine runs on
+// every AskUserQuestion tool call.
+// ---------------------------------------------------------------------------
+
+/** Model-facing message when uniqueness is violated (matches Claude's refine). */
+export const ASK_USER_UNIQUENESS_MESSAGE =
+  'Question texts must be unique, option labels must be unique within each question';
+
+interface AskUserOptionLike {
+  label?: string;
+  description?: string;
+  preview?: string;
+}
+
+interface AskUserQuestionLike {
+  question?: string;
+  options?: AskUserOptionLike[];
+  previewFormat?: string;
+}
+
+interface AskUserQuestionInputLike {
+  questions?: AskUserQuestionLike[];
+  question?: string;
+  options?: AskUserOptionLike[];
+  previewFormat?: string;
+}
+
+/**
+ * Validate an option's HTML preview fragment (only meaningful when the
+ * question's previewFormat is 'html'). Returns a model-facing error string, or
+ * null when the preview is safe/absent. Ported 1:1 from Claude's
+ * validateHtmlPreview: a preview must be a fragment (no full-document tags), must
+ * not carry executable/style tags, and must actually contain a tag.
+ */
+export function validateHtmlPreview(preview: string | undefined): string | null {
+  if (preview === undefined) return null;
+  if (/<\s*(html|body|!doctype)\b/i.test(preview)) {
+    return 'preview must be an HTML fragment, not a full document (no <html>, <body>, or <!DOCTYPE>)';
+  }
+  if (/<\s*(script|style)\b/i.test(preview)) {
+    return 'preview must not contain <script> or <style> tags. Use inline styles via the style attribute if needed.';
+  }
+  if (!/<[a-z][^>]*>/i.test(preview)) {
+    return 'preview must contain HTML (previewFormat is set to "html"). Wrap content in a tag like <div> or <pre>.';
+  }
+  return null;
+}
+
+/**
+ * Validate a parsed AskUserQuestion tool input. Returns a model-facing error
+ * string when the input is invalid, or null when it is acceptable. Enforces:
+ *   - unique question texts across the call,
+ *   - unique option labels within each question,
+ *   - HTML-fragment safety for previews when previewFormat === 'html'.
+ * Accepts both the multi-question (`questions[]`) and single-question shorthand
+ * (`question`/`options`) shapes the engine supports.
+ */
+export function validateAskUserQuestionInput(input: AskUserQuestionInputLike): string | null {
+  const qList: AskUserQuestionLike[] =
+    input.questions && input.questions.length > 0
+      ? input.questions
+      : [{ question: input.question, options: input.options, previewFormat: input.previewFormat }];
+
+  const texts = qList
+    .map(q => q.question)
+    .filter((t): t is string => typeof t === 'string');
+  if (texts.length !== new Set(texts).size) {
+    return ASK_USER_UNIQUENESS_MESSAGE;
+  }
+
+  for (const q of qList) {
+    const labels = (q.options ?? [])
+      .map(o => o.label)
+      .filter((l): l is string => typeof l === 'string');
+    if (labels.length !== new Set(labels).size) {
+      return ASK_USER_UNIQUENESS_MESSAGE;
+    }
+
+    if (q.previewFormat === 'html') {
+      for (const opt of q.options ?? []) {
+        const err = validateHtmlPreview(opt.preview);
+        if (err) {
+          return `Option "${opt.label}" in question "${q.question}": ${err}`;
+        }
+      }
+    }
+  }
+
+  return null;
+}

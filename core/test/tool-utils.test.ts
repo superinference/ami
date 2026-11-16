@@ -608,12 +608,17 @@ describe('scanForSecrets', () => {
     assert.ok(found.length > 0);
   });
 
-  it('truncates matched secrets for safety', () => {
-    const found = scanForSecrets('sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef');
-    for (const f of found) {
-      assert.ok(f.endsWith('...'));
-      assert.ok(f.length <= 25);
+  it('returns rule id + label and never the matched secret bytes', () => {
+    const secret = 'sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef';
+    const found = scanForSecrets(secret);
+    assert.ok(found.length > 0);
+    for (const m of found) {
+      assert.equal(typeof m.ruleId, 'string');
+      assert.equal(typeof m.label, 'string');
+      // The matched secret bytes must NEVER appear in the detection output.
+      assert.ok(!JSON.stringify(m).includes('sk-abcdefghijklmnopqrstuvwxyz'));
     }
+    assert.ok(found.some(m => m.ruleId === 'openai-api-key'));
   });
 });
 

@@ -33,30 +33,114 @@ export const COMPAT_VERSION = '2.1.307';
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolve the user's home directory with Claude-parity precedence (parity:
+ * xdg.ts `resolveOptions`): an explicit `homedir` override wins, then the `HOME`
+ * env var, then the OS passwd lookup. On POSIX `os.homedir()` reads the passwd
+ * entry and does NOT reflect a re-exported `$HOME`, so a sandbox / CI / `su`
+ * process that redirects HOME would otherwise resolve config/cache/data under
+ * the wrong home — preferring `env.HOME` fixes that. `homedir` is an injectable
+ * DI/test seam so paths can be resolved against an injected home without
+ * mutating `process.env` or the global home.
+ */
+export function resolveHome(env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
+  if (homedir) return homedir;
+  const h = env.HOME;
+  return h && h.trim() ? h : os.homedir();
+}
+
+/**
  * Expand a leading `~` in a config-dir override to the user's home directory.
  * A value supplied via settings.json `env` (as opposed to a shell) is NOT
  * tilde-expanded by the OS, so an override of `~/.ami` would otherwise create a
  * literal `~` directory in the cwd (gh-30794 / CC-212). We expand only a leading
  * `~` segment; every other value (absolute or otherwise) passes through verbatim
- * so existing precedence/behaviour is unchanged.
+ * so existing precedence/behaviour is unchanged. Home is resolved via
+ * {@link resolveHome} so a redirected `$HOME` is honored.
  */
-function expandConfigDir(value: string): string {
+function expandConfigDir(value: string, env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
   if (value === '~' || value.startsWith('~/') || value.startsWith('~\\')) {
-    return path.join(os.homedir(), value.slice(1));
+    return path.join(resolveHome(env, homedir), value.slice(1));
   }
   return value;
 }
 
 /**
- * Resolve the data dir the journal is written under, matching the dashboard's own
- * precedence: an explicit CLAUDE_CONFIG_DIR wins (lets a user point the dashboard and us
- * at one dir), then our SUPERINFERENCE_DATA_DIR override, else ~/.ami.
- * We never write into ~/.claude. A leading `~` in an override is expanded (gh-30794).
+ * Reject an externally-supplied storage root that is dangerous to trust as the
+ * base for ALL per-project state (sessions, memory, checkpoints) — parity with
+ * Claude's `validateMemoryPath` (memdir/paths.ts). A bad override must never
+ * silently redirect every write under the cwd or near the filesystem root.
+ * Rejects (after `path.normalize` + trailing-separator strip):
+ *  - non-absolute ("../foo" — interpreted relative to cwd)
+ *  - root / near-root (normalized length < 3: "/", "/a")
+ *  - Windows drive-root ("C:")
+ *  - UNC / network path ("\\\\server", "//server") — opaque trust boundary
+ *  - embedded NUL (survives `normalize()`, can truncate in syscalls)
  */
-export function resolveConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) return expandConfigDir(env.CLAUDE_CONFIG_DIR);
-  if (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim()) return expandConfigDir(env.SUPERINFERENCE_DATA_DIR);
-  return path.join(os.homedir(), '.ami');
+function isDangerousStorageRoot(p: string): boolean {
+  // UNC/network prefixes and NUL are checked on the RAW value too: POSIX
+  // `path.normalize` collapses a leading `//` to `/`, which would otherwise let a
+  // UNC path slip past the normalized check.
+  if (p.startsWith('\\\\') || p.startsWith('//') || p.includes('\0')) return true;
+  const normalized = path.normalize(p).replace(/[/\\]+$/, '');
+  return (
+    !path.isAbsolute(normalized) ||
+    normalized.length < 3 ||
+    /^[A-Za-z]:$/.test(normalized) ||
+    normalized.startsWith('\\\\') ||
+    normalized.startsWith('//')
+  );
+}
+
+/**
+ * Resolve the first TRUSTED, validated config-dir override from the env —
+ * CLAUDE_CONFIG_DIR (lets a user point an external dashboard and us at one dir),
+ * then SUPERINFERENCE_DATA_DIR. Each candidate is tilde-expanded (gh-30794),
+ * boundary-validated ({@link isDangerousStorageRoot}) and NFC-normalized (so
+ * decomposed-Unicode paths — common on macOS APFS/HFS — compare and join
+ * consistently; parity: envUtils.ts `getClaudeConfigHomeDir`). An unset / empty
+ * / dangerous override is skipped (falling through to the next source, ultimately
+ * `~/.ami`) and the rejection is logged — a bad value can never silently
+ * redirect state. Returns null when no trusted override is present.
+ */
+function resolveStorageOverride(env: NodeJS.ProcessEnv, homedir?: string): string | null {
+  for (const key of ['CLAUDE_CONFIG_DIR', 'SUPERINFERENCE_DATA_DIR'] as const) {
+    const raw = env[key];
+    if (!raw || !raw.trim()) continue;
+    const expanded = expandConfigDir(raw, env, homedir);
+    if (isDangerousStorageRoot(expanded)) {
+      logError('resolve-config-dir', `rejecting dangerous ${key} override`, { value: raw });
+      continue;
+    }
+    return expanded.normalize('NFC');
+  }
+  return null;
+}
+
+/**
+ * Env-keyed memo for {@link resolveConfigDir}: this is on many hot paths (every
+ * journal line, checkpoint, memory read). Keyed off the inputs that determine the
+ * result (the two override env vars, HOME, and any injected homedir) so a changed
+ * env value refreshes automatically without a manual cache clear — parity with
+ * envUtils.ts's memoized `getClaudeConfigHomeDir` (keyed off CLAUDE_CONFIG_DIR).
+ */
+const _configDirCache = new Map<string, string>();
+
+/**
+ * Resolve the data dir the journal is written under, matching the dashboard's own
+ * precedence: a validated CLAUDE_CONFIG_DIR wins, then SUPERINFERENCE_DATA_DIR,
+ * else `~/.ami`. We never write into `~/.claude`. Overrides are tilde-expanded
+ * (gh-30794), rejected if dangerous ({@link isDangerousStorageRoot}) and
+ * NFC-normalized; the default is resolved against {@link resolveHome} (HOME-aware)
+ * and NFC-normalized. `homedir` is an injectable test seam. Memoized per env.
+ */
+export function resolveConfigDir(env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
+  const cacheKey = JSON.stringify([env.CLAUDE_CONFIG_DIR, env.SUPERINFERENCE_DATA_DIR, env.HOME, homedir]);
+  const cached = _configDirCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const override = resolveStorageOverride(env, homedir);
+  const resolved = override ?? path.join(resolveHome(env, homedir), '.ami').normalize('NFC');
+  _configDirCache.set(cacheKey, resolved);
+  return resolved;
 }
 
 /**
@@ -67,7 +151,7 @@ export function resolveConfigDir(env: NodeJS.ProcessEnv = process.env): string {
  * only for the DEFAULT data dir (an explicit CLAUDE_CONFIG_DIR/SUPERINFERENCE_DATA_DIR opts out).
  * Best-effort; returns the names migrated. `homeDir` is injectable for tests.
  */
-export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeDir: string = os.homedir()): string[] {
+export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeDir: string = resolveHome(env)): string[] {
   if ((env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) ||
       (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim())) return [];
   const legacy = path.join(homeDir, '.superinference');
@@ -101,11 +185,12 @@ export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeD
  * treated as authoritative and REPLACES the defaults (keeps tests + power-users deterministic).
  */
 export function resolveReadDirs(env: NodeJS.ProcessEnv = process.env): string[] {
-  if (env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) return [expandConfigDir(env.CLAUDE_CONFIG_DIR)];
-  if (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim()) return [expandConfigDir(env.SUPERINFERENCE_DATA_DIR)];
+  const override = resolveStorageOverride(env);
+  if (override) return [override];
+  const home = resolveHome(env);
   const dirs: string[] = [
-    path.join(os.homedir(), '.ami'),
-    path.join(os.homedir(), '.claude'),
+    path.join(home, '.ami'),
+    path.join(home, '.claude'),
   ];
   // Dirs an external dashboard was told to scan (claudeConfigDirs) — include them too.
   const cfgPath = dashboardConfigPath(env);

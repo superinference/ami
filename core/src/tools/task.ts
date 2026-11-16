@@ -11,6 +11,7 @@ import { mapChildToSubagentEvent } from './subagent-relay';
 import { getCurrentTeam, registerTeamMember, setTeamMemberActive } from './team';
 import { SessionManager } from '../session';
 import { PERMISSION_MODES } from '../permissions';
+import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
 const AUTO_BG_MS = 120_000; // eslint-disable-line @typescript-eslint/no-unused-vars
@@ -220,13 +221,6 @@ export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
 /** The sentinel a sub-agent model request uses to mean "inherit the parent's model". */
 export const INHERIT_MODEL_SENTINEL = 'inherit';
 
-/** Bare family aliases → a concrete default model string. */
-export const MODEL_ALIASES: Record<string, string> = {
-  'sonnet': 'claude-sonnet-4',
-  'opus': 'claude-opus-4',
-  'haiku': 'claude-haiku-4-5',
-};
-
 /**
  * Resolve a sub-agent's model from a requested value, with ANTI-DOWNGRADE:
  * when the request is a bare family alias (sonnet/opus/haiku) and the PARENT is
@@ -235,6 +229,10 @@ export const MODEL_ALIASES: Record<string, string> = {
  * `claude-opus-4-8` that spawns `task({ model: 'opus' })` keeps the child on
  * `claude-opus-4-8` rather than silently downgrading it to `claude-opus-4`.
  * A full model name is returned verbatim; an unknown alias passes through.
+ *
+ * Alias recognition/resolution is delegated to the single canonical alias table
+ * in model-registry (`isModelFamilyAlias` / `resolveModelAlias`) so the subagent
+ * path, validateModel, and any CLI/slash path all resolve the same short names.
  */
 export function resolveSubagentModel(requested: string | undefined, parentModel: string | undefined): string | undefined {
   if (!requested) return undefined;
@@ -249,11 +247,10 @@ export function resolveSubagentModel(requested: string | undefined, parentModel:
   // exact model string — never to a generic alias default — so a parent on
   // claude-opus-4-8 that spawns task({ model: 'inherit' }) keeps the child there.
   if (normalized === INHERIT_MODEL_SENTINEL) return parentModel;
-  const isFamilyAlias = Object.prototype.hasOwnProperty.call(MODEL_ALIASES, normalized);
-  if (isFamilyAlias && parentModel && parentModel.toLowerCase().includes(normalized)) {
+  if (isModelFamilyAlias(normalized) && parentModel && parentModel.toLowerCase().includes(normalized)) {
     return parentModel;
   }
-  return MODEL_ALIASES[normalized] || requested;
+  return resolveModelAlias(normalized) ?? requested;
 }
 
 /**
@@ -720,7 +717,7 @@ export const taskTool: ToolDefinition = {
     } else if (agentModel) {
       providerConfig.model = agentModel;
     } else if (envSubagentModel) {
-      providerConfig.model = MODEL_ALIASES[envSubagentModel] || envSubagentModel;
+      providerConfig.model = resolveModelAlias(envSubagentModel) ?? envSubagentModel;
     }
 
     // Permission mode priority:

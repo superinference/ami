@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import { wildcardMatch } from '../permissions';
 
 export interface SandboxConfig {
   allowNetwork: boolean;
@@ -106,42 +107,217 @@ const SANDBOX_EXEMPT_PATTERNS = [
 ];
 
 /**
- * Options controlling which command prefixes bypass the sandbox.
+ * Options controlling which commands bypass the sandbox.
  *
  * By default the hardcoded `SANDBOX_EXEMPT_PATTERNS` (package managers, build
  * tools, test runners) are exempt. Operators/policy can extend or replace that
  * set via `excludedCommands`:
- *   - `excludedCommands` is a list of literal command prefixes (e.g. `'docker'`,
- *     `'bazel build'`) that should NOT be sandboxed. Each is matched at a word
- *     boundary against the command.
+ *   - `excludedCommands` is a list of command rules that should NOT be
+ *     sandboxed. Each entry is parsed into a structured rule
+ *     (see {@link parseExcludedRule}) anchored to the base command of each
+ *     subcommand rather than matched as a loose substring:
+ *       - a bare token / `foo:*` → PREFIX rule: matches the command `foo` or any
+ *         `foo <args...>` (AMI's additive-prefix convenience; also matches the
+ *         exact command);
+ *       - a pattern with an unescaped `*` → WILDCARD rule (e.g.
+ *         `bazel build //...:*`), matched with the canonical {@link wildcardMatch}.
  *   - When `overrideDefaults` is false/omitted, `excludedCommands` is ADDITIVE
  *     to the hardcoded defaults (no behavior change by default — an empty/absent
  *     list keeps exactly the current exemptions).
  *   - When `overrideDefaults` is true, `excludedCommands` REPLACES the hardcoded
  *     defaults entirely (an operator opting into a stricter or fully custom
  *     exemption policy).
+ *
+ * Exemption matching mirrors Claude Code's `containsExcludedCommand`: each
+ * top-level subcommand is normalized to a fixed-point candidate set by stripping
+ * leading env-var assignments (except binary-hijack vars, see
+ * {@link BINARY_HIJACK_VARS}) and safe wrappers (`timeout`, `nice`, …) so
+ * `timeout 300 FOO=bar bazel run` still matches a `bazel:*` exemption, while a
+ * hijack prefix like `LD_PRELOAD=evil.so bazel` does NOT.
+ *
+ * NOTE: `excludedCommands` is a user-facing convenience, not a security
+ * boundary — the sandbox permission system is the actual control.
  */
 export interface SandboxExemptionOptions {
   excludedCommands?: string[];
   overrideDefaults?: boolean;
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Resolve the effective list of hardcoded sandbox-exempt regex patterns for a
+ * policy. Returns the hardcoded defaults unless `overrideDefaults` is set, in
+ * which case the defaults are dropped and only the structured user
+ * `excludedCommands` rules (see {@link buildExcludedRules}) apply.
+ */
+export function buildSandboxExemptPatterns(options?: SandboxExemptionOptions): RegExp[] {
+  if (options?.overrideDefaults) return [];
+  return [...SANDBOX_EXEMPT_PATTERNS];
 }
 
 /**
- * Resolve the effective list of sandbox-exempt patterns for a given policy.
- * Returns the hardcoded defaults when no options are supplied, so the default
- * behavior is unchanged.
+ * Env-var prefixes that make a DIFFERENT binary run (injection or resolution
+ * hijack). These are NOT stripped before exemption matching, so an operator's
+ * `bazel:*` exemption cannot be smuggled onto a hijacked binary via
+ * `LD_PRELOAD=evil.so bazel ...` or `PATH=/evil bazel ...`. Heuristic only
+ * (excludedCommands is a convenience, not a security boundary), mirroring
+ * Claude Code's `BINARY_HIJACK_VARS`.
  */
-export function buildSandboxExemptPatterns(options?: SandboxExemptionOptions): RegExp[] {
-  const custom = (options?.excludedCommands ?? [])
+const BINARY_HIJACK_VARS = /^(LD_|DYLD_|PATH$)/;
+
+// A leading `NAME=value ` assignment. Values are restricted to quoted strings or
+// a run of non-whitespace/non-quote chars (shell metacharacters that could
+// change what runs are intentionally NOT consumed). Horizontal whitespace only
+// (`[ \t]`): a newline is a command separator, not an assignment terminator.
+const LEADING_ENV_ASSIGN_RE =
+  /^([A-Za-z_][A-Za-z0-9_]*)=(?:'[^'\n\r]*'|"[^"\n\r]*"|[^ \t\n\r'"]*)[ \t]+/;
+
+/**
+ * Strip ONE leading env-var assignment from a command unless the variable is a
+ * binary-hijack var (which stops the stripping). Returns the stripped command,
+ * or null when nothing could be stripped.
+ */
+function stripOneLeadingEnvVar(cmd: string): string | null {
+  const m = cmd.match(LEADING_ENV_ASSIGN_RE);
+  if (!m) return null;
+  if (BINARY_HIJACK_VARS.test(m[1]!)) return null;
+  return cmd.slice(m[0].length);
+}
+
+/**
+ * Safe command wrappers whose leading occurrence can be transparently stripped
+ * before exemption matching so `timeout 300 bazel run` still matches a `bazel:*`
+ * exemption. Mirrors Claude Code's `stripSafeWrappers` safe-list — deliberately
+ * EXCLUDING `sudo`/`env`/`bash -c`/`eval`, which run arbitrary code and must
+ * never be transparently stripped (doing so would let them inherit an exemption
+ * meant for the inner command).
+ */
+const SAFE_WRAPPER_PATTERNS: RegExp[] = [
+  // timeout [FLAGS] DURATION ...  (flags: -k 5, -s TERM, --preserve-status, …)
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, flag/duration tokens are disjoint
+  /^timeout[ \t]+(?:(?:--[a-z-]+(?:=[A-Za-z0-9_.+-]+)?|-[A-Za-z][ \t]*[A-Za-z0-9_.+-]*)[ \t]+)*\d+(?:\.\d+)?[smhd]?[ \t]+/,
+  /^time[ \t]+/,
+  // nice forms: `nice cmd`, `nice -10 cmd`, `nice -n 10 cmd`. Alternatives start
+  // with `-` (not whitespace) so there is no overlap with the leading `[ \t]+`.
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, bounded; alternatives start with `-`
+  /^nice[ \t]+(?:-n[ \t]+-?\d+[ \t]+|-\d+[ \t]+)?/,
+  /^nohup[ \t]+/,
+  // stdbuf forms: `stdbuf -o0 cmd`, `stdbuf -o0 -eL cmd`. Each repeated group must
+  // begin with `-[ioe]`, so backtracking is bounded by the flag count (no ReDoS).
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, each iteration starts with `-[ioe]`
+  /^stdbuf[ \t]+(?:-[ioe][A-Za-z0-9]+[ \t]+)+/,
+];
+
+/**
+ * Strip ONE leading safe wrapper from a command. Returns the stripped command,
+ * or null when no wrapper matched.
+ */
+function stripOneSafeWrapper(cmd: string): string | null {
+  for (const p of SAFE_WRAPPER_PATTERNS) {
+    const stripped = cmd.replace(p, '');
+    if (stripped !== cmd) return stripped;
+  }
+  return null;
+}
+
+/**
+ * Build the fixed-point candidate set for a subcommand by iteratively stripping
+ * leading env-var assignments and safe wrappers until no new form is produced.
+ * This handles interleaved patterns like `timeout 300 FOO=bar bazel run`
+ * (mirrors Claude Code's fixed-point candidate generation).
+ */
+function buildExemptionCandidates(subcommand: string): string[] {
+  const start = subcommand.trim();
+  const candidates = [start];
+  const seen = new Set(candidates);
+  for (let i = 0; i < candidates.length; i++) {
+    const cur = candidates[i]!;
+    for (const next of [stripOneLeadingEnvVar(cur), stripOneSafeWrapper(cur)]) {
+      if (next === null) continue;
+      const t = next.trim();
+      if (!seen.has(t)) {
+        seen.add(t);
+        candidates.push(t);
+      }
+    }
+  }
+  return candidates;
+}
+
+/**
+ * A parsed user `excludedCommands` rule. `prefix` matches the base command and
+ * its args; `wildcard` matches via the canonical glob matcher.
+ */
+type ExcludedRule =
+  | { type: 'prefix'; prefix: string }
+  | { type: 'wildcard'; pattern: string };
+
+/**
+ * True when `pattern` contains an UNescaped `*` (a real wildcard), ignoring the
+ * legacy `:*` prefix suffix and `\*` escapes. Mirrors Claude Code's
+ * `hasWildcards`.
+ */
+function hasUnescapedWildcard(pattern: string): boolean {
+  if (pattern.endsWith(':*')) return false;
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] !== '*') continue;
+    let backslashes = 0;
+    for (let j = i - 1; j >= 0 && pattern[j] === '\\'; j--) backslashes++;
+    if (backslashes % 2 === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Parse one `excludedCommands` entry into a structured rule (mirrors Claude
+ * Code's `bashPermissionRule`). A `foo:*` legacy suffix and a bare token both
+ * become PREFIX rules (AMI's additive-prefix convenience — a prefix rule also
+ * matches the exact command); any other unescaped `*` becomes a WILDCARD rule.
+ */
+function parseExcludedRule(pattern: string): ExcludedRule {
+  const trimmed = pattern.trim();
+  if (trimmed.endsWith(':*')) {
+    return { type: 'prefix', prefix: trimmed.slice(0, -2).trim() };
+  }
+  if (hasUnescapedWildcard(trimmed)) {
+    return { type: 'wildcard', pattern: trimmed };
+  }
+  return { type: 'prefix', prefix: trimmed };
+}
+
+/**
+ * Compile the user `excludedCommands` into structured rules, dropping
+ * empty/whitespace-only entries.
+ */
+export function buildExcludedRules(options?: SandboxExemptionOptions): ExcludedRule[] {
+  return (options?.excludedCommands ?? [])
     .map(c => c.trim())
     .filter(c => c.length > 0)
-    .map(c => new RegExp('\\b' + escapeRegExp(c) + '\\b'));
-  if (options?.overrideDefaults) return custom;
-  return [...SANDBOX_EXEMPT_PATTERNS, ...custom];
+    .map(parseExcludedRule);
+}
+
+/** Match a single candidate command against one structured rule. */
+function matchesExcludedRule(rule: ExcludedRule, cand: string): boolean {
+  if (rule.type === 'prefix') {
+    if (rule.prefix.length === 0) return false;
+    return cand === rule.prefix || cand.startsWith(rule.prefix + ' ');
+  }
+  return wildcardMatch(rule.pattern, cand);
+}
+
+/**
+ * True when a subcommand (after fixed-point env-var / wrapper normalization)
+ * matches ANY user `excludedCommands` rule — i.e. the operator asked to exempt
+ * it from the sandbox.
+ */
+function commandIsExcluded(subcommand: string, rules: ExcludedRule[]): boolean {
+  if (rules.length === 0) return false;
+  const candidates = buildExemptionCandidates(subcommand);
+  for (const rule of rules) {
+    for (const cand of candidates) {
+      if (matchesExcludedRule(rule, cand)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -201,18 +377,24 @@ function stripUrlArgs(s: string): string {
 }
 
 export function shouldUseSandbox(command: string, options?: SandboxExemptionOptions): boolean {
-  const exemptPatterns = buildSandboxExemptPatterns(options);
+  const defaultPatterns = buildSandboxExemptPatterns(options);
+  const userRules = buildExcludedRules(options);
   // Evaluate each top-level subcommand independently. A compound command is
   // sandboxed if ANY of its subcommands is a trigger that is not itself exempt,
   // so an exempt subcommand (git/npm/test-runner) can never suppress the
   // sandbox for a sibling trigger subcommand (the compound-escape vector).
   for (const sub of splitTopLevelSubcommands(command)) {
-    // Exemption matches on the subcommand with URL args removed, so an exempt
-    // keyword inside a trigger's URL cannot exempt it. Quotes are KEPT here so
-    // test runners hidden in a quoted argument (`bash -c "pytest ..."`,
+    // Hardcoded defaults match on the subcommand with URL args removed, so an
+    // exempt keyword inside a trigger's URL cannot exempt it. Quotes are KEPT
+    // here so test runners hidden in a quoted argument (`bash -c "pytest ..."`,
     // `python tests/runtests.py`) remain exempt — AMI's deliberate superset.
     const forExempt = stripUrlArgs(sub);
-    if (exemptPatterns.some(p => p.test(forExempt))) continue;
+    if (defaultPatterns.some(p => p.test(forExempt))) continue;
+    // User-configured excludedCommands are matched as structured prefix/wildcard
+    // rules anchored to the base command of the (env/wrapper-normalized)
+    // subcommand — NOT a loose substring — so an exempt keyword appearing as an
+    // argument or inside another command can never flip the exemption.
+    if (commandIsExcluded(sub, userRules)) continue;
     // Triggers match on the quote-stripped subcommand so trigger text inside
     // quotes (`echo "curl is a tool"`) does not force the sandbox.
     const stripped = sub.replace(/"[^"]*"|'[^']*'/g, '');

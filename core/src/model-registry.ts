@@ -307,6 +307,71 @@ function suggestDeprecatedReplacement(modelId: string, available: string[]): str
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Model aliases — short, memorable family names accepted anywhere a model id is
+// expected. Mirrors Claude Code's canonical MODEL_ALIASES set
+// (utils/model/aliases.ts): a user can type a family name (`opus`) instead of a
+// full provider id. The set, the membership guard, and the alias→canonical
+// resolver live here so EVERY consumer (the subagent `model` override in
+// tools/task.ts, validateModel below, and — via the public barrel — the
+// CLI/slash paths) resolves the SAME short names to the SAME canonical ids.
+// This is the single canonical alias table: tools/task.ts previously kept its
+// own inline copy and now imports these instead (consolidation — no parallel
+// alias maps).
+// ---------------------------------------------------------------------------
+
+/** Canonical set of accepted model-alias inputs (case-insensitive, trimmed). */
+export const MODEL_ALIASES = [
+  'sonnet', 'opus', 'haiku', 'best', 'sonnet[1m]', 'opus[1m]', 'opusplan',
+] as const;
+export type ModelAlias = (typeof MODEL_ALIASES)[number];
+
+/**
+ * Bare family aliases (sonnet/opus/haiku). These act as wildcards for the
+ * subagent anti-downgrade check: a bare family request inherits the parent's
+ * exact same-family model instead of the generic family default.
+ */
+export const MODEL_FAMILY_ALIASES = ['sonnet', 'opus', 'haiku'] as const;
+
+/** Each accepted alias → the concrete family-default model id it resolves to. */
+const MODEL_ALIAS_TARGETS: Record<ModelAlias, string> = {
+  'sonnet': 'claude-sonnet-4',
+  'opus': 'claude-opus-4',
+  'haiku': 'claude-haiku-4-5',
+  // "best" picks the strongest family; "opusplan" runs Opus for planning.
+  'best': 'claude-opus-4',
+  'opusplan': 'claude-opus-4',
+  // The 1M-context suffix variants resolve to the same base model; the 1M window
+  // itself is governed by model-capabilities, not the model id.
+  'sonnet[1m]': 'claude-sonnet-4',
+  'opus[1m]': 'claude-opus-4',
+};
+
+/** Normalize an input for alias matching: trimmed + lower-cased. */
+function normalizeAlias(input: string): string {
+  return typeof input === 'string' ? input.trim().toLowerCase() : '';
+}
+
+/** True when `input` (trimmed, case-insensitive) is a recognized model alias. */
+export function isModelAlias(input: string): boolean {
+  return (MODEL_ALIASES as readonly string[]).includes(normalizeAlias(input));
+}
+
+/** True when `input` is a bare family alias (sonnet/opus/haiku). */
+export function isModelFamilyAlias(input: string): boolean {
+  return (MODEL_FAMILY_ALIASES as readonly string[]).includes(normalizeAlias(input));
+}
+
+/**
+ * Resolve a model alias to its canonical family-default model id, or undefined
+ * when `input` is not a recognized alias (a full/unknown model id passes through
+ * for the caller to handle). Case-insensitive and whitespace-tolerant.
+ */
+export function resolveModelAlias(input: string): string | undefined {
+  const key = normalizeAlias(input);
+  return isModelAlias(key) ? MODEL_ALIAS_TARGETS[key as ModelAlias] : undefined;
+}
+
 export async function validateModel(
   config: ProviderConfig,
   modelId: string,
@@ -320,12 +385,20 @@ export async function validateModel(
     return { valid: false, available: [], reason: 'Model name cannot be empty', errorKind: 'none' };
   }
 
+  // A recognized short alias (opus/sonnet/haiku/best/opusplan/[1m]) resolves to
+  // its canonical family id, so the rest of this function matches/suggests as if
+  // the user had typed that id. AMI resolves the alias to a concrete id rather
+  // than blindly accepting the bare alias (Claude passes it through verbatim),
+  // because AMI's providers require a concrete model id — resolving here avoids
+  // validating-then-persisting an unusable bare alias like "opus".
+  const effective = resolveModelAlias(normalized) ?? normalized;
+
   // A user-declared trusted id is accepted without any provider round-trip.
-  if (customModelIds().some(c => c.toLowerCase() === normalized.toLowerCase())) {
+  if (customModelIds().some(c => c.toLowerCase() === effective.toLowerCase())) {
     return { valid: true, available: [], errorKind: 'none' };
   }
 
-  const cacheKey = `${detectProvider(config)}:::${config.baseUrl ?? ''}:::${normalized}`;
+  const cacheKey = `${detectProvider(config)}:::${config.baseUrl ?? ''}:::${effective}`;
   if (validModelCache.has(cacheKey)) return { valid: true, available: [] };
 
   const { models, diagnostic } = await listModelsDiagnostic(config);
@@ -344,8 +417,8 @@ export async function validateModel(
   const ids = models.map(m => m.id);
   // Exact match first, then a case-insensitive exact match (providers differ in
   // id casing), before falling back to substring matching.
-  const exact = ids.find(id => id === normalized)
-    ?? ids.find(id => id.toLowerCase() === normalized.toLowerCase());
+  const exact = ids.find(id => id === effective)
+    ?? ids.find(id => id.toLowerCase() === effective.toLowerCase());
   if (exact) {
     validModelCache.add(cacheKey);
     return { valid: true, available: ids, errorKind: 'none' };
@@ -353,10 +426,10 @@ export async function validateModel(
 
   // Try substring match, then a deprecated/renamed-id replacement suggestion for
   // ids that have no overlap with any live model at all.
-  const partial = ids.filter(id => id.includes(normalized) || normalized.includes(id));
+  const partial = ids.filter(id => id.includes(effective) || effective.includes(id));
   const suggestion = partial.length > 0
     ? partial[0]
-    : suggestDeprecatedReplacement(normalized, ids);
+    : suggestDeprecatedReplacement(effective, ids);
 
   return { valid: false, available: ids, suggestion, errorKind: 'none' };
 }

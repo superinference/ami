@@ -141,11 +141,12 @@ describe('exchangeCode / refreshToken', () => {
     assert.equal(form.get('code_verifier'), 'v');
     assert.equal(form.get('resource'), 'rs');
   });
-  it('defaults token_type to Bearer and leaves expiresAt undefined without expires_in', async () => {
+  it('defaults token_type to Bearer and falls back to a 3600s expiry for an opaque token without expires_in', async () => {
     const { fn } = fakeFetch({ 'https://as/token': { body: { access_token: 'AT' } } });
     const tok = await refreshToken(fn, { tokenEndpoint: 'https://as/token', refreshToken: 'RT', clientId: 'cid', resource: 'rs' }, NOW);
     assert.equal(tok.tokenType, 'Bearer');
-    assert.equal(tok.expiresAt, undefined);
+    // Opaque token (no expires_in, not a JWT) → DEFAULT_TOKEN_LIFETIME_SEC fallback.
+    assert.equal(tok.expiresAt, NOW + 3600 * 1000);
   });
   it('throws on a non-ok token endpoint and on a missing access_token', async () => {
     await assert.rejects(() => refreshToken(fakeFetch({ 'u': { ok: false, status: 401, body: {} } }).fn, { tokenEndpoint: 'u', refreshToken: 'r', clientId: 'c', resource: 'rs' }, NOW), /token endpoint error \(401\)/);

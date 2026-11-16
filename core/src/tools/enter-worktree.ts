@@ -151,7 +151,20 @@ export const enterWorktreeTool: ToolDefinition = {
         const resolved = path.resolve(existingPath).normalize('NFC');
         const entered = worktrees.find(w => path.resolve(w).normalize('NFC') === resolved);
         if (!entered) {
-          return { output: `Error: "${existingPath}" is not a registered worktree.`, isError: true };
+          // Affordance (parity with "invalid input shows valid options"):
+          // enumerate the repo's registered worktrees so the user can correct
+          // the path. Uses the shared, sorted (current-first), NFC-normalized
+          // listWorktrees enumeration. Best-effort — never blocks the error.
+          let avail = '';
+          try {
+            const { listWorktrees } = require('../worktree-manager');
+            const all = listWorktrees(context.cwd) as Array<{ path: string; branch?: string }>;
+            if (all.length > 0) {
+              avail = '\nAvailable worktrees:\n' +
+                all.map(w => `  - ${w.path}${w.branch ? ` (${w.branch})` : ''}`).join('\n');
+            }
+          } catch { /* affordance is best-effort */ }
+          return { output: `Error: "${existingPath}" is not a registered worktree.${avail}`, isError: true };
         }
       } catch (e) {
         return { output: `Error listing worktrees: ${e instanceof Error ? e.message : String(e)}`, isError: true };

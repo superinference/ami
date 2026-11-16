@@ -105,11 +105,13 @@ function hasOneMillionMarker(modelId: string): boolean {
 
 /**
  * Anthropic's 1M-context window is gated behind the `context-1m-2025-08-07`
- * beta header. Per Anthropic's docs it is available on Claude Sonnet 4 and
- * later (e.g. `claude-sonnet-4`, `claude-sonnet-4-5`, `claude-sonnet-5`). We
- * detect conservatively by model-id substring: only the Sonnet family, only
- * major version 4 and above, so the header is never sent to a model that would
- * reject it. The id may carry a gateway prefix (e.g.
+ * beta header. Per Anthropic's docs it is available on the Sonnet 4+ family AND
+ * the Opus 5+ family — Claude Code ships a dedicated `checkOpus1mAccess()`
+ * parallel to `checkSonnet1mAccess()`, i.e. Opus is a gated 1M-beta family too
+ * (ref utils/model/check1mAccess.ts:L45-L58). We detect conservatively by
+ * model-id substring: Sonnet major version 4+ and Opus major version 5+ (Opus 4
+ * and earlier stay on their 200k window), so the header is never sent to a model
+ * that would reject it. The id may carry a gateway prefix (e.g.
  * `openrouter/anthropic/claude-sonnet-4-5`), so the match is unanchored.
  */
 /**
@@ -129,7 +131,9 @@ export function is1mContextDisabled(): boolean {
 export function supportsOneMillionContextBeta(modelId: string): boolean {
   if (typeof modelId !== 'string' || !modelId) return false;
   if (is1mContextDisabled()) return false;
-  return /claude-sonnet-(?:[4-9]|\d{2,})/i.test(modelId);
+  // Sonnet 4+ or Opus 5+ — the two Anthropic families gated behind the 1M beta
+  // (checkSonnet1mAccess / checkOpus1mAccess). Opus 4 and earlier are excluded.
+  return /claude-sonnet-(?:[4-9]|\d{2,})|claude-opus-(?:[5-9]|\d{2,})/i.test(modelId);
 }
 
 /**
@@ -633,33 +637,106 @@ const BUDGET_MAP: Record<ThinkingLevel, number> = {
 export const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 
 /**
- * Per-family max-output-token ceilings. Several models pair a large context
- * window with a much smaller completion cap (e.g. claude-3-5-sonnet has a 200k
- * window but only an 8,192-token output cap), so a request that fits the window
- * can still exceed the model's output limit and be rejected by the API. Longer
- * ids come first so `claude-3-5-sonnet` is not shadowed by `claude-3`. A live
- * `/models` capability can override via registerModelCapabilities({ maxOutputTokens }).
+ * Global fallback output-token ceiling for a recognized-but-untabled Claude
+ * model (Claude's MAX_OUTPUT_TOKENS_UPPER_LIMIT, utils/context.ts). Used only as
+ * the `upperLimit` fallback in {@link getModelMaxOutputTokens}; it is NOT a cap
+ * for unknown/non-Claude models (those still return undefined from
+ * {@link getMaxOutputTokens} so no clamp is applied).
  */
-const OUTPUT_TOKEN_CAPS: Record<string, number> = {
-  // Anthropic — older small-output families
-  'claude-3-5-sonnet': 8192,
-  'claude-3.5-sonnet': 8192,
-  'claude-3-5-haiku': 8192,
-  'claude-3.5-haiku': 8192,
-  'claude-3-opus': 4096,
-  'claude-3-sonnet': 4096,
-  'claude-3-haiku': 4096,
-  // OpenAI
-  'gpt-4-turbo': 4096,
-  'gpt-4o-mini': 16384,
-  'gpt-4o': 16384,
-  'o1-mini': 65536,
+export const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 64_000;
+
+/** A model's output-token budget split: the conservative default sent by
+ *  default, and the hard ceiling a caller may escalate to. Mirrors Claude's
+ *  `getModelMaxOutputTokens(): { default, upperLimit }` (utils/context.ts) and
+ *  the AntModel `defaultMaxTokens` / `upperMaxTokensLimit` knobs. */
+export interface MaxOutputTokenRange {
+  /** Completion budget sent when the caller omits an explicit maxTokens. */
+  default: number;
+  /** Hard ceiling the budget may be raised to (and the API-rejection cap). */
+  upperLimit: number;
+}
+
+/**
+ * Per-family max-output-token budgets, each split into a conservative `default`
+ * and a hard `upperLimit`. Several models pair a large context window with a much
+ * smaller completion cap (e.g. claude-3-5-sonnet has a 200k window but only an
+ * 8,192-token output cap), so a request that fits the window can still exceed the
+ * model's output limit and be rejected by the API. Modern Claude families
+ * additionally ship a default BELOW their ceiling (e.g. opus-4-6 sends 64k by
+ * default but may be raised to 128k) — mirroring Claude's getModelMaxOutputTokens
+ * ladder (utils/context.ts:L146-L210). Longer / more-specific ids come first so
+ * `claude-3-5-sonnet` is not shadowed by `claude-3`, and `opus-4-6` is not
+ * shadowed by `opus-4`. A live `/models` capability or registered
+ * maxOutputTokens overrides the ceiling (see getModelMaxOutputTokens).
+ */
+const OUTPUT_TOKEN_CAPS: Record<string, MaxOutputTokenRange> = {
+  // Anthropic — modern families: default below the ceiling (distinct knobs)
+  'claude-opus-4-6':  { default: 64_000, upperLimit: 128_000 },
+  'claude-sonnet-4-6': { default: 32_000, upperLimit: 128_000 },
+  'claude-opus-4-5':  { default: 32_000, upperLimit: 64_000 },
+  'claude-sonnet-4':  { default: 32_000, upperLimit: 64_000 },
+  'claude-haiku-4':   { default: 32_000, upperLimit: 64_000 },
+  'claude-opus-4-1':  { default: 32_000, upperLimit: 32_000 },
+  'claude-opus-4':    { default: 32_000, upperLimit: 32_000 },
+  'claude-3-7-sonnet': { default: 32_000, upperLimit: 64_000 },
+  // Anthropic — older small-output families (default == ceiling)
+  'claude-3-5-sonnet': { default: 8192, upperLimit: 8192 },
+  'claude-3.5-sonnet': { default: 8192, upperLimit: 8192 },
+  'claude-3-5-haiku':  { default: 8192, upperLimit: 8192 },
+  'claude-3.5-haiku':  { default: 8192, upperLimit: 8192 },
+  'claude-3-opus':     { default: 4096, upperLimit: 4096 },
+  'claude-3-sonnet':   { default: 8192, upperLimit: 8192 },
+  'claude-3-haiku':    { default: 4096, upperLimit: 4096 },
+  // OpenAI (single-knob families: default == ceiling)
+  'gpt-4-turbo': { default: 4096, upperLimit: 4096 },
+  'gpt-4o-mini': { default: 16384, upperLimit: 16384 },
+  'gpt-4o':      { default: 16384, upperLimit: 16384 },
+  'o1-mini':     { default: 65536, upperLimit: 65536 },
 };
+
+/** First static-table range whose key is a substring of the (lowercased) id. */
+function lookupOutputTokenRange(lowerId: string): MaxOutputTokenRange | undefined {
+  for (const [key, range] of Object.entries(OUTPUT_TOKEN_CAPS)) {
+    if (lowerId.includes(key)) return range;
+  }
+  return undefined;
+}
+
+/** A capability-advertised completion cap (registered capability, then a cap
+ *  learned from a live /models payload), or undefined when none is known. */
+function capabilityOutputCap(lowerId: string, modelId: string): number | undefined {
+  const registered = getModelCapabilities(modelId)?.maxOutputTokens;
+  if (registered !== undefined && registered > 0) return registered;
+  return dynamicOutputCaps.get(lowerId);
+}
+
+/**
+ * The model's output-token budget as a {@link MaxOutputTokenRange} — the
+ * conservative `default` sent by default and the hard `upperLimit` a caller may
+ * escalate to. Mirrors Claude's getModelMaxOutputTokens (utils/context.ts):
+ * start from the per-family ladder (or the global default/upper for an unlisted
+ * model), then let a capability-advertised cap (>= 4096) raise the ceiling and
+ * clamp the default not to exceed it. Always returns a defined pair.
+ */
+export function getModelMaxOutputTokens(modelId: string): MaxOutputTokenRange {
+  const lower = typeof modelId === 'string' ? modelId.toLowerCase() : '';
+  const base = lookupOutputTokenRange(lower)
+    ?? { default: DEFAULT_MAX_OUTPUT_TOKENS, upperLimit: MAX_OUTPUT_TOKENS_UPPER_LIMIT };
+  let { default: defaultTokens, upperLimit } = base;
+  const cap = capabilityOutputCap(lower, modelId);
+  if (cap !== undefined && cap >= 4_096) {
+    upperLimit = cap;
+    defaultTokens = Math.min(defaultTokens, upperLimit);
+  }
+  return { default: defaultTokens, upperLimit };
+}
 
 /**
  * The model's own max-output-token ceiling, or undefined when unknown (callers
  * then clamp only against the context window). Honors a dynamically-registered
- * capability first, then the static family table.
+ * capability first, then a cap learned from a live /models payload, then the
+ * static family ladder's `upperLimit`. Unknown/non-Claude models return
+ * undefined so no clamp is applied.
  */
 export function getMaxOutputTokens(modelId: string): number | undefined {
   if (typeof modelId !== 'string' || !modelId) return undefined;
@@ -669,10 +746,7 @@ export function getMaxOutputTokens(modelId: string): number | undefined {
   // A cap learned from the live /models payload overrides the static family table.
   const discovered = dynamicOutputCaps.get(lower);
   if (discovered !== undefined) return discovered;
-  for (const [key, cap] of Object.entries(OUTPUT_TOKEN_CAPS)) {
-    if (lower.includes(key)) return cap;
-  }
-  return undefined;
+  return lookupOutputTokenRange(lower)?.upperLimit;
 }
 
 /**

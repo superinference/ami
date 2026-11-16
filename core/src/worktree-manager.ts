@@ -207,7 +207,7 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
 export function countWorktreeChanges(
   worktreePath: string,
   cwd: string,
-  opts: { ignoreUntracked?: boolean } = {},
+  opts: { ignoreUntracked?: boolean; baseCommit?: string } = {},
 ): { uncommitted: number; unpushed: number } | null {
   try {
     // --no-optional-locks: a read-only status must not take the index lock
@@ -216,6 +216,23 @@ export function countWorktreeChanges(
     if (opts.ignoreUntracked) statusArgs.push('--untracked-files=no');
     const status = gitExec(statusArgs, { cwd: worktreePath });
     const uncommitted = status ? status.split('\n').length : 0;
+
+    // Precise session-delta counting: when the caller knows the exact commit the
+    // worktree was branched from (session.originalHeadCommit), count ONLY the
+    // commits created in the session via `<base>..HEAD`. The remote-based count
+    // below over-counts whenever the base branch itself has unpushed/local-only
+    // commits — it attributes those pre-existing base commits to the worktree,
+    // so exit_worktree would refuse `remove` on a worktree that contains no new
+    // work. Claude parity: WorktreeExitDialog counts
+    // `git rev-list --count <originalHeadCommit>..HEAD`. A malformed or
+    // unreachable base is ignored (fall through to the remote-based count).
+    if (opts.baseCommit && isValidGitSha(opts.baseCommit)) {
+      try {
+        const count = gitExec(['rev-list', '--count', `${opts.baseCommit}..HEAD`], { cwd: worktreePath });
+        const n = parseInt(count, 10);
+        if (Number.isFinite(n)) return { uncommitted, unpushed: n };
+      } catch { /* base unreachable → fall back to the remote-based count */ }
+    }
 
     // Fail-closed: if we cannot definitively count unpushed commits, return null
     // so the caller never treats an unverifiable worktree as safe to delete.

@@ -448,53 +448,142 @@ export function renderToolDescription(
 }
 
 // ---------------------------------------------------------------------------
-// Secret scanner — checks content for leaked credentials before writes
+// Secret scanner — checks content for leaked credentials before writes.
+//
+// Detection (scanForSecrets) and redaction (redactSecrets) derive from ONE
+// curated rule source (SECRET_RULES) so they can never drift: a pattern added
+// for detection is automatically redacted, and vice-versa. Detection results
+// (SecretMatch) carry only a stable rule id + human label and NEVER the matched
+// bytes, so warnings and logs can name what leaked without echoing the secret.
 // ---------------------------------------------------------------------------
 
-const SECRET_PATTERNS = [
-  /(?:^|[^a-zA-Z0-9])(?:sk-[a-zA-Z0-9]{20,})(?:[^a-zA-Z0-9]|$)/,   // OpenAI
-  // PARITY FIX: real Anthropic keys are `sk-ant-api03-<base64url>` — the body
-  // contains `-`/`_`, so the old `[a-zA-Z0-9]{20,}` run stopped after `api03`
-  // and never matched a genuine key. Allow `_` and `-` in the token body.
-  /(?:^|[^a-zA-Z0-9])(?:sk-ant-[a-zA-Z0-9_-]{20,})/,                 // Anthropic
-  /(?:^|[^a-zA-Z0-9])(?:ghp_[a-zA-Z0-9]{36})/,                       // GitHub PAT (classic)
-  // PARITY FIX: GitHub fine-grained PATs use the `github_pat_` prefix (82-char
-  // body incl. underscores) — previously undetected as a dedicated token.
-  /(?:^|[^a-zA-Z0-9])(?:github_pat_[A-Za-z0-9_]{70,})/,              // GitHub fine-grained PAT
-  /(?:^|[^a-zA-Z0-9])(?:gh[osur]_[a-zA-Z0-9]{36,})/,                 // GitHub OAuth/Server/User/Refresh
-  /(?:^|[^a-zA-Z0-9])(?:gsk_[a-zA-Z0-9]{20,})/,                      // Groq
-  /(?:^|[^a-zA-Z0-9])(?:AKIA[A-Z0-9]{16})/,                          // AWS Access Key
-  /(?:^|[^a-zA-Z0-9])(?:AIza[a-zA-Z0-9_-]{35})/,                     // Google API Key
-  // PARITY ADD: Google OAuth access/refresh tokens (`ya29.<token>`).
-  /(?:^|[^a-zA-Z0-9])(?:ya29\.[0-9A-Za-z_-]{20,})/,                  // Google OAuth token
-  // PARITY ADD: Stripe secret / restricted keys (`sk_live_`, `rk_test_`, …) —
-  // underscore-delimited, so the OpenAI `sk-` rule never matched them.
-  /(?:^|[^a-zA-Z0-9])(?:[rs]k_(?:live|test)_[0-9a-zA-Z]{20,})/,      // Stripe secret/restricted key
-  // PARITY ADD: SendGrid API keys (`SG.<22>.<43>`).
-  /(?:^|[^a-zA-Z0-9])(?:SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})/,  // SendGrid
-  /(?:^|[^a-zA-Z0-9])(?:gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/,  // GitLab
-  /(?:^|[^a-zA-Z0-9])(?:xox[bpsar]-[a-zA-Z0-9-]{10,})/,              // Slack
-  /(?:^|[^a-zA-Z0-9])(?:eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,})/,  // JWT
-  /(?:^|[^a-zA-Z0-9])(?:npm_[a-zA-Z0-9]{36,})/,                      // npm
-  /(?:^|[^a-zA-Z0-9])(?:pypi-[a-zA-Z0-9]{50,})/,                     // PyPI
-  /(?:password|secret|token|api_key)\s*[:=]\s*['"][^'"]{8,}['"]/i,
+/**
+ * A curated secret-detection rule. Capture group 1 is the secret token itself;
+ * any surrounding boundary characters stay OUTSIDE the group so redaction can
+ * replace the secret while preserving the surrounding text.
+ */
+interface SecretRule {
+  /** Stable kebab-case id, surfaced in warnings/labels (never the secret bytes). */
+  id: string;
+  /** Regex source; capture group 1 = the secret token to redact. */
+  source: string;
+  /** Optional JS regex flags (defaults to case-sensitive). */
+  flags?: string;
+}
+
+/**
+ * A secret detection result. Intentionally carries only a rule id + human label
+ * and NEVER the matched bytes, so callers can name what leaked without echoing
+ * the credential itself.
+ */
+export interface SecretMatch {
+  /** The rule that fired, e.g. `aws-access-token`. */
+  ruleId: string;
+  /** Human-readable label, e.g. `AWS Access Token`. */
+  label: string;
+}
+
+const SECRET_RULES: SecretRule[] = [
+  // OpenAI project / service-account / admin keys carry a distinctive `T3BlbkFJ`
+  // infix — match BEFORE the generic `sk-` rule so they label precisely.
+  // PARITY ADD: sk-proj-/sk-svcacct-/sk-admin- scoped keys.
+  { id: 'openai-project-key', source: '(?:^|[^a-zA-Z0-9])(sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,})' },
+  // Anthropic `sk-ant-…` — body contains `-`/`_`, so must precede the generic sk- rule.
+  { id: 'anthropic-api-key', source: '(?:^|[^a-zA-Z0-9])(sk-ant-[a-zA-Z0-9_-]{20,})' },
+  { id: 'openai-api-key', source: '(?:^|[^a-zA-Z0-9])(sk-[a-zA-Z0-9]{20,})' },
+  { id: 'github-pat', source: '(?:^|[^a-zA-Z0-9])(ghp_[a-zA-Z0-9]{36})' },
+  // GitHub fine-grained PAT (82-char underscore-bearing body) — before the generic gh* rule.
+  { id: 'github-fine-grained-pat', source: '(?:^|[^a-zA-Z0-9])(github_pat_[A-Za-z0-9_]{70,})' },
+  { id: 'github-app-token', source: '(?:^|[^a-zA-Z0-9])(gh[osur]_[a-zA-Z0-9]{36,})' },
+  { id: 'groq-api-key', source: '(?:^|[^a-zA-Z0-9])(gsk_[a-zA-Z0-9]{20,})' },
+  // AWS access key IDs — PARITY ADD: cover session/temporary creds (ASIA = STS
+  // temp credentials) and the A3T…/ABIA/ACCA prefixes, not just long-lived AKIA.
+  { id: 'aws-access-token', source: '(?:^|[^a-zA-Z0-9])((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})' },
+  { id: 'gcp-api-key', source: '(?:^|[^a-zA-Z0-9])(AIza[a-zA-Z0-9_-]{35})' },
+  // Google OAuth access/refresh tokens (`ya29.<token>`).
+  { id: 'google-oauth-token', source: '(?:^|[^a-zA-Z0-9])(ya29\\.[0-9A-Za-z_-]{20,})' },
+  // Stripe secret / restricted keys (`sk_live_`, `rk_test_`, …) — underscore-delimited.
+  { id: 'stripe-access-token', source: '(?:^|[^a-zA-Z0-9])([rs]k_(?:live|test)_[0-9a-zA-Z]{20,})' },
+  // SendGrid API keys (`SG.<22>.<43>`).
+  { id: 'sendgrid-api-token', source: '(?:^|[^a-zA-Z0-9])(SG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43})' },
+  { id: 'gitlab-token', source: '(?:^|[^a-zA-Z0-9])(gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})' },
+  { id: 'slack-token', source: '(?:^|[^a-zA-Z0-9])(xox[bpsar]-[a-zA-Z0-9-]{10,})' },
+  // JWT — the signature (3rd) segment is optional so both scan + redact catch it.
+  { id: 'jwt', source: '(?:^|[^a-zA-Z0-9])(eyJ[a-zA-Z0-9_-]{20,}\\.eyJ[a-zA-Z0-9_-]{20,}(?:\\.[a-zA-Z0-9_-]+)?)' },
+  { id: 'npm-access-token', source: '(?:^|[^a-zA-Z0-9])(npm_[a-zA-Z0-9]{36,})' },
+  { id: 'pypi-upload-token', source: '(?:^|[^a-zA-Z0-9])(pypi-[a-zA-Z0-9]{50,})' },
+  // Quoted credential assignment: password/secret/token/api_key : = "value".
+  { id: 'credential-assignment', source: '(?:password|secret|token|api_key)\\s*[:=]\\s*[\'"]([^\'"]{8,})[\'"]', flags: 'i' },
 ];
 
 const MAX_SCAN_LINE_LENGTH = 500;
 
-export function scanForSecrets(content: string): string[] {
+// eslint-disable-next-line security/detect-bidi-characters -- matches invisible chars to strip
+const INVISIBLE_CHARS_RE = /[­͏؜᠎​-‏‪-‮⁠-⁤⁦-⁯﻿￹-￻]/g;
+
+// Lazily compiled rule caches (compiled once on first use). Scan needs
+// stateless, non-global `test` regexes; redact needs global `replace` regexes.
+// Both derive from the SAME SECRET_RULES, keeping detection + redaction in lockstep.
+let scanCompiled: Array<{ id: string; re: RegExp }> | null = null;
+let redactCompiled: Array<{ re: RegExp }> | null = null;
+
+function getScanRules(): Array<{ id: string; re: RegExp }> {
+  if (scanCompiled === null) {
+    scanCompiled = SECRET_RULES.map(r => ({
+      id: r.id,
+      // eslint-disable-next-line security/detect-non-literal-regexp -- sources are internal constants, never user input
+      re: new RegExp(r.source, (r.flags ?? '').replace('g', '')),
+    }));
+  }
+  return scanCompiled;
+}
+
+function getRedactRules(): Array<{ re: RegExp }> {
+  if (redactCompiled === null) {
+    redactCompiled = SECRET_RULES.map(r => ({
+      // eslint-disable-next-line security/detect-non-literal-regexp -- sources are internal constants, never user input
+      re: new RegExp(r.source, (r.flags ?? '').replace('g', '') + 'g'),
+    }));
+  }
+  return redactCompiled;
+}
+
+// Rule-id words whose canonical capitalization differs from plain title case.
+const RULE_LABEL_SPECIAL: Record<string, string> = {
+  aws: 'AWS', gcp: 'GCP', api: 'API', pat: 'PAT', jwt: 'JWT', npm: 'NPM',
+  pypi: 'PyPI', oauth: 'OAuth', github: 'GitHub', gitlab: 'GitLab',
+  openai: 'OpenAI', sendgrid: 'SendGrid', groq: 'Groq',
+};
+
+/** Convert a kebab-case rule id to a human-readable label (never a secret). */
+function ruleIdToLabel(ruleId: string): string {
+  return ruleId
+    .split('-')
+    .map(part => RULE_LABEL_SPECIAL[part] ?? (part.length === 0 ? part : part[0].toUpperCase() + part.slice(1)))
+    .join(' ');
+}
+
+/**
+ * Scan content for leaked credentials. Returns one {@link SecretMatch} per rule
+ * that fired (deduplicated by rule id). The matched bytes are DELIBERATELY never
+ * returned — callers name the rule/label and must never echo the secret value.
+ */
+export function scanForSecrets(content: string): SecretMatch[] {
   const lines = content.split('\n');
   const safeBuf: string[] = [];
   for (const line of lines) {
     safeBuf.push(line.length > MAX_SCAN_LINE_LENGTH ? line.slice(0, MAX_SCAN_LINE_LENGTH) : line);
   }
   const safe = safeBuf.join('\n');
-  const found: string[] = [];
-  for (const pattern of SECRET_PATTERNS) {
-    const match = safe.match(pattern);
-    if (match) found.push(match[0].slice(0, 20) + '...');
+  // One entry per rule that fires (rule ids are unique, so results are naturally
+  // deduplicated). The matched bytes are never captured into the result.
+  const matches: SecretMatch[] = [];
+  for (const rule of getScanRules()) {
+    if (rule.re.test(safe)) {
+      matches.push({ ruleId: rule.id, label: ruleIdToLabel(rule.id) });
+    }
   }
-  return found;
+  return matches;
 }
 
 /**
@@ -502,9 +591,6 @@ export function scanForSecrets(content: string): string[] {
  * boundary characters. Used before writing shared transcripts (/export) so API
  * keys and credentials never land in a file the user might paste or publish.
  */
-// eslint-disable-next-line security/detect-bidi-characters -- matches invisible chars to strip
-const INVISIBLE_CHARS_RE = /[­͏؜᠎​-‏‪-‮⁠-⁤⁦-⁯﻿￹-￻]/g;
-
 export function redactSecrets(content: string): string {
   const lines = content.split('\n');
   let out = lines.map(line => {
@@ -518,30 +604,12 @@ export function redactSecrets(content: string): string {
     '[REDACTED-PRIVATE-KEY]',
   );
 
-  // 2. Token patterns (first 6 of SECRET_PATTERNS) capture a single boundary char
-  // then the secret; redact just the secret run.
-  const tokenRes = [
-    // PARITY FIX: include `_` so real `sk-ant-api03-…` Anthropic keys redact fully.
-    /(sk-ant-[a-zA-Z0-9_-]{20,})/g,
-    /(sk-[a-zA-Z0-9]{20,})/g,
-    // PARITY ADD: GitHub fine-grained PAT — must precede the generic `gh*` rules.
-    /(github_pat_[A-Za-z0-9_]{70,})/g,
-    /(ghp_[a-zA-Z0-9]{36})/g,
-    /(gh[osur]_[a-zA-Z0-9]{36,})/g,
-    /(gsk_[a-zA-Z0-9]{20,})/g,
-    /(AKIA[A-Z0-9]{16})/g,
-    /(AIza[a-zA-Z0-9_-]{35})/g,
-    // PARITY ADD: Google OAuth, Stripe, SendGrid tokens.
-    /(ya29\.[0-9A-Za-z_-]{20,})/g,
-    /([rs]k_(?:live|test)_[0-9a-zA-Z]{20,})/g,
-    /(SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})/g,
-    /(gl(?:pat|dt|rt|oas|ptt|agent|imt|soat|cbt|ft|ffct)-[a-zA-Z0-9_-]{20,})/g,
-    /(xox[bpsar]-[a-zA-Z0-9-]{10,})/g,
-    /(eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]+)/g,
-    /(npm_[a-zA-Z0-9]{36,})/g,
-    /(pypi-[a-zA-Z0-9]{50,})/g,
-  ];
-  for (const re of tokenRes) out = out.replace(re, '[REDACTED-SECRET]');
+  // 2. Shared token/credential rules (SAME SECRET_RULES source as scanForSecrets).
+  // Every rule captures the secret in group 1; replace ONLY that captured run so
+  // the surrounding boundary characters / quotes survive.
+  for (const { re } of getRedactRules()) {
+    out = out.replace(re, (match: string, secret: string) => match.replace(secret, '[REDACTED-SECRET]'));
+  }
 
   // 3. Bearer / Basic auth headers — redact long token values (>= 20 chars).
   // Handles standard "Bearer <token>", percent-encoded "Bearer%20<token>",
@@ -568,11 +636,10 @@ export function redactSecrets(content: string): string {
     '$1[REDACTED-SECRET]$3',
   );
 
-  // 6. key: "value" / token = 'value' style — redact the quoted value only.
-  out = out.replace(/((?:password|secret|token|api_key)\s*[:=]\s*['"])[^'"]{8,}(['"])/gi, '$1[REDACTED-SECRET]$2');
-  // 7. JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
+  // 6. JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
+  // (The simpler `key: "value"` form is covered by the shared credential-assignment rule above.)
   out = out.replace(/("(?:password|secret|token|api_?key|access_?key|secret_?key|client_secret|auth)"\s*:\s*")[^"]{6,}(")/gi, '$1[REDACTED-SECRET]$2');
-  // 8. Unquoted KEY=value assignments (e.g. PASSWORD=mysecret, export API_KEY=abc123).
+  // 7. Unquoted KEY=value assignments (e.g. PASSWORD=mysecret, export API_KEY=abc123).
   // eslint-disable-next-line security/detect-unsafe-regex -- anchored (^|\s), fixed keyword alternation, no overlap
   out = out.replace(/((?:^|\s)(?:export\s+)?(?:PASSWORD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|SECRET_?KEY|CLIENT_SECRET|AUTH|PRIVATE_?KEY|GITHUB_?TOKEN|OPENAI_?KEY|ANTHROPIC_?KEY|DATABASE_?URL|DB_?PASS(?:WORD)?)\s*=\s*)\S{6,}/gim, '$1[REDACTED-SECRET]');
   return out;
@@ -582,7 +649,7 @@ export function redactSecrets(content: string): string {
  * Scan only lines that this edit introduces. A file that already contains
  * `Password = "placeholder"` must stay editable; a newly added secret must not.
  */
-export function scanAddedSecrets(before: string, after: string): string[] {
+export function scanAddedSecrets(before: string, after: string): SecretMatch[] {
   const beforeCounts = new Map<string, number>();
   for (const line of normalizeToLf(before).split('\n')) {
     beforeCounts.set(line, (beforeCounts.get(line) ?? 0) + 1);

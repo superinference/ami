@@ -1,4 +1,4 @@
-import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError, MCP_PROTOCOL_VERSION } from './client';
+import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError, MCP_PROTOCOL_VERSION, getMcpConnectTimeout } from './client';
 import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
 import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName } from './oauth';
 import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
@@ -307,7 +307,7 @@ export interface McpServerConfig {
   url?: string;
   containerConfig?: ContainerConfig;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
-  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; scope?: string };
+  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; scope?: string; authServerMetadataUrl?: string; loginHint?: string };
 }
 
 export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled', 'needs-auth'] as const;
@@ -702,6 +702,8 @@ export class McpManager extends EventEmitter {
         clientId: config.oauth.clientId,
         clientSecret: config.oauth.clientSecret,
         scope: config.oauth.scope,
+        authServerMetadataUrl: config.oauth.authServerMetadataUrl,
+        loginHint: config.oauth.loginHint,
       });
     }
 
@@ -711,7 +713,7 @@ export class McpManager extends EventEmitter {
       env: enrichedEnv,
       headers: config.headers ? resolveEnvVars(config.headers) : undefined,
       requestTimeout: config.requestTimeout ?? (config.containerConfig ? 60000 : 30000),
-      connectTimeout: config.connectTimeout ?? (config.containerConfig ? 120000 : 10000),
+      connectTimeout: config.connectTimeout ?? (config.containerConfig ? 120000 : getMcpConnectTimeout()),
       rootPaths: this.rootPaths,
       oauth,
     });

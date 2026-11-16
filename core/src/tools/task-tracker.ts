@@ -313,6 +313,35 @@ export function getAgentStatuses(): Array<{ owner: string; status: 'busy' | 'idl
   });
 }
 
+/**
+ * Post-completion affordance (PARITY): after a task transitions to completed,
+ * point the agent at its next available work and, when the whole list is done,
+ * nudge for a verification step. Mirrors Claude Code's TaskUpdateTool completion
+ * reminders — the "find your next / now-unblocked task" hint plus the structural
+ * "all done, nothing covers verification" nudge (all-completed && >=3 tasks &&
+ * no subject matching /verif/i).
+ */
+function completionHints(completedId: number): string {
+  const lines: string[] = [];
+  const unblocked: number[] = [];
+  for (const t of tasks.values()) {
+    if (t.status !== 'completed' && t.blockedBy.includes(completedId) && unresolvedBlockers(t).length === 0) {
+      unblocked.push(t.id);
+    }
+  }
+  unblocked.sort((a, b) => a - b);
+  if (unblocked.length > 0) {
+    lines.push(`Now unblocked: ${unblocked.map(i => `#${i}`).join(', ')}. Use action "next"/"list" to pick your next task and "claim" it.`);
+  } else {
+    lines.push('Use action "next"/"list" to find your next available task and "claim" it; dependent tasks may now be unblocked.');
+  }
+  const visible = [...tasks.values()].filter(t => !t.metadata?._internal);
+  if (visible.length >= 3 && visible.every(t => t.status === 'completed') && !visible.some(t => /verif/i.test(t.subject))) {
+    lines.push('All tasks are completed and none covers verification — consider adding a task to verify the work (tests/build/review) before finishing.');
+  }
+  return lines.length > 0 ? `\n\n${lines.join('\n')}` : '';
+}
+
 // Keys the schema accepts; anything else is a malformed call and is rejected so
 // typos (e.g. `taskId` vs `task_id`) surface instead of silently no-op'ing.
 const ALLOWED_INPUT_KEYS = new Set([
@@ -430,9 +459,29 @@ export const taskTrackerTool: ToolDefinition = {
         if (input.status && input.status !== 'deleted' && !VALID_STATUSES.has(input.status as string)) {
           return { output: `Error: invalid status "${input.status}". Must be one of: ${[...VALID_STATUSES].join(', ')}, deleted`, isError: true };
         }
+        // Blocking TaskCompleted hooks can VETO a status->completed transition
+        // (PARITY): consult them BEFORE mutating and refuse the completion when a
+        // hook returns a blockingError, instead of fire-and-forget after the fact.
+        // A throwing hook never blocks (best-effort, matching the prior behavior).
+        if (input.status === 'completed' && context._hookManager) {
+          reloadForRead();
+          const existing = tasks.get(id);
+          if (existing && existing.status !== 'completed') {
+            let blocking: string[] = [];
+            try {
+              const r = await context._hookManager.executeTaskCompleted({ taskId: String(id), subject: existing.subject });
+              const errs = (r as { blockingErrors?: unknown } | void)?.blockingErrors;
+              if (Array.isArray(errs)) blocking = errs.filter((e): e is string => typeof e === 'string');
+            } catch {
+              /* a throwing completion hook must not block the transition */
+            }
+            if (blocking.length > 0) {
+              return { output: `Error: completion of task #${id} blocked by hook: ${blocking.join('; ')} [reason: completion_blocked]`, isError: true };
+            }
+          }
+        }
         let notFound = false;
         let deleted = false;
-        let completed = false;
         let cycleErr = '';
         let startBlocked: number[] = [];
         const out = await mutate(() => {
@@ -475,14 +524,26 @@ export const taskTrackerTool: ToolDefinition = {
             if (blk.length > 0) { startBlocked = blk; return ''; }
           }
           const prevStatus = task.status;
+          const prevSubject = task.subject;
+          const prevDescription = task.description;
+          const prevActiveForm = task.activeForm;
+          const prevOwner = task.owner;
+          const blocksBefore = task.blocks.length;
+          const blockedByBefore = task.blockedBy.length;
           if (input.status) {
             task.status = input.status as Task['status'];
-            if (input.status === 'completed') completed = true;
           }
           if (input.subject) task.subject = (input.subject as string).trim();
           if (input.description !== undefined) task.description = ((input.description as string) || '').trim();
           if (input.activeForm !== undefined) task.activeForm = (input.activeForm as string) || undefined;
           if (input.owner !== undefined) task.owner = normalizeOwner(input.owner);
+          // Auto-assign owner (PARITY): when a teammate moves a task to in_progress
+          // without naming an owner and the task has none, default ownership to the
+          // acting agent identity so status/getAgentStatuses attribute the work.
+          if (input.status === 'in_progress' && input.owner === undefined && !task.owner) {
+            const self = normalizeOwner(context.agentId);
+            if (self) task.owner = self;
+          }
           if (input.metadata) {
             if (!task.metadata) task.metadata = {};
             for (const [k, v] of Object.entries(input.metadata as Record<string, unknown>)) {
@@ -510,10 +571,25 @@ export const taskTrackerTool: ToolDefinition = {
               }
             }
           }
+          // Per-field change detection (PARITY): report exactly which fields the
+          // update actually changed (updatedFields), plus the status transition.
+          const changedFields: string[] = [];
+          if (prevStatus !== task.status) changedFields.push('status');
+          if (prevSubject !== task.subject) changedFields.push('subject');
+          if (prevDescription !== task.description) changedFields.push('description');
+          if (prevActiveForm !== task.activeForm) changedFields.push('activeForm');
+          if (prevOwner !== task.owner) changedFields.push('owner');
+          if (input.metadata) changedFields.push('metadata');
+          if (blocksBefore !== task.blocks.length) changedFields.push('blocks');
+          if (blockedByBefore !== task.blockedBy.length) changedFields.push('blockedBy');
+          const didComplete = prevStatus !== 'completed' && task.status === 'completed';
+          const fieldsLine = changedFields.length > 0
+            ? `Updated task #${id} (fields: ${changedFields.join(', ')}).\n`
+            : '';
           const statusLine = (input.status && prevStatus !== task.status)
             ? `Status: ${prevStatus} -> ${task.status}\n`
             : '';
-          return statusLine + formatTask(task);
+          return fieldsLine + statusLine + formatTask(task) + (didComplete ? completionHints(id) : '');
         });
         if (notFound) {
           return { output: `Error: task #${id} not found.`, isError: true };
@@ -523,9 +599,6 @@ export const taskTrackerTool: ToolDefinition = {
         }
         if (startBlocked.length > 0) {
           return { output: `Error: task #${id} is blocked by: ${startBlocked.map(b => `#${b}`).join(', ')} — resolve blockers before starting. [reason: blocked]`, isError: true };
-        }
-        if (completed && context._hookManager) {
-          context._hookManager.executeTaskCompleted({ taskId: String(id), subject: tasks.get(id)?.subject ?? '' }).catch(() => {});
         }
         void deleted;
         return { output: capOutput(out), isError: false };
@@ -611,7 +684,14 @@ export const taskTrackerTool: ToolDefinition = {
             }
           }
           task.status = 'in_progress';
+          // Explicit owner wins; otherwise auto-assign the acting agent identity
+          // to an unowned task (PARITY: a teammate claiming without naming itself
+          // still becomes the owner, so status/next attribute the work correctly).
           if (owner) task.owner = owner;
+          else if (!task.owner) {
+            const self = normalizeOwner(context.agentId);
+            if (self) task.owner = self;
+          }
           return `Claimed task #${id}: ${task.subject} [in_progress]${task.owner ? ` (owner: ${task.owner})` : ''}`;
         });
         if (reason === 'task_not_found') return { output: `Error: task #${id} not found. [reason: task_not_found]`, isError: true };

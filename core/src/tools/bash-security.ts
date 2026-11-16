@@ -1,4 +1,4 @@
-import { parseBashAST, extractCommands, CommandNode } from './bash-parser';
+import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { redactCredentials } from '../credential-guard';
 
@@ -63,6 +63,7 @@ const CHECK_IDS = {
   GIT_CONFIG_RCE: 62,
   INCOMPLETE_COMMAND: 63,
   ARCHIVE_TOOL_EXECUTION: 64,
+  PARSE_ABORTED: 65,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1028,7 +1029,7 @@ const AST_BLOCKED_COMMANDS = new Set([
   'insmod', 'rmmod', 'modprobe',
 ]);
 
-function validateASTCommands(command: string): SecurityCheckResult {
+function validateASTCommands(command: string, budget?: ParseBudget): SecurityCheckResult {
   // Fail-closed fallback: the AST parser returns null on syntactically complex /
   // unparseable input, which previously let AST-only-blocked commands (useradd,
   // mkfs, mount, nc, …) pass unchecked when the parse was unavailable. Scan each
@@ -1041,7 +1042,14 @@ function validateASTCommands(command: string): SecurityCheckResult {
     }
   }
 
-  const ast = parseBashAST(command);
+  const ast = parseBashAST(command, budget);
+  // Fail-CLOSED on an aborted parse: the parser ran but exhausted its resource
+  // budget (node count / wall-clock timeout) or threw on pathological input.
+  // Such a command cannot be statically analyzed, so block it rather than fall
+  // through to the permissive "no AST → pass" path (parity: Claude PARSE_ABORTED).
+  if (ast === PARSE_ABORTED) {
+    return fail(CHECK_IDS.PARSE_ABORTED, 'Command too complex to statically analyze (parser aborted on resource budget) — blocked');
+  }
   if (!ast) return PASS;
 
   const commands = extractCommands(ast);

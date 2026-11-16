@@ -158,8 +158,11 @@ export const exitWorktreeTool: ToolDefinition = {
       };
     }
 
-    // TOCTOU: re-count change state at execution time.
-    const changes = countWorktreeChanges(worktreePath, worktreePath);
+    // TOCTOU: re-count change state at execution time. Pass the session's base
+    // commit so unpushed commits are counted as the precise session delta
+    // (originalHeadCommit..HEAD) rather than the remote-based count, which would
+    // over-count pre-existing local-only base commits and wrongly refuse remove.
+    const changes = countWorktreeChanges(worktreePath, worktreePath, { baseCommit: existing?.originalHeadCommit });
     // What the user will lose if we proceed. For "merge", the committed/unpushed
     // work is NOT a loss — it is exactly what gets merged — so only uncommitted
     // files are at risk and require discard_changes. For "remove", both

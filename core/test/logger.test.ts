@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, fsHooks, __resetLoggerForTest } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // getLogPath
@@ -304,5 +304,282 @@ describe('logger hardening', () => {
 
     assert.ok(!written.includes(token), 'secret in tool input/output must not be written');
     assert.ok(written.includes('[REDACTED]'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Severity levels + min-level verbosity gate (hermetic — fs seam mocked)
+// ---------------------------------------------------------------------------
+describe('log level filtering', () => {
+  const ORIG = { ...process.env };
+  function capture(): { written: string[] } {
+    const state = { written: [] as string[] };
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      state.written.push(String(data));
+    });
+    return state;
+  }
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DEBUG_LOG_LEVEL;
+    delete process.env.CLAUDE_CODE_DEBUG_LOG_LEVEL;
+    process.env = { ...ORIG };
+  });
+
+  it("stamps the severity in uppercase and defaults to [DEBUG]", () => {
+    __resetLoggerForTest();
+    const s = capture();
+    log('comp', 'hello');
+    assert.ok(s.written[0].includes('[DEBUG] [comp]'));
+  });
+
+  it("drops 'verbose' records by default (min level is 'debug')", () => {
+    __resetLoggerForTest();
+    const s = capture();
+    log('comp', 'noisy', undefined, 'verbose');
+    assert.equal(s.written.length, 0);
+  });
+
+  it("AMI_DEBUG_LOG_LEVEL=verbose lets verbose records through", () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_LOG_LEVEL = 'verbose';
+    const s = capture();
+    log('comp', 'noisy', undefined, 'verbose');
+    assert.equal(s.written.length, 1);
+    assert.ok(s.written[0].includes('[VERBOSE]'));
+  });
+
+  it("AMI_DEBUG_LOG_LEVEL=warn suppresses debug/info but keeps errors", () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_LOG_LEVEL = 'WARN'; // case/space-insensitive
+    const s = capture();
+    log('comp', 'dbg', undefined, 'debug');
+    log('comp', 'nfo', undefined, 'info');
+    logError('comp', 'boom');
+    assert.equal(s.written.length, 1);
+    assert.ok(s.written[0].includes('[ERROR] [comp] ERROR: boom'));
+  });
+
+  it('falls back to the default on an invalid env value', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_LOG_LEVEL = 'bogus';
+    const s = capture();
+    log('comp', 'dbg', undefined, 'debug');
+    assert.equal(s.written.length, 1);
+  });
+
+  it('honors the Claude-compatible CLAUDE_CODE_DEBUG_LOG_LEVEL env', () => {
+    __resetLoggerForTest();
+    process.env.CLAUDE_CODE_DEBUG_LOG_LEVEL = 'error';
+    const s = capture();
+    log('comp', 'dbg', undefined, 'debug');
+    assert.equal(s.written.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Component allow-filter (AMI_DEBUG_COMPONENTS)
+// ---------------------------------------------------------------------------
+describe('component debug filter', () => {
+  const ORIG = { ...process.env };
+  function capture(): { written: string[] } {
+    const state = { written: [] as string[] };
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      state.written.push(String(data));
+    });
+    return state;
+  }
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DEBUG_COMPONENTS;
+    process.env = { ...ORIG };
+  });
+
+  it('only persists listed components when the filter is set', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = 'api, tool';
+    const s = capture();
+    log('api', 'kept');
+    log('tool', 'kept too');
+    log('memory', 'dropped');
+    assert.equal(s.written.length, 2);
+    assert.ok(s.written[0].includes('[api]'));
+    assert.ok(s.written[1].includes('[tool]'));
+  });
+
+  it("the '*' sentinel logs everything", () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = '*';
+    const s = capture();
+    log('anything', 'kept');
+    assert.equal(s.written.length, 1);
+  });
+
+  it('an empty/whitespace filter logs everything', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = ' , ';
+    const s = capture();
+    log('anything', 'kept');
+    assert.equal(s.written.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Destination override (AMI_DEBUG_FILE / AMI_DEBUG_LOGS_DIR / Claude env)
+// ---------------------------------------------------------------------------
+describe('log destination override', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DEBUG_FILE;
+    delete process.env.AMI_DEBUG_LOGS_DIR;
+    delete process.env.CLAUDE_CODE_DEBUG_LOGS_DIR;
+    process.env = { ...ORIG };
+  });
+
+  it('getLogPath reflects AMI_DEBUG_LOGS_DIR before init', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-logdir-'));
+    process.env.AMI_DEBUG_LOGS_DIR = dir;
+    try {
+      assert.equal(getLogPath(), path.join(dir, 'engine.log'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('CLAUDE_CODE_DEBUG_LOGS_DIR is honored as a fallback', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-logdir-'));
+    process.env.CLAUDE_CODE_DEBUG_LOGS_DIR = dir;
+    try {
+      assert.equal(getLogPath(), path.join(dir, 'engine.log'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('AMI_DEBUG_FILE overrides the full file path and wins over the dir env', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-logfile-'));
+    const file = path.join(dir, 'custom.log');
+    process.env.AMI_DEBUG_FILE = file;
+    process.env.AMI_DEBUG_LOGS_DIR = '/should/be/ignored';
+    try {
+      assert.equal(getLogPath(), file);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('actually writes to the overridden directory and mkdirs it', () => {
+    __resetLoggerForTest();
+    let mkdirTarget = '';
+    let appendTarget = '';
+    mock.method(fsHooks, 'mkdirSync', (p: fs.PathLike) => { mkdirTarget = String(p); return undefined as unknown as string; });
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (p: fs.PathOrFileDescriptor) => { appendTarget = String(p); });
+    process.env.AMI_DEBUG_LOGS_DIR = '/tmp/ami-override-xyz';
+    log('comp', 'hi');
+    assert.equal(mkdirTarget, '/tmp/ami-override-xyz');
+    assert.equal(appendTarget, path.join('/tmp/ami-override-xyz', 'engine.log'));
+    // getLogPath is now pinned to the resolved file for the session.
+    assert.equal(getLogPath(), path.join('/tmp/ami-override-xyz', 'engine.log'));
+  });
+
+  it('rotation targets the overridden file', () => {
+    __resetLoggerForTest();
+    const renamed: Array<[string, string]> = [];
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => ({ size: 10 * 1024 * 1024 }) as unknown as fs.Stats);
+    mock.method(fsHooks, 'renameSync', (a: fs.PathLike, b: fs.PathLike) => { renamed.push([String(a), String(b)]); });
+    mock.method(fsHooks, 'unlinkSync', () => undefined);
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+    process.env.AMI_DEBUG_FILE = '/tmp/ami-rot/custom.log';
+    log('big', 'overflow record');
+    assert.equal(renamed.length, 1);
+    assert.deepEqual(renamed[0], ['/tmp/ami-rot/custom.log', '/tmp/ami-rot/custom.log.prev']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// In-memory recent-errors ring buffer
+// ---------------------------------------------------------------------------
+describe('in-memory recent-errors ring', () => {
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+  });
+
+  it('captures errors (newest last) with a timestamp and component tag', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+    logError('engine', 'first');
+    logError('provider', 'second');
+    const errs = getInMemoryErrors();
+    assert.equal(errs.length, 2);
+    assert.ok(errs[0].error.includes('[engine] first'));
+    assert.ok(errs[1].error.includes('[provider] second'));
+    assert.ok(/\d{4}-\d{2}-\d{2}T/.test(errs[1].timestamp));
+  });
+
+  it('redacts secrets before storing them in the ring', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+    const secret = 'sk-ant-' + 'c'.repeat(40);
+    logError('provider', `auth failed ${secret}`);
+    const errs = getInMemoryErrors();
+    assert.ok(!errs[0].error.includes(secret));
+    assert.ok(errs[0].error.includes('[REDACTED]'));
+  });
+
+  it('captures the error even when the disk write is filtered out', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_COMPONENTS = 'nothing-matches';
+    let appended = 0;
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => { appended++; });
+    try {
+      logError('engine', 'while filtered');
+      assert.equal(appended, 0, 'disk write was filtered out');
+      assert.equal(getInMemoryErrors().length, 1, 'but the ring still captured it');
+    } finally {
+      delete process.env.AMI_DEBUG_COMPONENTS;
+    }
+  });
+
+  it('is bounded at 100 entries (oldest dropped)', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+    for (let i = 0; i < 150; i++) logError('e', `err-${i}`);
+    const errs = getInMemoryErrors();
+    assert.equal(errs.length, 100);
+    assert.ok(errs[0].error.includes('err-50'), 'oldest surviving is err-50');
+    assert.ok(errs[99].error.includes('err-149'), 'newest is err-149');
+  });
+
+  it('returns a defensive copy (mutating it does not corrupt the ring)', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+    logError('e', 'one');
+    const first = getInMemoryErrors();
+    first.push({ error: 'injected', timestamp: 'x' });
+    assert.equal(getInMemoryErrors().length, 1);
   });
 });

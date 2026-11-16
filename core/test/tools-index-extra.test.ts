@@ -17,7 +17,7 @@ import {
   getCronScheduler, resetCronScheduler,
   getCurrentTeam, resetTeam,
   resetTodos, getTodos,
-  parseBashAST, extractCommands, extractCommandsFromString,
+  parseBashAST, extractCommands, extractCommandsFromString, PARSE_ABORTED,
   shouldUseSandbox, getSandboxStatus, resetSandboxCache,
   isReadOnlyBashCommand, BashResultCache,
   normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace,
@@ -205,6 +205,11 @@ describe('re-exported functions via index', () => {
     assert.equal(typeof extractCommandsFromString, 'function');
     const cmds = extractCommandsFromString('ls -la');
     assert.ok(Array.isArray(cmds));
+  });
+
+  it('re-exports the PARSE_ABORTED sentinel and honours a parse budget', () => {
+    assert.equal(typeof PARSE_ABORTED, 'symbol');
+    assert.equal(parseBashAST('echo hi && ls', { timeoutMs: -1 }), PARSE_ABORTED);
   });
 
   it('shouldUseSandbox, getSandboxStatus, resetSandboxCache are callable', () => {

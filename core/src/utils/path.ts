@@ -4,9 +4,42 @@ import * as os from 'os';
 /**
  * Resolves `~` to the user's home directory, resolves relative paths against
  * the provided cwd, and normalizes the result.
+ *
+ * Hardening (Claude Code path-utility parity, all additive):
+ *   - `cwd` is optional and defaults to `process.cwd()`.
+ *   - Non-string arguments are rejected with a descriptive `TypeError`.
+ *   - NUL bytes in either argument are rejected (a `\0` can truncate a path at
+ *     the C/syscall boundary and slip past the lexical safety check).
+ *   - Empty / whitespace-only input short-circuits to the normalized cwd.
+ *   - The returned path is Unicode NFC-normalized so the containment boundary
+ *     is canonical (visually-identical paths compare equal).
+ *
+ * @throws {TypeError} if `filePath` or `cwd` is not a string
+ * @throws {Error} if `filePath` or `cwd` contains a NUL byte
  */
-export function expandPath(filePath: string, cwd: string): string {
-  let resolved = filePath;
+export function expandPath(filePath: string, cwd: string = process.cwd()): string {
+  // Input validation: reject non-string arguments with a descriptive TypeError.
+  if (typeof filePath !== 'string') {
+    throw new TypeError(`Path must be a string, received ${typeof filePath}`);
+  }
+  if (typeof cwd !== 'string') {
+    throw new TypeError(`cwd must be a string, received ${typeof cwd}`);
+  }
+
+  // Security: reject NUL bytes before any resolution. A NUL truncates the path
+  // at the syscall boundary, so "/safe\0/../../etc/passwd" would pass a lexical
+  // descendant check while the kernel opens "/safe".
+  if (filePath.includes('\0') || cwd.includes('\0')) {
+    throw new Error('Path contains null bytes');
+  }
+
+  // Empty / whitespace-only paths resolve to the normalized cwd.
+  const trimmed = filePath.trim();
+  if (trimmed === '') {
+    return path.normalize(cwd).normalize('NFC');
+  }
+
+  let resolved = trimmed;
 
   // Expand leading ~ to the home directory
   if (resolved === '~' || resolved.startsWith('~/') || resolved.startsWith('~\\')) {
@@ -18,7 +51,8 @@ export function expandPath(filePath: string, cwd: string): string {
     resolved = path.resolve(cwd, resolved);
   }
 
-  return path.normalize(resolved);
+  // NFC-normalize so the containment boundary is Unicode-canonical.
+  return path.normalize(resolved).normalize('NFC');
 }
 
 /**
@@ -28,8 +62,10 @@ export function expandPath(filePath: string, cwd: string): string {
  */
 export function isPathSafe(filePath: string, cwd: string): boolean {
   const resolved = expandPath(filePath, cwd);
-  const normalizedCwd = path.normalize(cwd);
-  const homeDir = path.normalize(os.homedir());
+  // NFC-normalize the boundaries so comparison matches the NFC-normalized
+  // `resolved` value (expandPath returns NFC) — a Unicode-canonical boundary.
+  const normalizedCwd = path.normalize(cwd).normalize('NFC');
+  const homeDir = path.normalize(os.homedir()).normalize('NFC');
 
   // The resolved path must be inside cwd or inside the home directory
   return isDescendant(resolved, normalizedCwd) || isDescendant(resolved, homeDir);
@@ -41,7 +77,7 @@ export function isPathSafe(filePath: string, cwd: string): boolean {
  */
 export function toRelativePath(filePath: string, cwd: string): string {
   const resolved = expandPath(filePath, cwd);
-  const normalizedCwd = path.normalize(cwd);
+  const normalizedCwd = path.normalize(cwd).normalize('NFC');
 
   if (isDescendant(resolved, normalizedCwd)) {
     return path.relative(normalizedCwd, resolved);
@@ -120,9 +156,9 @@ export function isPathWithin(childPath: string, parentPath: string, cwd: string 
  * with Claude Code's path rendering.
  */
 export function abbreviateHome(filePath: string, home: string = os.homedir()): string {
-  const normalizedHome = stripTrailingSep(path.normalize(home));
+  const normalizedHome = stripTrailingSep(path.normalize(home).normalize('NFC'));
   const hadTrailing = /[/\\]$/.test(filePath);
-  const normalized = path.normalize(filePath);
+  const normalized = path.normalize(filePath).normalize('NFC');
   const bare = stripTrailingSep(normalized);
 
   if (bare === normalizedHome) {
@@ -155,7 +191,7 @@ export function abbreviateHome(filePath: string, home: string = os.homedir()): s
  */
 export function displayPath(filePath: string, cwd: string, home: string = os.homedir()): string {
   const resolved = expandPath(filePath, cwd);
-  const normalizedCwd = path.normalize(cwd);
+  const normalizedCwd = path.normalize(cwd).normalize('NFC');
 
   if (isDescendant(resolved, normalizedCwd)) {
     const rel = path.relative(stripTrailingSep(normalizedCwd), resolved);

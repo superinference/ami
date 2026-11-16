@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock } from '../utils/file-lock';
-import { TEAM_LEAD_NAME } from './send-message';
+import { TEAM_LEAD_NAME, clearMailbox } from './send-message';
 import { PERMISSION_MODES, normalizePermissionMode, PermissionMode } from '../permissions';
 
 /** Max length of a user-supplied team name (mirrors Claude's identifier bounds). */
@@ -96,6 +96,66 @@ function persistTeam(): void {
   });
 }
 
+/**
+ * Guarded reader for a persisted team file. Returns the parsed {@link TeamFile},
+ * or null when the file is missing, unreadable, not valid JSON, or structurally
+ * invalid (missing name / leadAgentId / members array). Mirrors Claude Code's
+ * swarm `readTeamFile` (null on ENOENT / parse failure) so a resumed session
+ * degrades gracefully instead of throwing on a missing or corrupt team file.
+ */
+export function readTeamFile(dir: string): TeamFile | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(teamFilePath(dir), 'utf8');
+  } catch {
+    return null; // missing / unreadable
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null; // corrupt JSON
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const t = parsed as Partial<TeamFile>;
+  if (typeof t.name !== 'string' || typeof t.leadAgentId !== 'string' || !Array.isArray(t.members)) {
+    return null; // wrong shape
+  }
+  return t as TeamFile;
+}
+
+/**
+ * Recover a member record by its (case-sensitive) name. Returns null when the
+ * member is absent — e.g. it was removed from the team between sessions. Mirrors
+ * Claude Code's resume-time `members.find(m => m.name === agentName)` lookup with
+ * its explicit removed-member branch (callers tolerate the null rather than throw).
+ */
+export function findTeamMemberByName(team: TeamFile, name: string): TeamMember | null {
+  return team.members.find(m => m.name === name) ?? null;
+}
+
+/**
+ * Load a persisted team by name from a workspace. Returns the team plus its
+ * on-disk directory, or null when no readable/valid team file exists there. Used
+ * by the resumed-session reconnection path so team state survives a restart.
+ */
+export function loadTeamFromDisk(cwd: string, name: string): { team: TeamFile; dir: string } | null {
+  const dir = path.join(cwd, '.ami', 'teams', name);
+  const team = readTeamFile(dir);
+  if (!team) return null;
+  return { team, dir };
+}
+
+/**
+ * Rehydrate the in-memory team singleton from a loaded team file (resumed
+ * session). Exposed so reconnection logic can restore state after a process
+ * restart without re-creating directories.
+ */
+export function restoreTeam(team: TeamFile, dir: string): void {
+  currentTeam = team;
+  currentTeamDir = dir;
+}
+
 export const teamCreateTool: ToolDefinition = {
   name: 'team_create',
   description:
@@ -148,6 +208,25 @@ export const teamCreateTool: ToolDefinition = {
     // this name already exists (e.g. an orphan from a prior session), pick the
     // next free "name-N" so we never clobber another team's state.
     const teamsRoot = path.join(context.cwd, '.ami', 'teams');
+
+    // Resumed-session reconnection: if a team directory for this exact name already
+    // exists AND its persisted team file belongs to THIS session (same
+    // leadSessionId) with an intact lead member, rehydrate it in place instead of
+    // forking a renamed duplicate. This lets team state survive a process restart
+    // (parity: Claude Code's swarm reconnection on a resumed session). A foreign or
+    // orphaned dir (different session, or a corrupt/partial file whose lead member
+    // is unreadable) falls through to the unique-name fallback below.
+    const existing = loadTeamFromDisk(context.cwd, base);
+    if (existing && existing.team.leadSessionId === context.sessionId
+        && findTeamMemberByName(existing.team, TEAM_LEAD_NAME)) {
+      restoreTeam(existing.team, existing.dir);
+      return {
+        output: `Reconnected to existing team "${existing.team.name}" (resumed session). ` +
+          `Team file: ${teamFilePath(existing.dir)}. Lead agent id: ${existing.team.leadAgentId}. ` +
+          `${existing.team.members.length} member(s) restored.`,
+      };
+    }
+
     let name = base;
     let n = 1;
     while (fs.existsSync(path.join(teamsRoot, name))) {
@@ -219,6 +298,13 @@ export const teamDeleteTool: ToolDefinition = {
       const msg = err instanceof Error ? err.message : String(err);
       return { output: `Error: failed to remove team directory ${teamDir}: ${msg}`, isError: true };
     }
+    // Flush any queued inbox/relay messages for every team member so a future team
+    // that reuses a name never inherits stale messages, and a crashed teammate's
+    // undelivered queue does not leak (parity: Claude clears the inbox on disband).
+    for (const m of currentTeam.members) {
+      clearMailbox(m.name);
+    }
+
     currentTeam = null;
     currentTeamDir = null;
     return { output: `Team "${name}" deleted (directories cleaned up).` };

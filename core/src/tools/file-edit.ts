@@ -298,7 +298,7 @@ export async function writeEntireFile(
 
   const secrets = scanAddedSecrets(oldContent, content);
   if (secrets.length > 0) {
-    return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
+    return { output: `Warning: Potential secrets detected in content: ${secrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
   }
 
   const jsonErr = validateJsonEdit(resolved, oldContent, content);
@@ -431,7 +431,7 @@ async function applySequentialEdits(
 
   const secrets = scanAddedSecrets(rawContent, content);
   if (secrets.length > 0) {
-    return { output: `Warning: Potential secrets detected in edited content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
+    return { output: `Warning: Potential secrets detected in edited content: ${secrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
   }
 
   const jsonErr = validateJsonEdit(resolved, rawContent, content);
@@ -668,7 +668,7 @@ export const fileEditTool: ToolDefinition = {
         const replaced = content.split(normalizedOld).join(normalizedNew);
         const addedSecrets = scanAddedSecrets(content, replaced);
         if (addedSecrets.length > 0) {
-          return { output: `Warning: Potential secrets detected in edited content: ${addedSecrets.join(', ')}. Remove secrets before writing.`, isError: true };
+          return { output: `Warning: Potential secrets detected in edited content: ${addedSecrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
         }
         const jsonErr = validateJsonEdit(resolved, rawContent, replaced);
         if (jsonErr) return jsonErr;
@@ -695,7 +695,7 @@ export const fileEditTool: ToolDefinition = {
 
     const secrets = scanAddedSecrets(rawContent, newContent);
     if (secrets.length > 0) {
-      return { output: `Warning: Potential secrets detected in content: ${secrets.join(', ')}. Remove secrets before writing.`, isError: true };
+      return { output: `Warning: Potential secrets detected in content: ${secrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
     }
 
     await trackFileHistory(resolved, rawContent, context.cwd);

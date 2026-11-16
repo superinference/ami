@@ -180,7 +180,7 @@ export const gitCommitTool: ToolDefinition = {
 
     const secrets = scanForSecrets(message);
     if (secrets.length > 0) {
-      return { output: `Warning: Potential secrets detected in commit message: ${secrets.join(', ')}. Remove secrets before committing.`, isError: true };
+      return { output: `Warning: Potential secrets detected in commit message: ${secrets.map(s => s.label).join(', ')}. Remove secrets before committing.`, isError: true };
     }
 
     // Build the final commit message with trailer

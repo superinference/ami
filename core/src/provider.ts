@@ -17,7 +17,7 @@ import { createCerebras } from '@ai-sdk/cerebras';
 import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
-import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta } from './model-capabilities';
+import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
@@ -1738,7 +1738,10 @@ export async function* streamChatCompletion(
       messages: coreMessages,
       tools: toolsForModel,
       maxOutputTokens: fitOutputTokens(
-        config.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+        // When the caller omits maxTokens, use the model's conservative DEFAULT
+        // budget (Claude's getModelMaxOutputTokens().default) rather than a flat
+        // global constant, so each model sends its own sensible default.
+        config.maxTokens ?? getModelMaxOutputTokens(modelId).default,
         config.contextWindow ?? getContextWindow(modelId),
         promptTokensForFit(systemPrompt, sanitized, tools),
         modelId,

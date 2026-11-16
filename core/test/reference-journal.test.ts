@@ -11,7 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   COMPAT_VERSION,
-  resolveConfigDir, resolveReadDirs, migrateLegacyDataDir, projectSlug, journalPathFor, subagentJournalPathFor,
+  resolveConfigDir, resolveReadDirs, resolveHome, migrateLegacyDataDir, projectSlug, journalPathFor, subagentJournalPathFor,
   AMI_TO_CLAUDE_TOOL, toReferenceToolName, toReferenceModelId,
   buildUsageFields, buildAssistantEntry, buildUserEntry,
   appendEntry, dashboardConfigPath, registerDataDir, maybeRegisterDataDir,
@@ -38,12 +38,12 @@ describe('COMPAT_VERSION', () => {
 
 describe('resolveConfigDir', () => {
   it('precedence: CLAUDE_CONFIG_DIR > SUPERINFERENCE_DATA_DIR > ~/.ami', () => {
-    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '/a', SUPERINFERENCE_DATA_DIR: '/b' } as any), '/a');
-    assert.equal(resolveConfigDir({ SUPERINFERENCE_DATA_DIR: '/b' } as any), '/b');
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '/aaa', SUPERINFERENCE_DATA_DIR: '/bbb' } as any), '/aaa');
+    assert.equal(resolveConfigDir({ SUPERINFERENCE_DATA_DIR: '/bbb' } as any), '/bbb');
     assert.equal(resolveConfigDir({} as any), path.join(os.homedir(), '.ami'));
   });
   it('ignores empty / whitespace overrides', () => {
-    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '   ', SUPERINFERENCE_DATA_DIR: '/b' } as any), '/b');
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '   ', SUPERINFERENCE_DATA_DIR: '/bbb' } as any), '/bbb');
     assert.equal(resolveConfigDir({ SUPERINFERENCE_DATA_DIR: '' } as any), path.join(os.homedir(), '.ami'));
   });
   it('expands a leading ~ in an override (gh-30794: env values are not shell-expanded)', () => {
@@ -55,12 +55,75 @@ describe('resolveConfigDir', () => {
     // a non-tilde value is untouched (no literal '~' dir, no change in contract)
     assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '/abs/dir' } as any), '/abs/dir');
   });
+
+  it('rejects a dangerous override and falls back to the next source (parity: validateMemoryPath)', () => {
+    // relative → interpreted against cwd; must be rejected, falls through to the data-dir override
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '../evil', SUPERINFERENCE_DATA_DIR: '/safe/dir' } as any), '/safe/dir');
+    // root / near-root (length < 3): both rejected → default ~/.ami
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '/', SUPERINFERENCE_DATA_DIR: '/a' } as any), path.join(os.homedir(), '.ami'));
+    // UNC / network path → rejected
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '//server/share' } as any), path.join(os.homedir(), '.ami'));
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '\\\\server\\share' } as any), path.join(os.homedir(), '.ami'));
+    // embedded NUL → rejected
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '/tmp/ev\0il' } as any), path.join(os.homedir(), '.ami'));
+  });
+
+  it('logs the rejection of a dangerous override (never silently redirects state)', () => {
+    __resetLoggerForTest();
+    const lines: string[] = [];
+    const spy = mock.method(loggerFsHooks, 'appendFileSync', (_f: unknown, line: unknown) => { lines.push(String(line)); });
+    try {
+      // unique relative value → unique memo key, so the rejection path actually runs
+      assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: 'rel-' + Date.now() } as any), path.join(os.homedir(), '.ami'));
+    } finally {
+      spy.mock.restore();
+    }
+    assert.ok(lines.some(l => l.includes('rejecting dangerous CLAUDE_CONFIG_DIR override')), 'rejection is logged');
+  });
+
+  it('NFC-normalizes the resolved override (parity: getClaudeConfigHomeDir)', () => {
+    // 'e' + combining acute (NFD) must normalize to the single NFC codepoint
+    const nfd = '/tmp/caf\u0065\u0301-dir'; // e + combining acute U+0301 (NFD)
+    const nfc = '/tmp/caf\u00e9-dir';       // single codepoint U+00E9 (NFC)
+    assert.notEqual(nfd, nfc); // inputs differ byte-wise
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: nfd } as any), nfc);
+  });
+
+  it('memoizes per env (changed env value refreshes without a manual clear)', () => {
+    const a = resolveConfigDir({ CLAUDE_CONFIG_DIR: '/memo/aaa' } as any);
+    const b = resolveConfigDir({ CLAUDE_CONFIG_DIR: '/memo/aaa' } as any);
+    assert.equal(a, b);
+    assert.equal(a, '/memo/aaa');
+    // a different value yields a different (fresh) result
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '/memo/bbb' } as any), '/memo/bbb');
+  });
+
+  it('honors an injected homedir and env.HOME for the default dir (test seam / HOME precedence)', () => {
+    // injected homedir wins over everything
+    assert.equal(resolveConfigDir({} as any, '/injected/home'), path.join('/injected/home', '.ami'));
+    // env.HOME is preferred over os.homedir() when no override/injection is given
+    assert.equal(resolveConfigDir({ HOME: '/env/home' } as any), path.join('/env/home', '.ami'));
+    // a ~ override expands against the injected home
+    assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: '~/cfg' } as any, '/injected/home'), path.join('/injected/home', 'cfg'));
+  });
+});
+
+describe('resolveHome (HOME-aware home resolution, parity: xdg.ts resolveOptions)', () => {
+  it('prefers an injected homedir, then env.HOME, then os.homedir()', () => {
+    assert.equal(resolveHome({ HOME: '/env/home' } as any, '/injected'), '/injected');
+    assert.equal(resolveHome({ HOME: '/env/home' } as any), '/env/home');
+    assert.equal(resolveHome({} as any), os.homedir());
+  });
+  it('treats an empty / whitespace HOME as unset', () => {
+    assert.equal(resolveHome({ HOME: '   ' } as any), os.homedir());
+    assert.equal(resolveHome({ HOME: '' } as any), os.homedir());
+  });
 });
 
 describe('resolveReadDirs (cross-agent spend aggregation)', () => {
   it('an explicit override is authoritative (single root, deterministic)', () => {
-    assert.deepEqual(resolveReadDirs({ CLAUDE_CONFIG_DIR: '/x' } as any), ['/x']);
-    assert.deepEqual(resolveReadDirs({ SUPERINFERENCE_DATA_DIR: '/y' } as any), ['/y']);
+    assert.deepEqual(resolveReadDirs({ CLAUDE_CONFIG_DIR: '/xxx' } as any), ['/xxx']);
+    assert.deepEqual(resolveReadDirs({ SUPERINFERENCE_DATA_DIR: '/yyy' } as any), ['/yyy']);
   });
   it('expands a leading ~ in the authoritative override (parity with resolveConfigDir)', () => {
     assert.deepEqual(resolveReadDirs({ CLAUDE_CONFIG_DIR: '~/ami' } as any), [path.join(os.homedir(), 'ami')]);

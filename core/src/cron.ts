@@ -333,6 +333,18 @@ export class CronScheduler {
     return this.jobs.get(id);
   }
 
+  /** Epoch ms of the soonest scheduled fire across all loaded jobs, or null when
+   *  nothing is pending (no jobs, or none with a computed nextRun). Lets a caller
+   *  decide whether to keep an idle session warm for an imminent fire or let it go
+   *  idle. Mirrors Claude's createCronScheduler().getNextFireTime(). */
+  getNextFireTime(): number | null {
+    let min = Infinity;
+    for (const job of this.jobs.values()) {
+      if (typeof job.nextRun === 'number' && job.nextRun < min) min = job.nextRun;
+    }
+    return min === Infinity ? null : min;
+  }
+
   getDueJobs(): CronJob[] {
     const now = Date.now();
     const due: CronJob[] = [];
@@ -360,7 +372,7 @@ export class CronScheduler {
     return Math.floor(norm * this.jitterConfig.oneShotMaxMs);
   }
 
-  markRun(id: string): void {
+  markRun(id: string, deferSave = false): void {
     const job = this.jobs.get(id);
     if (!job) return;
     job.lastRun = Date.now();
@@ -380,7 +392,9 @@ export class CronScheduler {
       // One-shot, or a recurring job that has used up its run budget → remove it.
       this.jobs.delete(id);
     }
-    this.saveDurable();
+    // Callers firing several jobs in one tick pass deferSave=true and persist
+    // once afterwards (batched write); single-fire callers persist immediately.
+    if (!deferSave) this.saveDurable();
   }
 
   /** computeNextRun that never throws — returns null on invalid/no-match. Used
@@ -404,14 +418,27 @@ export class CronScheduler {
    *  is deferred while the session is busy (mid-turn) so a cron never interrupts
    *  in-flight work — the job stays due and fires on a later tick. */
   private tick(onDue: (job: CronJob) => void): void {
+    // Mid-session kill-switch: the operator may flip the disable env var AFTER
+    // the scheduler started. Poll it every tick so an already-running scheduler
+    // stops firing (and ageing) the moment the gate flips, without being torn
+    // down — the timer keeps running and firing resumes if the gate clears.
+    // Mirrors Claude's isKilled() option (polled once per check() tick).
+    if (CronScheduler.isDisabled()) return;
     this.expireOld(onDue);
     if (this.busyCheck?.()) return;
     const due = this.getDueJobs();
+    // Batched fire-stamp persistence: N durable fires in one tick coalesce into
+    // a single saveDurable() write instead of one write per fired job. markRun is
+    // called with deferSave=true so the schedule mutations accumulate in memory,
+    // then one write persists them all at the end of the tick.
+    let durableFired = false;
     for (const job of due) {
       if (job.durable && !this.acquireLock()) continue;
-      this.markRun(job.id);
+      if (job.durable) durableFired = true;
+      this.markRun(job.id, true);
       onDue(job);
     }
+    if (durableFired) this.saveDurable();
   }
 
   stopTicker(): void {

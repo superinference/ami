@@ -32,6 +32,15 @@ export type FetchLike = (url: string, init?: {
 export const OAUTH_HTTP_TIMEOUT_MS = 30_000;
 
 /**
+ * Fallback access-token lifetime (seconds) when a token response omits
+ * `expires_in` AND the access token is not a JWT carrying an `exp` claim. Without
+ * this a tokenless-of-expiry grant would be treated as never-expiring and only a
+ * reactive 401 would ever refresh it; a sane default keeps such tokens on a
+ * proactive refresh/expiry schedule (parity with Claude's 3600s default).
+ */
+export const DEFAULT_TOKEN_LIFETIME_SEC = 3600;
+
+/**
  * Transport-downgrade guard. OAuth carries bearer tokens, authorization codes
  * and client secrets, so every issuer/discovery/authorization/token endpoint
  * MUST be https. Plaintext http is tolerated ONLY for loopback (local dev auth
@@ -155,6 +164,10 @@ export interface AuthServerMetadata {
   tokenEndpoint: string;
   registrationEndpoint?: string;
   scopesSupported?: string[];
+  /** Non-standard single `scope` string some providers advertise. */
+  scope?: string;
+  /** Non-standard `default_scope` string some providers advertise. */
+  defaultScope?: string;
   codeChallengeMethodsSupported?: string[];
 }
 
@@ -300,6 +313,20 @@ export function unionScopes(...scopes: Array<string | undefined>): string | unde
 }
 
 /**
+ * Resolve a requested scope string from authorization-server metadata, covering
+ * providers that advertise it in different fields. Tries the non-standard `scope`,
+ * then the non-standard `default_scope`, then the standard `scopes_supported`
+ * (space-joined). Returns undefined when none is present.
+ */
+export function resolveScopeFromMetadata(meta: AuthServerMetadata | null | undefined): string | undefined {
+  if (!meta) return undefined;
+  if (typeof meta.scope === 'string' && meta.scope) return meta.scope;
+  if (typeof meta.defaultScope === 'string' && meta.defaultScope) return meta.defaultScope;
+  if (meta.scopesSupported && meta.scopesSupported.length) return meta.scopesSupported.join(' ');
+  return undefined;
+}
+
+/**
  * Build a `.well-known` discovery URL (RFC 8414 §3.1 / RFC 9728 §3.1). The
  * `.well-known/<suffix>` segment is INSERTED between the host and any issuer
  * path component rather than replacing the path, so an issuer with a path
@@ -336,9 +363,26 @@ export async function discoverProtectedResource(
   };
 }
 
-/** RFC 8414 — fetch authorization-server metadata from an issuer URL. */
-export async function discoverAuthServer(fetchImpl: FetchLike, issuer: string): Promise<AuthServerMetadata> {
-  const doc = await getJson(fetchImpl, wellKnown(issuer, 'oauth-authorization-server'));
+/**
+ * RFC 8414 — fetch authorization-server metadata.
+ *
+ * By default the metadata is discovered at the issuer's well-known URL. When
+ * `explicitMetadataUrl` is supplied (a server-pinned `authServerMetadataUrl`), it
+ * is fetched directly instead — supporting servers whose AS metadata lives at a
+ * non-conventional URL. A pinned URL MUST be https:// (no loopback exception: it
+ * is an operator-configured value, not a discovered one) and, being explicitly
+ * trusted, bypasses the RFC 8414 §3.3 issuer mix-up check (the operator asserts
+ * the mapping). Discovered metadata still enforces the issuer-match guard.
+ */
+export async function discoverAuthServer(
+  fetchImpl: FetchLike,
+  issuer: string,
+  explicitMetadataUrl?: string,
+): Promise<AuthServerMetadata> {
+  if (explicitMetadataUrl !== undefined && !explicitMetadataUrl.startsWith('https://')) {
+    throw new Error(`authServerMetadataUrl must use https:// (got: ${explicitMetadataUrl})`);
+  }
+  const doc = await getJson(fetchImpl, explicitMetadataUrl ?? wellKnown(issuer, 'oauth-authorization-server'));
   const authorizationEndpoint = doc.authorization_endpoint;
   const tokenEndpoint = doc.token_endpoint;
   if (typeof authorizationEndpoint !== 'string' || typeof tokenEndpoint !== 'string') {
@@ -348,15 +392,18 @@ export async function discoverAuthServer(fetchImpl: FetchLike, issuer: string): 
   // metadata before we ever POST credentials or redirect for consent.
   assertSecureUrl(authorizationEndpoint, 'authorization endpoint');
   assertSecureUrl(tokenEndpoint, 'token endpoint');
-  // RFC 8414 §3.3 mix-up protection: a metadata document must not self-describe
-  // as a different issuer than the one we fetched it from.
-  if (typeof doc.issuer === 'string') assertIssuerMatch(doc.issuer, issuer);
+  // RFC 8414 §3.3 mix-up protection: a DISCOVERED metadata document must not
+  // self-describe as a different issuer than the one we fetched it from. A pinned
+  // metadata URL is operator-trusted, so the check is skipped for it.
+  if (explicitMetadataUrl === undefined && typeof doc.issuer === 'string') assertIssuerMatch(doc.issuer, issuer);
   return {
     issuer: typeof doc.issuer === 'string' ? doc.issuer : issuer,
     authorizationEndpoint,
     tokenEndpoint,
     registrationEndpoint: typeof doc.registration_endpoint === 'string' ? doc.registration_endpoint : undefined,
     scopesSupported: Array.isArray(doc.scopes_supported) ? (doc.scopes_supported as string[]) : undefined,
+    scope: typeof doc.scope === 'string' ? doc.scope : undefined,
+    defaultScope: typeof doc.default_scope === 'string' ? doc.default_scope : undefined,
     codeChallengeMethodsSupported: Array.isArray(doc.code_challenge_methods_supported)
       ? (doc.code_challenge_methods_supported as string[]) : undefined,
   };
@@ -395,6 +442,8 @@ export function buildAuthorizationUrl(params: {
   codeChallenge: string;
   state: string;
   scope?: string;
+  /** Optional OIDC `login_hint` to pre-fill the user identity on the consent screen. */
+  loginHint?: string;
 }): string {
   const u = new URL(params.authorizationEndpoint);
   u.searchParams.set('response_type', 'code');
@@ -405,16 +454,25 @@ export function buildAuthorizationUrl(params: {
   u.searchParams.set('state', params.state);
   u.searchParams.set('resource', params.resource); // RFC 8707
   if (params.scope) u.searchParams.set('scope', params.scope);
+  // Standard OIDC parameter: pre-populate the identity on the provider's login
+  // form so the consent screen is not a cold start.
+  if (params.loginHint) u.searchParams.set('login_hint', params.loginHint);
   return u.toString();
 }
 
 function toTokens(doc: Record<string, unknown>, now: number): OAuthTokens {
   if (typeof doc.access_token !== 'string') throw new Error('token response missing access_token');
   const expiresIn = typeof doc.expires_in === 'number' ? doc.expires_in : undefined;
-  // Prefer the server-supplied expires_in; when it is absent, fall back to the
-  // access token's own JWT `exp` claim so a JWT that omits expires_in is still
-  // treated as expiring (and refreshed) rather than valid forever.
-  const expiresAt = expiresIn !== undefined ? now + expiresIn * 1000 : decodeJwtExpiry(doc.access_token);
+  // Expiry resolution, in precedence order:
+  //   1. the server-supplied `expires_in`;
+  //   2. else the access token's own JWT `exp` claim (a JWT that omits expires_in
+  //      is still treated as expiring rather than valid forever);
+  //   3. else a DEFAULT_TOKEN_LIFETIME_SEC fallback so an opaque token lacking
+  //      both is still proactively refreshed on a sane schedule instead of being
+  //      treated as never-expiring (only a reactive 401 would recover it).
+  const expiresAt = expiresIn !== undefined
+    ? now + expiresIn * 1000
+    : (decodeJwtExpiry(doc.access_token) ?? now + DEFAULT_TOKEN_LIFETIME_SEC * 1000);
   return {
     accessToken: doc.access_token,
     tokenType: typeof doc.token_type === 'string' ? doc.token_type : 'Bearer',
@@ -463,10 +521,13 @@ export function exchangeCode(
 }
 
 /** Exchange a refresh token for fresh tokens.
- *  A `clientSecret` is included for confidential clients. */
+ *  A `clientSecret` is included for confidential clients.
+ *  An optional `scope` is sent to request a narrower (or server-permitting
+ *  broader) scope set on the refreshed grant (RFC 6749 §6); some authorization
+ *  servers otherwise drop previously-granted scopes on refresh. */
 export function refreshToken(
   fetchImpl: FetchLike,
-  params: { tokenEndpoint: string; refreshToken: string; clientId: string; resource: string; clientSecret?: string },
+  params: { tokenEndpoint: string; refreshToken: string; clientId: string; resource: string; clientSecret?: string; scope?: string },
   now: number,
 ): Promise<OAuthTokens> {
   const form: Record<string, string> = {
@@ -476,6 +537,7 @@ export function refreshToken(
     resource: params.resource,
   };
   if (params.clientSecret) form.client_secret = params.clientSecret;
+  if (params.scope) form.scope = params.scope;
   return postForm(fetchImpl, params.tokenEndpoint, form, now);
 }
 
@@ -582,6 +644,14 @@ export interface McpOAuthSessionOptions {
   /** Confidential-client secret (RFC 6749). Sent on token/refresh exchanges when set. */
   clientSecret?: string;
   scope?: string;
+  /**
+   * Pin the authorization-server metadata URL (RFC 8414), bypassing well-known
+   * discovery for servers whose AS metadata lives at a non-conventional URL. MUST
+   * be https://. When set, the operator-trusted URL is fetched directly.
+   */
+  authServerMetadataUrl?: string;
+  /** Optional OIDC `login_hint` pre-filled on the provider consent screen. */
+  loginHint?: string;
   /** Clock seam (epoch ms). Defaults to Date.now. */
   now?: () => number;
   store?: OAuthTokenStore;
@@ -660,6 +730,9 @@ export class McpOAuthSession implements McpOAuthProvider {
           clientId,
           clientSecret,
           resource: this.resource,
+          // RFC 6749 §6: carry the configured scope across the refresh so servers
+          // that would otherwise drop previously-granted scopes preserve them.
+          scope: this.opts.scope,
         }, this.now()),
         { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
       );
@@ -708,7 +781,7 @@ export class McpOAuthSession implements McpOAuthProvider {
       this.resource = prm.resource;
       const issuer = prm.authorizationServers[0];
       assertSecureUrl(issuer, 'authorization server issuer');
-      this.authMeta = await discoverAuthServer(this.fetch, issuer);
+      this.authMeta = await discoverAuthServer(this.fetch, issuer, this.opts.authServerMetadataUrl);
 
       const redirectUri = await this.getRedirectUri();
       if (!this.effectiveClientId) {
@@ -721,7 +794,14 @@ export class McpOAuthSession implements McpOAuthProvider {
 
       const pkce = generatePkce();
       const state = generateState();
-      const scope = unionScopes(this.opts.scope ?? prm.scopesSupported?.join(' '), requiredScope);
+      // Scope precedence: an explicitly configured scope wins; else resolve from
+      // the authorization-server metadata (scope / default_scope / scopes_supported);
+      // else fall back to the protected-resource metadata's advertised scopes. Any
+      // 403 step-up `requiredScope` is unioned in so re-consent covers it.
+      const scope = unionScopes(
+        this.opts.scope ?? resolveScopeFromMetadata(this.authMeta) ?? prm.scopesSupported?.join(' '),
+        requiredScope,
+      );
       const authorizationUrl = buildAuthorizationUrl({
         authorizationEndpoint: this.authMeta.authorizationEndpoint,
         clientId: this.effectiveClientId,
@@ -730,6 +810,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         codeChallenge: pkce.challenge,
         state,
         scope,
+        loginHint: this.opts.loginHint,
       });
       const authResult = await this.opts.authorize({ authorizationUrl, redirectUri, state });
       // RFC 6749 §10.12 CSRF protection: if the consent leg echoes the callback

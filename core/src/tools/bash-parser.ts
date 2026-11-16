@@ -31,6 +31,62 @@ const MAX_COMMAND_LENGTH = 10_000;
  */
 const MAX_PARSE_DEPTH = 50;
 
+/**
+ * SECURITY: Sentinel for "the parser ran but ABORTED" — it exhausted a resource
+ * budget (node count or wall-clock timeout) or threw on pathological/adversarial
+ * input. It is DISTINCT from `null` (empty / over-length / genuinely unparseable):
+ * callers MUST treat `PARSE_ABORTED` as fail-CLOSED ("too complex to analyze →
+ * block"), never route it to the permissive "parse-unavailable → PASS" path.
+ * Mirrors Claude Code's PARSE_ABORTED symbol (utils/bash/parser.ts).
+ */
+export const PARSE_ABORTED: unique symbol = Symbol('parse-aborted');
+
+/**
+ * Wall-clock parse budget (ms). Bails out on pathological/adversarial input so a
+ * single command can't stall the security gate. Override per call via the
+ * `timeoutMs` budget option; pass `Infinity` to disable (e.g. correctness tests
+ * where CI jitter could otherwise cause a spurious abort). Mirrors Claude's
+ * PARSE_TIMEOUT_MS=50.
+ */
+const PARSE_TIMEOUT_MS = 50;
+
+/**
+ * Node-count budget. Bails out before OOM/stack blow-ups on input that produces
+ * an abnormally large AST. Override per call via the `maxNodes` budget option.
+ * Mirrors Claude's MAX_NODES=50_000.
+ */
+const MAX_NODES = 50_000;
+
+/** Per-call resource budget for {@link parseBashAST}. Both knobs are optional. */
+export interface ParseBudget {
+  /** Wall-clock cap in ms (default {@link PARSE_TIMEOUT_MS}; `Infinity` disables). */
+  timeoutMs?: number;
+  /** Max AST nodes before fail-closed abort (default {@link MAX_NODES}). */
+  maxNodes?: number;
+}
+
+interface ParseState {
+  nodeCount: number;
+  maxNodes: number;
+  deadline: number;
+}
+
+/** Thrown internally when a {@link ParseBudget} is exceeded; caught at the top. */
+class ParseBudgetExceeded extends Error {}
+
+/**
+ * Charge one AST node against the budget. Called at every node-producing site so
+ * both the node-count and wall-clock caps bound the total parse work. Throws
+ * {@link ParseBudgetExceeded} (unwinds to {@link parseBashAST}, which maps it to
+ * {@link PARSE_ABORTED}) when either budget is exhausted.
+ */
+function countNode(state: ParseState): void {
+  state.nodeCount++;
+  if (state.nodeCount > state.maxNodes || performance.now() > state.deadline) {
+    throw new ParseBudgetExceeded();
+  }
+}
+
 // Shell keywords/control-structure tokens. A keyword that leads a simple-command
 // node means the node's real command is hidden behind it (e.g. `then nc …`,
 // `do socat …`, `{ insmod …`). extractCommands uses these sets to recover the
@@ -156,9 +212,10 @@ class BashLexer {
   getRemaining(): string { return this.input.slice(this.pos); }
 }
 
-function parseSimpleCommand(lexer: BashLexer, depth: number): CommandNode | null {
+function parseSimpleCommand(lexer: BashLexer, depth: number, state: ParseState): CommandNode | null {
   lexer.skipWhitespace();
   if (lexer.isAtEnd()) return null;
+  countNode(state);
 
   const p = lexer.peek();
 
@@ -168,7 +225,7 @@ function parseSimpleCommand(lexer: BashLexer, depth: number): CommandNode | null
     // Fail-closed recursion budget: past the cap, emit the subshell node WITHOUT
     // descending, so excessive-nesting detection still fires but we never risk a
     // stack-overflow RangeError on adversarial `((((…))))` input.
-    const children = depth >= MAX_PARSE_DEPTH ? null : parseBashASTInternal(inner, depth + 1);
+    const children = depth >= MAX_PARSE_DEPTH ? null : parseBashASTInternal(inner, depth + 1, state);
     return {
       type: 'subshell',
       children: children ? [children] : [],
@@ -180,7 +237,7 @@ function parseSimpleCommand(lexer: BashLexer, depth: number): CommandNode | null
     lexer.advance(); // $
     lexer.advance(); // (
     const inner = lexer.readUntilCloseParen();
-    const children = depth >= MAX_PARSE_DEPTH ? null : parseBashASTInternal(inner, depth + 1);
+    const children = depth >= MAX_PARSE_DEPTH ? null : parseBashASTInternal(inner, depth + 1, state);
     return {
       type: 'command_substitution',
       children: children ? [children] : [],
@@ -224,8 +281,8 @@ function parseSimpleCommand(lexer: BashLexer, depth: number): CommandNode | null
   };
 }
 
-function parsePipeline(lexer: BashLexer, depth: number): CommandNode | null {
-  const first = parseSimpleCommand(lexer, depth);
+function parsePipeline(lexer: BashLexer, depth: number, state: ParseState): CommandNode | null {
+  const first = parseSimpleCommand(lexer, depth, state);
   if (!first) return null;
 
   const pipelineCommands: CommandNode[] = [first];
@@ -234,7 +291,7 @@ function parsePipeline(lexer: BashLexer, depth: number): CommandNode | null {
     const p = lexer.peek();
     if (p === '|' && lexer.peekTwo() !== '||') {
       lexer.advance(); // consume |
-      const next = parseSimpleCommand(lexer, depth);
+      const next = parseSimpleCommand(lexer, depth, state);
       if (next) pipelineCommands.push(next);
     } else {
       break;
@@ -243,6 +300,7 @@ function parsePipeline(lexer: BashLexer, depth: number): CommandNode | null {
 
   if (pipelineCommands.length === 1) return pipelineCommands[0];
 
+  countNode(state);
   return {
     type: 'pipeline',
     children: pipelineCommands,
@@ -250,8 +308,8 @@ function parsePipeline(lexer: BashLexer, depth: number): CommandNode | null {
   };
 }
 
-function parseList(lexer: BashLexer, depth: number): CommandNode | null {
-  const first = parsePipeline(lexer, depth);
+function parseList(lexer: BashLexer, depth: number, state: ParseState): CommandNode | null {
+  const first = parsePipeline(lexer, depth, state);
   if (!first) return null;
 
   const listItems: CommandNode[] = [first];
@@ -265,17 +323,17 @@ function parseList(lexer: BashLexer, depth: number): CommandNode | null {
       operators.push(pp);
       lexer.advance();
       lexer.advance();
-      const next = parsePipeline(lexer, depth);
+      const next = parsePipeline(lexer, depth, state);
       if (next) listItems.push(next);
     } else if (p === ';' || p === '\n') {
       operators.push(';');
       lexer.advance();
-      const next = parsePipeline(lexer, depth);
+      const next = parsePipeline(lexer, depth, state);
       if (next) listItems.push(next);
     } else if (p === '&') {
       operators.push('&');
       lexer.advance();
-      const next = parsePipeline(lexer, depth);
+      const next = parsePipeline(lexer, depth, state);
       if (next) listItems.push(next);
     } else if (p === ')') {
       // A `)` surfacing at list level is a case-pattern terminator (e.g.
@@ -285,7 +343,7 @@ function parseList(lexer: BashLexer, depth: number): CommandNode | null {
       // and stays visible to AST-based security checks instead of being dropped.
       operators.push(';');
       lexer.advance();
-      const next = parsePipeline(lexer, depth);
+      const next = parsePipeline(lexer, depth, state);
       if (next) listItems.push(next);
     } else {
       break;
@@ -294,6 +352,7 @@ function parseList(lexer: BashLexer, depth: number): CommandNode | null {
 
   if (listItems.length === 1) return listItems[0];
 
+  countNode(state);
   return {
     type: 'list',
     children: listItems,
@@ -302,18 +361,46 @@ function parseList(lexer: BashLexer, depth: number): CommandNode | null {
   };
 }
 
-function parseBashASTInternal(input: string, depth: number): CommandNode | null {
+function parseBashASTInternal(input: string, depth: number, state: ParseState): CommandNode | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
   // Input-length cap (DoS defense): refuse to parse pathologically long input.
   if (trimmed.length > MAX_COMMAND_LENGTH) return null;
 
   const lexer = new BashLexer(trimmed);
-  return parseList(lexer, depth);
+  return parseList(lexer, depth, state);
 }
 
-export function parseBashAST(input: string): CommandNode | null {
-  return parseBashASTInternal(input, 0);
+/**
+ * Parse a bash command into an AST.
+ *
+ * Returns:
+ *   - {@link CommandNode}: parse succeeded.
+ *   - `null`: empty / whitespace-only / over-length input (nothing to analyze).
+ *   - {@link PARSE_ABORTED}: the parse ran but exhausted a {@link ParseBudget}
+ *     (node count / wall-clock timeout) or threw on pathological input — callers
+ *     MUST treat this fail-CLOSED (too complex → block), never as "no AST → pass".
+ *
+ * `budget` tunes the per-call resource caps (defaults {@link PARSE_TIMEOUT_MS} /
+ * {@link MAX_NODES}; pass `{ timeoutMs: Infinity }` to disable the wall-clock cap).
+ */
+export function parseBashAST(
+  input: string,
+  budget?: ParseBudget,
+): CommandNode | null | typeof PARSE_ABORTED {
+  const state: ParseState = {
+    nodeCount: 0,
+    maxNodes: budget?.maxNodes ?? MAX_NODES,
+    deadline: performance.now() + (budget?.timeoutMs ?? PARSE_TIMEOUT_MS),
+  };
+  try {
+    return parseBashASTInternal(input, 0, state);
+  } catch {
+    // Budget exhausted OR any unexpected parser throw on adversarial input:
+    // fail CLOSED with the sentinel so the security gate blocks rather than
+    // silently passing an un-analyzable command.
+    return PARSE_ABORTED;
+  }
 }
 
 /**
@@ -357,8 +444,11 @@ export function extractCommands(node: CommandNode): string[] {
   return commands;
 }
 
-export function extractCommandsFromString(input: string): string[] {
-  const ast = parseBashAST(input);
-  if (!ast) return [];
+export function extractCommandsFromString(input: string, budget?: ParseBudget): string[] {
+  const ast = parseBashAST(input, budget);
+  // No AST (empty/over-length) OR an aborted parse → nothing statically
+  // extractable. The abort case is surfaced as a hard block by the security
+  // gate (validateCompoundCommand), not here, so extraction stays total.
+  if (!ast || ast === PARSE_ABORTED) return [];
   return extractCommands(ast);
 }
