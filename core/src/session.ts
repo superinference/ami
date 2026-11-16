@@ -153,8 +153,18 @@ const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
  * Returns `'(no messages)'` when nothing meaningful exists. Result is collapsed
  * to one line and capped at 100 chars with an ellipsis.
  */
-export function extractMeaningfulPreview(messages: Message[]): string {
+/**
+ * Single forward pass that collects every meaningful user prompt (in order) from
+ * a transcript plus the first slash-command name as a fallback label. The ONE
+ * canonical extractor shared by both {@link extractMeaningfulPreview} (takes the
+ * FIRST prompt) and {@link extractLastPrompt} (takes the LAST) so the two can
+ * never diverge in their skip/normalization rules (§0b.6 — no duplicated label
+ * logic). Each returned prompt is already whitespace-collapsed and (for non-bash
+ * turns) capped at 100 chars with an ellipsis.
+ */
+function collectMeaningfulPrompts(messages: Message[]): { prompts: string[]; commandFallback: string } {
   let commandFallback = '';
+  const prompts: string[] = [];
   for (const msg of messages) {
     if (msg.role !== 'user') continue;
     const m = msg as { isMeta?: boolean; isSidechain?: boolean; isVisibleInTranscriptOnly?: boolean; content?: unknown };
@@ -162,7 +172,7 @@ export function extractMeaningfulPreview(messages: Message[]): string {
 
     for (const rawText of contentToTexts(m.content)) {
       // Strip system-injected `<tag>…</tag>` blocks (appended context files,
-      // system-reminder wrappers, IDE/hook/task notifications) so the preview
+      // system-reminder wrappers, IDE/hook/task notifications) so the label
       // reflects what the user actually typed, not machine-injected noise (U188).
       const flat = stripDisplayTags(rawText).replace(/\n/g, ' ').trim();
       if (!flat) continue;
@@ -179,15 +189,54 @@ export function extractMeaningfulPreview(messages: Message[]): string {
 
       // Bash input: label as typed — checked BEFORE the generic XML-tag skip.
       const bash = BASH_INPUT_RE.exec(flat);
-      if (bash) return `! ${bash[1].trim()}`;
+      if (bash) { prompts.push(`! ${bash[1].trim()}`); continue; }
 
       if (SKIP_FIRST_PROMPT_PATTERN.test(flat)) continue;
 
-      return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;
+      prompts.push(flat.length > 100 ? flat.slice(0, 100) + '...' : flat);
     }
   }
+  return { prompts, commandFallback };
+}
+
+export function extractMeaningfulPreview(messages: Message[]): string {
+  const { prompts, commandFallback } = collectMeaningfulPrompts(messages);
+  if (prompts.length > 0) return prompts[0];
   if (commandFallback) return commandFallback;
   return '(no messages)';
+}
+
+/**
+ * The most-recent meaningful user instruction (the LAST prompt), as opposed to
+ * {@link extractMeaningfulPreview}'s FIRST. Shares {@link collectMeaningfulPrompts}
+ * so the skip/normalization rules are identical. Returns `'(no messages)'` when no
+ * meaningful user turn exists. Parity: Claude's lastPrompt (distinct from
+ * firstPrompt) so the resume list can show what a session was last asked to do.
+ */
+export function extractLastPrompt(messages: Message[]): string {
+  const { prompts, commandFallback } = collectMeaningfulPrompts(messages);
+  if (prompts.length > 0) return prompts[prompts.length - 1];
+  if (commandFallback) return commandFallback;
+  return '(no messages)';
+}
+
+/**
+ * Resolve a session's display summary by the precedence chain customTitle >
+ * aiTitle > lastPrompt > firstPrompt, returning `undefined` when none exist (a
+ * metadata-only session). The `'(no messages)'` sentinel is treated as absent so
+ * an empty session never masquerades as having a real summary. Parity: Claude's
+ * listSessionsImpl summary precedence (which drops metadata-only sessions).
+ */
+export function resolveSessionSummary(
+  session: { customTitle?: string; aiTitle?: string },
+  prompts: { lastPrompt?: string; firstPrompt?: string } = {},
+): string | undefined {
+  for (const candidate of [session.customTitle, session.aiTitle, prompts.lastPrompt, prompts.firstPrompt]) {
+    if (typeof candidate !== 'string') continue;
+    const t = candidate.trim();
+    if (t && t !== '(no messages)') return t;
+  }
+  return undefined;
 }
 
 export interface Session {
@@ -211,14 +260,41 @@ export interface Session {
   /** App/schema version that wrote this session, so resume/migration can detect
    *  and adapt to sessions written by an older build. Stamped on save(). */
   version?: string;
-  /** Optional user-set label, searchable in /resume + /search. */
+  /** Optional user-set label, searchable in /resume + /search. One tag per
+   *  session (toggle/replace/remove via {@link SessionManager.toggleTag}). */
   tag?: string;
+  /** Session mode persisted so /resume can restore the posture the user left the
+   *  session in (parity: Claude's per-session `mode`). */
+  mode?: 'coordinator' | 'normal';
+  /** GitHub PR this session is linked to, for list navigation / tracking
+   *  (parity: Claude's prNumber/prUrl/prRepository PR-link fields). `repository`
+   *  is an `owner/repo` slug. */
+  pr?: { number: number; url: string; repository?: string };
+  /** Worktree the session was last inside, persisted so --resume can restore the
+   *  correct cwd (parity: Claude's WorktreeStateEntry / PersistedWorktreeSession).
+   *  `null` = the session explicitly EXITED its worktree; `undefined`/absent =
+   *  it was never inside one. */
+  worktreeState?: { originalCwd: string; worktreePath: string; branch?: string } | null;
+  /** Invocation surface that created / last wrote the session — e.g. `'cli'`
+   *  (interactive TUI), `'detached'` (`--prompt`), or an SDK surface. Lets later
+   *  filtering/analytics discriminate how a session was launched (parity: Claude's
+   *  CLAUDE_CODE_ENTRYPOINT `entrypoint` discriminator). */
+  entrypoint?: string;
+  /** Subagent/sidechain transcript marker: when true this session is a task
+   *  sub-engine's conversation and is excluded from the resume picker by default
+   *  (parity: Claude filters `isSidechain` logs out of the resumable list). */
+  isSidechain?: boolean;
   /** Per-session settings saved on disk so /resume can restore them. */
   settings?: {
     skill?: string;
     thinkingLevel?: string;
     outputStyle?: string;
     goal?: string;
+    /** Permission mode the user left the session in (e.g. `'ask'`, `'auto-allow'`,
+     *  `'deny-all'`), persisted so --resume restores the permission posture
+     *  instead of silently reverting to the flag-derived default (parity: Claude's
+     *  SessionIndexEntry.permissionMode). */
+    permissionMode?: string;
   };
 }
 
@@ -243,6 +319,29 @@ export interface SessionListEntry {
   gitBranch?: string;
   /** Resolved display title (user rename ?? AI title), when present. */
   title?: string;
+  /** The most-recent meaningful user instruction, distinct from {@link preview}
+   *  (which is the FIRST prompt) — lets the picker surface "what was this session
+   *  last asked to do" (parity: Claude's lastPrompt log entry). */
+  lastPrompt?: string;
+  /** Display summary via the precedence chain customTitle > aiTitle > lastPrompt >
+   *  firstPrompt (parity: Claude's listSessionsImpl summary). `undefined` for a
+   *  metadata-only session with no title and no prompts. */
+  summary?: string;
+  /** User-set searchable tag, when recorded. */
+  tag?: string;
+  /** Persisted session mode, when recorded. */
+  mode?: string;
+  /** Linked GitHub PR, when recorded. */
+  pr?: { number: number; url: string; repository?: string };
+  /** Worktree path the session was last inside, when it is currently in one. */
+  worktree?: string;
+  /** Invocation surface that last wrote the session, when recorded. */
+  entrypoint?: string;
+  /** Persisted permission mode, when recorded. */
+  permissionMode?: string;
+  /** True when this entry is a subagent sidechain transcript (only present when
+   *  {@link SessionManager.list} is called with `includeSidechain`). */
+  isSidechain?: boolean;
 }
 
 export function safeCharSlice(s: string, start: number, end?: number): string {
@@ -257,6 +356,67 @@ export function safeCharSlice(s: string, start: number, end?: number): string {
 
 function sanitizeSessionId(id: string): string {
   return id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
+}
+
+/** Rejects a session id that is unsafe to interpolate into a `${id}.json`
+ *  filename: a path separator, NUL, or any C0/C1 control byte or DEL. */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_SESSION_ID_RE = /[/\\\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Defensive format-validation boundary for a session id ingested from an untrusted
+ * source (a `--resume` argument, a session URL, an on-disk filename). Accepts
+ * `unknown` and returns `false` — never throws — for a non-string, an empty or
+ * over-long (>255) id, `.`/`..` or anything containing `..`, or any
+ * separator/control byte ({@link UNSAFE_SESSION_ID_RE}).
+ *
+ * Parity: Claude's `validateUuid` boundary guard, adapted to AMI's id contract
+ * (AMI ids are `session-…`/user `--session-id` segments, NOT UUIDs). This is the
+ * stronger up-front check the old denylist {@link sanitizeSessionId} lacked, while
+ * staying consistent with the `isSafeSegment` contract used for `--session-id`
+ * (spaces / non-separator Unicode remain valid). Used as the first check in
+ * {@link SessionManager.load}/{@link SessionManager.loadAsync}/
+ * {@link SessionManager.delete} so garbage is rejected before any path
+ * construction (with {@link assertPathWithin} still the containment backstop).
+ */
+export function isValidSessionId(id: unknown): id is string {
+  if (typeof id !== 'string') return false;
+  if (id.length === 0 || id.length > 255) return false;
+  if (id === '.' || id === '..' || id.includes('..')) return false;
+  return !UNSAFE_SESSION_ID_RE.test(id);
+}
+
+/**
+ * Normalize a user-supplied tag before it is persisted: strip C0/C1 control bytes
+ * (incl. DEL) and invisible/bidirectional Unicode (zero-width, BOM, LRM/RLM, bidi
+ * embeddings/overrides/isolates) that could carry a hidden-character attack, then
+ * collapse whitespace and trim. Returns `''` when nothing meaningful remains.
+ * Parity: Claude's `recursivelySanitizeUnicode(tag).trim()` before `saveTag` — a
+ * tag-specific normalizer (does NOT strip markdown the way the title sanitizer
+ * does, so a tag token is preserved verbatim).
+ */
+export function normalizeSessionTag(raw: string): string {
+  return raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '') // C0/C1 ctrl + DEL (keep \t\n\r for the \s+ collapse below)
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Outcome of {@link SessionManager.toggleTag}: a 3-way state machine over the
+ *  session's single tag (add when none, replace when different, remove when the
+ *  same tag is applied again) plus the two input-guard failures. */
+export interface TagToggleResult {
+  ok: boolean;
+  /** What happened on success. Absent on failure. */
+  action?: 'added' | 'replaced' | 'removed';
+  /** The tag now on the session (absent when removed or on failure). */
+  tag?: string;
+  /** The tag that was on the session before the op, when there was one. */
+  previous?: string;
+  /** Guard failure reason: no active session, or an empty-after-normalize tag. */
+  error?: string;
 }
 
 /** Escape a literal string for safe embedding in a RegExp source (used when a
@@ -439,6 +599,10 @@ export class SessionManager {
    * Load a specific session by ID.
    */
   load(id: string): Session | null {
+    // Allowlist-validate the id up front: a malformed/untrusted resume arg is
+    // rejected before any path construction (the stronger posture over the
+    // denylist sanitizer; assertPathWithin remains the containment backstop).
+    if (!isValidSessionId(id)) return null;
     const safeId = sanitizeSessionId(id);
     const filePath = path.join(this.sessionDir, `${safeId}.json`);
     assertPathWithin(filePath, this.sessionDir);
@@ -460,6 +624,8 @@ export class SessionManager {
    * "Loading session…" affordance in front of a potentially slow read.
    */
   async loadAsync(id: string): Promise<Session | null> {
+    // Same allowlist boundary as the sync load() so both reject identical garbage.
+    if (!isValidSessionId(id)) return null;
     const safeId = sanitizeSessionId(id);
     const filePath = path.join(this.sessionDir, `${safeId}.json`);
     assertPathWithin(filePath, this.sessionDir);
@@ -477,7 +643,7 @@ export class SessionManager {
    * sorted by recorded date descending so callers see a stable order regardless
    * of the mtime pre-sort.
    */
-  list(opts: { limit?: number; offset?: number } = {}): SessionListEntry[] {
+  list(opts: { limit?: number; offset?: number; includeSidechain?: boolean; dropEmpty?: boolean } = {}): SessionListEntry[] {
     const files = this.listFiles();
 
     // Cheap stat-only pass: carry mtime (for candidate ordering) + size (reused
@@ -499,23 +665,54 @@ export class SessionManager {
       ? candidates.slice(offset)
       : candidates.slice(offset, offset + Math.max(0, opts.limit));
 
+    // Dedup by the session's INTERNAL id keeping the newest readable copy: because
+    // `candidates` is mtime-descending, the FIRST successful read of an id is the
+    // newest valid copy; a later/staler file carrying the same id is dropped. The
+    // dedup is POST-read (an id is not dropped by an unreadable newer copy), parity
+    // with Claude's applySortAndLimit `seen` set. (AMI stores one id per filename,
+    // so this reconciles a manually-copied/stale duplicate rather than being the
+    // common path.)
+    const seenIds = new Set<string>();
     const entries: SessionListEntry[] = [];
     for (const { filePath, size: fileSize } of window) {
       // Preview only needs inline data — skip blob rehydration for speed.
       const session = this.readSessionFile(filePath, false);
       if (!session) continue;
 
+      // Subagent sidechain transcripts never pollute the resume picker unless the
+      // caller explicitly opts in (parity: Claude filters `isSidechain` logs out).
+      if (session.isSidechain && !opts.includeSidechain) continue;
+
+      const idKey = String(session.id);
+      if (seenIds.has(idKey)) continue;
+      seenIds.add(idKey);
+
       const preview = this.extractPreview(session);
-      // messageCount / gitBranch come at ~zero extra cost from the already-parsed
-      // inline JSON (no blob rehydration needed); fileSize is reused from the stat pass.
+      const lastPrompt = extractLastPrompt(session.messages);
+      const summary = resolveSessionSummary(session, { lastPrompt, firstPrompt: preview });
+      // Optionally drop a metadata-only session (no title and no real prompts),
+      // matching Claude's listSessionsImpl which returns null for such logs.
+      if (opts.dropEmpty && summary === undefined) continue;
+
+      // messageCount / gitBranch / metadata come at ~zero extra cost from the
+      // already-parsed inline JSON; fileSize is reused from the stat pass.
       entries.push({
         id: session.id,
         date: session.updatedAt || session.createdAt,
         preview,
+        lastPrompt,
+        summary,
         messageCount: Array.isArray(session.messages) ? session.messages.length : 0,
         fileSize,
         gitBranch: session.gitBranch,
         title: resolveSessionTitle(session),
+        tag: session.tag,
+        mode: session.mode,
+        pr: session.pr,
+        worktree: session.worktreeState ? session.worktreeState.worktreePath : undefined,
+        entrypoint: session.entrypoint,
+        permissionMode: session.settings?.permissionMode,
+        isSidechain: session.isSidechain,
       });
     }
 
@@ -539,6 +736,8 @@ export class SessionManager {
    * Delete a session file by ID.
    */
   delete(id: string): void {
+    // Reject a malformed id up front — same allowlist boundary as load().
+    if (!isValidSessionId(id)) return;
     const safeId = sanitizeSessionId(id);
     const filePath = path.join(this.sessionDir, `${safeId}.json`);
     assertPathWithin(filePath, this.sessionDir);
@@ -589,6 +788,33 @@ export class SessionManager {
       } catch { /* best effort — one undeletable file must not abort the sweep */ }
     }
     return removed;
+  }
+
+  /**
+   * Toggle the session's single searchable {@link Session.tag} (parity: Claude's
+   * `/tag` toggle/replace/remove state machine). Normalizes the input with
+   * {@link normalizeSessionTag}, then:
+   *  - no loadable session → `{ ok:false, error:'No active session to tag.' }`;
+   *  - empty after normalize → `{ ok:false, error:'Tag name cannot be empty.' }`;
+   *  - the SAME tag is already set → remove it (toggle off), `action:'removed'`;
+   *  - a DIFFERENT tag is set → replace it, `action:'replaced'`;
+   *  - none set → add it, `action:'added'`.
+   * One tag per session; the change is persisted via {@link save}.
+   */
+  toggleTag(id: string, rawTag: string): TagToggleResult {
+    const session = this.load(id);
+    if (!session) return { ok: false, error: 'No active session to tag.' };
+    const normalized = normalizeSessionTag(rawTag);
+    if (!normalized) return { ok: false, error: 'Tag name cannot be empty.' };
+    const previous = typeof session.tag === 'string' && session.tag ? session.tag : undefined;
+    if (previous === normalized) {
+      delete session.tag;
+      this.save(session);
+      return { ok: true, action: 'removed', previous };
+    }
+    session.tag = normalized;
+    this.save(session);
+    return { ok: true, action: previous ? 'replaced' : 'added', tag: normalized, previous };
   }
 
   /**

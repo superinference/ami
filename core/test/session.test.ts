@@ -256,11 +256,19 @@ describe('SessionManager', () => {
     assert.ok(files.every(f => !f.includes('..')));
   });
 
-  it('sanitizes session IDs with slashes', () => {
+  it('sanitizes session IDs with slashes on save and rejects the raw slashed id on load', () => {
+    // PARITY (functional change): load() now applies a strict format-validation
+    // boundary (isValidSessionId) that REJECTS a path-separator id outright rather
+    // than silently sanitizing-and-loading it. save() still sanitizes the on-disk
+    // filename (no traversal), so the session is reachable via its sanitized id.
     const session = makeSession('a/b/c');
     sm.save(session);
-    const loaded = sm.load('a/b/c');
-    assert.ok(loaded);
+    // The raw slashed id is rejected up front (stronger than the old denylist).
+    assert.equal(sm.load('a/b/c'), null);
+    // …but the sanitized on-disk id round-trips (filename is a_b_c.json).
+    const files = fs.readdirSync(sm.getSessionDir()).filter(f => f.endsWith('.json'));
+    const safeId = files.find(f => f.includes('a_b_c'))!.replace(/\.json$/, '');
+    assert.ok(sm.load(safeId));
   });
 
   it('list() handles sessions with missing date fields without NaN corruption', () => {
