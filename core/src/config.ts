@@ -448,6 +448,14 @@ export function loadManagedConfig(): ProjectConfig | null {
     const dropIn = parseManagedFile(path.join(dropInDir, name));
     merged = merged === null ? dropIn : mergeManagedLayer(merged, dropIn);
   }
+  // Success breadcrumb: unlike the per-tier loadConfigFile ("loaded <path>"),
+  // loadManagedConfig was previously silent on success, so an operator had no way to
+  // confirm an enterprise policy was actually picked up or which keys it contributed.
+  // Log the path + contributing key count (no values — the policy may be sensitive)
+  // so a managed deployment is diagnosable. Parity: Claude's "MDM settings found: …".
+  if (merged !== null) {
+    coreLog('config', `loaded managed config ${configPath} (${Object.keys(merged).length} key(s)${entries.length > 0 ? `, ${entries.length} drop-in(s)` : ''})`);
+  }
   return merged;
 }
 
@@ -1070,6 +1078,46 @@ function deepMergeConfigObjects(
 
 export type ConfigChangeListener = (config: ProjectConfig, prev: ProjectConfig) => void;
 
+/**
+ * Debounce (ms) collapsing a burst of watcher events for the same file into one
+ * reload. Kept small so a genuine edit takes effect promptly.
+ */
+export const CONFIG_WATCH_DEBOUNCE_MS = 100;
+
+/**
+ * Write-stability window (ms): when a watched config file is observed PRESENT but
+ * momentarily unparseable (the classic half-written / truncate-then-append save),
+ * the reload is retried once after this delay instead of silently dropping the
+ * change. Parity: Claude's changeDetector `FILE_STABILITY_THRESHOLD_MS` /
+ * chokidar `awaitWriteFinish` stabilityThreshold.
+ */
+export const CONFIG_FILE_STABILITY_THRESHOLD_MS = 1000;
+
+/**
+ * Deletion grace window (ms): a vanished config file is not acted on immediately —
+ * the common atomic delete-then-recreate pattern (another session's tmp+rename,
+ * an auto-updater) is coalesced into a single change when the file reappears within
+ * this window; only a deletion that OUTLASTS it reverts the in-memory project layer
+ * to defaults. Parity: Claude's `DELETION_GRACE_MS`.
+ */
+export const CONFIG_DELETION_GRACE_MS = 1000;
+
+/**
+ * Fallback reconcile-poll interval (ms). `fs.watch` is known to silently miss
+ * events (network filesystems, some Linux configurations, editors that save via
+ * atomic rename), so a low-frequency unref'd poll re-reads the file to pick up a
+ * dropped change event. Parity: Claude's `FALLBACK_POLL_MS`.
+ */
+export const CONFIG_FALLBACK_POLL_MS = 5000;
+
+/**
+ * Retry interval (ms) for (re-)establishing the watcher when the config directory
+ * does not exist yet or the underlying watcher errored — instead of giving up
+ * permanently, so a project whose `.ami/` appears mid-session (or a transient
+ * inotify error) still ends up with live config reload. Parity: Claude's `#rewatch`.
+ */
+export const CONFIG_WATCH_RETRY_MS = 1000;
+
 export interface ConfigServiceOptions {
   /**
    * Target env object the project config's `env` block is re-applied to when the
@@ -1078,6 +1126,16 @@ export interface ConfigServiceOptions {
    * real process environment.
    */
   env?: NodeJS.ProcessEnv;
+  /** Override the watcher debounce window (ms). Test seam. */
+  debounceMs?: number;
+  /** Override the write-stability retry window (ms). Test seam. */
+  stabilityThresholdMs?: number;
+  /** Override the deletion grace window (ms). Test seam. */
+  deletionGraceMs?: number;
+  /** Override the fallback reconcile-poll interval (ms); `<= 0` disables it. Test seam. */
+  fallbackPollMs?: number;
+  /** Override the watcher (re-)establish retry interval (ms). Test seam. */
+  watchRetryMs?: number;
 }
 
 export class ConfigService {
@@ -1086,14 +1144,29 @@ export class ConfigService {
   private watcher: fs.FSWatcher | null = null;
   private listeners: ConfigChangeListener[] = [];
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
+  private deletionTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private started = false;
   private onConfigChangeCallbacks: Array<(source: string, path: string) => void> = [];
   private envTarget: NodeJS.ProcessEnv;
   private lastEnvApplication: ApplyConfigEnvResult | null = null;
+  private readonly debounceMs: number;
+  private readonly stabilityThresholdMs: number;
+  private readonly deletionGraceMs: number;
+  private readonly fallbackPollMs: number;
+  private readonly watchRetryMs: number;
 
   constructor(cwd: string, opts: ConfigServiceOptions = {}) {
     this.configPath = path.join(cwd, '.ami', 'config.json');
     this.config = loadConfigFile(this.configPath) ?? {};
     this.envTarget = opts.env ?? process.env;
+    this.debounceMs = opts.debounceMs ?? CONFIG_WATCH_DEBOUNCE_MS;
+    this.stabilityThresholdMs = opts.stabilityThresholdMs ?? CONFIG_FILE_STABILITY_THRESHOLD_MS;
+    this.deletionGraceMs = opts.deletionGraceMs ?? CONFIG_DELETION_GRACE_MS;
+    this.fallbackPollMs = opts.fallbackPollMs ?? CONFIG_FALLBACK_POLL_MS;
+    this.watchRetryMs = opts.watchRetryMs ?? CONFIG_WATCH_RETRY_MS;
   }
 
   /**
@@ -1121,34 +1194,159 @@ export class ConfigService {
   }
 
   watch(): void {
+    if (this.started) return;
+    this.started = true;
+    this.ensureWatch();
+    this.startFallbackPoll();
+  }
+
+  /**
+   * Establish the directory watcher, or — when the directory does not exist yet /
+   * `fs.watch` throws (e.g. inotify exhaustion) — schedule a retry instead of giving
+   * up permanently, so a `.ami/` created after startup (or a transient error) still
+   * ends up watched. Parity: Claude's `#rewatch` retry-even-on-same-dir.
+   */
+  private ensureWatch(): void {
     if (this.watcher) return;
-
     const dir = path.dirname(this.configPath);
+    if (!fsHooks.existsSync(dir)) {
+      coreLog('config', `config dir ${dir} absent; scheduling watch retry in ${this.watchRetryMs}ms`);
+      this.scheduleWatchRetry();
+      return;
+    }
     try {
-      if (!fsHooks.existsSync(dir)) return;
-
-      this.watcher = fsHooks.watch(dir, (eventType, filename) => {
-        if (filename !== 'config.json') return;
-
-        // Swallow the echo of AMI's own write so it never self-triggers a reload
-        // + config-change notification (parity: changeDetector consumeInternalWrite).
-        if (consumeInternalWrite(this.configPath)) return;
-
-        if (this.debounceTimer) clearTimeout(this.debounceTimer);
-        this.debounceTimer = setTimeout(() => {
-          this.reload();
-        }, 100);
-      });
-
+      this.watcher = fsHooks.watch(dir, (_eventType, filename) => this.onWatchEvent(filename));
       // unref so the watcher doesn't prevent process exit in test environments
       this.watcher.unref();
-
-      this.watcher.on('error', () => {
-        this.stop();
-      });
+      this.watcher.on('error', () => this.onWatcherError());
+      coreLog('config', `watching ${this.configPath} for changes`);
     } catch {
-      // Directory doesn't exist or not watchable
+      // watch() can throw (ENOSPC on inotify watchers, a transient FS error) — leave
+      // the watcher null and re-attempt rather than permanently disabling hot-reload.
+      this.scheduleWatchRetry();
     }
+  }
+
+  /** (Re-)establish the watcher after a delay; no-op once a watcher exists or stopped. */
+  private scheduleWatchRetry(): void {
+    if (this.retryTimer || this.watcher || !this.started) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.started) this.ensureWatch();
+    }, this.watchRetryMs);
+    this.retryTimer.unref();
+  }
+
+  /** A watcher `error` event closes the dead watcher and re-establishes a fresh one. */
+  private onWatcherError(): void {
+    coreLog('config', 'config watcher error; re-establishing watch');
+    if (this.watcher) {
+      try { this.watcher.close(); } catch { /* already dead */ }
+      this.watcher = null;
+    }
+    this.scheduleWatchRetry();
+  }
+
+  /** Debounce a config.json event into a single stability-checked reload. */
+  private onWatchEvent(filename: string | null): void {
+    if (filename !== 'config.json') return;
+
+    // Swallow the echo of AMI's own write so it never self-triggers a reload
+    // + config-change notification (parity: changeDetector consumeInternalWrite).
+    if (consumeInternalWrite(this.configPath)) return;
+
+    // A recreate within the deletion grace window cancels the pending deletion so the
+    // common atomic delete-then-recreate save is coalesced into a single change rather
+    // than flapping through a spurious "deleted" state.
+    if (this.deletionTimer && fsHooks.existsSync(this.configPath)) {
+      clearTimeout(this.deletionTimer);
+      this.deletionTimer = null;
+    }
+
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      this.processWatchChange();
+    }, this.debounceMs);
+    this.debounceTimer.unref();
+  }
+
+  /**
+   * Apply a debounced watcher change: a missing file enters the deletion-grace path;
+   * a present-but-unparseable file (a half-written save caught mid-write) is retried
+   * once after the stability window instead of being silently dropped; otherwise the
+   * change is reloaded immediately.
+   */
+  private processWatchChange(): void {
+    if (!fsHooks.existsSync(this.configPath)) {
+      this.handlePossibleDeletion();
+      return;
+    }
+    const checked = loadConfigFileChecked(this.configPath);
+    if (checked.config === null && checked.diagnostic && checked.diagnostic.kind === 'parse-error') {
+      this.scheduleStabilityRetry();
+      return;
+    }
+    this.reload();
+  }
+
+  /** Retry a reload once after the write-stability window (partial-write tolerance). */
+  private scheduleStabilityRetry(): void {
+    if (this.stabilityTimer) return;
+    coreLog('config', `config at ${this.configPath} not yet stable; retrying reload in ${this.stabilityThresholdMs}ms`);
+    this.stabilityTimer = setTimeout(() => {
+      this.stabilityTimer = null;
+      // By now the write should have finished. A still-unparseable file is a REAL
+      // syntax error and reload() correctly declines to clobber the in-memory config.
+      this.reload();
+    }, this.stabilityThresholdMs);
+    this.stabilityTimer.unref();
+  }
+
+  /** Buffer a vanished file for the grace window before treating it as a deletion. */
+  private handlePossibleDeletion(): void {
+    if (this.deletionTimer) return;
+    this.deletionTimer = setTimeout(() => {
+      this.deletionTimer = null;
+      if (fsHooks.existsSync(this.configPath)) {
+        // Recreated during the grace window but the add event was missed — reload it.
+        this.reload();
+      } else {
+        this.applyDeletion();
+      }
+    }, this.deletionGraceMs);
+    this.deletionTimer.unref();
+  }
+
+  /**
+   * A grace-expired deletion reverts the in-memory project layer to empty so the
+   * session falls back to the lower merge layers (global/managed/env) instead of
+   * staying pinned to the deleted file's values. Listeners + onConfigChange fire with
+   * the empty config, mirroring a normal change. Parity: Claude's change-detector
+   * treating a (grace-expired) deletion as a settings change.
+   */
+  private applyDeletion(): void {
+    const prev = this.config;
+    if (JSON.stringify(prev) === '{}') return;
+    this.config = {};
+    coreLog('config', `config ${this.configPath} deleted; reverting project layer to defaults`);
+    for (const listener of this.listeners) {
+      try { listener({}, prev); } catch (err) { coreLog('config', 'config listener error', { error: String(err) }); }
+    }
+    for (const cb of this.onConfigChangeCallbacks) {
+      try { cb('project', this.configPath); } catch (err) { coreLog('config', 'onConfigChange callback error', { error: String(err) }); }
+    }
+  }
+
+  /**
+   * Low-frequency unref'd reconcile poll that re-reads the file so a change event
+   * silently dropped by `fs.watch` (network FS, atomic-rename save) is still picked
+   * up within one interval. Parity: Claude's FALLBACK_POLL_MS safety net.
+   */
+  private startFallbackPoll(): void {
+    if (this.pollTimer || this.fallbackPollMs <= 0) return;
+    this.pollTimer = setInterval(() => { this.reload(); }, this.fallbackPollMs);
+    this.pollTimer.unref();
   }
 
   reload(): boolean {
@@ -1182,14 +1380,16 @@ export class ConfigService {
   }
 
   stop(): void {
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
+    if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
+    if (this.stabilityTimer) { clearTimeout(this.stabilityTimer); this.stabilityTimer = null; }
+    if (this.deletionTimer) { clearTimeout(this.deletionTimer); this.deletionTimer = null; }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
     }
+    this.started = false;
   }
 }
 
