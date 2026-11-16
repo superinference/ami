@@ -1012,3 +1012,51 @@ describe('getFileCache — per-subagent isolation', () => {
     assert.doesNotThrow(() => releaseFileCache('/test/iso/never-created', 'ghost'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// File-type-aware token estimate (dense JSON counted ~2 chars/token)
+// ---------------------------------------------------------------------------
+describe('FileCache — file-type-aware tokenEstimate', () => {
+  it('estimates dense JSON denser (~2 chars/token) than prose (~4) for equal length', () => {
+    const cwd = '/test/tok';
+    const cache = new FileCache();
+    const len = 80;
+    const jsonContent = 'j'.repeat(len);
+    const textContent = 't'.repeat(len);
+    cache.set(`${cwd}/data.json`, jsonContent, 1);
+    cache.set(`${cwd}/notes.txt`, textContent, 2);
+
+    const jsonTokens = cache.get(`${cwd}/data.json`);
+    const textTokens = cache.get(`${cwd}/notes.txt`);
+    // These virtual paths don't exist on disk, so get() would re-stat and return
+    // null — read the estimate straight off getStats via a single-entry cache.
+    assert.equal(jsonTokens, null);
+    assert.equal(textTokens, null);
+
+    // Compare the stored estimates through two isolated single-file caches.
+    const jc = new FileCache();
+    jc.set(`${cwd}/data.json`, jsonContent, 1);
+    const tc = new FileCache();
+    tc.set(`${cwd}/notes.txt`, textContent, 2);
+    // JSON ratio 2 => 40 tokens; text ratio 4 => 20 tokens.
+    assert.equal(jc.getTotalTokens(), 40);
+    assert.equal(tc.getTotalTokens(), 20);
+    assert.ok(jc.getTotalTokens() > tc.getTotalTokens(),
+      'dense JSON must estimate more tokens than equal-length prose');
+  });
+
+  it('.jsonl and .jsonc also use the dense ratio', () => {
+    const jl = new FileCache();
+    jl.set('/x/a.jsonl', 'x'.repeat(40), 1); // ratio 2 => 20
+    const jc = new FileCache();
+    jc.set('/x/a.jsonc', 'x'.repeat(40), 1); // ratio 2 => 20
+    assert.equal(jl.getTotalTokens(), 20);
+    assert.equal(jc.getTotalTokens(), 20);
+  });
+
+  it('unknown/other extensions keep the generic ~4 chars/token ratio', () => {
+    const c = new FileCache();
+    c.set('/x/a.ts', 'y'.repeat(40), 1); // ratio 4 => 10
+    assert.equal(c.getTotalTokens(), 10);
+  });
+});

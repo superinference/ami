@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { decodeBuffer } from './tools/tool-utils';
+import { estimateTokensForFileType } from './utils/tokens';
 
 export interface FileState {
   path: string;
@@ -132,9 +133,12 @@ export class FileCache {
     }
   }
 
-  /** Record a file read. Token estimate uses the ~4 chars/token heuristic. */
-  set(path: string, content: string, mtime: number): void {
-    const key = this.norm(path);
+  /**
+   * Record a file read. The token estimate is file-type-aware: dense structured
+   * content (JSON/JSONL/JSONC) is counted at ~2 chars/token, other text at ~4.
+   */
+  set(filePath: string, content: string, mtime: number): void {
+    const key = this.norm(filePath);
     const byteSize = Buffer.byteLength(content, 'utf-8');
     const existing = this.cache.get(key);
     if (existing) {
@@ -148,7 +152,13 @@ export class FileCache {
       content,
       mtime,
       contentHash: hashContent(content),
-      tokenEstimate: Math.ceil(content.length / 4),
+      // File-type-aware token estimate: dense structured text (JSON/JSONL/JSONC)
+      // is dominated by single-character tokens, so a generic ~4 chars/token ratio
+      // badly UNDER-counts it. Estimate against the real per-file-type ratio (JSON
+      // ~2 chars/token, else ~4) so the cache's token total — surfaced via
+      // getTotalTokens()/getStats()/`/files` — reflects actual context cost.
+      // Mirrors Claude's bytesPerTokenForFileType-aware read-state accounting.
+      tokenEstimate: estimateTokensForFileType(content, path.extname(key)),
     });
     this.totalBytes += byteSize;
     this.evict(key);
