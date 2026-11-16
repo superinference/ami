@@ -15,6 +15,7 @@ import {
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
 import { stripBom } from './config';
+import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 
@@ -1852,6 +1853,12 @@ export class HookManager extends EventEmitter {
       SUPERINFERENCE_MODEL: this._providerConfig?.model ?? '',
       SUPERINFERENCE_PROVIDER: this._providerConfig?.provider ?? '',
       SUPERINFERENCE_EFFORT: this._effortLevel,
+      // Session-environment handoff: a lifecycle hook can write an
+      // `<event>-hook-<index>.sh` fragment (e.g. `export FOO=bar`,
+      // `source .venv/bin/activate`) into this dir and it is folded into the
+      // script prepended to subsequent bash commands, so hook-exported env
+      // persists across stateless tool calls (Claude Code CLAUDE_ENV_FILE parity).
+      SUPERINFERENCE_SESSION_ENV_DIR: sessionEnvDirPath(this._sessionId),
     };
   }
 
@@ -2905,6 +2912,11 @@ export class HookManager extends EventEmitter {
   }
 
   async executeCwdChanged(ctx: CwdChangedContext): Promise<void> {
+    // The cwd changed: drop stale directory-scoped env fragments and invalidate
+    // the persisted session-environment cache so the next bash command re-reads
+    // it (Claude Code `clearCwdEnvFiles` / `invalidateSessionEnvCache` parity).
+    await clearCwdEnvFiles(this._sessionId);
+    invalidateSessionEnvCache();
     return this.withConcurrencyGate('cwdChanged', async () => {
       for (const hook of this.cwdChangedHooks) {
         try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }

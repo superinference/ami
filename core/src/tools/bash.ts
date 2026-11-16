@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
 import { detectCommandChaining } from '../permissions';
+import { getSessionEnvironmentScript } from '../session-environment';
 import { execCommand } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
@@ -1146,6 +1147,15 @@ export const bashTool: ToolDefinition = {
     // command runs inside a container whose only writable mount is the project
     // dir; if Docker is unavailable we fail closed and never touch the host.
     // dangerouslyDisableSandbox cannot override enforced container mode.
+    //
+    // Session environment: prepend the persisted env script (parent-supplied
+    // CLAUDE_ENV_FILE/AMI_ENV_FILE + per-hook env fragments) so venv/conda
+    // activation and exported vars survive across separate, stateless bash
+    // invocations (Claude Code `sessionEnvironment` parity). [FUNCTIONAL CHANGE]
+    // The script is folded into the EXECUTED command only; the display `command`
+    // is left untouched so transcripts/output stay clean.
+    const sessionEnvScript = await getSessionEnvironmentScript(context.sessionId);
+    const commandToRun = sessionEnvScript ? `${sessionEnvScript}\n${command}` : command;
     let effectiveCommand: string;
     if (context.sandbox?.mode === 'container') {
       // Pass the abort signal so a user Ctrl-C during a hung daemon probe is
@@ -1160,7 +1170,7 @@ export const bashTool: ToolDefinition = {
           isError: true,
         };
       }
-      effectiveCommand = wrapWithDocker(command, context.cwd, {
+      effectiveCommand = wrapWithDocker(commandToRun, context.cwd, {
         image: context.sandbox.image || DEFAULT_DOCKER_IMAGE,
         projectDir: context.sandbox.projectDir || context.cwd,
         allowNetwork: context.sandbox.allowNetwork !== false,
@@ -1191,8 +1201,8 @@ export const bashTool: ToolDefinition = {
       // every configured restriction. hostSandboxConfigFromPolicy yields {} when
       // no carve-outs are set, preserving the prior defaults.
       effectiveCommand = useSandbox
-        ? _bashHooks.wrapWithSandbox(command, context.cwd, hostSandboxConfigFromPolicy(context.sandbox))
-        : command;
+        ? _bashHooks.wrapWithSandbox(commandToRun, context.cwd, hostSandboxConfigFromPolicy(context.sandbox))
+        : commandToRun;
     }
 
     if (runInBackground && context.processManager) {
