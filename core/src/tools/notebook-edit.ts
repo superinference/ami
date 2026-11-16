@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
+import { trackFileHistory } from './file-history';
 import {
   validateFilePath,
   validateFileWritePath,
@@ -73,13 +74,25 @@ export const notebookEditTool: ToolDefinition = {
       },
       edit_mode: {
         type: 'string',
-        description: 'The type of edit to make (replace, insert, delete). Defaults to replace.',
+        description:
+          'The type of edit to make. Defaults to "replace". "replace" overwrites the ' +
+          'selected cell\'s source (resetting a code cell\'s execution state); "insert" ' +
+          'adds a NEW cell AFTER the selected cell (identified by cell_id/cell_number), or ' +
+          'at the end of the notebook when no cell is selected, and requires cell_type; ' +
+          '"delete" removes the selected cell.',
         enum: ['replace', 'insert', 'delete'],
       },
     },
     required: ['notebook_path', 'new_source'],
+    // Strict object (parity: Claude's z.strictObject): reject unknown/typo'd
+    // parameters up front via the shared tool-input validator so a hallucinated
+    // key fails loudly instead of being silently dropped.
+    additionalProperties: false,
   },
   isReadOnly: false,
+  // Discovery hint for tool_search using synonyms NOT already in the name/
+  // description, so a deferred notebook_edit is findable by "jupyter"/"ipynb".
+  searchHint: 'jupyter ipynb notebook cell code markdown edit insert delete',
 
   async execute(
     input: Record<string, unknown>,
@@ -380,6 +393,12 @@ export const notebookEditTool: ToolDefinition = {
     // JSON.stringify cannot throw for this plain notebook object (no cycles / BigInt),
     // so it is computed outside the try to avoid an uncoverable catch arm.
     const updatedJson = JSON.stringify(notebook, null, 1);
+
+    // Pre-edit history snapshot (recovery/undo fallback), mirroring file-edit.ts:
+    // persist the ORIGINAL notebook bytes under <cwd>/.ami/file-history/ BEFORE the
+    // destructive write so a bad notebook edit can be recovered. Shared helper —
+    // best-effort, never fails the edit.
+    await trackFileHistory(resolved, raw, context.cwd);
 
     // FUNCTIONAL: preserve read-only / unwritable-target semantics under the atomic
     // write below. The atomic rename only needs a writable *directory*, so a

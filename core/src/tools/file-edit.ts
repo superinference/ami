@@ -8,6 +8,7 @@ import { suggestPathUnderCwd } from './path-suggest';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { coerceBool } from '../utils/coerce';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
+import { trackFileHistory } from './file-history';
 
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 
@@ -166,28 +167,6 @@ interface SequentialEdit {
   old_string: string;
   new_string: string;
   replace_all?: boolean;
-}
-
-async function trackFileHistory(filePath: string, originalContent: string, cwd: string): Promise<void> {
-  try {
-    const historyDir = path.join(cwd, '.ami', 'file-history');
-    await fs.promises.mkdir(historyDir, { recursive: true });
-
-    const timestamp = Date.now();
-    const safeName = path.basename(filePath).replace(/[^a-zA-Z0-9.-]/g, '_');
-    const historyFile = path.join(historyDir, `${safeName}.${timestamp}.bak`);
-
-    await fs.promises.writeFile(historyFile, originalContent, 'utf-8');
-
-    const prefix = safeName + '.';
-    const entries = await fs.promises.readdir(historyDir);
-    const matches = entries.filter(e => e.startsWith(prefix) && e.endsWith('.bak')).sort();
-    if (matches.length > 20) {
-      for (const old of matches.slice(0, matches.length - 20)) {
-        await fs.promises.unlink(path.join(historyDir, old)).catch(() => {});
-      }
-    }
-  } catch { /* non-critical, don't fail the edit */ }
 }
 
 /**
