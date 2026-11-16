@@ -242,6 +242,16 @@ export const taskOutputTool: ToolDefinition = {
       lines.push(result.exitCode === 0 ? 'Result: success' : `Result: failure (exit code ${result.exitCode})`);
     }
 
+    // Dedup (parity with Claude Code's TaskOutputTool flipping `task.notified` on a
+    // successful read): once the model has consumed a TERMINAL task's output, latch
+    // it so the engine's completion-drain does not re-announce a result the model
+    // already has (which would invite a wasteful re-poll). Running tasks are left
+    // un-notified so their eventual completion is still surfaced. Defensive typeof
+    // guard so a minimal manager stub (tests) is a no-op.
+    if (result.status !== 'running' && typeof context.processManager.markNotified === 'function') {
+      context.processManager.markNotified(taskId);
+    }
+
     const tailLabel = tail > 0 ? `last ${tail} lines` : 'all lines';
 
     // Incremental (since_offset) read path: show only what was appended since the

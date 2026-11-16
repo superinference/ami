@@ -35,6 +35,20 @@ export const GRACEFUL_SHUTDOWN_MS = 1500;
 export const MAX_BACKGROUND_PROCESSES = 20;
 
 /**
+ * Bounded cap on the durable completed-task buffer (parity with Claude Code's
+ * sdkEventQueue `MAX_QUEUE_SIZE`). The engine drains the buffer every turn, so in
+ * normal operation it stays tiny; but a very long silent turn (one in-flight API
+ * call with no drain between pushes) while many background producers finish could
+ * otherwise grow it without bound. At the cap we evict the OLDEST entry (FIFO
+ * drop-oldest) before pushing the newest, bounding memory the same way Claude's
+ * queue does. NOTE (intentional divergence): unlike sdkEventQueue we do NOT gate
+ * enqueue on non-interactive mode — AMI's buffer is a DURABLE delivery mechanism
+ * the engine drains in BOTH interactive and detached modes, so dropping in TUI
+ * mode would lose completions (a parity regression). We keep the cap, drop the gate.
+ */
+export const MAX_COMPLETED_BUFFER = 1000;
+
+/**
  * DI seam for platform detection. Defaults to the real `os.platform()`; tests
  * override it to drive the Windows-only spawn/kill branches on non-Windows CI.
  */
@@ -319,6 +333,18 @@ export interface BackgroundProcess {
   totalPausedMs?: number;
   /** Cumulative token usage for background agents (undefined for bash tasks). */
   tokenCount?: number;
+  /**
+   * Dedup latch (parity with Claude Code's `task.notified`): true once the model
+   * has already been told about this task's termination — either because it
+   * explicitly killed it via task_kill (kill() latches bash tasks) or because it
+   * consumed the result via task_output (markNotified() latches on retrieval).
+   * emitComplete() suppresses a redundant completion for a notified task so the
+   * model isn't re-announced a termination it already knows about. Undefined/false
+   * ⇒ not yet surfaced. Only set for bash tasks; agent kills deliberately stay
+   * un-notified so their abort completion (which carries the partial result) still
+   * surfaces, matching Claude's bash-vs-agent split in stopTask.
+   */
+  notified?: boolean;
 }
 
 /** Payload emitted on 'complete' and buffered for durable delivery (B4). */
@@ -540,8 +566,38 @@ export class ProcessManager extends EventEmitter {
 
   /** Emit a completion AND buffer it for durable drain (B4). */
   private emitComplete(payload: CompletedTaskEvent): void {
+    // Dedup (parity with Claude Code's stopTask `notified` flag): a task the model
+    // was already told about — because it explicitly killed it (task_kill latches
+    // bash tasks in kill()) or already consumed its result (task_output →
+    // markNotified()) — must NOT re-surface a redundant completion. The model
+    // learned of the termination from the tool result; a later "[Background task X
+    // completed (exit 137)]" note is pure noise. Suppress it before it ever reaches
+    // the durable buffer / 'complete' listeners.
+    const entry = this.processes.get(payload.taskId);
+    if (entry?.notified) return;
+    // Bounded buffer (parity with Claude Code's sdkEventQueue): evict the oldest
+    // entry at the cap so the durable buffer can never grow without bound across a
+    // long silent turn with active producers (see MAX_COMPLETED_BUFFER).
+    if (this._completedBuffer.length >= MAX_COMPLETED_BUFFER) this._completedBuffer.shift();
     this._completedBuffer.push(payload);
     this.emit('complete', payload);
+  }
+
+  /**
+   * Dedup check-and-set (parity with Claude Code's markTaskNotified): latch a task
+   * as already surfaced to the model so its completion is not re-announced. Called
+   * by task_output when a TERMINAL task's output is successfully retrieved (the
+   * model consumed the result; a follow-up "completed — call task_output" note
+   * would be a wasteful round-trip). Also drops any completion ALREADY buffered for
+   * this task so a drain after the retrieval doesn't re-surface it. Idempotent:
+   * returns true only on the first transition, false if already notified/unknown.
+   */
+  markNotified(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.notified) return false;
+    entry.notified = true;
+    this._completedBuffer = this._completedBuffer.filter((e) => e.taskId !== taskId);
+    return true;
   }
 
   /**
@@ -555,7 +611,18 @@ export class ProcessManager extends EventEmitter {
     return drained;
   }
 
-  kill(taskId: string): boolean {
+  /**
+   * Stop a running task. `opts.suppressCompletion` (set by the task_kill tool for
+   * an EXPLICIT model/user stop) latches a bash task's `notified` flag so its
+   * subsequent close→completion is suppressed as noise (the model already learned
+   * it stopped from the tool result) — parity with Claude Code's stopTask. INTERNAL
+   * kills (the timeout watchdog, cleanup, killAllAgents) pass no option, so their
+   * completion STILL surfaces: a task the model did not ask to stop (e.g. it hit
+   * its time limit) must be reported. Agent tasks are never latched (the bash
+   * branch is the only latch site) so their abort completion, which carries the
+   * partial result, always surfaces — matching Claude's bash-vs-agent split.
+   */
+  kill(taskId: string, opts: { suppressCompletion?: boolean } = {}): boolean {
     const entry = this.processes.get(taskId);
     if (!entry || entry.status !== 'running') return false;
 
@@ -577,6 +644,17 @@ export class ProcessManager extends EventEmitter {
       // signal the MAIN app's own process group (proc.pid === process.pid).
       try { entry.proc.kill(); } catch { /* abort already fired */ }
     } else {
+      // Bash (real child) EXPLICIT kill: latch `notified` so the forthcoming
+      // proc.on('close') → finalize() → emitComplete() does NOT re-surface a
+      // redundant "exit code 137" completion as noise — the model already learned
+      // the task stopped from the task_kill tool result. Parity with Claude Code's
+      // stopTask, which suppresses the exit-137 notification for LocalShellTask
+      // kills (but deliberately NOT for agent kills, whose abort completion carries
+      // the partial result — those run the _registered branch above and stay
+      // un-notified, so their completion still surfaces). Only on an EXPLICIT stop:
+      // an internal timeout/cleanup kill leaves it un-latched so the model is told.
+      if (opts.suppressCompletion) entry.notified = true;
+
       // Destroy stdout/stderr streams BEFORE killing the process to prevent
       // EBADF errors. When the process is killed, the OS closes the child end
       // of the pipes. If the parent-side streams are still reading, Node.js

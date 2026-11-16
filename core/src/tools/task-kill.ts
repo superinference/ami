@@ -146,7 +146,13 @@ export const taskKillTool: ToolDefinition = {
       return { output: out, isError: false, metadata: meta({ reason: 'already_terminal', taskId, taskType, command: fullLabel || undefined, status: task.status, exitCode: task.exitCode }) };
     }
 
-    const killed = pm.kill(taskId);
+    // suppressCompletion: this is an EXPLICIT model-initiated stop, so a bash
+    // task's subsequent "exit code 137" completion is redundant noise (the model
+    // learns the outcome from this very tool result). Latch it notified so the
+    // engine's completion-drain doesn't re-announce it — parity with Claude Code's
+    // stopTask. Agent tasks are unaffected (their abort completion carries the
+    // partial result and still surfaces).
+    const killed = pm.kill(taskId, { suppressCompletion: true });
     if (killed) {
       const out = `Task "${taskId}" (PID ${task.pid})${labelTag} killed successfully.` + maybeCleanup(pm, taskId, cleanup);
       return { output: out, isError: false, metadata: meta({ reason: 'killed', taskId, taskType, command: fullLabel || undefined, pid: task.pid }) };
