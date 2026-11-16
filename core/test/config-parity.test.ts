@@ -53,7 +53,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       cacheTtl: '5m', safeMode: true, maxWebSearchesPerSession: 1, deferTools: true,
       alwaysLoadTools: ['a'], fallbackModels: ['a'], disableBypassPermissionsMode: true,
       disableAllHooks: true, allowManagedHooksOnly: true, enabledPlugins: {}, allowManagedModsOnly: true,
-      allowedMcpServers: ['a'], managedMcpServers: {}, statusLine: 'l', sandboxExcludedCommands: ['a'],
+      allowedMcpServers: ['a'], deniedMcpServers: ['a'], managedMcpServers: {}, statusLine: 'l', sandboxExcludedCommands: ['a'],
       env: {}, tipsEnabled: true, tipsOverride: {}, composerHintsEnabled: true, composerHintsOverride: {},
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);

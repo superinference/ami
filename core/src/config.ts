@@ -84,6 +84,15 @@ export interface ProjectConfig {
   allowManagedModsOnly?: boolean;
   /** MCP allowlist: when non-empty, only these MCP servers may be connected. */
   allowedMcpServers?: string[];
+  /**
+   * MCP denylist: servers named here (by name, case-insensitive, or normalized
+   * upstream URL) are blocked across every scope. The denylist takes PRECEDENCE
+   * over {@link allowedMcpServers} — a server on both lists is denied. Default-open:
+   * an empty/absent list blocks nothing. A managed-tier value is authoritative (a
+   * project/local config can only ADD denies via array accumulation, never remove a
+   * managed deny). Parity: Claude Code's enterprise `deniedMcpServers` setting.
+   */
+  deniedMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
   managedMcpServers?: Record<string, unknown>;
   /** SL1: shell command whose stdout is rendered as a custom status line. */
@@ -215,8 +224,53 @@ export function getManagedDropInDir(): string {
   return path.join(path.dirname(getManagedConfigPath()), 'config.d');
 }
 
+/**
+ * True when a POSIX file mode grants WRITE to OTHER (world — the `0o002` bit). A
+ * managed-policy file ANY user on the machine can rewrite is not a trust anchor —
+ * the point of managed/enterprise policy is that only an administrator can change
+ * it. World-writable is the unambiguous "not a trust anchor" signal (group-writable
+ * is intentionally NOT flagged: the common umask 002 creates 0664 files and the
+ * group may legitimately be an admin group). Pure + exported for direct unit coverage.
+ */
+export function isWorldWritable(mode: number): boolean {
+  return (mode & 0o002) !== 0;
+}
+
+/**
+ * Verify that a managed-policy file is a trustworthy source before it is read, and
+ * throw {@link ManagedConfigError} (fail-closed) otherwise. This is AMI's analog of
+ * Claude Code sourcing managed policy only from OS-protected, admin-only locations
+ * (registry HKLM / /Library/Managed Preferences) that an end user cannot redirect:
+ *
+ *  - a SYMLINK is refused outright — otherwise an unprivileged user could redirect
+ *    the authoritative policy path at a file they control;
+ *  - on POSIX, a WORLD-WRITABLE regular file is refused — a policy file any user on
+ *    the machine can rewrite is not a trust anchor.
+ *
+ * Windows (no `process.getuid`) carries no meaningful POSIX mode bits, so only the
+ * symlink check applies there.
+ */
+function assertTrustedManagedFile(configPath: string): void {
+  let stats: fs.Stats;
+  try {
+    stats = fsHooks.lstatSync(configPath);
+  } catch (err) {
+    throw new ManagedConfigError(`Managed config at ${configPath} could not be inspected: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (stats.isSymbolicLink()) {
+    throw new ManagedConfigError(`Managed config at ${configPath} is a symlink; refusing to follow a redirected managed-policy source.`);
+  }
+  // POSIX mode bits are only meaningful where the platform models uid/gid.
+  if (typeof process.getuid === 'function' && isWorldWritable(stats.mode)) {
+    throw new ManagedConfigError(`Managed config at ${configPath} is world-writable; refusing an untrusted managed-policy source (chmod o-w it).`);
+  }
+}
+
 /** Read + JSON-parse a managed file, failing closed on any read/parse error. */
 function parseManagedFile(configPath: string): ProjectConfig {
+  // Tamper-resistance: refuse a symlinked or group/world-writable managed-policy
+  // file before trusting its contents (fail-closed on an untrusted source).
+  assertTrustedManagedFile(configPath);
   try {
     const raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
     return JSON.parse(stripJsoncComments(raw)) as ProjectConfig;
@@ -264,6 +318,13 @@ export interface ConfigValueIssue {
   /** The offending value, so a caller can surface "you supplied X" to the user
    *  (parity: Claude's ValidationError.invalidValue). */
   value?: unknown;
+  /**
+   * A short, actionable fix suggestion for THIS field+kind (parity: Claude's
+   * `getValidationTip`). Tells the user HOW to correct the value (e.g. "Use true
+   * or false without quotes", "Valid values: ..."), not just what is wrong. Absent
+   * when no specific tip applies. Surfaced alongside {@link message} by the loader
+   * diagnostic + `/doctor`. */
+  tip?: string;
 }
 
 /**
@@ -318,6 +379,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
   ['allowManagedModsOnly', 'boolean'],
   ['enforceAvailableModels', 'string[]'], ['allowedMcpServers', 'string[]'],
+  ['deniedMcpServers', 'string[]'],
   ['fallbackModels', 'string[]'], ['alwaysLoadTools', 'string[]'],
   ['sandboxExcludedCommands', 'string[]'],
   ['superinference', 'object'], ['managedMcpServers', 'object'],
@@ -363,6 +425,40 @@ function matchesConfigFieldType(value: unknown, type: ConfigFieldType): boolean 
   }
 }
 
+/** The kind of validation failure a tip is being generated for. */
+export type ConfigTipKind =
+  | { kind: 'type'; type: ConfigFieldType }
+  | { kind: 'enum'; allowed: readonly string[] }
+  | { kind: 'range' };
+
+/**
+ * Map a per-field validation failure to a short, actionable fix suggestion
+ * (parity: Claude Code's `getValidationTip`). Returns `undefined` when no specific
+ * tip applies (the generic `message` already suffices). Keeping this as ONE table
+ * (rather than inline strings at each push site) means the loader diagnostic,
+ * `/doctor`, and any future renderer all surface identical guidance.
+ */
+export function getConfigValidationTip(field: string, ctx: ConfigTipKind): string | undefined {
+  // Field-specific overrides first (most actionable), then generic per-kind tips.
+  if (field.startsWith('env.') || field === 'env') {
+    return 'Environment variables must be strings — wrap numbers and booleans in quotes, e.g. "DEBUG": "true".';
+  }
+  switch (ctx.kind) {
+    case 'enum':
+      return `Valid values: ${ctx.allowed.map(v => `"${v}"`).join(', ')}.`;
+    case 'range':
+      return 'Must be a positive, finite number.';
+    case 'type':
+      switch (ctx.type) {
+        case 'boolean': return 'Use true or false without quotes.';
+        case 'number': return 'Provide a number without quotes, e.g. 10.';
+        case 'string[]': return 'Must be an array of strings, e.g. ["a", "b"].';
+        case 'object': return 'Must be a JSON object, e.g. { "key": "value" }.';
+        case 'string': return 'Must be a quoted string, e.g. "value".';
+      }
+  }
+}
+
 /**
  * Validate the VALUES of a parsed config (the file parsed as a JSON object, but a
  * field may still hold the wrong type, an out-of-range number, or an invalid enum
@@ -384,7 +480,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     const value = config[field];
     if (value === undefined) continue;
     if (!matchesConfigFieldType(value, type)) {
-      issues.push({ field: field as string, message: `must be a ${type} (got ${describeJsonType(value)})`, value });
+      issues.push({ field: field as string, message: `must be a ${type} (got ${describeJsonType(value)})`, value, tip: getConfigValidationTip(field as string, { kind: 'type', type }) });
       typeInvalid.add(field as string);
     }
   }
@@ -393,7 +489,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
   for (const [field, allowed] of PROJECT_CONFIG_ENUMS) {
     const value = config[field];
     if (value !== undefined && !allowed.includes(value as string)) {
-      issues.push({ field: field as string, message: `must be one of ${allowed.join(', ')} (got ${JSON.stringify(value)})`, value });
+      issues.push({ field: field as string, message: `must be one of ${allowed.join(', ')} (got ${JSON.stringify(value)})`, value, tip: getConfigValidationTip(field as string, { kind: 'enum', allowed }) });
     }
   }
   // 3. Numeric RANGE — delegate to the single canonical EngineConfig validator, one
@@ -402,7 +498,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
   for (const field of ['maxTurns', 'tokenBudget', 'maxBudgetUsd'] as const) {
     if (config[field] === undefined || typeInvalid.has(field)) continue;
     const r = validateEngineConfig({ [field]: config[field] } as Partial<EngineConfig>);
-    if (!r.valid) issues.push({ field, message: r.warnings.join('; '), value: config[field] });
+    if (!r.valid) issues.push({ field, message: r.warnings.join('; '), value: config[field], tip: getConfigValidationTip(field, { kind: 'range' }) });
   }
   // 4. Nested `superinference` flags must be booleans when present. Step 1 only guards
   //    that `superinference` is an object; a non-boolean nested flag (e.g.
@@ -413,7 +509,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     const si = config.superinference as Record<string, unknown>;
     for (const flag of ['enforcing', 'useLLMCritic'] as const) {
       if (si[flag] !== undefined && typeof si[flag] !== 'boolean') {
-        issues.push({ field: `superinference.${flag}`, message: `must be a boolean (got ${describeJsonType(si[flag])})`, value: si[flag] });
+        issues.push({ field: `superinference.${flag}`, message: `must be a boolean (got ${describeJsonType(si[flag])})`, value: si[flag], tip: getConfigValidationTip(`superinference.${flag}`, { kind: 'type', type: 'boolean' }) });
       }
     }
   }
@@ -493,7 +589,7 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
   // accepting them — the valid parts still load (validation is advisory).
   const issues = validateProjectConfigValues(config);
   if (issues.length > 0) {
-    const message = `${issues.length} invalid config value(s): ${issues.map(i => `${i.field}: ${i.message}`).join('; ')}`;
+    const message = `${issues.length} invalid config value(s): ${issues.map(i => `${i.field}: ${i.message}${i.tip ? ` (${i.tip})` : ''}`).join('; ')}`;
     coreLog('config', `invalid value(s) in ${configPath}: ${message}`);
     return { config, diagnostic: { path: configPath, kind: 'invalid-value', message, issues } };
   }
@@ -747,6 +843,9 @@ export function mergeConfigs(
     if (layer.alwaysLoadTools !== undefined) merged.alwaysLoadTools = mergeConfigArray(merged.alwaysLoadTools, layer.alwaysLoadTools);
     if (layer.fallbackModels !== undefined) merged.fallbackModels = mergeConfigArray(merged.fallbackModels, layer.fallbackModels);
     if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = mergeConfigArray(merged.allowedMcpServers, layer.allowedMcpServers);
+    // Denylist ACCUMULATES across layers like the allowlist — a lower layer's
+    // deny can never be removed by a higher one, only added to (deny-wins).
+    if (layer.deniedMcpServers !== undefined) merged.deniedMcpServers = mergeConfigArray(merged.deniedMcpServers, layer.deniedMcpServers);
     if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
     if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
     if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = mergeConfigArray(merged.sandboxExcludedCommands, layer.sandboxExcludedCommands);
@@ -795,6 +894,13 @@ export function mergeConfigs(
   // Managed MCP allowlist is also authoritative.
   if (managedConfig?.allowedMcpServers) {
     merged.allowedMcpServers = managedConfig.allowedMcpServers;
+  }
+  // Managed MCP denylist is authoritative AND still accumulates the lower-tier
+  // denies on top (deny-wins): managed denies can never be dropped by a lower
+  // layer, but a project/local layer may add MORE blocked servers. Parity with
+  // Claude's deniedMcpServers precedence (a server denied at any tier stays denied).
+  if (managedConfig?.deniedMcpServers) {
+    merged.deniedMcpServers = mergeConfigArray(managedConfig.deniedMcpServers, merged.deniedMcpServers ?? []);
   }
   if (managedConfig?.managedMcpServers) {
     merged.managedMcpServers = managedConfig.managedMcpServers;
@@ -890,6 +996,7 @@ export const fsHooks = {
   mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
   watch: fs.watch as typeof fs.watch,
   readdirSync: fs.readdirSync as typeof fs.readdirSync,
+  lstatSync: fs.lstatSync as typeof fs.lstatSync,
 };
 
 /**
