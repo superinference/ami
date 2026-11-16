@@ -3,7 +3,7 @@ import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as child_process from 'child_process';
-import { ToolDefinition, ToolContext, ToolResult, EngineConfig, ToolInputSchema, JsonSchemaProperty } from '../types';
+import { ToolDefinition, ToolContext, ToolResult, EngineConfig, ToolInputSchema, JsonSchemaProperty, Message } from '../types';
 import { createDefaultTools } from './index';
 import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
@@ -317,6 +317,61 @@ export function resolveSubagentModel(requested: string | undefined, parentModel:
     return parentModel;
   }
   return resolveModelAlias(normalized) ?? requested;
+}
+
+/**
+ * Sentinels AMI writes into an assistant message's content when a turn did NOT
+ * finish cleanly: the engine's server-error interrupt
+ * (`[Response interrupted by server error]`) and the tool-call interrupt family
+ * (`[Tool call interrupted …]`). AMI's Message type carries no `stop_reason`
+ * field, so these in-band markers are the only discriminator for "this assistant
+ * turn is incomplete/in-progress" — the same marker set `session-search`
+ * recognizes for its rendered-as-sentinel exclusion.
+ */
+const INCOMPLETE_ASSISTANT_SENTINEL_RE =
+  /\[(?:Response interrupted by server error|Tool call interrupted[^\]]*)\]/;
+
+/**
+ * Whether a message is an assistant turn that did not complete cleanly (an
+ * interrupted/in-progress turn). Mirrors Claude Code's `stop_reason === null`
+ * discriminator in `buildSideQuestionFallbackParams`; since AMI messages have no
+ * `stop_reason`, it detects the in-band interrupt sentinels instead.
+ */
+export function isIncompleteAssistantMessage(msg: Message): boolean {
+  return (
+    msg.role === 'assistant' &&
+    typeof msg.content === 'string' &&
+    INCOMPLETE_ASSISTANT_SENTINEL_RE.test(msg.content)
+  );
+}
+
+/**
+ * Drop a TRAILING in-progress/interrupted assistant message before a conversation
+ * is forked into a sub-agent (mirrors Claude Code's
+ * `buildSideQuestionFallbackParams`, which discards the last message when it is an
+ * assistant turn with `stop_reason === null`). A fork can be requested mid-turn,
+ * and an unterminated/interrupted assistant block would otherwise leak a corrupt
+ * half-answer into the forked context. Only the trailing message is considered —
+ * an interrupted turn deeper in history was already followed by a completed one.
+ */
+export function stripIncompleteTrailingMessages(messages: Message[]): Message[] {
+  if (messages.length === 0) return messages;
+  const last = messages[messages.length - 1];
+  return isIncompleteAssistantMessage(last) ? messages.slice(0, -1) : messages;
+}
+
+/**
+ * Pick a sub-agent's returned deliverable: the text of its FINAL assistant turn
+ * (`lastTurnText`) when one carried text, else the accumulated text fallback.
+ * Mirrors Claude Code's `finalizeAgentTool` (agentToolUtils.ts:L297-317), which
+ * returns the last assistant message's text and — when that final turn is a pure
+ * tool_use block — walks backward to the most recent turn that had text. Tracking
+ * the last text-bearing `turn_complete` performs that backward walk incrementally,
+ * so only the clean final answer is handed back instead of every intermediate
+ * narration delta concatenated across the run.
+ */
+export function selectFinalAnswer(lastTurnText: string | undefined, accumulated: string): string {
+  return lastTurnText !== undefined ? lastTurnText : accumulated;
 }
 
 /**
@@ -663,7 +718,15 @@ export const taskTool: ToolDefinition = {
   description:
     'Spawn a subagent to perform a specific task in an isolated context with its own conversation. ' +
     'Use for parallel codebase exploration, research, or delegating independent subtasks. The subagent\'s ' +
-    'final text response is returned as the result.\n' +
+    'final text response is returned as the result. When you are searching for a keyword or file and are ' +
+    'not confident you will find the right match in the first few tries, delegate the search to a subagent ' +
+    'instead of burning your own context on repeated misses.\n' +
+    '\n' +
+    'Choosing an agent by capability: read-only agents (mode:"explore", or a custom agent whose tools are ' +
+    'restricted to search/read) must ONLY be given research, search, or planning tasks — never implementation/' +
+    'edit work, which they have no tools to do. Use a full-capability agent (mode:"general" or a subagent_type ' +
+    'with edit/bash tools) for changes. Before assigning work to a named subagent_type, review its tool set so ' +
+    'the task matches what the agent can actually do.\n' +
     '\n' +
     'Writing the prompt: brief the agent like a smart colleague who just walked into the room — it has not ' +
     'seen this conversation. Explain what you are trying to accomplish and why, what you have already ruled ' +
@@ -1000,12 +1063,18 @@ export const taskTool: ToolDefinition = {
 
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };
     const envSubagentModel = process.env.SUPERINFERENCE_SUBAGENT_MODEL;
-    if (modelOverride) {
+    // SUPERINFERENCE_SUBAGENT_MODEL is a HARD, highest-priority operator override
+    // (mirrors Claude Code's CLAUDE_CODE_SUBAGENT_MODEL, which is checked first and
+    // returns immediately): it beats a per-call `model` arg, an agent definition's
+    // pinned model, AND the `inherit` sentinel, so an operator policy forcing every
+    // subagent onto a cheap/local model cannot be silently overridden by a model
+    // named in a tool call or an on-disk agent file.
+    if (envSubagentModel) {
+      providerConfig.model = resolveModelAlias(envSubagentModel) ?? envSubagentModel;
+    } else if (modelOverride) {
       providerConfig.model = modelOverride;
     } else if (agentModel) {
       providerConfig.model = agentModel;
-    } else if (envSubagentModel) {
-      providerConfig.model = resolveModelAlias(envSubagentModel) ?? envSubagentModel;
     }
 
     // Permission mode priority:
@@ -1291,7 +1360,10 @@ export const taskTool: ToolDefinition = {
 
     let effectivePromptForSubmit = effectivePrompt;
     if (mode === 'fork' && context._parentMessages && context._parentMessages.length > 0) {
-      const contextSummary = context._parentMessages
+      // Drop a trailing in-progress/interrupted assistant turn before forking so a
+      // corrupt half-answer (the fork can be requested mid-turn) does not leak into
+      // the child's context (mirrors Claude's buildSideQuestionFallbackParams).
+      const contextSummary = stripIncompleteTrailingMessages(context._parentMessages)
         .filter(m => m.role === 'assistant' && typeof m.content === 'string')
         .map(m => (m.content as string).slice(0, 500))
         .join('\n---\n')
@@ -1318,6 +1390,14 @@ export const taskTool: ToolDefinition = {
     const recentActivities: string[] = [];
     let exitReason: import('../types').ExitReason | undefined;
     let sawAbortError = false;
+    // The text of the sub-agent's most recent text-bearing assistant turn. Tracking
+    // the last `turn_complete` that carried text performs Claude's finalizeAgentTool
+    // backward-walk incrementally, so the returned deliverable is the clean FINAL
+    // answer, not every intermediate narration delta concatenated across the run.
+    let lastTurnText: string | undefined;
+    // The chosen deliverable (final turn text, else accumulated fallback) plus any
+    // status markers; assembled after the loop and returned to the parent.
+    let deliverable = '';
 
     const stallTimeoutMs = parsePositiveIntEnv(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS, SUBAGENT_STALL_TIMEOUT_MS);
     let stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1353,16 +1433,26 @@ export const taskTool: ToolDefinition = {
         if (event.type === 'usage_update') {
           totalTokens = event.stats?.totalTokens ?? totalTokens;
         }
+        // The deliverable is the FINAL assistant turn's text (agentToolUtils
+        // finalizeAgentTool): record every text-bearing turn so the last one wins,
+        // and a trailing pure-tool_use turn (empty/null content) falls back to it.
+        if (event.type === 'turn_complete' && typeof event.content === 'string' && event.content.trim().length > 0) {
+          lastTurnText = event.content;
+        }
         if (event.type === 'done') {
           exitReason = event.exitReason;
         }
       }
+      // Choose the clean final answer (last text turn, else accumulated fallback),
+      // then append any run-status markers to IT so the parent gets the deliverable
+      // plus the truncation notice — not the intermediate narration.
+      deliverable = selectFinalAnswer(lastTurnText, resultText);
       if (stalled) {
-        resultText += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]`;
+        deliverable += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]`;
       } else if (exitReason === 'max_turns') {
         // Distinguish a turn-capped partial result from a clean completion so the
         // parent/UI does not mistake a truncated run for a finished one.
-        resultText += `\n[Subagent stopped — reached max turns limit${agentMaxTurns ? ` (${agentMaxTurns})` : ''}]`;
+        deliverable += `\n[Subagent stopped — reached max turns limit${agentMaxTurns ? ` (${agentMaxTurns})` : ''}]`;
       }
     } catch (err) {
       context.abortSignal.removeEventListener('abort', forwardAbort);
@@ -1407,7 +1497,7 @@ export const taskTool: ToolDefinition = {
         const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
         if (shouldRemoveWorktree(status, unpushed, runningAgents)) {
           child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'worktree', 'remove', '--force', effectiveCwd], { cwd: context.cwd, timeout: 10000 });
-          resultText += '\n[Agent worktree cleaned up — no changes detected]';
+          deliverable += '\n[Agent worktree cleaned up — no changes detected]';
         }
       } catch {}
     }
@@ -1416,8 +1506,8 @@ export const taskTool: ToolDefinition = {
     // disk), so a chatty subagent cannot blow up the parent's context.
     const taskMaxChars = context.outputBudget?.taskMaxChars;
     const cappedResult = taskMaxChars && taskMaxChars > 0
-      ? spillToolText(context.cwd, 'task', resultText, taskMaxChars)
-      : resultText;
+      ? spillToolText(context.cwd, 'task', deliverable, taskMaxChars)
+      : deliverable;
 
     // A stall-kill or an abort is a FAILURE, not a successful result — surface it
     // so the parent does not treat a cancelled/timed-out run as a finished one
@@ -1426,7 +1516,7 @@ export const taskTool: ToolDefinition = {
 
     context._emitChild?.({
       type: 'subagent_result', nodeId: taskId, depth: relayDepth,
-      success: !failed, summary: (resultText.trim().split('\n')[0] || 'done').slice(0, 120), tokens: totalTokens,
+      success: !failed, summary: (deliverable.trim().split('\n')[0] || 'done').slice(0, 120), tokens: totalTokens,
     });
     const durationS = ((Date.now() - startedAt) / 1000).toFixed(1);
     // A metadata-only tail (empty body + stats) reads as "nothing to act on" to
