@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   CODE_LOADING_VARIABLES,
@@ -7,6 +7,8 @@ import {
   detectBashArgv0Assignment,
   detectBashpidAssignment,
 } from '../src/tools/bash-security';
+import { bashTool, _bashHooks } from '../src/tools/bash';
+import type { ToolContext } from '../src/types';
 
 describe('CODE_LOADING_VARIABLES', () => {
   it('contains all expected variables', () => {
@@ -22,7 +24,17 @@ describe('CODE_LOADING_VARIABLES', () => {
     assert.ok(CODE_LOADING_VARIABLES.includes('NODE_OPTIONS'));
     assert.ok(CODE_LOADING_VARIABLES.includes('PROMPT_COMMAND'));
     assert.ok(CODE_LOADING_VARIABLES.includes('PATH'));
-    assert.equal(CODE_LOADING_VARIABLES.length, 12);
+  });
+
+  it('includes per-language module/code-loading vectors (parity with env-protection pin set)', () => {
+    // These let a child interpreter/toolchain load attacker-controlled code just
+    // like LD_PRELOAD, so the bash-command guard must block them too — not only
+    // the settings-env trust filter. (Previously omitted: PYTHONPATH & co. could
+    // be exported inline in a bash command.)
+    for (const v of ['PYTHONPATH', 'NODE_PATH', 'CLASSPATH', 'RUBYLIB', 'GOFLAGS', 'RUSTFLAGS', 'PERL5LIB', 'PERLLIB']) {
+      assert.ok(CODE_LOADING_VARIABLES.includes(v), `${v} should be in the code-loading set`);
+    }
+    assert.equal(CODE_LOADING_VARIABLES.length, 20);
   });
 });
 
@@ -130,8 +142,10 @@ describe('detectCodeLoadingEnvSet', () => {
   });
 
   describe('safe variables are NOT blocked', () => {
+    // GOPATH/JAVA_HOME are workspace/install-dir pointers, not code-injection
+    // vectors (unlike GOFLAGS/CLASSPATH), so they stay allowed.
     const safeVars = ['HOME', 'TERM', 'EDITOR', 'VISUAL', 'LANG',
-      'LC_ALL', 'USER', 'SHELL', 'TMPDIR', 'GOPATH', 'JAVA_HOME', 'PYTHONPATH'];
+      'LC_ALL', 'USER', 'SHELL', 'TMPDIR', 'GOPATH', 'JAVA_HOME'];
 
     for (const v of safeVars) {
       it(`allows export ${v}=value`, () => {
@@ -139,6 +153,66 @@ describe('detectCodeLoadingEnvSet', () => {
         assert.ok(!r.blocked, `expected ${v} to be allowed`);
       });
     }
+  });
+
+  describe('per-language module/code-loading loaders ARE blocked in bash commands', () => {
+    // RED→GREEN reproducer: before consolidating the bash-command guard onto the
+    // env-protection pin set, these were treated as safe and could be exported
+    // inline to inject code into a spawned interpreter (e.g. PYTHONPATH → python).
+    for (const v of ['PYTHONPATH', 'NODE_PATH', 'CLASSPATH', 'RUBYLIB', 'GOFLAGS', 'RUSTFLAGS', 'PERL5LIB', 'PERLLIB']) {
+      it(`blocks export ${v}=value`, () => {
+        const r = detectCodeLoadingEnvSet(`export ${v}=/evil/path`);
+        assert.ok(r.blocked, `expected ${v} to be blocked`);
+        assert.equal(r.variable, v);
+      });
+      it(`blocks inline ${v}=value cmd`, () => {
+        const r = detectCodeLoadingEnvSet(`${v}=/evil python run.py`);
+        assert.ok(r.blocked, `expected inline ${v} to be blocked`);
+      });
+    }
+
+    it('blocks lowercase pythonpath export', () => {
+      const r = detectCodeLoadingEnvSet('export pythonpath=/evil');
+      assert.ok(r.blocked);
+    });
+
+    it('does not over-block PYTHONPATH substrings', () => {
+      assert.ok(!detectCodeLoadingEnvSet('export MY_PYTHONPATH=foo').blocked);
+      assert.ok(!detectCodeLoadingEnvSet('export PYTHONPATH_EXTRA=foo').blocked);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E2E: drive the real model-facing bashTool.execute and prove a per-language
+// code-loading assignment is refused BEFORE the shell is ever invoked. This
+// proves the guard is wired end-to-end into the tool the model actually calls
+// (bash.ts:codeLoadCheck), not just the pure classifier.
+//
+// RED on revert (bash-security CODE_LOADING_VARIABLES back to the 12 linker/shell
+// vars): PYTHONPATH is no longer in the set, execute runs the command and
+// execCommand is called — this assertion then fails.
+// ---------------------------------------------------------------------------
+describe('bashTool.execute — per-language code-loading assignment is blocked (e2e)', () => {
+  afterEach(() => mock.restoreAll());
+
+  function ctx(): ToolContext {
+    return { cwd: process.cwd(), abortSignal: new AbortController().signal } as ToolContext;
+  }
+
+  it('refuses `export PYTHONPATH=/evil && python x.py` without spawning a shell', async () => {
+    const spy = mock.method(_bashHooks, 'execCommand', async () => ({ stdout: '', stderr: '', exitCode: 0 }));
+    const result = await bashTool.execute({ command: 'export PYTHONPATH=/evil && python x.py' }, ctx());
+    assert.equal(result.isError, true);
+    assert.match(result.output, /PYTHONPATH is blocked/);
+    assert.equal(spy.mock.callCount(), 0, 'the shell must never run for a blocked command');
+  });
+
+  it('still allows a harmless assignment (GOPATH) to run', async () => {
+    const spy = mock.method(_bashHooks, 'execCommand', async () => ({ stdout: 'ok', stderr: '', exitCode: 0 }));
+    const result = await bashTool.execute({ command: 'export GOPATH=/tmp/go && true' }, ctx());
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.equal(spy.mock.callCount(), 1);
   });
 
   describe('substring false positives', () => {

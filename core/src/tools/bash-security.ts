@@ -2,6 +2,7 @@ import { parseBashAST, extractCommands, extractDeclaredAssignments, CommandNode,
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powershell-security';
 import { redactCredentials } from '../credential-guard';
+import { CODE_LOADING_VARIABLES as PINNED_CODE_LOADING_VARIABLES } from '../env-protection';
 
 export interface SecurityCheckResult {
   safe: boolean;
@@ -2588,20 +2589,16 @@ export function extractInputRedirectionPaths(command: string): string[] {
 // Code-loading & policy-source variable protection
 // ---------------------------------------------------------------------------
 
-export const CODE_LOADING_VARIABLES = [
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'LD_AUDIT',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'DYLD_FRAMEWORK_PATH',
-  'BASH_ENV',
-  'ENV',
-  'ZDOTDIR',
-  'NODE_OPTIONS',
-  'PROMPT_COMMAND',
-  'PATH',
-] as const;
+// Canonical code-loading variable set lives in env-protection.ts (the single
+// source of truth consumed by the settings-env trust filter). The bash-command
+// guard reuses that exact set — exported here as an array for the introspection
+// payload — so a variable that can inject code into child processes (dynamic
+// linker families, shell-init hooks, AND per-language module loaders such as
+// PYTHONPATH/NODE_PATH/CLASSPATH/RUBYLIB/GOFLAGS/RUSTFLAGS/PERL5LIB/PERLLIB) is
+// blocked identically whether it is set from a settings `env` block or inline in
+// a bash command. Previously this guard enumerated only the 12 linker/shell vars,
+// letting `export PYTHONPATH=/evil && python x.py` slip past the command check.
+export const CODE_LOADING_VARIABLES: readonly string[] = [...PINNED_CODE_LOADING_VARIABLES];
 
 export const POLICY_SOURCE_VARIABLES = [
   'SUPERINFERENCE_MANAGED_SETTINGS_PATH',
