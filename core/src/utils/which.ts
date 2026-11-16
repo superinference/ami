@@ -130,6 +130,37 @@ export function whichSync(command: string): string | null {
 }
 
 /**
+ * Session cache of binary-presence checks, keyed by the trimmed command name.
+ * Stores BOTH positive and negative results so a given command is probed at most
+ * once per session. Parity with Claude Code's `binaryCache` (utils/binaryCheck.ts).
+ */
+const binaryCache = new Map<string, boolean>();
+
+/**
+ * True when `command` resolves to an executable — the canonical binary-presence
+ * check. Cross-platform via {@link whichSync} (`where.exe`/PATHEXT on Windows,
+ * `command -v`/PATH scan on POSIX), session-cached (hits AND misses), and
+ * defensive: an empty or whitespace-only command resolves to `false` without any
+ * filesystem probe. Parity with Claude Code's `isBinaryInstalled`
+ * (utils/binaryCheck.ts). Use this instead of re-spawning `which`/`where` per
+ * call site (e.g. LSP server launch).
+ */
+export function isBinaryInstalled(command: string): boolean {
+  const trimmed = (command ?? '').trim();
+  if (!trimmed) return false;
+  const cached = binaryCache.get(trimmed);
+  if (cached !== undefined) return cached;
+  const exists = whichSync(trimmed) !== null;
+  binaryCache.set(trimmed, exists);
+  return exists;
+}
+
+/** Clear the {@link isBinaryInstalled} session cache (tests / after a PATH change). */
+export function clearBinaryCache(): void {
+  binaryCache.clear();
+}
+
+/**
  * Resolve an executable *name* to its full PATH path, returning the spawn-ready
  * `{ cmd, args }` pair (parity with Claude Code's `findExecutable`, which
  * replaced spawn-rx's `findActualExecutable`). `cmd` is the resolved absolute

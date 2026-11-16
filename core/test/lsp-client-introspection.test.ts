@@ -51,7 +51,7 @@ let mockFile: string;
 
 function makeClient(): LSPClient {
   const client = new LSPClient();
-  client._spawnSync = (() => ({ status: 0 })) as unknown as typeof client._spawnSync;
+  client._isBinaryInstalled = () => true;
   client._sleep = async () => {};
   return client;
 }
@@ -139,7 +139,7 @@ describe('LSPClient: crash detection + retained error state', () => {
 
   it('records a command-not-found error status when the binary is missing', async () => {
     const client = new LSPClient();
-    client._spawnSync = (() => ({ status: 1 })) as unknown as typeof client._spawnSync; // which fails
+    client._isBinaryInstalled = () => false; // which fails
     registerLspServers({ mocklang: { command: process.execPath, args: [mockScript], extensionToLanguage: { '.mock': 'mocklang' } } });
 
     const ok = await client.ensureServer('mocklang', dir);

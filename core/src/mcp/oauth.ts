@@ -155,6 +155,14 @@ export interface RetryOptions {
   baseMs?: number;
   isRetryable?: (error: unknown) => boolean;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Observed once per scheduled retry, BEFORE the backoff sleep — carries the
+   * 1-based attempt number, the computed backoff delay (ms), and the error that
+   * triggered the retry. Lets a caller surface a progress/affordance hint for a
+   * transient failure (e.g. an LSP ContentModified retry) without changing the
+   * retry mechanics. The final (non-retried) failure does NOT fire this.
+   */
+  onRetry?: (info: { attempt: number; delayMs: number; error: unknown }) => void;
 }
 
 /** Retry `fn` with exponential backoff on transient (retryable) failures. */
@@ -170,7 +178,9 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, opts: RetryOptio
       lastError = error;
       if (attempt === retries) break;
       if (opts.isRetryable && !opts.isRetryable(error)) break;
-      await sleep(baseMs * 2 ** attempt);
+      const delayMs = baseMs * 2 ** attempt;
+      opts.onRetry?.({ attempt: attempt + 1, delayMs, error });
+      await sleep(delayMs);
     }
   }
   throw lastError;

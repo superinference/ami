@@ -53,7 +53,7 @@ function makeFakeProc(opts: { pid?: number | null; killThrows?: boolean; stdinTh
 }
 
 // ===========================================================================
-// LSPClient — ensureServer spawn success path (via _spawn / _spawnSync seams)
+// LSPClient — ensureServer spawn success path (via _spawn / _isBinaryInstalled seams)
 // ===========================================================================
 
 describe('LSPClient — spawn success path', () => {
@@ -72,7 +72,7 @@ describe('LSPClient — spawn success path', () => {
 
   it('spawns a server, sends initialize, and tracks it as running', async () => {
     const proc = makeFakeProc();
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
 
     const ok = await client.ensureServer('typescript', cwd);
@@ -96,7 +96,7 @@ describe('LSPClient — spawn success path', () => {
 
   it('clears tracking when the process emits exit', async () => {
     const proc = makeFakeProc();
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
 
     await client.ensureServer('typescript', cwd);
@@ -116,7 +116,7 @@ describe('LSPClient — spawn success path', () => {
 
   it('clears tracking when the process emits error', async () => {
     const proc = makeFakeProc();
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
     await client.ensureServer('go', cwd);
     proc.emit('error', new Error('spawn fail'));
@@ -127,7 +127,7 @@ describe('LSPClient — spawn success path', () => {
   });
 
   it('returns false when which cannot find the binary', async () => {
-    client._spawnSync = (() => ({ status: 1 })) as any;
+    client._isBinaryInstalled = () => false;
     client._spawn = (() => { throw new Error('nope'); }) as any;
     assert.equal(await client.ensureServer('python', cwd), false);
   });
@@ -137,19 +137,14 @@ describe('LSPClient — spawn success path', () => {
   });
 
   it('returns false when the spawned process has no pid', async () => {
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => makeFakeProc({ pid: null })) as any;
     assert.equal(await client.ensureServer('rust', cwd), false);
   });
 
-  it('returns false when spawnSync throws (caught)', async () => {
-    client._spawnSync = (() => { throw new Error('boom'); }) as any;
-    assert.equal(await client.ensureServer('typescript', cwd), false);
-  });
-
   it('notifyDidChange auto-starts the server then sends didOpen + didChange', async () => {
     const proc = makeFakeProc();
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
     await client.notifyDidChange(path.join(cwd, 'x.ts'), 'const x = 2;', cwd);
     const joined = proc._writes.join('');
@@ -164,14 +159,14 @@ describe('LSPClient — spawn success path', () => {
   });
 
   it('notifyDidChange returns early when the server cannot start', async () => {
-    client._spawnSync = (() => ({ status: 1 })) as any;
+    client._isBinaryInstalled = () => false;
     await client.notifyDidChange(path.join(cwd, 'y.ts'), 'code', cwd);
     // no throw, server never started
   });
 
   it('notifyDidSave auto-starts the server then sends didOpen + didSave', async () => {
     const proc = makeFakeProc();
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
     await client.notifyDidSave(path.join(cwd, 'z.ts'), cwd);
     const joined = proc._writes.join('');
@@ -184,13 +179,13 @@ describe('LSPClient — spawn success path', () => {
   });
 
   it('notifyDidSave returns early when the server cannot start', async () => {
-    client._spawnSync = (() => ({ status: 1 })) as any;
+    client._isBinaryInstalled = () => false;
     await client.notifyDidSave(path.join(cwd, 'w.ts'), cwd);
   });
 
   it('does not re-send didOpen for an already-open document', async () => {
     const proc = makeFakeProc();
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
     const file = path.join(cwd, 'dup.ts');
     await client.notifyDidChange(file, 'v1', cwd);
@@ -208,7 +203,7 @@ describe('LSPClient — spawn success path', () => {
 
   it('swallows stdin write errors during initialize and notifications (no throw)', async () => {
     const proc = makeFakeProc({ stdinThrows: true });
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
     // The initialize-request write throws -> caught in rawRequest -> the
     // handshake can't complete, so the server fails to start (gracefully, no crash).
@@ -226,7 +221,7 @@ describe('LSPClient — spawn success path', () => {
   it('shutdown kills tracked processes and swallows kill errors', async () => {
     const good = makeFakeProc();
     const bad = makeFakeProc({ killThrows: true });
-    client._spawnSync = (() => ({ status: 0 })) as any;
+    client._isBinaryInstalled = () => true;
     client._spawn = (() => good) as any;
     await client.ensureServer('typescript', cwd);
     client._spawn = (() => bad) as any;

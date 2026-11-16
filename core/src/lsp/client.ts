@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
+import { isBinaryInstalled } from '../utils/which';
 import { retryWithBackoff } from '../mcp/oauth';
 import { log, logError } from '../logger';
 import {
@@ -162,10 +163,16 @@ export class LSPClient implements DiagnosticSource {
     });
   }
 
-  // Process-spawn hooks (overridable in tests). Production behavior is identical
+  // Process-spawn hook (overridable in tests). Production behavior is identical
   // to calling child_process directly.
-  _spawnSync: typeof child_process.spawnSync = child_process.spawnSync;
   _spawn: typeof child_process.spawn = child_process.spawn;
+  /**
+   * Binary-presence check (overridable in tests). Delegates by default to the
+   * ONE canonical cross-platform, session-cached `isBinaryInstalled` — this is a
+   * thin DI seam, NOT a second implementation of `which`/`where`. Tests inject a
+   * fixed boolean so the spawn path can be driven without a real server on PATH.
+   */
+  _isBinaryInstalled: (command: string) => boolean = isBinaryInstalled;
   /** Overridable sleep for backoff (tests make retries instant). */
   _sleep: (ms: number) => Promise<void> = (ms) =>
     new Promise((r) => {
@@ -268,8 +275,10 @@ export class LSPClient implements DiagnosticSource {
     this.pendingInits++;
     this.setStatus(language, { state: 'starting', startTime: Date.now(), restartCount });
     try {
-      const which = this._spawnSync('which', [config.command], { timeout: 2000, stdio: 'pipe' });
-      if (which.status !== 0) {
+      // Cross-platform, session-cached binary-presence check (`which` on POSIX,
+      // `where.exe` on Windows). An empty/whitespace command resolves to false
+      // without a filesystem probe. Shared with every other binary check in core.
+      if (!this._isBinaryInstalled(config.command)) {
         this.recordError(language, `LSP server "${language}" command not found: ${config.command}`);
         return false;
       }
@@ -590,7 +599,7 @@ export class LSPClient implements DiagnosticSource {
       const method = message.method as string;
       const params = message.params;
       if (method === 'textDocument/publishDiagnostics') {
-        this.onPublishDiagnostics(language, params as PublishDiagnosticsParams);
+        this.onPublishDiagnostics(language, params);
       }
       for (const handler of this.notificationHandlers.get(method) ?? []) {
         try { handler(params); } catch { /* isolate handler errors */ }
@@ -620,12 +629,31 @@ export class LSPClient implements DiagnosticSource {
       );
   }
 
-  private onPublishDiagnostics(_language: string, params: PublishDiagnosticsParams): void {
-    if (!params || typeof params.uri !== 'string') return;
-    const key = normalizeDiagnosticPath(params.uri);
+  /**
+   * Handle a `textDocument/publishDiagnostics` notification. A JSON-RPC
+   * notification from an LSP subprocess is UNTRUSTED input, so the params are
+   * structurally validated before use: a non-null object carrying both a string
+   * `uri` AND an array `diagnostics`. Malformed payloads are logged (with the
+   * server's language for attribution) and dropped rather than being cast blindly
+   * — parity with Claude Code's passiveFeedback validation. An empty diagnostics
+   * array is still stored: it is how a server clears a file's previous
+   * diagnostics, which the baseline/diff tracker depends on.
+   */
+  private onPublishDiagnostics(language: string, params: unknown): void {
+    if (
+      !params ||
+      typeof params !== 'object' ||
+      typeof (params as { uri?: unknown }).uri !== 'string' ||
+      !Array.isArray((params as { diagnostics?: unknown }).diagnostics)
+    ) {
+      logError('lsp', `LSP server "${language}" sent invalid diagnostic params (missing uri or diagnostics)`);
+      return;
+    }
+    const valid = params as PublishDiagnosticsParams;
+    const key = normalizeDiagnosticPath(valid.uri);
     this.diagnosticsByUri.set(key, {
-      uri: params.uri,
-      diagnostics: convertPublishDiagnostics(params),
+      uri: valid.uri,
+      diagnostics: convertPublishDiagnostics(valid),
     });
     const waiters = this.diagnosticWaiters.get(key);
     if (waiters) {
@@ -719,6 +747,12 @@ export class LSPClient implements DiagnosticSource {
         baseMs: 500,
         sleep: this._sleep,
         isRetryable: (e) => (e as { code?: number }).code === LSP_CONTENT_MODIFIED,
+        // Progress/affordance hint for a transient ContentModified retry: the
+        // server's state changed mid-request (e.g. still indexing). Surface the
+        // attempt counter + backoff delay so a stalled request is diagnosable
+        // instead of silently waiting. Mirrors Claude's retry progress logging.
+        onRetry: ({ attempt, delayMs }) =>
+          log('lsp', `LSP server "${language}" request "${method}" content modified; retry ${attempt}/3 in ${delayMs}ms`),
       });
     } catch (e) {
       // Wrap the server/timeout error with the server name + method for context,

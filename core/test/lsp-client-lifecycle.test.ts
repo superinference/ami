@@ -104,7 +104,7 @@ function freshLifeServer(): string {
 
 function makeClient(): LSPClient {
   const client = new LSPClient();
-  client._spawnSync = (() => ({ status: 0 })) as unknown as typeof client._spawnSync;
+  client._isBinaryInstalled = () => true;
   client._sleep = async () => {};
   return client;
 }

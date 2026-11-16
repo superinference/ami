@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { whichSync, findOnPath } from '../src/utils/which';
+import { whichSync, findOnPath, isBinaryInstalled, clearBinaryCache } from '../src/utils/which';
 
 // ---------------------------------------------------------------------------
 // whichSync — cross-platform executable resolution (no-spawn fast path,
@@ -184,5 +184,44 @@ describe('findOnPath — no-spawn lookup with injectable env', () => {
     const exe = makeExe('deftool');
     process.env.PATH = dir;
     assert.equal(findOnPath('deftool'), exe);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isBinaryInstalled — cached, cross-platform binary-presence check built on
+// whichSync. Parity with Claude Code's binaryCheck.ts.
+// ---------------------------------------------------------------------------
+describe('isBinaryInstalled', () => {
+  beforeEach(() => clearBinaryCache());
+  afterEach(() => clearBinaryCache());
+
+  it('returns true for a binary resolvable on PATH, false for a missing one', () => {
+    makeExe('tool-present');
+    process.env.PATH = dir;
+    assert.equal(isBinaryInstalled('tool-present'), true);
+    assert.equal(isBinaryInstalled('tool-absent-xyz'), false);
+  });
+
+  it('returns false for an empty / whitespace / nullish command without probing', () => {
+    // PATH points at an empty dir; the guard must short-circuit before any lookup.
+    process.env.PATH = dir;
+    assert.equal(isBinaryInstalled(''), false);
+    assert.equal(isBinaryInstalled('   '), false);
+    assert.equal(isBinaryInstalled(undefined as unknown as string), false);
+  });
+
+  it('caches BOTH positive and negative results (and clearBinaryCache re-probes)', () => {
+    // Negative is cached: a binary that appears AFTER the first (missing) probe
+    // is NOT seen until the cache is cleared.
+    process.env.PATH = dir; // empty → miss
+    assert.equal(isBinaryInstalled('late-tool'), false);
+    makeExe('late-tool'); // now really present on PATH
+    assert.equal(isBinaryInstalled('late-tool'), false, 'stale negative served from cache');
+    clearBinaryCache();
+    assert.equal(isBinaryInstalled('late-tool'), true, 're-probed after cache clear');
+
+    // Positive is cached: removing the binary does not change the cached answer.
+    fs.rmSync(path.join(dir, 'late-tool'));
+    assert.equal(isBinaryInstalled('late-tool'), true, 'stale positive served from cache');
   });
 });

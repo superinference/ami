@@ -1,4 +1,4 @@
-import { describe, it, before, after, afterEach } from 'node:test';
+import { describe, it, before, after, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -6,6 +6,7 @@ import * as path from 'node:path';
 
 import { LSPClient } from '../src/lsp/client';
 import { registerLspServers, resetLspServers } from '../src/lsp/config';
+import { fsHooks } from '../src/logger';
 
 /**
  * A minimal LSP server over stdio (Content-Length framed JSON-RPC). Spawned as a
@@ -96,7 +97,7 @@ function makeClient(): LSPClient {
   const client = new LSPClient();
   // The which-check is not the thing under test; force it to succeed so the real
   // _spawn drives the real mock server subprocess.
-  client._spawnSync = (() => ({ status: 0 })) as unknown as typeof client._spawnSync;
+  client._isBinaryInstalled = () => true;
   client._sleep = async () => {};
   return client;
 }
@@ -207,6 +208,23 @@ describe('LSPClient e2e: ContentModified retry', () => {
     const res = await client.sendRequest<{ ok: boolean; attempts: number }>('mocklang', 'test/contentModified', {});
     assert.equal(res.ok, true);
     assert.equal(res.attempts, 3);
+  });
+
+  it('emits a retry-progress log line (attempt counter + backoff) on each ContentModified retry', async () => {
+    const lines: string[] = [];
+    mock.method(fsHooks, 'appendFileSync', (_f: string, line: string) => { lines.push(line); });
+    try {
+      client = makeClient();
+      await client.ensureServer('mocklang', dir);
+      await client.sendRequest('mocklang', 'test/contentModified', {});
+    } finally {
+      mock.restoreAll();
+    }
+    const retryLines = lines.filter((l) => /content modified; retry \d+\/3 in \d+ms/.test(l));
+    // The mock server errors with -32801 twice before succeeding → exactly two retries.
+    assert.equal(retryLines.length, 2);
+    assert.match(retryLines[0], /request "test\/contentModified" content modified; retry 1\/3 in 500ms/);
+    assert.match(retryLines[1], /retry 2\/3 in 1000ms/);
   });
 });
 
@@ -339,7 +357,7 @@ describe('LSPClient: supply-chain guard + crash cap', () => {
 
   it('refuses to spawn when the server binary is not on PATH', async () => {
     const client = new LSPClient();
-    client._spawnSync = (() => ({ status: 1 })) as unknown as typeof client._spawnSync; // which fails
+    client._isBinaryInstalled = () => false; // which fails
     const ok = await client.ensureServer('mocklang', dir);
     assert.equal(ok, false);
     client.shutdown();
