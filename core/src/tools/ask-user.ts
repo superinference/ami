@@ -161,6 +161,22 @@ export const ASK_USER_MAX_QUESTIONS = 4;
 export const ASK_USER_MIN_OPTIONS = 2;
 export const ASK_USER_MAX_OPTIONS = 4;
 
+/**
+ * Max header/chip width (parity with Claude's `ASK_USER_QUESTION_TOOL_CHIP_WIDTH = 12`).
+ * The schema advertises `maxLength: 12`, but JSON-Schema `maxLength` is advisory —
+ * providers do not reliably enforce it, so the validator fail-closes here too.
+ */
+export const ASK_USER_MAX_HEADER = 12;
+
+/**
+ * Model-facing message when a preview is supplied on a multi-select question.
+ * Previews are a single-select-only affordance (side-by-side focused preview),
+ * so a preview on a multiSelect question is rejected (parity with Claude's
+ * prompt constraint "previews are only supported for single-select questions").
+ */
+export const ASK_USER_PREVIEW_MULTISELECT_MESSAGE =
+  'Previews are only supported for single-select questions (not multiSelect).';
+
 interface AskUserOptionLike {
   label?: string;
   description?: string;
@@ -169,15 +185,19 @@ interface AskUserOptionLike {
 
 interface AskUserQuestionLike {
   question?: string;
+  header?: string;
   options?: AskUserOptionLike[];
   previewFormat?: string;
+  multiSelect?: boolean;
 }
 
 interface AskUserQuestionInputLike {
   questions?: AskUserQuestionLike[];
   question?: string;
+  header?: string;
   options?: AskUserOptionLike[];
   previewFormat?: string;
+  multiSelect?: boolean;
 }
 
 /**
@@ -207,8 +227,10 @@ export function validateHtmlPreview(preview: string | undefined): string | null 
  *   - cardinality bounds: 1-4 questions, each with 2-4 options (parity with
  *     Claude's zod `.min/.max`; providers do not reliably enforce JSON-Schema
  *     `minItems`/`maxItems`, so the engine must fail-closed here),
+ *   - header/chip width (<= 12 chars, parity with Claude's chip width),
  *   - unique question texts across the call,
  *   - unique option labels within each question,
+ *   - previews only on single-select questions (not multiSelect),
  *   - HTML-fragment safety for previews when previewFormat === 'html'.
  * Accepts both the multi-question (`questions[]`) and single-question shorthand
  * (`question`/`options`) shapes the engine supports. An absent `options` array
@@ -219,7 +241,13 @@ export function validateAskUserQuestionInput(input: AskUserQuestionInputLike): s
   const qList: AskUserQuestionLike[] =
     input.questions && input.questions.length > 0
       ? input.questions
-      : [{ question: input.question, options: input.options, previewFormat: input.previewFormat }];
+      : [{
+          question: input.question,
+          header: input.header,
+          options: input.options,
+          previewFormat: input.previewFormat,
+          multiSelect: input.multiSelect,
+        }];
 
   // Cardinality: too many questions. (min 1 is always satisfied — the shorthand
   // fallback yields a single question — so only the upper bound can be violated.)
@@ -233,6 +261,11 @@ export function validateAskUserQuestionInput(input: AskUserQuestionInputLike): s
       (q.options.length < ASK_USER_MIN_OPTIONS || q.options.length > ASK_USER_MAX_OPTIONS)
     ) {
       return `Question "${q.question ?? ''}" must have ${ASK_USER_MIN_OPTIONS}-${ASK_USER_MAX_OPTIONS} options (got ${q.options.length}).`;
+    }
+
+    // Header/chip width (parity with Claude's ASK_USER_QUESTION_TOOL_CHIP_WIDTH).
+    if (typeof q.header === 'string' && q.header.length > ASK_USER_MAX_HEADER) {
+      return `Question "${q.question ?? ''}" header must be <= ${ASK_USER_MAX_HEADER} chars (got ${q.header.length}).`;
     }
   }
 
@@ -249,6 +282,12 @@ export function validateAskUserQuestionInput(input: AskUserQuestionInputLike): s
       .filter((l): l is string => typeof l === 'string');
     if (labels.length !== new Set(labels).size) {
       return ASK_USER_UNIQUENESS_MESSAGE;
+    }
+
+    // Previews are a single-select-only affordance: reject a preview (or an
+    // html/markdown previewFormat) on a multiSelect question.
+    if (q.multiSelect === true && (q.previewFormat !== undefined || (q.options ?? []).some(o => o.preview !== undefined))) {
+      return ASK_USER_PREVIEW_MULTISELECT_MESSAGE;
     }
 
     if (q.previewFormat === 'html') {
