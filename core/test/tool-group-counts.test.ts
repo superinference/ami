@@ -71,6 +71,41 @@ describe('tool-group-counts: isGitOpBashCommand', () => {
     assert.equal(isGitOpBashCommand(''), false);
     assert.equal(isGitOpBashCommand(undefined as unknown as string), false);
   });
+
+  // U030 w69 — parity: Claude's gitOperationTracking subcommand set
+  // (GIT_CHERRY_PICK/MERGE/REBASE_RE + GH_PR_ACTIONS + glab mr).
+  it('detects cherry-pick / merge / rebase git operations', () => {
+    assert.equal(isGitOpBashCommand('git cherry-pick abc123'), true);
+    assert.equal(isGitOpBashCommand('git merge feature'), true);
+    assert.equal(isGitOpBashCommand('git merge'), true);
+    assert.equal(isGitOpBashCommand('git rebase main'), true);
+    assert.equal(isGitOpBashCommand('git -c user.name=x cherry-pick HEAD~1'), true);
+    assert.equal(isGitOpBashCommand('git -C /repo rebase origin/main'), true);
+  });
+  it('excludes hyphenated non-op subcommands (merge-base/tree)', () => {
+    // Token equality is the counterpart of Claude's `merge` `(?!-)` lookahead.
+    assert.equal(isGitOpBashCommand('git merge-base main feature'), false);
+    assert.equal(isGitOpBashCommand('git merge-tree a b c'), false);
+  });
+  it('detects all gh pr actions + glab mr actions', () => {
+    for (const a of ['create', 'edit', 'merge', 'comment', 'close', 'ready']) {
+      assert.equal(isGitOpBashCommand(`gh pr ${a} 42`), true, `gh pr ${a}`);
+      assert.equal(isGitOpBashCommand(`glab mr ${a} 42`), true, `glab mr ${a}`);
+    }
+    assert.equal(isGitOpBashCommand('gh pr create --fill --base main'), true);
+  });
+  it('is false for non-PR gh/glab subcommands', () => {
+    assert.equal(isGitOpBashCommand('gh pr view 42'), false);
+    assert.equal(isGitOpBashCommand('gh issue create'), false);
+    assert.equal(isGitOpBashCommand('glab mr view 42'), false);
+    assert.equal(isGitOpBashCommand('glab ci view'), false);
+  });
+  it('counts a gh pr merge inside a compound command as a gitOpBash', () => {
+    assert.equal(
+      classifyToolGroupKind('bash', { command: 'git fetch && gh pr merge 7 --squash' }),
+      'gitOpBash',
+    );
+  });
 });
 
 describe('tool-group-counts: aggregateToolGroupCounts', () => {

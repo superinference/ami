@@ -46,12 +46,46 @@ function pathOf(input: ToolCallInput | undefined): string | undefined {
   return typeof p === 'string' ? p : undefined;
 }
 
+/** Git subcommands that are counted as a git operation on their own, mirroring
+ *  Claude's gitOperationTracking detectors (GIT_PUSH_RE / GIT_CHERRY_PICK_RE /
+ *  GIT_MERGE_RE / GIT_REBASE_RE) plus the branch-creating navigation verbs. The
+ *  hyphenated forms (`merge-base`, `merge-tree`, `cherry` without `-pick`) are
+ *  naturally excluded because token equality requires the EXACT subcommand —
+ *  this is the token-scan counterpart of Claude's `merge` `(?!-)` lookahead. */
+const GIT_OP_SUBCOMMANDS = new Set(['push', 'branch', 'cherry-pick', 'merge', 'rebase']);
+
+/** `gh pr <action>` / `glab mr <action>` verbs Claude's GH_PR_ACTIONS tracks as a
+ *  PR operation (create/edit/merge/comment/close/ready + glab `mr create`). */
+const PR_ACTIONS = new Set(['create', 'edit', 'merge', 'comment', 'close', 'ready']);
+
 /**
- * True when a bash command is a git operation that should be counted as a git op
- * rather than a generic bash call: a `git commit` (reusing {@link detectGitCommit}),
- * a `git push`, a `git branch` / `git switch -c` / `git checkout -b`, or a
- * `gh pr create`. Token scan (no backtracking) to stay ReDoS-safe, matching the
- * posture of the detectors in `tools/bash.ts`.
+ * Advance past a CLI's global option tokens to the index of its first positional
+ * subcommand token. Options that consume a following value token (`valueOpts`,
+ * e.g. git's `-C <path>`) skip two tokens; any other `-`-prefixed token skips
+ * one. Generalized from the git-only scan so the same boundary logic serves git,
+ * gh and glab (parity: Claude's flag/subcommand boundary skipping is not
+ * git-specific). Returns the token count when no positional remains.
+ */
+function subcommandIndex(tokens: string[], start: number, valueOpts: ReadonlySet<string>): number {
+  let j = start;
+  while (j < tokens.length) {
+    const t = tokens[j]!;
+    if (valueOpts.has(t)) { j += 2; continue; }   // option + separate value token
+    if (t.startsWith('-')) { j += 1; continue; }  // --opt=val / boolean / short flags
+    break;                                        // first positional = subcommand
+  }
+  return j;
+}
+
+/**
+ * True when a bash command is a git/forge operation that should be counted as a
+ * git op rather than a generic bash call: a `git commit` (reusing
+ * {@link detectGitCommit}), a `git push` / `branch` / `cherry-pick` / `merge` /
+ * `rebase`, a branch-creating `git switch -c` / `git checkout -b`, or a forge PR
+ * operation `gh pr <create|edit|merge|comment|close|ready>` / `glab mr <action>`.
+ * Token scan (no backtracking) to stay ReDoS-safe, matching the posture of the
+ * detectors in `tools/bash.ts`. Parity: Claude's `gitOperationTracking`
+ * subcommand set (GIT_PUSH/CHERRY_PICK/MERGE/REBASE_RE + GH_PR_ACTIONS + glab).
  */
 export function isGitOpBashCommand(command: string): boolean {
   if (typeof command !== 'string' || command === '') return false;
@@ -59,24 +93,23 @@ export function isGitOpBashCommand(command: string): boolean {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   const tokens = stripped.replace(/[;&|()]/g, ' ').split(/\s+/).filter(Boolean);
   for (let i = 0; i < tokens.length; i++) {
-    const bin = tokens[i].replace(/^.*\//, '');
+    const bin = tokens[i]!.replace(/^.*\//, '');
     if (bin === 'git') {
       // Find the first positional subcommand (skip global options + their values,
       // matching detectGitCommit so `git -C /x push` is still recognised).
-      let j = i + 1;
-      while (j < tokens.length) {
-        const t = tokens[j];
-        if (GIT_VALUE_OPTS.has(t)) { j += 2; continue; }
-        if (t.startsWith('-')) { j += 1; continue; }
-        break;
-      }
+      const j = subcommandIndex(tokens, i + 1, GIT_VALUE_OPTS);
       const sub = tokens[j];
-      if (sub === 'push' || sub === 'branch') return true;
+      if (sub !== undefined && GIT_OP_SUBCOMMANDS.has(sub)) return true;
       if ((sub === 'switch' || sub === 'checkout') && tokens.slice(j + 1).some((t) => t === '-c' || t === '-b')) {
         return true;
       }
     } else if (bin === 'gh') {
-      if (tokens[i + 1] === 'pr' && tokens[i + 2] === 'create') return true;
+      // `gh pr <action>` with pr immediately after gh (parity: Claude's
+      // GH_PR_ACTIONS regex `\bgh\s+pr\s+<action>\b` tolerates no flags between).
+      if (tokens[i + 1] === 'pr' && PR_ACTIONS.has(tokens[i + 2] ?? '')) return true;
+    } else if (bin === 'glab') {
+      // `glab mr <action>` — GitLab's gh analogue (parity: Claude's `glab mr create`).
+      if (tokens[i + 1] === 'mr' && PR_ACTIONS.has(tokens[i + 2] ?? '')) return true;
     }
   }
   return false;

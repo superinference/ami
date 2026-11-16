@@ -91,6 +91,27 @@ export function resolveAssistantBlockingBudget(): number | undefined {
   return parseEnvMs('BASH_ASSISTANT_BLOCKING_BUDGET_MS');
 }
 
+/** Ceiling / default for a backgrounded (run_in_background) command's own timeout. */
+const MAX_BG_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const DEFAULT_BG_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Resolve a backgrounded command's timeout (ms). A positive per-call `timeout`
+ * wins; otherwise the SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS env knob, then
+ * the 30-minute default — all clamped to the 2-hour ceiling. The env knob is read
+ * via {@link parseEnvMs}, which rejects NaN AND non-positive values (so
+ * `=-5`/`=0`/`=abc` fall back to the default): the previous inline
+ * `parseInt(raw,10)` idiom let a negative value through, yielding a nonsensical
+ * negative timeout (and `=abc` → NaN → `Math.min(NaN, …)` → NaN). Parity: Claude
+ * Code's envValidation rejects `isNaN(parsed) || parsed <= 0`.
+ */
+export function resolveBackgroundTimeoutMs(inputTimeout: unknown): number {
+  const coerced = coerceNumber(inputTimeout, 0);
+  const requested = coerced > 0 ? coerced : undefined;
+  const envMs = parseEnvMs('SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS');
+  return Math.min(requested ?? envMs ?? DEFAULT_BG_TIMEOUT_MS, MAX_BG_TIMEOUT_MS);
+}
+
 let _cachedPermissionManager: InstanceType<typeof import('../permissions').PermissionManager> | null = null;
 
 /**
@@ -910,8 +931,31 @@ export function ensurePythonShimDir(pathValue: string | undefined = process.env.
   return cachedPythonShimDir;
 }
 
+/**
+ * Fan a single configured CA bundle out to every runtime-specific trust-store env
+ * var so an operator behind a corporate MITM proxy can point AMI at one custom CA
+ * and have the agent's spawned `curl`, `python`/`pip` (requests) and other tools
+ * trust it — not just AMI's own Node process. The source of truth is
+ * `NODE_EXTRA_CA_CERTS` (the one knob AMI already documents/honors); when it is
+ * set, `SSL_CERT_FILE` (OpenSSL/curl), `REQUESTS_CA_BUNDLE` (python-requests) and
+ * `CURL_CA_BUNDLE` (curl) are each populated with the same path — but ONLY when
+ * the user has not already set that specific var, so an explicit per-runtime
+ * override always wins. Parity: Claude Code's upstreamproxy `getUpstreamProxyEnv`
+ * CA-bundle fan-out. Mutates and returns `env`.
+ */
+export function applyCaBundleFanout(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const caBundle = env.NODE_EXTRA_CA_CERTS;
+  if (caBundle) {
+    for (const key of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'] as const) {
+      if (!env[key]) env[key] = caBundle;
+    }
+  }
+  return env;
+}
+
 function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   const env = sanitizeEnvForSubprocess({ ...process.env }) as NodeJS.ProcessEnv;
+  applyCaBundleFanout(env);
   env.GIT_EDITOR = 'false';
   env.GIT_PAGER = 'cat';
   env.EDITOR = 'false';
@@ -1361,16 +1405,9 @@ export const bashTool: ToolDefinition = {
 
     if (runInBackground && context.processManager) {
       const desc = (input.description as string) || command.slice(0, 80);
-      const MAX_BG_TIMEOUT_MS = 2 * 60 * 60 * 1000;
-      const DEFAULT_BG_TIMEOUT_MS = 30 * 60 * 1000;
-      const envBgTimeout = process.env.SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS;
-      // [functional parity] coerce a numeric-string timeout here too (semanticNumber).
-      const coercedBgTimeout = coerceNumber(input.timeout, 0);
-      const requestedTimeout = coercedBgTimeout > 0 ? coercedBgTimeout : undefined;
-      const bgTimeoutMs = Math.min(
-        requestedTimeout ?? (envBgTimeout ? parseInt(envBgTimeout, 10) : DEFAULT_BG_TIMEOUT_MS),
-        MAX_BG_TIMEOUT_MS,
-      );
+      // [functional parity] coerce a numeric-string timeout, honor the env knob,
+      // and reject NaN/non-positive env values (see resolveBackgroundTimeoutMs).
+      const bgTimeoutMs = resolveBackgroundTimeoutMs(input.timeout);
       const taskId = context.processManager.spawn(effectiveCommand, {
         cwd: context.cwd,
         description: desc,
