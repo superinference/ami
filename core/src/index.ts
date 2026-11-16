@@ -73,7 +73,7 @@ export type { CoordinatorState } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
 export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError } from './logger';
-export type { FileEntry, SymbolEntry, ImportEdge } from './workspace-indexer';
+export type { FileEntry, SymbolEntry, ImportEdge, BuildIndexResult } from './workspace-indexer';
 
 export { SuperInferenceEngine, Critic, Retriever } from './superinference';
 export type { SuperInferenceConfig, BeliefState, CriticDecision, StopReason } from './superinference';

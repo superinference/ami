@@ -365,7 +365,8 @@ describe('WorkspaceIndexer — getSummary minimal', () => {
       await indexer.buildIndex();
 
       const summary = indexer.getSummary();
-      assert.ok(summary.startsWith('Workspace:'));
+      assert.ok(summary.startsWith('Workspace index (snapshot'));
+      assert.ok(summary.includes('Workspace:'));
       assert.ok(!summary.includes('Key symbols'), 'no class/function means no key-symbols line');
       assert.ok(!summary.includes('Top files'), 'no imports means no top-files line');
     } finally {

@@ -87,23 +87,31 @@ function boundaryBonus(name: string, pos: number): number {
 }
 
 /**
- * Score how well `needle` (already lowercased + length-clamped) fuzzy-matches
- * `name`. Returns null when `needle` is not a subsequence of the lowercased
- * name. Higher is better. Boundary/camel/consecutive bonuses + gap penalties
- * mirror Claude Code's file-index scorer; a shorter-name bonus favors tighter
- * matches among equal-quality candidates.
+ * Score how well `needle` (already length-clamped) fuzzy-matches `name`.
+ * Returns null when `needle` is not a subsequence of `name`. Higher is better.
+ * Boundary/camel/consecutive bonuses + gap penalties mirror Claude Code's
+ * file-index scorer; a shorter-name bonus favors tighter matches among
+ * equal-quality candidates.
+ *
+ * Smart case: when `caseSensitive` is false (the default), `needle` must be
+ * lowercased by the caller and the match is case-insensitive (the haystack is
+ * lowercased here). When `caseSensitive` is true, `needle` keeps its original
+ * casing and the match is exact-case — mirroring Claude Code's
+ * `caseSensitive = query !== query.toLowerCase()` per-query derivation. The
+ * lowercase transform preserves character positions, so boundary/camel bonuses
+ * are always computed against the original-case `name`.
  */
-export function fuzzySymbolScore(name: string, needle: string): number | null {
+export function fuzzySymbolScore(name: string, needle: string, caseSensitive = false): number | null {
   const nLen = needle.length;
   if (nLen === 0) return null;
-  const lower = name.toLowerCase();
-  const hLen = lower.length;
+  const haystack = caseSensitive ? name : name.toLowerCase();
+  const hLen = haystack.length;
 
   // Greedy earliest-subsequence positions.
   const positions: number[] = new Array(nLen);
   let from = 0;
   for (let j = 0; j < nLen; j++) {
-    const pos = lower.indexOf(needle[j]!, from);
+    const pos = haystack.indexOf(needle[j]!, from);
     if (pos === -1) return null;
     positions[j] = pos;
     from = pos + 1;
@@ -153,6 +161,29 @@ export interface FileEntry {
 export interface ImportEdge {
   from: string;  // importing file
   to: string;    // imported file/module
+}
+
+/**
+ * Result of {@link WorkspaceIndexer.buildIndex}. Beyond the headline counts it
+ * carries stage-level introspection (which discovery path ran, per-stage wall
+ * time, whether the MAX_FILES cap bit) and a `cached` flag set when a
+ * change-detection fast path skipped a redundant full rebuild — mirroring the
+ * granular diagnostics Claude Code logs around its context-gathering path.
+ */
+export interface BuildIndexResult {
+  fileCount: number;
+  symbolCount: number;
+  duration: number;
+  /** Set only when the build was a no-op (e.g. no project root found). */
+  skippedReason?: string;
+  /** Which discovery path ran: git ls-files, the glob fallback, or none. */
+  discovery: 'git' | 'glob' | 'none';
+  /** True when a change-detection fast path reused the existing index. */
+  cached: boolean;
+  /** True when the discovered file list was clamped to MAX_FILES. */
+  maxFilesCapped: boolean;
+  /** Per-stage wall-clock timings (ms). */
+  stages: { discoveryMs: number; parseMs: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +291,39 @@ export function findProjectRoot(startDir: string): string | null {
 // call — indefinitely. On timeout/error we return null so buildIndex degrades
 // gracefully to the glob fallback. Mirrors Claude Code's 5s git-subprocess cap.
 const GIT_LS_FILES_TIMEOUT_MS = 5_000;
+
+/**
+ * Cheap change signal for tracked files: the mtime of `.git/index`, which git
+ * bumps on any staged/tracked-file change — so an unchanged mtime means nothing
+ * tracked changed and a rebuild can be skipped WITHOUT spawning `git ls-files`.
+ * Returns null for worktrees/submodules (`.git` is a file → ENOTDIR), fresh
+ * repos with no index yet (ENOENT), and non-git dirs; the caller then falls back
+ * to a path-list signature. Mirrors Claude Code's getGitIndexMtime.
+ */
+function gitIndexMtime(projectRoot: string): number | null {
+  try {
+    const st = fs.statSync(path.join(projectRoot, '.git', 'index'));
+    return st.isFile() ? st.mtimeMs : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Order-sensitive content signature of a discovered path list (count + FNV-1a
+ * hash). Used to skip the full re-parse when a rebuild discovers a byte-identical
+ * file set — analogous to Claude Code's sampled `pathListSignature`.
+ */
+function fileListSignature(paths: string[]): string {
+  let h = 0x811c9dc5;
+  for (const p of paths) {
+    for (let i = 0; i < p.length; i++) {
+      h = Math.imul(h ^ p.charCodeAt(i), 0x01000193);
+    }
+    h = Math.imul(h ^ 0x2f, 0x01000193); // separator between entries
+  }
+  return `${paths.length}:${(h >>> 0).toString(16)}`;
+}
 
 async function getGitTrackedFiles(cwd: string): Promise<string[] | null> {
   try {
@@ -389,6 +453,28 @@ export async function collectGitignoreGlobs(cwd: string, skipGlobs: string[]): P
 }
 
 // ---------------------------------------------------------------------------
+// getSummary presentation knobs — the summary is injected verbatim into the
+// system prompt, so it carries two affordances Claude Code attaches to its own
+// injected context (references src/context.ts):
+//   1. a snapshot/staleness caveat so the model does not over-trust counts that
+//      go stale as it edits (mirrors context.ts:96-97);
+//   2. an actionable truncation hint so a clipped summary tells the model how to
+//      recover the dropped detail (mirrors context.ts:85-89) instead of a silent
+//      '...' slice that hides that anything was cut.
+// ---------------------------------------------------------------------------
+
+/** Total character budget for the injected workspace summary (incl. caveat/hint). */
+export const SUMMARY_MAX_CHARS = 500;
+
+/** Leading caveat so the model treats the summary as a point-in-time snapshot. */
+export const SUMMARY_SNAPSHOT_CAVEAT =
+  'Workspace index (snapshot at conversation start; not updated as you edit — re-run search tools for current state):';
+
+/** Actionable hint appended when the summary is truncated to the budget. */
+export const SUMMARY_TRUNCATION_HINT =
+  ' ...(truncated; use the grep/search_symbols tools to find more symbols)';
+
+// ---------------------------------------------------------------------------
 // WorkspaceIndexer
 // ---------------------------------------------------------------------------
 
@@ -397,6 +483,9 @@ export class WorkspaceIndexer {
   private symbolIndex: Map<string, SymbolEntry[]> = new Map(); // symbol name -> entries
   private importGraph: Map<string, Set<string>> = new Map(); // file -> imported files
   private reverseImports: Map<string, Set<string>> = new Map(); // file -> files that import it
+  // Signature of the last successfully-built index (git:<mtime> or
+  // <discovery>-list:<hash>) used to skip redundant full rebuilds.
+  private lastIndexSignature: string | null = null;
 
   readonly cwd: string;
 
@@ -408,7 +497,7 @@ export class WorkspaceIndexer {
   // Build the full index
   // -------------------------------------------------------------------------
 
-  async buildIndex(): Promise<{ fileCount: number; symbolCount: number; duration: number; skippedReason?: string }> {
+  async buildIndex(): Promise<BuildIndexResult> {
     const start = Date.now();
 
     const projectRoot = findProjectRoot(this.cwd);
@@ -418,18 +507,42 @@ export class WorkspaceIndexer {
         symbolCount: 0,
         duration: Date.now() - start,
         skippedReason: 'no project root found',
+        discovery: 'none',
+        cached: false,
+        maxFilesCapped: false,
+        stages: { discoveryMs: 0, parseMs: 0 },
+      };
+    }
+
+    // Change-detection fast path: if a prior git-backed build exists and
+    // `.git/index` is unchanged, nothing tracked changed — skip spawning
+    // `git ls-files` AND the full re-parse.
+    const idxMtime = gitIndexMtime(projectRoot);
+    if (this.files.size > 0 && idxMtime !== null && this.lastIndexSignature === `git:${idxMtime}`) {
+      return {
+        fileCount: this.files.size,
+        symbolCount: this.getStats().symbolCount,
+        duration: Date.now() - start,
+        discovery: 'git',
+        cached: true,
+        maxFilesCapped: false,
+        stages: { discoveryMs: 0, parseMs: 0 },
       };
     }
 
     const extSet = new Set(Object.keys(EXT_TO_LANG));
     let filePaths: string[];
+    let discovery: 'git' | 'glob';
 
+    const discoveryStart = Date.now();
     const gitFiles = await getGitTrackedFiles(this.cwd);
     if (gitFiles) {
+      discovery = 'git';
       filePaths = gitFiles
         .filter(f => extSet.has(path.extname(f).toLowerCase()))
         .map(f => path.resolve(this.cwd, f));
     } else {
+      discovery = 'glob';
       const extensions = Object.keys(EXT_TO_LANG).map(e => e.slice(1));
       const pattern = `**/*.{${extensions.join(',')}}`;
       const ignorePatterns = Array.from(SKIP_DIRS).map(d => `**/${d}/**`);
@@ -454,11 +567,35 @@ export class WorkspaceIndexer {
         filePaths = [];
       }
     }
+    const discoveryMs = Date.now() - discoveryStart;
 
-    if (filePaths.length > MAX_FILES) {
+    const maxFilesCapped = filePaths.length > MAX_FILES;
+    if (maxFilesCapped) {
       filePaths = filePaths.slice(0, MAX_FILES);
     }
 
+    // Signature of the discovered set. Prefer the cheap `.git/index` mtime for
+    // the git path; fall back to a content hash of the path list (glob path, or
+    // a worktree whose `.git` is a file so no index mtime is available).
+    const signature = discovery === 'git' && idxMtime !== null
+      ? `git:${idxMtime}`
+      : `${discovery}-list:${fileListSignature(filePaths)}`;
+
+    // Post-discovery fast path: a byte-identical file set since the last build
+    // would reproduce the same index, so skip the re-parse.
+    if (this.files.size > 0 && this.lastIndexSignature === signature) {
+      return {
+        fileCount: this.files.size,
+        symbolCount: this.getStats().symbolCount,
+        duration: Date.now() - start,
+        discovery,
+        cached: true,
+        maxFilesCapped,
+        stages: { discoveryMs, parseMs: 0 },
+      };
+    }
+
+    const parseStart = Date.now();
     let symbolCount = 0;
     for (const fp of filePaths) {
       const entry = await this.indexFile(fp);
@@ -466,12 +603,18 @@ export class WorkspaceIndexer {
         symbolCount += entry.symbols.length;
       }
     }
+    const parseMs = Date.now() - parseStart;
 
-    const duration = Date.now() - start;
+    this.lastIndexSignature = signature;
+
     return {
       fileCount: this.files.size,
       symbolCount,
-      duration,
+      duration: Date.now() - start,
+      discovery,
+      cached: false,
+      maxFilesCapped,
+      stages: { discoveryMs, parseMs },
     };
   }
 
@@ -606,18 +749,24 @@ export class WorkspaceIndexer {
   searchSymbols(query: string, limit: number = 20): SymbolEntry[] {
     if (limit <= 0) return [];
     // Clamp an oversized query to bound per-symbol scan cost (DoS guard).
-    const needle = query.toLowerCase().slice(0, MAX_SYMBOL_QUERY_LEN);
+    const clamped = query.slice(0, MAX_SYMBOL_QUERY_LEN);
+    // Smart case (mirrors Claude Code's file-index): an all-lowercase query
+    // matches case-insensitively; any uppercase char in the query makes the
+    // match case-sensitive. This lets a precise `WorkspaceIndexer` query avoid
+    // lowercase noise while a casual `workspaceindexer` still matches broadly.
+    const caseSensitive = clamped !== clamped.toLowerCase();
+    const needle = caseSensitive ? clamped : clamped.toLowerCase();
     if (needle.length === 0) return [];
 
     const scored: { entry: SymbolEntry; score: number }[] = [];
     for (const [name, entries] of this.symbolIndex) {
-      const base = fuzzySymbolScore(name, needle);
+      const base = fuzzySymbolScore(name, needle, caseSensitive);
       if (base === null) continue;
 
-      const lower = name.toLowerCase();
+      const hay = caseSensitive ? name : name.toLowerCase();
       let nameScore = base;
-      if (lower === needle) nameScore += BONUS_EXACT;
-      else if (lower.startsWith(needle)) nameScore += BONUS_PREFIX;
+      if (hay === needle) nameScore += BONUS_EXACT;
+      else if (hay.startsWith(needle)) nameScore += BONUS_PREFIX;
 
       for (const entry of entries) {
         let s = nameScore;
@@ -703,6 +852,9 @@ export class WorkspaceIndexer {
     }
 
     const parts: string[] = [];
+    // Staleness caveat first so the model never over-trusts the counts/key
+    // symbols below once it starts editing.
+    parts.push(SUMMARY_SNAPSHOT_CAVEAT);
     parts.push(`Workspace: ${stats.fileCount} files, ${stats.symbolCount} symbols, ${stats.importEdges} import edges`);
 
     // Key symbols — a lightweight repo map: rank classes/functions by how
@@ -739,9 +891,11 @@ export class WorkspaceIndexer {
     }
 
     const summary = parts.join('\n');
-    // Truncate to ~500 chars
-    if (summary.length > 500) {
-      return summary.slice(0, 497) + '...';
+    // Truncate to the budget, but tell the model the summary was clipped AND how
+    // to recover the dropped detail (rather than a silent '...' slice).
+    if (summary.length > SUMMARY_MAX_CHARS) {
+      const keep = SUMMARY_MAX_CHARS - SUMMARY_TRUNCATION_HINT.length;
+      return summary.slice(0, keep) + SUMMARY_TRUNCATION_HINT;
     }
     return summary;
   }

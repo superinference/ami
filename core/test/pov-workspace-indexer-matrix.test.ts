@@ -378,11 +378,12 @@ describe('WorkspaceIndexer searchSymbols', () => {
     assert.equal(limited[0].name, 'run');
   });
 
-  it('is case-insensitive and returns [] for a miss', async () => {
+  it('is case-insensitive for an all-lowercase query and returns [] for a miss', async () => {
     const { root } = makeTsFixture();
     const idx = new WorkspaceIndexer(root);
     await idx.buildIndex();
-    assert.ok(idx.searchSymbols('ENGINE').some(s => s.name === 'Engine'));
+    // Smart case: an all-lowercase query matches case-insensitively.
+    assert.ok(idx.searchSymbols('engine').some(s => s.name === 'Engine'));
     assert.deepEqual(idx.searchSymbols('zzz-not-here'), []);
   });
 });
@@ -517,7 +518,9 @@ describe('WorkspaceIndexer accessors and summary', () => {
   it('getSummary surfaces file count, key symbols and stays bounded', async () => {
     const { idx } = await indexedTsFixture();
     const summary = idx.getSummary();
-    assert.ok(summary.startsWith('Workspace: 3 files,'));
+    // Snapshot caveat leads the injected summary; the stats line follows.
+    assert.ok(summary.startsWith('Workspace index (snapshot'));
+    assert.ok(summary.includes('Workspace: 3 files,'));
     assert.ok(summary.includes('Key symbols:'));
     assert.ok(summary.length <= 500);
     // (The "Top files by connections" section is edge-derived — see the import-edge note above —
