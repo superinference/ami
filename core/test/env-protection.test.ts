@@ -12,6 +12,7 @@ import {
   isSafeEnvVar,
   isDangerousSettingsEnvVar,
   PROVIDER_MANAGED_ENV_VARS,
+  PROVIDER_MANAGED_ENV_PREFIXES,
   isProviderManagedEnvVar,
   ENV_REJECT_REASONS,
   ENV_TRUST_TIERS,
@@ -274,6 +275,19 @@ describe('isProviderManagedEnvVar', () => {
     assert.equal(isProviderManagedEnvVar('EDITOR'), false);
     assert.equal(isProviderManagedEnvVar('BASH_MAX_TIMEOUT_MS'), false);
   });
+  it('matches the per-model region-override prefix family', () => {
+    // VERTEX_REGION_CLAUDE_<MODEL> routing knobs (provider.ts VERTEX_REGION_OVERRIDES)
+    // are prefix-matched so new model variants stay guarded without enumeration.
+    assert.equal(isProviderManagedEnvVar('VERTEX_REGION_CLAUDE_HAIKU_4_5'), true);
+    assert.equal(isProviderManagedEnvVar('VERTEX_REGION_CLAUDE_4_6_SONNET'), true);
+    assert.equal(isProviderManagedEnvVar('vertex_region_claude_opus'), true);
+  });
+  it('does not treat an unrelated VERTEX_REGION var as managed', () => {
+    assert.equal(isProviderManagedEnvVar('VERTEX_REGION'), false);
+  });
+  it('exposes the prefix family constant', () => {
+    assert.deepEqual([...PROVIDER_MANAGED_ENV_PREFIXES], ['VERTEX_REGION_CLAUDE_']);
+  });
 });
 
 describe('ENV_REJECT_REASONS / ENV_TRUST_TIERS', () => {
@@ -331,6 +345,19 @@ describe('filterSettingsEnv', () => {
     );
     assert.deepEqual(r.applied, { EDITOR: 'vim' });
     assert.deepEqual(r.rejected, []);
+  });
+
+  it('strips per-model region-override routing vars when the host owns routing', () => {
+    // End-to-end: a settings env block cannot re-route a model's region when the
+    // host owns inference routing, even for a prefix-matched VERTEX_REGION_CLAUDE_* var.
+    const r = filterSettingsEnv(
+      { VERTEX_REGION_CLAUDE_4_6_SONNET: 'attacker-region', EDITOR: 'vim' },
+      { tier: 'trusted', hostManagedProvider: true },
+    );
+    assert.deepEqual(r.applied, { EDITOR: 'vim' });
+    assert.deepEqual(r.rejected, [
+      { key: 'VERTEX_REGION_CLAUDE_4_6_SONNET', reason: 'provider-managed' },
+    ]);
   });
 });
 

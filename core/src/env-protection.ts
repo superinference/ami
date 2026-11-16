@@ -196,8 +196,9 @@ export function isDangerousSettingsEnvVar(name: string): boolean {
  * from every settings-sourced env object so a user's config cannot redirect
  * requests away from the host-configured provider.
  *
- * Classified by pattern (any `*_API_KEY`, `*_AUTH_TOKEN`, `*_BASE_URL`) plus an
- * explicit set of routing/credential vars that don't match the suffixes.
+ * Classified by pattern (any `*_API_KEY`, `*_AUTH_TOKEN`, `*_BASE_URL`), a
+ * prefix family (per-model region overrides — see {@link PROVIDER_MANAGED_ENV_PREFIXES}),
+ * plus an explicit set of routing/credential vars that match neither.
  */
 export const PROVIDER_MANAGED_ENV_VARS = new Set([
   'AI_API_KEY',
@@ -218,12 +219,29 @@ export const PROVIDER_MANAGED_ENV_VARS = new Set([
 const PROVIDER_MANAGED_ENV_SUFFIXES = ['_API_KEY', '_AUTH_TOKEN', '_BASE_URL'];
 
 /**
+ * Env-var name prefixes whose whole family controls inference routing. Per-model
+ * Vertex region overrides (`VERTEX_REGION_CLAUDE_<MODEL>`, consumed by
+ * provider.ts's VERTEX_REGION_OVERRIDES) grow with every model release, so the
+ * family is prefix-matched rather than enumerated — a new model's region knob
+ * can't slip past the host-routing guard by not being listed.
+ *
+ * Parity: Claude's managedEnvConstants.ts PROVIDER_MANAGED_ENV_PREFIXES
+ * (`['VERTEX_REGION_CLAUDE_']`).
+ */
+export const PROVIDER_MANAGED_ENV_PREFIXES = ['VERTEX_REGION_CLAUDE_'] as const;
+
+/**
  * True when `name` is an inference-routing / provider-credential env var.
+ *
+ * Matches by exact set membership, the `*_API_KEY|_AUTH_TOKEN|_BASE_URL` suffix
+ * family, OR a routing prefix family ({@link PROVIDER_MANAGED_ENV_PREFIXES}) so
+ * per-model region overrides stay guarded without being enumerated.
  */
 export function isProviderManagedEnvVar(name: string): boolean {
   const upper = name.toUpperCase();
   if (PROVIDER_MANAGED_ENV_VARS.has(upper)) return true;
-  return PROVIDER_MANAGED_ENV_SUFFIXES.some(s => upper.endsWith(s));
+  if (PROVIDER_MANAGED_ENV_SUFFIXES.some(s => upper.endsWith(s))) return true;
+  return PROVIDER_MANAGED_ENV_PREFIXES.some(p => upper.startsWith(p));
 }
 
 /**
