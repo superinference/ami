@@ -1,5 +1,76 @@
-import type { ProviderConfig } from './types';
+import type { ProviderConfig, Message } from './types';
 import { streamChatCompletion } from './provider';
+import { contentToText } from './session';
+
+/**
+ * A message is a valid title SOURCE only when it is genuinely human-authored.
+ * Parity: Claude's title-source filter (initReplBridge `onUserMessage` /
+ * `extractTitleText` + `isSyntheticMessage`) which skips meta nudges, synthetic/
+ * transcript-only injections, tool results, and non-`human`-origin messages
+ * (task notifications, channel pushes, coordinator/teammate traffic). Without
+ * this an engine-injected `isMeta` nudge or a task-notification could become the
+ * session title. Tool results are `role: 'tool'` in AMI, so the role check
+ * already excludes them.
+ */
+export function isHumanAuthoredUserMessage(m: Message): boolean {
+  if (m.role !== 'user') return false;
+  if (m.isMeta) return false;
+  if (m.isVisibleInTranscriptOnly) return false;
+  if (m.origin && m.origin.kind !== 'user') return false;
+  return contentToText(m.content).trim().length > 0;
+}
+
+/**
+ * Pick the message to derive a session title from by scanning BACKWARD for the
+ * most recent human-authored user message (parity: Claude's backward
+ * `initialMessages` scan). Replaces a naive forward `find()` that could latch
+ * onto an injected meta/synthetic message. Returns the message's flattened text,
+ * or undefined when no human-authored user message exists.
+ */
+export function selectTitleSource(messages: readonly Message[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (isHumanAuthoredUserMessage(m)) {
+      return contentToText(m.content).trim();
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Count the human-authored user messages in the transcript. Drives the
+ * count-based title refinement (parity: Claude re-derives the title at user
+ * message count 3) so injected meta/synthetic/non-human messages don't inflate
+ * the count and trigger a premature re-derivation.
+ */
+export function countHumanUserMessages(messages: readonly Message[]): number {
+  let n = 0;
+  for (const m of messages) if (isHumanAuthoredUserMessage(m)) n++;
+  return n;
+}
+
+/**
+ * Flatten the conversation into title-generation input for the richer count-3
+ * re-derivation (parity: Claude's `extractConversationText`). Includes every
+ * human-authored user message and every non-empty assistant message, in order,
+ * each prefixed by its role so the title model sees the actual dialogue rather
+ * than only the first prompt. Meta/synthetic/non-human and tool messages are
+ * excluded.
+ */
+export function extractConversationText(messages: readonly Message[]): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role === 'user') {
+      if (!isHumanAuthoredUserMessage(m)) continue;
+      const text = contentToText(m.content).trim();
+      if (text) parts.push(`User: ${text}`);
+    } else if (m.role === 'assistant') {
+      const text = (m.content ?? '').trim();
+      if (text) parts.push(`Assistant: ${text}`);
+    }
+  }
+  return parts.join('\n').trim();
+}
 
 /**
  * A session title is rendered on a single-line separator/tab. Raw model output (or

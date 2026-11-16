@@ -2,8 +2,15 @@ import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as http from 'http';
 
-import { generateTitle, sanitizeTitle } from '../src/title-generator';
-import type { ProviderConfig } from '../src/types';
+import {
+  generateTitle,
+  sanitizeTitle,
+  isHumanAuthoredUserMessage,
+  selectTitleSource,
+  countHumanUserMessages,
+  extractConversationText,
+} from '../src/title-generator';
+import type { ProviderConfig, Message } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // SSE mock server — returns OpenAI-compatible streaming responses
@@ -254,5 +261,137 @@ describe('sanitizeTitle — single-line markdown-free flattening', () => {
   });
   it('returns empty string for whitespace-only input', () => {
     assert.equal(sanitizeTitle('   \n\t  '), '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Title-source selection — skips meta/synthetic/tool/non-human messages
+// (parity: Claude's initReplBridge backward scan + isSyntheticMessage filter)
+// ---------------------------------------------------------------------------
+
+describe('isHumanAuthoredUserMessage', () => {
+  it('accepts a plain string user message', () => {
+    assert.equal(isHumanAuthoredUserMessage({ role: 'user', content: 'hello' }), true);
+  });
+  it('accepts a multimodal user message with a text block', () => {
+    assert.equal(
+      isHumanAuthoredUserMessage({ role: 'user', content: [{ type: 'text', text: 'hi there' }] }),
+      true,
+    );
+  });
+  it('rejects an isMeta (engine-injected nudge) user message', () => {
+    assert.equal(isHumanAuthoredUserMessage({ role: 'user', content: 'nudge', isMeta: true }), false);
+  });
+  it('rejects a transcript-only synthetic user message', () => {
+    assert.equal(
+      isHumanAuthoredUserMessage({ role: 'user', content: 'synthetic', isVisibleInTranscriptOnly: true }),
+      false,
+    );
+  });
+  it('rejects a non-human origin (task-notification/channel) user message', () => {
+    assert.equal(
+      isHumanAuthoredUserMessage({ role: 'user', content: 'notif', origin: { kind: 'task-notification' } }),
+      false,
+    );
+    assert.equal(
+      isHumanAuthoredUserMessage({ role: 'user', content: 'push', origin: { kind: 'channel', source: 'slack' } }),
+      false,
+    );
+  });
+  it('accepts an explicit human-origin user message', () => {
+    assert.equal(
+      isHumanAuthoredUserMessage({ role: 'user', content: 'from me', origin: { kind: 'user' } }),
+      true,
+    );
+  });
+  it('rejects an empty/whitespace-only user message', () => {
+    assert.equal(isHumanAuthoredUserMessage({ role: 'user', content: '   ' }), false);
+  });
+  it('rejects assistant, tool and system messages', () => {
+    assert.equal(isHumanAuthoredUserMessage({ role: 'assistant', content: 'a' }), false);
+    assert.equal(isHumanAuthoredUserMessage({ role: 'tool', tool_call_id: 't', content: 'r' }), false);
+    assert.equal(isHumanAuthoredUserMessage({ role: 'system', content: 's' }), false);
+  });
+});
+
+describe('selectTitleSource', () => {
+  it('returns the most recent human-authored user message (backward scan)', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'first prompt' },
+      { role: 'assistant', content: 'answer' },
+      { role: 'user', content: 'second prompt' },
+    ];
+    assert.equal(selectTitleSource(msgs), 'second prompt');
+  });
+  it('skips trailing meta/synthetic/non-human messages', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'real question' },
+      { role: 'assistant', content: 'reply' },
+      { role: 'user', content: 'injected nudge', isMeta: true },
+      { role: 'user', content: 'task note', origin: { kind: 'task-notification' } },
+      { role: 'tool', tool_call_id: 'x', content: 'tool output' },
+    ];
+    assert.equal(selectTitleSource(msgs), 'real question');
+  });
+  it('extracts text from a multimodal message', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: [{ type: 'image', image: 'data' } as never, { type: 'text', text: 'describe this' }] },
+    ];
+    assert.equal(selectTitleSource(msgs), 'describe this');
+  });
+  it('returns undefined when no human-authored user message exists', () => {
+    const msgs: Message[] = [
+      { role: 'assistant', content: 'hi' },
+      { role: 'user', content: 'nudge', isMeta: true },
+    ];
+    assert.equal(selectTitleSource(msgs), undefined);
+  });
+});
+
+describe('countHumanUserMessages', () => {
+  it('counts only human-authored user messages', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'one' },
+      { role: 'assistant', content: 'a' },
+      { role: 'user', content: 'meta', isMeta: true },
+      { role: 'user', content: 'two' },
+      { role: 'user', content: 'notif', origin: { kind: 'task-notification' } },
+      { role: 'user', content: 'three' },
+    ];
+    assert.equal(countHumanUserMessages(msgs), 3);
+  });
+  it('returns 0 for an empty transcript', () => {
+    assert.equal(countHumanUserMessages([]), 0);
+  });
+});
+
+describe('extractConversationText', () => {
+  it('flattens human user + assistant messages with role prefixes, in order', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'fix the bug' },
+      { role: 'assistant', content: 'found it in parser.ts' },
+      { role: 'user', content: 'now add a test' },
+    ];
+    assert.equal(
+      extractConversationText(msgs),
+      'User: fix the bug\nAssistant: found it in parser.ts\nUser: now add a test',
+    );
+  });
+  it('excludes meta/synthetic/non-human user messages and tool messages', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'real', },
+      { role: 'user', content: 'nudge', isMeta: true },
+      { role: 'tool', tool_call_id: 't', content: 'output' },
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: 'notif', origin: { kind: 'coordinator' } },
+    ];
+    assert.equal(extractConversationText(msgs), 'User: real\nAssistant: done');
+  });
+  it('skips empty assistant messages (null content)', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: null },
+    ];
+    assert.equal(extractConversationText(msgs), 'User: q');
   });
 });
