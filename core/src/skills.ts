@@ -114,6 +114,24 @@ export interface AgentDefinition {
    *  unless the caller explicitly overrides `run_in_background` (parity with
    *  Claude's agent `background`). */
   background?: boolean;
+  /** MCP server names this agent REQUIRES to be available before it can run
+   *  (parity with Claude's agent `requiredMcpServers`). Each entry is matched
+   *  case-insensitively as a substring against the live server names; when any
+   *  requirement is unmet the agent is filtered out of the spawnable set. See
+   *  {@link hasRequiredMcpServers} / {@link filterAgentsByMcpRequirements}. */
+  requiredMcpServers?: string[];
+  /** Per-subagent MCP servers to launch for this agent's run, additive to the
+   *  parent's servers (parity with Claude's per-agent `mcpServers`). Mirrors the
+   *  stance `mcpServers` shape on {@link SkillDefinition}. */
+  mcpServers?: Record<string, McpServerConfig>;
+  /** Names of skills to PRELOAD into this agent's context when it is spawned
+   *  (parity with Claude's agent `skills` allowlist). Normalized via
+   *  {@link parseAgentSkills}. */
+  skills?: string[];
+  /** Restrict which sub-agent *types* this agent may itself spawn via the task
+   *  tool (parity with Claude's `allowedAgentTypes` metadata). `undefined`/empty
+   *  ⇒ no restriction. Checked with {@link canSpawnAgentType}. */
+  allowedAgentTypes?: string[];
 }
 
 /**
@@ -189,6 +207,147 @@ export function parseBackgroundFlag(value: unknown): { value: boolean | undefine
   if (value === true || value === 'true') return { value: true, invalid: false };
   if (value === false || value === 'false') return { value: undefined, invalid: false };
   return { value: undefined, invalid: true };
+}
+
+/**
+ * Normalize a raw frontmatter list value (a comma/whitespace-delimited string OR
+ * a string array) into a clean, de-duplicated, length- and count-capped list of
+ * names. Shared by {@link parseAgentSkills} and {@link parseAllowedAgentTypes} so
+ * the two never drift apart. Unlike {@link parseArgumentNames} it does NOT drop
+ * numeric-only entries (skill/agent-type names are free-form). Any non-string /
+ * non-array value yields `[]`.
+ */
+function normalizeNameList(value: unknown): string[] {
+  let raw: string[];
+  if (typeof value === 'string') {
+    raw = value.split(/[,\s]+/);
+  } else if (Array.isArray(value)) {
+    raw = value.map((v) => (typeof v === 'string' ? v : String(v)));
+  } else {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const entry of raw) {
+    const name = entry.trim();
+    if (name.length === 0) continue;
+    if (name.length > MAX_SKILL_ARG_NAME_LENGTH) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+    if (names.length >= MAX_SKILL_ARG_NAMES) break;
+  }
+  return names;
+}
+
+/**
+ * Parse a frontmatter `skills` field into the ordered list of skill names to
+ * preload into a spawned agent's context (parity with Claude's agent `skills`).
+ * Accepts a comma/whitespace string or a string array; see
+ * {@link normalizeNameList} for the normalization rules.
+ */
+export function parseAgentSkills(value: unknown): string[] {
+  return normalizeNameList(value);
+}
+
+/**
+ * Parse a frontmatter `allowedAgentTypes` field into the ordered list of
+ * sub-agent types this agent may itself spawn (parity with Claude's
+ * `allowedAgentTypes` metadata, which splits a comma-delimited rule string).
+ * Accepts a comma/whitespace string or a string array.
+ */
+export function parseAllowedAgentTypes(value: unknown): string[] {
+  return normalizeNameList(value);
+}
+
+/**
+ * True when `agent` is permitted to spawn a sub-agent of type `type`. An agent
+ * with no `allowedAgentTypes` (or an empty list) is unrestricted and may spawn
+ * any type; otherwise the type must appear in the allowlist (case-sensitive,
+ * matching how agent types are registered by name).
+ */
+export function canSpawnAgentType(agent: Pick<AgentDefinition, 'allowedAgentTypes'>, type: string): boolean {
+  const allowed = agent.allowedAgentTypes;
+  if (!allowed || allowed.length === 0) return true;
+  return allowed.includes(type);
+}
+
+/**
+ * True when every MCP server the agent REQUIRES is available (parity with Claude
+ * Code's `hasRequiredMcpServers`). With no requirements the agent is always
+ * available. Each required pattern must match at least one available server name
+ * as a case-insensitive substring.
+ */
+export function hasRequiredMcpServers(
+  agent: Pick<AgentDefinition, 'requiredMcpServers'>,
+  availableServers: readonly string[],
+): boolean {
+  if (!agent.requiredMcpServers || agent.requiredMcpServers.length === 0) {
+    return true;
+  }
+  return agent.requiredMcpServers.every((pattern) =>
+    availableServers.some((server) => server.toLowerCase().includes(pattern.toLowerCase())),
+  );
+}
+
+/**
+ * Filter a list of agents down to those whose required MCP servers are all
+ * available (parity with Claude Code's `filterAgentsByMcpRequirements`). Agents
+ * with unmet requirements are dropped from the spawnable/listable set.
+ */
+export function filterAgentsByMcpRequirements<T extends Pick<AgentDefinition, 'requiredMcpServers'>>(
+  agents: readonly T[],
+  availableServers: readonly string[],
+): T[] {
+  return agents.filter((agent) => hasRequiredMcpServers(agent, availableServers));
+}
+
+/**
+ * The property names a skill/command definition may carry that are known to be
+ * SAFE — i.e. they do not themselves grant a capability that should require user
+ * consent (parity with Claude Code's `SAFE_SKILL_PROPERTIES`). Any property
+ * OUTSIDE this allowlist that carries a meaningful (non-empty) value means the
+ * skill is doing something new/unknown and must not be auto-allowed. This is
+ * forward-compatible by construction: a newly-added-but-unlisted property forces
+ * the permission path rather than silently auto-allowing.
+ */
+export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
+  // Prompt/command properties
+  'type', 'progressMessage', 'contentLength', 'content', 'argNames',
+  'argumentNames', 'model', 'effort', 'source', 'pluginInfo',
+  'disableNonInteractive', 'supportsNonInteractive', 'skillRoot', 'context',
+  'agent', 'getPromptForCommand', 'frontmatterKeys',
+  // Base command/skill properties
+  'name', 'description', 'hasUserSpecifiedDescription', 'isEnabled', 'isHidden',
+  'aliases', 'isMcp', 'argumentHint', 'whenToUse', 'paths', 'version',
+  'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
+  'immediate', 'userFacingName',
+]);
+
+/**
+ * True when a skill/command object carries ONLY {@link SAFE_SKILL_PROPERTIES}
+ * (parity with Claude Code's `skillHasOnlySafeProperties`). A property outside
+ * the allowlist is tolerated only when it has no meaningful value (`undefined`,
+ * `null`, an empty array, or an empty object); any meaningful unlisted value
+ * returns `false` so the caller routes the skill through the permission gate.
+ */
+export function skillHasOnlySafeProperties(command: Record<string, unknown>): boolean {
+  for (const key of Object.keys(command)) {
+    if (SAFE_SKILL_PROPERTIES.has(key)) continue;
+    const value = command[key];
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    if (
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.keys(value as object).length === 0
+    ) {
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -392,7 +551,12 @@ export interface AgentValidationResult {
  */
 export function validateAgentDefinition(
   raw: Partial<AgentDefinition>,
-  opts?: { knownTools?: readonly string[]; knownModels?: readonly string[] },
+  opts?: {
+    knownTools?: readonly string[];
+    knownModels?: readonly string[];
+    knownSkills?: readonly string[];
+    knownAgentTypes?: readonly string[];
+  },
 ): AgentValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -440,6 +604,19 @@ export function validateAgentDefinition(
   }
   if (raw.isolation !== undefined && parseIsolationMode(raw.isolation) === undefined) {
     warnings.push(`Unknown isolation mode "${raw.isolation}" (valid: ${AGENT_ISOLATION_MODES.join(', ')})`);
+  }
+
+  if (opts?.knownSkills && raw.skills) {
+    const known = new Set(opts.knownSkills);
+    for (const skill of raw.skills) {
+      if (!known.has(skill)) warnings.push(`Unknown preload skill: "${skill}"`);
+    }
+  }
+  if (opts?.knownAgentTypes && raw.allowedAgentTypes) {
+    const known = new Set(opts.knownAgentTypes);
+    for (const type of raw.allowedAgentTypes) {
+      if (!known.has(type)) warnings.push(`Unknown allowed agent type: "${type}"`);
+    }
   }
 
   return { valid: errors.length === 0, errors, warnings };
