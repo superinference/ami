@@ -129,6 +129,15 @@ export interface InstalledSkillManifest {
    */
   schemaVersion?: number;
   fetchedAt: string;
+  /**
+   * Stable `sha256:<hex>` checksum of the catalog index content the last pull
+   * materialized, computed over a deep key-sorted normalization so it is
+   * insensitive to key ordering / whitespace (mirrors Claude Code's
+   * policyLimits / remoteManagedSettings `computeChecksum`). When a fresh pull
+   * produces the identical checksum the catalog content is unchanged and the
+   * per-skill file re-download is skipped. Absent on legacy manifests.
+   */
+  catalogChecksum?: string;
   skills: Array<{ name: string; version?: string; category?: string; tags?: string[] }>;
 }
 
@@ -513,6 +522,7 @@ export function validateInstalledSkillManifest(raw: unknown): InstalledSkillMani
     owner: typeof o.owner === 'string' ? o.owner : undefined,
     schemaVersion: typeof o.schemaVersion === 'number' ? o.schemaVersion : undefined,
     fetchedAt: typeof o.fetchedAt === 'string' ? o.fetchedAt : '',
+    catalogChecksum: typeof o.catalogChecksum === 'string' ? o.catalogChecksum : undefined,
     skills,
   };
 }

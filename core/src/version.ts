@@ -15,3 +15,20 @@ export const AMI_CLIENT_NAME = 'ami';
 
 /** clientInfo sent in the MCP `initialize` handshake (name + real version). */
 export const AMI_CLIENT_INFO = { name: AMI_CLIENT_NAME, version: AMI_VERSION } as const;
+
+/**
+ * Centralized, version-stamped `User-Agent` string for every outbound HTTP
+ * request AMI makes (skill-catalog fetch, plugin download, update check, …).
+ *
+ * Mirrors Claude Code's `getClaudeCodeUserAgent()` (`src/utils/userAgent.ts`),
+ * which returns `claude-code/${VERSION}` — a single leaf so a version bump is
+ * reflected everywhere and remote endpoints can attribute traffic. AMI's form is
+ * `ami/<version>`, with an optional component suffix so a specific subsystem
+ * stays identifiable in server logs (e.g. `ami/0.7.4 (skill-discovery)`) without
+ * hardcoding an unversioned per-site string. Callers import this ONE helper
+ * rather than re-spelling a bespoke UA per fetch site (AGENTS.md No-Duplication).
+ */
+export function amiUserAgent(component?: string): string {
+  const base = `${AMI_CLIENT_NAME}/${AMI_VERSION}`;
+  return component ? `${base} (${component})` : base;
+}

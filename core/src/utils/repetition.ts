@@ -8,6 +8,8 @@
 //      sequence of tool invocations (identical tool + input repeated), the
 //      anti-infinite-loop guardrail for the agentic engine.
 
+import { stableStringify } from './stable-hash';
+
 export interface RepetitionOptions {
   /** Minimum text length before any detection runs. Default 200. */
   minChars?: number;
@@ -129,22 +131,6 @@ function fnv1a(s: string): string {
     h = Math.imul(h, 0x01000193);
   }
   return (h >>> 0).toString(36);
-}
-
-/**
- * Stable JSON stringify: object keys are emitted in sorted order (recursively),
- * so tool inputs that are structurally identical but key-reordered hash to the
- * same signature. Arrays preserve order (semantically significant).
- */
-function stableStringify(value: unknown): string {
-  if (value === null || value === undefined) return String(value);
-  if (typeof value !== 'object') return JSON.stringify(value) ?? String(value);
-  if (Array.isArray(value)) {
-    return '[' + value.map((v) => stableStringify(v)).join(',') + ']';
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
 /** Build the canonical signature for a (toolName, input) pair. */
