@@ -4,11 +4,12 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock } from '../utils/file-lock';
 import { TEAM_LEAD_NAME, clearMailbox } from './send-message';
 import { PERMISSION_MODES, normalizePermissionMode, PermissionMode, PermissionRule } from '../permissions';
-import { unassignTeammateTasks, setTaskPersistPath } from './task-tracker';
+import { unassignTeammateTasks, setTaskPersistPath, deleteTaskList } from './task-tracker';
 import { sanitizeAgentName } from './task';
 import { log as coreLog } from '../logger';
 import { gitExec } from '../worktree-manager';
 import { isTeammatesEnabled } from './tool-gates';
+import { AGENT_COLORS, AgentColorName, parseAgentColor } from '../skills';
 
 /**
  * Format a deterministic agent id as `agentName@teamName` (mirrors Claude Code's
@@ -33,6 +34,46 @@ export function parseAgentId(agentId: string): { agentName: string; teamName: st
   const at = agentId.indexOf('@');
   if (at === -1) return null;
   return { agentName: agentId.slice(0, at), teamName: agentId.slice(at + 1) };
+}
+
+/**
+ * Round-robin teammate color assignment (parity: Claude Code's
+ * `teammateLayoutManager` assignTeammateColor/getTeammateColor/clearTeammateColors).
+ * Each distinct teammate id is tinted with the next color from the shared
+ * {@link AGENT_COLORS} palette (reused from skills.ts — NOT a second palette) so
+ * concurrent agents are visually distinguishable in the roster/output. The
+ * assignment is idempotent per id (a re-assign returns the same color) and the
+ * lifecycle is reset on team teardown ({@link clearTeammateColors}).
+ */
+const teammateColorAssignments = new Map<string, AgentColorName>();
+let teammateColorIndex = 0;
+
+/**
+ * Assign (or return the already-assigned) display color for a teammate id,
+ * advancing round-robin through {@link AGENT_COLORS}. Idempotent: calling twice for
+ * the same id yields the same color and does not consume a new palette slot.
+ */
+export function assignTeammateColor(teammateId: string): AgentColorName {
+  const existing = teammateColorAssignments.get(teammateId);
+  if (existing) return existing;
+  const color = AGENT_COLORS[teammateColorIndex % AGENT_COLORS.length];
+  teammateColorAssignments.set(teammateId, color);
+  teammateColorIndex += 1;
+  return color;
+}
+
+/** Look up a teammate id's assigned color, or undefined when none was assigned. */
+export function getTeammateColor(teammateId: string): AgentColorName | undefined {
+  return teammateColorAssignments.get(teammateId);
+}
+
+/**
+ * Reset all teammate color assignments (parity: clearTeammateColors, called during
+ * team cleanup so a fresh team starts the palette from the top).
+ */
+export function clearTeammateColors(): void {
+  teammateColorAssignments.clear();
+  teammateColorIndex = 0;
 }
 
 /** Max length of a user-supplied team name (mirrors Claude's identifier bounds). */
@@ -79,6 +120,11 @@ export interface TeamMember {
   cwd?: string;
   subscriptions?: string[];
   permissionMode?: string;
+  /** Presentational display color tinting this teammate's badge/output so
+   *  concurrent agents are distinguishable (parity: Claude Code's per-member
+   *  `color`). Drawn round-robin from the shared {@link AGENT_COLORS} palette on
+   *  spawn ({@link assignTeammateColor}), or set explicitly at declaration. */
+  color?: AgentColorName;
   /** Absolute path of the git worktree this teammate runs in, when it was spawned
    *  into a dedicated worktree. Removed on team_delete (parity: Claude Code's
    *  cleanupTeamDirectories tears down per-teammate worktrees, not just dirs). */
@@ -103,6 +149,9 @@ export interface TeammateStatus {
   status: 'running' | 'idle';
   mode?: string;
   cwd?: string;
+  /** Display color for this teammate (parity: Claude's TeammateStatus.color),
+   *  surfaced so a roster/renderer can tint each agent consistently. */
+  color?: AgentColorName;
   idleSince?: string;
 }
 
@@ -306,6 +355,7 @@ interface DeclaredMember {
   agentType?: string;
   model?: string;
   permissionMode?: PermissionMode;
+  color?: AgentColorName;
 }
 
 /**
@@ -327,6 +377,7 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
     let agentType: string | undefined;
     let model: string | undefined;
     let permRaw: string | undefined;
+    let colorRaw: unknown;
     if (typeof item === 'string') {
       rawName = item;
     } else if (item && typeof item === 'object') {
@@ -335,6 +386,7 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
       agentType = typeof o.agent_type === 'string' ? o.agent_type : undefined;
       model = typeof o.model === 'string' ? o.model : undefined;
       permRaw = typeof o.permission_mode === 'string' ? o.permission_mode : undefined;
+      colorRaw = o.color;
     }
     if (!rawName) continue;
     const name = sanitizeAgentName(rawName);
@@ -347,8 +399,12 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
       }
       permissionMode = valid;
     }
+    // Explicit display color (parity: Claude's per-agent `color`). An unknown or
+    // 'automatic' value normalizes to undefined so the teammate falls back to the
+    // round-robin palette assignment made on spawn.
+    const color = parseAgentColor(colorRaw);
     seen.add(name);
-    out.push({ name, agentType, model, permissionMode });
+    out.push({ name, agentType, model, permissionMode, color });
   }
   return { members: out };
 }
@@ -469,6 +525,7 @@ export const teamCreateTool: ToolDefinition = {
             agent_type: { type: 'string' },
             model: { type: 'string' },
             permission_mode: { type: 'string' },
+            color: { type: 'string', description: `Display color (one of: ${AGENT_COLORS.join(', ')}, or "automatic").` },
           },
         },
       },
@@ -579,6 +636,7 @@ export const teamCreateTool: ToolDefinition = {
           agentType: m.agentType,
           model: m.model,
           permissionMode: m.permissionMode,
+          color: m.color,
           joinedAt: now,
           isActive: false,
         })),
@@ -662,6 +720,11 @@ export const teamDeleteTool: ToolDefinition = {
       const msg = err instanceof Error ? err.message : String(err);
       return { output: `Error: failed to remove team directory ${teamDir}: ${msg}`, isError: true };
     }
+    // Remove the team's 1:1 task list file last (parity: Claude Code's cleanup
+    // order is worktrees -> team dir -> tasks dir). Independent guard: a tasks-file
+    // removal failure must not fail a team_delete that already removed the dir.
+    const tasksRemoved = deleteTaskList(context.cwd, name);
+
     // Flush any queued inbox/relay messages for every team member so a future team
     // that reuses a name never inherits stale messages, and a crashed teammate's
     // undelivered queue does not leak (parity: Claude clears the inbox on disband).
@@ -671,19 +734,28 @@ export const teamDeleteTool: ToolDefinition = {
 
     currentTeam = null;
     currentTeamDir = null;
+    // Reset the round-robin color palette so the next team starts fresh (parity:
+    // clearTeammateColors is called during team cleanup).
+    clearTeammateColors();
     // Unbind the team-scoped task list: subsequent task_tracker calls fall back to
     // the default list now that the team (and its 1:1 task list) is gone.
     setTaskPersistPath(context.cwd);
     const wtNote = worktreesRemoved > 0
       ? ` and ${worktreesRemoved} worktree${worktreesRemoved === 1 ? '' : 's'}`
       : '';
-    return { output: `Team "${name}" deleted (directories${wtNote} cleaned up).` };
+    const tasksNote = tasksRemoved ? ', task list removed' : '';
+    return { output: `Team "${name}" deleted (directories${wtNote} cleaned up${tasksNote}).` };
   },
 };
 
 export function getCurrentTeam(): TeamFile | null { return currentTeam; }
 
-export function resetTeam(): void { currentTeam = null; currentTeamDir = null; }
+export function resetTeam(): void {
+  currentTeam = null;
+  currentTeamDir = null;
+  // Reset the color palette so a fresh team starts assignment from the top.
+  clearTeammateColors();
+}
 
 /**
  * Register (or update) a teammate in the current team file. Called when a named
@@ -694,9 +766,14 @@ export function registerTeamMember(member: Omit<TeamMember, 'joinedAt' | 'isActi
   if (!currentTeam) return;
   const existing = currentTeam.members.find(m => m.name === member.name || m.agentId === member.agentId);
   if (existing) {
-    Object.assign(existing, member, { isActive: member.isActive ?? true });
+    // Preserve any color already assigned; otherwise honor an explicit color or
+    // assign the next palette color round-robin (parity: a spawned teammate is
+    // tinted so its output is distinguishable).
+    const color = existing.color ?? member.color ?? assignTeammateColor(member.agentId || existing.agentId);
+    Object.assign(existing, member, { isActive: member.isActive ?? true, color });
   } else {
-    currentTeam.members.push({ ...member, joinedAt: member.joinedAt || new Date().toISOString(), isActive: member.isActive ?? true });
+    const color = member.color ?? assignTeammateColor(member.agentId);
+    currentTeam.members.push({ ...member, color, joinedAt: member.joinedAt || new Date().toISOString(), isActive: member.isActive ?? true });
   }
   persistTeam();
 }
@@ -893,6 +970,9 @@ export function getTeammateStatuses(team: TeamFile | null = currentTeam): Teamma
       status: running ? 'running' : 'idle',
       mode: m.permissionMode,
       cwd: m.cwd,
+      // Prefer the persisted member color; fall back to any live round-robin
+      // assignment keyed by the member's agentId.
+      color: m.color ?? getTeammateColor(m.agentId),
       idleSince: running ? undefined : m.idleSince,
     });
   }

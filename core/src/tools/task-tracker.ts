@@ -125,6 +125,32 @@ export function setTaskPersistPath(cwd: string, listId?: string): void {
   loadFromDisk();
 }
 
+/**
+ * Delete a scoped task-list file from disk (parity: Claude Code removes a team's
+ * tasks directory on disband — in AMI a team's 1:1 task list is a single
+ * `tasks-<id>.json` file). The DEFAULT shared list (`tasks.json`) is never removed
+ * — a bad listId can only ever delete its own scoped file. Also unbinds the
+ * in-memory persist path when it pointed at the deleted file so a later mutation
+ * does not resurrect it. Best-effort: a missing file is not an error. Returns true
+ * only when a scoped file was actually removed.
+ */
+export function deleteTaskList(cwd: string, listId: string): boolean {
+  const resolved = resolveTaskListId(listId);
+  if (resolved === DEFAULT_TASKS_MODE_TASK_LIST_ID) return false;
+  const file = path.join(projectStateDir(cwd), taskFileName(resolved));
+  let removed = false;
+  try {
+    if (fs.existsSync(file)) {
+      fs.rmSync(file, { force: true });
+      removed = true;
+    }
+  } catch {
+    /* best-effort — a failed removal must not block team teardown */
+  }
+  if (persistPath === file) persistPath = null;
+  return removed;
+}
+
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'completed']);
 
 /**
