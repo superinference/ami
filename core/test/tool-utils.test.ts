@@ -25,6 +25,11 @@ import {
   validateFilePath,
   sanitizePathForDisplay,
   validateFileWritePath,
+  resolveDeepestExistingAncestor,
+  detectVcs,
+  normalizePathForComparison,
+  isWithinWorkspaceRoots,
+  _toolUtilsHooks,
 } from '../src/tools/tool-utils';
 
 // ---------------------------------------------------------------------------
@@ -1209,5 +1214,264 @@ describe('validateFileWritePath', () => {
     assert.equal(result.valid, false);
     assert.ok(result.error);
     assert.ok(result.error.includes('symlink'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveDeepestExistingAncestor (gaps #2, #3, #11, #34)
+// ---------------------------------------------------------------------------
+
+describe('resolveDeepestExistingAncestor', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-anc-')); });
+  afterEach(() => {
+    _toolUtilsHooks.realpathSync = (p) => fs.realpathSync(p);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('resolves a not-yet-created file under an existing real directory', () => {
+    const real = fs.realpathSync(tmpDir);
+    const res = resolveDeepestExistingAncestor(path.join(tmpDir, 'a', 'b', 'new.txt'));
+    assert.equal(res.kind, 'resolved');
+    if (res.kind === 'resolved') {
+      assert.equal(res.path, path.join(real, 'a', 'b', 'new.txt'));
+    }
+  });
+
+  it('follows a live parent symlink to its real target', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'si-anc-out-'));
+    const realOutside = fs.realpathSync(outside);
+    fs.symlinkSync(outside, path.join(tmpDir, 'link'));
+    const res = resolveDeepestExistingAncestor(path.join(tmpDir, 'link', 'child.txt'));
+    assert.equal(res.kind, 'resolved');
+    if (res.kind === 'resolved') {
+      assert.equal(res.path, path.join(realOutside, 'child.txt'));
+    }
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('flags a dangling symlink target', () => {
+    const link = path.join(tmpDir, 'dangling');
+    fs.symlinkSync(path.join(tmpDir, 'nope', 'gone'), link);
+    const res = resolveDeepestExistingAncestor(link);
+    assert.equal(res.kind, 'dangling');
+  });
+
+  it('flags a dangling symlink in an ancestor component', () => {
+    const link = path.join(tmpDir, 'danglingdir');
+    fs.symlinkSync(path.join(tmpDir, 'missing-target'), link);
+    const res = resolveDeepestExistingAncestor(path.join(link, 'child.txt'));
+    assert.equal(res.kind, 'dangling');
+  });
+
+  it('reports a symlink loop as loop (ELOOP via injected realpath)', () => {
+    _toolUtilsHooks.realpathSync = () => { const e = new Error('loop') as NodeJS.ErrnoException; e.code = 'ELOOP'; throw e; };
+    const res = resolveDeepestExistingAncestor(path.join(tmpDir, 'x', 'y.txt'));
+    assert.equal(res.kind, 'loop');
+  });
+
+  it('fails closed (unverifiable) on EACCES', () => {
+    _toolUtilsHooks.realpathSync = () => { const e = new Error('denied') as NodeJS.ErrnoException; e.code = 'EACCES'; throw e; };
+    const res = resolveDeepestExistingAncestor(path.join(tmpDir, 'x.txt'));
+    assert.equal(res.kind, 'unverifiable');
+    if (res.kind === 'unverifiable') assert.equal(res.code, 'EACCES');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveFilePath — UNC + errno + dangling-ancestor wiring (gaps #4, #32, #37)
+// ---------------------------------------------------------------------------
+
+describe('resolveFilePath — security additions', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-rfp-sec-')); });
+  afterEach(() => {
+    _toolUtilsHooks.realpathSync = (p) => fs.realpathSync(p);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('blocks a UNC path before any filesystem access', () => {
+    const { error } = resolveFilePath('\\\\server\\share\\f.txt', tmpDir);
+    assert.ok(error);
+    assert.ok(error!.output.includes('UNC'));
+  });
+
+  it('blocks a forward-slash UNC path', () => {
+    const { error } = resolveFilePath('//server/share/f.txt', tmpDir);
+    assert.ok(error);
+    assert.ok(error!.output.includes('UNC'));
+  });
+
+  it('refuses a new file whose parent symlink escapes the workspace', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'si-rfp-out-'));
+    fs.symlinkSync(outside, path.join(tmpDir, 'escape'));
+    const { error } = resolveFilePath('escape/new.txt', tmpDir);
+    assert.ok(error, 'write through an escaping parent symlink must be blocked');
+    assert.ok(error!.output.includes('symlink'));
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('fails closed with ELOOP for a real symlink loop', () => {
+    const a = path.join(tmpDir, 'a');
+    const b = path.join(tmpDir, 'b');
+    fs.symlinkSync(b, a);
+    fs.symlinkSync(a, b);
+    const { error } = resolveFilePath('a', tmpDir);
+    assert.ok(error);
+    assert.ok(error!.output.includes('symlink loop'));
+  });
+
+  it('fails closed with EACCES (cannot verify containment) via the ancestor walk', () => {
+    // Non-existent target: the main realpath throws a real ENOENT, then the
+    // ancestor walk uses the injected hook and hits EACCES.
+    _toolUtilsHooks.realpathSync = () => { const e = new Error('denied') as NodeJS.ErrnoException; e.code = 'EACCES'; throw e; };
+    const { error } = resolveFilePath('nonexistent-sub/file.txt', tmpDir);
+    assert.ok(error);
+    assert.ok(error!.output.includes('cannot verify containment'));
+  });
+
+  it('refuses writing to a dangling symlink target', () => {
+    fs.symlinkSync(path.join(tmpDir, 'gone', 'x'), path.join(tmpDir, 'dang'));
+    const { error } = resolveFilePath('dang', tmpDir);
+    assert.ok(error);
+    assert.ok(error!.output.includes('dangling symlink'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectVcs (gaps #15, #16) + ancestor-walking hasGit
+// ---------------------------------------------------------------------------
+
+describe('detectVcs', () => {
+  let tmpDir: string;
+  let savedP4: string | undefined;
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'si-vcs-')));
+    savedP4 = process.env.P4PORT;
+    delete process.env.P4PORT;
+  });
+  afterEach(() => {
+    if (savedP4 === undefined) delete process.env.P4PORT; else process.env.P4PORT = savedP4;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('detects a git repo at the directory itself', () => {
+    fs.mkdirSync(path.join(tmpDir, '.git'));
+    assert.deepEqual(detectVcs(tmpDir), ['git']);
+  });
+
+  it('detects git from a nested subdirectory (walks ancestors)', () => {
+    fs.mkdirSync(path.join(tmpDir, '.git'));
+    const sub = path.join(tmpDir, 'a', 'b');
+    fs.mkdirSync(sub, { recursive: true });
+    assert.ok(detectVcs(sub).includes('git'));
+  });
+
+  it('treats a .git FILE (worktree/submodule) as git', () => {
+    fs.writeFileSync(path.join(tmpDir, '.git'), 'gitdir: /somewhere');
+    assert.ok(detectVcs(tmpDir).includes('git'));
+  });
+
+  it('detects mercurial via .hg marker', () => {
+    fs.mkdirSync(path.join(tmpDir, '.hg'));
+    assert.ok(detectVcs(tmpDir).includes('mercurial'));
+  });
+
+  it('detects svn via .svn marker', () => {
+    fs.mkdirSync(path.join(tmpDir, '.svn'));
+    assert.ok(detectVcs(tmpDir).includes('svn'));
+  });
+
+  it('detects perforce via the P4PORT env knob', () => {
+    process.env.P4PORT = 'perforce:1666';
+    assert.ok(detectVcs(tmpDir).includes('perforce'));
+  });
+
+  it('detects a git + mercurial hybrid working copy', () => {
+    fs.mkdirSync(path.join(tmpDir, '.git'));
+    fs.mkdirSync(path.join(tmpDir, '.hg'));
+    const got = detectVcs(tmpDir);
+    assert.ok(got.includes('git') && got.includes('mercurial'));
+  });
+
+  it('returns [] for a plain directory with no VCS', () => {
+    assert.deepEqual(detectVcs(tmpDir), []);
+  });
+
+  it('uses process.cwd() when no dir is given', () => {
+    // Smoke: must not throw and must return an array.
+    assert.ok(Array.isArray(detectVcs()));
+  });
+});
+
+describe('buildToolDescriptionContext — ancestor-walking git', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'si-btdc-'))); });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('reports hasGit=true from a subdirectory of a repo', () => {
+    fs.mkdirSync(path.join(tmpDir, '.git'));
+    const sub = path.join(tmpDir, 'src', 'deep');
+    fs.mkdirSync(sub, { recursive: true });
+    const ctx = buildToolDescriptionContext(sub);
+    assert.equal(ctx.hasGit, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// New curated provider secret rules (gap #38)
+// ---------------------------------------------------------------------------
+
+describe('scanForSecrets / redactSecrets — added provider rules (gap #38)', () => {
+  it('detects and redacts a Hugging Face access token', () => {
+    const tok = 'hf_' + 'a'.repeat(34);
+    const hits = scanForSecrets(`HF_TOKEN=${tok}`);
+    assert.ok(hits.some(h => h.ruleId === 'huggingface-access-token'));
+    assert.equal(hits.some(h => h.label === 'HuggingFace Access Token'), true);
+    const red = redactSecrets(`token ${tok} here`);
+    assert.ok(!red.includes(tok));
+    assert.ok(red.includes('[REDACTED-SECRET]'));
+  });
+
+  it('detects and redacts a DigitalOcean PAT', () => {
+    const tok = 'dop_v1_' + 'a'.repeat(64);
+    const hits = scanForSecrets(`DO=${tok}`);
+    assert.ok(hits.some(h => h.ruleId === 'digitalocean-pat'));
+    assert.ok(!redactSecrets(tok).includes(tok));
+  });
+
+  it('detects and redacts a DigitalOcean OAuth token', () => {
+    const tok = 'doo_v1_' + 'b'.repeat(64);
+    const hits = scanForSecrets(`DO=${tok}`);
+    assert.ok(hits.some(h => h.ruleId === 'digitalocean-access-token'));
+    assert.ok(!redactSecrets(tok).includes(tok));
+  });
+
+  it('does not false-positive on a short hf_ fragment', () => {
+    const hits = scanForSecrets('hf_short');
+    assert.ok(!hits.some(h => h.ruleId === 'huggingface-access-token'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NFC path normalization in containment/comparison (gaps #29, #35)
+// ---------------------------------------------------------------------------
+
+describe('NFC path normalization (gaps #29, #35)', () => {
+  const nfd = 'café';          // 'e' + U+0301 combining acute = decomposed (NFD)
+  const nfc = nfd.normalize('NFC');    // single precomposed 'e-acute' = NFC
+
+  it('folds NFD and NFC spellings to the same comparison key', () => {
+    assert.notEqual(nfc, nfd, 'the two spellings must be distinct byte sequences');
+    assert.equal(
+      normalizePathForComparison('/proj/' + nfd + '/x.ts'),
+      normalizePathForComparison('/proj/' + nfc + '/x.ts'),
+    );
+  });
+
+  it('treats an NFD target under an NFC-spelled root as in-bounds', () => {
+    const root = path.join('/proj', nfc);
+    const target = path.join('/proj', nfd, 'sub', 'file.ts');
+    assert.equal(isWithinWorkspaceRoots(target, root), true);
   });
 });

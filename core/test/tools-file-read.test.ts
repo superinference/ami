@@ -480,8 +480,12 @@ describe('fileReadTool – symlink target validation', () => {
     const result = await fileReadTool.execute({ file_path: link }, ctx());
     assert.equal(result.isError, true);
     assert.ok(
-      result.output.includes('not found') || result.output.includes('not readable'),
-      `expected not-found error for dangling symlink, got: ${result.output}`,
+      // The shared resolver now refuses a dangling symlink explicitly (a
+      // dangling link is a write-redirect attack vector); older generic
+      // not-found/not-readable wording is still accepted for robustness.
+      result.output.includes('dangling symlink') ||
+        result.output.includes('not found') || result.output.includes('not readable'),
+      `expected dangling-symlink/not-found error, got: ${result.output}`,
     );
   });
 

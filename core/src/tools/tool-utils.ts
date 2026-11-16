@@ -7,7 +7,7 @@ import { validatePathExpansionSafety, normalizeCaseForComparison } from '../util
 /**
  * Dependency seam so tests can drive branches that are otherwise shadowed by
  * earlier guards or never thrown by the real fs:
- *  - `existsSync` lets buildToolDescriptionContext's defensive catch arms run.
+ *  - `existsSync` lets buildToolDescriptionContext's package.json defensive catch arm run.
  *  - `realpathSync` lets safeReadFile's post-resolveFilePath symlink re-check
  *    (the TOCTOU swap guard) run even though resolveFilePath already resolved
  *    the same path inside the workspace.
@@ -49,7 +49,12 @@ export function isCaseInsensitiveFs(platform: NodeJS.Platform = _pathCompareHook
  * `path.normalize` (case preserved). Mirrors Claude Code's `normalizePathForComparison`.
  */
 export function normalizePathForComparison(filePath: string): string {
-  const normalized = path.normalize(filePath);
+  // NFC-normalize so the two Unicode spellings of the same filename (e.g. a
+  // precomposed "é" U+00E9 vs the decomposed "e" + U+0301) collapse to ONE
+  // comparison key — otherwise a path reached via a decomposed spelling would
+  // dodge a dedup/containment check that stored the composed form. Mirrors Claude
+  // Code's NFC normalization of resolved paths used for containment checks.
+  const normalized = path.normalize(filePath).normalize('NFC');
   if (isCaseInsensitiveFs()) {
     return normalized.replace(/\\/g, '/').toLowerCase();
   }
@@ -162,7 +167,9 @@ export function isWithinWorkspaceRoots(
   cwd: string,
   allowedRoots: readonly string[] = [],
 ): boolean {
-  const strip = (p: string): string => { const n = path.resolve(p); return n.replace(/[/\\]+$/, '') || n; };
+  // NFC-normalize both sides so a Unicode-equivalent spelling of the same path
+  // cannot slip a containment check (see normalizePathForComparison).
+  const strip = (p: string): string => { const n = path.resolve(p).normalize('NFC'); return n.replace(/[/\\]+$/, '') || n; };
   const target = strip(resolved);
   for (const root of [cwd, ...allowedRoots].filter(Boolean)) {
     const r = strip(root);
@@ -310,11 +317,77 @@ function outsideWorkspaceError(filePath: string, cwd: string, allowedRoots: read
   return { output: `Error: path "${filePath}" is outside the workspace directory.${hint}`, isError: true };
 }
 
+/**
+ * The outcome of walking a (possibly not-yet-existing) absolute path UP to its
+ * deepest existing ancestor to learn where a NEW-file write would ACTUALLY land
+ * once the OS follows the parent symlinks:
+ *  - `resolved`     — the realpath of the deepest existing ancestor with the
+ *                     non-existent tail segments rejoined.
+ *  - `dangling`     — a component is a symlink whose target does not exist (an
+ *                     attack vector: a write would follow it and create a file
+ *                     outside the workspace).
+ *  - `loop`         — a symlink loop (ELOOP).
+ *  - `unverifiable` — containment could not be checked (EACCES/EIO/…); fail closed.
+ */
+export type AncestorResolution =
+  | { kind: 'resolved'; path: string }
+  | { kind: 'dangling'; at: string }
+  | { kind: 'loop'; at: string }
+  | { kind: 'unverifiable'; at: string; code: string };
+
+/**
+ * Resolve the deepest EXISTING ancestor of an absolute path, following parent
+ * symlinks, so callers can containment-check where a not-yet-created target
+ * would really be written. Walks up with `realpathSync`; an ENOENT at a
+ * component is distinguished — via `lstat` — into a dangling symlink (link entry
+ * present, target gone → blocked) vs a genuinely absent segment (safe to walk
+ * past). ELOOP and EACCES/EIO fail closed. Mirrors Claude Code's
+ * `resolveDeepestExistingAncestorSync` / teamMemPaths `realpathDeepestExisting`.
+ */
+export function resolveDeepestExistingAncestor(absolutePath: string): AncestorResolution {
+  const tail: string[] = [];
+  let current = absolutePath;
+  for (let parent = path.dirname(current); current !== parent; parent = path.dirname(current)) {
+    try {
+      const real = _toolUtilsHooks.realpathSync(current);
+      return { kind: 'resolved', path: tail.length === 0 ? real : path.join(real, ...[...tail].reverse()) };
+    } catch (err) {
+      const code = getErrnoCode(err);
+      if (code === 'ELOOP') return { kind: 'loop', at: current };
+      if (code === 'ENOENT') {
+        // lstat succeeds for a dangling symlink's own entry but fails (ENOENT)
+        // for a truly absent path — the two need different handling.
+        try {
+          const st = fs.lstatSync(current);
+          if (st.isSymbolicLink()) return { kind: 'dangling', at: current };
+          // Non-symlink that realpath could not resolve ⇒ a dangling symlink sits
+          // in an ancestor; keep walking up to reach/clear it.
+        } catch { /* truly absent — safe to walk up */ }
+      } else if (code !== 'ENOTDIR' && code !== 'ENAMETOOLONG') {
+        // EACCES / EIO / etc. — cannot verify containment; fail closed.
+        return { kind: 'unverifiable', at: current, code: code ?? 'UNKNOWN' };
+      }
+      tail.push(path.basename(current));
+      current = parent;
+    }
+  }
+  // Reached the filesystem root without hitting a symlink — the logical path is
+  // the landing; the caller's containment check decides.
+  return { kind: 'resolved', path: absolutePath };
+}
+
 export function resolveFilePath(
   filePath: string,
   cwd: string,
   allowedRoots: readonly string[] = [],
 ): { resolved: string; error?: ToolResult } {
+  // UNC guard — BEFORE any filesystem access. Merely touching a UNC path on
+  // Windows can open an outbound SMB connection that leaks NTLM credentials, so
+  // the shared resolver refuses it for EVERY caller (file_edit, index.ts, …), not
+  // just the ones that happen to pre-check. Claude Code blocks UNC in safeResolvePath.
+  if (isUNCPath(filePath)) {
+    return { resolved: filePath, error: { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${filePath}`, isError: true } };
+  }
   const resolved = path.isAbsolute(filePath)
     ? filePath
     : path.resolve(cwd, filePath);
@@ -330,16 +403,31 @@ export function resolveFilePath(
     if (!isWithinWorkspaceRoots(real, cwd, allowedRoots)) {
       return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
     }
-  } catch {
-    // File doesn't exist yet — but check if parent dir resolves outside workspace via symlink
-    const parentDir = path.dirname(resolved);
-    try {
-      const realParent = fs.realpathSync(parentDir);
-      if (!isWithinWorkspaceRoots(realParent, cwd, allowedRoots)) {
-        return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
-      }
-    } catch {
-      // Parent doesn't exist either — logical path check above is sufficient
+  } catch (err) {
+    const code = getErrnoCode(err);
+    if (code === 'ELOOP') {
+      return { resolved, error: { output: `Error: path "${filePath}" contains a symlink loop — refused.`, isError: true } };
+    }
+    if (code === 'EACCES' || code === 'EIO') {
+      return { resolved, error: { output: `Error: cannot verify containment of "${filePath}" (${code}) — refused.`, isError: true } };
+    }
+    // ENOENT/ENOTDIR — the target does not exist yet. Resolve where a NEW-file
+    // write would ACTUALLY land by walking up to the deepest existing ancestor
+    // (following parent symlinks), so a dangling-or-live parent symlink that
+    // escapes the workspace is still caught (the old code only checked the
+    // IMMEDIATE parent — a grandparent symlink slipped through).
+    const landing = resolveDeepestExistingAncestor(resolved);
+    if (landing.kind === 'dangling') {
+      return { resolved, error: { output: `Error: path "${filePath}" is a dangling symlink — refused.`, isError: true } };
+    }
+    if (landing.kind === 'loop') {
+      return { resolved, error: { output: `Error: path "${filePath}" contains a symlink loop — refused.`, isError: true } };
+    }
+    if (landing.kind === 'unverifiable') {
+      return { resolved, error: { output: `Error: cannot verify containment of "${filePath}" (${landing.code}) — refused.`, isError: true } };
+    }
+    if (!isWithinWorkspaceRoots(landing.path, cwd, allowedRoots)) {
+      return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
     }
   }
   return { resolved };
@@ -513,9 +601,55 @@ export function extractQuery(input: Record<string, unknown>): { query: string; e
   return { query: input.query as string };
 }
 
+/**
+ * VCS working-copy markers. Git is handled separately (it is detected by walking
+ * ANCESTORS, since a subdirectory of a repo is still "in" the repo); the rest are
+ * checked in the given directory only. Mirrors Claude Code's `VCS_MARKERS`.
+ */
+const VCS_MARKERS: ReadonlyArray<readonly [marker: string, name: string]> = [
+  ['.hg', 'mercurial'],
+  ['.svn', 'svn'],
+  ['.p4config', 'perforce'],
+  ['.jj', 'jujutsu'],
+  ['.sl', 'sapling'],
+];
+
+/**
+ * Detect the version-control system(s) governing `dir` (default cwd). Git is
+ * found by walking ancestors synchronously (so being inside any subdirectory of a
+ * repo still reports `git`, mirroring Claude Code's `findGitRoot`); Mercurial/
+ * SVN/Perforce/Jujutsu/Sapling are detected by their marker in `dir`; Perforce is
+ * additionally inferred from the `P4PORT` env knob. Returns the detected VCS
+ * names (possibly several, e.g. a git + perforce hybrid). Mirrors Claude Code's
+ * `detectVcs(dir?)`.
+ */
+export function detectVcs(dir: string = process.cwd()): string[] {
+  const detected = new Set<string>();
+  if (process.env.P4PORT) detected.add('perforce');
+  // Git: walk ancestors until a `.git` dir/file is found (worktrees/submodules
+  // use a `.git` FILE), stopping at the filesystem root.
+  let current = path.resolve(dir);
+  for (;;) {
+    try {
+      const st = fs.statSync(path.join(current, '.git'));
+      if (st.isDirectory() || st.isFile()) { detected.add('git'); break; }
+    } catch { /* no .git at this level — keep walking up */ }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  for (const [marker, name] of VCS_MARKERS) {
+    try { if (fs.existsSync(path.join(dir, marker))) detected.add(name); } catch { /* unreadable */ }
+  }
+  return [...detected];
+}
+
 export function buildToolDescriptionContext(cwd: string): ToolDescriptionContext {
   const ctx: ToolDescriptionContext = { cwd, projectName: path.basename(cwd) };
-  try { ctx.hasGit = _toolUtilsHooks.existsSync(path.join(cwd, '.git')); } catch { ctx.hasGit = false; }
+  // Walk ancestors for git so a subdirectory of a repo still reports hasGit (the
+  // old cwd-only existsSync check missed that). detectVcs swallows its own fs
+  // errors, so no extra guard is needed here.
+  ctx.hasGit = detectVcs(cwd).includes('git');
   try { ctx.hasPackageJson = _toolUtilsHooks.existsSync(path.join(cwd, 'package.json')); } catch { ctx.hasPackageJson = false; }
   return ctx;
 }
@@ -584,6 +718,13 @@ const SECRET_RULES: SecretRule[] = [
   // temp credentials) and the A3T…/ABIA/ACCA prefixes, not just long-lived AKIA.
   { id: 'aws-access-token', source: '(?:^|[^a-zA-Z0-9])((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})' },
   { id: 'gcp-api-key', source: '(?:^|[^a-zA-Z0-9])(AIza[a-zA-Z0-9_-]{35})' },
+  // Hugging Face user access tokens (`hf_` + 34 letters). PARITY ADD — matches
+  // Claude Code's huggingface-access-token rule; AI-model credentials leak here too.
+  { id: 'huggingface-access-token', source: '(?:^|[^a-zA-Z0-9])(hf_[a-zA-Z]{34})' },
+  // DigitalOcean personal-access / OAuth tokens (`dop_v1_`/`doo_v1_` + 64 hex).
+  // PARITY ADD — curated-provider breadth (Claude Code SECRET_RULES).
+  { id: 'digitalocean-pat', source: '(?:^|[^a-zA-Z0-9])(dop_v1_[a-f0-9]{64})' },
+  { id: 'digitalocean-access-token', source: '(?:^|[^a-zA-Z0-9])(doo_v1_[a-f0-9]{64})' },
   // GCP / Vertex AI service-account identities (`<name>@<project>.iam.gserviceaccount.com`).
   // These name a privileged service identity; redacting + detecting them keeps a
   // leaked service-account email out of shared transcripts (Claude Code parity).
@@ -641,6 +782,7 @@ const RULE_LABEL_SPECIAL: Record<string, string> = {
   aws: 'AWS', gcp: 'GCP', api: 'API', pat: 'PAT', jwt: 'JWT', npm: 'NPM',
   pypi: 'PyPI', oauth: 'OAuth', github: 'GitHub', gitlab: 'GitLab',
   openai: 'OpenAI', sendgrid: 'SendGrid', groq: 'Groq',
+  huggingface: 'HuggingFace', digitalocean: 'DigitalOcean',
 };
 
 /** Convert a kebab-case rule id to a human-readable label (never a secret). */
