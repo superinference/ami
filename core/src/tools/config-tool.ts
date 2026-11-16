@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { safeWriteConfig, validateConfigJson, stripJsoncComments } from '../config';
+import { updateConfigFile, validateConfigJson, stripJsoncComments, type ProjectConfig } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
 import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
 
@@ -312,6 +312,29 @@ function readConfigRaw(configPath: string): { config?: Record<string, unknown>; 
   return { config: JSON.parse(stripped) as Record<string, unknown> };
 }
 
+/**
+ * Persist a (possibly nested) mutation to the config file through the guarded
+ * functional writer {@link updateConfigFile}: the mutation is re-applied to a
+ * FRESH re-read of the file right before the atomic write, so a concurrent writer
+ * is not clobbered (lost-update guard) and a present-but-corrupt file is refused
+ * rather than overwritten. Returns an error string on refusal / write failure.
+ */
+function writeConfigMutation(configPath: string, mutate: (cfg: Record<string, unknown>) => void): { error?: string } {
+  try {
+    const res = updateConfigFile(configPath, cur => {
+      const copy = { ...cur } as Record<string, unknown>;
+      mutate(copy);
+      return copy as ProjectConfig;
+    });
+    if (res.reason === 'corrupt') {
+      return { error: `Refusing to write: existing config is corrupt (${res.diagnostic?.message ?? 'parse error'}). Fix ${configPath} first.` };
+    }
+    return {};
+  } catch (err) {
+    return { error: `Error writing config: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 function handleGet(configPath: string, key: string | undefined): ToolResult {
   const { config, error, absent } = readConfigRaw(configPath);
   if (absent) return { output: 'No project config found. Create .ami/config.json via action="set".' };
@@ -363,11 +386,9 @@ function handleSet(configPath: string, input: Record<string, unknown>): ToolResu
     if (previousValue === undefined) {
       return { output: `${key} is already at its default.`, metadata: { operation: 'set', setting: key, previousValue, newValue: undefined } };
     }
-    deleteValueByPath(config, settingPath);
-    try {
-      safeWriteConfig(configPath, config);
-    } catch (err) {
-      return { output: `Error writing config: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    const resetWrite = writeConfigMutation(configPath, cfg => deleteValueByPath(cfg, settingPath));
+    if (resetWrite.error) {
+      return { output: resetWrite.error, isError: true };
     }
     return { output: `Reset ${key} to default.`, metadata: { operation: 'set', setting: key, previousValue, newValue: undefined } };
   }
@@ -402,11 +423,9 @@ function handleSet(configPath: string, input: Record<string, unknown>): ToolResu
     return { output: `${key} is already ${JSON.stringify(finalValue)} (no change).`, metadata: { operation: 'set', setting: key, previousValue, newValue: finalValue } };
   }
 
-  setValueByPath(config, settingPath, finalValue);
-  try {
-    safeWriteConfig(configPath, config);
-  } catch (err) {
-    return { output: `Error writing config: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+  const setWrite = writeConfigMutation(configPath, cfg => setValueByPath(cfg, settingPath, finalValue));
+  if (setWrite.error) {
+    return { output: setWrite.error, isError: true };
   }
   return {
     output: `Set ${key} = ${JSON.stringify(finalValue)}${previousValue !== undefined ? ` (was ${JSON.stringify(previousValue)})` : ''}`,

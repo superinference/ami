@@ -383,6 +383,34 @@ function tokenize(text: string): string[] {
     .filter(t => t.length > 2);
 }
 
+/**
+ * Signals that a `reference`-type memory is a WARNING/gotcha/known-issue rather
+ * than plain usage/API documentation. When a tool is in active use, its usage
+ * reference is noise (the conversation already demonstrates it) — but warnings
+ * matter MOST precisely then, so a reference memory matching this is never
+ * suppressed. Mirrors Claude Code's findRelevantMemories recentTools rule.
+ */
+const TOOL_WARNING_SIGNAL_RE =
+  /\b(warn(?:ing)?s?|gotchas?|caveats?|pitfalls?|cautions?|bugs?|broken|fails?|failure|limitations?|avoid|deprecat\w*|known[ -]issues?|do ?n['’]?t)\b/i;
+
+/**
+ * Whether a memory is a pure usage/API reference for a tool that is already in
+ * active use, and should therefore be suppressed from relevance selection. Only
+ * `reference`-type memories qualify; a memory carrying a warning/gotcha/known-issue
+ * signal is preserved even for an active tool (that is exactly when it matters).
+ */
+function isSuppressedToolReference(mem: MemoryEntry, recentTools: readonly string[]): boolean {
+  if (mem.memoryType !== 'reference') return false;
+  const hay = `${mem.name || ''} ${mem.description || ''} ${mem.content}`.toLowerCase();
+  const mentionsRecentTool = recentTools.some(t => {
+    const name = (t || '').trim().toLowerCase();
+    return name.length > 0 && hay.includes(name);
+  });
+  if (!mentionsRecentTool) return false;
+  // Keep warnings/gotchas/known-issues about an active tool.
+  return !TOOL_WARNING_SIGNAL_RE.test(hay);
+}
+
 function computeRelevanceScore(memoryText: string, queryTokens: string[], idfMap: Map<string, number>): number {
   const memTokens = tokenize(memoryText);
   if (memTokens.length === 0) return 0;
@@ -818,9 +846,38 @@ export class MemoryManager {
   /**
    * Select the most relevant memories for a given query context using BM25 scoring.
    * Returns up to `maxResults` memories sorted by relevance.
+   *
+   * `opts.alreadySurfaced` — paths already shown in prior turns are filtered out
+   * BEFORE scoring/short-circuit, so the fixed result budget is spent on fresh
+   * candidates instead of re-picking files the caller will discard (mirrors
+   * Claude Code's findRelevantMemories `alreadySurfaced`).
+   *
+   * `opts.recentTools` — when a tool is in active use, its pure usage/API
+   * reference memory is noise (the conversation already demonstrates it), so
+   * such `reference`-type memories are dropped; warning/gotcha/known-issue
+   * memories about the same tool are preserved (mirrors the `recentTools` rule).
    */
-  selectRelevantMemories(query: string, maxResults: number = 5): MemoryEntry[] {
-    const all = this.loadMemories();
+  selectRelevantMemories(
+    query: string,
+    maxResults: number = 5,
+    opts?: { recentTools?: readonly string[]; alreadySurfaced?: ReadonlySet<string> },
+  ): MemoryEntry[] {
+    let all = this.loadMemories();
+
+    // Cross-turn dedup: drop already-surfaced memories before anything else so
+    // the budget goes to fresh candidates, not re-picks the caller discards.
+    const surfaced = opts?.alreadySurfaced;
+    if (surfaced && surfaced.size > 0) {
+      all = all.filter(m => !surfaced.has(m.path));
+    }
+
+    // Active-tool precision filter: suppress pure-reference docs for tools
+    // already in active use, but keep their warnings/gotchas/known-issues.
+    const recentTools = opts?.recentTools;
+    if (recentTools && recentTools.length > 0) {
+      all = all.filter(m => !isSuppressedToolReference(m, recentTools));
+    }
+
     if (all.length <= maxResults) return all;
 
     const queryTokens = tokenize(query);

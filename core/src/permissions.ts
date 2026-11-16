@@ -4,6 +4,7 @@ import * as os from 'os';
 import { expandPath } from './utils/path';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath } from './tools/bash-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
+import { getManagedConfigPath } from './config';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,6 +110,40 @@ export const PERMISSION_UPDATE_DESTINATIONS = [
 ] as const;
 export type PermissionUpdateDestination = (typeof PERMISSION_UPDATE_DESTINATIONS)[number];
 
+/**
+ * The full set of tiers a permission rule can ORIGINATE from — a superset of the
+ * writable {@link PERMISSION_UPDATE_DESTINATIONS}. It adds three read-only sources
+ * that a rule can be loaded/evaluated from but can NEVER be persisted to:
+ *  - `policySettings` — managed/enterprise rules (admin-owned, highest precedence);
+ *  - `flagSettings`   — rules injected from a settings file named by a launch flag;
+ *  - `command`        — rules contributed at runtime by a slash command / tool.
+ * Mirrors Claude's `PermissionRuleSource` (types/permissions.ts L54-63), which is
+ * deliberately wider than its writable `PermissionUpdateDestination` set.
+ */
+export const PERMISSION_RULE_SOURCES = [
+  'userSettings', 'projectSettings', 'localSettings', 'session', 'cliArg',
+  'policySettings', 'flagSettings', 'command',
+] as const;
+export type PermissionRuleSource = (typeof PERMISSION_RULE_SOURCES)[number];
+
+/**
+ * Validate an arbitrary value against the known {@link PERMISSION_RULE_SOURCES},
+ * returning the typed source or `undefined`. Lets a persisted rule carry its own
+ * `source` tag (e.g. a managed/flag file that bundles rules from several origins)
+ * while a bogus value falls back to the loader's default tier.
+ */
+export function coercePermissionRuleSource(raw: unknown): PermissionRuleSource | undefined {
+  return typeof raw === 'string' && (PERMISSION_RULE_SOURCES as readonly string[]).includes(raw)
+    ? (raw as PermissionRuleSource)
+    : undefined;
+}
+
+/** A rule source is managed/enterprise-owned iff it is `policySettings`. Under the
+ *  {@link PermissionManager}'s managed-rules-only lockdown, ONLY these are honored. */
+export function isManagedPermissionSource(source: PermissionRuleSource | undefined): boolean {
+  return source === 'policySettings';
+}
+
 export interface PermissionRule {
   tool: string;       // tool name or '*'
   pattern?: string;   // glob pattern for args (e.g., "git *")
@@ -116,8 +151,8 @@ export interface PermissionRule {
   paramPattern?: Record<string, string>;
   action: 'allow' | 'deny' | 'ask';
   reason?: string;    // optional reason for deny rules
-  /** Tier this rule originated from (set when loaded from a destination file). */
-  source?: PermissionUpdateDestination;
+  /** Tier this rule originated from (set when loaded from a source file). */
+  source?: PermissionRuleSource;
 }
 
 /**
@@ -142,6 +177,18 @@ export function permissionDestinationPath(
     case 'cliArg':
       return null; // in-memory only — never persisted
   }
+}
+
+/**
+ * The managed/enterprise permission-rules file (`policySettings` source). It lives
+ * beside the managed config (`SUPERINFERENCE_MANAGED_CONFIG` env override, else
+ * `/etc/superinference/config.json`) as `permissions.json`, so one admin-owned
+ * location holds both managed config and managed permission policy. Admin-owned and
+ * read-only to the agent: these rules can be loaded/evaluated but never persisted to.
+ * Mirrors Claude's `policySettings` managed-settings tier.
+ */
+export function managedPermissionsPath(): string {
+  return path.join(path.dirname(getManagedConfigPath()), 'permissions.json');
 }
 
 export const BASH_CLASSIFICATIONS = ['safe', 'unsafe', 'destructive'] as const;
@@ -1859,6 +1906,11 @@ export class PermissionManager {
   private rules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
+  /** Managed-rules-only lockdown (Claude's `allowManagedPermissionRulesOnly`): when
+   *  true, ONLY `policySettings`-sourced rules are honored, runtime non-managed grants
+   *  are refused, and nothing may be persisted. Set from the managed permissions file
+   *  by {@link loadManagedPermissions} / {@link loadTieredRules}. */
+  private _managedRulesOnly = false;
   /** Extra absolute paths/dirs the USER has explicitly granted read access to,
    *  OUTSIDE the launch cwd — e.g. via `/add-dir`, `--context-file`, `--image`, or an
    *  approved out-of-workspace read prompt. The launch cwd is always allowed (passed
@@ -2663,8 +2715,11 @@ export class PermissionManager {
 
   /**
    * Add a rule. It is prepended so that later-added rules take priority.
+   * Under the managed-rules-only lockdown, a non-`policySettings` rule is refused
+   * (a runtime session/CLI grant cannot bypass managed policy).
    */
   addRule(rule: PermissionRule): void {
+    if (this._managedRulesOnly && !isManagedPermissionSource(rule.source)) return;
     this.rules.unshift(rule);
   }
 
@@ -2839,6 +2894,67 @@ export class PermissionManager {
   }
 
   // -------------------------------------------------------------------------
+  // Managed / enterprise policy (policySettings tier)
+  // -------------------------------------------------------------------------
+
+  /** Is the managed-rules-only lockdown active (Claude's
+   *  `allowManagedPermissionRulesOnly`)? When true, only `policySettings` rules are
+   *  honored and nothing may be persisted. Set by {@link loadManagedPermissions}. */
+  isManagedRulesOnly(): boolean {
+    return this._managedRulesOnly;
+  }
+
+  /** Should a permission prompt offer "always allow" / "don't ask again" options?
+   *  No, under the managed-rules-only lockdown — new rules can't be persisted, so a
+   *  durable-allow affordance would be a dead end. Mirrors Claude's
+   *  `shouldShowAlwaysAllowOptions()`. */
+  shouldShowAlwaysAllowOptions(): boolean {
+    return !this._managedRulesOnly;
+  }
+
+  /**
+   * Load managed/enterprise permission rules from {@link managedPermissionsPath}
+   * (the `policySettings` tier). The file is `{ allowManagedPermissionRulesOnly?:
+   * boolean, rules: [...] }`. Every rule is tagged `policySettings` and loaded at
+   * HIGHEST precedence (prepended). When `allowManagedPermissionRulesOnly` is true,
+   * the lockdown engages: all non-`policySettings` rules already loaded are cleared
+   * and no other tier is consulted — mirrors Claude's
+   * `loadAllPermissionRulesFromDisk` / `syncPermissionRulesFromDisk` managed path.
+   * Returns collected warnings. A missing file is a no-op.
+   */
+  loadManagedPermissions(): string[] {
+    const warnings: string[] = [];
+    const filePath = managedPermissionsPath();
+    if (!fs.existsSync(filePath)) return warnings;
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    } catch {
+      // A broken enterprise policy must not silently vanish — but it also must not
+      // crash the agent; surface a warning and treat as no managed rules.
+      warnings.push('policySettings: managed permissions file could not be parsed and was ignored');
+      return warnings;
+    }
+    const lockdown = data.allowManagedPermissionRulesOnly === true;
+    const managed: PermissionRule[] = [];
+    if (Array.isArray(data.rules)) {
+      for (const rule of data.rules) {
+        const { rule: coerced, warning } = this._coerceRule(rule, 'policySettings');
+        if (coerced) managed.push(coerced);
+        else if (warning) warnings.push(`policySettings: ${warning}`);
+      }
+    }
+    if (lockdown) {
+      this._managedRulesOnly = true;
+      // Clear every non-managed rule — under lockdown only policy rules are honored.
+      this.rules = this.rules.filter(r => isManagedPermissionSource(r.source));
+    }
+    // Prepend managed rules so they win first-match evaluation (highest precedence).
+    this.rules.unshift(...managed);
+    return warnings;
+  }
+
+  // -------------------------------------------------------------------------
   // Persistence
   // -------------------------------------------------------------------------
 
@@ -2881,7 +2997,7 @@ export class PermissionManager {
    * — one canonical validator, no per-loader duplication). Returns the typed rule
    * tagged with its `source` tier, or a human-readable warning for a dropped rule.
    */
-  private _coerceRule(rule: unknown, source: PermissionUpdateDestination): { rule?: PermissionRule; warning?: string } {
+  private _coerceRule(rule: unknown, source: PermissionRuleSource): { rule?: PermissionRule; warning?: string } {
     const r = rule as Record<string, unknown> | null;
     if (r && typeof r.tool === 'string' && typeof r.action === 'string' &&
         ['allow', 'deny', 'ask'].includes(r.action)) {
@@ -2903,6 +3019,8 @@ export class PermissionManager {
         const suffix = verdict.suggestion ? `. ${verdict.suggestion}` : '';
         return { warning: `Invalid permission rule "${canonical}" was skipped: ${verdict.error}${suffix}` };
       }
+      // Honor a per-rule `source` tag when the file bundles rules from several
+      // origins (a managed/flag file); a bogus tag falls back to the loader tier.
       return {
         rule: {
           tool: r.tool,
@@ -2910,7 +3028,7 @@ export class PermissionManager {
           action: r.action as PermissionRule['action'],
           reason: typeof r.reason === 'string' ? r.reason : undefined,
           paramPattern,
-          source,
+          source: coercePermissionRuleSource(r.source) ?? source,
         },
       };
     }
@@ -2927,6 +3045,11 @@ export class PermissionManager {
    */
   loadTieredRules(cwd: string): string[] {
     const warnings: string[] = [];
+    // Managed/enterprise (policySettings) is the highest-precedence tier and may
+    // engage the managed-rules-only lockdown. Load it FIRST; if lockdown engages,
+    // no other tier is consulted (only managed rules are honored).
+    warnings.push(...this.loadManagedPermissions());
+    if (this._managedRulesOnly) return warnings;
     // Precedence (highest first): local → project → user. Push highest first so
     // first-match evaluation prefers the more-specific tier.
     const tiers: PermissionUpdateDestination[] = ['localSettings', 'projectSettings', 'userSettings'];
@@ -2955,6 +3078,9 @@ export class PermissionManager {
    * failure is surfaced, never silently lost (see {@link saveRules}).
    */
   saveRulesToDestination(cwd: string, destination: PermissionUpdateDestination): { ok: boolean; error?: string } {
+    if (this._managedRulesOnly) {
+      return { ok: false, error: 'managed-rules-only lockdown: permission rules are controlled by policy and cannot be persisted' };
+    }
     const filePath = permissionDestinationPath(cwd, destination);
     if (!filePath) return { ok: true }; // session / cliArg are in-memory only
     try {
@@ -2976,6 +3102,9 @@ export class PermissionManager {
    * try/catch + boolean-return behavior (permissionsLoader.ts L258-295).
    */
   saveRules(cwd: string): { ok: boolean; error?: string } {
+    if (this._managedRulesOnly) {
+      return { ok: false, error: 'managed-rules-only lockdown: permission rules are controlled by policy and cannot be persisted' };
+    }
     try {
       const dirPath = path.join(cwd, '.ami');
       if (!fs.existsSync(dirPath)) {

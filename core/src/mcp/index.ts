@@ -5,8 +5,8 @@ export type {
   McpSamplingRequest, McpSamplingResult, McpSamplingMessage,
   McpLogLevel, McpLogMessage, McpCompletionRef, McpCompletionResult,
 } from './client';
-export { McpManager, findMcpConfigPaths } from './manager';
-export type { McpServerConfig, McpServerStatus, McpConfigError } from './manager';
+export { McpManager, findMcpConfigPaths, findMcpConfigScopes, mcpScopeLabel, MCP_SCOPE_ORDER } from './manager';
+export type { McpServerConfig, McpServerStatus, McpConfigError, McpServerScope } from './manager';
 export {
   generatePkce, generateState, parseWwwAuthenticate, wellKnown,
   discoverProtectedResource, discoverAuthServer, registerClient,

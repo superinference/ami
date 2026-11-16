@@ -48,12 +48,16 @@ export class ToolRegistry {
   private _guard = new ToolRegistryGuard();
 
   register(tool: ToolDefinition, source = 'core'): void {
-    this._guard.register(tool.name, source);
+    // Pass the tool's declared aliases so the guard both collision-checks them and
+    // can resolve a legacy/renamed name back to the canonical tool (parity: aliases).
+    this._guard.register(tool.name, source, tool.aliases);
     this.tools.set(tool.name, tool);
   }
 
   get(name: string): ToolDefinition | undefined {
-    return this.tools.get(name);
+    // Resolve by primary name, then via an alias (back-compat for renamed tools).
+    const canonical = this._guard.resolveToolName(name) ?? name;
+    return this.tools.get(canonical);
   }
 
   getAll(): ToolDefinition[] {

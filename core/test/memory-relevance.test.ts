@@ -98,3 +98,92 @@ describe('MemoryManager – selectRelevantMemories', () => {
     assert.equal(result.length, 1);
   });
 });
+
+describe('MemoryManager – selectRelevantMemories recentTools filter', () => {
+  it('suppresses a pure usage/API reference memory for a tool in active use', () => {
+    writeMemory('grep-ref', 'grep command reference', 'reference',
+      'grep -rn pattern to search files. Usage reference for the grep tool.');
+    writeMemory('grep-warn', 'grep known issues', 'reference',
+      'Warning: grep is extremely slow on node_modules; avoid running it there.');
+    writeMemory('unrelated', 'unrelated note', 'project', 'something else entirely about deploys');
+
+    const mm = new MemoryManager(tmpDir);
+
+    // Without recentTools, the pure reference is a candidate.
+    const baseline = mm.selectRelevantMemories('how do I grep for a pattern', 5).map(m => m.name);
+    assert.ok(baseline.includes('grep-ref'), `baseline should include grep-ref, got ${baseline.join(', ')}`);
+
+    // With grep in active use, its usage reference is suppressed but the warning is kept.
+    const filtered = mm.selectRelevantMemories('how do I grep for a pattern', 5, { recentTools: ['grep'] })
+      .map(m => m.name);
+    assert.ok(!filtered.includes('grep-ref'), `grep-ref should be suppressed, got ${filtered.join(', ')}`);
+    assert.ok(filtered.includes('grep-warn'), 'grep warning memory must be preserved for an active tool');
+    assert.ok(filtered.includes('unrelated'), 'unrelated memory is unaffected');
+  });
+
+  it('only suppresses reference-type memories, never project/user/feedback', () => {
+    writeMemory('grep-project', 'grep workflow', 'project', 'We rely on grep in our build scripts.');
+    writeMemory('grep-ref', 'grep reference', 'reference', 'grep usage: grep -rn pattern files.');
+    const mm = new MemoryManager(tmpDir);
+    const names = mm.selectRelevantMemories('grep', 5, { recentTools: ['grep'] }).map(m => m.name);
+    assert.ok(names.includes('grep-project'), 'non-reference memory mentioning the tool is kept');
+    assert.ok(!names.includes('grep-ref'), 'reference memory for the active tool is suppressed');
+  });
+
+  it('ignores empty/whitespace tool names and an empty recentTools list', () => {
+    writeMemory('grep-ref', 'grep reference', 'reference', 'grep usage docs for the grep tool.');
+    const mm = new MemoryManager(tmpDir);
+    // Empty list → no filtering.
+    assert.ok(mm.selectRelevantMemories('grep', 5, { recentTools: [] }).map(m => m.name).includes('grep-ref'));
+    // Whitespace-only entries are ignored (no tool actually in use).
+    assert.ok(mm.selectRelevantMemories('grep', 5, { recentTools: ['', '   '] }).map(m => m.name).includes('grep-ref'));
+  });
+
+  it('does not suppress a reference memory for a tool NOT in the recent list', () => {
+    writeMemory('grep-ref', 'grep reference', 'reference', 'grep usage docs.');
+    const mm = new MemoryManager(tmpDir);
+    const names = mm.selectRelevantMemories('grep', 5, { recentTools: ['bash'] }).map(m => m.name);
+    assert.ok(names.includes('grep-ref'), 'a reference for an inactive tool is not suppressed');
+  });
+});
+
+describe('MemoryManager – selectRelevantMemories alreadySurfaced dedup', () => {
+  it('filters already-surfaced paths before the count short-circuit', () => {
+    writeMemory('a', 'first note', 'project', 'content about deploy pipelines');
+    writeMemory('b', 'second note', 'project', 'content about deploy rollbacks');
+    writeMemory('c', 'third note', 'project', 'content about deploy monitoring');
+    const mm = new MemoryManager(tmpDir);
+
+    const first = mm.selectRelevantMemories('deploy', 5);
+    assert.equal(first.length, 3);
+    const surfacedPath = first[0].path;
+
+    const second = mm.selectRelevantMemories('deploy', 5, { alreadySurfaced: new Set([surfacedPath]) });
+    assert.equal(second.length, 2, 'the surfaced memory is excluded');
+    assert.ok(!second.some(m => m.path === surfacedPath));
+  });
+
+  it('filters already-surfaced paths before BM25 scoring when over the budget', () => {
+    for (let i = 0; i < 7; i++) {
+      writeMemory(`deploy${i}`, `deploy note ${i}`, 'project', `deploy runbook content number ${i} for the deploy pipeline`);
+    }
+    const mm = new MemoryManager(tmpDir);
+    const first = mm.selectRelevantMemories('deploy pipeline runbook', 3);
+    assert.equal(first.length, 3);
+    const surfaced = new Set(first.map(m => m.path));
+
+    const second = mm.selectRelevantMemories('deploy pipeline runbook', 3, { alreadySurfaced: surfaced });
+    assert.equal(second.length, 3);
+    for (const m of second) {
+      assert.ok(!surfaced.has(m.path), 'no re-pick of an already-surfaced memory');
+    }
+  });
+
+  it('treats an empty alreadySurfaced set as a no-op', () => {
+    writeMemory('a', 'first note', 'project', 'content one');
+    writeMemory('b', 'second note', 'project', 'content two');
+    const mm = new MemoryManager(tmpDir);
+    const res = mm.selectRelevantMemories('content', 5, { alreadySurfaced: new Set() });
+    assert.equal(res.length, 2);
+  });
+});

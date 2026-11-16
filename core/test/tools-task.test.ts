@@ -681,23 +681,43 @@ describe('taskTool – sub-engine lifecycle', () => {
 });
 
 describe('taskTool – thinking inheritance', () => {
-  it('passes the parent thinking config into the subagent EngineConfig', async () => {
+  async function captureThinking(input: Record<string, unknown>, parentThinking: unknown) {
     let captured: any = null;
     async function* fakeSubmit() { yield { type: 'text_delta' as const, text: 'ok' }; }
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-think-'));
     try {
       await taskTool.execute(
-        { prompt: 'do a thing', mode: 'explore' },
+        input,
         ctx({
           cwd: tmpDir,
           _providerConfig: { baseUrl: 'http://localhost', apiKey: 'k', model: 'm' },
-          _parentThinking: { enabled: true, level: 'high' } as any,
+          _parentThinking: parentThinking as any,
           _engineFactory: (cfg: any) => { captured = cfg; return { submit: fakeSubmit }; },
         }),
       );
-      assert.ok(captured, 'engine factory should have been called');
-      assert.deepEqual(captured.thinking, { enabled: true, level: 'high' });
     } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+    assert.ok(captured, 'engine factory should have been called');
+    return captured;
+  }
+
+  it('DISABLES thinking by default for a non-fork (explore) subagent — output-token cost control', async () => {
+    const cfg = await captureThinking({ prompt: 'do a thing', mode: 'explore' }, { enabled: true, level: 'high' });
+    assert.deepEqual(cfg.thinking, { enabled: false, level: 'off', type: 'disabled' });
+  });
+
+  it('DISABLES thinking by default for a mode-only general subagent', async () => {
+    const cfg = await captureThinking({ prompt: 'do a thing', mode: 'general' }, { enabled: true, level: 'high' });
+    assert.deepEqual(cfg.thinking, { enabled: false, level: 'off', type: 'disabled' });
+  });
+
+  it('INHERITS the parent thinking config for a fork subagent (context-continuing clone)', async () => {
+    const cfg = await captureThinking({ prompt: 'do a thing', mode: 'fork' }, { enabled: true, level: 'high' });
+    assert.deepEqual(cfg.thinking, { enabled: true, level: 'high' });
+  });
+
+  it('an explicit effort override re-enables thinking even for a non-fork subagent', async () => {
+    const cfg = await captureThinking({ prompt: 'do a thing', mode: 'explore', effort: 'high' }, undefined);
+    assert.deepEqual(cfg.thinking, { enabled: true, level: 'high' });
   });
 });
 

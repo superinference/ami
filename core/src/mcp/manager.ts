@@ -265,6 +265,29 @@ export interface McpConfigError {
   severity: 'fatal';
 }
 
+/**
+ * The config-source scope a live MCP server was loaded from (Claude-parity
+ * `ConfigScope`, MCPListPanel.tsx). `project`/`local`/`user`/`enterprise` each
+ * come from a config file at that tier; `dynamic` is a built-in / programmatically
+ * added server with no backing file. `MCP_SCOPE_ORDER` is the deterministic
+ * display order (dynamic/built-in last). This is the LOAD-ORIGIN scope of a live
+ * server, distinct from the narrower WRITE-target scope (`local|project|user`) the
+ * `/mcp add` command persists to.
+ */
+export const MCP_SCOPE_ORDER = ['project', 'local', 'user', 'enterprise', 'dynamic'] as const;
+export type McpServerScope = (typeof MCP_SCOPE_ORDER)[number];
+
+/** Human-readable heading label for a scope group (Claude-parity getScopeHeading). */
+export function mcpScopeLabel(scope: McpServerScope): string {
+  switch (scope) {
+    case 'project': return 'Project MCPs';
+    case 'local': return 'Local MCPs';
+    case 'user': return 'User MCPs';
+    case 'enterprise': return 'Enterprise MCPs';
+    case 'dynamic': return 'Built-in MCPs';
+  }
+}
+
 export interface McpServerConfig {
   command: string;
   args?: string[];
@@ -307,6 +330,15 @@ export interface McpServerStatus {
    * `undefined` for stdio servers (not auth-scoped) and non-ready remotes.
    */
   isAuthenticated?: boolean;
+  /**
+   * The config-source scope this server was loaded from (Claude-parity scope
+   * grouping). `undefined` only before scope has been recorded. See
+   * {@link McpServerScope}.
+   */
+  scope?: McpServerScope;
+  /** Absolute path of the config file this server was loaded from (if any), so a
+   *  diagnostics/listing view can show the user which file to edit. */
+  sourcePath?: string;
   error?: string;
 }
 
@@ -424,6 +456,11 @@ export class McpManager extends EventEmitter {
   private _intentionalDisconnect = new Set<string>();
   private pendingServers = new Map<string, PendingServerInfo>();
   private serverErrors = new Map<string, string>();
+  /** Config-source scope per server (Claude-parity scope grouping). Recorded at
+   *  load/add time; a programmatically-added server defaults to `'dynamic'`. */
+  private _serverScopes = new Map<string, McpServerScope>();
+  /** Absolute config-file path a server was loaded from (undefined for dynamic). */
+  private _serverSources = new Map<string, string>();
   /** Per-server non-fatal config diagnostics (e.g. unset referenced env vars) — H35. */
   private _configWarnings = new Map<string, string[]>();
   /**
@@ -609,6 +646,9 @@ export class McpManager extends EventEmitter {
     if (this.clients.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
     }
+    // A server added without a recorded scope (programmatic/built-in add, not via
+    // loadFromConfig/loadManagedServers) is the `dynamic` built-in scope.
+    if (!this._serverScopes.has(name)) this._serverScopes.set(name, 'dynamic');
 
     let resolvedCommand = config.command || '';
     let resolvedArgs = config.args;
@@ -752,6 +792,7 @@ export class McpManager extends EventEmitter {
     if (this.clients.has(name) || this.pendingServers.has(name)) {
       throw new Error(`MCP server '${name}' already registered`);
     }
+    if (!this._serverScopes.has(name)) this._serverScopes.set(name, 'dynamic');
     let imageAvailable: boolean | undefined;
     if (config.containerConfig) {
       const runtime = this._resolveRuntime(config.containerConfig.runtime);
@@ -972,6 +1013,8 @@ export class McpManager extends EventEmitter {
         uptime: null,
         imageAvailable: info.imageAvailable,
         containerBacked: !!info.config.containerConfig,
+        scope: this._serverScopes.get(name),
+        sourcePath: this._serverSources.get(name),
         error: info.error || this.serverErrors.get(name),
       });
     }
@@ -993,6 +1036,7 @@ export class McpManager extends EventEmitter {
       return {
         name, state: 'pending', serverInfo: null, toolCount: 0,
         resourceCount: 0, uptime: null, containerBacked: !!config?.containerConfig,
+        scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
       };
     }
     return {
@@ -1005,6 +1049,8 @@ export class McpManager extends EventEmitter {
       uptime: client.uptime,
       containerBacked: !!config?.containerConfig,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
+      scope: this._serverScopes.get(name),
+      sourcePath: this._serverSources.get(name),
       error: this.serverErrors.get(name),
     };
   }
@@ -1025,6 +1071,8 @@ export class McpManager extends EventEmitter {
     this.pendingServers.delete(name);
     this.serverErrors.delete(name);
     this.configs.delete(name);
+    this._serverScopes.delete(name);
+    this._serverSources.delete(name);
     this.invalidateToolCache(name);
   }
 
@@ -1270,6 +1318,8 @@ export class McpManager extends EventEmitter {
       promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
+      scope: this._serverScopes.get(name),
+      sourcePath: this._serverSources.get(name),
     };
   }
 
@@ -1282,6 +1332,52 @@ export class McpManager extends EventEmitter {
   /** The stored config for a server (transport/url/oauth), or undefined if none. */
   getServerConfig(name: string): McpServerConfig | undefined {
     return this.configs.get(name);
+  }
+
+  /** The config-source scope a server was loaded from, or undefined if unknown. */
+  getServerScope(name: string): McpServerScope | undefined {
+    return this._serverScopes.get(name);
+  }
+
+  /** Record the scope + source config path for a server (load-time metadata). */
+  private recordServerScope(name: string, scope: McpServerScope, sourcePath?: string): void {
+    this._serverScopes.set(name, scope);
+    if (sourcePath !== undefined) this._serverSources.set(name, sourcePath);
+    else this._serverSources.delete(name);
+  }
+
+  /**
+   * Load enterprise/managed MCP servers (admin-provisioned `managedMcpServers`).
+   * Every entry is tagged with the `enterprise` scope and loaded through the same
+   * validation/denylist/expansion path as a config file, so a managed server is
+   * grouped under "Enterprise MCPs" and is diagnosable like any other. Each entry
+   * goes through per-server isolation: one malformed entry does not abort the rest.
+   */
+  loadManagedServers(servers: Record<string, unknown>, opts?: { sourcePath?: string }): void {
+    this.loadServerEntries(servers, { scope: 'enterprise', sourcePath: opts?.sourcePath });
+  }
+
+  /**
+   * Group live servers by their config-source scope for a Claude-parity listing
+   * (MCPListPanel): groups are ordered by {@link MCP_SCOPE_ORDER}, servers within a
+   * group are alphabetical (inherited from {@link listAllServers}), and each group
+   * carries its heading `label` and the `sourcePath` of its first server so a UI can
+   * show the user which file to edit. Empty scopes are omitted.
+   */
+  listServersByScope(): Array<{ scope: McpServerScope; label: string; sourcePath?: string; servers: McpServerStatus[] }> {
+    const all = this.listAllServers();
+    const groups: Array<{ scope: McpServerScope; label: string; sourcePath?: string; servers: McpServerStatus[] }> = [];
+    for (const scope of MCP_SCOPE_ORDER) {
+      const servers = all.filter((s) => (s.scope ?? 'dynamic') === scope);
+      if (servers.length === 0) continue;
+      groups.push({
+        scope,
+        label: mcpScopeLabel(scope),
+        sourcePath: servers.find((s) => s.sourcePath)?.sourcePath,
+        servers,
+      });
+    }
+    return groups;
   }
 
   startHealthChecks(intervalMs: number = 30000): void {
@@ -1434,6 +1530,8 @@ export class McpManager extends EventEmitter {
     this._allTools.clear();
     this.pendingServers.clear();
     this.serverErrors.clear();
+    this._serverScopes.clear();
+    this._serverSources.clear();
     this._lastUsedAt.clear();
     this._deniedServers = [];
   }
@@ -1448,7 +1546,7 @@ export class McpManager extends EventEmitter {
    * auto-connected; only servers the user previously approved connect normally.
    * For user/global-tier configs (the default), every server is added as before.
    */
-  loadFromConfig(configPath: string, opts?: { projectScoped?: boolean }): void {
+  loadFromConfig(configPath: string, opts?: { projectScoped?: boolean; scope?: McpServerScope }): void {
     // A missing config file is expected (silent); only a file that EXISTS but is
     // malformed is a diagnosable error (surfaced below).
     if (!fs.existsSync(configPath)) {
@@ -1463,7 +1561,38 @@ export class McpManager extends EventEmitter {
       this._configErrors.delete(configPath);
       const servers = config.mcpServers ?? config;
       if (typeof servers !== 'object') return;
+      // The scope a server from this file belongs to: an explicit scope wins; else
+      // a projectScoped (under-cwd) file is `project`, and any other file is `user`.
+      const scope: McpServerScope = opts?.scope ?? (opts?.projectScoped ? 'project' : 'user');
+      this.loadServerEntries(servers as Record<string, unknown>, {
+        projectScoped: opts?.projectScoped,
+        scope,
+        sourcePath: configPath,
+      });
+    } catch (err) {
+      // The file exists but is malformed (invalid JSON). Surface it as a fatal
+      // diagnostic + event instead of silently dropping every server it declared,
+      // so the user can see and fix their broken config (vs. a missing file, which
+      // is expected and handled above).
+      const message = err instanceof Error ? err.message : String(err);
+      const diag: McpConfigError = { path: configPath, message, severity: 'fatal' };
+      this._configErrors.set(configPath, diag);
+      coreLog('mcp', `Failed to parse MCP config "${configPath}": ${message}`);
+      this.emit('config-error', diag);
+    }
+  }
 
+  /**
+   * Load a map of `{ name: serverConfig }` entries (shared by {@link loadFromConfig}
+   * and {@link loadManagedServers}). Each entry gets per-server isolation,
+   * `type`→`transport` normalization, shape validation, env expansion with
+   * missing-var diagnostics, denylist skipping, M14 project-approval gating, and is
+   * tagged with `opts.scope` + `opts.sourcePath` for scope grouping.
+   */
+  private loadServerEntries(
+    servers: Record<string, unknown>,
+    opts: { projectScoped?: boolean; scope: McpServerScope; sourcePath?: string },
+  ): void {
       for (const [name, serverConfig] of Object.entries(servers)) {
         // Per-server isolation: one malformed/throwing entry must NOT abort the
         // rest of the file (Claude-parity) — each entry is loaded in its own guard.
@@ -1503,8 +1632,11 @@ export class McpManager extends EventEmitter {
             coreLog('mcp', `skipping denied MCP server "${name}"`);
             continue;
           }
+          // Tag the server with its config-source scope + path BEFORE registering it
+          // so the add paths see the recorded scope rather than defaulting to dynamic.
+          this.recordServerScope(name, opts.scope, opts.sourcePath);
           // M14 — gate project-tier servers behind approval unless already approved.
-          if (opts?.projectScoped && !this._approvedServers.has(name)) {
+          if (opts.projectScoped && !this._approvedServers.has(name)) {
             coreLog('mcp', `project MCP server "${name}" requires approval — registered pending`);
             this.addPendingServer(name, expanded, { needsApproval: true });
             continue;
@@ -1517,17 +1649,6 @@ export class McpManager extends EventEmitter {
           this.emit('config-invalid', name, [message]);
         }
       }
-    } catch (err) {
-      // The file exists but is malformed (invalid JSON). Surface it as a fatal
-      // diagnostic + event instead of silently dropping every server it declared,
-      // so the user can see and fix their broken config (vs. a missing file, which
-      // is expected and handled above).
-      const message = err instanceof Error ? err.message : String(err);
-      const diag: McpConfigError = { path: configPath, message, severity: 'fatal' };
-      this._configErrors.set(configPath, diag);
-      coreLog('mcp', `Failed to parse MCP config "${configPath}": ${message}`);
-      this.emit('config-error', diag);
-    }
   }
 
   private expandConfigEnv(config: McpServerConfig, missingOut?: Set<string>): McpServerConfig {
@@ -1808,8 +1929,15 @@ export function expandEnvVars(value: string): string {
   return expandEnvVarsTracked(value).expanded;
 }
 
-export function findMcpConfigPaths(cwd: string): string[] {
-  const paths: string[] = [];
+/**
+ * Discover MCP config files for `cwd`, each tagged with the {@link McpServerScope}
+ * it belongs to, in first-wins precedence order. Config files under cwd (the
+ * shareable `.ami/mcp.json` and `.mcp.json`, walked up to the FS root) are the
+ * `project` scope; the user-global `~/.ami/mcp.json` is the `user` scope. This is
+ * the canonical discovery; {@link findMcpConfigPaths} is its paths-only projection.
+ */
+export function findMcpConfigScopes(cwd: string): Array<{ path: string; scope: McpServerScope }> {
+  const entries: Array<{ path: string; scope: McpServerScope }> = [];
   const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? '';
 
   // Precedence is first-wins (addServer rejects a duplicate name, so the first
@@ -1824,7 +1952,7 @@ export function findMcpConfigPaths(cwd: string): string[] {
 
   // 1. AMI project (.ami/mcp.json in cwd) — highest.
   const projectConfig = path.join(cwd, '.ami', 'mcp.json');
-  if (fs.existsSync(projectConfig)) paths.push(projectConfig);
+  if (fs.existsSync(projectConfig)) entries.push({ path: projectConfig, scope: 'project' });
 
   // 2. Claude Code project interop — the shareable `.mcp.json`. Walk from cwd UP
   //    to the filesystem root collecting every `.mcp.json` (closer-to-cwd first),
@@ -1834,7 +1962,7 @@ export function findMcpConfigPaths(cwd: string): string[] {
   let dir = path.resolve(cwd);
   while (true) {
     const candidate = path.join(dir, '.mcp.json');
-    if (fs.existsSync(candidate)) paths.push(candidate);
+    if (fs.existsSync(candidate)) entries.push({ path: candidate, scope: 'project' });
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -1842,7 +1970,11 @@ export function findMcpConfigPaths(cwd: string): string[] {
 
   // 3. AMI user-global (~/.ami/mcp.json).
   const globalConfig = path.join(homeDir, '.ami', 'mcp.json');
-  if (fs.existsSync(globalConfig)) paths.push(globalConfig);
+  if (fs.existsSync(globalConfig)) entries.push({ path: globalConfig, scope: 'user' });
 
-  return paths;
+  return entries;
+}
+
+export function findMcpConfigPaths(cwd: string): string[] {
+  return findMcpConfigScopes(cwd).map((e) => e.path);
 }

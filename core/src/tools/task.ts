@@ -30,6 +30,19 @@ export function parsePositiveIntEnv(raw: string | undefined, fallback: number): 
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * Coerce a model-supplied `max_turns` tool argument to a positive integer, or
+ * `undefined` when it is absent/invalid. Providers serialize numbers as either a
+ * JSON number or a string ("200"), so both are accepted; a zero, negative,
+ * fractional, or non-numeric value is rejected (returns undefined) rather than
+ * silently capping a subagent at an absurd turn budget.
+ */
+export function parsePositiveIntInput(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 /** Turn budget for a `fork` child when its agent definition sets none (mirrors
  *  Claude Code's FORK_AGENT maxTurns:200 — a context-inheriting clone needs a
  *  generous ceiling because it continues the parent's full task). */
@@ -97,6 +110,17 @@ export const SUBAGENT_SYSTEM_PROMPT =
 - Do not loop re-checking, re-running, or re-announcing completion. One correct answer, then stop.
 - Read any error in full and fix the root cause; never fabricate results. If the task is impossible or underspecified, say so plainly and stop.`;
 
+/**
+ * Minimum number of distinct searches an `explore`-mode sub-agent should run
+ * before it concludes something is absent or reports back (mirrors Claude Code's
+ * EXPLORE_AGENT_MIN_QUERIES). It guards the UNDER-exploration edge: the lean
+ * prompt's "do not over-explore" is only an upper bound; without a floor an
+ * explorer can return prematurely after a single miss and wrongly conclude a
+ * symbol/file does not exist. The prompt below cites this floor so the agent runs
+ * at least this many search strategies before declaring absence.
+ */
+export const EXPLORE_AGENT_MIN_QUERIES = 3;
+
 /** Lean system prompt for a read-only `explore`-mode sub-agent. ui#13. */
 export const EXPLORE_SUBAGENT_SYSTEM_PROMPT =
   `You are a read-only exploration sub-agent handling one search/investigation task.
@@ -104,6 +128,7 @@ export const EXPLORE_SUBAGENT_SYSTEM_PROMPT =
 - Investigate using read and search tools only. Do NOT modify files, run mutating commands, or make any changes.
 - Adapt your search breadth to the thoroughness the caller requests ("quick" for a basic lookup, "medium" for moderate exploration, "very thorough" for comprehensive analysis).
 - Start broad and narrow down; if one search strategy yields nothing, try another; consider alternate naming conventions and check multiple locations before concluding something does not exist.
+- Run at least ${EXPLORE_AGENT_MIN_QUERIES} distinct searches (different strategies, terms, or locations) before concluding something is absent — do not report "not found" after a single miss.
 - Gather exactly what the task asks for, cite concrete locations (file:line) where relevant, then report your findings directly and concisely as your final message and STOP. Your final message IS the deliverable.
 - Do not over-explore beyond what the task asks. One focused report, then stop.`;
 
@@ -142,6 +167,30 @@ export function uniqueAgentName(name: string): string {
   let i = 2;
   while (agentNameRegistry.has(`${name}-${i}`)) i++;
   return `${name}-${i}`;
+}
+
+/** Routing-significant characters that must never appear in an agent name: `@`
+ *  is the reserved `agentName@teamName` identity separator and `*` is the
+ *  send_message broadcast wildcard. */
+const AGENT_NAME_RESERVED_CHARS = /[@*]/g;
+
+/**
+ * Sanitize a caller-supplied agent `name` so it is safe to use as a routing /
+ * mailbox key (mirrors Claude Code's sanitizeAgentName, which strips the `@`
+ * team separator). The agent name becomes the send_message / resume address and
+ * is baked into the team-scoped identity, so a name containing `@` would corrupt
+ * `agentName@teamName` parsing and a name of (or containing) `*` would collide
+ * with send_message's broadcast wildcard — a model-chosen `*` agent could then
+ * silently intercept every broadcast. Reserved routing chars are replaced with
+ * `-`, runs collapsed, and stray leading/trailing separators trimmed. Returns an
+ * empty string only when the input was ENTIRELY reserved characters, so callers
+ * can fall back to no-name rather than register a degenerate key.
+ */
+export function sanitizeAgentName(name: string): string {
+  return name
+    .replace(AGENT_NAME_RESERVED_CHARS, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 const DEFAULT_MAX_AGENT_DEPTH = 5;
@@ -427,6 +476,10 @@ export const taskTool: ToolDefinition = {
         description: 'Reasoning effort for this subagent. Controls thinking depth.',
         enum: ['low', 'medium', 'high', 'max'],
       },
+      max_turns: {
+        type: 'number',
+        description: 'Maximum number of agentic turns (API round-trips) for this subagent before it stops. Caps a mode-only general/explore/fork subagent that has no named agent definition to set one. Must be a positive integer.',
+      },
     },
     required: ['prompt'],
   },
@@ -590,9 +643,36 @@ export const taskTool: ToolDefinition = {
     // allowlist (incl. `['*']`) can reintroduce plan_mode or workflow.
     tools = tools.filter(t => !ALL_AGENT_DISALLOWED_TOOLS.has(t.name));
 
+    // Boundary guard: a custom agent whose `tools` allowlist resolves to zero
+    // available tools — every name offline/typo'd, or an allowlist fully cancelled
+    // by its denylist or the universal floor — would otherwise spawn a subagent
+    // that can take no action: an opaque, hard-to-diagnose stall. Fail fast with an
+    // explicit error instead of silently launching a zero-tool agent (mirrors
+    // Claude's non-empty selected-tools boundary guard).
+    if (tools.length === 0) {
+      return {
+        output: `Error: the resolved tool set for this subagent is empty — it would be unable to act. ` +
+          (subagentType
+            ? `Check agent "${subagentType}"'s tools/disallowedTools lists`
+            : 'Check the requested tool restrictions') +
+          ` (tool names must match registered tools and must not all be baseline-denied: ${[...ALL_AGENT_DISALLOWED_TOOLS].join(', ')}).`,
+        isError: true,
+      };
+    }
+
+    // A direct per-call `max_turns` override caps any mode-only general/explore/
+    // fork subagent (mirrors Claude's runForkedAgent maxTurns parameter). It wins
+    // over an agent definition's maxTurns AND the fork default below, so an ad-hoc
+    // delegation can bound its API round-trips without a named agent definition.
+    const requestedMaxTurns = parsePositiveIntInput(input.max_turns);
+    if (requestedMaxTurns !== undefined) {
+      agentMaxTurns = requestedMaxTurns;
+    }
+
     // A `fork` child continues the parent's full task as a context-inheriting
-    // clone, so it needs a generous turn budget. When no agent definition set
-    // one, default to DEFAULT_FORK_MAX_TURNS (mirrors Claude's FORK_AGENT).
+    // clone, so it needs a generous turn budget. When no agent definition and no
+    // explicit max_turns set one, default to DEFAULT_FORK_MAX_TURNS (mirrors
+    // Claude's FORK_AGENT).
     if (mode === 'fork' && agentMaxTurns === undefined) {
       agentMaxTurns = DEFAULT_FORK_MAX_TURNS;
     }
@@ -678,9 +758,19 @@ export const taskTool: ToolDefinition = {
       detachedMode: !!context.detachedMode,
       agentDepth: childDepth._agentDepth,
       maxAgentDepth: childDepth._maxAgentDepth,
+      // Thinking is DISABLED by default for non-fork subagents to control
+      // output-token cost across a fleet of delegations (mirrors Claude's runAgent,
+      // which sets thinkingConfig {type:'disabled'} for regular sub-agents and only
+      // inherits the parent's thinking on the fork/useExactTools path). An explicit
+      // `effort` override always re-enables it; `fork` inherits the parent's config
+      // as a context-continuing clone. The explicit disabled object (not undefined)
+      // is required so the child engine's reasoning-model auto-enable does not turn
+      // thinking back on.
       thinking: effortOverride
         ? { enabled: true, level: effortOverride as import('../model-capabilities').ThinkingLevel }
-        : context._parentThinking || undefined,
+        : mode === 'fork'
+          ? (context._parentThinking || undefined)
+          : { enabled: false, level: 'off', type: 'disabled' as const },
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip stance-skill resolution (which would inject e.g. the
       // swebench stance workflow into a verification-only agent).
@@ -712,10 +802,15 @@ export const taskTool: ToolDefinition = {
       effectivePrompt = `${buildWorktreeNotice(context.cwd, effectiveCwd)}\n\n---\n\n${effectivePrompt}`;
     }
 
-    // Reconcile the caller-supplied name to a unique one BEFORE registering it,
-    // so a reused base name does not silently overwrite an earlier agent's entry.
+    // Sanitize the caller-supplied name against reserved routing characters
+    // (`@` identity separator, `*` broadcast wildcard) and THEN reconcile it to a
+    // unique one BEFORE registering it, so a reused base name does not silently
+    // overwrite an earlier agent's entry and a routing-char name cannot hijack
+    // addressing. A name that was ENTIRELY reserved chars sanitizes to empty →
+    // fall back to no name rather than register a degenerate key.
     const rawAgentName = input.name as string | undefined;
-    const agentName = rawAgentName ? uniqueAgentName(rawAgentName) : undefined;
+    const sanitizedName = rawAgentName ? sanitizeAgentName(rawAgentName) : undefined;
+    const agentName = sanitizedName ? uniqueAgentName(sanitizedName) : undefined;
 
     if (runInBackground) {
       incrementSpawnCount(context);

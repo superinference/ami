@@ -458,6 +458,10 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     // Unreadable (permissions, race) — treat as absent rather than corrupt.
     return { config: null };
   }
+  // Strip a leading UTF-8 BOM (e.g. config.json written by PowerShell 5.x or some
+  // editors) before parsing — JSON.parse rejects a leading U+FEFF, which would
+  // otherwise misreport an otherwise-valid file as corrupt.
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
   let parsed: unknown;
   try {
     parsed = JSON.parse(stripJsoncComments(raw));
@@ -901,6 +905,65 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
     try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     throw err;
   }
+}
+
+/** Why a {@link updateConfigFile} call did (or did not) persist. */
+export type UpdateConfigReason = 'written' | 'no-change' | 'corrupt';
+
+/** Outcome of a guarded functional config update. */
+export interface UpdateConfigResult {
+  /** True iff the new config was persisted to disk. */
+  written: boolean;
+  reason: UpdateConfigReason;
+  /** The resulting config (the new one when written, else the current on-disk one). */
+  config: ProjectConfig;
+  /** Present only when `reason === 'corrupt'`: the blocking load diagnostic. */
+  diagnostic?: ConfigDiagnostic;
+}
+
+/**
+ * Guarded functional read-modify-write of a config file (parity: Claude Code's
+ * `saveGlobalConfig(updater)` / `saveConfigWithLock` lost-update + auth-loss guard).
+ *
+ * The caller passes a pure `updater(current) -> next`. This helper:
+ *  1. RE-READS the file fresh from disk right before writing (via
+ *     {@link loadConfigFileChecked}) so a concurrent writer's keys are part of
+ *     `current` and the merge lands on the LATEST state — closing the classic
+ *     read-then-write lost-update window where a stale in-memory base would
+ *     clobber another process's changes.
+ *  2. REFUSES to write when the freshly-read file is present-but-corrupt
+ *     (`parse-error` / `not-object`): writing a merge built on an assumed-empty
+ *     base would wipe the user's recoverable content. This is AMI's analog of
+ *     Claude's "re-read returned defaults → don't persist defaults over good
+ *     state" (`wouldLoseAuthState`): a momentarily-unparseable file never gets
+ *     overwritten with a defaults-derived config. (Advisory `invalid-value` /
+ *     `unknown-key` diagnostics still load — the update proceeds on them.)
+ *  3. Treats an updater that returns the SAME reference as a no-op (no write),
+ *     mirroring `saveGlobalConfig`'s same-reference skip.
+ *
+ * The actual write reuses {@link safeWriteConfig} (atomic temp+rename, internal-
+ * write suppression), so there is one canonical write path.
+ */
+export function updateConfigFile(
+  filePath: string,
+  updater: (current: ProjectConfig) => ProjectConfig,
+): UpdateConfigResult {
+  const checked = loadConfigFileChecked(filePath);
+  // Never clobber a present-but-unparseable file: a merge built on an empty base
+  // would destroy the user's (recoverable) content. Only the fatal diagnostics
+  // (bad JSON / not an object) block; advisory value/key diagnostics still load.
+  if (checked.diagnostic && (checked.diagnostic.kind === 'parse-error' || checked.diagnostic.kind === 'not-object')) {
+    return { written: false, reason: 'corrupt', config: checked.config ?? {}, diagnostic: checked.diagnostic };
+  }
+  const current = checked.config ?? {};
+  const next = updater(current);
+  // Same-reference return means "nothing to do" — skip the write (parity:
+  // saveGlobalConfig's no-op short-circuit).
+  if (next === current) {
+    return { written: false, reason: 'no-change', config: current };
+  }
+  safeWriteConfig(filePath, next as Record<string, unknown>);
+  return { written: true, reason: 'written', config: next };
 }
 
 export function cleanupStaleConfigTmp(filePath: string): boolean {

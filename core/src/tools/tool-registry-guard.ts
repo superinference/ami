@@ -275,6 +275,43 @@ export class ToolRegistryGuard {
  * those names as the protected set so they can never be gated out, letting a stance
  * be activated from any tier. Tools without an `isEnabled` predicate are always kept.
  */
+/** Minimal structural shape needed to match a tool by name or alias. */
+export interface NameableToolLike {
+  name: string;
+  aliases?: readonly string[];
+}
+
+/**
+ * PARITY (additive): does `tool` answer to `name` — by its primary name or any
+ * declared `aliases` entry? Mirrors Claude's `toolMatchesName`, giving renamed
+ * tools a back-compat dispatch path (e.g. a model/old transcript calling the
+ * deprecated `KillShell` for `task_kill`).
+ */
+export function toolMatchesName(tool: NameableToolLike, name: string): boolean {
+  return tool.name === name || (tool.aliases?.includes(name) ?? false);
+}
+
+/**
+ * PARITY (additive): resolve a tool from a set by primary name or alias. An exact
+ * (name-or-alias) match wins; a case-insensitive (name-or-alias) match is the
+ * fallback so AMI keeps its existing case-insensitive tolerance. Mirrors Claude's
+ * `findToolByName`. Returns `undefined` when nothing answers to `name`.
+ */
+export function findToolByName<T extends NameableToolLike>(
+  tools: Iterable<T>,
+  name: string,
+): T | undefined {
+  const list = Array.isArray(tools) ? (tools as T[]) : Array.from(tools);
+  const exact = list.find((t) => toolMatchesName(t, name));
+  if (exact) return exact;
+  const lower = name.toLowerCase();
+  return list.find(
+    (t) =>
+      t.name.toLowerCase() === lower ||
+      (t.aliases?.some((a) => a.toLowerCase() === lower) ?? false),
+  );
+}
+
 export function filterAvailableTools<
   T extends { name: string; isEnabled?: (context?: C) => boolean },
   C = unknown,

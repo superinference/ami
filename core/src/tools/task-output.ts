@@ -31,6 +31,11 @@ function filterAndTail(chunk: string, re: RegExp | undefined, tail: number): str
 
 export const taskOutputTool: ToolDefinition = {
   name: 'task_output',
+  // PARITY (additive): dedicated tool-search hint + back-compat aliases so a model
+  // or an old transcript/SDK caller using Claude's renamed `AgentOutputTool` /
+  // `BashOutputTool` names still resolves to this tool.
+  searchHint: 'read output/logs from a background task',
+  aliases: ['AgentOutputTool', 'BashOutputTool'],
   description:
     'Get status and output from a background task (task/agent/bash). Returns status, exit code (if finished), ' +
     'elapsed time, and the tail of output. Set wait:true to BLOCK until the task finishes and return its final ' +

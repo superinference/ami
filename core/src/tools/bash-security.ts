@@ -3765,11 +3765,41 @@ export function detectGitInternalWrite(command: string): { blocked: boolean; rea
 
 const POWERSHELL_EXE_RE = /\b(?:pwsh|powershell(?:\.exe)?)\b/i;
 
-export function detectPowerShellExecution(command: string): { blocked: boolean; reason?: string } {
-  const stripped = stripInvisibleUnicode(command);
+// PowerShell accepts en-dash (U+2013), em-dash (U+2014) and horizontal-bar
+// (U+2015) as equivalent to the ASCII hyphen-minus for parameters
+// (SpecialCharacters.IsDash), so `powershell –enc <b64>` is the same as
+// `powershell -enc <b64>`. Normalize those visible dash variants at a token
+// boundary to `-` before matching, otherwise the flag checks below (which look
+// for an ASCII `-`) are trivially bypassed. The `/` prefix (Windows PowerShell
+// 5.1's CommandLineParameterParser) is accepted directly by the flag regexes
+// via a `[-/]` character class rather than normalized, since `/` is also a
+// legitimate path separator.
+const PS_ALT_DASH_RE = /(^|\s)[\u2013\u2014\u2015](?=\S)/g;
 
-  // 1. -EncodedCommand / -enc / -ec / -e on a PowerShell executable.
-  if (POWERSHELL_EXE_RE.test(stripped) && /\s-(?:e|ec|enc|encoded|encodedcommand)\b/i.test(stripped)) {
+// Build an alternation matching any prefix (length >= minLen) of a parameter
+// name, mirroring PowerShell's unambiguous parameter abbreviation
+// (commandHasArgAbbreviation): `-e`, `-en`, `-enc`, … `-encodedcommand` all
+// select -EncodedCommand. Longest-first so the regex engine prefers the full
+// word before shorter prefixes.
+function psAbbrevAlternation(word: string, minLen = 1): string {
+  const parts: string[] = [];
+  for (let n = word.length; n >= minLen; n--) parts.push(word.slice(0, n));
+  return parts.join('|');
+}
+
+// `-EncodedCommand` reached via a `-` or `/` prefix and any abbreviation down to
+// `-e`. (Alternative unicode dashes are normalized to `-` before this runs.)
+const PS_ENCODED_FLAG_RE = new RegExp(
+  `\\s[-/](?:${psAbbrevAlternation('encodedcommand')})\\b`,
+  'i',
+);
+
+export function detectPowerShellExecution(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command).replace(PS_ALT_DASH_RE, '$1-');
+
+  // 1. -EncodedCommand / -enc / -e (and any prefix abbreviation, via a `-` or
+  //    `/` prefix) on a PowerShell executable.
+  if (POWERSHELL_EXE_RE.test(stripped) && PS_ENCODED_FLAG_RE.test(stripped)) {
     return { blocked: true, reason: 'PowerShell -EncodedCommand runs a base64-encoded script — opaque to security checks' };
   }
 
@@ -3789,7 +3819,7 @@ export function detectPowerShellExecution(command: string): { blocked: boolean; 
   }
 
   // 4. LOLBAS download primitives.
-  if (/\bcertutil\b/i.test(stripped) && /-urlcache\b/i.test(stripped)) {
+  if (/\bcertutil\b/i.test(stripped) && /[-/]urlcache\b/i.test(stripped)) {
     return { blocked: true, reason: 'certutil -urlcache is a LOLBAS download primitive — can fetch remote payloads' };
   }
   if (/\bbitsadmin\b/i.test(stripped) && /\/transfer\b/i.test(stripped)) {

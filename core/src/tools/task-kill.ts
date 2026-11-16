@@ -25,6 +25,11 @@ function maybeCleanup(pm: ProcessManager, taskId: string, cleanup: boolean): str
 
 export const taskKillTool: ToolDefinition = {
   name: 'task_kill',
+  // PARITY (additive): dedicated tool-search hint + back-compat alias so a model or
+  // an old transcript/SDK caller using Claude's deprecated `KillShell` name still
+  // resolves to this tool.
+  searchHint: 'kill a running background task',
+  aliases: ['KillShell'],
   description:
     'Stop a running background task by its ID. Kills the process and its children. ' +
     'Idempotent and concurrency-safe: stopping an already-finished task (or one that ' +
