@@ -42,6 +42,7 @@ import { lspTool } from './lsp';
 import { agenticFetchTool } from './agentic-fetch';
 import { scoutTool } from './scout';
 import { endConversationTool } from './end-conversation';
+import { isTeammatesEnabled, isLspEnabled, isWorkflowScriptsEnabled } from './tool-gates';
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
@@ -100,7 +101,6 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(webSearchTool);
   registry.register(notebookEditTool);
   registry.register(searchSymbolsTool);
-  registry.register(taskTool);
   registry.register(toolSearchTool);
   registry.register(askUserQuestionTool);
   registry.register(gitCommitTool);
@@ -117,23 +117,37 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(scheduleWakeupTool);
   registry.register(enterWorktreeTool);
   registry.register(exitWorktreeTool);
-  registry.register(sendMessageTool);
   registry.register(sleepTool);
-  registry.register(workflowTool);
   registry.register(briefTool);
-  registry.register(teamCreateTool);
-  registry.register(teamDeleteTool);
   registry.register(todoWriteTool);
   registry.register(configTool);
   registry.register(syntheticOutputTool);
-  registry.register(lspDiagnosticsTool);
-  registry.register(lspReferencesTool);
-  registry.register(lspTool);
   registry.register(agenticFetchTool);
   registry.register(scoutTool);
   registry.register(endConversationTool);
   registry.register(readMemoryTool);
   registry.register(writeMemoryTool);
+
+  // PARITY (additive): conditional registration behind centralized capability
+  // gates (see tool-gates.ts). All default ON — these are shipped AMI
+  // subsystems; the gates only add a single-source-of-truth off-switch so an
+  // operator can disable a whole subsystem uniformly instead of `--deny`-ing
+  // each tool name. Mirrors Claude's feature-flag-gated task/tool registration.
+  if (isTeammatesEnabled()) {
+    // Multi-agent teammate subsystem: one gate for the whole feature.
+    registry.register(taskTool);
+    registry.register(sendMessageTool);
+    registry.register(teamCreateTool);
+    registry.register(teamDeleteTool);
+  }
+  if (isWorkflowScriptsEnabled()) {
+    registry.register(workflowTool);
+  }
+  if (isLspEnabled()) {
+    registry.register(lspDiagnosticsTool);
+    registry.register(lspReferencesTool);
+    registry.register(lspTool);
+  }
 
   setSearchableTools(registry.getAll());
 
@@ -217,3 +231,19 @@ export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, sugges
 export type { PathSuggestionKind, PathCorrectionOptions, PathCorrectionResult, BasenameSearchOptions } from './path-suggest';
 export { detectToolConflict, isReservedToolName, ToolRegistryGuard, RESERVED_TOOL_PREFIXES } from './tool-registry-guard';
 export type { ToolConflict } from './tool-registry-guard';
+export {
+  capabilityEnabled,
+  isTeammatesEnabled,
+  isLspEnabled,
+  isWorkflowScriptsEnabled,
+  AGENT_TEAMS_ENV,
+  AGENT_TEAMS_ON_FLAG,
+  AGENT_TEAMS_OFF_FLAG,
+  LSP_ENV,
+  WORKFLOW_SCRIPTS_ENV,
+} from './tool-gates';
+export {
+  getToolCategory,
+  TOOL_CATEGORY_LABELS,
+} from './tool-categories';
+export type { ToolCategory, CategorizableTool } from './tool-categories';

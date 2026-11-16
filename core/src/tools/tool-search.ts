@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { type SkillDefinition, isStanceSkill } from '../skills';
+import { getToolCategory, TOOL_CATEGORY_LABELS } from './tool-categories';
 
 let _allTools: ToolDefinition[] = [];
 
@@ -53,6 +54,9 @@ function toolPayload(tool: ToolDefinition): Record<string, unknown> {
     description: tool.description,
     inputSchema: tool.inputSchema,
     isReadOnly: tool.isReadOnly,
+    // PARITY (additive): human-readable capability category so a discovered tool
+    // can be reasoned about by what it does (read vs edit vs execute vs mcp).
+    category: TOOL_CATEGORY_LABELS[getToolCategory(tool)],
   };
 }
 
