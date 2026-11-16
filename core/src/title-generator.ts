@@ -135,6 +135,63 @@ export function truncateTitle(title: string, max = 50): string {
   return clipped.trimEnd();
 }
 
+/**
+ * Title-generation prompt. Parity with Claude's `SESSION_TITLE_PROMPT`
+ * (utils/sessionTitle.ts:56-68) and `generateSessionName` prompt
+ * (commands/rename/generateSessionName.ts:L21-23): rather than a bare one-liner,
+ * it states the exact format (sentence-case, 3-7 words, single line, max 50
+ * chars, same language), gives concrete GOOD few-shot examples plus BAD
+ * counter-examples (too vague / too long / wrong case), and REQUIRES a
+ * JSON-constrained `{"title": "..."}` output so the model emits clean,
+ * single-field, markdown-free output by construction instead of free-form prose
+ * that we then have to scrub with regexes.
+ */
+export const TITLE_GENERATION_PROMPT =
+  `Generate a concise, sentence-case title (3-7 words, max 50 characters) that captures the main topic or goal of this conversation. ` +
+  `Use sentence case: capitalize only the first word and proper nouns. Keep it on a single line, no quotes, in the same language as the text.\n\n` +
+  `Return ONLY JSON with a single "title" field — no prose, no markdown, no code fences.\n\n` +
+  `Good examples:\n` +
+  `{"title": "Fix login button on mobile"}\n` +
+  `{"title": "Add OAuth authentication"}\n` +
+  `{"title": "Debug failing CI tests"}\n` +
+  `{"title": "Refactor API client error handling"}\n\n` +
+  `Bad (too vague): {"title": "Code changes"}\n` +
+  `Bad (too long): {"title": "Investigate and fix the issue where the login button does not respond on mobile devices"}\n` +
+  `Bad (wrong case): {"title": "Fix Login Button On Mobile"}`;
+
+/**
+ * Parse a structured title out of the model's raw output. Parity with Claude's
+ * JSON-schema title path (utils/sessionTitle.ts:90-120 / generateSessionName.ts):
+ * the model is asked for `{"title": "..."}` (or `{"name": "..."}` on the
+ * kebab-case /rename path), and we read that field directly instead of
+ * regex-scrubbing free-form prose. Tolerant like Claude's `safeParseJSON`:
+ *   - parses a clean JSON object first;
+ *   - else extracts the first `{...}` block so a model that wrapped the JSON in
+ *     prose or ```json fences still parses;
+ *   - `title` wins over `name`; both must be non-empty strings.
+ * Returns `undefined` when there is no usable JSON object (bare string, array,
+ * non-string field, empty, or non-JSON text) — the caller then falls back to the
+ * free-form sanitize pipeline.
+ */
+export function parseTitleJson(raw: string): string | undefined {
+  const text = raw.trim();
+  if (!text) return undefined;
+  const fromObject = (s: string): string | undefined => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(s); } catch { return undefined; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const rec = parsed as Record<string, unknown>;
+    const value = rec.title ?? rec.name;
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+  const direct = fromObject(text);
+  if (direct !== undefined) return direct;
+  const block = text.match(/\{[\s\S]*\}/);
+  return block ? fromObject(block[0]) : undefined;
+}
+
 export async function generateTitle(
   userMessage: string,
   provider: ProviderConfig,
@@ -142,11 +199,22 @@ export async function generateTitle(
   // Test seam (behaviour-preserving): defaults to the real streamer so callers
   // are unaffected; tests inject a deterministic async generator.
   _streamChatCompletion: typeof streamChatCompletion = streamChatCompletion,
+  // External cancellation. Parity: Claude threads the caller's AbortSignal into
+  // generateSessionName/generateSessionTitle (generateSessionName.ts:L10-13,
+  // rename.ts:L37-40) so a user Esc / turn-abort / session-end cancels an
+  // in-flight title generation. Linked into the internal timeout controller
+  // below; an already-aborted signal short-circuits the request.
+  signal?: AbortSignal,
 ): Promise<string> {
   const titleProvider: ProviderConfig = {
     ...provider,
     model: compactionModel || provider.model,
     maxTokens: 50,
+    // Deterministic side-query. Parity: Claude forces `temperatureOverride: 0`
+    // on auxiliary (non-streaming) queries (apiQueryHookHelper.ts:88-108) so the
+    // title is stable, cheaper, and reasoning-free. (Extended thinking is already
+    // disabled here — no thinking option is passed to the streamer below.)
+    temperature: 0,
   };
 
   // The first user message carries system-injected `<tag>…</tag>` blocks (appended
@@ -157,12 +225,20 @@ export async function generateTitle(
 
   const messages = [{
     role: 'user' as const,
-    content: `Generate a concise title (max 50 chars, single line, no quotes, same language as the text) for this conversation:\n\n"${cleaned.slice(0, 500)}"`,
+    content: `${TITLE_GENERATION_PROMPT}\n\nConversation:\n"""\n${cleaned.slice(0, 1000)}\n"""`,
   }];
 
   let title = '';
   try {
     const ac = new AbortController();
+    // Link the caller's signal: an already-aborted signal aborts immediately, a
+    // later abort propagates, and the listener is cleaned up in `finally` so no
+    // handler leaks onto a long-lived turn signal.
+    const onExternalAbort = () => ac.abort();
+    if (signal) {
+      if (signal.aborted) ac.abort();
+      else signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
     const timer = setTimeout(() => ac.abort(), 30000);
     try {
       for await (const chunk of _streamChatCompletion(titleProvider, messages, [], ac.signal)) {
@@ -171,19 +247,26 @@ export async function generateTitle(
       }
     } finally {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onExternalAbort);
     }
   } catch {}
 
-  // Clean up: remove thinking tags (paired and unclosed), then strip surrounding
-  // quotes, then flatten to a single markdown-free line (see sanitizeTitle) so it
-  // never wraps/corrupts the separator bar or leaks raw markdown into the tab/title
-  // chrome. ADDITIVE HARDENING (superset): trim BEFORE the quote strip so a trailing
-  // `"<space>` is still unwrapped, strip repeated/nested quotes, and recognise the
-  // smart/typographic and guillemet quote pairs a model often wraps the title in —
-  // the old pass only removed a single leading/trailing straight quote.
-  title = title
+  // Clean up: remove thinking tags (paired and unclosed) first. Then prefer the
+  // structured JSON `{"title": …}` the prompt asked for (parseTitleJson); only
+  // when the model ignored the JSON contract do we fall back to treating the raw
+  // text as the title. Either way the value then goes through the quote-strip +
+  // single-line markdown/control-byte flattening (sanitizeTitle) so it never
+  // wraps/corrupts the separator bar or leaks raw markdown into the tab/title
+  // chrome. ADDITIVE HARDENING (superset): trim BEFORE the quote strip so a
+  // trailing `"<space>` is still unwrapped, strip repeated/nested quotes, and
+  // recognise the smart/typographic and guillemet quote pairs a model often wraps
+  // the title in.
+  const stripped = title
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .replace(/<think>[\s\S]*$/g, '')
+    .trim();
+  const structured = parseTitleJson(stripped);
+  title = (structured ?? stripped)
     .trim()
     .replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, '')
     .trim();
