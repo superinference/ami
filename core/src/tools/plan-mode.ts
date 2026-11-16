@@ -3,6 +3,7 @@ import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { generateWordSlug, generateShortWordSlug } from '../words';
+import { isEnvTruthy } from '../analytics';
 
 let _planModeActive = false;
 let _planFilePath: string | null = null;
@@ -17,6 +18,45 @@ export const PLAN_MAX_RESULT_CHARS = 100_000;
 /** Soft conciseness threshold: `verify` warns past this so the model trims the
  *  plan to a reviewable outline rather than a dump before exiting. */
 export const PLAN_SOFT_CAP_CHARS = 12_000;
+
+/**
+ * Plan-mode interview-phase feature flag (plan mode V2 parity).
+ *
+ * When enabled, `enter` delivers an interview-first workflow — clarify
+ * requirements with AskUserQuestion, then run parallel read-only exploration —
+ * instead of the linear exploration workflow. Off by default; opt in with
+ * `AMI_PLAN_MODE_INTERVIEW_PHASE` (the Claude-config var
+ * `CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE` is honored for compatibility).
+ */
+export function isPlanModeInterviewPhaseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env.AMI_PLAN_MODE_INTERVIEW_PHASE) ||
+    isEnvTruthy(env.CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE);
+}
+
+/** Clamp bounds + default for the configurable plan-mode exploration agent count. */
+export const PLAN_AGENT_COUNT_MIN = 1;
+export const PLAN_AGENT_COUNT_MAX = 10;
+export const PLAN_AGENT_COUNT_DEFAULT = 1;
+
+/**
+ * Number of parallel read-only exploration passes/agents plan mode may use
+ * during the interview phase (plan mode V2 parity: getPlanModeV2AgentCount).
+ *
+ * Overridable via `AMI_PLAN_AGENT_COUNT` (the Claude-config var
+ * `CLAUDE_CODE_PLAN_V2_AGENT_COUNT` is honored for compatibility), clamped to
+ * `[PLAN_AGENT_COUNT_MIN, PLAN_AGENT_COUNT_MAX]`. Unset, non-numeric, or
+ * out-of-range values fall back to {@link PLAN_AGENT_COUNT_DEFAULT}.
+ */
+export function getPlanAgentCount(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AMI_PLAN_AGENT_COUNT ?? env.CLAUDE_CODE_PLAN_V2_AGENT_COUNT;
+  if (raw !== undefined) {
+    const n = parseInt(raw, 10);
+    if (!Number.isNaN(n) && n >= PLAN_AGENT_COUNT_MIN && n <= PLAN_AGENT_COUNT_MAX) {
+      return n;
+    }
+  }
+  return PLAN_AGENT_COUNT_DEFAULT;
+}
 
 export function isPlanModeActive(): boolean { return _planModeActive; }
 export function setPlanModeActive(active: boolean): void { _planModeActive = active; }
@@ -135,17 +175,32 @@ export function allocatePlanFile(planDir: string, opts: { sessionId?: string } =
 export const planModeTool: ToolDefinition = {
   name: 'plan_mode',
   description:
+    'Use this tool proactively when you are about to start a non-trivial implementation task. Getting user ' +
+    'sign-off on your approach before writing code prevents wasted rework and ensures alignment. ' +
     'Enter or exit plan mode. In plan mode, writable tools are blocked so you can safely explore the codebase, ' +
     'create tasks, and design your implementation plan before executing.\n' +
-    'WHEN TO USE: complex or multi-step tasks where you should research and agree on an approach before changing ' +
-    'anything — large refactors, ambiguous requirements, or anything where a wrong first move is costly. ' +
-    'WHEN NOT TO USE: trivial, single-step, or purely read-only requests — entering plan mode just adds a round-trip.\n' +
+    'WHEN TO USE — prefer plan mode for implementation tasks unless they are trivial. Use it when ANY apply:\n' +
+    '  1. New feature implementation (meaningful new functionality).\n' +
+    '  2. Multiple valid approaches (the task can be solved several ways).\n' +
+    '  3. Code modifications that change existing behavior or structure.\n' +
+    '  4. Architectural decisions (choosing between patterns or technologies).\n' +
+    '  5. Multi-file changes (likely more than 2-3 files).\n' +
+    '  6. Unclear requirements that need exploration before scoping.\n' +
+    '  7. User preferences matter (if you would AskUserQuestion about the approach, enter plan mode instead).\n' +
+    'WHEN NOT TO USE — skip plan mode for simple tasks: single/few-line fixes (typos, obvious bugs), a single ' +
+    'function with clear requirements, very specific detailed instructions, or pure research/read-only tasks ' +
+    'that produce no code change (explore directly instead — plan mode just adds a round-trip).\n' +
     'Workflow after "enter": 1) explore with Read/grep/glob and read-only Bash; 2) resolve open questions with ' +
     'AskUserQuestion BEFORE exiting (do not ask "is this plan okay?" — the exit step handles approval); ' +
     '3) write a concise plan to the plan file; 4) call "exit" to submit it for approval. ' +
     'Keep the plan tight — a reviewable outline, not a dump. ' +
-    'Exit requires user approval; the plan content is shown to the user for review, and implementation begins only after approval. ' +
-    'Example: enter → inspect auth module → AskUserQuestion about the token store → write plan → exit.',
+    'Exit requires user approval; the plan content is shown to the user for review, and implementation begins only after approval.\n' +
+    '## Examples\n' +
+    'GOOD (enter plan mode): "Add user authentication" (session vs JWT, token storage, middleware structure); ' +
+    '"Optimize the database queries" (profile first, several approaches); "Implement dark mode" (theme system ' +
+    'spanning many components).\n' +
+    'BAD (skip plan mode): "Fix this typo"; "Rename this variable"; "Explain how auth works" (read-only research).\n' +
+    'Example flow: enter → inspect auth module → AskUserQuestion about the token store → write plan → exit.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -201,15 +256,20 @@ export const planModeTool: ToolDefinition = {
         planDir = projectStateDir(cwd, 'plans');
       }
       _planFilePath = allocatePlanFile(planDir, { sessionId: context?.sessionId });
-      return {
-        output:
-          `Entered plan mode. Plan file: ${_planFilePath}\n` +
-          'Writable tools are now blocked. Explore with Read, read-only Bash, grep, glob.\n' +
+      // Plan mode V2: the interview phase leads with clarifying questions and
+      // parallel exploration; otherwise use the linear exploration workflow.
+      const body = isPlanModeInterviewPhaseEnabled()
+        ? `Interview phase: first clarify requirements with AskUserQuestion, then explore. You may run up to ` +
+          `${getPlanAgentCount()} parallel read-only exploration pass(es) (Read, read-only Bash, grep, glob) ` +
+          'before writing a concise plan to the plan file and calling exit to submit it for approval.'
+        : 'Writable tools are now blocked. Explore with Read, read-only Bash, grep, glob.\n' +
           'Exploration workflow:\n' +
           '  1. Read the relevant code and tests.\n' +
           '  2. Resolve open questions with AskUserQuestion before exiting.\n' +
           '  3. Write a concise plan to the plan file.\n' +
-          '  4. Call exit to submit the plan for approval.',
+          '  4. Call exit to submit the plan for approval.';
+      return {
+        output: `Entered plan mode. Plan file: ${_planFilePath}\n${body}`,
         isError: false,
       };
     }
