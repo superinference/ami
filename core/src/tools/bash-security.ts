@@ -1026,6 +1026,33 @@ function validateCommandSubstitution(
 
   const stripped = stripSafeHeredocSubstitutions(command);
   if (stripped !== null) {
+    // Hardening before trusting the stripped remainder (parity: Claude Code
+    // isSafeHeredoc, bashSecurity.ts L467-513). Two guards, either of which blocks:
+    //   1. ARGUMENT-POSITION: a non-whitespace command word must precede the
+    //      FIRST heredoc `$(`. If the prefix is empty/whitespace AND there is
+    //      trailing text, the `$()` sits in command-NAME position — the heredoc
+    //      body becomes the command and the trailing text its args, e.g.
+    //      `$(cat <<'EOF'\nchmod\nEOF\n) 777 /etc/shadow` → `chmod 777 /etc/shadow`.
+    //   2. SAFE-CHARSET: the remainder may only contain command names, args,
+    //      quotes, and whitespace — any shell metacharacter (| & ; $ ` { } < >)
+    //      could chain a dangerous command after the safe heredoc. Explicit ASCII
+    //      space/tab only (not \s, which matches Unicode whitespace used to hide).
+    // (Claude additionally recursively revalidates the remainder; AMI needs no such
+    // call. Unlike Claude's early-ALLOW short-circuit, validateCommandSubstitution is
+    // one validator among many that ALL run on the full command, so any dangerous
+    // remainder — e.g. `zmodload zsh/system $(…)` — is already caught by the main
+    // validateZshDangerousCommands pass. A recursive call would be semantic duplication.)
+    const trimmedRemaining = stripped.trim();
+    if (trimmedRemaining.length > 0) {
+      const firstMatch = HEREDOC_IN_SUBSTITUTION.exec(command);
+      const prefix = firstMatch ? command.slice(0, firstMatch.index) : '';
+      if (prefix.trim().length === 0) {
+        return fail(CHECK_IDS.COMMAND_SUBSTITUTION, 'Blocked: $(…heredoc…) substitution in command-name position with trailing arguments (heredoc body would become the command)');
+      }
+    }
+    if (!/^[a-zA-Z0-9 \t"'.\-/_@=,:+~]*$/.test(stripped)) {
+      return fail(CHECK_IDS.COMMAND_SUBSTITUTION, 'Blocked: unsafe characters remain after stripping a heredoc substitution (shell metacharacters could chain a dangerous command)');
+    }
     const reExtracted = extractQuotedContent(stripped);
     content = reExtracted.fullyUnquoted;
     dq = reExtracted.withDoubleQuotes;
@@ -1067,8 +1094,15 @@ function validateRedirections(command: string, extracted: { fullyUnquoted: strin
   const base = stripHeredocBodies(command);
   const reExtracted = base === command ? extracted : extractQuotedContent(base);
   const content = stripSafeRedirections(reExtracted.fullyUnquoted);
-  if (/[<>]/.test(content)) {
-    return fail(CHECK_IDS.REDIRECTIONS, 'Blocked: unquoted redirect operators detected');
+  // Distinct, consequence-explaining messages per direction (parity: Claude Code
+  // validateRedirections) so the model understands WHY it was stopped and how to
+  // fix it: input redirection can read sensitive files; output redirection can
+  // write to arbitrary files. Input is checked first (matches reference order).
+  if (/</.test(content)) {
+    return fail(CHECK_IDS.REDIRECTIONS, 'Blocked: input redirection (<) detected which could read sensitive files');
+  }
+  if (/>/.test(content)) {
+    return fail(CHECK_IDS.REDIRECTIONS, 'Blocked: output redirection (>) detected which could write to arbitrary files');
   }
   return PASS;
 }
