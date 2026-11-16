@@ -166,6 +166,66 @@ export function injectFindMaxdepth(command: string): string {
   }).join('');
 }
 
+/**
+ * Strip a redundant leading `cd <cwd> && ` prefix from a command. Models often
+ * prefix a command with `cd` to the directory the shell is already in; since the
+ * command already executes with `cwd` as its working directory, that prefix is a
+ * no-op. Removing it keeps the downstream advisories/caching keyed on the real
+ * work (e.g. a `cd <cwd> && git …` won't be mistaken for a relocation) and
+ * matches the executed command the model sees. Only the literal current-cwd
+ * prefix is stripped — a `cd` into any OTHER directory is preserved.
+ * Parity: Claude Code api.ts BashTool normalizeToolInput (L586-592).
+ */
+export function stripRedundantCdPrefix(command: string, cwd: string | undefined): string {
+  if (!cwd) return command;
+  // String.replace with a string pattern replaces only the FIRST occurrence and
+  // treats the pattern literally (no regex metachar surprises in the path).
+  return command.replace(`cd ${cwd} && `, '');
+}
+
+/**
+ * Rewrite Windows CMD-style `>nul` redirects to POSIX `/dev/null`. The model
+ * occasionally hallucinates Windows CMD syntax (e.g. `ls 2>nul`) even though the
+ * shell is always POSIX; a literal `>nul` makes bash create a file named `nul`,
+ * a reserved device name that is extremely hard to delete and breaks `git add .`
+ * / `git clone`. Matches `>nul`, `> NUL`, `2>nul`, `&>nul`, `>>nul`
+ * (case-insensitive); does NOT match `>null`, `>nul.txt`, or `cat nul.txt`.
+ * Parity: Claude Code utils/bash/shellQuoting.ts rewriteWindowsNullRedirect.
+ */
+const NUL_REDIRECT_RE = /(\d?&?>+\s*)[Nn][Uu][Ll](?=\s|$|[|&;)\n])/g;
+export function rewriteWindowsNullRedirect(command: string): string {
+  return command.replace(NUL_REDIRECT_RE, '$1/dev/null');
+}
+
+/**
+ * Pre-execution normalization applied to every bash command before security
+ * checks and execution: drop a redundant `cd <cwd> && ` prefix and rewrite
+ * Windows `>nul` redirects to `/dev/null`. Behavior-preserving transforms that
+ * make the command the model actually wrote run correctly on the POSIX shell.
+ */
+export function normalizeBashInput(command: string, cwd: string | undefined): string {
+  let out = stripRedundantCdPrefix(command, cwd);
+  out = rewriteWindowsNullRedirect(out);
+  return out;
+}
+
+/**
+ * Strip leading and trailing lines that contain only whitespace while preserving
+ * interior blank lines and in-line indentation. Unlike `String.prototype.trim()`
+ * — which also strips meaningful leading indentation of the first content line
+ * and trailing spaces of the last — this removes only whole empty boundary lines.
+ * Parity: Claude Code tools/BashTool/utils.ts stripEmptyLines.
+ */
+export function stripEmptyLines(content: string): string {
+  const lines = content.split('\n');
+  let start = 0;
+  while (start < lines.length && lines[start]?.trim() === '') start++;
+  let end = lines.length - 1;
+  while (end >= 0 && lines[end]?.trim() === '') end--;
+  if (start > end) return '';
+  return lines.slice(start, end + 1).join('\n');
+}
+
 const FILE_READ_COMMANDS = /^\s*(?:cat|head|tail|less|more|bat|batcat|grep|egrep|fgrep|sed\s+-n)\b/;
 const GREP_COMMANDS = /^\s*(?:grep|egrep|fgrep)\b/;
 
@@ -760,6 +820,12 @@ export const bashTool: ToolDefinition = {
     // commands like r\<NL>m can't evade detection.
     command = joinLineContinuations(command);
 
+    // Pre-execution normalization (runs BEFORE every security check so the checks
+    // see exactly what will execute): drop a redundant `cd <cwd> && ` prefix,
+    // collapse the double-escaped `find -exec \;` terminator, and rewrite
+    // Windows `>nul` redirects to `/dev/null`.
+    command = normalizeBashInput(command, context.cwd);
+
     // Nuclear command blocklist — un-bypassable, runs before ALL other checks.
     // No flag, mode, or env var can disable this. Even --yolo cannot override it.
     const nuclear = detectNuclearCommand(command);
@@ -1074,9 +1140,12 @@ function presentCommandOutput(
 ): { stdout: string; stderr: string } {
   const foldOut = isTestRunnerCommand(command) || looksLikeSuiteLog(stdout);
   const foldErr = isTestRunnerCommand(command) || looksLikeSuiteLog(stderr);
+  // Strip only whole leading/trailing empty lines (a trailing newline from most
+  // commands, or a leading blank from a banner) while preserving interior blank
+  // lines and indentation, so the model sees clean output without losing layout.
   return {
-    stdout: foldOut ? compactTestLog(stdout) : stdout,
-    stderr: foldErr ? compactTestLog(stderr) : stderr,
+    stdout: stripEmptyLines(foldOut ? compactTestLog(stdout) : stdout),
+    stderr: stripEmptyLines(foldErr ? compactTestLog(stderr) : stderr),
   };
 }
 
