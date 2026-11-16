@@ -1240,8 +1240,13 @@ export const fileReadTool: ToolDefinition = {
     // "File unchanged" stub for content it never actually saw (CC parity:
     // FileReadTool gates the unchanged short-circuit on a matching range).
     const fileCache = getFileCache(context.cwd, context.agentId);
-    const cached = fileCache.get(resolved);
-    if (cached && input.offset === undefined && input.limit === undefined) {
+    // mtime-hit accelerator: we already statted the file above, so serve a full
+    // re-read of an unchanged file from the cache WITHOUT re-reading/re-hashing
+    // its (possibly large) bytes off disk. A range read still falls through.
+    const cached = input.offset === undefined && input.limit === undefined
+      ? fileCache.getCachedRead(resolved, stat.mtimeMs)
+      : null;
+    if (cached) {
       const lineCount = cached.content.split('\n').length;
       return { output: `${FILE_UNCHANGED_STUB} (${resolved}, ${lineCount} lines)` };
     }
@@ -1306,8 +1311,9 @@ export const fileReadTool: ToolDefinition = {
     // never carry those boundary markers forward into the transcript.
     const content = stripForgedSystemReminders(rawContent);
 
-    // Cache the file for future reads
-    fileCache.set(resolved, content, stat.mtimeMs);
+    // Cache the file for future reads, preserving the decode encoding so an
+    // mtime-hit re-read can be served with its original encoding.
+    fileCache.set(resolved, content, stat.mtimeMs, bomEncoding);
 
     const allLines = content.split('\n');
     const totalLines = allLines.length;

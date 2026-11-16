@@ -21,6 +21,12 @@ export interface FileState {
   offset?: number;
   /** Line `limit` (window size) of the most recent RANGE read — see `offset`. */
   limit?: number;
+  /** Text encoding the cached `content` was decoded from (e.g. `utf-8`,
+   *  `utf16le`). Stored so the mtime-hit read accelerator ({@link FileCache.getCachedRead})
+   *  can return the content WITH its original encoding, letting a caller re-emit
+   *  an unchanged file without re-detecting/re-decoding it from disk. Absent on
+   *  mtime-only / partial / range stub entries that hold no content. */
+  encoding?: string;
 }
 
 /**
@@ -62,12 +68,45 @@ function isENOENT(err: unknown): boolean {
 }
 
 /**
+ * Filesystem errnos that mean "this path cannot be accessed right now" without
+ * implying the cached read-state is wrong: a permission/lock/type/resource
+ * condition (EACCES/EPERM denied, EBUSY/ETXTBSY locked, EISDIR path became a
+ * directory, ELOOP/ENOTDIR path-component churn, E*FILE/ENOMEM/EAGAIN resource
+ * exhaustion, EIO/ETIMEDOUT transient I/O). On any of these during a freshness
+ * check the cached entry is KEPT (treated as unchanged) rather than reported as
+ * modified, so a momentary glitch does not force a spurious re-read or fail a
+ * later edit. A thrown value that is NOT one of these (and not ENOENT) is a
+ * genuinely unexpected error and is surfaced to the caller rather than swallowed.
+ */
+const FS_INACCESSIBLE_ERRNOS = new Set([
+  'EACCES', 'EPERM', 'EBUSY', 'ETXTBSY', 'EISDIR', 'ELOOP', 'ENOTDIR',
+  'EMFILE', 'ENFILE', 'ENOMEM', 'EAGAIN', 'EIO', 'ETIMEDOUT',
+]);
+
+/**
+ * True when `err` is a filesystem error that means the path is temporarily/structurally
+ * inaccessible (see {@link FS_INACCESSIBLE_ERRNOS}) — distinct from ENOENT (deleted)
+ * and from a genuinely unexpected error. Mirrors Claude Code's isENOENT-only eviction
+ * while classifying the remaining FS errnos as "keep the entry, do not swallow bugs".
+ */
+export function isFsInaccessible(err: unknown): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    FS_INACCESSIBLE_ERRNOS.has((err as NodeJS.ErrnoException).code ?? '')
+  );
+}
+
+/**
  * Indirection seam for the post-write metadata stat. Routing `setWritten`'s
  * stat through a plain mutable object lets tests simulate NFS/CSI metadata lag
  * (a stat that fails right after a successful write) without reassigning the
  * frozen ESM `fs` namespace. Production uses the real `fs.statSync`.
  */
-export const fsHooks: { statSync: typeof fs.statSync } = { statSync: fs.statSync };
+export const fsHooks: {
+  statSync: typeof fs.statSync;
+  readFileSync: typeof fs.readFileSync;
+} = { statSync: fs.statSync, readFileSync: fs.readFileSync };
 
 /**
  * Tracks files the engine has read to avoid re-sending unchanged content.
@@ -137,7 +176,7 @@ export class FileCache {
    * Record a file read. The token estimate is file-type-aware: dense structured
    * content (JSON/JSONL/JSONC) is counted at ~2 chars/token, other text at ~4.
    */
-  set(filePath: string, content: string, mtime: number): void {
+  set(filePath: string, content: string, mtime: number, encoding: string = 'utf-8'): void {
     const key = this.norm(filePath);
     const byteSize = Buffer.byteLength(content, 'utf-8');
     const existing = this.cache.get(key);
@@ -151,6 +190,9 @@ export class FileCache {
       path: key,
       content,
       mtime,
+      // Preserve the decode encoding so getCachedRead() can return content in
+      // its original encoding on an mtime hit without re-detecting from disk.
+      encoding,
       contentHash: hashContent(content),
       // File-type-aware token estimate: dense structured text (JSON/JSONL/JSONC)
       // is dominated by single-character tokens, so a generic ~4 chars/token ratio
@@ -221,11 +263,17 @@ export class FileCache {
       // ceiling just to hash it. Treat an over-cap file as changed so callers
       // re-read it through the normal size-limited read path.
       if (stat.size > this.maxSizeBytes) return true;
-      const rawBuf = fs.readFileSync(key);
-      const currentContent = decodeBuffer(rawBuf).text;
+      const rawBuf = fsHooks.readFileSync(key);
+      const currentContent = decodeBuffer(rawBuf as Buffer).text;
       return hashContent(currentContent) !== cached.contentHash;
     } catch (err) {
-      return isENOENT(err);
+      // Deleted file → changed (invalidate). A known-inaccessible FS condition
+      // (permission/lock/type/resource) → keep the entry (not "changed"). Any
+      // OTHER, genuinely unexpected error is surfaced rather than silently
+      // swallowed into a false "unchanged", so real bugs are not masked.
+      if (isENOENT(err)) return true;
+      if (isFsInaccessible(err)) return false;
+      throw err;
     }
   }
 
@@ -304,6 +352,31 @@ export class FileCache {
     this.cache.delete(key);
     this.cache.set(key, cached);
     return cached;
+  }
+
+  /**
+   * mtime-hit read accelerator. When the caller ALREADY has the file's current
+   * mtime in hand (from a `stat` it just performed) and it matches the cached
+   * entry's mtime, return the cached `content` + its original `encoding` WITHOUT
+   * re-reading or re-hashing the file from disk — turning a repeat full read of
+   * an unchanged (possibly large) file into an O(1) lookup. Returns `null` on a
+   * miss (not cached, no cached content, or mtime differs) so the caller falls
+   * back to a full disk read.
+   *
+   * This is the fast optimization counterpart to {@link get}: `get()` re-reads +
+   * re-hashes to also catch a same-mtime-tick rewrite on coarse-timestamp
+   * filesystems (used by the read-before-edit staleness guard), whereas this
+   * accelerator trusts the already-statted mtime for the read-tool hot path.
+   * Mirrors Claude Code's `fileReadCache` mtime-hit fast return.
+   */
+  getCachedRead(path: string, mtimeMs: number): { content: string; encoding: string } | null {
+    const key = this.norm(path);
+    const cached = this.cache.get(key);
+    if (!cached || !cached.content || cached.mtime !== mtimeMs) return null;
+    // LRU: a served cache hit marks the entry most-recently-used.
+    this.cache.delete(key);
+    this.cache.set(key, cached);
+    return { content: cached.content, encoding: cached.encoding ?? 'utf-8' };
   }
 
   /**
