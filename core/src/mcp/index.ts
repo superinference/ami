@@ -11,8 +11,11 @@ export {
   generatePkce, generateState, parseWwwAuthenticate, wellKnown,
   discoverProtectedResource, discoverAuthServer, registerClient,
   buildAuthorizationUrl, exchangeCode, refreshToken, OAuthTokenStore, McpOAuthSession,
+  redactOAuthUrl, redactTokenBody, mcpCredentialKey, mcpTokenFileName,
+  combineAbortSignals, SENSITIVE_OAUTH_PARAMS,
 } from './oauth';
 export type {
   FetchLike, PkcePair, ProtectedResourceMetadata, AuthServerMetadata,
   OAuthTokens, McpOAuthProvider, McpOAuthSessionOptions, AuthorizeFn,
+  OAuthLogEvent, OAuthLogger,
 } from './oauth';

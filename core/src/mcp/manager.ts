@@ -1,6 +1,6 @@
 import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError, MCP_PROTOCOL_VERSION, getMcpConnectTimeout } from './client';
 import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
-import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName } from './oauth';
+import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName, mcpCredentialKey } from './oauth';
 import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
@@ -525,6 +525,13 @@ export class McpManager extends EventEmitter {
    * stopped. Cleared when the server (re)connects.
    */
   private _intentionalDisconnect = new Set<string>();
+  /**
+   * Per-server OAuth cancellation controllers. Aborting one cancels any in-flight
+   * OAuth HTTP request (discovery / DCR / consent / token exchange) for that server
+   * when it is stopped or removed, so a torn-down server never leaves a hung auth
+   * call running.
+   */
+  private _oauthAbort = new Map<string, AbortController>();
   private pendingServers = new Map<string, PendingServerInfo>();
   private serverErrors = new Map<string, string>();
   /** Config-source scope per server (Claude-parity scope grouping). Recorded at
@@ -838,16 +845,37 @@ export class McpManager extends EventEmitter {
       const configuredRedirect = config.oauth.redirectUri;
       const envCallbackPort = getConfiguredOAuthCallbackPort();
       // Persist tokens per server so authentication survives restarts (H22/H45).
+      // Key the token file on the server NAME *and* a hash of its connection config
+      // (type/url/headers) so a reconfigured server (changed URL/transport/headers)
+      // does not reuse a stale grant that no longer applies — parity with Claude's
+      // getServerKey. (Labeled functional change: the token filename now embeds the
+      // config hash; an old name-only token file is simply re-authed, not reused.)
+      const credentialKey = mcpCredentialKey(name, {
+        type: config.transport,
+        url: config.url,
+        headers: config.headers,
+      });
       const tokenStore = new FileOAuthTokenStore(
-        path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(name)),
+        path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(credentialKey)),
         // Proactive refresh-ahead window: refresh this many ms before real expiry
         // so a long-running session never presents an expired token mid-request.
         config.oauth.refreshBufferMs,
       );
+      // Per-server cancellation: aborting this controller (on stop/remove) aborts
+      // any in-flight OAuth HTTP request so a user-cancelled / torn-down server
+      // does not leave a hung consent/discovery call running.
+      const oauthAbort = new AbortController();
+      this._oauthAbort.get(name)?.abort();
+      this._oauthAbort.set(name, oauthAbort);
       oauth = new McpOAuthSession({
         serverUrl: config.url,
         fetchImpl: this._fetch,
         store: tokenStore,
+        signal: oauthAbort.signal,
+        // Step-by-step diagnostic logging: attribute each leg (discovery, DCR,
+        // consent, token exchange, refresh, revoke) to the MCP log so an auth
+        // failure is traceable to the exact leg. URLs/bodies are pre-redacted.
+        onLog: (ev) => coreLog('mcp', `oauth[${name}] ${ev.step}: ${ev.message}${ev.ok === false ? ' (failed)' : ''}${ev.error ? ` — ${ev.error}` : ''}`),
         authorize: (params) => {
           // Record the URL before delegating so even a headless authorizer that
           // refuses still leaves the URL available to relay to the model (H46/H48/H49).
@@ -1219,6 +1247,9 @@ export class McpManager extends EventEmitter {
   }
 
   async stopServer(name: string, disable?: boolean): Promise<void> {
+    // Cancel any in-flight OAuth flow for this server before teardown.
+    this._oauthAbort.get(name)?.abort();
+    this._oauthAbort.delete(name);
     const client = this.clients.get(name);
     if (client) {
       // Mark intentional so the close handler does not auto-reconnect a stopped server.
@@ -1464,6 +1495,9 @@ export class McpManager extends EventEmitter {
   }
 
   removeServer(name: string): void {
+    // Cancel any in-flight OAuth flow for this server before teardown.
+    this._oauthAbort.get(name)?.abort();
+    this._oauthAbort.delete(name);
     const timer = this.reconnectTimers.get(name);
     if (timer) {
       clearTimeout(timer);

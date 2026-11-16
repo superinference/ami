@@ -122,9 +122,32 @@ export function withTimeout<T>(factory: (signal: AbortSignal | undefined) => Pro
   });
 }
 
-/** Wrap a fetch impl so every call is bounded by a per-request timeout. */
+/**
+ * Compose multiple (possibly undefined) AbortSignals into one that aborts as soon
+ * as ANY input aborts. Returns the lone signal when only one is present, or
+ * undefined when none are — so the common single-signal/no-signal paths add no
+ * overhead. Used to carry BOTH a caller's cancellation signal and a per-request
+ * timeout signal into the same fetch so either can abort an in-flight OAuth call.
+ */
+export function combineAbortSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const present = signals.filter((s): s is AbortSignal => s !== undefined);
+  if (present.length === 0) return undefined;
+  if (present.length === 1) return present[0];
+  return AbortSignal.any(present);
+}
+
+/**
+ * Wrap a fetch impl so every call is bounded by a per-request timeout. Any signal
+ * the caller already passed in `init.signal` (e.g. a user cancellation) is
+ * COMBINED with the timeout signal rather than overriding it, so a cancel and a
+ * timeout both still abort the request.
+ */
 export function wrapFetchWithTimeout(fetchImpl: FetchLike, ms: number): FetchLike {
-  return (url, init) => withTimeout((signal) => fetchImpl(url, { ...init, signal: init?.signal ?? signal }), ms, `OAuth request to ${url}`);
+  return (url, init) => withTimeout(
+    (signal) => fetchImpl(url, { ...init, signal: combineAbortSignals(init?.signal, signal) }),
+    ms,
+    `OAuth request to ${url}`,
+  );
 }
 
 export interface RetryOptions {
@@ -157,6 +180,90 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, opts: RetryOptio
 export function isTransientOAuthError(error: unknown): boolean {
   if (error instanceof OAuthError) return error.status >= 500 || error.status === 429;
   return true; // network-level throw (no HTTP status) — retry
+}
+
+/**
+ * OAuth query parameters that must be redacted before a URL is logged: `state`
+ * and `nonce` are CSRF/session-fixation secrets, `code_challenge`/`code_verifier`
+ * are PKCE secrets, and `code` is the single-use authorization code. Leaking any
+ * of these into a debug log would enable replay / CSRF attacks.
+ */
+export const SENSITIVE_OAUTH_PARAMS = ['state', 'nonce', 'code_challenge', 'code_verifier', 'code'] as const;
+
+/**
+ * Redact sensitive OAuth query parameters ({@link SENSITIVE_OAUTH_PARAMS}) from a
+ * URL so an authorization/callback URL can be written to a DIAGNOSTIC LOG safely. A
+ * value that is not a valid URL is returned unchanged (nothing to redact).
+ *
+ * This is deliberately DISTINCT from `tools/mcp-auth.ts`'s `redactAuthUrl`, which
+ * redacts only credential VALUES for a URL SURFACED TO THE USER/MODEL and must
+ * KEEP `state`/`code_challenge` so the user can still complete consent. A log line
+ * has no such constraint, so this stricter variant also scrubs the CSRF/PKCE
+ * params (`state`/`nonce`/`code_challenge`/`code_verifier`) — the two cannot be one
+ * function because their param policies conflict.
+ */
+export function redactOAuthUrl(url: string): string {
+  let u: URL;
+  try { u = new URL(url); } catch { return url; }
+  for (const param of SENSITIVE_OAUTH_PARAMS) {
+    if (u.searchParams.has(param)) u.searchParams.set(param, '[REDACTED]');
+  }
+  return u.toString();
+}
+
+/**
+ * Nesting-depth-agnostic redaction of token-bearing JSON keys from an error body
+ * before it reaches a debug log. Matches the quoted value of any of
+ * `access_token`/`refresh_token`/`id_token`/`assertion`/`subject_token`/
+ * `client_secret` at ANY depth, operating on both a raw `text()` body and a
+ * parsed-then-stringified object — so a misbehaving auth server that echoes a
+ * request's credential back inside a 4xx envelope cannot leak it into logs.
+ */
+const SENSITIVE_TOKEN_RE = /"(access_token|refresh_token|id_token|assertion|subject_token|client_secret)"\s*:\s*"[^"]*"/g;
+
+export function redactTokenBody(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  return (s ?? '').replace(SENSITIVE_TOKEN_RE, (_, k) => `"${k}":"[REDACTED]"`);
+}
+
+/**
+ * One step in the multi-leg MCP OAuth flow, surfaced to an optional observer so a
+ * frontend can show step-by-step progress and attribute a failure to the exact
+ * leg that failed (discovery vs registration vs consent vs token exchange).
+ */
+export interface OAuthLogEvent {
+  /** Which leg of the flow emitted this. */
+  step:
+    | 'cache-hit' | 'discover-prm' | 'discover-as' | 'register-client'
+    | 'authorize' | 'exchange-code' | 'refresh' | 'revoke' | 'cancelled' | 'token-stored';
+  /** Human-readable, already-redacted message (URLs via {@link redactOAuthUrl}). */
+  message: string;
+  /** The MCP server URL this flow is for. */
+  serverUrl: string;
+  /** Present on a terminal leg: whether it succeeded. */
+  ok?: boolean;
+  /** Present on a failed leg: the redacted failure reason. */
+  error?: string;
+}
+
+/** Observer for {@link OAuthLogEvent}s — a diagnostic/introspection seam for the frontend. */
+export type OAuthLogger = (event: OAuthLogEvent) => void;
+
+/**
+ * Credential-store key for an MCP OAuth server, derived from the server NAME plus
+ * a hash of its connection config (`type`/`url`/`headers`). Keying on the config
+ * hash — not the name alone — prevents credentials being reused across two servers
+ * that share a name but differ in URL/transport/headers, or across a reconfigured
+ * server whose endpoint changed (the old grant no longer applies). Parity with
+ * Claude Code's `getServerKey`.
+ */
+export function mcpCredentialKey(
+  serverName: string,
+  config: { type?: string; url?: string; headers?: Record<string, string> },
+): string {
+  const configJson = JSON.stringify({ type: config.type, url: config.url, headers: config.headers ?? {} });
+  const hash = createHash('sha256').update(configJson).digest('hex').slice(0, 16);
+  return `${serverName}|${hash}`;
 }
 
 /**
@@ -844,10 +951,15 @@ export class FileOAuthTokenStore extends OAuthTokenStore {
   }
 }
 
-/** Filesystem-safe token filename for a server (bearer creds live under 0700 dir). */
-export function mcpTokenFileName(serverName: string): string {
-  const safe = serverName.replace(/[^a-zA-Z0-9_.-]/g, '_');
-  const hash = createHash('sha256').update(serverName).digest('hex').slice(0, 8);
+/**
+ * Filesystem-safe token filename for a credential-store key (bearer creds live
+ * under a 0700 dir). Pass a {@link mcpCredentialKey} (`name|confighash`) so tokens
+ * for the same server name but a different config are stored in distinct files; a
+ * bare server name is also accepted (filename stays stable per name).
+ */
+export function mcpTokenFileName(credentialKey: string): string {
+  const safe = credentialKey.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const hash = createHash('sha256').update(credentialKey).digest('hex').slice(0, 8);
   return `${safe}.${hash}.json`;
 }
 
@@ -906,6 +1018,21 @@ export interface McpOAuthSessionOptions {
   timeoutMs?: number;
   /** Retry policy for transient token-refresh failures. */
   retry?: RetryOptions;
+  /**
+   * Caller cancellation signal composed into EVERY OAuth HTTP request (discovery,
+   * DCR, token exchange, refresh, revoke). When the frontend aborts it — a user
+   * cancelling the consent flow / closing the server menu — the in-flight request
+   * is aborted instead of running to completion, and the flow resolves to a
+   * non-fatal outcome rather than hanging.
+   */
+  signal?: AbortSignal;
+  /**
+   * Optional diagnostic observer. Receives a redacted {@link OAuthLogEvent} at each
+   * leg of the flow (cache hit, discovery, registration, consent, token exchange,
+   * refresh, revoke, cancellation) so a frontend can show step-by-step progress and
+   * attribute a failure to the exact leg. Purely observational — never affects the flow.
+   */
+  onLog?: OAuthLogger;
 }
 
 /**
@@ -939,18 +1066,37 @@ export class McpOAuthSession implements McpOAuthProvider {
     this.store = opts.store ?? new OAuthTokenStore(opts.refreshBufferMs);
     this.now = opts.now ?? (() => Date.now());
     // Every OAuth HTTP call (discovery, DCR, token, refresh) is bounded by a
-    // per-request timeout so a hung auth server cannot wedge the session. The
-    // underlying impl is read per call so it stays swappable after construction.
+    // per-request timeout so a hung auth server cannot wedge the session, AND
+    // carries the caller's cancellation signal (opts.signal) so a user-cancel
+    // aborts the in-flight request. The underlying impl is read per call so it
+    // stays swappable after construction.
     const timeoutMs = opts.timeoutMs ?? OAUTH_HTTP_TIMEOUT_MS;
-    this.fetch = wrapFetchWithTimeout((url, init) => this.opts.fetchImpl(url, init), timeoutMs);
+    this.fetch = wrapFetchWithTimeout(
+      (url, init) => this.opts.fetchImpl(url, { ...init, signal: combineAbortSignals(init?.signal, this.opts.signal) }),
+      timeoutMs,
+    );
     this.resource = opts.serverUrl;
     this.effectiveClientId = opts.clientId;
     this.effectiveClientSecret = opts.clientSecret;
   }
 
+  /** Emit a redacted diagnostic event to the optional observer (best-effort). */
+  private log(event: Omit<OAuthLogEvent, 'serverUrl'>): void {
+    if (!this.opts.onLog) return;
+    try { this.opts.onLog({ ...event, serverUrl: this.opts.serverUrl }); } catch { /* an observer must never break the flow */ }
+  }
+
+  /** True when the caller's cancellation signal has fired. */
+  private isCancelled(): boolean {
+    return this.opts.signal?.aborted === true;
+  }
+
   async authorizationHeader(): Promise<string | null> {
     const live = this.store.authorizationHeader(this.now());
-    if (live) return live;
+    if (live) {
+      this.log({ step: 'cache-hit', message: 'using cached access token (not yet expired)', ok: true });
+      return live;
+    }
     // Token present but expired, and we can refresh without user interaction.
     if (this.canSilentRefresh()) return this.refreshAccessToken();
     return null;
@@ -983,6 +1129,7 @@ export class McpOAuthSession implements McpOAuthProvider {
     // lands while the refresh is in flight (sign-out, step-up, a fresh consent)
     // supersedes this result instead of being overwritten by a stale token.
     const generation = this.store.getGeneration();
+    this.log({ step: 'refresh', message: 'refreshing access token via refresh_token grant' });
     try {
       const refreshed = await retryWithBackoff(
         () => refreshToken(this.fetch, {
@@ -998,12 +1145,17 @@ export class McpOAuthSession implements McpOAuthProvider {
         { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
       );
       // Discard a stale refresh whose generation was superseded mid-flight.
-      if (!this.store.applyRefresh(refreshed, generation)) return null;
+      if (!this.store.applyRefresh(refreshed, generation)) {
+        this.log({ step: 'refresh', message: 'refresh superseded by a concurrent credential change', ok: false });
+        return null;
+      }
+      this.log({ step: 'refresh', message: 'access token refreshed', ok: true });
       return this.store.authorizationHeader(this.now());
     } catch (error) {
       // A dead grant (invalid_grant) can never recover by retry — clear the
       // stored tokens so the next 401 drives a full interactive re-auth.
       if (error instanceof OAuthError && error.code === 'invalid_grant') this.store.clear();
+      this.log({ step: 'refresh', message: 'refresh failed', ok: false, error: redactTokenBody(error instanceof Error ? error.message : String(error)) });
       return null; // fall through to a full re-auth on the next 401
     }
   }
@@ -1033,6 +1185,7 @@ export class McpOAuthSession implements McpOAuthProvider {
    */
   async revoke(): Promise<void> {
     const tokens = this.store.get();
+    this.log({ step: 'revoke', message: 'revoking tokens server-side and clearing local credentials' });
     try {
       if (tokens) {
         // Discover the AS (hence the revocation endpoint) if a prior 401 flow has
@@ -1068,6 +1221,7 @@ export class McpOAuthSession implements McpOAuthProvider {
       }
     } finally {
       this.store.clear();
+      this.log({ step: 'revoke', message: 'local credentials cleared', ok: true });
     }
   }
 
@@ -1101,6 +1255,7 @@ export class McpOAuthSession implements McpOAuthProvider {
   private async discoverAuthorizationServer(wwwAuthenticate: string | null): Promise<{ prmScopes?: string[] }> {
     const parsed = parseWwwAuthenticate(wwwAuthenticate);
     const metadataUrl = parsed.resourceMetadata ?? wellKnown(this.opts.serverUrl, 'oauth-protected-resource');
+    this.log({ step: 'discover-prm', message: `discovering protected-resource metadata at ${redactOAuthUrl(metadataUrl)}` });
     try {
       const prm = await discoverProtectedResource(this.fetch, metadataUrl);
       // RFC 9728 §3.3 mix-up protection: the resource the PRM describes must be
@@ -1118,9 +1273,11 @@ export class McpOAuthSession implements McpOAuthProvider {
       for (const issuer of servers) {
         try {
           assertSecureUrl(issuer, 'authorization server issuer');
+          this.log({ step: 'discover-as', message: `discovering authorization-server metadata for ${redactOAuthUrl(issuer)}` });
           const meta = await discoverAuthServer(this.fetch, issuer, this.opts.authServerMetadataUrl);
           this.assertGrantCapable(meta);
           this.authMeta = meta;
+          this.log({ step: 'discover-as', message: `authorization server resolved: ${redactOAuthUrl(issuer)}`, ok: true });
           return { prmScopes: prm.scopesSupported };
         } catch (asError) {
           errors.push(`${issuer}: ${asError instanceof Error ? asError.message : String(asError)}`);
@@ -1172,12 +1329,14 @@ export class McpOAuthSession implements McpOAuthProvider {
         if (!authMeta.registrationEndpoint) throw new Error('no client_id and no registration endpoint');
         // Register with an auth method the server actually accepts (per its
         // advertised token_endpoint_auth_methods_supported), not an assumed `none`.
+        this.log({ step: 'register-client', message: 'registering a dynamic OAuth client (RFC 7591)' });
         const reg = await registerClient(
           this.fetch, authMeta.registrationEndpoint, [redirectUri], undefined, authMeta.tokenEndpointAuthMethodsSupported,
         );
         this.effectiveClientId = reg.clientId;
         // A confidential client registered dynamically returns its secret once.
         if (reg.clientSecret) this.effectiveClientSecret = reg.clientSecret;
+        this.log({ step: 'register-client', message: 'dynamic client registered', ok: true });
       }
 
       const pkce = generatePkce();
@@ -1200,6 +1359,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         scope,
         loginHint: this.opts.loginHint,
       });
+      this.log({ step: 'authorize', message: `awaiting interactive consent at ${redactOAuthUrl(authorizationUrl)}` });
       const authResult = await this.opts.authorize({ authorizationUrl, redirectUri, state });
       // RFC 6749 §10.12 CSRF protection: if the consent leg echoes the callback
       // `state`, it MUST match the one we generated. A mismatch means the redirect
@@ -1208,6 +1368,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         throw new Error('OAuth state mismatch (possible CSRF): callback state does not match the authorization request');
       }
       const code = authResult.code;
+      this.log({ step: 'exchange-code', message: 'exchanging authorization code for tokens' });
       const tokens = await exchangeCode(this.fetch, {
         tokenEndpoint: authMeta.tokenEndpoint,
         code,
@@ -1218,8 +1379,17 @@ export class McpOAuthSession implements McpOAuthProvider {
         resource: this.resource,
       }, this.now());
       this.store.set(tokens);
+      this.log({ step: 'token-stored', message: 'access token obtained and stored', ok: true });
       return true;
-    } catch {
+    } catch (error) {
+      // A user cancellation (caller signal aborted) is NOT a failure — surface it
+      // as a distinct 'cancelled' event so a frontend does not render it as an
+      // error. Any other failure is attributed with its redacted reason.
+      if (this.isCancelled()) {
+        this.log({ step: 'cancelled', message: 'OAuth flow cancelled by the user', ok: false });
+      } else {
+        this.log({ step: 'authorize', message: 'OAuth flow failed', ok: false, error: redactTokenBody(error instanceof Error ? error.message : String(error)) });
+      }
       return false;
     }
   }
