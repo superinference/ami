@@ -10,6 +10,7 @@ import { isEnvTruthy } from '../analytics';
 import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
 import { getCurrentTeam, registerTeamMember, setTeamMemberActive } from './team';
+import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
 import { PERMISSION_MODES } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
@@ -715,6 +716,8 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
 
 export const taskTool: ToolDefinition = {
   name: 'task',
+  // PARITY (additive): declarative per-tool gate for the teammate subsystem.
+  isEnabled: () => isTeammatesEnabled(),
   description:
     'Spawn a subagent to perform a specific task in an isolated context with its own conversation. ' +
     'Use for parallel codebase exploration, research, or delegating independent subtasks. The subagent\'s ' +

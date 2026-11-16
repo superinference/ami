@@ -1,6 +1,7 @@
 import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, type CronJob } from '../cron';
 import { coerceBool } from '../utils/coerce';
+import { isCronEnabled } from './tool-gates';
 
 /** @deprecated Use getScheduler from '../cron' directly */
 export function getCronScheduler(cwd: string): CronScheduler {
@@ -47,6 +48,8 @@ export function findDuplicateCronJob(
 
 export const cronCreateTool: ToolDefinition = {
   name: 'cron_create',
+  // PARITY (additive): declarative per-tool gate for the cron subsystem.
+  isEnabled: () => isCronEnabled(),
   description:
     'Schedule a prompt to run at a future time or on a recurring schedule. ' +
     'Uses standard 5-field cron in LOCAL time: minute hour day-of-month month day-of-week. ' +

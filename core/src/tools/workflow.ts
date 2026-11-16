@@ -3,6 +3,7 @@ import { projectStateDir } from '../reference-journal';
 import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache } from './workflow-runtime';
 import { SUBAGENT_RETURN_DIRECTIVE, generateTaskId } from './task';
 import { normalizePermissionMode } from '../permissions';
+import { isWorkflowScriptsEnabled } from './tool-gates';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -95,6 +96,8 @@ export function loadWorkflowRun(cwd: string, runId: string): WorkflowRunRecord |
 
 export const workflowTool: ToolDefinition = {
   name: 'workflow',
+  // PARITY (additive): declarative per-tool gate for the workflow-scripts subsystem.
+  isEnabled: () => isWorkflowScriptsEnabled(),
   description:
     'Execute a workflow script that orchestrates multiple subagents. ' +
     'Workflows run agent(), parallel(), pipeline(), phase(), and log() to coordinate multi-step work. ' +

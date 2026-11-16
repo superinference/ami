@@ -6,6 +6,7 @@ import {
   uriToPath,
   MAX_LSP_FILE_SIZE_BYTES,
 } from '../lsp/diagnostic-tracking';
+import { isLspEnabled } from './tool-gates';
 
 /**
  * Position-based semantic LSP tool — parity with Claude Code's LSPTool.
@@ -315,6 +316,8 @@ function formatHover(contents: unknown): string {
 
 export const lspTool: ToolDefinition = {
   name: 'lsp',
+  // PARITY (additive): declarative per-tool gate for the LSP subsystem.
+  isEnabled: () => isLspEnabled(),
   description:
     'Query a language server for precise, compiler-accurate code intelligence at a ' +
     'cursor position: goToDefinition, findReferences, hover, documentSymbol, ' +

@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler } from '../cron';
+import { isCronEnabled } from './tool-gates';
 
 /** Hard bounds on the self-paced loop cadence (seconds). A wakeup may fire no
  *  sooner than 60s (abuse floor) and no later than 3600s (so the loop never
@@ -41,6 +42,8 @@ export function clampWakeupDelay(raw: unknown): number {
 
 export const scheduleWakeupTool: ToolDefinition = {
   name: 'schedule_wakeup',
+  // PARITY (additive): declarative per-tool gate for the cron subsystem.
+  isEnabled: () => isCronEnabled(),
   description:
     'Schedule a one-shot wakeup after a delay. Used for /loop dynamic pacing. ' +
     'The prompt fires once after delaySeconds, then auto-deletes. Pass stop:true ' +

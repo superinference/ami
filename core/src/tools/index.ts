@@ -1,5 +1,5 @@
-import { ToolDefinition, ToolInputSchema } from '../types';
-import { ToolRegistryGuard, type ToolConflict } from './tool-registry-guard';
+import { ToolDefinition, ToolInputSchema, ToolContext } from '../types';
+import { ToolRegistryGuard, type ToolConflict, filterAvailableTools } from './tool-registry-guard';
 import { bashTool } from './bash';
 import { fileReadTool } from './file-read';
 import { fileEditTool } from './file-edit';
@@ -42,7 +42,6 @@ import { lspTool } from './lsp';
 import { agenticFetchTool } from './agentic-fetch';
 import { scoutTool } from './scout';
 import { endConversationTool } from './end-conversation';
-import { isTeammatesEnabled, isLspEnabled, isWorkflowScriptsEnabled } from './tool-gates';
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
@@ -91,63 +90,65 @@ export class ToolRegistry {
 export function createDefaultTools(_cwd: string): ToolRegistry {
   const registry = new ToolRegistry();
 
-  registry.register(bashTool);
-  registry.register(fileReadTool);
-  registry.register(fileEditTool);
-  registry.register(grepTool);
-  registry.register(globTool);
-  registry.register(listDirTool);
-  registry.register(webFetchTool);
-  registry.register(webSearchTool);
-  registry.register(notebookEditTool);
-  registry.register(searchSymbolsTool);
-  registry.register(toolSearchTool);
-  registry.register(askUserQuestionTool);
-  registry.register(gitCommitTool);
-  registry.register(taskTrackerTool);
-  registry.register(planModeTool);
-  registry.register(taskCompleteTool);
-  registry.register(taskOutputTool);
-  registry.register(taskKillTool);
-  registry.register(taskListTool);
-  registry.register(skillTool);
-  registry.register(cronCreateTool);
-  registry.register(cronDeleteTool);
-  registry.register(cronListTool);
-  registry.register(scheduleWakeupTool);
-  registry.register(enterWorktreeTool);
-  registry.register(exitWorktreeTool);
-  registry.register(sleepTool);
-  registry.register(briefTool);
-  registry.register(todoWriteTool);
-  registry.register(todoReadTool);
-  registry.register(configTool);
-  registry.register(syntheticOutputTool);
-  registry.register(agenticFetchTool);
-  registry.register(scoutTool);
-  registry.register(endConversationTool);
-  registry.register(readMemoryTool);
-  registry.register(writeMemoryTool);
+  // PARITY (additive): the complete default tool pool, listed unconditionally.
+  // Conditionally-available subsystems (teammates, workflow scripts, LSP, cron)
+  // each declare their own `ToolDefinition.isEnabled()` predicate rather than
+  // being hand-gated here — mirroring Claude Code's declarative per-tool
+  // `Tool.isEnabled()` (ScheduleCron/TeamDelete/TaskCreate). `filterAvailableTools`
+  // honors those predicates uniformly, so there is ONE gating mechanism and the
+  // whole pool is self-describing. All subsystems default ON; their env flags
+  // (AMI_AGENT_TEAMS / AMI_WORKFLOW_SCRIPTS / AMI_LSP / AMI_CRON) are the single
+  // source-of-truth off-switches.
+  const allTools: ToolDefinition[] = [
+    bashTool,
+    fileReadTool,
+    fileEditTool,
+    grepTool,
+    globTool,
+    listDirTool,
+    webFetchTool,
+    webSearchTool,
+    notebookEditTool,
+    searchSymbolsTool,
+    toolSearchTool,
+    askUserQuestionTool,
+    gitCommitTool,
+    taskTrackerTool,
+    planModeTool,
+    taskCompleteTool,
+    taskOutputTool,
+    taskKillTool,
+    taskListTool,
+    skillTool,
+    cronCreateTool,
+    cronDeleteTool,
+    cronListTool,
+    scheduleWakeupTool,
+    enterWorktreeTool,
+    exitWorktreeTool,
+    sleepTool,
+    briefTool,
+    todoWriteTool,
+    todoReadTool,
+    configTool,
+    syntheticOutputTool,
+    agenticFetchTool,
+    scoutTool,
+    endConversationTool,
+    readMemoryTool,
+    writeMemoryTool,
+    taskTool,
+    sendMessageTool,
+    teamCreateTool,
+    teamDeleteTool,
+    workflowTool,
+    lspDiagnosticsTool,
+    lspReferencesTool,
+    lspTool,
+  ];
 
-  // PARITY (additive): conditional registration behind centralized capability
-  // gates (see tool-gates.ts). All default ON — these are shipped AMI
-  // subsystems; the gates only add a single-source-of-truth off-switch so an
-  // operator can disable a whole subsystem uniformly instead of `--deny`-ing
-  // each tool name. Mirrors Claude's feature-flag-gated task/tool registration.
-  if (isTeammatesEnabled()) {
-    // Multi-agent teammate subsystem: one gate for the whole feature.
-    registry.register(taskTool);
-    registry.register(sendMessageTool);
-    registry.register(teamCreateTool);
-    registry.register(teamDeleteTool);
-  }
-  if (isWorkflowScriptsEnabled()) {
-    registry.register(workflowTool);
-  }
-  if (isLspEnabled()) {
-    registry.register(lspDiagnosticsTool);
-    registry.register(lspReferencesTool);
-    registry.register(lspTool);
+  for (const tool of filterAvailableTools<ToolDefinition, ToolContext>(allTools)) {
+    registry.register(tool);
   }
 
   setSearchableTools(registry.getAll());
@@ -296,11 +297,13 @@ export {
   isTeammatesEnabled,
   isLspEnabled,
   isWorkflowScriptsEnabled,
+  isCronEnabled,
   AGENT_TEAMS_ENV,
   AGENT_TEAMS_ON_FLAG,
   AGENT_TEAMS_OFF_FLAG,
   LSP_ENV,
   WORKFLOW_SCRIPTS_ENV,
+  CRON_ENV,
 } from './tool-gates';
 export {
   getToolCategory,

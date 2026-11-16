@@ -8,6 +8,7 @@ import { unassignTeammateTasks, setTaskPersistPath } from './task-tracker';
 import { sanitizeAgentName } from './task';
 import { log as coreLog } from '../logger';
 import { gitExec } from '../worktree-manager';
+import { isTeammatesEnabled } from './tool-gates';
 
 /**
  * Format a deterministic agent id as `agentName@teamName` (mirrors Claude Code's
@@ -339,6 +340,8 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
 
 export const teamCreateTool: ToolDefinition = {
   name: 'team_create',
+  // PARITY (additive): declarative per-tool gate for the teammate subsystem.
+  isEnabled: () => isTeammatesEnabled(),
   description:
     'Create a team of agents for collaborative work. A team has a 1:1 correspondence with a task list and ' +
     'shares a memory directory; a team file records each member (name, agentId, agentType, model, per-member ' +
@@ -538,6 +541,8 @@ export const teamCreateTool: ToolDefinition = {
 
 export const teamDeleteTool: ToolDefinition = {
   name: 'team_delete',
+  // PARITY (additive): declarative per-tool gate for the teammate subsystem.
+  isEnabled: () => isTeammatesEnabled(),
   description:
     'Disband the current team and clean up its directories. Refuses while any teammate is still active — ' +
     'gracefully shut teammates down first (send a shutdown_request via send_message).',

@@ -10,6 +10,7 @@ import {
   type DiagnosticFile,
   type DiagnosticSeverityName,
 } from '../lsp/diagnostic-tracking';
+import { isLspEnabled } from './tool-gates';
 
 /**
  * Minimal view of the LSP client the diagnostics tool relies on. The real
@@ -161,6 +162,8 @@ export const _lspDiagHooks = {
 
 export const lspDiagnosticsTool: ToolDefinition = {
   name: 'diagnostics',
+  // PARITY (additive): declarative per-tool gate for the LSP subsystem.
+  isEnabled: () => isLspEnabled(),
   description: 'Get LSP diagnostics (errors, warnings) for a file or the workspace. Useful for finding issues after edits.',
   inputSchema: {
     type: 'object',
@@ -278,6 +281,8 @@ export const lspDiagnosticsTool: ToolDefinition = {
 
 export const lspReferencesTool: ToolDefinition = {
   name: 'find_references',
+  // PARITY (additive): declarative per-tool gate for the LSP subsystem.
+  isEnabled: () => isLspEnabled(),
   description: 'Find all references to a symbol in the codebase using the workspace indexer.',
   inputSchema: {
     type: 'object',

@@ -1,6 +1,7 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { isTerminalTaskStatus } from '../process-manager';
 import { normalizePermissionMode, PermissionMode, PERMISSION_MODES } from '../permissions';
+import { isTeammatesEnabled } from './tool-gates';
 
 interface AgentMessage {
   /**
@@ -657,6 +658,8 @@ function isReachable(name: string): boolean {
 
 export const sendMessageTool: ToolDefinition = {
   name: 'send_message',
+  // PARITY (additive): declarative per-tool gate for the teammate subsystem.
+  isEnabled: () => isTeammatesEnabled(),
   description:
     'Send a message to a named teammate agent, or "*" to broadcast to all (expensive — linear in team size, ' +
     'use only when everyone genuinely needs it).\n' +

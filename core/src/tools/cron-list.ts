@@ -1,6 +1,7 @@
 import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler } from '../cron';
 import type { CronJob } from '../cron';
+import { isCronEnabled } from './tool-gates';
 
 /** Single-line, ellipsis-marked truncation of a prompt for list display. */
 function truncatePrompt(prompt: string, max = 100): string {
@@ -40,6 +41,8 @@ export function sortJobsForDisplay(jobs: CronJob[]): CronJob[] {
 
 export const cronListTool: ToolDefinition = {
   name: 'cron_list',
+  // PARITY (additive): declarative per-tool gate for the cron subsystem.
+  isEnabled: () => isCronEnabled(),
   description:
     'List scheduled cron jobs (durable and session-only). A teammate sees only its own jobs; the lead sees all. ' +
     'Jobs are ordered by soonest next fire; an optional "status" filter (all|active|inactive) narrows the list.',

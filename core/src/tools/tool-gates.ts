@@ -98,3 +98,16 @@ export const WORKFLOW_SCRIPTS_ENV = 'AMI_WORKFLOW_SCRIPTS';
 export function isWorkflowScriptsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return capabilityEnabled(env[WORKFLOW_SCRIPTS_ENV]);
 }
+
+/** Env var that toggles the cron / scheduled-prompt subsystem (default ON). */
+export const CRON_ENV = 'AMI_CRON';
+
+/**
+ * Gate for the cron / scheduling tools (`cron_create`, `cron_delete`,
+ * `cron_list`, `schedule_wakeup`). Parity with Claude's `isKairosCronEnabled()`
+ * feature-flag check on its ScheduleCron tools, but default ON (AMI ships
+ * scheduling always-on) with {@link CRON_ENV} as the single disable switch.
+ */
+export function isCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return capabilityEnabled(env[CRON_ENV]);
+}

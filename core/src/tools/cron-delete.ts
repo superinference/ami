@@ -1,12 +1,15 @@
 import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler } from '../cron';
 import { coerceBool } from '../utils/coerce';
+import { isCronEnabled } from './tool-gates';
 
 const ID_RE = /^[\w-]+$/;
 const ALLOWED_KEYS = new Set(['id', 'ids', 'all', 'ignoreMissing']);
 
 export const cronDeleteTool: ToolDefinition = {
   name: 'cron_delete',
+  // PARITY (additive): declarative per-tool gate for the cron subsystem.
+  isEnabled: () => isCronEnabled(),
   description:
     'Cancel scheduled cron job(s) by ID (as shown by cron_list). ' +
     'Delete one job with id, several at once with ids:[...], or every job you own with all:true. ' +
