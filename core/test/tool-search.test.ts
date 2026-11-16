@@ -415,15 +415,30 @@ describe('tool_search — +required keyword terms (M4b)', () => {
   it('restricts matches to items whose name OR description contains the +term, ranked by the rest', async () => {
     const result = await toolSearchTool.execute({ query: '+file read' }, ctx);
     assert.equal(result.isError, false);
+    // file_read / file_write carry the whole word "file" in both name and
+    // description, so they qualify for the +file gate.
     assert.ok(result.output.includes('file_read'));
     assert.ok(result.output.includes('file_write'));
-    // Parity (U106): the +term gate also matches the DESCRIPTION — grep's
-    // description "Search for patterns in files" contains "file", so it qualifies.
-    assert.ok(result.output.includes('**grep**'));
-    // bash has "file" in neither its name nor description, so it is still excluded.
+    // Parity (U106): the +term gate is a WHOLE-WORD (\bfile\b) match on name OR
+    // description — matching Claude's compiled `\bterm\b`. grep's description
+    // "Search for patterns in files" has only the plural "files", which is NOT
+    // the whole word "file", so grep is correctly gated OUT (a prefix-only
+    // boundary would have spuriously admitted it).
+    assert.ok(!result.output.includes('**grep**'));
+    // bash has "file" in neither its name nor description, so it is also excluded.
     assert.ok(!result.output.includes('**bash**'));
     // "read" ranks file_read above file_write.
     assert.ok(result.output.indexOf('file_read') < result.output.indexOf('file_write'));
+  });
+
+  it('matches a +term that appears as a whole word only in the DESCRIPTION', async () => {
+    // file_read's description "Read file contents from the filesystem" contains
+    // the whole word "file"; grep's "...in files" does not — so a +file gate on
+    // description (not name) admits file_read and excludes grep.
+    const result = await toolSearchTool.execute({ query: '+file contents' }, ctx);
+    assert.equal(result.isError, false);
+    assert.ok(result.output.includes('file_read'));
+    assert.ok(!result.output.includes('**grep**'));
   });
 
   it('returns no matches when no tool name contains the +term', async () => {

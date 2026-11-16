@@ -116,6 +116,45 @@ describe('U106: required +term matches description / searchHint / whenToUse', ()
   });
 });
 
+describe('U106: whole-word boundary matching (both edges) avoids prefix false-positives', () => {
+  // Claude compiles `\bterm\b` (BOTH boundaries); a leading-only `\bterm` still
+  // spuriously matches a longer word that merely STARTS with the term
+  // (`cat` → `category`, `shell` → `shellac`). Parity requires both edges.
+  it('a term does not match a longer description word it only prefixes', async () => {
+    setSearchableTools([
+      { name: 'browse', description: 'open the category index', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    // "cat" prefixes "category" but is not a whole word there, and the name
+    // "browse" has no "cat" either — so there must be NO match.
+    const result = await toolSearchTool.execute({ query: 'cat' }, ctx);
+    assert.ok(
+      result.output.includes('No tools or skills matched'),
+      `expected no match for prefix-only term, got:\n${result.output}`,
+    );
+  });
+
+  it('a required +term does not match a searchHint word it only prefixes', async () => {
+    setSearchableTools([
+      { name: 'paint', description: 'draw things', searchHint: 'shellac varnish finish', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    // "+shell" prefixes "shellac" in the hint but is not a whole word → filtered out.
+    const result = await toolSearchTool.execute({ query: '+shell' }, ctx);
+    assert.ok(
+      result.output.includes('No tools or skills matched'),
+      `expected +shell to NOT gate a hint containing only "shellac", got:\n${result.output}`,
+    );
+  });
+
+  it('a whole-word term still matches normally', async () => {
+    setSearchableTools([
+      { name: 'browse', description: 'open the cat index', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: true, execute: async () => ({ output: '', isError: false }) },
+    ]);
+    const result = await toolSearchTool.execute({ query: 'cat' }, ctx);
+    assert.ok(result.output.includes('Tools matching'), `expected a whole-word match, got:\n${result.output}`);
+    assert.ok(result.output.includes('browse'));
+  });
+});
+
 describe('U106: searchHint ranks above description', () => {
   it('a hint-only match outranks a description-only match for the same term', async () => {
     // descTool has "deploy" in its DESCRIPTION; hintTool has "deploy" only in

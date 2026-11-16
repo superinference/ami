@@ -148,11 +148,14 @@ function missMetadata(query: string, pending: string[]): Record<string, unknown>
   };
 }
 
-/** Word-boundary match of a single term against text (so "read" matches
- *  "read file" but not "already"). */
+/** Whole-word match of a single term against text, bounded on BOTH edges so
+ *  "read" matches "read file" but not "already" (leading) OR "ready"/"reader"
+ *  (trailing), and "cat" never matches "category". Mirrors Claude's compiled
+ *  `\bterm\b` description/hint matcher (prefix-only boundaries let a term
+ *  spuriously match any longer word it merely starts, inflating scores). */
 function matchesTerm(text: string, term: string): boolean {
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\b${escaped}`, 'i').test(text);
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
 }
 
 /**
