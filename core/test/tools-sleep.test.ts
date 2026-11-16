@@ -21,8 +21,12 @@ describe('sleepTool – definition', () => {
     assert.equal(sleepTool.isConcurrencySafe, true);
   });
 
-  it('requires duration_ms', () => {
-    assert.ok(sleepTool.inputSchema.required?.includes('duration_ms'));
+  it('accepts either duration_ms or a human-friendly duration', () => {
+    assert.ok(sleepTool.inputSchema.properties?.duration_ms);
+    assert.ok(sleepTool.inputSchema.properties?.duration);
+    // Neither is schema-`required`: execute() enforces that at least one is present,
+    // so the model may supply whichever form is convenient.
+    assert.ok(!sleepTool.inputSchema.required?.includes('duration_ms'));
   });
 
   it('has reason as optional', () => {
