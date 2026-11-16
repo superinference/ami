@@ -74,6 +74,7 @@ describe('wrapWithDocker — exact argv assembly', () => {
       '-w', `'${p}'`,
       '--memory', '512m',
       '--pids-limit', '128',
+      '-e', `'TMPDIR=/tmp'`,
       `'${DEFAULT_DOCKER_IMAGE}'`, '-c', `'echo hi'`,
     ].join(' ');
     assert.equal(out, expected);
@@ -90,6 +91,7 @@ describe('wrapWithDocker — exact argv assembly', () => {
       '--tmpfs', '/tmp', '--tmpfs', '/root', '--tmpfs', '/home',
       '-v', `'${p}:${p}'`,
       '-w', `'${p}'`,
+      '-e', `'TMPDIR=/tmp'`,
       `'alpine:3.20'`, '-c', `'ls -la'`,
     ].join(' ');
     assert.equal(out, expected);

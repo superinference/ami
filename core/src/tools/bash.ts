@@ -7,7 +7,13 @@ import { execCommand } from '../utils/shell';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
-import { isDockerAvailable, wrapWithDocker, DEFAULT_DOCKER_IMAGE } from './docker-sandbox';
+import {
+  getDockerAvailability,
+  describeDockerUnavailable,
+  annotateStderrWithSandboxFailures,
+  wrapWithDocker,
+  DEFAULT_DOCKER_IMAGE,
+} from './docker-sandbox';
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
@@ -881,12 +887,15 @@ export const bashTool: ToolDefinition = {
     // dangerouslyDisableSandbox cannot override enforced container mode.
     let effectiveCommand: string;
     if (context.sandbox?.mode === 'container') {
-      if (!isDockerAvailable()) {
+      // Pass the abort signal so a user Ctrl-C during a hung daemon probe is
+      // honored instead of blocking for the full probe timeout.
+      const availability = getDockerAvailability({ signal: context.abortSignal });
+      if (!availability.available) {
         return {
           output:
             'Error: SANDBOX REQUIRED — bash is configured to run only inside a container '
-            + '(sandbox mode=container) but no Docker daemon is reachable. Refusing to run on the '
-            + 'host. Start Docker (rootless: `systemctl --user start docker`) or change the sandbox policy.',
+            + '(sandbox mode=container) but ' + describeDockerUnavailable(availability) + '. '
+            + 'Refusing to run on the host. Change the sandbox policy to run without a container.',
           isError: true,
         };
       }
@@ -998,7 +1007,16 @@ export const bashTool: ToolDefinition = {
     // Already folded. Spill only non-suite output that is still over the cap.
     const bashMaxChars = context.outputBudget?.bashMaxChars ?? resolveBashMaxOutput();
     let stdout = spillToolText(context.cwd, 'bash', presented.stdout, bashMaxChars);
-    const stderr = presented.stderr;
+    // In container mode, explain a failure that was likely caused by sandbox
+    // isolation (network off, or a host path not mounted inside the container) so
+    // the model does not misdiagnose a blocked op as a real error.
+    const stderr =
+      context.sandbox?.mode === 'container'
+        ? annotateStderrWithSandboxFailures(command, presented.stderr, {
+            allowNetwork: context.sandbox.allowNetwork !== false,
+            projectDir: context.sandbox.projectDir || context.cwd,
+          })
+        : presented.stderr;
 
     const noOutputExpected = /^\s*(mkdir|touch|mv|cp|rm|chmod|chown)\b/.test(command);
     if (noOutputExpected && !stdout.trim() && result.exitCode === 0) {
