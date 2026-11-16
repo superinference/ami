@@ -84,8 +84,11 @@ describe('getMcpToolTimeout', () => {
 
 describe('qualifiedMcpToolName', () => {
   it('normalizes illegal characters in server and tool names', () => {
+    // Hardened normalization collapses underscore runs and strips edge
+    // underscores (delimiter protection), so a trailing special char no longer
+    // leaves a trailing `_`.
     const name = qualifiedMcpToolName('my-server.v2', 'do/thing!');
-    assert.equal(name, 'mcp__my_server_v2__do_thing_');
+    assert.equal(name, 'mcp__my_server_v2__do_thing');
   });
 
   it('keeps names at or under the limit intact', () => {

@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { normalizeMcpNameSegment } from './mcp-tool';
 
 /** Does a (re)connect failure look like the server demanding authentication? */
 export function isAuthRequiredError(message: string): boolean {
@@ -10,7 +11,7 @@ export function isAuthRequiredError(message: string): boolean {
 const MCP_CONNECT_ABORTED = Symbol('mcp-connect-aborted');
 
 export function createMcpConnectTool(serverName: string, description: string): ToolDefinition {
-  const normalizedServer = serverName.replace(/[^a-zA-Z0-9_]/g, '_');
+  const normalizedServer = normalizeMcpNameSegment(serverName);
 
   return {
     name: `mcp__${normalizedServer}__connect`,

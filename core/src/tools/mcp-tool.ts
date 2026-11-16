@@ -32,15 +32,50 @@ function shortHash(s: string): string {
   return (h >>> 0).toString(36);
 }
 
+/** Normalize a single MCP name segment (a server name or a tool name) so it is
+ *  safe to embed between the `__` delimiters of a qualified MCP tool name.
+ *
+ *  Illegal characters are replaced with `_`, then runs of underscores are
+ *  collapsed and leading/trailing underscores stripped — explicitly so a segment
+ *  can never introduce a spurious `__` that would collide with the delimiter used
+ *  to separate `mcp`, the server, and the tool (which would corrupt prefix-based
+ *  permission/auto-allow matching and the inverse parser). Mirrors Claude Code's
+ *  `normalizeNameForMCP` (services/mcp/normalization.ts). */
+export function normalizeMcpNameSegment(name: string): string {
+  return name
+    .replace(/[^a-zA-Z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
 /** Build the qualified MCP tool name, truncating with a hash suffix so it never
  *  exceeds the API tool-name length limit. */
 export function qualifiedMcpToolName(serverName: string, toolName: string): string {
-  const normalizedServer = serverName.replace(/[^a-zA-Z0-9_]/g, '_');
-  const normalizedTool = toolName.replace(/[^a-zA-Z0-9_]/g, '_');
+  const normalizedServer = normalizeMcpNameSegment(serverName);
+  const normalizedTool = normalizeMcpNameSegment(toolName);
   const full = `mcp__${normalizedServer}__${normalizedTool}`;
   if (full.length <= MAX_MCP_TOOL_NAME_LEN) return full;
   const suffix = '_' + shortHash(full);
   return full.slice(0, MAX_MCP_TOOL_NAME_LEN - suffix.length) + suffix;
+}
+
+/** Centralized, boundary-safe inverse of {@link qualifiedMcpToolName}: parse a
+ *  `mcp__<server>__<tool>` name into its `{ serverName, toolName }` parts.
+ *
+ *  Splits on `__`, requires the leading `mcp` segment and a non-empty server
+ *  name (returns `null` for any non-MCP or malformed input), and rejoins every
+ *  remaining part with `__` so a tool name that itself contains `__` survives.
+ *  `toolName` is `undefined` for a bare `mcp__<server>` server-granularity
+ *  prefix. Mirrors Claude Code's `mcpInfoFromString`
+ *  (services/mcp/mcpStringUtils.ts). */
+export function parseMcpToolName(
+  name: string,
+): { serverName: string; toolName: string | undefined } | null {
+  const parts = name.split('__');
+  const [mcpPart, serverName, ...toolNameParts] = parts;
+  if (mcpPart !== 'mcp' || !serverName) return null;
+  const toolName = toolNameParts.length > 0 ? toolNameParts.join('__') : undefined;
+  return { serverName, toolName };
 }
 
 /** Extract a human-readable error string from an MCP tool result flagged

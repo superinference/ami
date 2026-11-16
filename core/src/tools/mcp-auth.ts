@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { redactSecrets } from './tool-utils';
+import { normalizeMcpNameSegment } from './mcp-tool';
 
 /** Transports that can carry an OAuth browser-consent flow. */
 const OAUTH_TRANSPORTS = new Set(['sse', 'http']);
@@ -105,7 +106,7 @@ export interface McpAuthServerConfig {
  * reflects the live server configuration.
  */
 export function createMcpAuthTool(serverName: string, config?: McpAuthServerConfig): ToolDefinition {
-  const normalized = serverName.replace(/[^a-zA-Z0-9_]/g, '_');
+  const normalized = normalizeMcpNameSegment(serverName);
   return {
     name: `mcp__${normalized}__authenticate`,
     description:
