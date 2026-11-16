@@ -184,7 +184,9 @@ describe('getSandboxStatus — platform/unshare matrix', () => {
     withPlatform('linux', () => {
       withUnshareAvailable(() => {
         const status = getSandboxStatus();
-        assert.deepEqual(status, { available: true, method: 'unshare' });
+        // Additive warnings channel: a healthy ns sandbox with no requested
+        // network policy has no degradation warnings.
+        assert.deepEqual(status, { available: true, method: 'unshare', warnings: [] });
       });
     });
   });
@@ -194,7 +196,11 @@ describe('getSandboxStatus — platform/unshare matrix', () => {
       // Even with a fake unshare on PATH, non-linux must never claim unshare.
       withUnshareAvailable(() => {
         const status = getSandboxStatus();
-        assert.deepEqual(status, { available: true, method: 'ulimits' });
+        assert.equal(status.available, true);
+        assert.equal(status.method, 'ulimits');
+        // The namespace-unavailable diagnostic is folded into the warnings
+        // channel on the ulimits fallback (degraded isolation surfaced).
+        assert.ok(status.warnings.some((w) => w.includes('Linux')));
       });
     });
   });

@@ -98,6 +98,109 @@ function isUnshareAvailable(): boolean {
   return _unshareAvailable;
 }
 
+/**
+ * Best-effort probe for whether an external command is resolvable on the current
+ * PATH (via the POSIX `command -v` builtin, which works even with an empty PATH
+ * because the shell itself is spawned by absolute path). Used by
+ * {@link checkSandboxDependencies} to name the SPECIFIC missing tool (unshare /
+ * iptables / getent) rather than conflating all failures into one generic
+ * message. NOT memoized: PATH can change between calls (and across tests), and
+ * the cost is only paid on diagnostics (`/sandbox`, validate), never per command.
+ */
+function isCommandAvailable(name: string): boolean {
+  // Guard: only ever probe the fixed internal literals below. Rejecting anything
+  // else keeps the shell invocation injection-free even if a caller slips.
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) return false;
+  try {
+    execSync(`command -v ${name}`, { stdio: 'pipe', timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Structured, two-tier result of a sandbox dependency pre-flight (parity with
+ * Claude Code's `SandboxManager.checkDependencies()` → `{ errors, warnings }`):
+ *   - `errors`   — the namespace sandbox (real filesystem/network isolation)
+ *                  cannot run at all; each string names the specific missing
+ *                  dependency/capability and how to install/enable it.
+ *   - `warnings` — the sandbox CAN run but a REQUESTED security control is
+ *                  silently degraded (e.g. `allowedDomains` set but `iptables`
+ *                  unavailable, so the outbound allowlist is a no-op). Non-fatal,
+ *                  surfaced to the user so a security footgun isn't hidden.
+ */
+export interface SandboxDependencyCheck {
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Pre-flight the host bash sandbox's dependencies and report, split into
+ * `errors` (namespace isolation cannot run — names the specific missing tool:
+ * unshare not installed vs. present-but-userns-disabled, or non-Linux platform)
+ * and `warnings` (a requested control silently cannot be enforced — an
+ * `allowedDomains`/`deniedDomains` policy with `iptables`/`getent` missing).
+ *
+ * Mirrors Claude Code's `checkDependencies()` two-tier contract and closes the
+ * "security control silently unenforced" footgun: `buildNetworkAllowlist`
+ * swallows iptables failures with `2>/dev/null`, so without this warning a user
+ * who set `allowedDomains` on a host lacking iptables would believe outbound
+ * traffic is restricted when it is wide open. Additive + pure: no cfg → only the
+ * platform/unshare errors; the degradation warnings require the relevant cfg.
+ */
+export function checkSandboxDependencies(cfg?: Partial<SandboxConfig>): SandboxDependencyCheck {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // --- namespace isolation availability (the real filesystem/network sandbox) ---
+  if (process.platform !== 'linux') {
+    errors.push(
+      `Namespace sandbox requires Linux; current platform is ${process.platform}. ` +
+        'Only resource limits (ulimit) are applied — filesystem and network isolation are NOT enforced.',
+    );
+  } else if (!isUnshareAvailable()) {
+    // Distinguish "not installed" from "installed but user namespaces blocked" so
+    // the remediation hint names the actual missing capability.
+    if (!isCommandAvailable('unshare')) {
+      errors.push(
+        'Namespace sandbox dependency `unshare` is not installed. Install util-linux ' +
+          '(Debian/Ubuntu: `apt-get install util-linux`; Fedora/RHEL: `dnf install util-linux`; ' +
+          'Alpine: `apk add util-linux`).',
+      );
+    } else {
+      errors.push(
+        'Namespace sandbox dependency `unshare` is present but could not create a user namespace ' +
+          '(unprivileged user namespaces are likely disabled). Enable them with ' +
+          '`sysctl -w kernel.unprivileged_userns_clone=1`, or set sandbox.enabled to false.',
+      );
+    }
+  }
+
+  // --- capability-degradation warnings for the REQUESTED config. These apply
+  //     even when namespaces work, because the allow/deny list is realized by
+  //     iptables + getent INSIDE the namespace. ---
+  const wantsAllowlist =
+    !!cfg && cfg.allowNetwork === false && !!cfg.allowedDomains && cfg.allowedDomains.length > 0;
+  const wantsDenylist = !!cfg?.deniedDomains && cfg.deniedDomains.length > 0;
+  if (wantsAllowlist && !isCommandAvailable('iptables')) {
+    warnings.push(
+      'allowedDomains is configured but `iptables` is not available; the outbound network ' +
+        'allowlist will NOT be enforced — all outbound traffic is permitted. Install iptables ' +
+        '(Debian/Ubuntu: `apt-get install iptables`; Fedora/RHEL: `dnf install iptables`).',
+    );
+  }
+  if ((wantsAllowlist || wantsDenylist) && !isCommandAvailable('getent')) {
+    warnings.push(
+      'A network allow/deny domain list is configured but `getent` (glibc name resolution) is ' +
+        'not available; configured domains cannot be resolved to IPs and the rules will not match. ' +
+        'Install glibc tools (Debian/Ubuntu: `apt-get install libc-bin`).',
+    );
+  }
+
+  return { errors, warnings };
+}
+
 const SANDBOX_TRIGGER_PATTERNS = [
   /\bcurl\b/,
   /\bwget\b/,
@@ -738,11 +841,26 @@ function escapeShell(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-export function getSandboxStatus(): { available: boolean; method: string } {
-  if (process.platform === 'linux' && isUnshareAvailable()) {
-    return { available: true, method: 'unshare' };
-  }
-  return { available: true, method: 'ulimits' };
+/**
+ * Report the host-side isolation capability plus a `warnings` channel surfacing
+ * any degraded/unenforced controls (parity with Claude's dependency-aware status).
+ * `available` stays true (AMI always has at least the ulimits fallback). When the
+ * namespace sandbox cannot run, its diagnostic is folded into `warnings` (the
+ * ulimits fallback still runs, so from the user's view it's a degradation, not a
+ * hard error). When a `cfg` with an allow/deny domain list is supplied, a missing
+ * `iptables`/`getent` is reported here too — so `/sandbox` can tell the user their
+ * `allowedDomains` policy is silently a no-op instead of hiding it behind `2>/dev/null`.
+ */
+export function getSandboxStatus(
+  cfg?: Partial<SandboxConfig>,
+): { available: boolean; method: string; warnings: string[] } {
+  const dep = checkSandboxDependencies(cfg);
+  const nsAvailable = process.platform === 'linux' && isUnshareAvailable();
+  const method = nsAvailable ? 'unshare' : 'ulimits';
+  // On the ulimits fallback the namespace "errors" are a user-facing degradation
+  // notice (AMI still runs, just with weaker isolation), so fold them in.
+  const warnings = nsAvailable ? dep.warnings : [...dep.errors, ...dep.warnings];
+  return { available: true, method, warnings };
 }
 
 export interface SandboxValidation {
@@ -765,23 +883,13 @@ export interface SandboxValidation {
  */
 export function validateSandboxEnabled(opts?: { failIfUnavailable?: boolean }): SandboxValidation {
   const fatal = !!opts?.failIfUnavailable;
-  if (process.platform !== 'linux') {
-    return {
-      valid: false,
-      fatal,
-      error: 'Sandbox mode requires Linux with namespace support (unshare). ' +
-        `Current platform is ${process.platform}. ` +
-        'Set sandbox.enabled to false or run on Linux.',
-    };
-  }
-  if (!isUnshareAvailable()) {
-    return {
-      valid: false,
-      fatal,
-      error: 'Sandbox mode is enabled but the unshare command is not available or lacks permissions. ' +
-        'Install util-linux and ensure user namespaces are enabled (sysctl kernel.unprivileged_userns_clone=1), ' +
-        'or set sandbox.enabled to false.',
-    };
+  // Reuse the structured dependency check so the error ENUMERATES the specific
+  // missing dependency (unshare not installed vs. present-but-userns-disabled vs.
+  // non-Linux platform) instead of one generic "not available or lacks
+  // permissions" string that conflates distinct causes.
+  const { errors } = checkSandboxDependencies();
+  if (errors.length > 0) {
+    return { valid: false, fatal, error: errors.join(' ') };
   }
   return { valid: true, method: 'unshare' };
 }
