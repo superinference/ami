@@ -1,6 +1,15 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { webFetchTool, makeSecondaryModelPrompt } from '../src/tools/web-fetch';
+import {
+  webFetchTool,
+  makeSecondaryModelPrompt,
+  httpStatusText,
+  clearWebFetchCache,
+  getCached,
+  setCache,
+  MAX_MARKDOWN_LENGTH,
+} from '../src/tools/web-fetch';
+import { isPreapprovedHost, PREAPPROVED_HOSTS } from '../src/tools/web-preapproved';
 import type { ToolContext } from '../src/types';
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
@@ -164,5 +173,138 @@ describe('web_fetch description and schema parity', () => {
   it('marks prompt as required in the input schema', () => {
     assert.ok(webFetchTool.inputSchema.required?.includes('url'));
     assert.ok(webFetchTool.inputSchema.required?.includes('prompt'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U072 — httpStatusText: numeric code -> human reason phrase
+// ---------------------------------------------------------------------------
+
+describe('httpStatusText', () => {
+  it('maps common codes to their reason phrase', () => {
+    assert.equal(httpStatusText(200), 'OK');
+    assert.equal(httpStatusText(404), 'Not Found');
+    assert.equal(httpStatusText(500), 'Internal Server Error');
+  });
+  it('returns an empty string for an unknown code', () => {
+    assert.equal(httpStatusText(799), '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U072 — fetch result surfaces received size + human HTTP status
+// ---------------------------------------------------------------------------
+
+describe('web_fetch result formatting', () => {
+  it('reports the human status phrase and the received byte size', async () => {
+    const res = await webFetchTool.execute(
+      { url: 'https://example.com/a', prompt: 'read it' },
+      ctx({ _webFetchHttpGet: mockGet('hello world') }),
+    );
+    assert.equal(res.isError, undefined);
+    assert.match(res.output, /Status: 200 OK/);
+    assert.match(res.output, /Received: \d/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U072 — built-in preapproved trusted-docs host list
+// ---------------------------------------------------------------------------
+
+describe('isPreapprovedHost (PREAPPROVED_HOSTS config knob)', () => {
+  it('matches a curated hostname-only doc host', () => {
+    assert.ok(PREAPPROVED_HOSTS.has('docs.python.org'));
+    assert.ok(isPreapprovedHost('docs.python.org', '/3/library/os.html'));
+    assert.ok(isPreapprovedHost('DOCS.PYTHON.ORG', '/'));
+  });
+  it('rejects an unlisted host', () => {
+    assert.equal(isPreapprovedHost('evil.example', '/'), false);
+  });
+  it('enforces path-segment boundaries for path-scoped entries', () => {
+    assert.ok(isPreapprovedHost('github.com', '/anthropics'));
+    assert.ok(isPreapprovedHost('github.com', '/anthropics/claude-code'));
+    assert.equal(isPreapprovedHost('github.com', '/anthropics-evil/malware'), false);
+    assert.equal(isPreapprovedHost('github.com', '/other'), false);
+  });
+});
+
+describe('web_fetch preapproved raw-markdown passthrough', () => {
+  it('returns verbatim content WITHOUT summarizing for a preapproved docs host', async () => {
+    let summarizerCalled = false;
+    const res = await webFetchTool.execute(
+      { url: 'https://docs.python.org/3/library/os.html', prompt: 'summarize' },
+      ctx({
+        _providerConfig: {} as never,
+        _webFetchHttpGet: mockGet('VERBATIM DOCS CONTENT'),
+        _engineFactory: ((_cfg: unknown) => ({
+          async *submit(_p: string) {
+            summarizerCalled = true;
+            yield { type: 'text_delta', text: 'LOSSY SUMMARY' } as never;
+          },
+          shutdown() {},
+        })) as never,
+      }),
+    );
+    assert.equal(res.isError, undefined);
+    assert.equal(summarizerCalled, false, 'preapproved host must not run the summarizer');
+    assert.match(res.output, /VERBATIM DOCS CONTENT/);
+    assert.doesNotMatch(res.output, /LOSSY SUMMARY/);
+  });
+
+  it('still summarizes an unlisted host (regression lock on default behavior)', async () => {
+    let summarizerCalled = false;
+    const res = await webFetchTool.execute(
+      { url: 'https://untrusted-u072-regression.example/a', prompt: 'summarize' },
+      ctx({
+        _providerConfig: {} as never,
+        _webFetchHttpGet: mockGet('raw page'),
+        _engineFactory: ((_cfg: unknown) => ({
+          async *submit(_p: string) {
+            summarizerCalled = true;
+            yield { type: 'text_delta', text: 'SUMMARY OUT' } as never;
+          },
+          shutdown() {},
+        })) as never,
+      }),
+    );
+    assert.equal(res.isError, undefined);
+    assert.equal(summarizerCalled, true, 'unlisted host must still summarize');
+    assert.equal(res.output, 'SUMMARY OUT');
+  });
+
+  it('feeds PERMISSIVE guidelines for a preapproved host when content exceeds the raw ceiling', async () => {
+    let seenPrompt = '';
+    const big = 'x'.repeat(MAX_MARKDOWN_LENGTH + 10);
+    const res = await webFetchTool.execute(
+      { url: 'https://docs.python.org/huge', prompt: 'summarize' },
+      ctx({
+        _providerConfig: {} as never,
+        _webFetchHttpGet: mockGet(big),
+        _engineFactory: ((_cfg: unknown) => ({
+          async *submit(p: string) {
+            seenPrompt = p;
+            yield { type: 'text_delta', text: 'ok' } as never;
+          },
+          shutdown() {},
+        })) as never,
+      }),
+    );
+    assert.equal(res.isError, undefined);
+    assert.match(seenPrompt, /documentation excerpts/, 'preapproved host must get permissive guidelines');
+    assert.doesNotMatch(seenPrompt, /125-character maximum/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U072 — clearWebFetchCache evicts cached fetched pages (/clear parity)
+// ---------------------------------------------------------------------------
+
+describe('clearWebFetchCache', () => {
+  it('evicts all cached entries', () => {
+    const key = 'https://cache.example/x\u0000prompt\u00000';
+    setCache(key, 'cached-body');
+    assert.equal(getCached(key), 'cached-body');
+    clearWebFetchCache();
+    assert.equal(getCached(key), null);
   });
 });

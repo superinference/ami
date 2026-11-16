@@ -6,9 +6,55 @@ import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES } from './web-utils';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
+import { isPreapprovedHost } from './web-preapproved';
 
 const MAX_RESPONSE_LENGTH = 50000;
 export const MAX_FETCH_DEADLINE_MS = 300_000;
+
+/**
+ * Upper bound on content handed to the secondary summarizer / returned verbatim
+ * from a preapproved trusted-docs host (parity with Claude's MAX_MARKDOWN_LENGTH).
+ * Preapproved docs under this size are returned raw (no lossy summarization pass).
+ */
+export const MAX_MARKDOWN_LENGTH = 100_000;
+
+/**
+ * Map an HTTP status code to its canonical reason phrase (e.g. 200 -> "OK",
+ * 404 -> "Not Found"), so fetch results can surface a human-readable status
+ * alongside the numeric code (parity with Claude's codeText). Returns '' for an
+ * unknown code so callers can omit a trailing phrase.
+ */
+export function httpStatusText(code: number): string {
+  const MAP: Record<number, string> = {
+    200: 'OK',
+    201: 'Created',
+    202: 'Accepted',
+    204: 'No Content',
+    206: 'Partial Content',
+    301: 'Moved Permanently',
+    302: 'Found',
+    303: 'See Other',
+    304: 'Not Modified',
+    307: 'Temporary Redirect',
+    308: 'Permanent Redirect',
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    405: 'Method Not Allowed',
+    406: 'Not Acceptable',
+    408: 'Request Timeout',
+    409: 'Conflict',
+    410: 'Gone',
+    429: 'Too Many Requests',
+    500: 'Internal Server Error',
+    501: 'Not Implemented',
+    502: 'Bad Gateway',
+    503: 'Service Unavailable',
+    504: 'Gateway Timeout',
+  };
+  return MAP[code] ?? '';
+}
 
 /** Head and tail for a summary prompt. A head slice hides the end of the page. */
 export function summaryWindow(text: string, limit = 30_000): string {
@@ -65,6 +111,17 @@ export function setCache(url: string, content: string): void {
   }
   fetchCache.set(url, { content, timestamp: Date.now(), sizeBytes });
   cacheTotalBytes += sizeBytes;
+}
+
+/**
+ * Evict ALL cached fetched web-page content and reset the byte accounting.
+ * Wired into the /clear session-reset handler (Claude parity: clearSessionCaches)
+ * so a fresh conversation never reuses stale fetched pages — a bounded-memory
+ * boundary and a cross-session data-retention hygiene guard.
+ */
+export function clearWebFetchCache(): void {
+  fetchCache.clear();
+  cacheTotalBytes = 0;
 }
 
 /**
@@ -456,10 +513,16 @@ export const webFetchTool: ToolDefinition = {
         content += `\n\n[Download stopped at ${MAX_HTTP_BODY_BYTES} bytes; the rest of the response was not read.]`;
       }
 
-      // Build the result
+      // Build the result. The status line carries the human-readable reason
+      // phrase (e.g. "200 OK") and a separate "Received <size>" line reports the
+      // bytes actually fetched, so a fetch result is self-describing at a glance
+      // (parity with Claude's "Received 12.3 KB (200 OK)" confirmation).
+      const statusText = httpStatusText(statusCode);
+      const receivedBytes = bodyBuffer ? bodyBuffer.length : Buffer.byteLength(body);
       const parts: string[] = [];
       parts.push(`URL: ${sanitizedUrl}`);
-      parts.push(`Status: ${statusCode}`);
+      parts.push(`Status: ${statusCode}${statusText ? ' ' + statusText : ''}`);
+      parts.push(`Received: ${formatSize(receivedBytes)}`);
       parts.push(`Content-Type: ${contentType}`);
       if (prompt) {
         parts.push(`Prompt: ${prompt}`);
@@ -469,12 +532,20 @@ export const webFetchTool: ToolDefinition = {
 
       let output = parts.join('\n');
 
+      // A fetch to a curated trusted code/docs host (the built-in PREAPPROVED_HOSTS
+      // knob) is treated as preapproved: its content is returned VERBATIM without a
+      // lossy small-model summarization pass, as long as it fits under the markdown
+      // ceiling (parity with Claude's isPreapprovedUrl raw-markdown passthrough).
+      const preapprovedHost = isPreapprovedHost(host, parsedUrl.pathname);
+      const rawPassthrough = preapprovedHost && totalLength < MAX_MARKDOWN_LENGTH;
+
       // Apply prompt to content via LLM summarization (like Claude's applyPromptToMarkdown)
-      if (input.prompt && typeof input.prompt === 'string' && context._engineFactory) {
-        // A domain the caller explicitly allow-listed is treated as preapproved/trusted,
-        // which relaxes the summarizer's copyright/quote guardrails (code-doc excerpts
+      if (input.prompt && typeof input.prompt === 'string' && context._engineFactory && !rawPassthrough) {
+        // A domain the caller explicitly allow-listed — OR one on the built-in
+        // preapproved trusted-docs list — is treated as preapproved/trusted, which
+        // relaxes the summarizer's copyright/quote guardrails (code-doc excerpts
         // are fine). Everything else gets the strict guidelines.
-        const isPreapprovedDomain = !!(
+        const isPreapprovedDomain = preapprovedHost || !!(
           allowedDomains &&
           allowedDomains.length > 0 &&
           allowedDomains.some(d => host === d || host.endsWith('.' + d))
