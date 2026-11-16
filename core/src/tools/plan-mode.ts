@@ -61,8 +61,22 @@ export function getPlanAgentCount(env: NodeJS.ProcessEnv = process.env): number 
 export function isPlanModeActive(): boolean { return _planModeActive; }
 export function setPlanModeActive(active: boolean): void { _planModeActive = active; }
 export function getPlanFilePath(): string | null { return _planFilePath; }
-/** Recover the last submitted plan content (fallback on rejection). */
-export function getPlan(): string | null { return _lastPlan; }
+/**
+ * Recover the current plan content (fallback on rejection / read-back).
+ *
+ * Prefers the last plan submitted on exit (`_lastPlan`); when none has been
+ * submitted in this plan session it falls back to reading the active plan file
+ * from disk, so a plan that was written but not yet submitted — or that must be
+ * re-rendered after a rejection — is never lost. Mirrors Claude's `getPlan()`,
+ * which reads the plan file directly.
+ */
+export function getPlan(): string | null {
+  if (_lastPlan !== null) return _lastPlan;
+  if (_planFilePath) {
+    try { return fs.readFileSync(_planFilePath, 'utf-8'); } catch { /* no file yet */ }
+  }
+  return null;
+}
 
 /** Memoized resolution of the plans directory, keyed by cwd + override, so the
  *  repeated enter/write/boundary-check callers don't re-resolve each time. */
@@ -247,6 +261,10 @@ export const planModeTool: ToolDefinition = {
         return { output: 'Already in plan mode.', isError: true };
       }
       _planModeActive = true;
+      // A new plan session starts fresh: drop any plan submitted in a prior
+      // session so getPlan() never reports a stale plan before this one is
+      // written/submitted (it falls back to the fresh plan file on disk).
+      _lastPlan = null;
       const cwd = context?.cwd || process.cwd();
       let planDir: string;
       try {

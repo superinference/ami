@@ -149,6 +149,31 @@ describe('planModeTool — parity enhancements', () => {
     assert.equal(getPlan(), 'remembered plan');
   });
 
+  it('getPlan falls back to the on-disk plan file while planning (nothing submitted yet)', async () => {
+    const fs = require('fs');
+    const mod = require('../src/tools/plan-mode');
+    // Entering plan mode starts a fresh plan session (no stale last-plan leaks).
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    const planFile = mod.getPlanFilePath();
+    assert.ok(planFile, 'Plan file path should be set after enter');
+    fs.writeFileSync(planFile, '## Draft plan\n- explore the module\n');
+    // No exit has run, so there is no in-memory submitted plan; getPlan must
+    // recover the plan content straight from disk (Claude getPlan() parity).
+    assert.equal(mod.getPlan(), '## Draft plan\n- explore the module\n');
+    mod.setPlanModeActive(false);
+  });
+
+  it('entering plan mode clears a stale submitted plan from a prior session', async () => {
+    const mod = require('../src/tools/plan-mode');
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    await planModeTool.execute({ action: 'exit', plan: 'old session plan' }, ctx());
+    assert.equal(mod.getPlan(), 'old session plan');
+    // A new plan session must not report the previous session's plan.
+    await planModeTool.execute({ action: 'enter' }, ctx());
+    assert.equal(mod.getPlan(), null);
+    mod.setPlanModeActive(false);
+  });
+
   it('caps very large plan content in the echoed result', async () => {
     const { PLAN_MAX_RESULT_CHARS } = require('../src/tools/plan-mode');
     await planModeTool.execute({ action: 'enter' }, ctx());
