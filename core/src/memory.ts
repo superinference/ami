@@ -39,6 +39,18 @@ export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as cons
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 
 /**
+ * Memory scope — WHERE a memory is stored, orthogonal to its {@link MemoryType}.
+ * Mirrors Claude Code's two-directory model (teamMemPrompts.ts `## Memory scope`):
+ * - `private`: known only to you and the current user; stored in the private
+ *   auto-memory root. This is the default.
+ * - `team`: shared with and contributed to by everyone working in this project
+ *   directory; synced at session start; stored in the shared `team/` sub-directory
+ *   (the same directory {@link MemoryManager.loadTeamMemories} reads).
+ */
+export const MEMORY_SCOPES = ['private', 'team'] as const;
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+
+/**
  * Per-type memory taxonomy guidance surfaced in the system prompt. Mirrors Claude
  * Code's `TYPES_SECTION_INDIVIDUAL` (memdir/memoryTypes.ts): each type carries a
  * rich <description>, <when_to_save> trigger, <how_to_use> cue, a <body_structure>
@@ -122,6 +134,20 @@ const WHAT_NOT_TO_SAVE_GUIDANCE = [
   '- Ephemeral task details: in-progress work, temporary state, current conversation context.',
   '',
   'These exclusions apply even when the user explicitly asks you to save. If they ask you to save a PR list or activity summary, ask what was *surprising* or *non-obvious* about it — that is the part worth keeping.',
+].join('\n');
+
+/**
+ * `### Memory scope` block distinguishing the two storage scopes (Claude Code
+ * teamMemPrompts.ts `## Memory scope`). The model must DECIDE, per memory, whether
+ * it is private (only this user) or team (shared with everyone in this project dir,
+ * synced at session start) — and it must never put secrets in a shared team memory.
+ */
+const MEMORY_SCOPE_GUIDANCE = [
+  '### Memory scope',
+  'Every memory you save has a `scope` — WHERE it is stored — in addition to its type:',
+  '- **private** (the default): known only to you and the current user; persists across this user\'s sessions. Use for user-specific preferences and anything personal to this user.',
+  '- **team**: shared with and contributed to by EVERYONE working in this project directory, and synced at the start of every session. Use for durable project/reference context that benefits every collaborator.',
+  'Choose the scope per the memory\'s nature. You MUST NOT save sensitive data in a team memory — never save API keys or user credentials to shared/team memory, since team memories are visible to all collaborators.',
 ].join('\n');
 
 /**
@@ -825,14 +851,22 @@ export class MemoryManager {
    * @param content - Memory body content
    * @param description - One-line summary for relevance matching
    * @param memoryType - Memory type category (defaults to 'project')
+   * @param scope - Storage scope (defaults to 'private'); 'team' routes the file
+   *                into the shared `team/` sub-directory read by {@link loadTeamMemories}.
+   * @returns The absolute path of the written memory file.
    */
   saveMemory(
     name: string,
     content: string,
     description?: string,
     memoryType?: MemoryType,
-  ): void {
-    const memoryDir = this.getMemoryDir();
+    scope: MemoryScope = 'private',
+  ): string {
+    // Route by scope: private memories live at the auto-memory root; team
+    // memories live in the shared `team/` sub-directory (the one loadTeamMemories
+    // reads), so the model can now AUTHOR a team memory, not just read one.
+    const baseDir = this.getMemoryDir();
+    const memoryDir = scope === 'team' ? path.join(baseDir, 'team') : baseDir;
     fs.mkdirSync(memoryDir, { recursive: true });
 
     const safeName = name
@@ -852,6 +886,7 @@ export class MemoryManager {
     const fileContent = `${frontmatter}\n${redactCredentials(content)}\n`;
 
     fs.writeFileSync(filePath, fileContent, 'utf-8');
+    return filePath;
   }
 
   /**
@@ -971,6 +1006,8 @@ ${WHAT_NOT_TO_SAVE_GUIDANCE}
 
 ### Memory types
 ${MEMORY_TYPES_GUIDANCE}
+
+${MEMORY_SCOPE_GUIDANCE}
 
 ${WHEN_TO_ACCESS_GUIDANCE}
 

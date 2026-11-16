@@ -69,6 +69,27 @@ describe('getMemoryContext — What NOT to save + explicit-save gate (gap)', () 
   });
 });
 
+describe('getMemoryContext — Memory scope (private vs team) guidance', () => {
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-mem-guid-')); });
+  afterEach(() => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} });
+
+  it('emits a Memory scope section distinguishing private vs team', () => {
+    const ctx = withMemory().getMemoryContext();
+    assert.ok(ctx.includes('Memory scope'), 'missing Memory scope header');
+    assert.ok(/\bprivate\b/.test(ctx), 'missing private scope');
+    assert.ok(/\bteam\b/.test(ctx), 'missing team scope');
+    assert.ok(/synced at the start of every session/i.test(ctx), 'missing team-sync description');
+  });
+
+  it('warns never to put secrets/credentials in a shared team memory', () => {
+    const ctx = withMemory().getMemoryContext();
+    assert.ok(
+      /never save API keys or user credentials/i.test(ctx),
+      'missing team-memory sensitive-data warning',
+    );
+  });
+});
+
 describe('getMemoryContext — When to access memories (gap)', () => {
   beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-mem-guid-')); });
   afterEach(() => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} });

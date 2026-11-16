@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { MemoryManager, MEMORY_TYPES, type MemoryType } from '../memory';
+import { MemoryManager, MEMORY_TYPES, MEMORY_SCOPES, type MemoryType, type MemoryScope } from '../memory';
 import { findCredentials } from '../credential-guard';
 
 /**
@@ -14,6 +14,8 @@ export const writeMemoryTool: ToolDefinition = {
     "Persist a durable memory so it survives across sessions. Use when the user asks you to remember something, or when you learn a durable fact worth keeping (a preference, a project constraint, a reference).\n" +
     'Provide a short kebab-case `name`, the `content` to store, an optional one-line `description` (shown in the memory index, keep it under ~150 chars — one line, no newlines), and an optional `type` (user | feedback | project | reference). ' +
     'user=about the user; feedback=how to work; project=ongoing context; reference=external pointers.\n' +
+    'Pick a `scope`: private (default — known only to you and the current user) or team (shared with and contributed to by EVERYONE working in this project directory, synced each session). Use team for durable project/reference context useful to every collaborator; keep user-specific preferences private. ' +
+    'NEVER save secrets or user credentials in a team memory — team memories are visible to all collaborators.\n' +
     'Body structure: for feedback and project memories, lead with the rule/fact, then a `**Why:**` line (the originating reason) and a `**How to apply:**` line (when/where it applies). ' +
     'For project memories, convert relative dates to absolute (e.g. "Thursday" -> "2026-03-05") so the memory stays interpretable later.\n' +
     'Before writing, check the existing memory index and UPDATE an existing entry rather than creating a near-duplicate. ' +
@@ -28,6 +30,11 @@ export const writeMemoryTool: ToolDefinition = {
         type: 'string',
         enum: [...MEMORY_TYPES],
         description: 'Memory category (default: project). user=about the user; feedback=how to work; project=ongoing context; reference=external pointers.',
+      },
+      scope: {
+        type: 'string',
+        enum: [...MEMORY_SCOPES],
+        description: 'Storage scope (default: private). private=only you and the current user; team=shared with everyone working in this project directory (synced each session). NEVER put secrets or user credentials in a team memory.',
       },
     },
     required: ['name', 'content'],
@@ -70,7 +77,15 @@ export const writeMemoryTool: ToolDefinition = {
     const type: MemoryType | undefined =
       rawType && (MEMORY_TYPES as readonly string[]).includes(rawType) ? (rawType as MemoryType) : undefined;
 
-    new MemoryManager(context.cwd).saveMemory(name, content, description, type);
-    return { output: `Saved memory "${name}"${type ? ` (type: ${type})` : ''}.` };
+    // Scope defaults to 'private'; an unrecognized value falls back to private
+    // (mirrors the invalid-type fallback) so a bad model arg never mis-routes a
+    // write into the shared team directory.
+    const rawScope = typeof input.scope === 'string' ? input.scope : undefined;
+    const scope: MemoryScope =
+      rawScope && (MEMORY_SCOPES as readonly string[]).includes(rawScope) ? (rawScope as MemoryScope) : 'private';
+
+    const savedPath = new MemoryManager(context.cwd).saveMemory(name, content, description, type, scope);
+    const meta = type ? `${scope}, type: ${type}` : scope;
+    return { output: `Saved memory "${name}" (${meta}) to ${savedPath}. View with /memory.` };
   },
 };

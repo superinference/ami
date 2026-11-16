@@ -126,4 +126,61 @@ describe('write_memory tool', () => {
     assert.match(d, /UPDATE an existing entry/);
     assert.match(d, /How to apply/);
   });
+
+  // ── scope (private vs team) on the WRITE path ──────────────────────────
+  it('defaults to private scope and surfaces the saved file path', async () => {
+    const r = await writeMemoryTool.execute({ name: 'deploy-cmd', content: 'run deploy.sh' }, ctx());
+    assert.notEqual(r.isError, true);
+    // scope named + the concrete saved file path surfaced
+    assert.match(String(r.output), /\(private\)/);
+    assert.match(String(r.output), /deploy-cmd\.md/);
+    // a private memory goes to the auto-memory root (readMemory reads the root)
+    assert.ok(new MemoryManager(tmp).readMemory('deploy-cmd') !== null, 'private memory persisted at root');
+    // and NOT into the team dir
+    assert.equal(new MemoryManager(tmp).loadTeamMemories().length, 0, 'team dir must stay empty for a private write');
+  });
+
+  it('scope=team routes the write into the shared team directory (authorable team memory)', async () => {
+    const r = await writeMemoryTool.execute(
+      { name: 'ci-runner', content: 'CI uses the arm64 pool', scope: 'team', type: 'reference' },
+      ctx(),
+    );
+    assert.notEqual(r.isError, true);
+    assert.match(String(r.output), /\(team, type: reference\)/);
+    // The saved path lands under a team/ segment
+    assert.match(String(r.output), /[/\\]team[/\\]ci-runner\.md/);
+    // loadTeamMemories (the read side) now sees the authored team memory
+    const team = new MemoryManager(tmp).loadTeamMemories();
+    assert.equal(team.length, 1, 'team memory is readable back');
+    assert.match(team[0], /arm64 pool/);
+    // It is NOT counted as a private root memory
+    assert.equal(new MemoryManager(tmp).readMemory('ci-runner'), null, 'team write must not land in the private root');
+  });
+
+  it('an unrecognized scope falls back to private (never mis-routes to team)', async () => {
+    const r = await writeMemoryTool.execute(
+      { name: 'safe', content: 'body', scope: 'everyone' },
+      ctx(),
+    );
+    assert.notEqual(r.isError, true);
+    assert.match(String(r.output), /\(private\)/);
+    assert.equal(new MemoryManager(tmp).loadTeamMemories().length, 0, 'bad scope must not write to team');
+    assert.ok(new MemoryManager(tmp).readMemory('safe') !== null);
+  });
+
+  it('a secret is blocked even when targeting team scope (never persisted anywhere)', async () => {
+    const r = await writeMemoryTool.execute(
+      { name: 'teamleak', content: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789', scope: 'team' },
+      ctx(),
+    );
+    assert.equal(r.isError, true);
+    assert.match(String(r.output), /refusing to store/);
+    assert.equal(new MemoryManager(tmp).loadTeamMemories().length, 0, 'no team file written for a blocked secret');
+  });
+
+  it('exposes scope in the input schema enum', () => {
+    const scope = (writeMemoryTool.inputSchema.properties as Record<string, { enum?: string[] }>).scope;
+    assert.deepEqual(scope?.enum, ['private', 'team']);
+    assert.match(writeMemoryTool.description, /never save .*credentials.*team|NEVER save secrets or user credentials in a team/i);
+  });
 });
