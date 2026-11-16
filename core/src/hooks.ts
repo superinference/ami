@@ -286,6 +286,12 @@ export interface ConfigChangeContext {
 export interface InstructionsContext {
   filePath: string;
   loadReason: string;
+  /**
+   * Which memory tier the instruction file belongs to — `Project` | `Local` |
+   * `User` | `Managed` (parity: Claude Code's InstructionsLoaded `memory_type`,
+   * sdk/coreSchemas.ts). Optional: emitters that don't classify the source omit it.
+   */
+  memoryType?: string;
 }
 
 export interface WorktreeContext {
@@ -896,6 +902,7 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   sessionId: 'session_id', subagentSessionId: 'subagent_session_id',
   durationMs: 'duration_ms', turnCount: 'turn_count', messageCount: 'message_count',
   agentType: 'agent_type', teammateName: 'teammate_name', teamName: 'team_name',
+  loadReason: 'load_reason', memoryType: 'memory_type',
 };
 
 export function serializeHookEvent(obj: Record<string, unknown>): string {
@@ -2516,7 +2523,7 @@ export class HookManager extends EventEmitter {
         case 'instructionsLoaded': {
           const fn: InstructionsHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('instructionsLoaded', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'instructionsLoaded', filePath: ctx.filePath, loadReason: ctx.loadReason });
+            const eventData = serializeHookEvent({ event: 'instructionsLoaded', filePath: ctx.filePath, loadReason: ctx.loadReason, memoryType: ctx.memoryType });
             await this.runArmHook(hookConfig, cwd, eventData, undefined, this.instructionsLoadedHooks, fn, 'instructionsLoaded');
           };
           this.onInstructionsLoaded(fn);

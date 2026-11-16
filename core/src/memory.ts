@@ -159,6 +159,7 @@ const MEMORY_TYPES_GUIDANCE = [
   "    <description>Contain information about the user's role, goals, responsibilities, and knowledge. Great user memories help you tailor your future behavior to the user's preferences and perspective. Your goal in reading and writing these memories is to build up an understanding of who the user is and how you can be most helpful to them specifically. For example, you should collaborate with a senior software engineer differently than a student who is coding for the very first time. Avoid writing memories about the user that could be viewed as a negative judgement or that are not relevant to the work you're trying to accomplish together.</description>",
   "    <when_to_save>When you learn any details about the user's role, preferences, responsibilities, or knowledge</when_to_save>",
   '    <how_to_use>When your work should be informed by the user\'s profile or perspective. For example, if the user is asking you to explain a part of the code, answer in a way tailored to the details they will find most valuable or that build on domain knowledge they already have.</how_to_use>',
+  '    <scope>Always private — a user profile is personal to this user and must never be written to shared/team memory.</scope>',
   '    <examples>',
   "    user: I'm a data scientist investigating what logging we have in place",
   '    assistant: [saves user memory: user is a data scientist, currently focused on observability/logging]',
@@ -172,6 +173,7 @@ const MEMORY_TYPES_GUIDANCE = [
   '    <description>Guidance the user has given you about how to approach work — both what to avoid and what to keep doing. These let you remain coherent and responsive to how work should be done in the project. Record from failure AND success: if you only save corrections, you will avoid past mistakes but drift away from approaches the user has already validated, and may grow overly cautious.</description>',
   '    <when_to_save>Any time the user corrects your approach ("no not that", "don\'t", "stop doing X") OR confirms a non-obvious approach worked ("yes exactly", "perfect, keep doing that", accepting an unusual choice without pushback). Corrections are easy to notice; confirmations are quieter — watch for them. Include *why* so you can judge edge cases later.</when_to_save>',
   '    <how_to_use>Let these memories guide your behavior so the user does not need to offer the same guidance twice.</how_to_use>',
+  '    <scope>Default private; use team scope only when the guidance is a project-wide convention everyone working here should follow. Before saving a PRIVATE feedback memory, check it does not contradict an existing TEAM feedback memory — if it does, update the team memory instead of silently diverging from it.</scope>',
   '    <body_structure>Lead with the rule itself, then a **Why:** line (the reason the user gave — often a past incident or strong preference) and a **How to apply:** line (when/where this guidance kicks in). Knowing *why* lets you judge edge cases instead of blindly following the rule.</body_structure>',
   '    <examples>',
   "    user: don't mock the database in these tests — we got burned last quarter when mocked tests passed but the prod migration failed",
@@ -186,6 +188,7 @@ const MEMORY_TYPES_GUIDANCE = [
   '    <description>Information you learn about ongoing work, goals, initiatives, bugs, or incidents within the project that is not otherwise derivable from the code or git history. Project memories help you understand the broader context and motivation behind the work in this working directory.</description>',
   '    <when_to_save>When you learn who is doing what, why, or by when. These states change relatively quickly so keep your understanding up to date. Always convert relative dates to absolute dates when saving (e.g., "Thursday" → "2026-03-05"), so the memory remains interpretable later.</when_to_save>',
   "    <how_to_use>Use these memories to more fully understand the details and nuance behind the user's request and make better informed suggestions.</how_to_use>",
+  '    <scope>Bias toward team — project context (who/what/why/when, incidents, decisions) usually benefits every collaborator in this directory. Keep it private only when it is specific to how YOU work rather than the project.</scope>',
   '    <body_structure>Lead with the fact or decision, then a **Why:** line (the motivation — often a constraint, deadline, or stakeholder ask) and a **How to apply:** line (how this should shape your suggestions). Project memories decay fast, so the why helps future-you judge whether the memory is still load-bearing.</body_structure>',
   '    <examples>',
   "    user: we're freezing all non-critical merges after Thursday — mobile team is cutting a release branch",
@@ -200,6 +203,7 @@ const MEMORY_TYPES_GUIDANCE = [
   '    <description>Stores pointers to where information can be found in external systems, so you remember where to look for up-to-date information outside the project directory.</description>',
   '    <when_to_save>When you learn about resources in external systems and their purpose. For example, that bugs are tracked in a specific Linear project or that feedback lives in a specific Slack channel.</when_to_save>',
   '    <how_to_use>When the user references an external system or information that may be in an external system.</how_to_use>',
+  '    <scope>Usually team — pointers to shared external systems (issue trackers, dashboards, channels) help the whole team. Keep a pointer private only when it is personal or carries a credential.</scope>',
   '    <examples>',
   '    user: check the Linear project "INGEST" if you want context on these tickets, that\'s where we track all pipeline bugs',
   '    assistant: [saves reference memory: pipeline bugs are tracked in Linear project "INGEST"]',
@@ -240,6 +244,7 @@ const MEMORY_SCOPE_GUIDANCE = [
   '- **private** (the default): known only to you and the current user; persists across this user\'s sessions. Use for user-specific preferences and anything personal to this user.',
   '- **team**: shared with and contributed to by EVERYONE working in this project directory, and synced at the start of every session. Use for durable project/reference context that benefits every collaborator.',
   'Choose the scope per the memory\'s nature. You MUST NOT save sensitive data in a team memory — never save API keys or user credentials to shared/team memory, since team memories are visible to all collaborators.',
+  'Tailor what you write to the scope: keep **private** memories general to you and this user (they apply across your work here); make **team** memories durable and specific to THIS project (they are checked into the shared project directory and read by everyone). Before saving a private memory that restates project guidance, check it does not contradict an existing team memory — reconcile with the team memory rather than keeping a divergent private copy.',
 ].join('\n');
 
 /**
@@ -357,6 +362,16 @@ const LOCAL_VARIANTS = [
   'CLAUDE.local.md',
   'SUPERINFERENCE.local.md',
 ] as const;
+
+/**
+ * Per-source provenance/trust labels appended to each instruction-file section
+ * header so the model can see WHERE an instruction came from and whether editing
+ * it is shared or private. Parity with Claude Code's `getClaudeMds` descriptive
+ * suffixes (utils/claudemd.ts) — AMI previously emitted a bare relative-path header.
+ */
+const PROVENANCE_PROJECT = 'project instructions, checked into the codebase';
+const PROVENANCE_LOCAL = 'private project instructions, not checked in';
+const PROVENANCE_USER_GLOBAL = "user's global instructions for all projects";
 
 /** Maximum number of parent directories to scan upward. */
 const MAX_PARENT_SCAN_DEPTH = 3;
@@ -1145,6 +1160,17 @@ export function clampIndexEntry(entry: string): string {
  *  not be slurped whole into the context/scan. */
 const MAX_MEMORY_FILE_BYTES = 256 * 1024;
 
+/**
+ * Aggregate file-count ceiling for the shared TEAM memory store. Team memories are
+ * committed to version control and contributed by everyone in the project, so —
+ * unlike the private store — there is no per-author limit on how many accumulate.
+ * Without an aggregate cap a repo carrying many team-memory files could stuff the
+ * context unbounded (each body is already {@link MAX_MEMORY_FILE_BYTES}-capped, but
+ * count was not). Parity with Claude Code's memdir hard caps on untrusted memory
+ * content reaching the prompt; mirrors the primary store's 200-file ceiling in
+ * {@link MemoryManager.loadMemories}. */
+const MAX_TEAM_MEMORY_FILES = 200;
+
 function tokenize(text: string): string[] {
   return text.toLowerCase()
     .replace(/[^a-z0-9\s_-]/g, ' ')
@@ -1246,6 +1272,13 @@ export class MemoryManager {
     for (let i = 0; i < lines.length; i++) {
       if (/^\s*```/.test(lines[i])) { inFence = !inFence; continue; }
       if (inFence) continue;
+      // Skip INDENTED CODE BLOCKS (≥4 leading spaces or a leading tab). In Markdown
+      // these are code, not prose, so an `@path` written inside one is documentation
+      // of the import syntax, not an import to resolve — inlining it would be wrong.
+      // Parity with Claude Code's lexer-token `@include` extraction, which skips
+      // `code` tokens (indented code blocks AND inline code spans alike); AMI's
+      // line-based resolver previously tracked only triple-backtick fences.
+      if (/^(?: {4}|\t)/.test(lines[i])) continue;
       // Mask INLINE CODE SPANS (`` `…` ``) so an `@path` inside backticks is not
       // inlined (parity with Claude Code's markdown-lexer import extraction, which
       // skips code spans as well as fenced blocks). NUL sentinels can't occur in a
@@ -1298,6 +1331,11 @@ export class MemoryManager {
           let imported = sanitizeContent(fs.readFileSync(real, 'utf-8').trim(), real);
           imported = this.resolveAtImports(imported, real, depth + 1, seen);
           seen.delete(real);
+          // Fire the InstructionsLoaded hook PER successfully-inlined @-import with
+          // loadReason 'include' (parity: Claude Code reports a distinct 'include'
+          // load reason for @-included children, not just the top-level files), so a
+          // hook can see which files were pulled in via an import vs. loaded directly.
+          if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: real, loadReason: 'include' });
           return `${pre}${imported}`;
         } catch {
           return full;
@@ -1324,9 +1362,22 @@ export class MemoryManager {
           if (raw) {
             const content = this.resolveAtImports(sanitizeContent(raw, found), found);
             const relativePath = path.relative(this.cwd, found) || path.basename(found);
-            const label = depth === 0 ? relativePath : `(parent) ${relativePath}`;
+            // Per-source provenance/trust label (parity: Claude Code's getClaudeMds
+            // descriptive suffixes) — tells the model whether editing this file is
+            // version-controlled/shared vs. local, surfacing WHERE the instruction
+            // came from rather than a bare path header.
+            const prefix = depth === 0 ? '' : '(parent) ';
+            const label = `${prefix}${relativePath} (${PROVENANCE_PROJECT})`;
             sections.push(`## ${label}\n\n${content}`);
-            if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: found, loadReason: 'startup' });
+            // Differentiated InstructionsLoaded load reason + memory_type (parity:
+            // Claude Code reports session_start for the first/own load and
+            // nested_traversal for a parent-dir file, each tagged memory_type Project)
+            // so a hook can tell WHY/HOW each instruction file was pulled in.
+            if (this._hookCallback) this._hookCallback('instructionsLoaded', {
+              filePath: found,
+              loadReason: depth === 0 ? 'session_start' : 'nested_traversal',
+              memoryType: 'Project',
+            });
           }
         } catch {
           // File unreadable — skip silently
@@ -1342,8 +1393,17 @@ export class MemoryManager {
             if (raw) {
               const content = this.resolveAtImports(sanitizeContent(raw, localPath), localPath);
               const relativePath = path.relative(this.cwd, localPath) || path.basename(localPath);
-              const label = depth === 0 ? relativePath : `(parent) ${relativePath}`;
+              // Local variants (CLAUDE.local.md / SUPERINFERENCE.local.md) are the
+              // private, git-ignored project instructions — label them as such so the
+              // model knows edits here are NOT shared with the team.
+              const prefix = depth === 0 ? '' : '(parent) ';
+              const label = `${prefix}${relativePath} (${PROVENANCE_LOCAL})`;
               sections.push(`## ${label}\n\n${content}`);
+              if (this._hookCallback) this._hookCallback('instructionsLoaded', {
+                filePath: localPath,
+                loadReason: depth === 0 ? 'session_start' : 'nested_traversal',
+                memoryType: 'Local',
+              });
             }
           }
         } catch {
@@ -1674,7 +1734,7 @@ export class MemoryManager {
 
     const userGlobal = this.loadUserGlobalInstructions();
     if (userGlobal) {
-      sections.push(`## User Instructions (global)\n\n${userGlobal}`);
+      sections.push(`## User Instructions (${PROVENANCE_USER_GLOBAL})\n\n${userGlobal}`);
     }
 
     const instructions = this.loadProjectInstructions();
@@ -1714,7 +1774,12 @@ export class MemoryManager {
           const typeTag = m.memoryType ? `[${m.memoryType}] ` : '';
           const ageTag = m.freshness ? `, ${m.freshness}` : '';
           const desc = m.description ? ` — ${m.description}` : '';
-          return `- ${typeTag}${m.name || 'Untitled'}${desc} (${m.content.length} chars${ageTag})`;
+          // Exact ISO-8601 mtime alongside the coarse freshness bucket (parity:
+          // Claude Code's formatMemoryManifest, memdir/memoryScan.ts) — gives the
+          // recall selector a precise, sortable time anchor so two memories in the
+          // same freshness bucket ("3 days ago") are still distinguishable by recency.
+          const isoTag = typeof m.mtimeMs === 'number' ? `, ${new Date(m.mtimeMs).toISOString()}` : '';
+          return `- ${typeTag}${m.name || 'Untitled'}${desc} (${m.content.length} chars${ageTag}${isoTag})`;
         });
         sections.push(`## Stored Memories (index — call read_memory with a name for the full body)\n\n${indexLines.join('\n')}`);
       } else {
@@ -1895,12 +1960,20 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   private loadMemoriesFromDir(dir: string): string[] {
     try {
       const out: string[] = [];
-      for (const f of fs.readdirSync(dir)) {
-        if (!f.endsWith('.md')) continue;
-        // The MEMORY.md index is a table of contents, not a memory body — exclude
-        // it from the body scan (mirrors loadMemories) so a team/MEMORY.md index
-        // isn't dumped verbatim into the prompt as if it were a memory.
-        if (f === MEMORY_INDEX_FILENAME) continue;
+      // RECURSIVE scan (parity: Claude Code memdir/memoryScan.ts `readdir(dir,
+      // { recursive: true })`) so team memories organized into topic SUBDIRECTORIES
+      // are discovered, not just the flat top level. The MEMORY.md index is a table
+      // of contents, not a memory body — exclude it by BASENAME at ANY depth (mirrors
+      // loadMemories) so a team/.../MEMORY.md isn't dumped verbatim into the prompt.
+      // The aggregate count is then bounded by MAX_TEAM_MEMORY_FILES (shared store
+      // has no per-author limit).
+      const names = (fs.readdirSync(dir, { recursive: true }) as string[])
+        .filter(f =>
+          typeof f === 'string' &&
+          f.endsWith('.md') &&
+          path.basename(f) !== MEMORY_INDEX_FILENAME)
+        .slice(0, MAX_TEAM_MEMORY_FILES);
+      for (const f of names) {
         const candidate = path.join(dir, f);
         // SYMLINK-ESCAPE CONTAINMENT: a `.md` entry in the (version-controlled,
         // shared) team-memory dir may be a symlink pointing OUT of it — e.g. to
