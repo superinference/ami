@@ -4,7 +4,8 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock } from '../utils/file-lock';
 import { TEAM_LEAD_NAME, clearMailbox } from './send-message';
 import { PERMISSION_MODES, normalizePermissionMode, PermissionMode } from '../permissions';
-import { unassignTeammateTasks } from './task-tracker';
+import { unassignTeammateTasks, setTaskPersistPath } from './task-tracker';
+import { sanitizeAgentName } from './task';
 import { log as coreLog } from '../logger';
 import { gitExec } from '../worktree-manager';
 
@@ -127,6 +128,10 @@ export interface TeamFile {
   leadSessionId?: string;
   leadAgentId: string;
   teamAllowedPaths?: string[];
+  /** Declarative team-wide tool allowlist inherited by every teammate (parity:
+   *  Claude Code's per-agent `tools` scoping knob). Stored on the team file so a
+   *  teammate spawned into the team can be constrained the same way the lead is. */
+  teamAllowedTools?: string[];
   members: TeamMember[];
   createdAt: string;
 }
@@ -172,6 +177,8 @@ export const _teamHooks = {
   exec: gitExec,
   existsSync: fs.existsSync as typeof fs.existsSync,
   rmSync: fs.rmSync as typeof fs.rmSync,
+  mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
+  writeFileSync: fs.writeFileSync as typeof fs.writeFileSync,
 };
 
 /**
@@ -277,6 +284,59 @@ export function restoreTeam(team: TeamFile, dir: string): void {
   currentTeamDir = dir;
 }
 
+/** A teammate pre-declared in team_create's `members` input (post-validation). */
+interface DeclaredMember {
+  name: string;
+  agentType?: string;
+  model?: string;
+  permissionMode?: PermissionMode;
+}
+
+/**
+ * Parse and validate the optional `members` roster supplied to team_create (parity:
+ * Claude Code lets the caller name the agents that participate at creation). Each
+ * entry may be a bare name string or an object `{ name, agent_type?, model?,
+ * permission_mode? }`. Names are sanitized with the canonical {@link sanitizeAgentName}
+ * (shared helper — no duplicate reserved-char logic); the lead name and duplicates
+ * are skipped. An invalid `permission_mode` on any entry is a hard error (returned
+ * in `error`) so a bad knob fails the create rather than being silently dropped.
+ */
+function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?: string } {
+  if (raw === undefined || raw === null) return { members: [] };
+  if (!Array.isArray(raw)) return { members: [], error: 'members must be an array of names or member objects.' };
+  const out: DeclaredMember[] = [];
+  const seen = new Set<string>([TEAM_LEAD_NAME]);
+  for (const item of raw) {
+    let rawName: string | undefined;
+    let agentType: string | undefined;
+    let model: string | undefined;
+    let permRaw: string | undefined;
+    if (typeof item === 'string') {
+      rawName = item;
+    } else if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      rawName = typeof o.name === 'string' ? o.name : undefined;
+      agentType = typeof o.agent_type === 'string' ? o.agent_type : undefined;
+      model = typeof o.model === 'string' ? o.model : undefined;
+      permRaw = typeof o.permission_mode === 'string' ? o.permission_mode : undefined;
+    }
+    if (!rawName) continue;
+    const name = sanitizeAgentName(rawName);
+    if (!name || seen.has(name)) continue;
+    let permissionMode: PermissionMode | undefined;
+    if (permRaw !== undefined) {
+      const valid = normalizePermissionMode(permRaw);
+      if (!valid) {
+        return { members: [], error: `member "${name}" has an invalid permission_mode; must be one of: ${PERMISSION_MODES.join(', ')}.` };
+      }
+      permissionMode = valid;
+    }
+    seen.add(name);
+    out.push({ name, agentType, model, permissionMode });
+  }
+  return { members: out };
+}
+
 export const teamCreateTool: ToolDefinition = {
   name: 'team_create',
   description:
@@ -304,10 +364,36 @@ export const teamCreateTool: ToolDefinition = {
       description: { type: 'string', description: 'Description of the team purpose.' },
       agent_type: { type: 'string', description: 'Role/type of the team lead (default "lead").' },
       model: { type: 'string', description: 'Model the lead runs under.' },
+      permission_mode: {
+        type: 'string',
+        description: 'Permission mode the lead runs under (one of the valid permission modes).',
+      },
       team_allowed_paths: {
         type: 'array',
         items: { type: 'string' },
         description: 'Declarative team-wide allowed paths inherited by all teammates.',
+      },
+      allowed_tools: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Declarative team-wide tool allowlist inherited by all teammates.',
+      },
+      members: {
+        type: 'array',
+        description:
+          'Optional roster of teammates to pre-declare at creation (added idle, awaiting spawn via task). ' +
+          'Each item is either a teammate name or an object { name, agent_type?, model?, permission_mode? }.',
+        items: {
+          // Union item (parity with Claude's union value params): a bare name
+          // string OR an object { name, agent_type?, model?, permission_mode? }.
+          type: ['string', 'object'],
+          properties: {
+            name: { type: 'string' },
+            agent_type: { type: 'string' },
+            model: { type: 'string' },
+            permission_mode: { type: 'string' },
+          },
+        },
       },
     },
     required: ['team_name'],
@@ -325,6 +411,27 @@ export const teamCreateTool: ToolDefinition = {
       return { output: `Error: description must be at most ${MAX_TEAM_DESCRIPTION_LEN} characters (got ${description.length}).`, isError: true };
     }
 
+    // Per-agent scoping knob: the lead's permission mode (parity: Claude's agent
+    // `permissionMode`). Validate up-front so an invalid value fails fast instead
+    // of being persisted as a dead string.
+    const rawPermMode = input.permission_mode as string | undefined;
+    let leadPermissionMode: PermissionMode | undefined;
+    if (rawPermMode !== undefined) {
+      const valid = normalizePermissionMode(rawPermMode);
+      if (!valid) {
+        return { output: `Error: permission_mode must be one of: ${PERMISSION_MODES.join(', ')}.`, isError: true };
+      }
+      leadPermissionMode = valid;
+    }
+
+    // Parse any pre-declared teammate roster (parity: Claude's team members input).
+    // Each entry becomes an idle member record awaiting its task-spawn; spawning
+    // later reconciles it by name via registerTeamMember. Invalid permission modes
+    // abort the whole create so the caller fixes the input rather than getting a
+    // silently-dropped knob.
+    const parsedMembers = parseDeclaredMembers(input.members);
+    if (parsedMembers.error) return { output: `Error: ${parsedMembers.error}`, isError: true };
+
     // On-disk collision detection with a unique-name fallback: if a directory for
     // this name already exists (e.g. an orphan from a prior session), pick the
     // next free "name-N" so we never clobber another team's state.
@@ -341,6 +448,9 @@ export const teamCreateTool: ToolDefinition = {
     if (existing && existing.team.leadSessionId === context.sessionId
         && findTeamMemberByName(existing.team, TEAM_LEAD_NAME)) {
       restoreTeam(existing.team, existing.dir);
+      // Re-bind the shared, team-scoped task list so task_tracker resolves to this
+      // team's tasks (parity: Team = Project = TaskList) after the restart too.
+      setTaskPersistPath(context.cwd, existing.team.name);
       return {
         output: `Reconnected to existing team "${existing.team.name}" (resumed session). ` +
           `Team file: ${teamFilePath(existing.dir)}. Lead agent id: ${existing.team.leadAgentId}. ` +
@@ -356,33 +466,71 @@ export const teamCreateTool: ToolDefinition = {
     }
 
     const teamDir = path.join(teamsRoot, name);
-    fs.mkdirSync(teamDir, { recursive: true });
-    fs.mkdirSync(path.join(teamDir, 'memory'), { recursive: true });
 
     const leadAgentId = leadAgentIdFor(name);
-    currentTeam = {
+    const now = new Date().toISOString();
+    const team: TeamFile = {
       name,
       description,
       leadSessionId: context.sessionId,
       leadAgentId,
       teamAllowedPaths: Array.isArray(input.team_allowed_paths) ? (input.team_allowed_paths as string[]) : undefined,
-      members: [{
-        name: TEAM_LEAD_NAME,
-        agentId: leadAgentId,
-        agentType: (input.agent_type as string) || 'lead',
-        model: input.model as string | undefined,
-        cwd: context.cwd,
-        joinedAt: new Date().toISOString(),
-        isActive: true,
-      }],
-      createdAt: new Date().toISOString(),
+      teamAllowedTools: Array.isArray(input.allowed_tools) ? (input.allowed_tools as string[]) : undefined,
+      members: [
+        {
+          name: TEAM_LEAD_NAME,
+          agentId: leadAgentId,
+          agentType: (input.agent_type as string) || 'lead',
+          model: input.model as string | undefined,
+          permissionMode: leadPermissionMode,
+          cwd: context.cwd,
+          joinedAt: now,
+          isActive: true,
+        },
+        // Pre-declared teammates: idle until spawned (a later task-spawn reconciles
+        // the record by name). Each carries a deterministic agentId so the lead can
+        // address it before it runs.
+        ...parsedMembers.members.map((m): TeamMember => ({
+          name: m.name,
+          agentId: formatAgentId(m.name, name),
+          agentType: m.agentType,
+          model: m.model,
+          permissionMode: m.permissionMode,
+          joinedAt: now,
+          isActive: false,
+        })),
+      ],
+      createdAt: now,
     };
+
+    // Atomicity (parity: Claude's FileWriteTool orders the disk write to preserve
+    // state consistency): persist team.json to disk FIRST, and only commit the
+    // in-memory singleton after a successful write. A failed write (EACCES, ENOSPC,
+    // read-only cwd) returns an error WITHOUT leaving a phantom in-memory team that
+    // every later team_create would reject as "already exists".
+    try {
+      _teamHooks.mkdirSync(teamDir, { recursive: true });
+      _teamHooks.mkdirSync(path.join(teamDir, 'memory'), { recursive: true });
+      _teamHooks.writeFileSync(teamFilePath(teamDir), JSON.stringify(team, null, 2));
+    } catch (err) {
+      // Roll back any partially-created directory so a retry starts clean.
+      try { if (_teamHooks.existsSync(teamDir)) _teamHooks.rmSync(teamDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { output: `Error: failed to create team "${name}": ${msg}`, isError: true };
+    }
+
+    currentTeam = team;
     currentTeamDir = teamDir;
-    persistTeam();
+    // Bind the shared, team-scoped task list (parity: Team = Project = TaskList) so
+    // task_tracker calls persist to this team's own tasks file.
+    setTaskPersistPath(context.cwd, name);
 
     const renamed = name !== base ? ` (renamed from "${base}" — a team by that name already existed on disk)` : '';
+    const declaredNote = parsedMembers.members.length > 0
+      ? ` ${parsedMembers.members.length} teammate(s) pre-declared: ${parsedMembers.members.map(m => m.name).join(', ')}.`
+      : '';
     return {
-      output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}. ` +
+      output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}.${declaredNote} ` +
         `Spawn teammates with task({ name: "<teammate>" }) to add members.`,
     };
   },
@@ -438,6 +586,9 @@ export const teamDeleteTool: ToolDefinition = {
 
     currentTeam = null;
     currentTeamDir = null;
+    // Unbind the team-scoped task list: subsequent task_tracker calls fall back to
+    // the default list now that the team (and its 1:1 task list) is gone.
+    setTaskPersistPath(context.cwd);
     const wtNote = worktreesRemoved > 0
       ? ` and ${worktreesRemoved} worktree${worktreesRemoved === 1 ? '' : 's'}`
       : '';
