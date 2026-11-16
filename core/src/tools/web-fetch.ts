@@ -162,6 +162,32 @@ export function extensionForMimeType(mimeType: string | undefined): string {
   return MAP[mt] ?? 'bin';
 }
 
+/**
+ * Deny-by-default binary content-type detection: treat a fetched response as
+ * BINARY (persist raw bytes to disk) UNLESS it is provably textual. Only a small
+ * whitelist of text-ish types is considered safe to decode into the model's
+ * context — `text/*`, the structured-text `+json`/`+xml` suffixes (and their
+ * bare `application/json` / `application/xml` forms), `application/javascript`,
+ * and form-urlencoded. Everything else — including UNKNOWN or novel types
+ * (`font/woff2`, `video/mp4`, `application/wasm`, …) — is binary. The previous
+ * allow-list (image/* + zip + octet-stream) silently leaked the raw bytes of any
+ * unrecognized binary type into the conversation. Parity with Claude's
+ * `isBinaryContentType` (mcpOutputStorage.ts). An empty/absent header is treated
+ * as text so a server that omits Content-Type still gets the inline path.
+ */
+export function isBinaryContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false;
+  const mt = (contentType.split(';')[0] ?? '').trim().toLowerCase();
+  if (mt.startsWith('text/')) return false;
+  // Structured text delivered under an application/ type. Suffix or exact match
+  // (not substring) so 'openxmlformats' office types stay binary.
+  if (mt.endsWith('+json') || mt === 'application/json') return false;
+  if (mt.endsWith('+xml') || mt === 'application/xml') return false;
+  if (mt.startsWith('application/javascript')) return false;
+  if (mt === 'application/x-www-form-urlencoded') return false;
+  return true;
+}
+
 function htmlToMarkdown(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -216,6 +242,10 @@ export const webFetchTool: ToolDefinition = {
     '  - If a URL redirects to a different host, protocol, or port, the tool reports the redirect instead of returning the content; re-fetch with the redirect URL to continue.\n' +
     '  - For GitHub URLs, prefer the gh CLI via Bash (e.g. gh pr view, gh issue view, gh api) instead of fetching.\n' +
     '  - NOT for binary files (zip, tar, images) — use bash with curl -O for binary downloads.',
+  // Intent synonyms NOT present in the name/description, so ToolSearch can surface
+  // web_fetch when the model searches by capability rather than exact wording
+  // (parity with Claude's Tool.searchHint).
+  searchHint: 'scrape crawl retrieve webpage website visit open link read article rest api endpoint',
   inputSchema: {
     type: 'object',
     properties: {
@@ -462,8 +492,9 @@ export const webFetchTool: ToolDefinition = {
         };
       }
 
-      const binaryTypes = ['image/', 'application/zip', 'application/octet-stream'];
-      if (binaryTypes.some(t => contentType?.includes(t))) {
+      // Deny-by-default: anything not provably text is persisted as raw bytes so
+      // non-text payloads never leak into the model context (see isBinaryContentType).
+      if (isBinaryContentType(contentType)) {
         // Derive the extension from a fixed-vocabulary whitelist so a hostile
         // Content-Type header can never inject path separators / garbage into
         // the on-disk filename.
