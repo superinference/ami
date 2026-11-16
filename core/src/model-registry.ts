@@ -5,6 +5,27 @@ import type { ProviderConfig } from './types';
 import { MODEL_PREFERENCE } from './provider';
 import { discoverFromModelList } from './model-capabilities';
 import { redactSecrets } from './tools/tool-utils';
+import { log } from './logger';
+
+/**
+ * Pull a human-readable message out of an API error-response body: checks
+ * `data.message` first, then `data.error.message`. Mirrors Claude Code's
+ * extractErrorDetail (bridge/debugUtils.ts) so an HTTP failure can surface the
+ * server's own reason (e.g. "model X not found, available: ...") instead of a
+ * bare status code. The single canonical body-detail extractor for every reject
+ * path in this module.
+ */
+export function extractErrorDetail(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const d = data as Record<string, unknown>;
+  if (typeof d.message === 'string' && d.message.trim() !== '') return d.message;
+  const err = d.error;
+  if (err && typeof err === 'object') {
+    const m = (err as Record<string, unknown>).message;
+    if (typeof m === 'string' && m.trim() !== '') return m;
+  }
+  return undefined;
+}
 
 // Default 10s; overridable per-call via env for tests and constrained
 // environments (mirrors SUPERINFERENCE_API_TIMEOUT_MS / HF_ENDPOINT seams).
@@ -42,14 +63,21 @@ function httpGetJSON(
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', () => {
         const status = res.statusCode ?? 0;
+        const bodyText = Buffer.concat(chunks).toString('utf-8');
         if (status < 200 || status >= 300) {
-          const httpErr = new Error(`HTTP ${status}`) as Error & { statusCode: number };
+          // Parse the error body and surface the server's own human-readable
+          // reason (data.message / data.error.message) on the thrown error, so
+          // the diagnostic can tell the user WHY instead of a bare "HTTP 404".
+          let detail: string | undefined;
+          try { detail = extractErrorDetail(JSON.parse(bodyText)); } catch { /* non-JSON error body */ }
+          const httpErr = new Error(`HTTP ${status}`) as Error & { statusCode: number; detail?: string };
           httpErr.statusCode = status;
+          if (detail) httpErr.detail = detail;
           reject(httpErr);
           return;
         }
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+          resolve(JSON.parse(bodyText));
         } catch {
           reject(new Error('Invalid JSON response'));
         }
@@ -116,8 +144,9 @@ export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
     }
     // OpenAI-compatible: OpenAI, Ollama, OpenRouter
     return await listOpenAIModels(config);
-  } catch {
+  } catch (err) {
     // Fallback to static list if API call fails
+    log('modelCapabilities', `[modelCapabilities] fetch failed: ${diagnoseModelDiscovery(err, provider)}`);
     const models = MODEL_PREFERENCE[provider] || [];
     if (models.length > 0) return models.map(id => ({ id, name: id }));
     return [];
@@ -156,14 +185,23 @@ export function diagnoseModelDiscovery(err: unknown, provider: string): string {
     : undefined;
   const message = err instanceof Error ? err.message : String(err ?? '');
 
+  // The server's own error-body message (if any), scrubbed of secrets, so the
+  // user sees the concrete reason (e.g. "model X not found, available: ...")
+  // appended to the status-code line instead of only a bare HTTP code.
+  const rawDetail = typeof (err as { detail?: unknown })?.detail === 'string'
+    ? (err as { detail: string }).detail
+    : undefined;
+  const detail = rawDetail ? redactSecrets(rawDetail) : undefined;
+  const suffix = detail ? ` — ${detail}` : '';
+
   if (status === 401 || status === 403) {
-    return `Authentication failed (HTTP ${status}): ${provider} rejected the API key. Check ${providerKeyHint(provider)}.`;
+    return `Authentication failed (HTTP ${status}): ${provider} rejected the API key. Check ${providerKeyHint(provider)}.${suffix}`;
   }
   if (status === 404) {
-    return `Model list endpoint not found (HTTP 404) for ${provider}. Check the base URL includes the API path (e.g. ".../v1").`;
+    return `Model list endpoint not found (HTTP 404) for ${provider}. Check the base URL includes the API path (e.g. ".../v1").${suffix}`;
   }
   if (typeof status === 'number') {
-    return `${provider} returned HTTP ${status} when listing models.`;
+    return `${provider} returned HTTP ${status} when listing models.${suffix}`;
   }
   if (message.includes('baseUrl is required')) {
     return `No base URL configured for ${provider}. Set AI_BASE_URL (or pass --base-url).`;
@@ -210,7 +248,9 @@ export async function listModelsDiagnostic(
         : `${provider} returned an empty model list. Verify ${providerKeyHint(provider)} has model-list access.`,
     };
   } catch (err) {
-    return { models: [], diagnostic: diagnoseModelDiscovery(err, provider) };
+    const diagnostic = diagnoseModelDiscovery(err, provider);
+    log('modelCapabilities', `[modelCapabilities] fetch failed: ${diagnostic}`);
+    return { models: [], diagnostic };
   }
 }
 
@@ -227,7 +267,18 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
     name: m.id,
     owned_by: m.owned_by,
   }));
-  discoverFromModelList(models as unknown as Record<string, unknown>[]);
+  const discovery = discoverFromModelList(models as unknown as Record<string, unknown>[]);
+  // Debug/introspection: report the outcome of capability discovery (how many
+  // models the endpoint returned and how many advertised a context window), so
+  // operators can see which models/windows were learned. Mirrors Claude Code's
+  // `[modelCapabilities] cached N models` debug line. Gated by log level.
+  log('modelCapabilities',
+    `[modelCapabilities] cached ${models.length} models`,
+    {
+      registered: discovery.registered.length,
+      contextWindows: Object.keys(discovery.contextWindows).length,
+    },
+  );
   return models;
 }
 
@@ -381,6 +432,34 @@ export function resolveModelAlias(input: string): string | undefined {
   return isModelAlias(key) ? MODEL_ALIAS_TARGETS[key as ModelAlias] : undefined;
 }
 
+/**
+ * True when `modelName` begins with `prefix` at a SEGMENT BOUNDARY — the match
+ * must reach the end of the name or a '-' separator. So "claude-opus-4-5"
+ * matches "claude-opus-4-5-20251101" but NOT "claude-opus-4-50". Mirrors Claude
+ * Code's prefixMatchesModel (utils/model/modelAllowlist.ts).
+ */
+function prefixMatchesModel(modelName: string, prefix: string): boolean {
+  if (!modelName.startsWith(prefix)) return false;
+  return modelName.length === prefix.length || modelName[prefix.length] === '-';
+}
+
+/**
+ * True when `model` matches a version-prefix `entry` with segment-boundary
+ * safety and 'claude-' shorthand: an entry like "opus-4-5" is auto-expanded to
+ * "claude-opus-4-5" so it matches "claude-opus-4-5-20251101" while refusing
+ * "claude-opus-4-50". Case-insensitive. Mirrors Claude Code's
+ * modelMatchesVersionPrefix — the single boundary-aware matcher reused by the
+ * validateModel suggestion path (and available to the engine allowlist check so
+ * admins can pin a version family without accidentally matching a sibling).
+ */
+export function modelMatchesVersionPrefix(model: string, entry: string): boolean {
+  const m = model.toLowerCase();
+  const e = entry.toLowerCase();
+  if (prefixMatchesModel(m, e)) return true;
+  if (!e.startsWith('claude-') && prefixMatchesModel(m, `claude-${e}`)) return true;
+  return false;
+}
+
 export async function validateModel(
   config: ProviderConfig,
   modelId: string,
@@ -433,9 +512,18 @@ export async function validateModel(
     return { valid: true, available: ids, errorKind: 'none' };
   }
 
-  // Try substring match, then a deprecated/renamed-id replacement suggestion for
-  // ids that have no overlap with any live model at all.
-  const partial = ids.filter(id => id.includes(effective) || effective.includes(id));
+  // Suggestion ranking: prefer a SEGMENT-BOUNDARY version-prefix match so a
+  // precise request ("claude-opus-4-5") resolves to the dated build
+  // ("claude-opus-4-5-20251101") and never a sibling ("claude-opus-4-50-preview").
+  // Only when no boundary match exists do we fall back to the looser substring
+  // "did you mean" (e.g. "gpt-4" → "gpt-4o"), then to a deprecated/renamed-id
+  // replacement for ids with no overlap with any live model at all.
+  const boundary = ids.filter(id =>
+    modelMatchesVersionPrefix(id, effective) || modelMatchesVersionPrefix(effective, id),
+  );
+  const partial = boundary.length > 0
+    ? boundary
+    : ids.filter(id => id.includes(effective) || effective.includes(id));
   const suggestion = partial.length > 0
     ? partial[0]
     : suggestDeprecatedReplacement(effective, ids);
