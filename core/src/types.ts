@@ -597,6 +597,13 @@ export interface ToolDefinition {
    *  it on demand via `tool_search` — the per-tool opt-in equivalent of MCP schema-size
    *  auto-deferral. Parity: Claude's `Tool.shouldDefer`. */
   shouldDefer?: boolean;
+  /** Per-tool self-declared opt-OUT of deferral: force-KEEP this tool in the initial
+   *  advertised set (full schema) even when it would otherwise be deferred behind
+   *  `tool_search` (e.g. an MCP tool subject to schema-size auto-deferral). An MCP
+   *  server sets this on a tool via `_meta['anthropic/alwaysLoad'] === true`. Checked
+   *  before the `isMcp` auto-defer rule. Parity: Claude's `Tool.alwaysLoad`
+   *  (ToolSearchTool/prompt.ts — `if (tool.alwaysLoad === true) return false`). */
+  alwaysLoad?: boolean;
   /** Input-aware irreversible-operation predicate (delete / overwrite / send). Absent
    *  or `false` = not destructive. Lets the permission layer add an extra guard for ANY
    *  tool, not just bash. Parity: Claude's `Tool.isDestructive(input)`. */

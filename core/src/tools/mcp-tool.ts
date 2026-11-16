@@ -107,12 +107,33 @@ export function extractMcpErrorText(result: unknown): string {
   return 'MCP tool returned an error';
 }
 
+/** Read the two MCP tool-discovery hints a server can attach under the tool's
+ *  `_meta` block (Claude Code parity, services/mcp/client.ts:L1779-L1785):
+ *
+ *   - `anthropic/searchHint` — a free-text discovery hint. Whitespace is collapsed
+ *     to single spaces and trimmed; an empty result becomes `undefined` so the
+ *     `tool_search` weighting layer only ever sees a meaningful one-line hint.
+ *   - `anthropic/alwaysLoad` — when strictly `true`, the tool opts OUT of
+ *     schema-size deferral and is kept in the initial advertised set.
+ *
+ *  Exported so the behavior is unit-testable in isolation from a live MCP server. */
+export function readMcpToolMeta(
+  meta: Record<string, unknown> | undefined,
+): { searchHint: string | undefined; alwaysLoad: boolean } {
+  const rawHint = meta?.['anthropic/searchHint'];
+  const searchHint =
+    typeof rawHint === 'string' ? rawHint.replace(/\s+/g, ' ').trim() || undefined : undefined;
+  const alwaysLoad = meta?.['anthropic/alwaysLoad'] === true;
+  return { searchHint, alwaysLoad };
+}
+
 export function createMcpTool(
   serverName: string,
   toolName: string,
   description: string,
   inputSchema: Record<string, unknown>,
   annotations?: McpToolAnnotations,
+  meta?: Record<string, unknown>,
 ): ToolDefinition {
   // Untrusted server-supplied metadata is advertised to the model; strip hidden
   // Unicode from the name/description and every string in the input schema so a
@@ -121,6 +142,10 @@ export function createMcpTool(
   const safeInputSchema = recursivelySanitizeUnicode(inputSchema);
   // MCP annotations declare read-only/concurrency semantics (H29).
   const readOnly = annotations?.readOnlyHint ?? false;
+  // Server-supplied discovery hints (`_meta`): a one-line searchHint so a deferred
+  // MCP tool is findable by synonym via tool_search, and alwaysLoad so a server can
+  // force-keep a tool in the initial set despite schema-size auto-deferral.
+  const { searchHint, alwaysLoad } = readMcpToolMeta(meta);
   return {
     name: qualifiedMcpToolName(serverName, stripInvisibleUnicode(toolName)),
     description: `[MCP:${serverName}] ${safeDescription}`,
@@ -128,6 +153,8 @@ export function createMcpTool(
     isReadOnly: readOnly,
     isConcurrencySafe: readOnly,
     isMcp: true,
+    ...(searchHint ? { searchHint: stripInvisibleUnicode(searchHint) } : {}),
+    ...(alwaysLoad ? { alwaysLoad: true } : {}),
     async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
       const mcpManager = context._mcpManager;
       if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
