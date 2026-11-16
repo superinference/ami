@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { ToolResult } from '../types';
 import { isCredentialPath } from './bash-security';
+import { validatePathExpansionSafety } from '../utils/path';
 
 /**
  * Dependency seam so tests can drive branches that are otherwise shadowed by
@@ -58,6 +59,13 @@ export function isUNCPath(filePath: string): boolean {
 export function validateFilePath(filePath: string): ToolResult | null {
   if (filePath.includes('\x00')) {
     return { output: 'Error: file path contains a null byte.', isError: true };
+  }
+  // Reject TOCTOU-prone path inputs that are literal at validation time but
+  // re-expanded by the shell at execution time (unresolved tilde variants,
+  // $/%/leading-= shell-expansion syntax) — see validatePathExpansionSafety.
+  const expansionError = validatePathExpansionSafety(filePath);
+  if (expansionError) {
+    return { output: `Error: ${expansionError}`, isError: true };
   }
   return null;
 }

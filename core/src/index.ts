@@ -145,6 +145,7 @@ export {
   displayPath,
   shortestDisplayPath,
   stripTrailingSep,
+  validatePathExpansionSafety,
 } from './utils/path';
 export { generateTitle, sanitizeTitle, truncateTitle } from './title-generator';
 export { ProcessManager, TASK_STATUS } from './process-manager';

@@ -5,6 +5,36 @@ import { canonicalizeExisting } from '../path-safety';
 import { maybePosixToWindows } from './windows-paths';
 
 /**
+ * Dependency-injection seam for the host platform. The containment check folds
+ * case on case-insensitive filesystems (Windows, macOS); production reads the
+ * real `process.platform`, tests override it to exercise the win32/darwin arms
+ * deterministically on any host.
+ *
+ * [FUNCTIONAL CHANGE] New seam so case-insensitive boundary comparison is
+ * testable without running on Windows/macOS.
+ */
+export const _pathHooks: { platform: NodeJS.Platform } = { platform: process.platform };
+
+/**
+ * Normalize a path for a case-insensitive containment comparison on filesystems
+ * that are case-insensitive (Windows NTFS, macOS HFS+/APFS default): the whole
+ * path is lower-cased so `C:\Users\Foo` and `c:\users\foo` — or `/Users/Foo` and
+ * `/users/foo` — compare equal. On case-sensitive platforms (Linux) the path is
+ * returned unchanged. Lower-casing the entire path subsumes Claude Code's
+ * Windows drive-letter upper-casing (both make `c:` and `C:` match) while also
+ * matching Claude's macOS `normalizeCaseForComparison` fold.
+ *
+ * [FUNCTIONAL CHANGE] New helper — case-insensitive path containment parity.
+ */
+function normalizeCaseForComparison(p: string): string {
+  const plat = _pathHooks.platform;
+  if (plat === 'win32' || plat === 'darwin') {
+    return p.toLowerCase();
+  }
+  return p;
+}
+
+/**
  * Resolves `~` to the user's home directory, resolves relative paths against
  * the provided cwd, and normalizes the result.
  *
@@ -133,10 +163,46 @@ export function realpathNFC(
 }
 
 /**
+ * Rejects path inputs whose spelling is interpreted literally at validation time
+ * but re-expanded differently by the shell at execution time — a TOCTOU gap the
+ * file tools must close before trusting a model-supplied path:
+ *
+ *   - Unresolved tilde-expansion variants (`~user`, `~+`, `~-`, `~N`). `expandPath`
+ *     only resolves bare `~`, `~/` and `~\`; anything else that still starts with
+ *     `~` is left literal and resolved relative to cwd (`<cwd>/~root/...`) while a
+ *     shell would expand it to a different real path (`~root` → `/var/root`,
+ *     `~+` → `$PWD`, `~-` → `$OLDPWD`).
+ *   - Shell-expansion syntax: `$VAR`/`${VAR}`/`$(cmd)` (Unix), `%VAR%` (Windows),
+ *     or a leading `=` (zsh equals-expansion, e.g. `=rg` → `/usr/bin/rg`).
+ *
+ * Returns a human-readable reason string when the path must be rejected, or
+ * `null` when it is safe to resolve. Mirrors Claude Code's `validatePath` tilde-
+ * variant / shell-expansion guards (permissions/pathValidation.ts).
+ *
+ * [FUNCTIONAL CHANGE] New exported validator consumed by the file-tool path
+ * guard (`tool-utils.validateFilePath`).
+ */
+export function validatePathExpansionSafety(filePath: string): string | null {
+  if (typeof filePath !== 'string') return null;
+  // A tilde that is NOT the bare `~`, `~/…` or `~\…` form expandPath handles.
+  if (/^~[^/\\]/.test(filePath)) {
+    return 'Tilde expansion variants (~user, ~+, ~-) in paths are not allowed; specify an explicit path.';
+  }
+  if (filePath.includes('$') || filePath.includes('%') || filePath.startsWith('=')) {
+    return 'Shell expansion syntax ($, %, or a leading =) in paths is not allowed; specify an explicit path.';
+  }
+  return null;
+}
+
+/**
  * Converts an absolute path to a relative path if it is within cwd.
  * Otherwise returns the absolute path unchanged.
+ *
+ * `cwd` is optional and defaults to `process.cwd()`, matching Claude Code's
+ * single-argument `toRelativePath(absolutePath)` (callers that already thread an
+ * explicit cwd keep passing it).
  */
-export function toRelativePath(filePath: string, cwd: string): string {
+export function toRelativePath(filePath: string, cwd: string = process.cwd()): string {
   const resolved = expandPath(filePath, cwd);
   const normalizedCwd = path.normalize(cwd).normalize('NFC');
 
@@ -182,8 +248,12 @@ export function stripTrailingSep(p: string): string {
  * the boundary. Previously `isDescendant('/a/b', '/a/b/')` returned false.
  */
 function isDescendant(child: string, parent: string): boolean {
-  const normalizedParent = stripTrailingSep(parent);
-  const normalizedChild = stripTrailingSep(child);
+  // Case-fold both sides on case-insensitive filesystems so a path whose casing
+  // (including the Windows drive letter) differs from the recorded boundary is
+  // still recognized as inside it — otherwise a genuinely-contained path is
+  // spuriously rejected on Windows/macOS and mis-drives permission/scope checks.
+  const normalizedParent = normalizeCaseForComparison(stripTrailingSep(parent));
+  const normalizedChild = normalizeCaseForComparison(stripTrailingSep(child));
   // Ensure trailing separator so "/home/user2" is not matched by "/home/user"
   const parentPrefix = normalizedParent.endsWith(path.sep)
     ? normalizedParent
