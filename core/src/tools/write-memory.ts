@@ -84,8 +84,12 @@ export const writeMemoryTool: ToolDefinition = {
     const scope: MemoryScope =
       rawScope && (MEMORY_SCOPES as readonly string[]).includes(rawScope) ? (rawScope as MemoryScope) : 'private';
 
-    const savedPath = new MemoryManager(context.cwd).saveMemory(name, content, description, type, scope);
+    // Two-step save (addToIndex=true): persist the topic file AND append a
+    // one-line pointer to the memory directory's MEMORY.md index, matching Claude
+    // Code's two-step memory-write pattern so the always-loaded index stays in
+    // sync with what was written.
+    const savedPath = new MemoryManager(context.cwd).saveMemory(name, content, description, type, scope, true);
     const meta = type ? `${scope}, type: ${type}` : scope;
-    return { output: `Saved memory "${name}" (${meta}) to ${savedPath}. View with /memory.` };
+    return { output: `Saved memory "${name}" (${meta}) to ${savedPath} and indexed it in MEMORY.md. View with /memory.` };
   },
 };

@@ -248,6 +248,22 @@ const BEFORE_RECOMMENDING_GUIDANCE = [
 ].join('\n');
 
 /**
+ * `### Memory and other forms of persistence` block (Claude Code
+ * memdir/memdir.ts `buildMemoryLines` + teamMemPrompts.ts). Memory is for
+ * information useful in FUTURE conversations; a Plan (reaching alignment on a
+ * non-trivial approach) and Tasks (breaking the current conversation's work into
+ * steps / tracking progress) are for the CURRENT conversation. This steers the
+ * model away from polluting durable memory with ephemeral approach/progress
+ * state and toward AMI's plan-mode / task surfaces instead.
+ */
+const PERSISTENCE_GUIDANCE = [
+  '### Memory and other forms of persistence',
+  'Memory is one of several persistence mechanisms. The distinction: memory is recalled in FUTURE conversations and must not hold information only useful within the CURRENT conversation.',
+  '- Use (or update) a **plan** instead of memory when you are about to start a non-trivial implementation and want to align on the approach, or when your approach changes mid-task — update the plan, do not save the change to memory.',
+  '- Use (or update) **tasks** instead of memory to break the current conversation into discrete steps and track progress. Tasks persist work for THIS conversation; memory is reserved for what will still be useful in future ones.',
+].join('\n');
+
+/**
  * Frontmatter example with the body-structure scaffold (Claude Code
  * `MEMORY_FRONTMATTER_EXAMPLE`) — shows the model the exact shape of a good
  * saved memory, including the **Why:** / **How to apply:** body scaffolding for
@@ -752,6 +768,20 @@ function buildFrontmatter(
   return `---\nname: ${sanitizeFrontmatterValue(name)}\ndescription: ${sanitizeFrontmatterValue(description)}\ntype: ${memoryType}\nmodified: ${modified}\n---\n`;
 }
 
+/**
+ * Pure index-append rule shared by every MEMORY.md writer (the two-step
+ * {@link MemoryManager.saveMemory} and {@link MemoryManager.addToMemoryIndex}).
+ * Given the existing index text and a one-line pointer entry, returns the new
+ * index content — or `null` when the entry is already present (dedup: never
+ * double-write the same pointer). Keeping this as a single canonical rule
+ * prevents the two writers from drifting into two subtly different append
+ * behaviors.
+ */
+export function computeIndexAppend(existing: string, entry: string): string | null {
+  if (existing.includes(entry)) return null;
+  return existing.trimEnd() + '\n' + entry + '\n';
+}
+
 /** Per-file upper bound when scanning the memory dir: a single runaway file must
  *  not be slurped whole into the context/scan. */
 const MAX_MEMORY_FILE_BYTES = 256 * 1024;
@@ -1123,6 +1153,14 @@ export class MemoryManager {
    * @param memoryType - Memory type category (defaults to 'project')
    * @param scope - Storage scope (defaults to 'private'); 'team' routes the file
    *                into the shared `team/` sub-directory read by {@link loadTeamMemories}.
+   * @param addToIndex - When true, perform Claude Code's TWO-STEP save: after
+   *                writing the topic file, also append a one-line pointer
+   *                (`- [name](file.md) — description`) to the memory directory's
+   *                `MEMORY.md` index (parity with memdir.ts's two-step pattern +
+   *                extractMemories' `skipIndex` option, inverted). Defaults to
+   *                false so internal single-step callers (e.g. task-result dumps)
+   *                do not clutter the human-facing index; the model-facing
+   *                write_memory tool opts in for full two-step parity.
    * @returns The absolute path of the written memory file.
    */
   saveMemory(
@@ -1131,6 +1169,7 @@ export class MemoryManager {
     description?: string,
     memoryType?: MemoryType,
     scope: MemoryScope = 'private',
+    addToIndex: boolean = false,
   ): string {
     // Route by scope: private memories live at the auto-memory root; team
     // memories live in the shared `team/` sub-directory (the one loadTeamMemories
@@ -1156,6 +1195,25 @@ export class MemoryManager {
     const fileContent = `${frontmatter}\n${redactCredentials(content)}\n`;
 
     fs.writeFileSync(filePath, fileContent, 'utf-8');
+
+    // Step 2 of the two-step save: append a one-line pointer to the always-loaded
+    // MEMORY.md index at the auto-memory root (a single index may point into the
+    // team/ subtree via a relative path). The index is a table of contents, never
+    // a memory body — see TWO_STEP_SAVE_GUIDANCE. Dedup + append are the shared
+    // computeIndexAppend rule so this never drifts from addToMemoryIndex.
+    if (addToIndex) {
+      const relFile = scope === 'team' ? `team/${filename}` : filename;
+      const entry = `- [${name}](${relFile}) — ${desc}`;
+      const indexPath = path.join(baseDir, MEMORY_INDEX_FILENAME);
+      let existing = '';
+      try { existing = fs.readFileSync(indexPath, 'utf-8'); } catch { /* no index yet */ }
+      const next = computeIndexAppend(existing, entry);
+      if (next !== null) {
+        fs.mkdirSync(baseDir, { recursive: true });
+        fs.writeFileSync(indexPath, next, 'utf-8');
+      }
+    }
+
     return filePath;
   }
 
@@ -1241,6 +1299,13 @@ export class MemoryManager {
       return sections.join('\n\n');
     }
 
+    // Whether any instruction content precedes the memory system. Used to decide
+    // whether to surface the empty-memory affordance (below): a project that has
+    // instructions but no memories yet should still learn that a persistent
+    // memory system exists, while a completely blank context stays empty so
+    // getMemoryContext's "no content ⇒ empty string" contract is preserved.
+    const hasInstructionContent = sections.length > 0;
+
     const memories = this.loadMemories();
     if (memories.length > 0) {
       // When the combined stored-memory bodies exceed the caller's inline budget,
@@ -1285,6 +1350,20 @@ export class MemoryManager {
       sections.push(`## Team Memories\n\n${teamMemories.join('\n\n')}`);
     }
 
+    // Empty-memory affordance (parity with Claude Code's buildMemoryPrompt
+    // `## MEMORY.md … currently empty` branch): when the project already has
+    // instruction context but no stored/team memories yet, tell the model the
+    // persistent memory system exists and is simply empty, so it knows it can
+    // write to it — rather than giving zero signal on a fresh memory store. A
+    // fully-blank context (no instructions either) stays empty to preserve the
+    // "no content ⇒ empty string" contract.
+    if (hasInstructionContent && memories.length === 0 && teamMemories.length === 0) {
+      sections.push(
+        `## ${MEMORY_INDEX_FILENAME}\n\n` +
+        `Your ${MEMORY_INDEX_FILENAME} is currently empty. When you save new memories, they will appear here.`,
+      );
+    }
+
     // Oversized-memory-file diagnostic: flag (never silently clip) any stored
     // memory file over the recommended cap so the user can split/trim it.
     const large = this.getLargeMemoryFiles();
@@ -1326,6 +1405,8 @@ ${WHEN_TO_ACCESS_GUIDANCE}
 ${this.buildSearchingPastContextSection()}
 
 ${BEFORE_RECOMMENDING_GUIDANCE}
+
+${PERSISTENCE_GUIDANCE}
 
 ### Saving a memory
 Lead feedback/project memories with the rule/fact, then a **Why:** line and a **How to apply:** line. Use this frontmatter:
@@ -1764,9 +1845,9 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
       await fsp.mkdir(path.dirname(indexPath), { recursive: true });
       let content = '';
       try { content = await fsp.readFile(indexPath, 'utf-8'); } catch { /* file doesn't exist */ }
-      if (!content.includes(entry)) {
-        content = content.trimEnd() + '\n' + entry + '\n';
-        await fsp.writeFile(indexPath, content, 'utf-8');
+      const next = computeIndexAppend(content, entry);
+      if (next !== null) {
+        await fsp.writeFile(indexPath, next, 'utf-8');
       }
     } catch { /* best effort */ }
   }
