@@ -253,6 +253,8 @@ export { WorkflowRuntime, executeWorkflow, parseWorkflowMeta } from './workflow-
 export type { WorkflowMeta, AgentHandler, AgentOptions, WorkflowBudget, WorkflowContext, WorkflowResolver } from './workflow-runtime';
 export { parseBashAST, extractCommands, extractCommandsFromString, PARSE_ABORTED, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes, resolveShellWord } from './bash-parser';
 export type { CommandNode, ParseBudget, OutputRedirection } from './bash-parser';
+export { parseSedEditCommand, applySedSubstitution } from './bash-sed-parser';
+export type { SedEditInfo } from './bash-sed-parser';
 export {
   parsePowerShellCommand,
   getParseTimeoutMs,
