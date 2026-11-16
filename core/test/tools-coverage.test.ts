@@ -2513,7 +2513,7 @@ describe('configTool — coverage', () => {
 describe('createMcpTool — coverage', () => {
   it('creates tool with correct normalized name', () => {
     const tool = createMcpTool('my-server', 'my-tool', 'Does things', { type: 'object', properties: {} });
-    assert.equal(tool.name, 'mcp__my_server__my_tool');
+    assert.equal(tool.name, 'mcp__my-server__my-tool');
     assert.ok(tool.description.includes('[MCP:my-server]'));
     assert.ok(tool.description.includes('Does things'));
   });
@@ -2771,7 +2771,7 @@ describe('readMcpResourceTool — coverage', () => {
 describe('createMcpAuthTool — coverage', () => {
   it('creates auth tool with correct normalized name and side-effect capabilities', () => {
     const tool = createMcpAuthTool('my-server', { transport: 'http' });
-    assert.equal(tool.name, 'mcp__my_server__authenticate');
+    assert.equal(tool.name, 'mcp__my-server__authenticate');
     assert.ok(tool.description.includes('my-server'));
     // Side-effecting + interactive: must not be read-only or concurrency-safe.
     assert.equal(tool.isReadOnly, false);

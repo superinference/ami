@@ -34,12 +34,22 @@ describe('normalizeMcpNameSegment — delimiter protection', () => {
     assert.equal(normalizeMcpNameSegment('nmap_scan'), 'nmap_scan');
     assert.equal(normalizeMcpNameSegment('kali'), 'kali');
   });
+
+  it('preserves hyphens (API pattern ^[a-zA-Z0-9_-]{1,64}$) instead of collapsing them to `_`', () => {
+    // Parity: hyphens are valid in MCP server/tool names; keep them so the
+    // normalized segment stays faithful to the user's configured name.
+    assert.equal(normalizeMcpNameSegment('my-server'), 'my-server');
+    assert.equal(normalizeMcpNameSegment('context-7'), 'context-7');
+    // Only non-[a-zA-Z0-9_-] characters are replaced; hyphens survive alongside.
+    assert.equal(normalizeMcpNameSegment('my-server.v2'), 'my-server_v2');
+  });
 });
 
 describe('qualifiedMcpToolName — hardened normalization', () => {
-  it('strips the trailing underscore a special char used to leave', () => {
+  it('strips the trailing underscore a special char used to leave (hyphens preserved)', () => {
     // Previously `do/thing!` -> `do_thing_`; the edge underscore is now stripped.
-    assert.equal(qualifiedMcpToolName('my-server.v2', 'do/thing!'), 'mcp__my_server_v2__do_thing');
+    // The server's hyphen is preserved (only `.` becomes `_`): `my-server.v2` -> `my-server_v2`.
+    assert.equal(qualifiedMcpToolName('my-server.v2', 'do/thing!'), 'mcp__my-server_v2__do_thing');
   });
 
   it('cannot produce a spurious `__` inside a segment (round-trips to one server)', () => {

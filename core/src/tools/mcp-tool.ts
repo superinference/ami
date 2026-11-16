@@ -35,15 +35,21 @@ function shortHash(s: string): string {
 /** Normalize a single MCP name segment (a server name or a tool name) so it is
  *  safe to embed between the `__` delimiters of a qualified MCP tool name.
  *
- *  Illegal characters are replaced with `_`, then runs of underscores are
- *  collapsed and leading/trailing underscores stripped — explicitly so a segment
- *  can never introduce a spurious `__` that would collide with the delimiter used
- *  to separate `mcp`, the server, and the tool (which would corrupt prefix-based
- *  permission/auto-allow matching and the inverse parser). Mirrors Claude Code's
- *  `normalizeNameForMCP` (services/mcp/normalization.ts). */
+ *  Only characters OUTSIDE the API-compatible class `[a-zA-Z0-9_-]` are replaced
+ *  with `_` — hyphens are PRESERVED so the normalized segment matches the server
+ *  name pattern `^[a-zA-Z0-9_-]{1,64}$` and stays faithful to the user's actual
+ *  server/tool name (FUNCTIONAL FIX, parity: AMI previously collapsed hyphens to
+ *  underscores, so a `my-server` config surfaced as `mcp__my_server__…`, which did
+ *  not match the name the user configured; Claude Code's `normalizeNameForMCP`
+ *  preserves hyphens). Runs of underscores are then collapsed and leading/trailing
+ *  underscores stripped — explicitly so a segment can never introduce a spurious
+ *  `__` that would collide with the delimiter used to separate `mcp`, the server,
+ *  and the tool (which would corrupt prefix-based permission/auto-allow matching
+ *  and the inverse parser). Mirrors Claude Code's `normalizeNameForMCP`
+ *  (services/mcp/normalization.ts). */
 export function normalizeMcpNameSegment(name: string): string {
   return name
-    .replace(/[^a-zA-Z0-9_]/g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_|_$/g, '');
 }

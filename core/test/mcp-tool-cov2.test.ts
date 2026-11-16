@@ -88,7 +88,7 @@ describe('qualifiedMcpToolName', () => {
     // underscores (delimiter protection), so a trailing special char no longer
     // leaves a trailing `_`.
     const name = qualifiedMcpToolName('my-server.v2', 'do/thing!');
-    assert.equal(name, 'mcp__my_server_v2__do_thing');
+    assert.equal(name, 'mcp__my-server_v2__do_thing');
   });
 
   it('keeps names at or under the limit intact', () => {

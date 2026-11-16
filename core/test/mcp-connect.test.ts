@@ -21,9 +21,14 @@ describe('createMcpConnectTool', () => {
     assert.equal(tool.name, 'mcp__kali__connect');
   });
 
-  it('normalizes server name in tool name', () => {
+  it('normalizes server name in tool name (hyphens preserved for API-pattern parity)', () => {
     const tool = createMcpConnectTool('my-server', 'Test');
-    assert.equal(tool.name, 'mcp__my_server__connect');
+    assert.equal(tool.name, 'mcp__my-server__connect');
+  });
+
+  it('replaces illegal characters while preserving hyphens', () => {
+    const tool = createMcpConnectTool('my-server.v2', 'Test');
+    assert.equal(tool.name, 'mcp__my-server_v2__connect');
   });
 
   it('includes description about connecting', () => {

@@ -117,7 +117,7 @@ describe('createMcpConnectTool', () => {
     assert.equal(res.isError, true);
     assert.equal(res.metadata?.status, 'needs-auth');
     assert.match(res.output, /requires authentication/);
-    assert.match(res.output, /mcp__secure_svc__authenticate/);
+    assert.match(res.output, /mcp__secure-svc__authenticate/);
   });
 });
 
