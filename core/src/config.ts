@@ -4,6 +4,7 @@ import { log as coreLog } from './logger';
 import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
 import { validateEngineConfig, type EngineConfig } from './types';
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
+import { levenshteinDistance } from './tools/path-suggest';
 
 /**
  * Project-level configuration that can be stored in
@@ -287,18 +288,40 @@ function assertTrustedManagedFile(configPath: string): void {
   }
 }
 
-/** Read + JSON-parse a managed file, failing closed on any read/parse error. */
+/**
+ * Read + JSON-parse a managed file, failing closed on an untrusted source, an
+ * unreadable file, a JSON syntax error, or a non-object payload. A present-but-
+ * valid file is value-SALVAGED ({@link salvageManagedConfig}): each individual
+ * field whose value is invalid is dropped (logged) while the valid remainder is
+ * kept, so one bad enum/typed field never rejects the whole enterprise policy.
+ */
 function parseManagedFile(configPath: string): ProjectConfig {
   // Tamper-resistance: refuse a symlinked or group/world-writable managed-policy
   // file before trusting its contents (fail-closed on an untrusted source).
   assertTrustedManagedFile(configPath);
+  let raw: string;
   try {
-    const raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
-    return JSON.parse(stripJsoncComments(stripBom(raw))) as ProjectConfig;
+    raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
   } catch (err) {
-    // A broken enterprise policy must fail closed, not be silently ignored.
-    throw new ManagedConfigError(`Managed config at ${configPath} failed to parse: ${err instanceof Error ? err.message : String(err)}`);
+    // An unreadable present file (EACCES/EIO) must fail closed, not be ignored.
+    throw new ManagedConfigError(`Managed config at ${configPath} could not be read: ${err instanceof Error ? err.message : String(err)}`);
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsoncComments(stripBom(raw)));
+  } catch (err) {
+    // A broken enterprise policy must fail closed, with the SAME actionable JSON
+    // syntax-recovery hint AMI surfaces for user/project config (one shared source)
+    // instead of a bare parser message. Parity: Claude's root-level JSON syntax tip.
+    throw new ManagedConfigError(`Managed config at ${configPath} failed to parse: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`);
+  }
+  // Managed policy must be a JSON object — an array/primitive at the root is a
+  // malformed policy, not an empty one; fail closed rather than cast it blindly.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ManagedConfigError(`Managed config at ${configPath} is not a JSON object (got ${describeJsonType(parsed)}).`);
+  }
+  // Per-field salvage: drop invalid individual values, keep the valid remainder.
+  return salvageManagedConfig(parsed as ProjectConfig, configPath);
 }
 
 /** Merge one managed drop-in over an accumulated base (later wins; env key-merges). */
@@ -443,6 +466,31 @@ export function findUnknownConfigKeys(config: ProjectConfig): string[] {
 }
 
 /**
+ * Suggest the nearest recognized {@link KNOWN_CONFIG_KEYS} entry for a likely-typo
+ * `key`, or `undefined` when nothing is close enough. Reuses the ONE canonical
+ * edit-distance primitive ({@link levenshteinDistance}) — no parallel fuzzy matcher.
+ * An exact known key gets no suggestion. Otherwise a suggestion is offered only for
+ * a genuine near-miss: a case-insensitive edit distance within `min(3, max(1,
+ * ceil(len/3)))` — tolerant enough for a transposition (`"modle"`→`"model"`, dist 2)
+ * or a wrong case (`"StatusLine"`→`"statusLine"`, dist 0) yet capped at 3 so an
+ * unrelated long key never matches. Parity: Claude Code's `ValidationErrorsList`
+ * "did you mean" hint for an unrecognized settings key — AMI previously surfaced
+ * this only for slash-command / `/config` key names, never for config-file keys.
+ */
+export function suggestKnownConfigKey(key: string): string | undefined {
+  if (KNOWN_CONFIG_KEYS.has(key)) return undefined;
+  const lower = key.toLowerCase();
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const known of KNOWN_CONFIG_KEYS) {
+    const d = levenshteinDistance(lower, known.toLowerCase());
+    if (d < bestDist) { bestDist = d; best = known; }
+  }
+  const threshold = Math.min(3, Math.max(1, Math.ceil(key.length / 3)));
+  return best !== undefined && bestDist <= threshold ? best : undefined;
+}
+
+/**
  * True when `value` matches the expected {@link ConfigFieldType}. Numbers must be
  * finite (an out-of-range literal is not a usable knob); arrays must be homogeneously
  * `string[]`; objects exclude `null` and arrays.
@@ -549,6 +597,47 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
 }
 
 /**
+ * Validate the VALUES of a managed/enterprise config and SALVAGE it: drop each
+ * field whose value fails {@link validateProjectConfigValues} (logging a per-field,
+ * source-tagged warning) while keeping the valid remainder, instead of either
+ * trusting a bad value or rejecting the entire managed policy. A nested flag issue
+ * (e.g. `superinference.enforcing`) drops only that flag, not the whole object.
+ * Unknown/future top-level keys are left untouched (ignored on merge) so a newer
+ * client's policy key never degrades the file — forwards-compatible fail-safe
+ * degradation: an invalid single field degrades to "not applied" (less locked),
+ * never nulls the whole file.
+ *
+ * Parity: Claude's `parseCommandOutputAsSettings` — `filterInvalidPermissionRules`
+ * keeps the valid remainder of a managed policy, per-field `.catch(undefined)`
+ * degrades one bad value to undefined, and `formatZodError` tags each message with
+ * its source path. Reuses the ONE canonical value validator (no parallel schema).
+ */
+export function salvageManagedConfig(config: ProjectConfig, sourcePath: string): ProjectConfig {
+  const issues = validateProjectConfigValues(config);
+  if (issues.length === 0) return config;
+  const salvaged: ProjectConfig = { ...config };
+  for (const issue of issues) {
+    const dot = issue.field.indexOf('.');
+    if (dot > 0) {
+      const top = issue.field.slice(0, dot) as keyof ProjectConfig;
+      const nested = issue.field.slice(dot + 1);
+      const obj = salvaged[top];
+      if (obj !== null && typeof obj === 'object' && !Array.isArray(obj)) {
+        // Clone the nested object before mutating so the caller's parsed value is
+        // not aliased, then drop just the invalid nested flag.
+        const copy = { ...(obj as Record<string, unknown>) };
+        delete copy[nested];
+        (salvaged as Record<string, unknown>)[top as string] = copy;
+      }
+    } else {
+      delete salvaged[issue.field as keyof ProjectConfig];
+    }
+    coreLog('config', `managed config at ${sourcePath}: dropped invalid ${issue.field} (${issue.message})`);
+  }
+  return salvaged;
+}
+
+/**
  * Back up a corrupt config file so the user's content is never silently lost.
  * Returns the backup path, or null if the backup itself failed.
  */
@@ -645,7 +734,14 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
   // Claude Code warns on unrecognized settings keys.
   const unknownKeys = findUnknownConfigKeys(config);
   if (unknownKeys.length > 0) {
-    const message = `${unknownKeys.length} unknown config key(s): ${unknownKeys.join(', ')}`;
+    // Attach a "did you mean X?" near-match suggestion per unknown key so a typo
+    // (e.g. "modle") is self-correctable, not merely flagged. Parity: Claude's
+    // ValidationErrorsList actionable-fix suggestion for an unrecognized key.
+    const described = unknownKeys.map(k => {
+      const suggestion = suggestKnownConfigKey(k);
+      return suggestion ? `${k} (did you mean "${suggestion}"?)` : k;
+    });
+    const message = `${unknownKeys.length} unknown config key(s): ${described.join(', ')}`;
     coreLog('config', `unknown key(s) in ${configPath}: ${message}`);
     return { config, diagnostic: { path: configPath, kind: 'unknown-key', message, unknownKeys } };
   }
@@ -674,6 +770,21 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
     const { diagnostic } = loadConfigFileChecked(p);
     if (diagnostic) {
       diagnostics.push({ ...diagnostic, backupPath: diagnostic.backupPath ?? findMostRecentBackup(p) ?? undefined });
+    }
+  }
+  // Managed/enterprise tier (fail-open VISIBILITY): a broken managed policy fails
+  // CLOSED at load (an untrusted source — symlink redirect / world-writable file —
+  // an unreadable file, a JSON syntax error, or a non-object payload all throw
+  // {@link ManagedConfigError}), so it is normally invisible to /doctor. Surface it
+  // HERE alongside the user/project/local diagnostics so an invalid security-bearing
+  // policy file is reported across EVERY source, never silently ignored. Parity:
+  // Claude's buildInstallationHealthDiagnostics aggregating invalid settings across
+  // managed + user + project + local. A clean/absent managed policy adds nothing.
+  try {
+    loadManagedConfig();
+  } catch (err) {
+    if (err instanceof ManagedConfigError) {
+      diagnostics.push({ path: getManagedConfigPath(), kind: 'unreadable', message: err.message });
     }
   }
   return diagnostics;
