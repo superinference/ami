@@ -30,10 +30,13 @@ const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024; // 20 MB
 /**
  * Max pages in a PDF accepted for a FULL (un-ranged) read. A document larger than
  * this would dump an unbounded amount of text into context, so the model must use
- * the `pages` parameter to extract a specific range instead. Mirrors Claude Code's
+ * the `pages` parameter to extract a specific range instead. Re-exported from the
+ * shared {@link module:media-limits} so the tool guard and the error classifier
+ * share ONE canonical page ceiling (no drift). Mirrors Claude Code's
  * API_PDF_MAX_PAGES (constants/apiLimits.ts).
  */
-export const API_PDF_MAX_PAGES = 100;
+export { API_PDF_MAX_PAGES } from '../media-limits';
+import { API_PDF_MAX_PAGES } from '../media-limits';
 /** Max PDF pages to render to images when falling back to pdftoppm (context guard). */
 const MAX_PDF_RENDER_PAGES = 10;
 

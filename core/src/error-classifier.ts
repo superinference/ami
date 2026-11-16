@@ -12,6 +12,8 @@
 
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 import { classifyZdrError } from './openrouter-zdr';
+import { formatFileSize } from './utils/format';
+import { API_PDF_MAX_PAGES, PDF_TARGET_RAW_SIZE } from './media-limits';
 
 /**
  * Walk an error's `.cause` chain (depth-limited, loop-guarded) and return the
@@ -131,6 +133,32 @@ export interface ClassifiedError {
    * reactive compaction jump past multiple groups in one retry.
    */
   tokenGap?: number;
+  /**
+   * For context_overflow: the actual prompt token count the server reported
+   * (the `N` in "N tokens > M maximum"), when parseable. Surfaced so callers and
+   * the user-facing message can show the exact overflow, not just "too long".
+   */
+  actualTokens?: number;
+  /**
+   * For context_overflow: the server-reported token limit (the `M` in
+   * "N tokens > M maximum"), when parseable.
+   */
+  limitTokens?: number;
+}
+
+/**
+ * Parsed token fields (gap + actual/limit) for a context-overflow error, with
+ * only the keys that could be parsed present. Shared by every context_overflow
+ * classification branch so the structured counts stay consistent.
+ */
+function overflowTokenFields(raw: string): Pick<ClassifiedError, 'tokenGap' | 'actualTokens' | 'limitTokens'> {
+  const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(raw);
+  const fields: Pick<ClassifiedError, 'tokenGap' | 'actualTokens' | 'limitTokens'> = {};
+  const gap = getPromptTooLongTokenGap(raw);
+  if (gap !== undefined) fields.tokenGap = gap;
+  if (actualTokens !== undefined) fields.actualTokens = actualTokens;
+  if (limitTokens !== undefined) fields.limitTokens = limitTokens;
+  return fields;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +345,148 @@ export function isToolPairingError(lowerMsg: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Model refusal / content-filter (AUP) — stop_reason 'refusal'
+// ---------------------------------------------------------------------------
+
+/** Usage-policy URL cited in a refusal notice. */
+export const AUP_POLICY_URL = 'https://www.anthropic.com/legal/aup';
+
+/**
+ * Model this provider's refusals suggest switching to. A refusal is often
+ * model-specific, so pointing the user at a known-good model is the fastest
+ * recovery. Mirrors Claude's getErrorMessageIfRefusal model-switch affordance.
+ */
+export const REFUSAL_FALLBACK_MODEL = 'claude-sonnet-4-5';
+
+/**
+ * Build the actionable user-facing notice for a model refusal / content-filter
+ * stop reason (the API returned `stop_reason: 'refusal'`, surfaced by the SDK as
+ * `finishReason: 'content-filter'`). Explains it is an AUP/policy decision (not a
+ * transient error), tells the user how to proceed, and — unless already on the
+ * suggested model — names a `/model` switch to try. The wording adapts to
+ * non-interactive (detached) sessions, which cannot "press esc to edit".
+ * Mirrors Claude Code's `getErrorMessageIfRefusal`.
+ */
+export function getRefusalMessage(model: string, nonInteractive = false): string {
+  const base = nonInteractive
+    ? `The model refused this request, which appears to violate the provider's usage policy (${AUP_POLICY_URL}). Rephrase the request or try a different approach.`
+    : `The model refused this request, which appears to violate the provider's usage policy (${AUP_POLICY_URL}). Edit your last message or start a new session to continue with a different task.`;
+  const suggestion = typeof model === 'string' && model !== REFUSAL_FALLBACK_MODEL
+    ? ` If you see this refusal repeatedly, run /model ${REFUSAL_FALLBACK_MODEL} to switch models.`
+    : '';
+  return base + suggestion;
+}
+
+// ---------------------------------------------------------------------------
+// Per-model-family fallback suggestion — name a concrete model to switch to
+// ---------------------------------------------------------------------------
+
+/**
+ * Suggest a concrete fallback model when the selected one is unavailable
+ * (404 model-not-found), mapping each model family to its previous generation so
+ * a deployment that lacks the newest model still has a working option. Returns
+ * undefined when there is no sensible suggestion (the caller then falls back to
+ * generic "/model to pick another"). Mirrors Claude's get3PModelFallbackSuggestion
+ * family→previous-version chain.
+ */
+export function suggestFallbackModel(model: string): string | undefined {
+  if (typeof model !== 'string') return undefined;
+  const m = model.toLowerCase();
+  if (m.includes('opus-4-6') || m.includes('opus_4_6')) return 'claude-opus-4-1';
+  if (m.includes('opus-4-5') || m.includes('opus_4_5')) return 'claude-opus-4-1';
+  if (m.includes('sonnet-4-6') || m.includes('sonnet_4_6')) return 'claude-sonnet-4-5';
+  if (m.includes('sonnet-4-5') || m.includes('sonnet_4_5')) return 'claude-sonnet-4';
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Media-size rejections — actionable PDF / image / request-too-large messages
+// ---------------------------------------------------------------------------
+
+/**
+ * Is this raw API error text a media-size rejection (oversized/invalid PDF or
+ * image, or a request that exceeds the raw payload ceiling)? Used both to decide
+ * whether stripping media and retrying can help and to dispatch a per-variant
+ * actionable message. Mirrors Claude's `isMediaSizeError`, broadened to the PDF
+ * password/invalid variants that share the same recovery path. Case-insensitive.
+ */
+export function isMediaSizeError(raw: string): boolean {
+  const r = typeof raw === 'string' ? raw.toLowerCase() : '';
+  if (!r) return false;
+  return (
+    (r.includes('image exceeds') && r.includes('maximum')) ||
+    r.includes('image dimensions exceed') ||
+    /maximum of \d+ pdf pages/.test(r) ||
+    r.includes('pdf is too large') || r.includes('pdf too large') ||
+    r.includes('password protected') || r.includes('password-protected') ||
+    (r.includes('pdf') && (r.includes('not valid') || r.includes('invalid') || r.includes('could not be parsed'))) ||
+    r.includes('image was too large') || r.includes('image is too large') || r.includes('image too large') ||
+    r.includes('request too large') || r.includes('request is too large') || r.includes('request exceeds')
+  );
+}
+
+function pdfLimitsBlurb(): string {
+  return `max ${API_PDF_MAX_PAGES} pages, ${formatFileSize(PDF_TARGET_RAW_SIZE)}`;
+}
+
+/** "PDF too large" guidance (pages + size ceiling), interactive/non-interactive aware. */
+export function getPdfTooLargeErrorMessage(nonInteractive = false): string {
+  const limits = pdfLimitsBlurb();
+  return nonInteractive
+    ? `PDF too large (${limits}). Try reading the file a different way (e.g. extract text with pdftotext).`
+    : `PDF too large (${limits}). Edit your message and try again, or use pdftotext to convert it to text first.`;
+}
+
+/** Password-protected PDF guidance. */
+export function getPdfPasswordProtectedErrorMessage(nonInteractive = false): string {
+  return nonInteractive
+    ? 'PDF is password protected. Use a CLI tool to extract or convert the PDF first.'
+    : 'PDF is password protected. Edit your message and try again with an unprotected copy.';
+}
+
+/** Invalid/corrupt PDF guidance. */
+export function getPdfInvalidErrorMessage(nonInteractive = false): string {
+  return nonInteractive
+    ? 'The PDF file was not valid. Convert it to text first (e.g. pdftotext).'
+    : 'The PDF file was not valid. Edit your message and try again with a different file.';
+}
+
+/** Oversized image guidance. */
+export function getImageTooLargeErrorMessage(nonInteractive = false): string {
+  return nonInteractive
+    ? 'Image was too large. Resize the image or use a different approach.'
+    : 'Image was too large. Edit your message and try again with a smaller image.';
+}
+
+/** Oversized request-payload guidance (size ceiling), interactive/non-interactive aware. */
+export function getRequestTooLargeErrorMessage(nonInteractive = false): string {
+  const limits = `max ${formatFileSize(PDF_TARGET_RAW_SIZE)}`;
+  return nonInteractive
+    ? `Request too large (${limits}). Try again with a smaller file.`
+    : `Request too large (${limits}). Edit your message and try again with a smaller file.`;
+}
+
+/**
+ * Dispatch the correct actionable media-size message for a raw error, in
+ * specificity order (password → invalid → PDF-too-large → image → request).
+ * Returns undefined when the text is not a media-size rejection, so callers can
+ * fall through. Centralizes the per-variant wording so no call site re-derives it.
+ */
+export function getMediaSizeErrorMessage(raw: string, nonInteractive = false): string | undefined {
+  const r = typeof raw === 'string' ? raw.toLowerCase() : '';
+  if (!isMediaSizeError(r)) return undefined;
+  if (r.includes('password')) return getPdfPasswordProtectedErrorMessage(nonInteractive);
+  if (r.includes('pdf') && (r.includes('not valid') || r.includes('invalid') || r.includes('could not be parsed'))) {
+    return getPdfInvalidErrorMessage(nonInteractive);
+  }
+  if (/maximum of \d+ pdf pages/.test(r) || r.includes('pdf is too large') || r.includes('pdf too large')) {
+    return getPdfTooLargeErrorMessage(nonInteractive);
+  }
+  if (r.includes('image')) return getImageTooLargeErrorMessage(nonInteractive);
+  return getRequestTooLargeErrorMessage(nonInteractive);
+}
+
+// ---------------------------------------------------------------------------
 // SDK typed-error fast path — classify by error class + status code
 // ---------------------------------------------------------------------------
 
@@ -370,7 +540,7 @@ function classifySDKError(error: Error): ClassifiedError | null {
       case 429:
         return { category: 'rate_limited', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
       case 413:
-        return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false, tokenGap: getPromptTooLongTokenGap(msg) };
+        return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false, ...overflowTokenFields(msg) };
       case 400:
         // 400 from corrupted tool_use/tool_result pairing — retrying the same
         // history loops; the user must /rewind. Checked before the gateway/
@@ -391,7 +561,7 @@ function classifySDKError(error: Error): ClassifiedError | null {
             lowerMsg.includes('token count') ||
             lowerMsg.includes('prompt_too_long') || lowerMsg.includes('prompt is too long') || lowerMsg.includes('input is too long') ||
             lowerMsg.includes('reduce the length')) {
-          return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false, tokenGap: getPromptTooLongTokenGap(msg) };
+          return { category: 'context_overflow', message: msg, retryable: true, shouldCompact: true, shouldFallback: false, ...overflowTokenFields(msg) };
         }
         return null; // fall through to regex
       case 500:
@@ -543,7 +713,7 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
     lower.includes('too many tokens') ||
     lower.includes('reduce the length')
   ) {
-    return { category: 'context_overflow', message: errorString, retryable: true, shouldCompact: true, shouldFallback: false, tokenGap: getPromptTooLongTokenGap(errorString) };
+    return { category: 'context_overflow', message: errorString, retryable: true, shouldCompact: true, shouldFallback: false, ...overflowTokenFields(errorString) };
   }
 
   // Output too large — retryable (the engine can request fewer output tokens)
@@ -732,12 +902,20 @@ export function getSSLErrorHint(message: string): string {
   return FRIENDLY_MESSAGES.ssl_error!;
 }
 
-export function friendlyErrorMessage(classified: ClassifiedError): string {
+export function friendlyErrorMessage(
+  classified: ClassifiedError,
+  opts?: { model?: string; nonInteractive?: boolean },
+): string {
   // OpenRouter ZDR-violation 404 masquerades as a generic error (often 'unknown'
   // or 'model_unavailable'); surface actionable guidance before the category
   // fallbacks so users learn it is an account data-policy setting, not a bad model.
   const zdr = classifyZdrError(classified.message);
   if (zdr.isZdr) return zdr.guidance!;
+  // Media-size rejection (oversized/invalid/password-protected PDF, oversized
+  // image, request-too-large): these classify as a generic 'unknown', so dispatch
+  // the per-variant actionable message before the category fallbacks.
+  const media = getMediaSizeErrorMessage(classified.message, opts?.nonInteractive);
+  if (media) return media;
   if (classified.category === 'unknown' || classified.category === 'abort') {
     // A bare/empty error body (e.g. a generic API-error prefix with no detail)
     // is useless to the user — substitute an actionable fallback instead.
@@ -747,9 +925,14 @@ export function friendlyErrorMessage(classified: ClassifiedError): string {
     return classified.message;
   }
   // A non-retryable model_unavailable is a 404 model-not-found (vs a retryable
-  // 503/529 overload): tell the user how to recover instead of "retrying".
+  // 503/529 overload): name a concrete fallback model to switch to when the
+  // family maps to a known previous generation, else generic /model guidance.
   if (classified.category === 'model_unavailable' && !classified.retryable) {
-    return `Model not found or no access: ${classified.message}. Run /model to pick a different one.`;
+    const suggestion = opts?.model ? suggestFallbackModel(opts.model) : undefined;
+    const switchHint = suggestion
+      ? `Run /model ${suggestion} to switch, or /model to pick another.`
+      : 'Run /model to pick a different one.';
+    return `Model not found or no access: ${classified.message}. ${switchHint}`;
   }
   if (classified.category === 'network_error') {
     return networkErrorHint(classified.message.toLowerCase());
@@ -757,6 +940,12 @@ export function friendlyErrorMessage(classified: ClassifiedError): string {
   // SSL/TLS: dispatch a per-code, actionable hint instead of one generic line.
   if (classified.category === 'ssl_error') {
     return getSSLErrorHint(classified.message);
+  }
+  // Context overflow with server-reported counts: show the exact overflow
+  // (actual > limit) so the user sees how far over they are, not just "too long".
+  if (classified.category === 'context_overflow' &&
+      classified.actualTokens !== undefined && classified.limitTokens !== undefined) {
+    return `Context limit reached (${classified.actualTokens} > ${classified.limitTokens} tokens) — compacting conversation. Run /compact or /clear to continue.`;
   }
   const friendly = FRIENDLY_MESSAGES[classified.category];
   return friendly ?? classified.message;
