@@ -137,6 +137,46 @@ export interface PostToolUseHookResult {
 export type PostToolUseHookFn = (context: PostToolUseContext) => Promise<PostToolUseHookResult | void>;
 export type PreSamplingHookFn = (context: PreSamplingContext) => Promise<HookDecision>;
 
+/**
+ * Allowed SessionStart `source` discriminators (Claude Code's
+ * SessionStartHookInputSchema `source` enum). Surfaced to a sessionStart hook as
+ * the matcher field so a hook can scope to e.g. only `resume`.
+ */
+export const SESSION_START_SOURCES = ['startup', 'resume', 'clear', 'compact'] as const;
+export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
+/** Narrow an arbitrary value to a known SessionStart source. */
+export function isSessionStartSource(v: unknown): v is SessionStartSource {
+  return typeof v === 'string' && (SESSION_START_SOURCES as readonly string[]).includes(v);
+}
+
+/**
+ * Session-exit-reason classification for the SessionEnd hook (Claude Code's
+ * EXIT_REASONS / ExitReasonSchema). This is the SessionEnd `reason` discriminator
+ * — distinct from the engine-loop `EXIT_REASONS` in types.ts (which classifies why
+ * the agent turn-loop terminated). Enumerated in the sessionEnd introspection
+ * metadata so `/hooks` and `--introspect` show the allowed values.
+ */
+export const SESSION_END_REASONS = [
+  'clear', 'resume', 'logout', 'prompt_input_exit', 'other', 'bypass_permissions_disabled',
+] as const;
+export type SessionEndReason = (typeof SESSION_END_REASONS)[number];
+/** Narrow an arbitrary value to a known SessionEnd reason. */
+export function isSessionEndReason(v: unknown): v is SessionEndReason {
+  return typeof v === 'string' && (SESSION_END_REASONS as readonly string[]).includes(v);
+}
+
+/**
+ * Setup hook `trigger` discriminator (Claude Code's SetupHookInputSchema
+ * `trigger` enum): `init` (first-run setup) vs `maintenance` (periodic). Used as
+ * the setup matcher field so a hook can scope to just one trigger.
+ */
+export const SETUP_TRIGGERS = ['init', 'maintenance'] as const;
+export type SetupTrigger = (typeof SETUP_TRIGGERS)[number];
+/** Narrow an arbitrary value to a known setup trigger. */
+export function isSetupTrigger(v: unknown): v is SetupTrigger {
+  return typeof v === 'string' && (SETUP_TRIGGERS as readonly string[]).includes(v);
+}
+
 export interface SessionContext {
   sessionId: string;
   cwd: string;
@@ -149,6 +189,16 @@ export interface SessionContext {
    *  (clear | logout | prompt_input_exit | other). A `matcher` on a sessionEnd
    *  hook is tested against this (HOOK_MATCHER_FIELD.sessionEnd = 'reason'). */
   reason?: string;
+  /** Why the Setup hook is firing — Claude Code's `trigger` discriminator
+   *  (init | maintenance). A `matcher` on a setup hook is tested against this
+   *  (HOOK_MATCHER_FIELD.setup = 'trigger'). */
+  trigger?: string;
+  /** Active model id, forwarded to SessionStart/Setup hooks in the stdin payload
+   *  (Claude Code's SessionStart `model`). */
+  model?: string;
+  /** Agent type the session is running as, forwarded to SessionStart hooks as
+   *  `agent_type` (Claude Code's SessionStart `agent_type`). */
+  agentType?: string;
 }
 
 export interface SubagentContext {
@@ -231,7 +281,11 @@ export interface ElicitationContext {
   mode?: string;
 }
 
-export type SessionHookFn = (context: SessionContext) => Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void>;
+/** SessionStart/Setup hook result. A hook may inject a single `initialUserMessage`
+ *  OR, matching Claude Code's SessionStart hook result (an ARRAY of injectable
+ *  messages, not a single string), multiple messages via `initialUserMessages`.
+ *  executeSessionStart aggregates ALL messages from ALL hooks (not last-wins). */
+export type SessionHookFn = (context: SessionContext) => Promise<{ initialUserMessage?: string; initialUserMessages?: string[]; watchPaths?: string[] } | void>;
 export type SubagentHookFn = (context: SubagentContext) => Promise<void>;
 /** SubagentStart hook: may contribute additionalContexts prepended to the
  *  subagent's initial messages (Claude Code parity). */
@@ -763,11 +817,13 @@ const HOOK_EVENT_PASCAL: Record<string, string> = {
   subagentStop: 'SubagentStop', preCompact: 'PreCompact', postCompact: 'PostCompact',
   stop: 'Stop', error: 'Error', preSampling: 'PreSampling', postSampling: 'PostSampling',
   permissionRequest: 'PermissionRequest', permissionDenied: 'PermissionDenied',
+  setup: 'Setup',
 };
 const HOOK_KEY_SNAKE: Record<string, string> = {
   toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_response',
   sessionId: 'session_id', subagentSessionId: 'subagent_session_id',
   durationMs: 'duration_ms', turnCount: 'turn_count', messageCount: 'message_count',
+  agentType: 'agent_type',
 };
 
 export function serializeHookEvent(obj: Record<string, unknown>): string {
@@ -965,6 +1021,9 @@ export const HOOK_MATCHER_FIELD: Record<string, string> = {
   // fire for e.g. only `resume` or only `clear`.
   sessionStart: 'source',
   sessionEnd: 'reason',
+  // Setup: scope on the boundary cause (Claude Code's Setup `trigger`
+  // discriminator — init | maintenance).
+  setup: 'trigger',
   // A StopFailure hook can scope on the failure cause (Claude Code's `error`
   // field, e.g. rate_limit / authentication_failed).
   stopFailure: 'error',
@@ -1028,9 +1087,9 @@ const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: st
   stop: { summary: 'When the agent turn is about to end', description: 'Input: JSON with stop_hook_active, last_assistant_message. May block turn-end.' + EXIT_CODE_BLOCKING },
   stopFailure: { summary: 'When a Stop hook itself errors', description: 'Input: JSON with error, hookIndex.' + EXIT_CODE_OBSERVE },
   error: { summary: 'On an engine/turn error', description: 'Input: JSON event marker.' + EXIT_CODE_OBSERVE },
-  sessionStart: { summary: 'At session start', description: 'Input: JSON with session_id, source. May return initialUserMessage / watchPaths.' + EXIT_CODE_OBSERVE },
-  sessionEnd: { summary: 'At session end', description: 'Input: JSON with session_id, reason.' + EXIT_CODE_OBSERVE },
-  setup: { summary: 'On first-run setup', description: 'Input: JSON with session_id, cwd.' + EXIT_CODE_OBSERVE },
+  sessionStart: { summary: 'At session start', description: `Input: JSON with session_id, source (${SESSION_START_SOURCES.join('|')}), model, agent_type. May return initialUserMessage / initialUserMessages[] / watchPaths.` + EXIT_CODE_OBSERVE },
+  sessionEnd: { summary: 'At session end', description: `Input: JSON with session_id, reason (${SESSION_END_REASONS.join('|')}).` + EXIT_CODE_OBSERVE },
+  setup: { summary: 'On first-run setup', description: `Input: JSON with session_id, cwd, trigger (${SETUP_TRIGGERS.join('|')}).` + EXIT_CODE_OBSERVE },
   subagentStart: { summary: 'When a subagent starts', description: 'Input: JSON with prompt. May contribute additionalContexts.' + EXIT_CODE_OBSERVE },
   subagentStop: { summary: 'When a subagent stops', description: 'Input: JSON with subagent_session_id.' + EXIT_CODE_OBSERVE },
   preCompact: { summary: 'Before context compaction', description: 'Input: JSON with message_count, trigger, customInstructions. May override instructions.' + EXIT_CODE_OBSERVE },
@@ -1809,11 +1868,21 @@ export class HookManager extends EventEmitter {
         case 'sessionStart': {
           const fn: SessionHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('sessionStart', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId, source: ctx.source });
+            // `model` falls back to the session's configured model (Claude Code
+            // includes it in the SessionStart payload); `agent_type` is supplied
+            // by the engine when a non-default agent is active.
+            const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId, source: ctx.source, model: ctx.model ?? this._providerConfig?.model, agentType: ctx.agentType });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.sessionStartHooks, fn, 'sessionStart');
             const watchPaths = this.registerWatchPaths('sessionStart', result);
             try {
               const parsed = JSON.parse(result);
+              // Claude Code's SessionStart hook result is an ARRAY of injectable
+              // messages; accept `initialUserMessages: string[]` as well as the
+              // single `initialUserMessage` / `systemMessage` forms.
+              if (Array.isArray(parsed.initialUserMessages)) {
+                const msgs = parsed.initialUserMessages.filter((m: unknown): m is string => typeof m === 'string' && m.length > 0);
+                if (msgs.length > 0) return { initialUserMessages: msgs, watchPaths };
+              }
               if (parsed.initialUserMessage) return { initialUserMessage: parsed.initialUserMessage, watchPaths };
               if (parsed.systemMessage) return { initialUserMessage: parsed.systemMessage, watchPaths };
             } catch {}
@@ -1975,7 +2044,9 @@ export class HookManager extends EventEmitter {
         }
         case 'setup': {
           const fn: SessionHookFn = async (ctx) => {
-            const eventData = serializeHookEvent({ event: 'setup', sessionId: ctx.sessionId, cwd: ctx.cwd });
+            // Scope on the Setup `trigger` (init | maintenance) when a matcher is set.
+            if (!matcherAppliesToCtx('setup', matcher, ctx as unknown as Record<string, unknown>)) return;
+            const eventData = serializeHookEvent({ event: 'setup', sessionId: ctx.sessionId, cwd: ctx.cwd, trigger: ctx.trigger });
             await this.runArmHook(hookConfig, cwd, eventData, undefined, this.setupHooks, fn, 'setup');
           };
           this.onSetup(fn);
@@ -2258,21 +2329,32 @@ export class HookManager extends EventEmitter {
   }
 
   async executeSessionStart(ctx: SessionContext): Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void> {
+    if (ctx.source !== undefined && !isSessionStartSource(ctx.source)) {
+      coreLog('hooks', `SessionStart: unrecognized source '${ctx.source}' (expected ${SESSION_START_SOURCES.join('|')})`);
+    }
     return this.withConcurrencyGate('sessionStart', async (): Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void> => {
-      let initialUserMessage: string | undefined;
+      // Aggregate ALL messages from ALL SessionStart hooks (Claude Code injects
+      // an array of hook messages, not just the last) — a hook may contribute one
+      // (`initialUserMessage`) or many (`initialUserMessages[]`); all are joined.
+      const messages: string[] = [];
       const watchPaths: string[] = [];
       for (const hook of this.sessionStartHooks) {
         try {
           const result = await hook(ctx);
-          if (result && result.initialUserMessage) initialUserMessage = result.initialUserMessage;
-          if (result && result.watchPaths?.length) watchPaths.push(...result.watchPaths);
+          if (result?.initialUserMessage) messages.push(result.initialUserMessage);
+          if (result?.initialUserMessages?.length) messages.push(...result.initialUserMessages);
+          if (result?.watchPaths?.length) watchPaths.push(...result.watchPaths);
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      const initialUserMessage = messages.length ? messages.join('\n\n') : undefined;
       if (initialUserMessage || watchPaths.length > 0) return { initialUserMessage, watchPaths: watchPaths.length > 0 ? watchPaths : undefined };
     });
   }
 
   async executeSessionEnd(ctx: SessionContext): Promise<void> {
+    if (ctx.reason !== undefined && !isSessionEndReason(ctx.reason)) {
+      coreLog('hooks', `SessionEnd: unrecognized reason '${ctx.reason}' (expected ${SESSION_END_REASONS.join('|')})`);
+    }
     return this.withConcurrencyGate('sessionEnd', async () => {
       // SessionEnd hooks run during shutdown/clear; bound the WHOLE run with a
       // tight budget (getSessionEndHookTimeoutMs) so a slow or hanging teardown
@@ -2456,6 +2538,9 @@ export class HookManager extends EventEmitter {
   }
 
   async executeSetup(ctx: SessionContext): Promise<void> {
+    if (ctx.trigger !== undefined && !isSetupTrigger(ctx.trigger)) {
+      coreLog('hooks', `Setup: unrecognized trigger '${ctx.trigger}' (expected ${SETUP_TRIGGERS.join('|')})`);
+    }
     return this.withConcurrencyGate('setup', async () => {
       for (const hook of this.setupHooks) {
         try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }

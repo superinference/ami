@@ -40,8 +40,8 @@ export type { McpServerState } from './mcp/manager';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
 export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow } from './error-classifier';
 export type { ClassifiedError, ErrorCategory } from './error-classifier';
-export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES, resolveHookTimeoutMs, combineHookAbort, HOOK_AGENT_DISALLOWED_TOOLS, isHttpHookUrlAllowed, interpolateHookHeaderEnv, sanitizeHeaderValue, unwrapHookSpecificOutput, matchesHookIf, ELICITATION_ACTIONS, getHookEventMetadata } from './hooks';
-export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy, HookEventMetadata } from './hooks';
+export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES, resolveHookTimeoutMs, combineHookAbort, HOOK_AGENT_DISALLOWED_TOOLS, isHttpHookUrlAllowed, interpolateHookHeaderEnv, sanitizeHeaderValue, unwrapHookSpecificOutput, matchesHookIf, ELICITATION_ACTIONS, getHookEventMetadata, SESSION_START_SOURCES, isSessionStartSource, SESSION_END_REASONS, isSessionEndReason, SETUP_TRIGGERS, isSetupTrigger } from './hooks';
+export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy, HookEventMetadata, SessionStartSource, SessionEndReason, SetupTrigger } from './hooks';
 export { shouldSkipHookDueToTrust } from './hook-protection';
 export { wildcardMatch } from './permissions';
 export {
