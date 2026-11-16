@@ -90,6 +90,23 @@ export interface SandboxConfig {
   // bash/powershell provider `sandboxTmpDir` TMPDIR override. Additive:
   // undefined is a no-op.
   sandboxTmpDir?: string;
+  // PARITY (allowLocalBinding): when the sandbox runs in its OWN network
+  // namespace (outbound network off) the loopback interface starts DOWN, so a
+  // sandboxed server/test that binds 127.0.0.1 fails. When true, bring loopback
+  // UP so purely-LOCAL binding works WITHOUT opening outbound network. Mirrors
+  // Claude's `SandboxNetworkConfig.allowLocalBinding`. No-op when outbound
+  // network is already on (loopback is up) or the knob is unset.
+  allowLocalBinding?: boolean;
+  // PARITY (enableWeakerNestedSandbox): drop the `--map-root-user` unshare flag,
+  // which fails inside a NESTED user namespace (outer container / CI) where the
+  // UID map is already consumed — letting a (weaker) sandbox still start there.
+  // Security-weakening escape hatch. Additive: undefined/false keeps the flag.
+  enableWeakerNestedSandbox?: boolean;
+  // PARITY (enableWeakerNetworkIsolation): do NOT bind /dev/null over the
+  // default-denied Unix domain sockets, so a local trust/CA service (e.g. a MITM
+  // proxy's validator) stays reachable. Security-weakening escape hatch.
+  // Additive: undefined/false keeps the default socket denial.
+  enableWeakerNetworkIsolation?: boolean;
 }
 
 export function getDefaultMemoryMB(): number {
@@ -627,6 +644,7 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy): Partial<San
     if (net.allowAllUnixSockets !== undefined) cfg.allowUnixSockets = net.allowAllUnixSockets;
     if (net.httpProxyPort !== undefined) cfg.httpProxyPort = net.httpProxyPort;
     if (net.socksProxyPort !== undefined) cfg.socksProxyPort = net.socksProxyPort;
+    if (net.allowLocalBinding !== undefined) cfg.allowLocalBinding = net.allowLocalBinding;
   }
   const fs = policy.filesystem;
   if (fs) {
@@ -634,6 +652,9 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy): Partial<San
     if (fs.denyWrite) cfg.denyWritePaths = fs.denyWrite;
     if (fs.allowRead) cfg.allowReadPaths = fs.allowRead;
   }
+  // Security-weakening escape hatches (nested-userns / network-isolation relax).
+  if (policy.enableWeakerNestedSandbox !== undefined) cfg.enableWeakerNestedSandbox = policy.enableWeakerNestedSandbox;
+  if (policy.enableWeakerNetworkIsolation !== undefined) cfg.enableWeakerNetworkIsolation = policy.enableWeakerNetworkIsolation;
   return cfg;
 }
 
@@ -656,7 +677,12 @@ export function wrapWithSandbox(
 }
 
 export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): string {
-  const flags: string[] = ['--map-root-user', '--mount', '--pid', '--fork'];
+  // `--map-root-user` fails inside a NESTED user namespace (the UID map is
+  // already consumed), so `enableWeakerNestedSandbox` drops it to let a weaker
+  // sandbox still start there. Default keeps the flag for full isolation.
+  const flags: string[] = cfg.enableWeakerNestedSandbox
+    ? ['--mount', '--pid', '--fork']
+    : ['--map-root-user', '--mount', '--pid', '--fork'];
 
   const hasAllowedDomains =
     cfg.allowedDomains && cfg.allowedDomains.length > 0;
@@ -679,6 +705,7 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
   const readDenials = buildReadDenials(cfg);
   const credentialScrub = buildCredentialScrub(cfg);
   const socketDenial = buildSocketDenial(cfg);
+  const loopbackSetup = buildLoopbackSetup(cfg);
   // Scratch-dir + proxy env exports apply right before the command runs so a
   // sandboxed command's temp files are contained and its outbound traffic is
   // proxy-routed (parity: Claude's sandboxTmpDir / http(s)/socks proxy knobs).
@@ -690,7 +717,21 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
     !cfg.allowNetwork && hasAllowedDomains
       ? buildDeniedDomainRules(cfg.deniedDomains) + buildNetworkAllowlist(cfg.allowedDomains!)
       : '';
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${configGuard}${gitGuard}${readDenials}${credentialScrub}${socketDenial}${networkRules}${tmpDirEnv}${proxyEnv}cd ${escapedCwd} && ${escapedCmd}'`;
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${configGuard}${gitGuard}${readDenials}${credentialScrub}${socketDenial}${loopbackSetup}${networkRules}${tmpDirEnv}${proxyEnv}cd ${escapedCwd} && ${escapedCmd}'`;
+}
+
+/**
+ * PARITY (allowLocalBinding): bring the loopback interface UP inside the
+ * sandbox's network namespace so a sandboxed server/test can bind 127.0.0.1
+ * WITHOUT enabling outbound network. Returns '' unless the sandbox has its own
+ * netns (outbound network OFF) AND `allowLocalBinding` is set — when outbound
+ * network is on, loopback is already up, and when the knob is unset the stricter
+ * default (loopback left down) is preserved. Mirrors Claude's
+ * `SandboxNetworkConfig.allowLocalBinding`. Best-effort (`2>/dev/null`).
+ */
+export function buildLoopbackSetup(cfg: SandboxConfig): string {
+  if (!cfg.allowLocalBinding || cfg.allowNetwork) return '';
+  return 'ip link set lo up 2>/dev/null; ';
 }
 
 /** Join a sandbox cwd and a relative path, normalizing a trailing slash so the
@@ -926,7 +967,10 @@ const DEFAULT_DENIED_SOCKETS = [
  * /dev/null-bind technique as the credential file-hiding path.
  */
 export function buildSocketDenial(cfg: SandboxConfig): string {
-  if (cfg.allowUnixSockets) return '';
+  // `enableWeakerNetworkIsolation` (parity) leaves ALL default-denied sockets
+  // reachable so a local trust/CA service (MITM-proxy validator) works — the same
+  // all-sockets-open effect as the blanket `allowUnixSockets` opt-out.
+  if (cfg.allowUnixSockets || cfg.enableWeakerNetworkIsolation) return '';
   // PARITY (per-path socket allow): re-allow any default-denied socket whose path
   // the operator explicitly listed in `allowedUnixSockets`, leaving the rest
   // denied — Claude's granular `allowUnixSockets: string[]` instead of the
@@ -1027,16 +1071,75 @@ function escapeShell(s: string): string {
  * `iptables`/`getent` is reported here too — so `/sandbox` can tell the user their
  * `allowedDomains` policy is silently a no-op instead of hiding it behind `2>/dev/null`.
  */
+/**
+ * PARITY (sandbox.enabledPlatforms): decide whether the sandbox (and its
+ * auto-allow) applies on a given platform. Semantics mirror Claude's
+ * sandbox-adapter `enabledPlatforms`:
+ *   - `undefined` → enabled on ALL supported platforms (the default),
+ *   - `[]`        → enabled on NONE (sandbox fully disabled by config),
+ *   - otherwise   → a membership test against `process.platform`.
+ * Pure (platform is injectable for tests); the default reads `process.platform`.
+ */
+export function isSandboxPlatformEnabled(
+  enabledPlatforms: string[] | undefined,
+  platform: string = process.platform,
+): boolean {
+  if (enabledPlatforms === undefined) return true;
+  return enabledPlatforms.includes(platform);
+}
+
+/** A single enabled security-weakening sandbox option and its blunt tradeoff
+ *  warning, surfaced to the operator (e.g. via `/sandbox`). */
+export interface SandboxTradeoffWarning {
+  /** The SandboxPolicy option that is weakening security. */
+  option: string;
+  /** User-facing "**Reduces security** — …" wording for that option. */
+  warning: string;
+}
+
+/**
+ * PARITY (explicit security-tradeoff warnings): enumerate every ENABLED
+ * security-weakening knob on a {@link SandboxPolicy} with blunt, user-facing
+ * wording, so the operator sees the tradeoff instead of a silent relaxation.
+ * Mirrors Claude Code's per-option "**Reduces security** — …" descriptions on
+ * `enableWeakerNetworkIsolation` et al. Returns `[]` for a policy with no
+ * weakening options set (and for `mode: 'off'`, where the sandbox is inactive).
+ */
+export function describeSandboxSecurityTradeoffs(policy?: SandboxPolicy): SandboxTradeoffWarning[] {
+  const out: SandboxTradeoffWarning[] = [];
+  if (!policy || policy.mode === 'off') return out;
+  if (policy.allowNetwork) {
+    out.push({ option: 'allowNetwork', warning: '**Reduces security** — outbound network is reachable from inside the sandbox, enabling data exfiltration. Default: false.' });
+  }
+  if (policy.network?.allowAllUnixSockets) {
+    out.push({ option: 'network.allowAllUnixSockets', warning: '**Reduces security** — all Unix domain sockets are reachable, including privileged daemon sockets (e.g. the Docker socket). Default: false.' });
+  }
+  if (policy.enableWeakerNestedSandbox) {
+    out.push({ option: 'enableWeakerNestedSandbox', warning: '**Reduces security** — drops user-namespace root mapping so a nested command runs with weaker isolation. Default: false.' });
+  }
+  if (policy.enableWeakerNetworkIsolation) {
+    out.push({ option: 'enableWeakerNetworkIsolation', warning: '**Reduces security** — opens a potential data-exfiltration vector through local trust/proxy sockets. Default: false.' });
+  }
+  if (policy.allowUnsandboxedFallback) {
+    out.push({ option: 'allowUnsandboxedFallback', warning: '**Reduces security** — a command that cannot be sandboxed runs UNsandboxed on the host instead of being refused. Default: false.' });
+  }
+  return out;
+}
+
 export function getSandboxStatus(
   cfg?: Partial<SandboxConfig>,
+  policy?: SandboxPolicy,
 ): { available: boolean; method: string; warnings: string[] } {
   const dep = checkSandboxDependencies(cfg);
   const nsAvailable = process.platform === 'linux' && isUnshareAvailable();
   const method = nsAvailable ? 'unshare' : 'ulimits';
   // On the ulimits fallback the namespace "errors" are a user-facing degradation
   // notice (AMI still runs, just with weaker isolation), so fold them in.
-  const warnings = nsAvailable ? dep.warnings : [...dep.errors, ...dep.warnings];
-  return { available: true, method, warnings };
+  const baseWarnings = nsAvailable ? dep.warnings : [...dep.errors, ...dep.warnings];
+  // Fold in the blunt security-tradeoff wording for any enabled weakening knob so
+  // `/sandbox` surfaces the relaxation instead of hiding it (parity).
+  const tradeoffs = describeSandboxSecurityTradeoffs(policy).map((t) => `${t.option}: ${t.warning}`);
+  return { available: true, method, warnings: [...baseWarnings, ...tradeoffs] };
 }
 
 export interface SandboxValidation {

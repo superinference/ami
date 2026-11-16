@@ -330,6 +330,27 @@ export interface SandboxPolicy {
   ignoreViolations?: Record<string, string[]>;
   /** Restrict sandboxing (and auto-allow) to specific platforms (e.g. ['linux']). */
   enabledPlatforms?: string[];
+  /** Whether a bash command that cannot be sandboxed may still run UNsandboxed.
+   *  Default (unset/true) keeps the warn-and-run-on-host behavior; `false` makes
+   *  the host sandbox a hard gate — a command that would otherwise degrade to the
+   *  weaker ulimits-only path (no namespace isolation) is REFUSED instead. Mirrors
+   *  Claude Code's `areUnsandboxedCommandsAllowed()` / `, fallback allowed` status.
+   *  Security-weakening when true; surfaced by {@link import('./tools/bash-sandbox').describeSandboxSecurityTradeoffs}. */
+  allowUnsandboxedFallback?: boolean;
+  /** OPT-IN security relaxation for NESTED sandbox environments (inside an outer
+   *  container / CI runner where the user-namespace UID map is already consumed):
+   *  when true the host unshare backend drops the `--map-root-user` flag that fails
+   *  in a nested user namespace, allowing a (weaker) sandbox to still start. Mirrors
+   *  Claude Code's `enableWeakerNestedSandbox`. **Reduces security** — see
+   *  {@link import('./tools/bash-sandbox').describeSandboxSecurityTradeoffs}. Default false. */
+  enableWeakerNestedSandbox?: boolean;
+  /** OPT-IN security relaxation of NETWORK isolation: when true the host unshare
+   *  backend does NOT bind `/dev/null` over the default-denied Unix domain sockets,
+   *  so a local trust/CA service (e.g. a MITM proxy's cert validator) remains
+   *  reachable. Mirrors Claude Code's `enableWeakerNetworkIsolation`. **Reduces
+   *  security** — opens a potential data-exfiltration vector; see
+   *  {@link import('./tools/bash-sandbox').describeSandboxSecurityTradeoffs}. Default false. */
+  enableWeakerNetworkIsolation?: boolean;
 }
 
 export interface ToolContext {

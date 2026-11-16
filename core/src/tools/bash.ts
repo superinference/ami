@@ -8,7 +8,7 @@ import { execCommand } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
-import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy } from './bash-sandbox';
+import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled } from './bash-sandbox';
 import { validateBoundedIntEnvVar } from '../config';
 import {
   getDockerAvailability,
@@ -1157,7 +1157,12 @@ export const bashTool: ToolDefinition = {
     const sessionEnvScript = await getSessionEnvironmentScript(context.sessionId);
     const commandToRun = sessionEnvScript ? `${sessionEnvScript}\n${command}` : command;
     let effectiveCommand: string;
-    if (context.sandbox?.mode === 'container') {
+    // PARITY (sandbox.enabledPlatforms): when the current platform is excluded,
+    // the sandbox (container OR host) is disabled entirely and the command runs
+    // on the host — undefined=all, []=none, else a membership test. Gates both
+    // backends so container mode does not hard-fail on an unsupported platform.
+    const platformSandboxEnabled = isSandboxPlatformEnabled(context.sandbox?.enabledPlatforms);
+    if (context.sandbox?.mode === 'container' && platformSandboxEnabled) {
       // Pass the abort signal so a user Ctrl-C during a hung daemon probe is
       // honored instead of blocking for the full probe timeout.
       const availability = getDockerAvailability({ signal: context.abortSignal });
@@ -1192,8 +1197,32 @@ export const bashTool: ToolDefinition = {
       // would silently keep the sandbox on for `dangerouslyDisableSandbox: "true"`.
       // Use the SAME coercion as run_in_background so both boolean flags behave
       // identically for string-serialized input.
-      const disableSandbox = coerceBool(input.dangerouslyDisableSandbox);
-      const useSandbox = !disableSandbox && _bashHooks.shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
+      // PARITY (allowUnsandboxedCommands): when the policy sets it to exactly
+      // false, the `dangerouslyDisableSandbox` escape hatch is COMPLETELY ignored
+      // — every command must run sandboxed (a managed-deployment lockout).
+      const sandboxEscapeLocked = context.sandbox?.allowUnsandboxedCommands === false;
+      const disableSandbox = sandboxEscapeLocked ? false : coerceBool(input.dangerouslyDisableSandbox);
+      const useSandbox = platformSandboxEnabled && !disableSandbox && _bashHooks.shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
+      // PARITY (failIfUnavailable / allowUnsandboxedFallback): if the command must
+      // be sandboxed but the host backend cannot actually start, a hard gate
+      // (`failIfUnavailable`, or `allowUnsandboxedFallback === false`) REFUSES the
+      // run instead of silently degrading to the weaker ulimits-only path.
+      if (
+        useSandbox
+        && (context.sandbox?.failIfUnavailable === true || context.sandbox?.allowUnsandboxedFallback === false)
+      ) {
+        const validation = validateSandboxEnabled({ failIfUnavailable: true });
+        if (!validation.valid) {
+          return {
+            output:
+              'Error: SANDBOX REQUIRED — bash is configured to refuse unsandboxed commands '
+              + '(sandbox.failIfUnavailable / allowUnsandboxedFallback=false) but the host sandbox '
+              + 'cannot start: ' + (validation.error ?? 'unavailable') + '. '
+              + 'Refusing to run unsandboxed.',
+            isError: true,
+          };
+        }
+      }
       // Thread the policy's network/filesystem carve-outs (deny/allow hosts, unix
       // sockets, proxy ports, deny-read/deny-write with allow-read re-opens) into
       // the HOST unshare backend too — previously honored only by the container
