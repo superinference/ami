@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock } from '../utils/file-lock';
-import { TEAM_LEAD_NAME, clearMailbox } from './send-message';
+import { TEAM_LEAD_NAME, purgeMailbox } from './send-message';
 import { PERMISSION_MODES, normalizePermissionMode, PermissionMode, PermissionRule } from '../permissions';
 import { unassignTeammateTasks, setTaskPersistPath, deleteTaskList } from './task-tracker';
 import { sanitizeAgentName } from './task';
@@ -1072,11 +1072,13 @@ export const teamDeleteTool: ToolDefinition = {
     // removal failure must not fail a team_delete that already removed the dir.
     const tasksRemoved = deleteTaskList(context.cwd, name);
 
-    // Flush any queued inbox/relay messages for every team member so a future team
-    // that reuses a name never inherits stale messages, and a crashed teammate's
-    // undelivered queue does not leak (parity: Claude clears the inbox on disband).
+    // Fully tear down every team member's mailbox state so a future team that
+    // reuses a name never inherits stale messages, a crashed teammate's undelivered
+    // queue, a leaked receive() waiter, or a stale eager-delivery notifier (parity:
+    // Claude purges the inbox at the exit boundary). purgeMailbox is the superset of
+    // clearMailbox — it also reclaims waiters/notifier/revision/outbound-DM history.
     for (const m of currentTeam.members) {
-      clearMailbox(m.name);
+      purgeMailbox(m.name);
     }
 
     currentTeam = null;

@@ -668,6 +668,65 @@ export function sendToUdsSocket(socketPath: string, payload: string): Promise<vo
 
 const mailboxes = new Map<string, AgentMessage[]>();
 
+// --- Last outbound peer-DM tracking -----------------------------------------
+// When a teammate goes idle it should tell the lead what it was last coordinating
+// on, WITHOUT the model having to restate it. Claude Code derives that from the
+// conversation (utils/teammateMailbox.ts getLastPeerDmSummary: backward-scan the
+// turn for the last SendMessage tool_use whose `to` is a peer — not "*" and not
+// the team lead — formatted as `[to <name>] <summary>`). AMI has no raw
+// conversation here, so the equivalent is captured at the send site: every plain-
+// text DM a sender emits is recorded, and the idle path scans that record
+// backward for the most recent PEER DM. A non-destructive, predicate-filtered
+// read (never mutates the record) — the mailbox is untouched.
+interface OutboundDm {
+  /** The recipient's bare name. */
+  to: string;
+  /** The model-supplied summary, else a truncation of the message content. */
+  summary: string;
+  /** True when `to` is a peer (not "*" and not the team lead). */
+  peer: boolean;
+}
+const outboundDms = new Map<string, OutboundDm[]>();
+
+/**
+ * Bound on how many recent outbound DMs we retain per sender. Only the most
+ * recent peer DM is ever read (getLastPeerDmSummary), so a small window is ample;
+ * the cap keeps the record from growing without bound for a long-lived sender.
+ */
+export const MAX_OUTBOUND_DM_HISTORY = 50;
+
+/**
+ * Record one plain-text direct message a sender emitted, so the idle path can
+ * later derive an idle-notification summary from the sender's last peer DM.
+ * Broadcasts ("*") are not recorded (they are not a peer DM — mirrors Claude Code
+ * excluding `to === '*'`). Capped at {@link MAX_OUTBOUND_DM_HISTORY} per sender.
+ */
+function recordOutboundDm(from: string, to: string, summary: string): void {
+  const peer = to !== '*' && to.toLowerCase() !== TEAM_LEAD_NAME.toLowerCase();
+  const list = outboundDms.get(from) ?? [];
+  list.push({ to, summary, peer });
+  if (list.length > MAX_OUTBOUND_DM_HISTORY) {
+    list.splice(0, list.length - MAX_OUTBOUND_DM_HISTORY);
+  }
+  outboundDms.set(from, list);
+}
+
+/**
+ * The sender's most recent PEER direct message, formatted `[to <name>] <summary>`,
+ * or undefined when the sender has sent no peer DM. Backward scan with the same
+ * peer/lead/"*" exclusion as Claude Code's getLastPeerDmSummary. Non-destructive:
+ * the record is only read, never consumed, so repeated calls are idempotent.
+ */
+export function getLastPeerDmSummary(agentName: string): string | undefined {
+  const list = outboundDms.get(agentName);
+  if (!list) return undefined;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const dm = list[i];
+    if (dm.peer) return `[to ${dm.to}] ${dm.summary}`;
+  }
+  return undefined;
+}
+
 // --- Predicate-filtered + blocking consumption (Mailbox parity) -------------
 // Mirrors Claude Code's utils/mailbox.ts Mailbox: in addition to the drain-all
 // pollMailbox and the non-destructive peek/ack, a caller can SELECT a single
@@ -769,11 +828,30 @@ export function clearMailbox(agentName: string): void {
   mailboxes.delete(agentName);
 }
 
+/**
+ * Full exit-boundary teardown of one agent's mailbox state. Beyond the queue that
+ * clearMailbox flushes, this reclaims every per-agent resource an exiting agent
+ * leaves behind: pending receive() waiters (whose promises would otherwise dangle
+ * forever), the eager-delivery notifier, the revision counter, and the recorded
+ * outbound-DM history. Called at an agent's exit / a team's disband so a future
+ * agent that reuses the name never inherits a dead agent's queue, a leaked waiter,
+ * or a stale notifier. Mirrors Claude Code purging an exiting teammate's inbox at
+ * its lifecycle boundary — clearMailbox is the lighter "flush the queue only" form.
+ */
+export function purgeMailbox(agentName: string): void {
+  clearMailbox(agentName);
+  mailboxWaiters.delete(agentName);
+  mailboxNotifiers.delete(agentName);
+  mailboxRevisions.delete(agentName);
+  outboundDms.delete(agentName);
+}
+
 export function resetAllMailboxes(): void {
   mailboxes.clear();
   mailboxNotifiers.clear();
   mailboxWaiters.clear();
   mailboxRevisions.clear();
+  outboundDms.clear();
   messageSeq = 0;
 }
 
@@ -1271,9 +1349,22 @@ export const sendMessageTool: ToolDefinition = {
           if (toRaw !== TEAM_LEAD_NAME) {
             return { output: `Error: idle_notification must be sent to "${TEAM_LEAD_NAME}".`, isError: true };
           }
-          enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content, timestamp: Date.now() });
+          // Auto-derive the idle summary from the teammate's LAST peer DM when the
+          // model omitted one, so the lead sees what the teammate was last
+          // coordinating on without the teammate restating it. Mirrors Claude
+          // Code feeding getLastPeerDmSummary into the idle_notification summary.
+          let wire = content;
+          let derivedTag = '';
+          if (!structured.summary) {
+            const lastDm = getLastPeerDmSummary(from);
+            if (lastDm) {
+              wire = JSON.stringify({ ...structured, summary: lastDm });
+              derivedTag = ` (summary: ${lastDm})`;
+            }
+          }
+          enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content: wire, timestamp: Date.now() });
           const reasonTag = structured.idleReason ? ` (${structured.idleReason})` : '';
-          return { output: `Idle notification sent to ${TEAM_LEAD_NAME}${reasonTag} [from: ${from}]` };
+          return { output: `Idle notification sent to ${TEAM_LEAD_NAME}${reasonTag}${derivedTag} [from: ${from}]` };
         }
         case 'mode_set_request': {
           // Only the lead may change a teammate's permission mode. Routed to the
@@ -1394,6 +1485,13 @@ export const sendMessageTool: ToolDefinition = {
       : '';
 
     enqueue(to, msg);
+
+    // Record this plain-text DM so a later idle_notification can derive its
+    // summary from the sender's last PEER DM (getLastPeerDmSummary). Use the bare
+    // target name (toRaw) the sender addressed, and the model summary when given,
+    // else a truncation of the content — mirrors Claude Code's
+    // `summary ?? message.slice(0, 80)`.
+    recordOutboundDm(from, toRaw, summary && summary.trim() ? summary : content.slice(0, 80));
 
     const summaryTag = summary ? ` — "${summary}"` : '';
     return {
