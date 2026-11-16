@@ -12,7 +12,7 @@ import { mapChildToSubagentEvent } from './subagent-relay';
 import { getCurrentTeam, registerTeamMember, setTeamMemberActive, teamAllowedPathsToRules } from './team';
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
-import { PERMISSION_MODES } from '../permissions';
+import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
 import { validateBoundedIntEnvVar } from '../config';
 
@@ -605,6 +605,44 @@ export function filterToolsForAsyncAgent(tools: ToolDefinition[]): ToolDefinitio
 }
 
 /**
+ * Resolve an agent-definition / per-spawn tool-spec list (its `tools`,
+ * `disallowedTools`, or a per-call `allowed_tools`) to canonical AMI tool names.
+ * Each entry may be a bare tool name (`bash`), a legacy / cross-framework alias
+ * (`Bash`, `Read`, `Edit`), or a PATTERNED permission spec (`Bash(git:*)`,
+ * `Read(src/**)`). Every form is run through the single canonical
+ * {@link permissionRuleValueFromString} parser (shared with the permission layer —
+ * no second parser) so the BASE tool name is extracted and aliased to AMI's
+ * registered name. Mirrors Claude Code's `resolveAgentTools`, which runs each tool
+ * spec through `permissionRuleValueFromString` before matching — without this a
+ * pattern-form allow entry silently filtered the tool out and a pattern-form
+ * disallow entry silently failed to block (exact-string matching never matched
+ * `Bash(git:*)` against the registered `bash`).
+ */
+export function canonicalAgentToolNames(specs: string[]): string[] {
+  return specs.map(spec => permissionRuleValueFromString(spec).toolName);
+}
+
+/**
+ * Built-in agent types that run ONCE and return a report — the parent never
+ * resumes/messages them to continue, so the per-result "to continue this agent"
+ * trailer is dead weight on them (mirrors Claude Code's
+ * ONE_SHOT_BUILTIN_AGENT_TYPES in `AgentTool/constants.ts`, which gates whether the
+ * agentId/SendMessage continuation trailer is emitted). `explore` MODE is the third
+ * one-shot form (a read-only report), handled by {@link isOneShotAgent}.
+ */
+export const ONE_SHOT_BUILTIN_AGENT_TYPES = new Set(['Explore', 'Plan']);
+
+/**
+ * Whether a spawned subagent is a ONE-SHOT agent that is never continued — a
+ * read-only `explore`-mode run or a named one-shot built-in agent type
+ * ({@link ONE_SHOT_BUILTIN_AGENT_TYPES}). The task tool omits the "to continue this
+ * agent" affordance for these (parity with Claude Code's one-shot trailer gate).
+ */
+export function isOneShotAgent(subagentType: string | undefined, mode: string): boolean {
+  return mode === 'explore' || (subagentType !== undefined && ONE_SHOT_BUILTIN_AGENT_TYPES.has(subagentType));
+}
+
+/**
  * Normalize a caller-supplied `allowed_agent_types` value into a string[] (or
  * undefined when the field is absent). Mirrors Claude Code's `allowedAgentTypes`
  * boundary (`AgentTool/prompt.ts`): when a parent scopes which subagent types a
@@ -633,6 +671,26 @@ export function isAgentTypeAllowed(
   allowedAgentTypes: string[] | undefined,
 ): boolean {
   return allowedAgentTypes === undefined || allowedAgentTypes.includes(subagentType);
+}
+
+/**
+ * Normalize a caller-supplied per-spawn `allowed_tools` value into a string[] (or
+ * undefined when absent). Mirrors Claude Code's spawn-time `permissions` /
+ * allowedTools list (`swarm/backends/types.ts`): the caller scopes ONE subagent's
+ * tool set inline at task-call time, without a pre-authored named agent definition.
+ * Returns `{ error }` for a non-array / non-string-element shape so the caller can
+ * reject it; `{ value: undefined }` means "no inline restriction". Entries may be
+ * bare names, aliases, or patterned specs — {@link canonicalAgentToolNames}
+ * resolves them to canonical tool names at apply time.
+ */
+export function parseAllowedTools(
+  raw: unknown,
+): { value: string[] | undefined } | { error: string } {
+  if (raw === undefined || raw === null) return { value: undefined };
+  if (!Array.isArray(raw) || raw.some(t => typeof t !== 'string')) {
+    return { error: 'allowed_tools must be an array of strings (the tool names this subagent may use).' };
+  }
+  return { value: raw as string[] };
 }
 
 /**
@@ -728,6 +786,11 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     type: 'array',
     items: { type: 'string' },
     description: 'Restrict which subagent_type values this call may spawn. When set, a subagent_type outside this list is rejected (an empty list forbids every named agent type). Omit for no restriction.',
+  },
+  allowed_tools: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Scope this one subagent to exactly these tools (inline, without a named subagent_type). The resolved tool set is intersected with this list. Entries may be bare names ("bash", "file_read"), aliases ("Bash", "Read"), or patterned specs ("Bash(git:*)"). Omit for the full tool set for the chosen mode.',
   },
   model: {
     type: 'string',
@@ -875,6 +938,16 @@ export const taskTool: ToolDefinition = {
       return { output: `Error: ${allowedAgentTypesResult.error}`, isError: true };
     }
     const allowedAgentTypes = allowedAgentTypesResult.value;
+
+    // allowed_tools: a per-spawn inline tool scope (mirrors Claude's spawn-time
+    // permissions/allowedTools). Validate the shape here; the resolved tool set is
+    // intersected with it after mode/agent-def resolution below.
+    const allowedToolsResult = parseAllowedTools(input.allowed_tools);
+    if ('error' in allowedToolsResult) {
+      return { output: `Error: ${allowedToolsResult.error}`, isError: true };
+    }
+    const allowedToolsSpec = allowedToolsResult.value;
+
     if (subagentType !== undefined && !isAgentTypeAllowed(subagentType, allowedAgentTypes)) {
       const permitted = (allowedAgentTypes as string[]).length
         ? (allowedAgentTypes as string[]).join(', ')
@@ -1000,9 +1073,12 @@ export const taskTool: ToolDefinition = {
           tools = everything;
         } else {
           // Reject an allowlist naming a tool that does not exist — a silent
-          // filter-to-nothing hides the typo and strands the agent.
+          // filter-to-nothing hides the typo and strands the agent. Each entry is
+          // parsed to its canonical base tool name first (canonicalAgentToolNames),
+          // so an alias (`Bash`) or a patterned spec (`Bash(git:*)`) matches the
+          // registered tool instead of being misread as an unknown name.
           const known = new Set(everything.map(t => t.name));
-          const invalid = agentDef.tools.filter(n => !known.has(n));
+          const invalid = agentDef.tools.filter(spec => !known.has(permissionRuleValueFromString(spec).toolName));
           if (invalid.length > 0) {
             return {
               output: `Error: agent "${subagentType}" lists unknown tool(s): ${invalid.join(', ')}. ` +
@@ -1010,7 +1086,7 @@ export const taskTool: ToolDefinition = {
               isError: true,
             };
           }
-          const allowed = new Set(agentDef.tools);
+          const allowed = new Set(canonicalAgentToolNames(agentDef.tools));
           tools = everything.filter(t => allowed.has(t.name));
         }
         // Deny wins even when an allowlist is set: an agent may declare BOTH
@@ -1019,14 +1095,14 @@ export const taskTool: ToolDefinition = {
         // the denylist from the allowlist result so the two compose instead of
         // the allowlist silently ignoring the denylist.
         if (agentDef.disallowedTools && agentDef.disallowedTools.length > 0) {
-          const denied = new Set(agentDef.disallowedTools);
+          const denied = new Set(canonicalAgentToolNames(agentDef.disallowedTools));
           tools = tools.filter(t => !denied.has(t.name));
         }
         if (!shouldAllowNestedTask(currentDepth, maxDepth)) {
           tools = tools.filter(t => t.name !== 'task');
         }
       } else if (agentDef.disallowedTools && agentDef.disallowedTools.length > 0) {
-        const disallowed = new Set(agentDef.disallowedTools);
+        const disallowed = new Set(canonicalAgentToolNames(agentDef.disallowedTools));
         tools = allTools.getAll().filter(t => !disallowed.has(t.name));
         if (!shouldAllowNestedTask(currentDepth, maxDepth)) {
           tools = tools.filter(t => t.name !== 'task');
@@ -1049,6 +1125,26 @@ export const taskTool: ToolDefinition = {
     // Universal baseline denylist — applied last so no mode or explicit
     // allowlist (incl. `['*']`) can reintroduce plan_mode or workflow.
     tools = tools.filter(t => !ALL_AGENT_DISALLOWED_TOOLS.has(t.name));
+
+    // Per-spawn `allowed_tools` inline scope (mirrors Claude's spawn-time
+    // permissions/allowedTools): intersect the resolved set with exactly the tools
+    // the caller named for this one subagent. A name that matches no registered tool
+    // is rejected so a typo is not silently dropped (leaving a narrower set than
+    // intended); patterned/alias specs are canonicalized first. The empty-set guard
+    // below still fires if the intersection removes every tool.
+    if (allowedToolsSpec) {
+      const known = new Set(allTools.getAll().map(t => t.name));
+      const invalid = allowedToolsSpec.filter(spec => !known.has(permissionRuleValueFromString(spec).toolName));
+      if (invalid.length > 0) {
+        return {
+          output: `Error: allowed_tools names unknown tool(s): ${invalid.join(', ')}. ` +
+            `Available tools: ${[...known].sort().join(', ')}.`,
+          isError: true,
+        };
+      }
+      const allowed = new Set(canonicalAgentToolNames(allowedToolsSpec));
+      tools = tools.filter(t => allowed.has(t.name));
+    }
 
     // Providers often serialize booleans as the STRING "true"/"false" in tool-call
     // args; coerceBool handles both (a strict `=== true` silently dropped
@@ -1600,9 +1696,13 @@ export const taskTool: ToolDefinition = {
     // no-output marker (mirrors Claude's "(Subagent completed but returned no output.)").
     const body = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
     // Continue-affordance: tell the parent it CAN message/resume this agent to
-    // carry the work forward. Skipped for one-shot `explore` runs (read-only
-    // reports that are never continued), mirroring Claude's ONE_SHOT agent types.
-    const continueHint = effectiveMode === 'explore'
+    // carry the work forward. Skipped for ONE-SHOT agents — a read-only `explore`
+    // run OR a named one-shot built-in type (Explore/Plan) — which are never
+    // continued, so the trailer is dead weight (mirrors Claude Code's
+    // ONE_SHOT_BUILTIN_AGENT_TYPES continuation-trailer gate). Uses the RAW `mode`
+    // (not effectiveMode, which fork/explore paths may reassign) so the one-shot
+    // classification matches what the caller requested.
+    const continueHint = isOneShotAgent(subagentType, mode)
       ? ''
       : `\nTo continue this agent, call task({ resume: "${agentName || taskId}", prompt: ... }).`;
     return {
