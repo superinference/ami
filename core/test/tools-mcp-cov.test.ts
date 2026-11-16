@@ -256,6 +256,39 @@ describe('listMcpResourcesTool', () => {
     const res = await listMcpResourcesTool.execute!({}, context);
     assert.match(res.output, /Servers may still provide tools or prompts/);
   });
+
+  it('includes the per-resource description when the server provides one', async () => {
+    const context = fakeManager({
+      listResources: async () => [
+        { uri: 'res://1', name: 'One', mimeType: 'text/plain', description: 'The first resource', server: 'alpha' },
+      ],
+    });
+    const res = await listMcpResourcesTool.execute!({}, context);
+    assert.match(res.output, /res:\/\/1 — One \(text\/plain\): The first resource/);
+  });
+
+  it('caps an oversized resource listing to disk (maxResultSizeChars parity)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'si-mcp-list-'));
+    try {
+      // Many resources with long URIs so the joined output exceeds the 100k cap.
+      const many = Array.from({ length: 4000 }, (_, i) => ({
+        uri: `res://${'x'.repeat(40)}/${i}`,
+        name: `Resource number ${i}`,
+        mimeType: 'text/plain',
+      }));
+      const context = fakeManager({ listResources: async () => many });
+      const res = await listMcpResourcesTool.execute!(
+        { server: 'srv' },
+        ctx({ cwd: tmp, _mcpManager: (context as ToolContext)._mcpManager }),
+      );
+      assert.ok(res.output.length <= 100_000, 'listing output should be capped at 100k chars');
+      assert.match(res.output, /persisted to/);
+      const spillDir = projectStateDir(tmp, 'tool-results');
+      assert.ok(fs.readdirSync(spillDir).length >= 1, 'a spill file should exist');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // ===========================================================================
@@ -302,6 +335,23 @@ describe('readMcpResourceTool', () => {
     const entry = (res.metadata?.contents as Array<{ blobSavedTo?: string }>)[0];
     assert.ok(entry.blobSavedTo && entry.blobSavedTo.endsWith('.png'));
     assert.equal(fs.readFileSync(entry.blobSavedTo!).toString(), 'PNGDATA');
+    fs.rmSync(entry.blobSavedTo!, { force: true });
+  });
+
+  it('attaches a human-readable saved-to-disk message (with size + source) to a persisted blob', async () => {
+    const payload = Buffer.from('PNGDATA').toString('base64');
+    const context = fakeManager({
+      readResource: async () => ({ contents: [{ uri: 'res://img', mimeType: 'image/png', blob: payload }] }),
+    });
+    const res = await readMcpResourceTool.execute!({ server: 'myserver', uri: 'res://img' }, context);
+    const entry = (res.metadata?.contents as Array<{ blobSavedTo?: string; text?: string }>)[0];
+    assert.ok(entry.blobSavedTo, 'blob should still be persisted');
+    // Source description + mime + humanized size + the saved path, mirroring
+    // Claude's getBinaryBlobSavedMessage.
+    assert.match(entry.text ?? '', /^\[Resource from myserver at res:\/\/img\] Binary content \(image\/png, 7 B\) saved to /);
+    assert.ok(entry.text?.includes(entry.blobSavedTo!), 'message should name the saved path');
+    // The message is surfaced in the model-visible output, not just metadata.
+    assert.match(res.output, /Binary content \(image\/png, 7 B\) saved to/);
     fs.rmSync(entry.blobSavedTo!, { force: true });
   });
 

@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { spillToolText } from './spill-output';
+import { spillToolText, formatSize } from './spill-output';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -86,39 +86,61 @@ export const listMcpResourcesTool: ToolDefinition = {
         return { output: 'No MCP resources available. (Servers may still provide tools or prompts — this lists resources only.)' };
       }
       const showServer = !serverFilter; // disambiguate only when listing across servers
-      const lines = resources.map((r: { uri: string; name?: string; title?: string; mimeType?: string; server?: string }) => {
+      const lines = resources.map((r: { uri: string; name?: string; title?: string; mimeType?: string; description?: string; server?: string }) => {
         const label = r.title || r.name || '';
         const prefix = showServer && r.server ? `[${r.server}] ` : '';
-        return `${prefix}${r.uri} — ${label} (${r.mimeType ?? 'unknown'})`;
+        // Surface the server-provided description (when present) — it is the main
+        // affordance the model uses to pick the right resource to read.
+        const desc = r.description ? `: ${r.description}` : '';
+        return `${prefix}${r.uri} — ${label} (${r.mimeType ?? 'unknown'})${desc}`;
       });
-      return { output: lines.join('\n'), metadata: { count: resources.length, server: serverFilter } };
+      // Cap the joined listing the same way the read tool caps its body, so a
+      // server advertising a very large resource catalog cannot return an
+      // unbounded string into the model context (Claude's maxResultSizeChars).
+      const output = spillToolText(context.cwd, 'mcp-resources', lines.join('\n'), 100_000);
+      return { output, metadata: { count: resources.length, server: serverFilter } };
     } catch (err) {
       return { output: `Error listing MCP resources: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
   },
 };
 
+/**
+ * Build the human/model-facing message describing where a decoded binary blob
+ * was saved, mirroring Claude's `getBinaryBlobSavedMessage`:
+ *   `[Resource from <server> at <uri>] Binary content (<mime>, <size>) saved to <path>`
+ * The leading source description lets the model re-open the file with the Read
+ * tool and know which resource it came from.
+ */
+function blobSavedMessage(file: string, mimeType: string | undefined, size: number, source: string): string {
+  return `${source}Binary content (${mimeType || 'unknown type'}, ${formatSize(size)}) saved to ${file}`;
+}
+
 /** Normalize a raw resources/read result into text/blob entries, persisting blobs. */
-function normalizeResourceResult(result: unknown, dir: string): ResourceContent[] {
+function normalizeResourceResult(result: unknown, dir: string, server: string): ResourceContent[] {
   const raw = (result && typeof result === 'object' ? (result as { contents?: unknown }).contents : undefined);
   if (!Array.isArray(raw)) {
     // Not the standard { contents: [...] } shape — fall back to a single text entry.
     const text = typeof result === 'string' ? result : JSON.stringify(result);
     return [{ text }];
   }
-  return raw.map((item) => {
-    const it = item as { uri?: string; mimeType?: string; text?: string; blob?: string };
+  return raw.map((it: { uri?: string; mimeType?: string; text?: string; blob?: string }) => {
     if (typeof it.blob === 'string' && it.blob.length) {
+      const bytes = Buffer.from(it.blob, 'base64');
       try {
         fs.mkdirSync(dir, { recursive: true });
         const ext = extForMime(it.mimeType);
         const name = `${createHash('sha256').update(it.blob).digest('hex').slice(0, 16)}.${ext}`;
         const file = path.join(dir, name);
-        fs.writeFileSync(file, Buffer.from(it.blob, 'base64'));
-        return { uri: it.uri, mimeType: it.mimeType, blobSavedTo: file };
-      } catch {
+        fs.writeFileSync(file, bytes);
+        // Keep both the structured path AND a legible saved-to-disk message so the
+        // base64 is never inlined into the context (Claude-parity blob interception).
+        const source = `[Resource from ${server} at ${it.uri ?? ''}] `;
+        return { uri: it.uri, mimeType: it.mimeType, blobSavedTo: file, text: blobSavedMessage(file, it.mimeType, bytes.length, source) };
+      } catch (err) {
         // Persistence failed — degrade to a text note rather than throwing.
-        return { uri: it.uri, mimeType: it.mimeType, text: '[binary blob could not be saved to disk]' };
+        const reason = err instanceof Error ? err.message : String(err);
+        return { uri: it.uri, mimeType: it.mimeType, text: `Binary content could not be saved to disk: ${reason}` };
       }
     }
     return { uri: it.uri, mimeType: it.mimeType, text: typeof it.text === 'string' ? it.text : '' };
@@ -153,7 +175,7 @@ export const readMcpResourceTool: ToolDefinition = {
     try {
       const result = await mcpManager.readResource(server, input.uri as string, { signal: context.abortSignal });
       const dir = path.join(os.tmpdir(), 'ami-mcp-resources');
-      const contents = normalizeResourceResult(result, dir);
+      const contents = normalizeResourceResult(result, dir, server);
       if (!contents.length || contents.every((c) => !c.text && !c.blobSavedTo)) {
         return { output: `MCP resource "${input.uri as string}" returned no content.`, metadata: { contents } };
       }

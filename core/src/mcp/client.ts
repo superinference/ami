@@ -118,6 +118,8 @@ export interface McpResource {
   /** Human-display name (2025-06-18). */
   title?: string;
   mimeType?: string;
+  /** Human-readable description the model uses to pick the right resource. */
+  description?: string;
 }
 
 /** A parameterized resource URI (RFC 6570 template), from resources/templates/list. */
