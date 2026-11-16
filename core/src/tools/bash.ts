@@ -1311,6 +1311,9 @@ export const bashTool: ToolDefinition = {
         description: desc,
         env: scrubEnv(context.skillEnv),
         timeoutMs: bgTimeoutMs,
+        // Record the owning agent so the shell is reaped if that agent exits first
+        // (zombie prevention — see ProcessManager.killTasksForAgent).
+        agentId: context.agentId,
       });
       const task = context.processManager.get(taskId);
       return {
@@ -1355,6 +1358,7 @@ export const bashTool: ToolDefinition = {
           cwd: context.cwd,
           description: `[auto-bg] ${command.slice(0, 60)}`,
           env: scrubEnv(context.skillEnv),
+          agentId: context.agentId,
         });
         return {
           output: sanitizeToolOutput(

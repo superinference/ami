@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ProcessManager, computeElapsedMs } from '../src/process-manager';
+import { ProcessManager, computeElapsedMs, STALL_THRESHOLD_MS } from '../src/process-manager';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pm-elapsed-'));
@@ -151,11 +151,19 @@ describe('ProcessManager – stall watchdog notifies instead of killing', () => 
     const stalledEvents: any[] = [];
     pm.on('stalled', (e) => stalledEvents.push(e));
 
-    // Drive the extracted stall-check tick directly (the real interval is 45s).
+    // Drive the extracted stall-check tick directly with an injected clock (the
+    // real poll cadence is STALL_CHECK_INTERVAL_MS; the no-growth threshold is
+    // STALL_THRESHOLD_MS). The first tick records growth; we only act once the
+    // injected clock has advanced past the threshold with no further growth.
+    const t0 = Date.now();
     let last = 0;
-    last = (pm as any).stallTick(id, last); // first tick records the size
+    last = (pm as any).stallTick(id, last, t0); // first tick records the size + growth time
     const sizeBeforeHint = pm.getOutputSize(id);
-    last = (pm as any).stallTick(id, last); // size unchanged + prompt-like -> notify
+    // Still within the no-growth threshold → must NOT notify yet.
+    last = (pm as any).stallTick(id, last, t0 + STALL_THRESHOLD_MS - 1);
+    assert.equal(stalledEvents.length, 0, 'no stall notification before the no-growth threshold elapses');
+    // Past the threshold + prompt-like tail → notify.
+    last = (pm as any).stallTick(id, last, t0 + STALL_THRESHOLD_MS + 1);
 
     // The task is NOT killed — parity with Claude's actionable notification.
     assert.equal(pm.getStatus(id), 'running', 'stalled task must stay running, not be killed');
@@ -175,7 +183,7 @@ describe('ProcessManager – stall watchdog notifies instead of killing', () => 
 
     // A further tick does not re-notify (one-shot) while still stalled.
     const beforeCount = stalledEvents.length;
-    (pm as any).stallTick(id, pm.getOutputSize(id));
+    (pm as any).stallTick(id, pm.getOutputSize(id), t0 + STALL_THRESHOLD_MS + 2);
     assert.equal(stalledEvents.length, beforeCount, 'stall notification is one-shot');
 
     // Output hint only written once.

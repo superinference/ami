@@ -202,6 +202,34 @@ export function formatStoppedByUserNotification(descriptions: string[]): string 
 }
 
 /**
+ * FUNCTIONAL (parity): the status-aware model-facing note for a drained background
+ * completion, mirroring Claude Code's enqueueShellNotification which branches the
+ * summary on the terminal status rather than always saying "completed":
+ *   - completed → `completed (exit code N)`   (exit code only when known)
+ *   - failed    → `failed with exit code N`   (exit code only when known)
+ *   - killed    → `was stopped`               (no exit code — a deliberate stop)
+ * Keeps AMI's task_output guidance (the differentiator) and output-file reference.
+ * A legacy/unknown status falls back to the completed wording. Pure + exported so
+ * the engine drain loop and its tests share one source of truth.
+ */
+export function formatBackgroundCompletionNote(event: CompletedTaskEvent): string {
+  const outputInfo = event.outputPath ? ` Output file: ${event.outputPath}.` : '';
+  const hasExit = event.exitCode !== null && event.exitCode !== undefined;
+  let summary: string;
+  if (event.status === 'killed') {
+    summary = 'was stopped';
+  } else if (event.status === 'failed') {
+    summary = hasExit ? `failed with exit code ${event.exitCode}` : 'failed';
+  } else {
+    summary = hasExit ? `completed (exit code: ${event.exitCode})` : 'completed';
+  }
+  return (
+    `[Background task "${event.taskId}" ${summary}. Command: ${event.description}.${outputInfo} ` +
+    `Use task_output({ task_id: "${event.taskId}" }) to read the output.]`
+  );
+}
+
+/**
  * Compute a background task's elapsed wall-clock duration, mirroring Claude
  * Code's CoordinatorAgentStatus/useElapsedTime formula:
  *   Math.max(0, (endTime ?? now) - startTime - totalPausedMs)
@@ -223,6 +251,20 @@ export function computeElapsedMs(
  *  buffered stdout/stderr can flush, before finalizing the task regardless of any
  *  grandchildren that inherited the fds (see the 'exit'-not-'close' rationale). */
 export const OUTPUT_FLUSH_MS = 50;
+
+/**
+ * Stall-watchdog tuning knobs (parity with Claude Code's LocalShellTask
+ * STALL_CHECK_INTERVAL_MS / STALL_THRESHOLD_MS / STALL_TAIL_BYTES). AMI previously
+ * conflated the poll cadence and the "no growth" threshold into a single 45s
+ * interval, so a stalled task could take up to 90s to be noticed and the tail read
+ * pulled the WHOLE file into memory. Splitting them lets the watchdog POLL output
+ * size cheaply every {@link STALL_CHECK_INTERVAL_MS} but only ACT once output has
+ * not grown for {@link STALL_THRESHOLD_MS}, reading just the last
+ * {@link STALL_TAIL_BYTES} to classify the tail as an interactive prompt.
+ */
+export const STALL_CHECK_INTERVAL_MS = 5_000;
+export const STALL_THRESHOLD_MS = 45_000;
+export const STALL_TAIL_BYTES = 1024;
 
 /**
  * SECURITY (parity with Claude Code's diskOutput): flags for creating a task
@@ -345,15 +387,48 @@ export interface BackgroundProcess {
    * surfaces, matching Claude's bash-vs-agent split in stopTask.
    */
   notified?: boolean;
+  /**
+   * Id of the agent (sub-agent task id) that spawned this task, or undefined when
+   * it was started from the main thread. Recorded so orphaned background shells can
+   * be reaped when their owning agent exits ({@link ProcessManager.killTasksForAgent}),
+   * preventing zombie processes that outlive the agent. Mirrors Claude Code's
+   * LocalShellTaskState.agentId (killShellTasksForAgent).
+   */
+  agentId?: string;
 }
 
-/** Payload emitted on 'complete' and buffered for durable delivery (B4). */
+/**
+ * Payload emitted on 'complete' and buffered for durable delivery (B4). Carries
+ * the terminal `status` (completed/failed/killed) so the model-facing note can be
+ * worded status-aware (completed vs failed vs stopped) rather than always saying
+ * "completed" — parity with Claude Code's enqueueShellNotification which branches
+ * the summary on status.
+ */
 export interface CompletedTaskEvent {
   taskId: string;
   exitCode: number | null;
   command: string;
   description: string;
   outputPath: string;
+  /** Terminal lifecycle status at completion; defaults to 'completed' when a
+   *  legacy emitter omits it (e.g. the MCP monitor's bare 'complete'). */
+  status?: TaskStatus;
+}
+
+/**
+ * Payload for the 'killed' introspection event emitted by {@link ProcessManager.kill}.
+ * Lets a frontend/engine trace WHY a background process ended (parity with Claude
+ * Code's `LocalShellTask ${taskId} kill requested` debug log) and whether the
+ * subsequent completion note was suppressed as noise.
+ */
+export interface KilledTaskEvent {
+  taskId: string;
+  description: string;
+  /** The task-type discriminator ('agent' | 'bash' | undefined-for-monitor). */
+  taskType: 'agent' | 'bash' | undefined;
+  /** True when the kill latched `notified` (explicit model/user stop), so the
+   *  completion note is suppressed. */
+  suppressed: boolean;
 }
 
 interface InternalProcess extends BackgroundProcess {
@@ -372,6 +447,10 @@ interface InternalProcess extends BackgroundProcess {
   /** Latched true once the stall-on-prompt actionable hint has been written, so
    *  the watchdog notifies the model exactly once per task. */
   _stallNotified?: boolean;
+  /** Wall-clock ms of the last tick at which the output file was observed to GROW.
+   *  The stall watchdog only acts once (now - _lastGrowthAt) exceeds
+   *  STALL_THRESHOLD_MS, decoupling the poll cadence from the no-growth threshold. */
+  _lastGrowthAt?: number;
 }
 
 export class ProcessManager extends EventEmitter {
@@ -411,7 +490,7 @@ export class ProcessManager extends EventEmitter {
     return this.runningCount() >= this.maxBackgroundProcesses;
   }
 
-  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): string {
+  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string }): string {
     // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
     // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
     // session could spawn unbounded detached shells. Claude Code caps concurrent
@@ -456,6 +535,7 @@ export class ProcessManager extends EventEmitter {
       exitCode: null,
       outputPath,
       startTime: Date.now(),
+      ...(opts.agentId ? { agentId: opts.agentId } : {}),
       proc,
       outputFd: fd,
       bytesWritten: 0,
@@ -486,11 +566,13 @@ export class ProcessManager extends EventEmitter {
     proc.stderr?.on('error', swallowEBADF);
 
     // Stall detection for background processes. Delegated to stallTick() so the
-    // logic is unit-testable without waiting out the 45s interval.
+    // logic is unit-testable without waiting out the poll interval. The cadence
+    // (STALL_CHECK_INTERVAL_MS) is decoupled from the no-growth threshold
+    // (STALL_THRESHOLD_MS, enforced inside stallTick) — see the knob JSDoc.
     let lastOutputSize = 0;
     const stallCheck = setInterval(() => {
       lastOutputSize = this.stallTick(taskId, lastOutputSize);
-    }, 45_000);
+    }, STALL_CHECK_INTERVAL_MS);
     // Observation-only timer: unref() so a still-registered task's poller can never
     // by itself keep the Node event loop alive and block clean process exit
     // (parity with Claude Code unref-ing its progress-poll interval).
@@ -527,7 +609,7 @@ export class ProcessManager extends EventEmitter {
       entry.endTime = Date.now();
       try { fs.closeSync(fd); } catch { /* already closed (e.g. after kill) */ }
       entry.outputFd = null;
-      this.emitComplete({ taskId, exitCode: entry.exitCode, command: entry.command, description: entry.description, outputPath: entry.outputPath });
+      this.emitComplete({ taskId, exitCode: entry.exitCode, command: entry.command, description: entry.description, outputPath: entry.outputPath, status: entry.status });
     };
 
     // 'close' is the normal completion signal: it fires once all stdio pipes have
@@ -558,7 +640,7 @@ export class ProcessManager extends EventEmitter {
       this.safeWrite(fd, Buffer.from(`\n[process error: ${err.message}]\n`));
       try { fs.closeSync(fd); } catch { /* ignore */ }
       entry.outputFd = null;
-      this.emitComplete({ taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath });
+      this.emitComplete({ taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath, status: 'failed' });
     });
 
     return taskId;
@@ -677,6 +759,19 @@ export class ProcessManager extends EventEmitter {
       entry.outputFd = null;
     }
 
+    // INTROSPECTION (parity with Claude Code's `LocalShellTask ${taskId} kill
+    // requested` debug log): emit a structured 'killed' event so a frontend/engine
+    // can trace WHY a background process ended (and whether its completion note was
+    // suppressed). Unlike the completion note this fires for EVERY kill — including
+    // suppressed explicit stops — so the lifecycle is always observable.
+    const killed: KilledTaskEvent = {
+      taskId,
+      description: entry.description,
+      taskType: entry._registered ? 'agent' : (entry.command?.startsWith('monitor:') ? undefined : 'bash'),
+      suppressed: !!entry.notified,
+    };
+    this.emit('killed', killed);
+
     return true;
   }
 
@@ -744,26 +839,40 @@ export class ProcessManager extends EventEmitter {
 
   /**
    * One stall-check tick for a running background task (extracted from spawn()'s
-   * 45s interval so it is unit-testable). Mirrors Claude Code's startStallWatchdog:
-   * when the output STOPPED growing AND the tail looks like an interactive prompt,
-   * write an ACTIONABLE hint into the task's own output file (surfaced to the model
-   * via getOutput — the already-wired delivery surface), PAUSE the elapsed clock,
-   * and emit a one-shot 'stalled' event — instead of silently KILLING the task as
-   * before. If output grew since the last tick the task is making progress: resume
-   * the clock if it was paused. Returns the latest observed output size for the
-   * caller to carry into the next tick.
+   * poll interval so it is unit-testable). Mirrors Claude Code's startStallWatchdog:
+   * the watchdog POLLS cheaply every STALL_CHECK_INTERVAL_MS but only ACTS once the
+   * output has not grown for STALL_THRESHOLD_MS AND the tail (last STALL_TAIL_BYTES)
+   * looks like an interactive prompt — then it writes an ACTIONABLE hint into the
+   * task's own output file (surfaced to the model via getOutput — the already-wired
+   * delivery surface), PAUSES the elapsed clock, and emits a one-shot 'stalled'
+   * event, instead of silently KILLING the task. If output grew since the last tick
+   * the task is making progress: reset the no-growth timer and resume the clock if
+   * paused. `now` is injectable so the threshold can be driven deterministically in
+   * tests. Returns the latest observed output size for the next tick.
    */
-  private stallTick(taskId: string, lastSize: number): number {
+  private stallTick(taskId: string, lastSize: number, now: number = Date.now()): number {
     const entry = this.processes.get(taskId);
     if (!entry || entry.status !== 'running') return lastSize;
     const currentSize = this.getOutputSize(taskId);
     if (currentSize !== lastSize) {
-      // Output grew — the task is making progress, not stalled.
+      // Output grew — the task is making progress, not stalled. Reset the
+      // no-growth timer so the threshold is measured from this moment.
+      entry._lastGrowthAt = now;
       if (entry._pausedAt !== undefined) this.resumeTask(taskId);
       return currentSize;
     }
+    // No growth this tick. Start the no-growth timer on first observation and only
+    // act once it has been stalled for at least STALL_THRESHOLD_MS (decoupled from
+    // the poll cadence) — a merely slow command gets the full grace window.
+    if (entry._lastGrowthAt === undefined) {
+      entry._lastGrowthAt = now;
+      return currentSize;
+    }
+    if (now - entry._lastGrowthAt < STALL_THRESHOLD_MS) return currentSize;
     if (!entry._stallNotified) {
-      const result = this.getOutput(taskId, 10);
+      // Byte-bounded tail read (STALL_TAIL_BYTES) so classifying a huge log's tail
+      // never pulls the whole file into memory (parity with Claude's tailFile).
+      const result = this.getOutput(taskId, 10, undefined, STALL_TAIL_BYTES);
       if (result && this.looksLikePrompt(result.output)) {
         entry._stallNotified = true;
         this.pauseTask(taskId);
@@ -884,6 +993,27 @@ export class ProcessManager extends EventEmitter {
       if (this.removeTask(taskId)) removed++;
     }
     return removed;
+  }
+
+  /**
+   * FUNCTIONAL (parity): kill every RUNNING task spawned by `agentId` (zombie
+   * prevention). Invoked from the sub-agent lifecycle's finally block so background
+   * shells a sub-agent launched don't outlive the agent that started them — parity
+   * with Claude Code's killShellTasksForAgent (prevents the "10-day fake-logs.sh
+   * zombie" class of orphan). Only tasks whose recorded `agentId` matches and that
+   * are still running are affected; returns the count killed. Internal kills (no
+   * suppressCompletion) so a leftover task the model didn't explicitly stop still
+   * surfaces its termination.
+   */
+  killTasksForAgent(agentId: string): number {
+    if (!agentId) return 0;
+    let killed = 0;
+    for (const taskId of Array.from(this.processes.keys())) {
+      const entry = this.processes.get(taskId);
+      if (!entry || entry.agentId !== agentId || entry.status !== 'running') continue;
+      if (this.kill(taskId)) killed++;
+    }
+    return killed;
   }
 
   getOutput(
@@ -1029,13 +1159,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, ...rest } = entry;
     return rest;
   }
 
@@ -1074,6 +1204,10 @@ export class ProcessManager extends EventEmitter {
     description: string;
     outputPath: string;
     abortFn: () => void;
+    /** Id of the PARENT agent that spawned this sub-agent, so a parent's
+     *  killTasksForAgent() can reap it if the parent exits first. Undefined for a
+     *  top-level agent spawned from the main thread. */
+    agentId?: string;
   }): void {
     this.processes.set(taskId, {
       taskId,
@@ -1084,6 +1218,7 @@ export class ProcessManager extends EventEmitter {
       exitCode: null,
       outputPath: opts.outputPath,
       startTime: Date.now(),
+      ...(opts.agentId ? { agentId: opts.agentId } : {}),
       proc: { pid: process.pid, kill: opts.abortFn } as any,
       outputFd: null,
       bytesWritten: 0,

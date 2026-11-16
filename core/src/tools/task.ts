@@ -1650,6 +1650,9 @@ export const taskTool: ToolDefinition = {
         } finally {
           clearBgStall();
           subEngine.shutdown?.();
+          // Reap any background shells this agent left running so they don't
+          // outlive the agent (zombie prevention — killShellTasksForAgent parity).
+          context.processManager?.killTasksForAgent(taskId);
           // Release-on-finish: drop this sub-agent's isolated file cache.
           releaseFileCache(effectiveCwd, taskId);
         }
@@ -1806,6 +1809,9 @@ export const taskTool: ToolDefinition = {
     } finally {
       clearStallTimer();
       subEngine.shutdown?.();
+      // Reap any background shells this agent left running so they don't outlive
+      // the agent (zombie prevention — killShellTasksForAgent parity).
+      context.processManager?.killTasksForAgent(taskId);
       // Release-on-finish: drop this sub-agent's isolated file cache.
       releaseFileCache(effectiveCwd, taskId);
       // Foreground teammate finished (success or error) — mark it idle so it no
