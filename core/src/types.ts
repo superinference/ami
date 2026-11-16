@@ -432,6 +432,13 @@ export interface ToolDefinition {
   description: string;
   inputSchema: ToolInputSchema;
   isReadOnly: boolean;
+  /** Per-invocation read-only classification that overrides the static `isReadOnly`
+   *  flag for THIS specific call. A few tools are read-only for some inputs and
+   *  writable for others — e.g. the config tool only reads on `get` but mutates on
+   *  `set`. When present, the permission layer trusts this verdict so a read
+   *  auto-allows without a prompt while a write stays on the permission-asking path.
+   *  Parity: Claude's `Tool.isReadOnly(input)`. */
+  isReadOnlyForInput?: (input: Record<string, unknown>) => boolean;
   isConcurrencySafe?: boolean;
   /** True for tools originating from MCP servers — used for auto-deferral when schema tokens exceed the context budget. */
   isMcp?: boolean;

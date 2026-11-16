@@ -304,6 +304,7 @@ export {
 } from './tool-gates';
 export {
   getToolCategory,
+  isToolReadOnlyForInput,
   TOOL_CATEGORY_LABELS,
 } from './tool-categories';
 export type { ToolCategory, CategorizableTool } from './tool-categories';

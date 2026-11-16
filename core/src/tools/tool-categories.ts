@@ -28,6 +28,26 @@ export interface CategorizableTool {
   name: string;
   isReadOnly?: boolean;
   isMcp?: boolean;
+  /** Per-invocation read-only predicate (see {@link isToolReadOnlyForInput}). */
+  isReadOnlyForInput?: (input: Record<string, unknown>) => boolean;
+}
+
+/**
+ * Per-invocation read-only verdict for a single tool call. Most tools are read-only
+ * or writable for their whole lifetime (`isReadOnly`), but a few — notably the config
+ * tool — are read-only for some inputs and writable for others: a config `get` only
+ * reads, while a `set` mutates on-disk config. When a tool declares
+ * `isReadOnlyForInput`, that dynamic verdict wins for THIS call (parity: Claude's
+ * `Tool.isReadOnly(input)`), so a read auto-allows without a permission prompt while a
+ * write stays on the permission-asking path. Tools without the hook fall back to their
+ * static `isReadOnly` flag.
+ */
+export function isToolReadOnlyForInput(
+  tool: CategorizableTool,
+  input: Record<string, unknown>,
+): boolean {
+  if (tool.isReadOnlyForInput) return tool.isReadOnlyForInput(input);
+  return !!tool.isReadOnly;
 }
 
 /**

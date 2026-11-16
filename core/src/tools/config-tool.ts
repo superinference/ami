@@ -403,6 +403,15 @@ export const configTool: ToolDefinition = {
     required: ['action'],
   },
   isReadOnly: false,
+  // Dynamic read-vs-write classification (parity: Claude's ConfigTool.isReadOnly =
+  // `value === undefined`). A config call only mutates on-disk config when it is a
+  // `set` that carries a value (a plain `get`, or a `set` with no value — which is a
+  // no-op error — reads nothing on disk). Reporting the read case as read-only lets
+  // the permission layer auto-allow config reads without a prompt while keeping every
+  // actual write on the permission-asking path, matching Claude's auto-allow-reads /
+  // ask-on-set affordance exactly. See core/tools/tool-categories.isToolReadOnlyForInput.
+  isReadOnlyForInput: (input: Record<string, unknown>): boolean =>
+    !(input.action === 'set' && input.value !== undefined),
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const action = input.action as string;
 
