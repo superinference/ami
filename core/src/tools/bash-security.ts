@@ -679,6 +679,30 @@ function checkSedExpression(expr: string): string | null {
   return null;
 }
 
+/**
+ * Conservative "when in doubt, unsafe" rejection of sed scripts that are too
+ * complex to reason about statically (parity: Claude Code
+ * sedValidation.ts `containsDangerousOperations`, L488-504). A `{ … }` block can
+ * hide arbitrary commands behind address grouping, and an embedded newline turns
+ * a one-liner into a multi-line script — both defeat the pattern-based write/exec
+ * detectors, so we refuse to auto-approve them. Returns a reason string when the
+ * expression should be rejected, or null when it is simple enough to inspect.
+ *
+ * Note: Claude also blanket-rejects any `#` not acting as an `s#…` delimiter. AMI
+ * deliberately does NOT port that — its /regex/ address handling allows the
+ * precise, benign `sed '/^#/d'` (delete comment lines), a superset over Claude's
+ * cruder block. That precision is intentional and locked by tests.
+ */
+function sedExpressionTooComplex(expr: string): string | null {
+  if (expr.includes('{') || expr.includes('}')) {
+    return 'sed script contains a { } block, which is too complex to statically verify as safe';
+  }
+  if (/[\n\r]/.test(expr)) {
+    return 'sed script contains an embedded newline (multi-line scripts are too complex to statically verify as safe)';
+  }
+  return null;
+}
+
 /** Full dangerous-sed inspection of ONE segment whose base command is sed. */
 function checkSedSegment(seg: string): SecurityCheckResult {
   const trimmed = seg.trim();
@@ -702,6 +726,8 @@ function checkSedSegment(seg: string): SecurityCheckResult {
   for (const expr of toCheck) {
     const reason = checkSedExpression(expr);
     if (reason) return fail(CHECK_IDS.SED_DANGEROUS, reason);
+    const complex = sedExpressionTooComplex(expr);
+    if (complex) return fail(CHECK_IDS.SED_DANGEROUS, complex);
   }
 
   // 'y' (transliterate) with potential follow-up commands
@@ -1062,8 +1088,45 @@ function validateBackslashEscapedWhitespace(command: string, extracted: { fullyU
   return PASS;
 }
 
+/**
+ * Walk `command` with BASH quoting semantics and report whether the raw string
+ * carries an ODD number of unescaped `"` or `'` (an unterminated quote). Mirrors
+ * Claude Code's `hasMalformedTokens` quote scan (shellQuote.ts): a backslash
+ * escapes the next character OUTSIDE single quotes, and nothing is escaped inside
+ * single quotes — so a `'` that lives inside `"…"` (and vice-versa) does NOT
+ * toggle the opposite quote's balance. This fixes the previous naive
+ * `.split(quote).length` counter, which miscounted a quote nested inside the
+ * other quote type (e.g. the apostrophe in `echo "it's fine"`).
+ */
+function hasUnbalancedQuotes(command: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  let doubleCount = 0;
+  let singleCount = 0;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === '\\' && !inSingle) {
+      i++; // backslash escapes the next char outside single quotes
+      continue;
+    }
+    if (c === '"' && !inSingle) {
+      doubleCount++;
+      inDouble = !inDouble;
+    } else if (c === "'" && !inDouble) {
+      singleCount++;
+      inSingle = !inSingle;
+    }
+  }
+  return doubleCount % 2 !== 0 || singleCount % 2 !== 0;
+}
+
 function validateMalformedTokenInjection(command: string): SecurityCheckResult {
-  if (/['"]\s*[;|&]/.test(command) && (command.split("'").length % 2 === 0 || command.split('"').length % 2 === 0)) {
+  // Only a concern when a command separator is present: ambiguous/unbalanced
+  // quoting combined with `;`/`&&`/`||`/`|`/`&` is the eval-reparse bypass class
+  // (HackerOne). Without a separator an unterminated quote is just a malformed
+  // single command the shell will reject, not a hidden-command injection.
+  if (!/[;|&]/.test(command)) return PASS;
+  if (hasUnbalancedQuotes(command)) {
     return fail(CHECK_IDS.MALFORMED_TOKEN, 'Blocked: potentially malformed quoting with command separators');
   }
   return PASS;
