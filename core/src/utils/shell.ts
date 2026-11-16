@@ -29,6 +29,20 @@ const TAIL_CHARS = 330_000;
 const DEFAULT_STALL_TIMEOUT_MS = 45_000;
 
 /**
+ * After the shell process itself emits `'exit'`, how long to keep waiting for the
+ * stdio pipes to emit `'close'` before concluding anyway.
+ *
+ * `'close'` fires only once EVERY inherited stdio fd is closed, which a detached
+ * grandchild that inherited the pipes keeps open for its whole lifetime
+ * (`echo done; sleep 300 &`) — so a `'close'`-only wait would block the whole
+ * foreground timeout even though the command already finished. The window is a
+ * QUIET period: any new output resets it, so a command still flushing a large
+ * result is never truncated — only a genuinely idle-but-unclosed pipe triggers
+ * the `'exit'`-based fallback.
+ */
+const EXIT_DRAIN_QUIET_MS = 150;
+
+/**
  * Exit code reported when the shell/command could not be launched at all (no
  * suitable shell found, or the spawn itself failed — ENOENT/EACCES/etc.). 126 is
  * the standard Unix "command found but not executable / could not execute" code.
@@ -386,6 +400,7 @@ export function execCommand(
     const procStderr = proc.stderr!;
 
     let settled = false;
+    let exitDrainTimer: ReturnType<typeof setTimeout> | null = null;
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null = null): void => {
       if (settled) return;
@@ -397,6 +412,19 @@ export function execCommand(
         exitCode,
         signal,
       });
+    };
+
+    // Conclude, first surfacing a human-readable note when the child was killed
+    // by a signal (crash/OOM/self-signal) so the model sees WHAT killed it
+    // instead of a bare `exitCode: null`. Shared by the `'close'` and the
+    // `'exit'`-fallback completion paths (guarded by `!settled` so a
+    // timeout/abort that already resolved — and then SIGKILLs the tree — doesn't
+    // tack a misleading signal note onto its result).
+    const concludeWithSignalNote = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (!settled && signal) {
+        stderrBuf.push(`\n[Process terminated by signal ${signal}${describeSignal(signal)}]`);
+      }
+      finish(code, signal);
     };
 
     // --- Timeout handling ---
@@ -433,6 +461,7 @@ export function execCommand(
     const cleanUp = (): void => {
       clearTimeout(timer);
       if (stallCheck) clearInterval(stallCheck);
+      if (exitDrainTimer) clearTimeout(exitDrainTimer);
       abortSignal?.removeEventListener('abort', onAbort);
     };
 
@@ -461,19 +490,36 @@ export function execCommand(
     });
 
     // --- Process exit ---
+    // Resolve on the shell's OWN 'exit', not only on 'close'. 'close' fires only
+    // once every inherited stdio fd is closed — which a detached grandchild that
+    // inherited the stdout/stderr pipes (e.g. `echo done; sleep 300 &`) keeps
+    // open for its whole lifetime. A 'close'-only wait would therefore block for
+    // the entire timeout even though the command already finished (stall
+    // detection won't fire either — a silent grandchild doesn't look like a
+    // prompt). On 'exit' we wait for a short QUIET window (no new output) so a
+    // normally-draining pipe still delivers its tail and 'close' can win the
+    // race; only when 'close' stays blocked do we destroy the pipes and conclude
+    // with the shell's real exit code/signal.
+    proc.on('exit', (code, signal) => {
+      if (settled) return;
+      const drain = (): void => {
+        exitDrainTimer = setTimeout(() => {
+          if (settled) return;
+          // Output arrived within the window — the pipe is still flushing, so
+          // extend the quiet period rather than truncating a large result.
+          if (Date.now() - lastDataTime < EXIT_DRAIN_QUIET_MS) { drain(); return; }
+          destroyStreams(proc);
+          concludeWithSignalNote(code, signal);
+        }, EXIT_DRAIN_QUIET_MS);
+      };
+      drain();
+    });
+
     // Node's 'close' passes (code, signal): a signal-killed child reports
-    // code === null with signal set (e.g. 'SIGSEGV'), so we surface the signal
-    // to distinguish a crash from a clean exit or a timeout.
+    // code === null with signal set (e.g. 'SIGSEGV'). When it fires it carries
+    // the fully-drained output, so it is preferred over the 'exit' fallback.
     proc.on('close', (code, signal) => {
-      // A genuine signal-kill (crash, OOM, self-signal) reports code === null
-      // with signal set. Surface a human-readable note naming the signal so the
-      // model sees WHAT killed the process instead of a bare `exitCode: null`.
-      // Guarded by `!settled` so a timeout/abort that already resolved (and then
-      // SIGKILLs the tree) doesn't tack a misleading signal note onto its result.
-      if (!settled && signal) {
-        stderrBuf.push(`\n[Process terminated by signal ${signal}${describeSignal(signal)}]`);
-      }
-      finish(code, signal);
+      concludeWithSignalNote(code, signal);
     });
 
     proc.on('error', (err: NodeJS.ErrnoException) => {
@@ -507,25 +553,78 @@ function destroyStreams(proc: child_process.ChildProcess): void {
 }
 
 /**
+ * Enumerate a process and ALL its descendants (the process TREE) by reading the
+ * system process table (`ps`) and walking the ppid graph down from `rootPid`.
+ *
+ * Used by {@link killTree} on POSIX so a descendant that escaped the child's
+ * process group — via `setsid()` / becoming its own session leader — is still
+ * terminated. A bare process-group kill (`kill -<pid>`) misses those, leaving
+ * orphaned processes that keep consuming resources after a timeout/abort/kill.
+ * Only the subtree rooted at `rootPid` is returned, never an unrelated pid, so
+ * the kill is safe by construction. Falls back to `[rootPid]` if the process
+ * table can't be read.
+ */
+function collectProcessTree(rootPid: number): number[] {
+  let table: string;
+  try {
+    table = shellHooks.execSync('ps -A -o pid=,ppid=', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString();
+  } catch {
+    return [rootPid];
+  }
+  const childrenOf = new Map<number, number[]>();
+  for (const line of table.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const ppid = Number(match[2]);
+    const siblings = childrenOf.get(ppid);
+    if (siblings) siblings.push(pid);
+    else childrenOf.set(ppid, [pid]);
+  }
+  const tree: number[] = [];
+  const seen = new Set<number>();
+  const stack = [rootPid];
+  while (stack.length > 0) {
+    const pid = stack.pop()!;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    tree.push(pid);
+    for (const child of childrenOf.get(pid) ?? []) stack.push(child);
+  }
+  return tree;
+}
+
+/**
  * Kill the process and its descendants.
+ *
+ * On Windows `taskkill /T` is already tree-based. On POSIX we kill every pid in
+ * the process TREE individually (via {@link collectProcessTree} — catching
+ * descendants that escaped the group with `setsid()`), THEN signal the process
+ * group (negative pid) to mop up anything the `ps` snapshot missed due to a
+ * race. If nothing could be signalled, fall back to the ChildProcess handle.
  */
 function killTree(proc: child_process.ChildProcess): void {
   if (proc.pid == null) return;
 
-  try {
-    if (shellHooks.platform() === 'win32') {
-      // On Windows, use taskkill to kill the tree
-      shellHooks.execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
-    } else {
-      // On Unix, kill the process group (negative pid)
-      shellHooks.kill(-proc.pid, 'SIGKILL');
-    }
-  } catch {
-    // Process may already be dead; swallow the error
+  if (shellHooks.platform() === 'win32') {
     try {
-      proc.kill('SIGKILL');
+      shellHooks.execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
     } catch {
-      // Nothing left to do
+      try { proc.kill('SIGKILL'); } catch { /* already dead */ }
     }
+    return;
+  }
+
+  let signalled = false;
+  for (const pid of collectProcessTree(proc.pid)) {
+    try { shellHooks.kill(pid, 'SIGKILL'); signalled = true; } catch { /* already dead */ }
+  }
+  // Process-group sweep (negative pid) for anything the snapshot raced past.
+  try { shellHooks.kill(-proc.pid, 'SIGKILL'); signalled = true; } catch { /* group gone */ }
+  if (!signalled) {
+    try { proc.kill('SIGKILL'); } catch { /* nothing left to do */ }
   }
 }

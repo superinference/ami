@@ -70,3 +70,108 @@ describe('execCommand – truncation message reports total size', () => {
     assert.ok(!r.stdout.includes('truncated'));
   });
 });
+
+const tick = (): Promise<void> => new Promise((res) => setImmediate(res));
+
+// ---------------------------------------------------------------------------
+// Resolve on the shell's own 'exit', not only 'close' (U049 — parity with
+// Claude ShellCommand.ts L269-272). A detached grandchild that inherits the
+// stdio pipes keeps 'close' from firing; AMI must still return when the shell
+// itself exits instead of blocking for the full timeout.
+// ---------------------------------------------------------------------------
+
+describe('execCommand – resolves on shell exit when close is blocked', () => {
+  it('returns the real exit code when only "exit" fires (grandchild holds the pipes open)', async () => {
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    // Generous timeout so a pre-fix 'close'-only wait would (if at all) resolve
+    // via timeout with exitCode null — discriminating the fix by VALUE (0 vs
+    // null), not merely by a test-harness hang.
+    const p = execCommand('echo done; sleep 300 &', { cwd: os.tmpdir(), timeout: 5000, stallTimeoutMs: 0 });
+    fake.stdout.write('done\n');
+    await tick(); // let execCommand's reader consume the chunk
+    fake.emit('exit', 0, null); // shell exits; NO 'close' — grandchild holds the fds
+    const r = await p;
+    assert.equal(r.exitCode, 0, 'completes with the shell exit code, not a timeout null');
+    assert.ok(r.stdout.includes('done'), r.stdout);
+  });
+
+  it('surfaces a signal note when the shell exits via signal with close blocked', async () => {
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    const p = execCommand('x', { cwd: os.tmpdir(), timeout: 5000, stallTimeoutMs: 0 });
+    fake.emit('exit', null, 'SIGSEGV');
+    const r = await p;
+    assert.equal(r.signal, 'SIGSEGV');
+    assert.ok(r.stderr.includes('terminated by signal SIGSEGV'), r.stderr);
+    assert.ok(r.stderr.includes('segmentation fault'), r.stderr);
+  });
+
+  it('prefers close output: close wins the race so exit never truncates', async () => {
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    const p = execCommand('echo hi', { cwd: os.tmpdir(), stallTimeoutMs: 0 });
+    fake.stdout.write('hi\n');
+    await tick();
+    fake.emit('exit', 0, null);
+    fake.emit('close', 0, null); // close arrives right after exit (normal case)
+    const r = await p;
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.includes('hi'), r.stdout);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Full POSIX process-tree kill (U049 — parity with Claude's treeKill,
+// ShellCommand.ts #doKill). Kill every descendant pid, not just the process
+// group, so a child that escaped the group via setsid() is still terminated —
+// while never touching an unrelated pid.
+// ---------------------------------------------------------------------------
+
+describe('killTree – POSIX full process-tree kill on abort', () => {
+  it('kills every descendant pid in the tree (not just the group), sparing unrelated pids', async () => {
+    const fake = new FakeProc();
+    fake.pid = 1000;
+    mock.method(shellHooks, 'platform', () => 'linux' as NodeJS.Platform);
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    // Tree: 1000 -> 1001 -> {1002, 1003}; plus an unrelated 9999 under init.
+    mock.method(
+      shellHooks,
+      'execSync',
+      (() => '  1000     1\n  1001  1000\n  1002  1001\n  1003  1001\n  9999     1\n') as typeof shellHooks.execSync,
+    );
+    const killed: number[] = [];
+    mock.method(shellHooks, 'kill', ((pid: number) => { killed.push(pid); }) as typeof shellHooks.kill);
+
+    const ac = new AbortController();
+    const p = execCommand('run-tree', { cwd: os.tmpdir(), stallTimeoutMs: 0, abortSignal: ac.signal });
+    ac.abort();
+    await p;
+
+    assert.ok(killed.includes(1000), 'root killed');
+    assert.ok(killed.includes(1001), 'child killed');
+    assert.ok(killed.includes(1002), 'grandchild 1002 killed');
+    assert.ok(killed.includes(1003), 'grandchild 1003 killed');
+    assert.ok(killed.includes(-1000), 'process group swept');
+    assert.ok(!killed.includes(9999), 'unrelated pid untouched');
+  });
+
+  it('falls back to the process group when the process table cannot be read', async () => {
+    const fake = new FakeProc();
+    fake.pid = 2000;
+    mock.method(shellHooks, 'platform', () => 'linux' as NodeJS.Platform);
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    mock.method(shellHooks, 'execSync', (() => { throw new Error('ps unavailable'); }) as typeof shellHooks.execSync);
+    const killed: number[] = [];
+    mock.method(shellHooks, 'kill', ((pid: number) => { killed.push(pid); }) as typeof shellHooks.kill);
+
+    const ac = new AbortController();
+    const p = execCommand('run', { cwd: os.tmpdir(), stallTimeoutMs: 0, abortSignal: ac.signal });
+    ac.abort();
+    await p;
+
+    // Root (from the [rootPid] fallback) and the group sweep are both signalled.
+    assert.ok(killed.includes(2000), 'root killed via fallback');
+    assert.ok(killed.includes(-2000), 'process group swept');
+  });
+});
