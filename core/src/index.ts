@@ -148,6 +148,7 @@ export {
   validatePathExpansionSafety,
 } from './utils/path';
 export { generateTitle, sanitizeTitle, truncateTitle } from './title-generator';
+export { stripDisplayTags } from './utils/display-tags';
 export { ProcessManager, TASK_STATUS } from './process-manager';
 export type { BackgroundProcess } from './process-manager';
 

@@ -1,6 +1,7 @@
 import type { ProviderConfig, Message } from './types';
 import { streamChatCompletion } from './provider';
 import { contentToText } from './session';
+import { stripDisplayTags } from './utils/display-tags';
 
 /**
  * A message is a valid title SOURCE only when it is genuinely human-authored.
@@ -148,9 +149,15 @@ export async function generateTitle(
     maxTokens: 50,
   };
 
+  // The first user message carries system-injected `<tag>…</tag>` blocks (appended
+  // context files, system-reminder wrappers, IDE/hook/task notifications). Strip them
+  // so neither the title-model prompt nor the raw-message fallback title reflects
+  // machine-injected noise instead of what the user actually asked.
+  const cleaned = stripDisplayTags(userMessage);
+
   const messages = [{
     role: 'user' as const,
-    content: `Generate a concise title (max 50 chars, single line, no quotes, same language as the text) for this conversation:\n\n"${userMessage.slice(0, 500)}"`,
+    content: `Generate a concise title (max 50 chars, single line, no quotes, same language as the text) for this conversation:\n\n"${cleaned.slice(0, 500)}"`,
   }];
 
   let title = '';
@@ -183,5 +190,5 @@ export async function generateTitle(
   title = sanitizeTitle(title);
   // Word-boundary-aware truncation; fall back to the sanitised user message when the
   // model produced nothing usable (same fallback as before, now also word-aware).
-  return truncateTitle(title) || truncateTitle(sanitizeTitle(userMessage));
+  return truncateTitle(title) || truncateTitle(sanitizeTitle(cleaned));
 }

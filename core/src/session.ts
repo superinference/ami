@@ -8,6 +8,7 @@ import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot } from './refere
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, fsHooks, OWNER_ONLY_FILE_MODE, OWNER_ONLY_DIR_MODE } from './utils/fs-atomic';
 import { getGitBranch } from './utils/git';
+import { stripDisplayTags } from './utils/display-tags';
 import { AMI_VERSION } from './version';
 import { isEnvTruthy } from './analytics';
 export { assertPathWithin } from './path-safety';
@@ -146,7 +147,10 @@ export function extractMeaningfulPreview(messages: Message[]): string {
     if (m.isMeta || m.isSidechain || m.isVisibleInTranscriptOnly) continue;
 
     for (const rawText of contentToTexts(m.content)) {
-      const flat = rawText.replace(/\n/g, ' ').trim();
+      // Strip system-injected `<tag>…</tag>` blocks (appended context files,
+      // system-reminder wrappers, IDE/hook/task notifications) so the preview
+      // reflects what the user actually typed, not machine-injected noise (U188).
+      const flat = stripDisplayTags(rawText).replace(/\n/g, ' ').trim();
       if (!flat) continue;
 
       // Compaction summaries are history, not a prompt — never a picker label.
