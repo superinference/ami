@@ -883,8 +883,10 @@ export function buildReadDenials(cfg: SandboxConfig): string {
 }
 
 /** A valid TCP port (1..65535) usable for a loopback proxy. Non-integers and
- * out-of-range values are rejected so a bad config can never emit a bogus env. */
-function isValidProxyPort(port: unknown): port is number {
+ * out-of-range values are rejected so a bad config can never emit a bogus env.
+ * Shared with the container backend ({@link import('./docker-sandbox')}) so both
+ * sandboxes validate proxy ports identically — no duplicate predicate. */
+export function isValidProxyPort(port: unknown): port is number {
   return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535;
 }
 

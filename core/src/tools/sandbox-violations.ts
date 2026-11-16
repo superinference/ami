@@ -17,6 +17,49 @@
  * operators whitelist known-benign denials without disabling the sandbox wholesale.
  */
 
+/**
+ * PARITY (Claude's `<sandbox_violations>` envelope — `extractSandboxViolations` /
+ * `removeSandboxViolationTags` in `BashToolResultMessage.tsx`): the tag name that
+ * wraps sandbox-caused diagnostic notes in a command's stderr. The block is kept
+ * in the MODEL-facing output (so the model can explain that a failure was the
+ * sandbox boundary, not a genuine error) but stripped from the USER-facing error
+ * display. Defining the tag ONCE here keeps the emitter ({@link wrapSandboxViolations},
+ * used by docker-sandbox's `annotateStderrWithSandboxFailures`) and the stripper
+ * ({@link removeSandboxViolationTags}, used by the CLI tool-view renderer) in sync —
+ * no duplicated literal.
+ */
+export const SANDBOX_VIOLATIONS_TAG = 'sandbox_violations';
+
+/** Matches a whole `<sandbox_violations>…</sandbox_violations>` block (non-greedy,
+ *  dot-all) so {@link removeSandboxViolationTags} can excise it from a display string. */
+const SANDBOX_VIOLATIONS_TAG_RE = new RegExp(
+  `<${SANDBOX_VIOLATIONS_TAG}>[\\s\\S]*?</${SANDBOX_VIOLATIONS_TAG}>`,
+  'g',
+);
+
+/**
+ * Wrap sandbox diagnostic `notes` in a single `<sandbox_violations>` envelope so
+ * the model keeps them (to explain the failure) while a UI renderer strips the
+ * block from what the user sees. Returns '' for an empty/blank note list so a
+ * caller can append it unconditionally without emitting an empty tag.
+ */
+export function wrapSandboxViolations(notes: readonly string[]): string {
+  const body = notes.filter((n) => n && n.trim().length > 0).join('\n');
+  if (body.length === 0) return '';
+  return `<${SANDBOX_VIOLATIONS_TAG}>\n${body}\n</${SANDBOX_VIOLATIONS_TAG}>`;
+}
+
+/**
+ * Remove every `<sandbox_violations>…</sandbox_violations>` block from `text`
+ * (model-only markup — the user display must not show it). Mirrors Claude's
+ * `removeSandboxViolationTags`. Pure; returns `text` unchanged when no block is
+ * present. Used by the CLI tool-error renderer so the emitter and stripper share
+ * the one tag definition above.
+ */
+export function removeSandboxViolationTags(text: string): string {
+  return text.replace(SANDBOX_VIOLATIONS_TAG_RE, '');
+}
+
 /** The class of sandbox boundary that blocked an operation. */
 export type SandboxViolationKind = 'network' | 'filesystem';
 

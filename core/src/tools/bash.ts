@@ -1188,6 +1188,12 @@ export const bashTool: ToolDefinition = {
         denyReadPaths: context.sandbox.filesystem?.denyRead,
         allowWritePaths: context.sandbox.filesystem?.allowWrite,
         allowUnixSockets: context.sandbox.network?.allowUnixSockets,
+        // PARITY (per-host container egress): blackhole denied hosts + route through
+        // the configured host egress proxy (previously honored only by the unshare
+        // backend), so container-mode network control is no longer all-or-nothing.
+        deniedHosts: context.sandbox.network?.deniedHosts,
+        httpProxyPort: context.sandbox.network?.httpProxyPort,
+        socksProxyPort: context.sandbox.network?.socksProxyPort,
         // PARITY (custom seccomp profile): thread the operator-supplied Docker
         // seccomp JSON profile into the container backend.
         seccompProfilePath: context.sandbox.seccomp?.profilePath,

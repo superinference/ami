@@ -17,9 +17,10 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import type { SandboxPolicy } from '../types';
 import { shellHooks } from '../utils/shell';
-import { BARE_GIT_REPO_FILES } from './bash-sandbox';
-import { sandboxViolationStore } from './sandbox-violations';
+import { BARE_GIT_REPO_FILES, isValidProxyPort } from './bash-sandbox';
+import { sandboxViolationStore, wrapSandboxViolations } from './sandbox-violations';
 
 // The project's own agent sandbox image, built from the core submodule's
 // Dockerfile (core/Dockerfile → `openshell-ami`) and published by
@@ -33,6 +34,31 @@ export interface DockerSandboxConfig {
   /** Absolute path to the only writable mount (the project/workspace root). */
   projectDir: string;
   allowNetwork: boolean;
+  /**
+   * PARITY (per-host egress denylist — Claude's `SandboxNetworkConfig.deniedHosts`,
+   * "deny wins over allow"): hostnames blocked for outbound network INSIDE the
+   * container even when `allowNetwork` is true. Each host is blackholed via
+   * `--add-host <host>:0.0.0.0`, so DNS resolution inside the container returns an
+   * unroutable address and the connection fails closed — host-granular egress
+   * control at the `docker run` level (SSRF / data-exfil guard). Only applied when
+   * network is on (with `--network none` everything is already blocked).
+   */
+  deniedHosts?: string[];
+  /**
+   * PARITY (proxy-routed egress — Claude's `SandboxNetworkConfig.httpProxyPort`):
+   * host TCP port of an HTTP(S) egress proxy. When set, the container exports
+   * HTTP(S)_PROXY pointing at `host.docker.internal:<port>` (a host-gateway
+   * `--add-host` is added so the container can reach it), routing outbound HTTP(S)
+   * through the host proxy that enforces the real allow/deny policy. 1..65535;
+   * invalid values are ignored.
+   */
+  httpProxyPort?: number;
+  /**
+   * PARITY (proxy-routed egress — Claude's `SandboxNetworkConfig.socksProxyPort`):
+   * host TCP port of a SOCKS egress proxy. When set, the container exports
+   * ALL_PROXY=`socks5://host.docker.internal:<port>`. 1..65535; invalid ignored.
+   */
+  socksProxyPort?: number;
   maxMemoryMB?: number;
   maxProcesses?: number;
   /**
@@ -119,6 +145,12 @@ export const DOCKER_PROBE_TIMEOUT_MS = 5000;
  *  guarantees sandboxed commands write temp files into the writable jail and that
  *  an image `ENV TMPDIR=…` pointing elsewhere cannot repoint them out of it. */
 export const DOCKER_SANDBOX_TMPDIR = '/tmp';
+
+/** Docker's special hostname that resolves to the host from inside a container
+ *  (paired with `--add-host <alias>:host-gateway`). Used to reach a host-side
+ *  egress proxy configured via {@link DockerSandboxConfig.httpProxyPort} /
+ *  {@link DockerSandboxConfig.socksProxyPort}. */
+export const DOCKER_HOST_GATEWAY_ALIAS = 'host.docker.internal';
 
 /**
  * PARITY (seccomp syscall filtering / privilege-escalation isolation layer —
@@ -270,6 +302,42 @@ export function describeDockerUnavailable(a: DockerAvailability): string {
   }
 }
 
+/**
+ * PARITY (Claude's `getSandboxUnavailableReason()` — the #34044 security-footgun
+ * fix): when the container sandbox is explicitly ENABLED (`mode: 'container'`) but
+ * cannot actually run, return a precise, human-readable reason + remediation meant
+ * to be surfaced ONCE (e.g. at startup or via `/sandbox`), so a user whose security
+ * setting is silently being ignored is told. Returns `null` when no container
+ * sandbox is requested or when it CAN run (no warning needed).
+ *
+ * Covered causes, in order:
+ *  - the current platform is excluded by `enabledPlatforms`;
+ *  - the Docker daemon/CLI is unavailable (reusing {@link getDockerAvailability} +
+ *    {@link describeDockerUnavailable} for the cause-specific remediation hint).
+ *
+ * The trailing clause reflects `failIfUnavailable`: a managed deployment that set it
+ * will REFUSE commands (fail-closed), otherwise bash silently runs UNsandboxed — the
+ * exact footgun this warning exists to make visible.
+ */
+export function getSandboxUnavailableReason(policy?: SandboxPolicy): string | null {
+  if (!policy || policy.mode !== 'container') return null;
+  const platforms = policy.enabledPlatforms;
+  if (platforms && platforms.length > 0 && !platforms.includes(process.platform)) {
+    return (
+      `sandbox.mode is 'container' but the current platform (${process.platform}) is excluded by `
+      + `enabledPlatforms (${platforms.join(', ')}); bash will NOT be sandboxed on this platform.`
+    );
+  }
+  const availability = getDockerAvailability();
+  if (!availability.available) {
+    const tail = policy.failIfUnavailable
+      ? 'commands will be REFUSED (failIfUnavailable is set).'
+      : 'bash will run UNsandboxed — your security setting is being ignored.';
+    return `sandbox.mode is 'container' but ${describeDockerUnavailable(availability)}. ${tail}`;
+  }
+  return null;
+}
+
 /** Signatures in stderr that indicate an outbound network call was blocked. */
 const NETWORK_OFF_SIGNATURES: RegExp[] = [
   /could not resolve host/i,
@@ -349,7 +417,11 @@ export function annotateStderrWithSandboxFailures(
     });
   }
   if (notes.length === 0) return stderr;
-  return `${stderr}\n${notes.join('\n')}`;
+  // PARITY (Claude's `<sandbox_violations>` envelope): wrap the sandbox notes in a
+  // `<sandbox_violations>` block so the MODEL keeps them (to explain that a failure
+  // was the sandbox boundary, not a real error) while the CLI tool-error renderer
+  // strips the block from the USER-facing display (removeSandboxViolationTags).
+  return `${stderr}\n${wrapSandboxViolations(notes)}`;
 }
 
 /** Test seam: reset the cached availability probe. */
@@ -553,6 +625,37 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
     if (socketSeen.has(abs) || !fs.existsSync(abs)) continue;
     socketSeen.add(abs);
     parts.push('-v', shSingleQuote(`${abs}:${abs}`));
+  }
+
+  // PARITY (per-host network egress control): when network is ON, blackhole each
+  // denied host by injecting `--add-host <host>:0.0.0.0` so its in-container DNS
+  // resolves to an unroutable address and the connection fails closed (deny wins
+  // over the broad `bridge` allow — host-granular egress / SSRF guard). Skipped
+  // under `--network none` (everything is already blocked there). Route outbound
+  // through a host egress proxy when a proxy port is configured: the proxy enforces
+  // the real allowlist that `docker run` alone cannot express.
+  const proxyEnv: string[] = [];
+  if (isValidProxyPort(cfg.httpProxyPort)) {
+    const url = `http://${DOCKER_HOST_GATEWAY_ALIAS}:${cfg.httpProxyPort}`;
+    proxyEnv.push(`HTTP_PROXY=${url}`, `HTTPS_PROXY=${url}`, `http_proxy=${url}`, `https_proxy=${url}`);
+  }
+  if (isValidProxyPort(cfg.socksProxyPort)) {
+    const url = `socks5://${DOCKER_HOST_GATEWAY_ALIAS}:${cfg.socksProxyPort}`;
+    proxyEnv.push(`ALL_PROXY=${url}`, `all_proxy=${url}`);
+  }
+  if (cfg.allowNetwork) {
+    const deniedSeen = new Set<string>();
+    for (const h of cfg.deniedHosts ?? []) {
+      const host = h.trim();
+      if (host.length === 0 || deniedSeen.has(host)) continue;
+      deniedSeen.add(host);
+      parts.push('--add-host', shSingleQuote(`${host}:0.0.0.0`));
+    }
+    // A host-gateway alias lets the container reach a proxy listening on the host.
+    if (proxyEnv.length > 0) {
+      parts.push('--add-host', shSingleQuote(`${DOCKER_HOST_GATEWAY_ALIAS}:host-gateway`));
+      for (const e of proxyEnv) parts.push('-e', shSingleQuote(e));
+    }
   }
 
   if (cfg.maxMemoryMB && cfg.maxMemoryMB > 0) {
