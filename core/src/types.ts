@@ -435,8 +435,13 @@ export interface ToolContext {
    *  foreground subagents are visible live. Injected by the tool executor (which
    *  drains it onto the parent generator); absent → no relay (back-compat). */
   _emitChild?: (event: EngineEvent) => void;
-  /** Per-tool output budgets (e.g. inline bash stdout cap before spill). */
-  outputBudget?: { bashMaxChars?: number; taskTailLines?: number; taskMaxChars?: number };
+  /** Per-tool output budgets (e.g. inline bash stdout cap before spill).
+   *  `fileReadMaxTokens`/`fileReadMaxSizeBytes` are per-call overrides for the
+   *  Read tool's output-token budget and pre-read size gate; each falls through
+   *  to its env override (AMI_FILE_READ_MAX_OUTPUT_TOKENS /
+   *  AMI_FILE_READ_MAX_SIZE_BYTES) and then the hardcoded default, validated so a
+   *  malformed value can never disable the cap (see tools/file-read-limits.ts). */
+  outputBudget?: { bashMaxChars?: number; taskTailLines?: number; taskMaxChars?: number; fileReadMaxTokens?: number; fileReadMaxSizeBytes?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
   _parentThinking?: ThinkingConfig;
   /** Parent engine's permission rules, forwarded to subagents so deny rules are inherited. */

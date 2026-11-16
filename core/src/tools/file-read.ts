@@ -13,10 +13,11 @@ import { suggestSimilarPaths, suggestPathUnderCwd } from './path-suggest';
 import { formatFileSize } from '../utils/format';
 import { estimateTokensForFileType, charsPerTokenForFileType } from '../utils/tokens';
 import { memoryFreshnessReminder } from '../memory';
+import { getFileReadingLimits } from './file-read-limits';
+import { log } from '../logger';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
-const MAX_FILE_READ_TOKENS = 25_000;
 /**
  * Per-cell combined-output size (chars of text + image base64) above which a
  * notebook cell's outputs are replaced with a `jq` escape-hatch hint instead of
@@ -816,6 +817,16 @@ export const fileReadTool: ToolDefinition = {
     const offset = offsetParsed.value ?? 0;
     const limit = limitParsed.value ?? DEFAULT_LIMIT;
 
+    // Resolve the effective size/token caps: env override > per-call context
+    // override (threaded via outputBudget) > hardcoded default. Strict per-field
+    // validation in getFileReadingLimits guarantees no 0/NaN/Infinity cap, so a
+    // malformed operator value can never disable the guard. (PARITY: Claude
+    // Code getDefaultFileReadingLimits.)
+    const limits = getFileReadingLimits({
+      maxTokens: context.outputBudget?.fileReadMaxTokens,
+      maxSizeBytes: context.outputBudget?.fileReadMaxSizeBytes,
+    });
+
     if (!filePath || filePath.trim().length === 0) {
       return { output: 'Error: file_path must not be empty.', isError: true };
     }
@@ -892,6 +903,12 @@ export const fileReadTool: ToolDefinition = {
         if (!realTarget.startsWith(cwdAbs + path.sep) && realTarget !== cwdAbs) {
           return { output: `Error: Symlink resolves outside the workspace: ${realTarget}`, isError: true };
         }
+        // PARITY (symlink read transparency): a read that silently follows a
+        // symlink can confuse an operator auditing the debug log ("why was this
+        // other file read?"). Record the hop (requested link -> real target) at
+        // debug level so the resolution is diagnosable. Mirrors Claude Code's
+        // `logForDebugging("Reading through symlink: ...")` (utils/fileRead.ts).
+        log('file-read', `Reading through symlink: ${resolved} -> ${realTarget}`);
       }
     } catch {
       // Dangling symlink or file disappeared between access and lstat —
@@ -923,7 +940,7 @@ export const fileReadTool: ToolDefinition = {
       return { output: suiteLog };
     }
 
-    const MAX_READ_SIZE = 256 * 1024; // 256KB
+    const MAX_READ_SIZE = limits.maxSizeBytes; // default 256KB; env/context-overridable
     const PARTIAL_VIEW_LINES = 200;
     // PDFs have their own page/spill handling; allow_large opts past the cap.
     if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext)
@@ -947,7 +964,7 @@ export const fileReadTool: ToolDefinition = {
           output: `[PARTIAL VIEW — file is ${formatFileSize(stat.size)}, showing first ${lines.length} of ~${totalLines}+ lines. Use offset/limit for other sections, or allow_large:true for the full file.]\n${numbered}`,
         };
       } catch {
-        return { output: `Error: File size (${formatFileSize(stat.size)}) exceeds 256KB limit. Use offset/limit to read specific sections, or pass allow_large:true to read past the size cap (still subject to the token budget).`, isError: true };
+        return { output: `Error: File size (${formatFileSize(stat.size)}) exceeds the ${formatFileSize(MAX_READ_SIZE)} limit. Use offset/limit to read specific sections, or pass allow_large:true to read past the size cap (still subject to the token budget).`, isError: true };
       }
     }
 
@@ -1195,9 +1212,9 @@ export const fileReadTool: ToolDefinition = {
 
         let content = parts.join('\n');
         const estimatedTokens = Math.ceil(content.length / 4);
-        if (estimatedTokens > MAX_FILE_READ_TOKENS) {
-          const truncateChars = MAX_FILE_READ_TOKENS * 4;
-          content = content.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${MAX_FILE_READ_TOKENS} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
+        if (estimatedTokens > limits.maxTokens) {
+          const truncateChars = limits.maxTokens * 4;
+          content = content.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${limits.maxTokens} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
         }
         context.filesRead?.add(resolved);
         if (notebookImages.length > 0) {
@@ -1287,8 +1304,8 @@ export const fileReadTool: ToolDefinition = {
       // oversized JSON range is not under-counted past the budget; non-JSON
       // reads use the generic ~4 ratio and keep identical behavior.
       const estimatedTokens = estimateTokensForFileType(output, ext);
-      if (estimatedTokens > MAX_FILE_READ_TOKENS) {
-        output = output.slice(0, MAX_FILE_READ_TOKENS * charsPerTokenForFileType(ext)) + `\n\n[... truncated: exceeds ${MAX_FILE_READ_TOKENS} token budget. Narrow offset/limit.]`;
+      if (estimatedTokens > limits.maxTokens) {
+        output = output.slice(0, limits.maxTokens * charsPerTokenForFileType(ext)) + `\n\n[... truncated: exceeds ${limits.maxTokens} token budget. Narrow offset/limit.]`;
       }
       // Record the exact window so an identical repeat read on an unchanged file
       // short-circuits above instead of re-streaming it.
@@ -1362,9 +1379,9 @@ export const fileReadTool: ToolDefinition = {
     // returns ~2 for JSON and ~4 for everything else, so non-JSON reads keep
     // identical behavior. Mirrors Claude Code's roughTokenCountEstimationForFileType.
     const estimatedTokens = estimateTokensForFileType(output, ext);
-    if (estimatedTokens > MAX_FILE_READ_TOKENS) {
-      const truncateChars = MAX_FILE_READ_TOKENS * charsPerTokenForFileType(ext);
-      output = output.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${MAX_FILE_READ_TOKENS} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
+    if (estimatedTokens > limits.maxTokens) {
+      const truncateChars = limits.maxTokens * charsPerTokenForFileType(ext);
+      output = output.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${limits.maxTokens} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
     }
 
     if (output.length > 1000) {
