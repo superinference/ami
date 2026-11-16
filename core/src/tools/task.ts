@@ -902,6 +902,12 @@ export const taskTool: ToolDefinition = {
     // Per-agent `isolation` default (parity: Claude's agent isolation field) — used
     // when the caller did not pass an explicit `isolation` on the task call.
     let agentIsolationDefault: string | undefined;
+    // Per-agent `effort` default (parity: Claude's agent effort field) — the sub-engine
+    // thinking level, used when the caller did not pass an explicit per-call `effort`.
+    let agentEffort: string | undefined;
+    // Per-agent `initialPrompt` (parity: Claude's agent initialPrompt) — text prepended
+    // to the first user turn on the initial spawn (never on resume).
+    let agentInitialPrompt: string | undefined;
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -916,6 +922,8 @@ export const taskTool: ToolDefinition = {
       agentTokenBudget = agentDef.autoCompactWindow;
       agentBackgroundDefault = agentDef.background === true;
       agentIsolationDefault = agentDef.isolation;
+      agentEffort = agentDef.effort;
+      agentInitialPrompt = agentDef.initialPrompt;
 
       if (agentDef.tools && agentDef.tools.length > 0) {
         const everything = allTools.getAll();
@@ -1152,8 +1160,8 @@ export const taskTool: ToolDefinition = {
       // as a context-continuing clone. The explicit disabled object (not undefined)
       // is required so the child engine's reasoning-model auto-enable does not turn
       // thinking back on.
-      thinking: effortOverride
-        ? { enabled: true, level: effortOverride as import('../model-capabilities').ThinkingLevel }
+      thinking: (effortOverride ?? agentEffort)
+        ? { enabled: true, level: (effortOverride ?? agentEffort) as import('../model-capabilities').ThinkingLevel }
         : mode === 'fork'
           ? (context._parentThinking || undefined)
           : { enabled: false, level: 'off', type: 'disabled' as const },
@@ -1184,6 +1192,13 @@ export const taskTool: ToolDefinition = {
     let effectivePrompt = finalSystemPrompt
       ? prompt
       : `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
+
+    // Per-agent `initialPrompt` (parity: Claude's agent initialPrompt): prepend the
+    // agent's standing instruction ahead of the caller's task prompt on the FIRST
+    // user turn only — a resumed agent already carries its seeded context, so skip it.
+    if (agentInitialPrompt && !resumeSessionId) {
+      effectivePrompt = `${agentInitialPrompt}\n\n${effectivePrompt}`;
+    }
 
     // Caller-specified thoroughness dial for explore-mode agents: turns the
     // explore prompt's abstract "adapt to the requested thoroughness" into a

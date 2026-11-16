@@ -132,6 +132,17 @@ export interface AgentDefinition {
    *  tool (parity with Claude's `allowedAgentTypes` metadata). `undefined`/empty
    *  ⇒ no restriction. Checked with {@link canSpawnAgentType}. */
   allowedAgentTypes?: string[];
+  /** Default thinking/reasoning-effort budget for this subagent's run (parity with
+   *  Claude's agent `effort`). A named level (`low`|`medium`|`high`|`xhigh`|`max`)
+   *  OR the decimal string of a non-negative integer (raw token budget) — normalized
+   *  at load time via {@link parseEffort}. Applied as the sub-engine's thinking level
+   *  UNLESS the spawning task call passes an explicit per-call `effort` override. */
+  effort?: string;
+  /** Text auto-prepended to the agent's FIRST user turn when it is spawned (parity
+   *  with Claude's agent `initialPrompt`). Lets an agent definition seed its run with
+   *  a standing instruction ahead of the caller's task prompt. Only applied on the
+   *  initial spawn, never when resuming an existing agent session. */
+  initialPrompt?: string;
 }
 
 /**
@@ -604,6 +615,9 @@ export function validateAgentDefinition(
   }
   if (raw.isolation !== undefined && parseIsolationMode(raw.isolation) === undefined) {
     warnings.push(`Unknown isolation mode "${raw.isolation}" (valid: ${AGENT_ISOLATION_MODES.join(', ')})`);
+  }
+  if (raw.effort !== undefined && !isValidEffort(raw.effort)) {
+    warnings.push(`Invalid effort "${raw.effort}" (valid: ${EFFORT_LEVELS.join(', ')}, or a non-negative integer)`);
   }
 
   if (opts?.knownSkills && raw.skills) {
