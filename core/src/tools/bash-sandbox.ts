@@ -1,4 +1,6 @@
 import { execSync } from 'child_process';
+import { homedir } from 'os';
+import { isAbsolute, resolve as resolvePath } from 'path';
 import { wildcardMatch } from '../permissions';
 import type { SandboxPolicy } from '../types';
 
@@ -73,6 +75,15 @@ export interface SandboxConfig {
   // Mirrors Claude's `SandboxFilesystemConfig.allowRead`. Additive: undefined/
   // empty leaves every `denyReadPaths` entry denied.
   allowReadPaths?: string[];
+  // PARITY (filesystem write RE-allow with precedence): absolute paths that must
+  // stay WRITABLE inside the sandbox even when they fall inside a `denyWritePaths`
+  // region. Any `denyWritePaths` entry equal to, or nested under, one of these is
+  // NOT read-only-remounted — the write mirror of `allowReadPaths`,
+  // "allowWrite wins over denyWrite for matching paths" (Claude's nested
+  // `SandboxFilesystemConfig.allowWrite` / `denyWithinAllow` carve-out model, and
+  // the host-backend home of `permissions.additionalDirectories`/`--add-dir`
+  // grants). Additive: undefined/empty leaves every `denyWritePaths` entry denied.
+  allowWritePaths?: string[];
   // PARITY (proxy-routed network isolation): when set, the sandbox exports the
   // standard HTTP/HTTPS proxy env vars pointing at a loopback proxy on this port
   // so outbound traffic is routed (and can be MITM-filtered) through it instead
@@ -207,6 +218,7 @@ function collectGlobPatternPaths(cfg: Partial<SandboxConfig>): string[] {
     cfg.denyReadPaths,
     cfg.denyWritePaths,
     cfg.allowReadPaths,
+    cfg.allowWritePaths,
   ];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -622,18 +634,50 @@ export function shouldUseSandbox(command: string, options?: SandboxExemptionOpti
 }
 
 /**
+ * PARITY (CC-specific sandbox fs path conventions — Claude's
+ * `resolveSandboxFilesystemPath`): normalize one `sandbox.filesystem.*` path entry
+ * the way Claude Code resolves `allowWrite`/`denyWrite`/`allowRead`/`denyRead`
+ * settings values, so an operator's path works as written rather than being
+ * silently mis-matched by the literal bind-mount sandbox:
+ *   - `//path` → `/path`  (legacy permission-rule escape, accepted for compat),
+ *   - `~` or `~/path` → expanded to the user's home directory,
+ *   - a RELATIVE path (`./x`, `x`) → resolved against `cwd` (AMI's settings/project
+ *     root) when a `cwd` is supplied; left as-is when it is not,
+ *   - an already-absolute `/path` → returned unchanged (as-written, NOT
+ *     settings-relative; matches Claude's #30067 fix).
+ * Pure; absolute inputs are returned verbatim so a policy of absolute paths maps
+ * identically to the pre-normalization behavior (fully additive).
+ */
+export function normalizeSandboxFsPath(pattern: string, cwd?: string): string {
+  const p = pattern.trim();
+  if (p.length === 0) return pattern;
+  // `//abs` → `/abs` (legacy permission-rule escape).
+  if (p.startsWith('//')) return p.slice(1);
+  // `~` / `~/rest` → home-relative.
+  if (p === '~') return homedir();
+  if (p.startsWith('~/')) return resolvePath(homedir(), p.slice(2));
+  // Already absolute → as-written.
+  if (isAbsolute(p)) return p;
+  // Relative → resolve against cwd when available, else leave untouched so a
+  // cwd-less caller (e.g. the existing absolute-path translation) is unaffected.
+  return cwd ? resolvePath(cwd, p) : p;
+}
+
+/**
  * Map a high-level {@link SandboxPolicy} (the engine/tool-facing config, shared
  * with the container backend) onto the low-level host {@link SandboxConfig}
  * consumed by {@link wrapWithSandbox}. Only fields the HOST unshare backend can
  * enforce are mapped: the per-host network allow/deny lists, the Unix-socket
  * allowlist, the http/socks proxy ports, and the filesystem deny-read/deny-write
- * carve-outs with the allow-read re-opens. Each field is included only when set,
- * so an empty/absent policy yields `{}` and leaves the sandbox defaults intact
- * (no behavior change when no policy carve-outs are configured). This is the
- * single translation point so bash.ts stays a one-line call site and the host
- * backend honors the same policy the container backend already does.
+ * carve-outs with the allow-read AND allow-write re-opens. Filesystem path entries
+ * are normalized through {@link normalizeSandboxFsPath} (CC `~`/`//`/relative
+ * conventions). Each field is included only when set, so an empty/absent policy
+ * yields `{}` and leaves the sandbox defaults intact (no behavior change when no
+ * policy carve-outs are configured). This is the single translation point so
+ * bash.ts stays a one-line call site and the host backend honors the same policy
+ * the container backend already does.
  */
-export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy): Partial<SandboxConfig> {
+export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy, cwd?: string): Partial<SandboxConfig> {
   const cfg: Partial<SandboxConfig> = {};
   if (!policy) return cfg;
   const net = policy.network;
@@ -648,9 +692,15 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy): Partial<San
   }
   const fs = policy.filesystem;
   if (fs) {
-    if (fs.denyRead) cfg.denyReadPaths = fs.denyRead;
-    if (fs.denyWrite) cfg.denyWritePaths = fs.denyWrite;
-    if (fs.allowRead) cfg.allowReadPaths = fs.allowRead;
+    // Normalize each configured fs path through the CC-compatible convention
+    // resolver so `~`/`//abs`/relative entries work as written. Absolute paths
+    // pass through unchanged, so a policy built entirely from absolute paths maps
+    // identically to the pre-normalization behavior.
+    const norm = (list: string[]): string[] => list.map((p) => normalizeSandboxFsPath(p, cwd));
+    if (fs.denyRead) cfg.denyReadPaths = norm(fs.denyRead);
+    if (fs.denyWrite) cfg.denyWritePaths = norm(fs.denyWrite);
+    if (fs.allowRead) cfg.allowReadPaths = norm(fs.allowRead);
+    if (fs.allowWrite) cfg.allowWritePaths = norm(fs.allowWrite);
   }
   // Security-weakening escape hatches (nested-userns / network-isolation relax).
   if (policy.enableWeakerNestedSandbox !== undefined) cfg.enableWeakerNestedSandbox = policy.enableWeakerNestedSandbox;
@@ -830,16 +880,24 @@ function buildReadOnlyMounts(cfg: SandboxConfig): string {
 }
 
 /**
- * PARITY (filesystem write-deny): bind-remount each `denyWritePaths` entry
- * read-only inside the mount namespace so it cannot be written even if it would
- * otherwise be writable. Reuses the exact bind+remount technique as
- * {@link buildReadOnlyMounts}; failures are tolerated (`2>/dev/null`). Returns ''
- * when no denyWritePaths are configured. Mirrors Claude's
- * `SandboxFilesystemConfig.denyWrite`.
+ * PARITY (filesystem write-deny with allowWrite precedence): bind-remount each
+ * `denyWritePaths` entry read-only inside the mount namespace so it cannot be
+ * written even if it would otherwise be writable — EXCEPT any entry that is equal
+ * to, or nested under, an `allowWritePaths` region, which is left writable
+ * ("allowWrite wins over denyWrite for matching paths"). This is the exact write
+ * mirror of {@link buildReadDenials}'s allowRead-over-denyRead precedence, and it
+ * is where a `permissions.additionalDirectories`/`--add-dir` write grant that
+ * overlaps a broader deny is re-opened on the host backend. Reuses the same
+ * bind+remount technique as {@link buildReadOnlyMounts}; failures are tolerated
+ * (`2>/dev/null`). Returns '' when nothing is denied (or everything is
+ * re-allowed). Mirrors Claude's nested `SandboxFilesystemConfig.allowWrite` /
+ * `denyWrite` carve-out model.
  */
 export function buildWriteDenials(cfg: SandboxConfig): string {
   if (!cfg.denyWritePaths || cfg.denyWritePaths.length === 0) return '';
+  const allow = (cfg.allowWritePaths ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
   return cfg.denyWritePaths
+    .filter((p) => !allow.some((a) => pathIsWithin(p, a)))
     .map((p) => {
       const esc = escapeShell(p).replace(/'/g, "'\\''");
       return `mount --bind ${esc} ${esc} 2>/dev/null && mount -o remount,ro,bind ${esc} 2>/dev/null; `;

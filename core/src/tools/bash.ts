@@ -1306,13 +1306,14 @@ export const bashTool: ToolDefinition = {
         }
       }
       // Thread the policy's network/filesystem carve-outs (deny/allow hosts, unix
-      // sockets, proxy ports, deny-read/deny-write with allow-read re-opens) into
+      // sockets, proxy ports, deny-read/deny-write with allow-read/allow-write
+      // re-opens, CC `~`/`//`/relative path normalization) into
       // the HOST unshare backend too — previously honored only by the container
       // backend (see wrapWithDocker above), so the host sandbox silently ignored
       // every configured restriction. hostSandboxConfigFromPolicy yields {} when
       // no carve-outs are set, preserving the prior defaults.
       effectiveCommand = useSandbox
-        ? _bashHooks.wrapWithSandbox(commandToRun, context.cwd, hostSandboxConfigFromPolicy(context.sandbox))
+        ? _bashHooks.wrapWithSandbox(commandToRun, context.cwd, hostSandboxConfigFromPolicy(context.sandbox, context.cwd))
         : commandToRun;
     }
 
