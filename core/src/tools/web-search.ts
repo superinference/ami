@@ -8,6 +8,28 @@ const TOP_RESULTS_TO_FETCH = 3;
 const MIN_QUERY_LENGTH = 2;
 
 /**
+ * Overall serialized tool-result size cap. Mirrors Claude Code's framework-level
+ * `maxResultSizeChars: 100_000` knob on the WebSearch tool: the per-result
+ * (MAX_CONTENT_PER_RESULT) and top-N (TOP_RESULTS_TO_FETCH) bounds limit each
+ * piece, but a large number of results/snippets can still accumulate, so the
+ * whole formatted output is capped as a last line of defense.
+ */
+export const MAX_RESULT_SIZE_CHARS = 100000;
+
+/**
+ * Cap the total serialized output to {@link MAX_RESULT_SIZE_CHARS}, appending a
+ * truncation marker when the limit is exceeded. Mirrors Claude's
+ * maxResultSizeChars. Exported for direct unit testing.
+ */
+export function capResultSize(output: string, max = MAX_RESULT_SIZE_CHARS): string {
+  if (output.length <= max) return output;
+  return (
+    output.slice(0, max) +
+    `\n\n[Results truncated: output exceeded the ${max} character limit]`
+  );
+}
+
+/**
  * Current month/year injected into the tool description so the model grounds
  * recency-sensitive queries in the present year instead of a stale
  * training-cutoff year. Computed once at module load (the process is a single
@@ -72,7 +94,15 @@ export function parseDuckDuckGoResults(html: string): SearchResult[] {
 
     const uddgMatch = href.match(/[?&]uddg=([^&]+)/);
     if (uddgMatch) {
-      href = decodeURIComponent(uddgMatch[1]);
+      // Untrusted upstream HTML: a malformed percent-encoding (lone '%' / '%ZZ')
+      // makes decodeURIComponent throw URIError. Mirror Claude's formatUri
+      // never-throw guard — degrade this ONE result to its raw href instead of
+      // letting the throw abort parsing of the entire search response.
+      try {
+        href = decodeURIComponent(uddgMatch[1]);
+      } catch {
+        href = uddgMatch[1];
+      }
     }
 
     const title = titleHtml.replace(/<[^>]+>/g, '').trim();
@@ -116,6 +146,23 @@ async function fetchResultContent(
   }
 }
 
+/**
+ * Mandatory, structured citation directive appended to every successful search
+ * result. Mirrors Claude's WebSearch prompt: a MANDATORY "Sources:" section with
+ * an explicit [Title](URL) format spec and a concrete example, instead of a
+ * single terse reminder line — so the model's citation output is consistent.
+ */
+const SOURCES_DIRECTIVE =
+  '\n\nCRITICAL REQUIREMENT — You MUST follow this:\n' +
+  '- After answering the user\'s question, you MUST include a "Sources:" section at the end of your response.\n' +
+  '- In the Sources section, list all relevant URLs from these results as markdown hyperlinks: [Title](URL).\n' +
+  '- This is MANDATORY — never skip including sources in your response.\n' +
+  '- Example format:\n\n' +
+  '    [Your answer here]\n\n' +
+  '    Sources:\n' +
+  '    - [Source Title 1](https://example.com/1)\n' +
+  '    - [Source Title 2](https://example.com/2)';
+
 function formatResults(query: string, results: SearchResult[]): string {
   const lines: string[] = [];
   lines.push(`Search results for: "${query}"\n`);
@@ -141,7 +188,11 @@ function formatResults(query: string, results: SearchResult[]): string {
 export const webSearchTool: ToolDefinition = {
   name: 'web_search',
   description:
-    'Search the web and return results with article content. Returns search results with titles, URLs, snippets, and the actual page content from the top results. ' +
+    'Search the web and return results with article content. ' +
+    'Provides up-to-date information for current events and recent data. ' +
+    "Use this tool for accessing information beyond your knowledge cutoff. " +
+    'Returns search results with titles, URLs, snippets, and the actual page content from the top results, formatted with markdown hyperlinks. ' +
+    'Searches are performed automatically within a single call. ' +
     `The current month is ${CURRENT_MONTH_YEAR}. You MUST use the current year (${CURRENT_YEAR}) when searching for recent information, documentation, or current events — e.g. for "latest React docs", search "React documentation ${CURRENT_YEAR}", NOT last year.`,
   inputSchema: {
     type: 'object',
@@ -220,6 +271,11 @@ export const webSearchTool: ToolDefinition = {
     const hooks: WebSearchHooks = (context._webSearchHooks as WebSearchHooks | undefined) ?? { httpGet, validateUrlSafety, searchUrl: defaultSearchUrl };
     const searchUrl = hooks.searchUrl(query);
 
+    // Live progress affordance (parity with Claude's WebSearch 'query_update'):
+    // surface what is being searched before the (potentially multi-second) fetch
+    // so the TUI/CLI shows activity instead of going silent until completion.
+    context.onProgress?.(`Searching: "${query}"`);
+
     try {
       const { body, statusCode } = await hooks.httpGet(
         searchUrl,
@@ -253,6 +309,10 @@ export const webSearchTool: ToolDefinition = {
         });
       }
 
+      // Live progress affordance (parity with Claude's 'search_results_received'):
+      // report how many results came back for this query.
+      context.onProgress?.(`Found ${results.length} results for "${query}"`);
+
       if (results.length === 0) {
         return {
           output: `No results found for "${query}". Try using web_fetch with a specific URL if you know where the information is.`,
@@ -270,7 +330,7 @@ export const webSearchTool: ToolDefinition = {
         }
       }
 
-      const output = formatResults(query, results) + '\n\nREMINDER: Include sources with markdown links in your response.';
+      const output = capResultSize(formatResults(query, results) + SOURCES_DIRECTIVE);
       return { output };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

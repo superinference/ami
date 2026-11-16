@@ -222,7 +222,7 @@ describe('webSearchTool.execute — success path (real mock HTTP server)', () =>
     };
   }
 
-  it('parses results, fetches top-result content, and appends the reminder', async () => {
+  it('parses results, fetches top-result content, and appends the Sources directive', async () => {
     const result = await webSearchTool.execute(
       { query: 'hello world' },
       ctx({ _webSearchHooks: liveHooks() }),
@@ -233,7 +233,10 @@ describe('webSearchTool.execute — success path (real mock HTTP server)', () =>
     assert.match(result.output, /Second Title/);
     assert.match(result.output, /Content from http:\/\/127\.0\.0\.1/);
     assert.match(result.output, /Full article body/);
-    assert.match(result.output, /REMINDER: Include sources/);
+    // Parity (U201): the terse REMINDER line was replaced by a MANDATORY,
+    // structured "Sources:" directive with a [Title](URL) format spec + example.
+    assert.match(result.output, /Sources:/);
+    assert.match(result.output, /\[Title\]\(URL\)/);
   });
 });
 
