@@ -9,7 +9,9 @@ import {
   execCommand,
   findSuitableShell,
   formatShellPrefixCommand,
+  rewriteWindowsNullRedirect,
   shellHooks,
+  SPAWN_FAILURE_EXIT_CODE,
 } from '../src/utils/shell';
 
 // A real bash on this host (shopt/login tests need bash specifically).
@@ -17,7 +19,7 @@ const REAL_BASH = ['/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash'].find(p =
 
 // Env vars these tests mutate; captured once and restored after each test so a
 // leaked AMI_SHELL / SHELL never bleeds into another case or the real suite.
-const ENV_KEYS = ['AMI_SHELL', 'CLAUDE_CODE_SHELL', 'SHELL', 'AMI_LOGIN_SHELL', 'AMI_SHELL_PREFIX'] as const;
+const ENV_KEYS = ['AMI_SHELL', 'CLAUDE_CODE_SHELL', 'SHELL', 'AMI_LOGIN_SHELL', 'AMI_SHELL_PREFIX', 'CLAUDE_CODE_SHELL_PREFIX'] as const;
 const savedEnv: Record<string, string | undefined> = {};
 for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
 
@@ -167,7 +169,9 @@ describe('execCommand – shell resolution', () => {
     mock.method(shellHooks, 'spawn', () => { spawned = true; throw new Error('should not spawn'); });
     const r = await execCommand('echo nope', { cwd: '/tmp' });
     assert.equal(spawned, false);
-    assert.equal(r.exitCode, null);
+    // A launch failure reports the dedicated spawn-failure code, NOT null —
+    // null is reserved for timeouts/aborts so callers can tell them apart.
+    assert.equal(r.exitCode, SPAWN_FAILURE_EXIT_CODE);
     assert.ok(r.stderr.includes('No suitable shell found'));
   });
 });
@@ -265,7 +269,7 @@ describe('execCommand – actionable spawn error', () => {
     const p = execCommand('x', { cwd: '/tmp', stallTimeoutMs: 0 });
     fake.emit('error', Object.assign(new Error('spawn bash ENOENT'), { code: 'ENOENT' }));
     const r = await p;
-    assert.equal(r.exitCode, null);
+    assert.equal(r.exitCode, SPAWN_FAILURE_EXIT_CODE);
     assert.ok(r.stderr.includes('Failed to start command'));
     assert.ok(r.stderr.includes('could not be found'));
   });
@@ -276,8 +280,148 @@ describe('execCommand – actionable spawn error', () => {
     const p = execCommand('x', { cwd: '/tmp', stallTimeoutMs: 0 });
     fake.emit('error', Object.assign(new Error('weird-failure'), { code: 'EACCES' }));
     const r = await p;
-    assert.equal(r.exitCode, null);
+    assert.equal(r.exitCode, SPAWN_FAILURE_EXIT_CODE);
     assert.ok(r.stderr.includes('weird-failure'));
     assert.ok(!r.stderr.includes('Failed to start command'));
+  });
+
+  it('discriminates a launch failure (126) from a timeout (null)', async () => {
+    // A launch failure and a timeout are two different outcomes: a caller must
+    // be able to tell them apart so it does not treat "shell not found" as a
+    // hang and re-run it. Launch failure → SPAWN_FAILURE_EXIT_CODE.
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    const launchP = execCommand('x', { cwd: '/tmp', stallTimeoutMs: 0 });
+    fake.emit('error', Object.assign(new Error('spawn bash ENOENT'), { code: 'ENOENT' }));
+    const launch = await launchP;
+    assert.equal(launch.exitCode, SPAWN_FAILURE_EXIT_CODE);
+    assert.notEqual(launch.exitCode, null);
+    // Timeout still yields null (verified against a real process).
+    mock.restoreAll();
+    const timedOut = await execCommand('sleep 5', { cwd: os.tmpdir(), timeout: 150, stallTimeoutMs: 0 });
+    assert.equal(timedOut.exitCode, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rewriteWindowsNullRedirect (hallucinated Windows `>nul` → POSIX /dev/null)
+// ---------------------------------------------------------------------------
+
+describe('rewriteWindowsNullRedirect', () => {
+  it('rewrites stdout, stderr, combined, and append null redirects', () => {
+    assert.equal(rewriteWindowsNullRedirect('ls >nul'), 'ls >/dev/null');
+    assert.equal(rewriteWindowsNullRedirect('ls > NUL'), 'ls > /dev/null');
+    assert.equal(rewriteWindowsNullRedirect('ls 2>nul'), 'ls 2>/dev/null');
+    assert.equal(rewriteWindowsNullRedirect('ls &>nul'), 'ls &>/dev/null');
+    assert.equal(rewriteWindowsNullRedirect('ls >>nul'), 'ls >>/dev/null');
+    assert.equal(rewriteWindowsNullRedirect('a >nul; b 2>nul'), 'a >/dev/null; b 2>/dev/null');
+  });
+
+  it('does not rewrite look-alikes (>null, >nul.txt, a bare nul argument)', () => {
+    assert.equal(rewriteWindowsNullRedirect('ls >null'), 'ls >null');
+    assert.equal(rewriteWindowsNullRedirect('ls >nullable'), 'ls >nullable');
+    assert.equal(rewriteWindowsNullRedirect('ls >nul.txt'), 'ls >nul.txt');
+    assert.equal(rewriteWindowsNullRedirect('cat nul.txt'), 'cat nul.txt');
+  });
+
+  it('e2e: a hallucinated POSIX `>nul` does not create a literal nul file', async () => {
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ami-nul-`);
+    try {
+      const r = await execCommand('echo hi 2>nul', { cwd: dir, stallTimeoutMs: 0 });
+      assert.equal(r.exitCode, 0);
+      // Without the rewrite, the POSIX shell would create a file named `nul`.
+      assert.equal(fs.existsSync(`${dir}/nul`), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLAUDE_CODE_SHELL_PREFIX fallback + precedence
+// ---------------------------------------------------------------------------
+
+describe('execCommand – CLAUDE_CODE_SHELL_PREFIX', () => {
+  it('wraps the command when only CLAUDE_CODE_SHELL_PREFIX is set', (t) => {
+    if (!REAL_BASH) return t.skip('no bash on host');
+    clearShellEnv();
+    process.env.AMI_SHELL = REAL_BASH;
+    process.env.CLAUDE_CODE_SHELL_PREFIX = `${REAL_BASH} -c`;
+    return execCommand('echo cc-prefixed', { cwd: '/tmp' }).then((r) => {
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes('cc-prefixed'));
+    });
+  });
+
+  it('prefers AMI_SHELL_PREFIX over CLAUDE_CODE_SHELL_PREFIX', async () => {
+    clearShellEnv();
+    process.env.AMI_SHELL_PREFIX = '/ami/pref -c';
+    process.env.CLAUDE_CODE_SHELL_PREFIX = '/cc/pref -c';
+    let captured = '';
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', (_s: string, args: string[]) => {
+      captured = args[args.length - 1] ?? '';
+      queueMicrotask(() => fake.emit('close', 0, null));
+      return fake as unknown as ReturnType<typeof shellHooks.spawn>;
+    });
+    const r = await execCommand('echo hi', { cwd: '/tmp', stallTimeoutMs: 0 });
+    assert.equal(r.exitCode, 0);
+    assert.ok(captured.includes("'/ami/pref'"), captured);
+    assert.ok(!captured.includes('/cc/pref'), captured);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Human-readable terminating-signal note on the result stderr
+// ---------------------------------------------------------------------------
+
+describe('execCommand – signal name in stderr', () => {
+  it('appends a human-readable signal note on a signal-kill close', async () => {
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    const p = execCommand('x', { cwd: '/tmp', stallTimeoutMs: 0 });
+    queueMicrotask(() => fake.emit('close', null, 'SIGSEGV'));
+    const r = await p;
+    assert.equal(r.exitCode, null);
+    assert.equal(r.signal, 'SIGSEGV');
+    assert.ok(r.stderr.includes('terminated by signal SIGSEGV'), r.stderr);
+    assert.ok(r.stderr.includes('segmentation fault'), r.stderr);
+  });
+
+  it('does not append a signal note on a clean exit', async () => {
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    const p = execCommand('x', { cwd: '/tmp', stallTimeoutMs: 0 });
+    queueMicrotask(() => fake.emit('close', 0, null));
+    const r = await p;
+    assert.equal(r.exitCode, 0);
+    assert.ok(!r.stderr.includes('terminated by signal'), r.stderr);
+  });
+
+  it('names an unknown signal without a description suffix', async () => {
+    const fake = new FakeProc();
+    mock.method(shellHooks, 'spawn', () => fake as unknown as ReturnType<typeof shellHooks.spawn>);
+    const p = execCommand('x', { cwd: '/tmp', stallTimeoutMs: 0 });
+    queueMicrotask(() => fake.emit('close', null, 'SIGUSR1'));
+    const r = await p;
+    assert.ok(r.stderr.includes('terminated by signal SIGUSR1]'), r.stderr);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prompt-detection breadth: directed questions + Overwrite?
+// ---------------------------------------------------------------------------
+
+describe('execCommand – directed-question stall detection', () => {
+  it('detects a directed-question prompt tail and kills the stalled process', async () => {
+    const result = await execCommand(
+      'echo "Do you want to continue? " && sleep 30',
+      { cwd: os.tmpdir(), timeout: 10000, stallTimeoutMs: 500 },
+    );
+    assert.equal(result.exitCode, null);
+    assert.ok(
+      result.stderr.includes('Stall detected') || result.stderr.includes('waiting for interactive input'),
+      result.stderr,
+    );
   });
 });

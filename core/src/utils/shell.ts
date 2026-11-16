@@ -28,6 +28,15 @@ const HEAD_CHARS = 670_000;
 const TAIL_CHARS = 330_000;
 const DEFAULT_STALL_TIMEOUT_MS = 45_000;
 
+/**
+ * Exit code reported when the shell/command could not be launched at all (no
+ * suitable shell found, or the spawn itself failed — ENOENT/EACCES/etc.). 126 is
+ * the standard Unix "command found but not executable / could not execute" code.
+ * Surfacing it (instead of `null`) lets callers distinguish a launch failure
+ * from a timeout or abort, both of which legitimately yield `exitCode: null`.
+ */
+export const SPAWN_FAILURE_EXIT_CODE = 126;
+
 /** Candidate directories probed for a POSIX shell when resolving one. */
 const SHELL_SEARCH_PATHS = ['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'];
 
@@ -68,6 +77,9 @@ const PROMPT_PATTERNS = [
   /Are you sure\?/i,
   /Continue\?/i,
   /Proceed\?/i,
+  // Any line ending in "?" (covers directed questions — "Do you want to
+  // continue?", "Overwrite?", "Shall I proceed?" — more broadly than Claude's
+  // enumerated prompt list, which only matches specific directed-question stems).
   /\?\s*$/,
   /:\s*$/,
   />\s*$/,
@@ -114,6 +126,52 @@ export function formatShellPrefixCommand(prefix: string, command: string): strin
     return `${shQuote(execPath)} ${args} ${shQuote(command)}`;
   }
   return `${shQuote(prefix)} ${shQuote(command)}`;
+}
+
+/**
+ * Rewrites Windows CMD-style `>nul` redirects to the POSIX `/dev/null`.
+ *
+ * The model occasionally hallucinates Windows CMD syntax (e.g. `ls 2>nul`) even
+ * though AMI always runs commands through a POSIX shell (bash/zsh) on
+ * non-Windows hosts. When that POSIX shell sees `2>nul`, it does NOT discard the
+ * output — it creates a literal file named `nul` in the working directory, a
+ * stray artifact that pollutes the tree and breaks `git add .` / `git clone`.
+ * Rewriting the redirect target to `/dev/null` makes the hallucinated form
+ * behave as the model intended.
+ *
+ * Matches the redirect-target `nul`/`NUL` in `>nul`, `> NUL`, `2>nul`, `&>nul`,
+ * `>>nul` (case-insensitive). Does NOT match `>null`, `>nullable`, `>nul.txt`,
+ * or a bare `cat nul.txt` argument.
+ *
+ * Limitation: this is a lexical rewrite, not a shell parse, so a quoted literal
+ * like `echo ">nul"` is also rewritten. That is extremely rare and harmless
+ * (printing `/dev/null` instead of `nul`), which is why the simple regex is
+ * preferred over a full tokenizer. Only applied on the POSIX spawn path.
+ */
+const NUL_REDIRECT_REGEX = /(\d?&?>+\s*)[Nn][Uu][Ll](?=\s|$|[|&;)\n])/g;
+export function rewriteWindowsNullRedirect(command: string): string {
+  return command.replace(NUL_REDIRECT_REGEX, '$1/dev/null');
+}
+
+/**
+ * Short human-readable description for the common POSIX termination signals so a
+ * signal-killed child reports WHAT killed it (not just a bare `exitCode: null`).
+ * Returns `''` for signals without a well-known cause so the caller can still
+ * surface the raw signal name on its own.
+ */
+function describeSignal(signal: NodeJS.Signals): string {
+  switch (signal) {
+    case 'SIGSEGV': return ' (segmentation fault)';
+    case 'SIGKILL': return ' (killed)';
+    case 'SIGTERM': return ' (terminated)';
+    case 'SIGABRT': return ' (aborted)';
+    case 'SIGINT': return ' (interrupt)';
+    case 'SIGQUIT': return ' (quit)';
+    case 'SIGFPE': return ' (arithmetic error)';
+    case 'SIGBUS': return ' (bus error)';
+    case 'SIGILL': return ' (illegal instruction)';
+    default: return '';
+  }
 }
 
 /** True when `shellPath` can be executed (X_OK, or `--version` as a fallback). */
@@ -210,13 +268,18 @@ export interface ExecCommandResult {
  * - `AMI_SHELL` / `CLAUDE_CODE_SHELL` — explicit shell path override.
  * - `AMI_LOGIN_SHELL` — when set, spawn the shell as a login shell (`-l`) so
  *   the user's profile/rc files are sourced.
- * - `AMI_SHELL_PREFIX` — an executable+args that wraps the command, quoted per
- *   component (see {@link formatShellPrefixCommand}).
+ * - `AMI_SHELL_PREFIX` / `CLAUDE_CODE_SHELL_PREFIX` — an executable+args that
+ *   wraps the command, quoted per component (see {@link formatShellPrefixCommand}).
  *
  * - Respects timeout (default 120 000 ms) and abort signal.
  * - Kills the entire process tree on timeout or abort.
  * - Recovers if the working directory no longer exists (falls back to a
  *   known-good root; fails with a clear message when none is available).
+ * - Rewrites hallucinated Windows `>nul` redirects to `/dev/null` on the POSIX
+ *   path (see {@link rewriteWindowsNullRedirect}).
+ * - Distinguishes a launch failure (no shell / spawn error →
+ *   `exitCode: {@link SPAWN_FAILURE_EXIT_CODE}`) from a timeout/abort
+ *   (`exitCode: null`), and surfaces the terminating signal name on a crash.
  * - Keeps the first 670k and last 330k characters of stdout and stderr.
  */
 export function execCommand(
@@ -269,7 +332,7 @@ export function execCommand(
         resolve({
           stdout: stdoutBuf.value(),
           stderr: stderrBuf.value() + 'No suitable shell found. AMI requires a POSIX shell: install bash or zsh, or set AMI_SHELL to its path.',
-          exitCode: null,
+          exitCode: SPAWN_FAILURE_EXIT_CODE,
           signal: null,
         });
         return;
@@ -277,9 +340,15 @@ export function execCommand(
       shell = resolved;
     }
 
-    // Optional command wrapping via a configured shell prefix.
-    const prefix = process.env.AMI_SHELL_PREFIX;
-    const finalCommand = prefix ? formatShellPrefixCommand(prefix, command) : command;
+    // On the POSIX spawn path, repair hallucinated Windows `>nul` redirects so
+    // they discard output via `/dev/null` instead of creating a literal `nul`
+    // file. On Windows (cmd), `>nul` is the correct native form — leave it.
+    const normalizedCommand = isWindows ? command : rewriteWindowsNullRedirect(command);
+
+    // Optional command wrapping via a configured shell prefix. The Claude-Code
+    // name (CLAUDE_CODE_SHELL_PREFIX) is accepted as a fallback for parity.
+    const prefix = process.env.AMI_SHELL_PREFIX || process.env.CLAUDE_CODE_SHELL_PREFIX;
+    const finalCommand = prefix ? formatShellPrefixCommand(prefix, normalizedCommand) : normalizedCommand;
 
     // Login-shell flag sources profile/rc files when requested.
     const loginArgs = !isWindows && process.env.AMI_LOGIN_SHELL ? ['-l'] : [];
@@ -388,6 +457,14 @@ export function execCommand(
     // code === null with signal set (e.g. 'SIGSEGV'), so we surface the signal
     // to distinguish a crash from a clean exit or a timeout.
     proc.on('close', (code, signal) => {
+      // A genuine signal-kill (crash, OOM, self-signal) reports code === null
+      // with signal set. Surface a human-readable note naming the signal so the
+      // model sees WHAT killed the process instead of a bare `exitCode: null`.
+      // Guarded by `!settled` so a timeout/abort that already resolved (and then
+      // SIGKILLs the tree) doesn't tack a misleading signal note onto its result.
+      if (!settled && signal) {
+        stderrBuf.push(`\n[Process terminated by signal ${signal}${describeSignal(signal)}]`);
+      }
       finish(code, signal);
     });
 
@@ -399,7 +476,10 @@ export function execCommand(
       } else {
         stderrBuf.push(err.message);
       }
-      finish(null);
+      // A spawn/pre-exec failure is a launch error, not a timeout — report the
+      // dedicated exit code so callers don't mistake it for a hang and e.g.
+      // re-run it in the background.
+      finish(SPAWN_FAILURE_EXIT_CODE);
     });
   });
 }
