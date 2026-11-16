@@ -5,6 +5,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { execCommand, resolveTmpBase } from '../utils/shell';
 import { scanForSecrets } from './tool-utils';
+import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
 
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
 const TRAILER_REGEX = /Co-Authored-By:\s*AMI\s*<ami@superinference\.org>/i;
@@ -71,18 +72,54 @@ function buildCommitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function buildFinalMessage(message: string): string {
+/**
+ * Resolve the commit trailer to append for a repo at `cwd`, honoring (in order):
+ *  1. `SUPERINFERENCE_DISABLE_CO_AUTHOR=1` — suppress the trailer (→ `null`).
+ *  2. The merged config's `attribution.commit` (parity: Claude Code's
+ *     `attribution.commit` setting): a non-empty string REPLACES the default AMI
+ *     trailer; the empty string `""` suppresses it (→ `null`); absent → default.
+ * All config layers participate via {@link mergeConfigs} (managed > cli > … > global),
+ * so an enterprise/global/project policy can set the custom trailer. A broken config
+ * never blocks a commit — it falls back to the default AMI trailer.
+ */
+export function resolveCommitAttribution(cwd: string): string | null {
+  if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') return null;
+  let custom: string | undefined;
+  try {
+    const merged = mergeConfigs(
+      {}, {},
+      loadProjectConfig(cwd),
+      loadGlobalConfig(),
+      loadLocalConfig(cwd),
+      loadManagedConfig(),
+    );
+    custom = merged.attribution?.commit;
+  } catch {
+    custom = undefined;
+  }
+  if (custom !== undefined) {
+    const trimmed = custom.trim();
+    return trimmed.length === 0 ? null : trimmed;
+  }
+  return CO_AUTHOR_TRAILER;
+}
+
+function buildFinalMessage(message: string, trailer: string | null = CO_AUTHOR_TRAILER): string {
   // Always remove foreign/disallowed attribution first — a drafted message must
-  // never carry another assistant's byline, even when the AMI trailer is opted out.
+  // never carry another assistant's byline, even when the trailer is opted out.
   const trimmed = stripDisallowedAttribution(message.trim());
-  // Attribution opt-out for user projects that don't want the byline.
-  if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') {
+  // Attribution opt-out (env / config `attribution.commit: ""`) → no trailer.
+  if (trailer === null) {
     return trimmed;
   }
-  if (TRAILER_REGEX.test(trimmed)) {
+  // Avoid a duplicate trailer when the drafted message already carries it.
+  const alreadyPresent = trailer === CO_AUTHOR_TRAILER
+    ? TRAILER_REGEX.test(trimmed)
+    : trimmed.includes(trailer);
+  if (alreadyPresent) {
     return trimmed;
   }
-  return trimmed + '\n\n' + CO_AUTHOR_TRAILER;
+  return trimmed + '\n\n' + trailer;
 }
 
 export const gitCommitTool: ToolDefinition = {
@@ -90,7 +127,7 @@ export const gitCommitTool: ToolDefinition = {
   description:
     'Create a git commit with automatic Co-Authored-By attribution for AMI. ' +
     'Use this instead of running git commit via bash. ' +
-    'Optionally stage files before committing. The Co-Authored-By trailer is appended automatically unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1 is set.',
+    'Optionally stage files before committing. The Co-Authored-By trailer is appended automatically unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1 is set or the config `attribution.commit` overrides/suppresses it.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -182,8 +219,8 @@ export const gitCommitTool: ToolDefinition = {
       return { output: `Warning: Potential secrets detected in commit message: ${secrets.map(s => s.label).join(', ')}. Remove secrets before committing.`, isError: true };
     }
 
-    // Build the final commit message with trailer
-    const finalMessage = buildFinalMessage(message);
+    // Build the final commit message with trailer (config/env-aware attribution).
+    const finalMessage = buildFinalMessage(message, resolveCommitAttribution(context.cwd));
 
     // Write message to temp file to avoid shell escaping issues. Use an
     // unpredictable randomUUID name and the 'wx' (O_EXCL) flag so a pre-planted

@@ -5,6 +5,7 @@ import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRe
 import { validateEngineConfig, type EngineConfig } from './types';
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
 import { levenshteinDistance } from './tools/path-suggest';
+import { TIER_LOCKED_KEYS } from './settings-guard';
 
 /**
  * Project-level configuration that can be stored in
@@ -162,6 +163,17 @@ export interface ProjectConfig {
    * checked out as usual.
    */
   worktree?: { symlinkDirectories?: string[]; sparsePaths?: string[] };
+  /**
+   * Commit / PR attribution override (parity: Claude Code's `attribution.commit` /
+   * `attribution.pr` settings). When `commit` is a non-empty string it REPLACES the
+   * default `Co-Authored-By: AMI …` trailer the git_commit tool appends; when it is
+   * the empty string `""` the trailer is suppressed entirely (same effect as the
+   * `SUPERINFERENCE_DISABLE_CO_AUTHOR=1` env opt-out); when absent the default AMI
+   * trailer is used. `pr` carries the analogous override text for PR-description
+   * attribution. Consumed by {@link resolveCommitAttribution} in
+   * core/core/src/tools/git-commit.ts.
+   */
+  attribution?: { commit?: string; pr?: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -345,9 +357,32 @@ export function getGlobalConfigPath(): string | null {
 /** Thrown when a present managed-config file fails to parse (fail-closed). */
 export class ManagedConfigError extends Error {}
 
-/** The managed-config base file path (env override or the /etc default). */
+/**
+ * The managed-config base file path. An explicit `SUPERINFERENCE_MANAGED_CONFIG`
+ * env var always wins (testing / non-standard deployments); otherwise the default
+ * is PLATFORM-SPECIFIC so an enterprise policy lands in the OS-conventional
+ * machine-wide location an administrator actually writes to — mirroring Claude
+ * Code's `getManagedFilePath` platform switch:
+ *
+ *   - macOS   → `/Library/Application Support/SuperInference/config.json`
+ *   - Windows → `%PROGRAMDATA%\SuperInference\config.json` (falls back to the
+ *               conventional `C:\ProgramData` when PROGRAMDATA is unset)
+ *   - Linux/other → `/etc/superinference/config.json`
+ *
+ * Previously this was hardcoded to the Linux `/etc` path on every platform, so a
+ * managed policy deployed to the macOS/Windows convention was never read.
+ */
 export function getManagedConfigPath(): string {
-  return process.env.SUPERINFERENCE_MANAGED_CONFIG || '/etc/superinference/config.json';
+  const override = process.env.SUPERINFERENCE_MANAGED_CONFIG;
+  if (override) return override;
+  switch (process.platform) {
+    case 'darwin':
+      return '/Library/Application Support/SuperInference/config.json';
+    case 'win32':
+      return path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'SuperInference', 'config.json');
+    default:
+      return '/etc/superinference/config.json';
+  }
 }
 
 /**
@@ -596,7 +631,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['superinference', 'object'], ['managedMcpServers', 'object'],
   ['enabledPlugins', 'object'], ['env', 'object'],
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
-  ['worktree', 'object'],
+  ['worktree', 'object'], ['attribution', 'object'],
 ];
 
 /**
@@ -1488,6 +1523,7 @@ export function mergeConfigs(
     if (layer.tipsOverride !== undefined) merged.tipsOverride = deepMergeConfigObjects(merged.tipsOverride as Record<string, unknown> | undefined, layer.tipsOverride as Record<string, unknown>) as ProjectConfig['tipsOverride'];
     if (layer.composerHintsEnabled !== undefined) merged.composerHintsEnabled = layer.composerHintsEnabled;
     if (layer.composerHintsOverride !== undefined) merged.composerHintsOverride = deepMergeConfigObjects(merged.composerHintsOverride as Record<string, unknown> | undefined, layer.composerHintsOverride as Record<string, unknown>) as ProjectConfig['composerHintsOverride'];
+    if (layer.attribution !== undefined) merged.attribution = deepMergeConfigObjects(merged.attribution as Record<string, unknown> | undefined, layer.attribution as Record<string, unknown>) as ProjectConfig['attribution'];
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -1544,6 +1580,26 @@ export function mergeConfigs(
   // project may still exempt commands, so this only overrides when present.)
   if (managedConfig?.sandboxExcludedCommands) {
     merged.sandboxExcludedCommands = managedConfig.sandboxExcludedCommands;
+  }
+  // Managed tier is HIGHEST-PRECEDENCE and authoritative for the security-relevant
+  // scalar settings, not just the allowlists/killswitches handled above. The
+  // per-field loop merges these last-layer-wins, so without this a `--yolo` /
+  // env / project value would silently override an enterprise cap. We re-apply the
+  // managed value for every {@link TIER_LOCKED_KEYS} entry that exists on
+  // ProjectConfig (permissionMode / maxTurns / maxBudgetUsd) PLUS safeMode, so a
+  // lower tier can never widen a managed security boundary at runtime. This reuses
+  // the SAME TIER_LOCKED_KEYS set the config-tool guard enforces at write time (one
+  // source — no second lock list). Parity: Claude Code's policySettings being the
+  // last, winning SETTING_SOURCE for all security-relevant settings.
+  if (managedConfig) {
+    for (const key of TIER_LOCKED_KEYS) {
+      if ((managedConfig as Record<string, unknown>)[key] !== undefined) {
+        (merged as Record<string, unknown>)[key] = (managedConfig as Record<string, unknown>)[key];
+      }
+    }
+    if (managedConfig.safeMode !== undefined) {
+      merged.safeMode = managedConfig.safeMode;
+    }
   }
 
   return merged;
