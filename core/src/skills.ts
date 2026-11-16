@@ -91,6 +91,98 @@ export interface AgentDefinition {
   /** When a higher-priority same-named agent shadows this one, the winner's
    *  source. Undefined on the active (winning) agent. */
   overriddenBy?: AgentSource;
+  /** Orchestrator delegation hint — the "when should the parent pick this agent"
+   *  cue, distinct from `description` (parity with Claude's agent `whenToUse`).
+   *  Parsed from a `when-to-use`/`when_to_use` frontmatter key. */
+  whenToUse?: string;
+  /** Per-agent display color used to tint the subagent's badge/label in listings
+   *  (parity with Claude's agent `color`). `undefined` ⇒ the UI picks a default. */
+  color?: AgentColorName;
+  /** Persistent-memory storage scope for the agent (parity with Claude's agent
+   *  `memory`): user / project / local. */
+  memory?: AgentMemoryScope;
+  /** Run the subagent in an isolated git worktree by default (parity with Claude's
+   *  agent `isolation`). */
+  isolation?: AgentIsolationMode;
+  /** When true, spawning this agent defaults to background/detached execution
+   *  unless the caller explicitly overrides `run_in_background` (parity with
+   *  Claude's agent `background`). */
+  background?: boolean;
+}
+
+/**
+ * The named display colors an agent may declare (parity with Claude Code's
+ * `AGENT_COLORS` / `AgentColorName`). Purely presentational metadata: it tints the
+ * subagent's badge/label so concurrent agents are visually distinguishable. The
+ * sentinel `'automatic'` (and any unrecognized value) maps to `undefined` so the
+ * UI falls back to its default tinting — see {@link parseAgentColor}.
+ */
+export const AGENT_COLORS = [
+  'red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan',
+] as const;
+export type AgentColorName = (typeof AGENT_COLORS)[number];
+
+/**
+ * Normalize a raw frontmatter `color` value to a known {@link AgentColorName}.
+ * Case-insensitive; the `'automatic'` sentinel and any unrecognized value (or
+ * non-string) return `undefined` (UI default). Mirrors Claude Code's
+ * ColorPicker, where `'automatic'` is an explicit option that clears the color.
+ */
+export function parseAgentColor(value: unknown): AgentColorName | undefined {
+  if (typeof value !== 'string') return undefined;
+  const t = value.trim().toLowerCase();
+  return (AGENT_COLORS as readonly string[]).includes(t) ? (t as AgentColorName) : undefined;
+}
+
+/**
+ * The persistent-memory storage scopes an agent may declare (parity with Claude
+ * Code's `AgentMemoryScope`): `user` (home), `project` (committed), or `local`
+ * (project-local, non-shared).
+ */
+export const AGENT_MEMORY_SCOPES = ['user', 'project', 'local'] as const;
+export type AgentMemoryScope = (typeof AGENT_MEMORY_SCOPES)[number];
+
+/**
+ * Validate + normalize a raw frontmatter `memory` value against the scope
+ * allowlist. Case-insensitive; returns `undefined` for an unknown/non-string
+ * value so an arbitrary scope can never silently propagate.
+ */
+export function parseMemoryScope(value: unknown): AgentMemoryScope | undefined {
+  if (typeof value !== 'string') return undefined;
+  const t = value.trim().toLowerCase();
+  return (AGENT_MEMORY_SCOPES as readonly string[]).includes(t) ? (t as AgentMemoryScope) : undefined;
+}
+
+/**
+ * The isolation modes an agent may declare (parity with Claude Code's agent
+ * `isolation`). AMI supports `worktree` (run the subagent in an isolated git
+ * worktree). Claude's ant-only `remote` mode has no AMI analogue and is rejected.
+ */
+export const AGENT_ISOLATION_MODES = ['worktree'] as const;
+export type AgentIsolationMode = (typeof AGENT_ISOLATION_MODES)[number];
+
+/**
+ * Validate + normalize a raw frontmatter `isolation` value. Case-insensitive;
+ * returns `undefined` for an unknown/non-string value.
+ */
+export function parseIsolationMode(value: unknown): AgentIsolationMode | undefined {
+  if (typeof value !== 'string') return undefined;
+  const t = value.trim().toLowerCase();
+  return (AGENT_ISOLATION_MODES as readonly string[]).includes(t) ? (t as AgentIsolationMode) : undefined;
+}
+
+/**
+ * Parse a raw frontmatter `background` value (parity with Claude Code's agent
+ * `background` parsing). Accepts the string/boolean forms `'true'`/`true` →
+ * `true` and `'false'`/`false`/omitted → `undefined`; ANY other value is
+ * `invalid` (the caller surfaces a load warning) and yields `undefined` so a
+ * garbled flag never silently forces background execution.
+ */
+export function parseBackgroundFlag(value: unknown): { value: boolean | undefined; invalid: boolean } {
+  if (value === undefined) return { value: undefined, invalid: false };
+  if (value === true || value === 'true') return { value: true, invalid: false };
+  if (value === false || value === 'false') return { value: undefined, invalid: false };
+  return { value: undefined, invalid: true };
 }
 
 /**
@@ -332,6 +424,16 @@ export function validateAgentDefinition(
     for (const tool of raw.disallowedTools ?? []) {
       if (!known.has(tool)) warnings.push(`Unknown tool in disallowed list: "${tool}"`);
     }
+  }
+
+  if (raw.color !== undefined && parseAgentColor(raw.color) === undefined) {
+    warnings.push(`Unknown color "${raw.color}" (valid: ${AGENT_COLORS.join(', ')}, or "automatic")`);
+  }
+  if (raw.memory !== undefined && parseMemoryScope(raw.memory) === undefined) {
+    warnings.push(`Unknown memory scope "${raw.memory}" (valid: ${AGENT_MEMORY_SCOPES.join(', ')})`);
+  }
+  if (raw.isolation !== undefined && parseIsolationMode(raw.isolation) === undefined) {
+    warnings.push(`Unknown isolation mode "${raw.isolation}" (valid: ${AGENT_ISOLATION_MODES.join(', ')})`);
   }
 
   return { valid: errors.length === 0, errors, warnings };

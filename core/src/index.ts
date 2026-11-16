@@ -11,8 +11,8 @@ export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSour
 export type { PluginBundle, CommandDefinition, GitSourceValidation, PluginValidationResult, PluginValidationIssue, PluginLoadFailure } from './plugins';
 // Skill/agent TYPES + arg-safety live in core (bare building blocks). The
 // SkillManager (management) lives in common/src/skill-manager.ts.
-export type { SkillDefinition, AgentDefinition, SkillManagerLike, EffortLevel, AgentValidationResult } from './skills';
-export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS, AGENT_SOURCES, coerceDescriptionToString, EFFORT_LEVELS, parseEffort, isValidEffort, parseArgumentNames, AGENT_PERMISSION_MODES, validateAgentDefinition } from './skills';
+export type { SkillDefinition, AgentDefinition, SkillManagerLike, EffortLevel, AgentValidationResult, AgentColorName, AgentMemoryScope, AgentIsolationMode } from './skills';
+export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS, AGENT_SOURCES, coerceDescriptionToString, EFFORT_LEVELS, parseEffort, isValidEffort, parseArgumentNames, AGENT_PERMISSION_MODES, validateAgentDefinition, AGENT_COLORS, parseAgentColor, AGENT_MEMORY_SCOPES, parseMemoryScope, AGENT_ISOLATION_MODES, parseIsolationMode, parseBackgroundFlag } from './skills';
 // Skill catalog types + path-safety for URL-based skill discovery.
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult } from './skill-catalog';
 export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256 } from './skill-catalog';

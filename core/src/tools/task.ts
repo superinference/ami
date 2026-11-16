@@ -617,6 +617,12 @@ export const taskTool: ToolDefinition = {
     let agentMaxTurns: number | undefined;
     let agentPermissionMode: string | undefined;
     let agentTokenBudget: number | undefined;
+    // Per-agent `background: true` default (parity: Claude's agent background flag).
+    // Applied only when the caller did not explicitly pass run_in_background.
+    let agentBackgroundDefault = false;
+    // Per-agent `isolation` default (parity: Claude's agent isolation field) — used
+    // when the caller did not pass an explicit `isolation` on the task call.
+    let agentIsolationDefault: string | undefined;
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -629,6 +635,8 @@ export const taskTool: ToolDefinition = {
       agentMaxTurns = agentDef.maxTurns;
       agentPermissionMode = agentDef.permissionMode;
       agentTokenBudget = agentDef.autoCompactWindow;
+      agentBackgroundDefault = agentDef.background === true;
+      agentIsolationDefault = agentDef.isolation;
 
       if (agentDef.tools && agentDef.tools.length > 0) {
         const everything = allTools.getAll();
@@ -690,7 +698,11 @@ export const taskTool: ToolDefinition = {
     // args; coerceBool handles both (a strict `=== true` silently dropped
     // `run_in_background: "true"` to foreground, serializing a batch the model
     // meant to run concurrently). Shared with bash.ts for consistent coercion.
-    const runInBackground = coerceBool(input.run_in_background);
+    // An explicit run_in_background (even "false") wins; otherwise fall back to the
+    // agent definition's `background: true` default (parity: Claude's agent background).
+    const runInBackground = input.run_in_background !== undefined
+      ? coerceBool(input.run_in_background)
+      : agentBackgroundDefault;
 
     // Async/background allowlist — a detached background agent has no live parent
     // turn supervising it, so after all mode/agent-def/denylist resolution its tool
@@ -741,7 +753,9 @@ export const taskTool: ToolDefinition = {
       context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
     }
 
-    const isolation = input.isolation as string | undefined;
+    // An explicit per-call `isolation` wins; otherwise fall back to the agent
+    // definition's `isolation` default (parity: Claude's agent isolation field).
+    const isolation = (input.isolation as string | undefined) ?? agentIsolationDefault;
     const requestedCwd = input.cwd as string | undefined;
     if (requestedCwd) {
       // The subagent's working directory is bounded by the PARENT's trusted
