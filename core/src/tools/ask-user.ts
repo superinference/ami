@@ -142,11 +142,35 @@ export const askUserQuestionTool: ToolDefinition = {
     additionalProperties: false,
   },
   isReadOnly: true,
+  // Cap the (user/model-derived) answer+annotation text that flows back into the
+  // model context (parity with Claude's `maxResultSizeChars: 100_000`). The tool is
+  // handled specially by the engine, which reads this field to bound the result.
+  maxResultSizeChars: 100_000,
   async execute(_input, _context) {
     // Handled specially by the engine — not executed through normal tool pipeline
     return { output: 'AskUserQuestion is handled by the engine directly.', isError: false };
   },
 };
+
+/** Hard cap on the serialized AskUserQuestion result (parity with Claude's
+ *  `maxResultSizeChars: 100_000`). The engine reads {@link askUserQuestionTool}'s
+ *  `maxResultSizeChars` so this constant is the single source of the default. */
+export const ASK_USER_MAX_RESULT_CHARS = askUserQuestionTool.maxResultSizeChars ?? 100_000;
+
+/**
+ * Bound an AskUserQuestion tool result to `cap` characters before it flows back
+ * into the model context. Oversized answer/annotation payloads are truncated with
+ * an explicit marker rather than returned unbounded (parity with Claude's
+ * `maxResultSizeChars`). Returns the input unchanged when within the cap.
+ */
+export function capAskUserResult(output: string, cap: number = ASK_USER_MAX_RESULT_CHARS): string {
+  if (cap <= 0 || output.length <= cap) return output;
+  const marker = `\n… [truncated ${output.length - cap} chars over the ${cap}-char AskUserQuestion result limit]`;
+  // If even the marker alone would overflow the cap, hard-truncate without it so
+  // the result is always <= cap.
+  if (marker.length >= cap) return output.slice(0, cap);
+  return output.slice(0, cap - marker.length) + marker;
+}
 
 // ---------------------------------------------------------------------------
 // Input validation (parity with Claude's AskUserQuestionTool refine + validateInput)
