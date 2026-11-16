@@ -1,7 +1,26 @@
 import type { ProviderConfig, Message } from './types';
 import { streamChatCompletion } from './provider';
 import { contentToText } from './session';
-import { stripDisplayTags } from './utils/display-tags';
+import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './utils/display-tags';
+
+/**
+ * Cap on the characters of conversation text fed to the title model. Parity with
+ * Claude's `MAX_CONVERSATION_TEXT = 1000` (utils/sessionTitle.ts:24). The cap is
+ * applied as a RECENCY-BIASED TAIL slice (see {@link capTitleInput}) so that when
+ * the conversation is long the MOST RECENT context is what the title model sees.
+ */
+export const MAX_CONVERSATION_TEXT = 1000;
+
+/**
+ * Cap title-generation input to the last {@link MAX_CONVERSATION_TEXT} characters.
+ * Parity: Claude tail-slices (`text.slice(-MAX)`) so "recent context wins when the
+ * conversation is long" (utils/sessionTitle.ts:52-53). This replaces a HEAD slice,
+ * which kept only the oldest opening prefix (preamble/boilerplate) and dropped the
+ * substantive recent ask. A string already within the cap is returned unchanged.
+ */
+export function capTitleInput(text: string): string {
+  return text.length > MAX_CONVERSATION_TEXT ? text.slice(-MAX_CONVERSATION_TEXT) : text;
+}
 
 /**
  * A message is a valid title SOURCE only when it is genuinely human-authored.
@@ -18,7 +37,13 @@ export function isHumanAuthoredUserMessage(m: Message): boolean {
   if (m.isMeta) return false;
   if (m.isVisibleInTranscriptOnly) return false;
   if (m.origin && m.origin.kind !== 'user') return false;
-  return contentToText(m.content).trim().length > 0;
+  // Skip command-only / pure-injected-tag messages: a turn that is ENTIRELY
+  // system-injected wrapper tags (a bare `/clear` marker, a lone
+  // `<session-start-hook>…</session-start-hook>`, a task-notification wrapper)
+  // carries no human-authored prose and must not become a title source — the
+  // deriver falls through to the next real user message (parity: Claude's
+  // `stripDisplayTagsAllowEmpty` command-only detection, displayTags.ts:31-39).
+  return stripDisplayTagsAllowEmpty(contentToText(m.content)).length > 0;
 }
 
 /**
@@ -70,7 +95,10 @@ export function extractConversationText(messages: readonly Message[]): string {
       if (text) parts.push(`Assistant: ${text}`);
     }
   }
-  return parts.join('\n').trim();
+  // Recency-biased cap: keep the LAST MAX_CONVERSATION_TEXT chars so a long
+  // conversation is titled from where it actually went, not its opening preamble
+  // (parity: Claude's tail-slice, utils/sessionTitle.ts:52-53).
+  return capTitleInput(parts.join('\n').trim());
 }
 
 /**
@@ -124,15 +152,25 @@ export function sanitizeTitle(s: string): string {
  * (e.g. a URL or hash) would collapse the title to almost nothing, so we hard-cut.
  * Any trailing space left by the cut is trimmed. A title already within `max` is
  * returned unchanged, so no previously-short title is altered.
+ *
+ * TRUNCATION AFFORDANCE (parity: Claude's `slice(0, MAX - 1) + '…'`,
+ * initReplBridge.ts:566-567): when a cut actually happens, a horizontal ellipsis
+ * `…` is appended so the user can tell the title continued (rather than a silent
+ * mid-thought stop). One char of the budget is reserved for the ellipsis so the
+ * returned string — ellipsis included — never exceeds `max`. A title within `max`
+ * is still returned verbatim with NO ellipsis.
  */
 export function truncateTitle(title: string, max = 50): string {
   if (title.length <= max) return title;
-  const clipped = title.slice(0, max);
+  // Reserve one char of the budget for the trailing ellipsis so the result
+  // (ellipsis included) stays within `max`.
+  const budget = max - 1;
+  const clipped = title.slice(0, budget);
   const lastSpace = clipped.lastIndexOf(' ');
-  if (lastSpace >= Math.floor(max * 0.6)) {
-    return clipped.slice(0, lastSpace).trimEnd();
-  }
-  return clipped.trimEnd();
+  const body = lastSpace >= Math.floor(max * 0.6)
+    ? clipped.slice(0, lastSpace).trimEnd()
+    : clipped.trimEnd();
+  return `${body}…`;
 }
 
 /**
@@ -206,6 +244,14 @@ export async function generateTitle(
   // below; an already-aborted signal short-circuits the request.
   signal?: AbortSignal,
 ): Promise<string> {
+  // Empty / whitespace / command-only / pure-injected-tag input short-circuit:
+  // skip the model round-trip (and its cost + latency) entirely when there is no
+  // human-authored content to title. Parity: Claude's `const trimmed =
+  // description.trim(); if (!trimmed) return null` (utils/sessionTitle.ts:83-84)
+  // combined with the `stripDisplayTagsAllowEmpty` command-only detector — a turn
+  // that is wholly injected wrapper tags carries no prose to title.
+  if (!stripDisplayTagsAllowEmpty(userMessage).trim()) return '';
+
   const titleProvider: ProviderConfig = {
     ...provider,
     model: compactionModel || provider.model,
@@ -225,7 +271,11 @@ export async function generateTitle(
 
   const messages = [{
     role: 'user' as const,
-    content: `${TITLE_GENERATION_PROMPT}\n\nConversation:\n"""\n${cleaned.slice(0, 1000)}\n"""`,
+    // Recency-biased input cap (tail slice): keep the last MAX_CONVERSATION_TEXT
+    // chars so a long opening message / aggregated conversation is titled from its
+    // substantive recent ask, not its boilerplate preamble (parity: Claude's
+    // `text.slice(-MAX_CONVERSATION_TEXT)`, utils/sessionTitle.ts:52-53).
+    content: `${TITLE_GENERATION_PROMPT}\n\nConversation:\n"""\n${capTitleInput(cleaned)}\n"""`,
   }];
 
   let title = '';

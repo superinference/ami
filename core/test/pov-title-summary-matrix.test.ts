@@ -171,7 +171,8 @@ describe('generateTitle: produces a clean single-line title <=50 chars', () => {
       streamText(long) as never,
     );
     assert.equal(title.length, 50);
-    assert.equal(title, 'A'.repeat(50));
+    // Truncation affordance: ellipsis appended on a cut (one budget char reserved).
+    assert.equal(title, 'A'.repeat(49) + '…');
   });
 
   it('falls back to the sanitized user message when model output is empty', async () => {

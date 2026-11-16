@@ -153,7 +153,9 @@ describe('generateTitle — network failure fallback', () => {
     const longMsg = 'X'.repeat(200);
     const title = await generateTitle(longMsg, provider);
     assert.equal(title.length, 50);
-    assert.equal(title, 'X'.repeat(50));
+    // Truncation affordance: a cut appends a horizontal ellipsis (one char of the
+    // 50-char budget reserved for it), so the title ends with '…' not a raw char.
+    assert.equal(title, 'X'.repeat(49) + '…');
   });
 });
 

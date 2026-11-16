@@ -33,3 +33,19 @@ export function stripDisplayTags(text: string): string {
   const result = text.replace(XML_TAG_BLOCK_PATTERN, '').trim();
   return result || text;
 }
+
+/**
+ * Like {@link stripDisplayTags} but returns the EMPTY string when the message is
+ * ALL tags (no human-authored prose survives the strip). Parity: Claude's
+ * `stripDisplayTagsAllowEmpty` (utils/displayTags.ts:31-39), used so a title
+ * deriver can DETECT a command-only / pure-injected-tag message (e.g. a bare
+ * `/clear`, a lone `<session-start-hook>…</session-start-hook>`, or a
+ * task-notification wrapper) and FALL THROUGH to the next real user message
+ * instead of titling injected noise. `stripDisplayTags` deliberately returns the
+ * original on an empty result ("better to show something than nothing") — that
+ * fallback is wrong for the "is there any human content here?" question, which is
+ * what this discriminator answers.
+ */
+export function stripDisplayTagsAllowEmpty(text: string): string {
+  return text.replace(XML_TAG_BLOCK_PATTERN, '').trim();
+}

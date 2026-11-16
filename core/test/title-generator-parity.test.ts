@@ -74,20 +74,23 @@ describe('sanitizeTitle — gap 3: invisible / bidi Unicode', () => {
 });
 
 describe('truncateTitle — gap 4: word-boundary truncation', () => {
-  it('breaks on a word boundary instead of mid-word', () => {
+  it('breaks on a word boundary instead of mid-word and appends an ellipsis', () => {
     const out = truncateTitle('the quick brown fox jumps over the lazy dog again now');
     assert.ok(out.length <= 50);
-    assert.equal(out, 'the quick brown fox jumps over the lazy dog again');
+    // One budget char reserved for '…', so the word boundary lands earlier than a
+    // bare 50-char cut; the ellipsis signals the title continued.
+    assert.equal(out, 'the quick brown fox jumps over the lazy dog…');
   });
-  it('hard-cuts a single long word with no usable boundary', () => {
-    assert.equal(truncateTitle('X'.repeat(200)), 'X'.repeat(50));
+  it('hard-cuts a single long word with an ellipsis affordance', () => {
+    // No usable boundary -> 49 chars + '…' == 50 total (never exceeds max).
+    assert.equal(truncateTitle('X'.repeat(200)), 'X'.repeat(49) + '…');
   });
-  it('leaves a short title untouched', () => {
+  it('leaves a short title untouched (no ellipsis)', () => {
     assert.equal(truncateTitle('short title'), 'short title');
   });
-  it('respects a custom max and breaks on the boundary within it', () => {
-    // max 12 -> hard clip "alpha beta g"; last space at 10 (>= 60% of 12) -> "alpha beta".
-    assert.equal(truncateTitle('alpha beta gamma', 12), 'alpha beta');
+  it('respects a custom max and breaks on the boundary within it, ellipsis appended', () => {
+    // max 12 -> budget 11 -> clip "alpha beta "; last space at 10 (>= 60% of 12) -> "alpha beta…".
+    assert.equal(truncateTitle('alpha beta gamma', 12), 'alpha beta…');
   });
 });
 
@@ -129,6 +132,9 @@ describe('generateTitle — end-to-end hardening through the engine seam', () =>
     const title = await generateTitle(msg, provider, undefined, seam(''));
     assert.ok(title.length <= 50);
     assert.ok(!title.endsWith(' '));
-    assert.ok(msg.startsWith(title));
+    // Truncation affordance: the cut title ends with '…'; its body (sans ellipsis)
+    // is still a clean word-boundary prefix of the original message.
+    assert.ok(title.endsWith('…'));
+    assert.ok(msg.startsWith(title.slice(0, -1)));
   });
 });
