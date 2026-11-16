@@ -3,6 +3,32 @@ import * as path from 'path';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
+import {
+  isEnvTruthy,
+  getPrivacyLevel,
+  isTelemetryDisabled,
+  isEssentialTrafficOnly,
+  getEssentialTrafficOnlyReason,
+  getPrivacyPosture,
+  PRIVACY_LEVELS,
+  ESSENTIAL_TRAFFIC_VARS,
+  type PrivacyLevel,
+  type PrivacyPosture,
+} from './privacy-level';
+
+// Re-exported so the analytics subsystem keeps a stable public surface; the
+// canonical definitions live in ./privacy-level (single source of truth).
+export {
+  isEnvTruthy,
+  getPrivacyLevel,
+  isTelemetryDisabled,
+  isEssentialTrafficOnly,
+  getEssentialTrafficOnlyReason,
+  getPrivacyPosture,
+  PRIVACY_LEVELS,
+  ESSENTIAL_TRAFFIC_VARS,
+};
+export type { PrivacyLevel, PrivacyPosture };
 
 export interface AnalyticsEvent {
   timestamp: string;
@@ -14,77 +40,6 @@ export interface AnalyticsEvent {
 }
 
 const MAX_IN_MEMORY_EVENTS = 1000;
-
-// ---------------------------------------------------------------------------
-// Privacy-level resolution + telemetry opt-out gating
-// ---------------------------------------------------------------------------
-
-/** Standard env-flag truthiness: anything set and not '', '0', 'false', 'no', 'off'. */
-export function isEnvTruthy(v: string | undefined): boolean {
-  if (v === undefined) return false;
-  const s = v.trim().toLowerCase();
-  return s !== '' && s !== '0' && s !== 'false' && s !== 'no' && s !== 'off';
-}
-
-/** Ordered privacy tiers; a more-restrictive signal always wins. */
-export const PRIVACY_LEVELS = ['default', 'no-telemetry', 'essential-traffic'] as const;
-export type PrivacyLevel = (typeof PRIVACY_LEVELS)[number];
-const PRIVACY_RANK: Record<PrivacyLevel, number> = {
-  'default': 0,
-  'no-telemetry': 1,
-  'essential-traffic': 2,
-};
-
-/**
- * Env vars that raise the privacy level to `essential-traffic`, in resolution
- * order (AMI-native knob first, then the Claude Code-compatible alias). Single
- * source of truth consumed by {@link getPrivacyLevel} and the reason accessor in
- * `./privacy-level`.
- */
-export const ESSENTIAL_TRAFFIC_VARS = [
-  'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC',
-  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
-] as const;
-
-/**
- * Resolve the effective privacy level from the standard opt-out env vars,
- * taking the MOST restrictive signal (mirrors Claude's getPrivacyLevel):
- *  - DISABLE_TELEMETRY / DO_NOT_TRACK → no-telemetry
- *  - *_DISABLE_NONESSENTIAL_TRAFFIC  → essential-traffic (strictest)
- */
-export function getPrivacyLevel(env: NodeJS.ProcessEnv = process.env): PrivacyLevel {
-  let level: PrivacyLevel = 'default';
-  const bump = (l: PrivacyLevel): void => { if (PRIVACY_RANK[l] > PRIVACY_RANK[level]) level = l; };
-  if (isEnvTruthy(env.DISABLE_TELEMETRY) || isEnvTruthy(env.DO_NOT_TRACK)) bump('no-telemetry');
-  if (ESSENTIAL_TRAFFIC_VARS.some(name => isEnvTruthy(env[name]))) {
-    bump('essential-traffic');
-  }
-  return level;
-}
-
-/** True when analytics/telemetry transmission must be suppressed (no-telemetry or stricter). */
-export function isTelemetryDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return PRIVACY_RANK[getPrivacyLevel(env)] >= PRIVACY_RANK['no-telemetry'];
-}
-
-/** True when only strictly-essential (product-function) traffic may leave the machine. */
-export function isEssentialTrafficOnly(env: NodeJS.ProcessEnv = process.env): boolean {
-  return getPrivacyLevel(env) === 'essential-traffic';
-}
-
-/**
- * The env var responsible for the current essential-traffic-only restriction, or
- * null when nonessential traffic is allowed. Mirrors {@link getPrivacyLevel}'s
- * essential-traffic signals (SUPERINFERENCE first, then the Claude-compatible
- * alias), so a user-facing message can name EXACTLY which var to unset to
- * re-enable nonessential traffic (parity: privacyLevel.getEssentialTrafficOnlyReason).
- * Invariant: returns non-null iff {@link isEssentialTrafficOnly} is true.
- */
-export function getEssentialTrafficOnlyReason(env: NodeJS.ProcessEnv = process.env): string | null {
-  if (isEnvTruthy(env.SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC)) return 'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC';
-  if (isEnvTruthy(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)) return 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC';
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Redaction / data-minimization for analytics event payloads
