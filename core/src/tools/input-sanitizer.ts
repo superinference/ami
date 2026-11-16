@@ -102,18 +102,30 @@ export function recursivelySanitizeUnicode<T>(value: T, depth = 0): T {
 const POISONED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_SANITIZE_DEPTH = 20;
 
+/**
+ * Sanitize a single value reachable from a tool-input object: strings are
+ * NUL-stripped and trimmed, ARRAYS are recursed element-by-element (so a string
+ * smuggled inside `{ paths: ['  rm\x00 -rf /  '] }` is cleaned, not passed
+ * through), plain objects re-enter `sanitizeToolInput` (dropping poisoned keys),
+ * and non-string primitives are returned unchanged. Depth-bounded through the
+ * same `MAX_SANITIZE_DEPTH` cap as the object walker.
+ */
+function sanitizeToolValue(value: unknown, depth: number): unknown {
+  if (typeof value === 'string') return value.replace(/\x00/g, '').trim();
+  if (depth >= MAX_SANITIZE_DEPTH) return value;
+  if (Array.isArray(value)) return value.map((v) => sanitizeToolValue(v, depth + 1));
+  if (value && typeof value === 'object') {
+    return sanitizeToolInput(value as Record<string, unknown>, depth + 1);
+  }
+  return value;
+}
+
 export function sanitizeToolInput(input: Record<string, unknown>, depth: number = 0): Record<string, unknown> {
   if (depth >= MAX_SANITIZE_DEPTH) return {};
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
     if (POISONED_KEYS.has(key)) continue;
-    if (typeof value === 'string') {
-      result[key] = value.replace(/\x00/g, '').trim();
-    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-      result[key] = sanitizeToolInput(value as Record<string, unknown>, depth + 1);
-    } else {
-      result[key] = value;
-    }
+    result[key] = sanitizeToolValue(value, depth);
   }
   return result;
 }

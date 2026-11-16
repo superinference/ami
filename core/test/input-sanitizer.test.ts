@@ -142,6 +142,36 @@ describe('sanitizeToolInput', () => {
     const result = sanitizeToolInput({ name: '  test  ' }, 19);
     assert.equal(result.name, 'test');
   });
+
+  it('sanitizes string elements inside arrays (NUL-strip + trim)', () => {
+    const result = sanitizeToolInput({ paths: ['  a\x00b  ', 'c\x00d'] });
+    assert.deepEqual(result.paths, ['ab', 'cd']);
+  });
+
+  it('recurses into objects nested inside arrays', () => {
+    const result = sanitizeToolInput({ edits: [{ old: '  x\x00  ', n: 5 }] });
+    assert.deepEqual(result.edits, [{ old: 'x', n: 5 }]);
+  });
+
+  it('drops prototype-poisoning keys inside array-nested objects', () => {
+    const inner = Object.create(null);
+    inner['__proto__'] = { hack: true };
+    inner.ok = '  v\x00  ';
+    const result = sanitizeToolInput({ arr: [inner] });
+    const got = (result.arr as any[])[0];
+    assert.ok(!Object.hasOwn(got, '__proto__'));
+    assert.equal(got.ok, 'v');
+  });
+
+  it('preserves non-string primitives inside arrays', () => {
+    const result = sanitizeToolInput({ nums: [1, true, null] });
+    assert.deepEqual(result.nums, [1, true, null]);
+  });
+
+  it('handles nested arrays of strings', () => {
+    const result = sanitizeToolInput({ grid: [['  a\x00  '], ['b\x00']] });
+    assert.deepEqual(result.grid, [['a'], ['b']]);
+  });
 });
 
 describe('validateRequiredFields', () => {

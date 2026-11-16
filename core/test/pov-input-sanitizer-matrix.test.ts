@@ -71,10 +71,12 @@ describe('sanitizeToolInput — behavioral matrix', () => {
     assert.deepEqual(r.outer, { good: 'x' });
   });
 
-  it('preserves arrays as-is (does not recurse into them)', () => {
-    const arr = [' not trimmed ', '\x00keeps bytes'];
+  it('recurses into arrays, sanitizing string elements (NUL-strip + trim)', () => {
+    // Parity fix: string elements smuggled inside an array field are now cleaned
+    // rather than passed through (closes the `{ paths: ['...'] }` sanitization hole).
+    const arr = [' trim me ', '\x00strip bytes'];
     const r = sanitizeToolInput({ list: arr });
-    assert.deepEqual(r.list, arr);
+    assert.deepEqual(r.list, ['trim me', 'strip bytes']);
   });
 
   it('preserves number values unchanged', () => {
