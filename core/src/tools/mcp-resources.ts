@@ -62,6 +62,12 @@ export const listMcpResourcesTool: ToolDefinition = {
     'List resources exposed by connected MCP servers. With no `server`, lists across ALL servers ' +
     '(each row is prefixed with its server for disambiguation); pass `server` to scope to one. ' +
     'Example: {"server": "github"}. Resources are read via ReadMcpResource.',
+  // Synonyms NOT already in the name/description so the tool is findable by intent
+  // via tool_search. Parity: Claude's ListMcpResourcesTool.searchHint.
+  searchHint: 'enumerate discover available resource catalog inventory',
+  // Declared result-size knob driving the spill cap below. Parity: Claude's
+  // ListMcpResourcesTool.maxResultSizeChars (100_000).
+  maxResultSizeChars: 100_000,
   inputSchema: {
     type: 'object',
     properties: {
@@ -97,7 +103,8 @@ export const listMcpResourcesTool: ToolDefinition = {
       // Cap the joined listing the same way the read tool caps its body, so a
       // server advertising a very large resource catalog cannot return an
       // unbounded string into the model context (Claude's maxResultSizeChars).
-      const output = spillToolText(context.cwd, 'mcp-resources', lines.join('\n'), 100_000);
+      const cap = listMcpResourcesTool.maxResultSizeChars ?? 100_000;
+      const output = spillToolText(context.cwd, 'mcp-resources', lines.join('\n'), cap);
       return { output, metadata: { count: resources.length, server: serverFilter } };
     } catch (err) {
       return { output: `Error listing MCP resources: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -154,6 +161,12 @@ export const readMcpResourceTool: ToolDefinition = {
     'Example: {"server": "github", "uri": "repo://owner/name/README.md"}. ' +
     'Text contents are returned inline (pretty-printed); binary blobs are decoded and saved to disk, ' +
     'with the file path returned as `blobSavedTo`.',
+  // Synonyms NOT already in the name/description so the tool is findable by intent
+  // via tool_search. Parity: Claude's ReadMcpResourceTool.searchHint.
+  searchHint: 'fetch retrieve download a specific resource by uri',
+  // Declared result-size knob driving the spill cap below. Parity: Claude's
+  // ReadMcpResourceTool.maxResultSizeChars (100_000).
+  maxResultSizeChars: 100_000,
   inputSchema: {
     type: 'object',
     properties: {
@@ -180,7 +193,8 @@ export const readMcpResourceTool: ToolDefinition = {
         return { output: `MCP resource "${input.uri as string}" returned no content.`, metadata: { contents } };
       }
       const rendered = JSON.stringify({ contents }, null, 2);
-      return { output: spillToolText(context.cwd, 'mcp-resource', rendered, 100_000), metadata: { contents } };
+      const cap = readMcpResourceTool.maxResultSizeChars ?? 100_000;
+      return { output: spillToolText(context.cwd, 'mcp-resource', rendered, cap), metadata: { contents } };
     } catch (err) {
       return { output: `Error reading MCP resource: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
