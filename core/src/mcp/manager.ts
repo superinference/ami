@@ -4,7 +4,7 @@ import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName } from './oauth'
 import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
-import { getMcpToolTimeout } from '../tools/mcp-tool';
+import { getMcpToolTimeout, normalizeMcpNameSegment } from '../tools/mcp-tool';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
@@ -505,6 +505,25 @@ export class McpManager extends EventEmitter {
    * one that is not is gated behind approval (registered pending, not auto-connected).
    */
   private _approvedServers = new Set<string>();
+  /**
+   * M14 (U018) — names of PROJECT-tier MCP servers the user has explicitly
+   * REJECTED (Claude's persisted `disabledMcpjsonServers`). This is the negative
+   * counterpart of {@link _approvedServers}: a rejected project server is
+   * SUPPRESSED on every load (never registered, never re-surfaced for approval)
+   * instead of re-appearing as `pending` each session. Seeded from a persisted
+   * store by the integrator ({@link setRejectedServers}) and extended by
+   * {@link rejectServer} / {@link rejectAllPending}. Explicit reject takes
+   * precedence over approval (see {@link getProjectMcpServerStatus}).
+   */
+  private _rejectedServers = new Set<string>();
+  /**
+   * M14 (U018) — blanket "trust all project MCP servers" flag (Claude's
+   * `enableAllProjectMcpServers`). When true, every project-tier server that is
+   * not explicitly rejected is approved without a per-server prompt, so a user
+   * who trusts a repo can opt every current AND future `.mcp.json` server in with
+   * one decision. Seeded via {@link setEnableAllProjectServers}.
+   */
+  private _enableAllProjectServers = false;
 
   /** Timestamp (ms) of the last tool call per server name. */
   _lastUsedAt = new Map<string, number>();
@@ -857,6 +876,103 @@ export class McpManager extends EventEmitter {
   /** M14 — true when the named project server has been approved. */
   isServerApproved(name: string): boolean {
     return this._approvedServers.has(name);
+  }
+
+  /**
+   * M14 (U018) — seed the set of REJECTED (persistently declined) PROJECT-tier
+   * MCP servers (Claude's `disabledMcpjsonServers`). The integrator loads this
+   * from a persisted store before {@link loadFromConfig}; a project server whose
+   * name is here is suppressed (never registered, never re-prompted). Replaces any
+   * previously-set rejections.
+   */
+  setRejectedServers(names: string[]): void {
+    this._rejectedServers = new Set(names);
+  }
+
+  /** M14 (U018) — current rejected PROJECT-tier server names (for persistence). */
+  getRejectedServers(): string[] {
+    return [...this._rejectedServers];
+  }
+
+  /**
+   * M14 (U018) — set the blanket "trust all project MCP servers" flag
+   * (`enableAllProjectMcpServers`). When on, every project server that is not
+   * explicitly rejected is approved without prompting.
+   */
+  setEnableAllProjectServers(on: boolean): void {
+    this._enableAllProjectServers = on;
+  }
+
+  /** M14 (U018) — current blanket project-trust flag (for persistence). */
+  getEnableAllProjectServers(): boolean {
+    return this._enableAllProjectServers;
+  }
+
+  /** True when `name` matches any entry in `set` under MCP name normalization
+   *  (Claude-parity: comparisons go through `normalizeNameForMCP` on BOTH sides,
+   *  so a config name `my.server` and a stored decision `my_server` match). */
+  private nameInSet(set: Set<string>, name: string): boolean {
+    if (set.size === 0) return false;
+    if (set.has(name)) return true;
+    const norm = normalizeMcpNameSegment(name);
+    for (const n of set) {
+      if (normalizeMcpNameSegment(n) === norm) return true;
+    }
+    return false;
+  }
+
+  /**
+   * M14 (U018) — resolve a PROJECT-tier server to its approval status with
+   * Claude-parity layered precedence (getProjectMcpServerStatus): an explicit
+   * reject wins first (`disabledMcpjsonServers`), then an explicit approval OR the
+   * blanket enable-all flag (`enabledMcpjsonServers` / `enableAllProjectMcpServers`),
+   * otherwise `pending`. All name comparisons are normalization-insensitive. This
+   * is the single source of truth the load path uses to gate project servers.
+   */
+  getProjectMcpServerStatus(name: string): 'approved' | 'rejected' | 'pending' {
+    if (this.nameInSet(this._rejectedServers, name)) return 'rejected';
+    if (this._enableAllProjectServers || this.nameInSet(this._approvedServers, name)) return 'approved';
+    return 'pending';
+  }
+
+  /**
+   * M14 (U018) — durably REJECT a project-tier MCP server (the approval dialog's
+   * "no" branch → `disabledMcpjsonServers`). Records the rejection (so it is
+   * returned by {@link getRejectedServers} for persistence and suppressed on every
+   * future load), clears any stale approval, and tears down the server's live or
+   * pending instance so it disappears now instead of lingering awaiting approval.
+   */
+  rejectServer(name: string): void {
+    this._rejectedServers.add(name);
+    this._approvedServers.delete(name);
+    if (this.clients.has(name) || this.pendingServers.has(name)) {
+      this.removeServer(name);
+    }
+  }
+
+  /**
+   * M14 (U018) — reject EVERY server currently awaiting approval (Claude's
+   * cancel/ESC `handleEscRejectAll`): a cancellation of the new-MCP-servers prompt
+   * is a committed decision, not a no-op that re-asks. Each pending-approval server
+   * is durably rejected (and torn down). Returns the names rejected.
+   */
+  rejectAllPending(): string[] {
+    const names = this.listPendingApprovals().map((p) => p.name);
+    for (const n of names) this.rejectServer(n);
+    return names;
+  }
+
+  /**
+   * M14 (U018) — clear ALL persisted project-scope decisions (Claude's
+   * `mcpResetChoicesHandler`): drop the approved set, the rejected set, and the
+   * blanket enable-all flag, so the user is re-prompted for every project server
+   * on the next load. The complement of {@link approvePendingServer} /
+   * {@link rejectServer} — a single "forget my choices" reset.
+   */
+  resetProjectMcpChoices(): void {
+    this._approvedServers.clear();
+    this._rejectedServers.clear();
+    this._enableAllProjectServers = false;
   }
 
   /**
@@ -1813,11 +1929,22 @@ export class McpManager extends EventEmitter {
             coreLog('mcp', `skipping denied MCP server "${name}"`);
             continue;
           }
+          // M14 (U018) — a project-tier server the user previously REJECTED is
+          // SUPPRESSED entirely: never registered, never re-surfaced for approval
+          // (Claude's disabledMcpjsonServers). Checked BEFORE recording scope so a
+          // rejected server leaves no orphan metadata behind.
+          if (opts.projectScoped && this.getProjectMcpServerStatus(name) === 'rejected') {
+            coreLog('mcp', `skipping rejected project MCP server "${name}"`);
+            continue;
+          }
           // Tag the server with its config-source scope + path BEFORE registering it
           // so the add paths see the recorded scope rather than defaulting to dynamic.
           this.recordServerScope(name, opts.scope, opts.sourcePath);
-          // M14 — gate project-tier servers behind approval unless already approved.
-          if (opts.projectScoped && !this._approvedServers.has(name)) {
+          // M14 (U018) — gate project-tier servers by their resolved approval
+          // status: `pending` awaits explicit approval; `approved` (an approval
+          // entry OR the blanket enableAllProjectServers flag) connects normally.
+          // `rejected` was already handled above.
+          if (opts.projectScoped && this.getProjectMcpServerStatus(name) === 'pending') {
             coreLog('mcp', `project MCP server "${name}" requires approval — registered pending`);
             this.addPendingServer(name, expanded, { needsApproval: true });
             continue;
