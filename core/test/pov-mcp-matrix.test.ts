@@ -167,7 +167,7 @@ describe('POV/mcp — constant sets (membership + shape)', () => {
   });
 
   it('MCP_CLIENT_STATES enumerates the client lifecycle', () => {
-    assert.deepEqual([...MCP_CLIENT_STATES], ['disconnected', 'connecting', 'ready', 'error']);
+    assert.deepEqual([...MCP_CLIENT_STATES], ['disconnected', 'connecting', 'ready', 'error', 'needs-auth']);
   });
 
   it('MCP_SERVER_STATES enumerates the manager lifecycle', () => {

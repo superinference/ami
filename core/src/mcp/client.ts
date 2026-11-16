@@ -247,6 +247,13 @@ export interface McpElicitationRequest {
   showCancel?: boolean;
   /** URL-mode only: set true once the server posts a completion notification. */
   completed?: boolean;
+  /**
+   * URL-mode only: the server-assigned id of this elicitation. Set when the
+   * elicitation arrives inside a tool call's `-32042` (URL-elicitation-required)
+   * error so a frontend can correlate the server's completion notification; absent
+   * for server-initiated `elicitation/create` requests.
+   */
+  elicitationId?: string;
 }
 
 export interface McpElicitationResult {
@@ -373,8 +380,79 @@ export function is403RevokedToken(wwwAuthenticate: string | null, body: string):
   return hay.includes('invalid_token') || hay.includes('revoked');
 }
 
-export const MCP_CLIENT_STATES = ['disconnected', 'connecting', 'ready', 'error'] as const;
+export const MCP_CLIENT_STATES = ['disconnected', 'connecting', 'ready', 'error', 'needs-auth'] as const;
 export type McpClientState = (typeof MCP_CLIENT_STATES)[number];
+
+/**
+ * JSON-RPC server error code that signals a tool call cannot proceed until the
+ * user completes one or more URL elicitations (opens a URL in a browser). The
+ * server returns `-32042` with `data.elicitations: [{ mode:'url', url,
+ * elicitationId, message }, …]`; {@link McpClient.callTool} drives each
+ * elicitation then retries the call (parity with Claude Code's
+ * UrlElicitationRequiredError / callMCPToolWithUrlElicitationRetry).
+ */
+export const MCP_URL_ELICITATION_REQUIRED_CODE = -32042;
+/** Max times a single {@link McpClient.callTool} retries after a `-32042`. */
+export const MAX_MCP_URL_ELICITATION_RETRIES = 3;
+
+/**
+ * A JSON-RPC error returned by an MCP server, preserving the numeric `code` and
+ * optional `data` payload (not just a flattened message) so callers can branch on
+ * well-known codes — e.g. the URL-elicitation-required retry loop keys off
+ * {@link MCP_URL_ELICITATION_REQUIRED_CODE} and reads `data.elicitations`.
+ */
+export class McpRpcError extends Error {
+  readonly code: number;
+  readonly data?: unknown;
+  constructor(code: number, message: string, data?: unknown) {
+    super(`MCP error ${code}: ${message}`);
+    this.name = 'McpRpcError';
+    this.code = code;
+    this.data = data;
+  }
+}
+
+/**
+ * An unrecoverable MCP authentication failure — the bearer token is gone/revoked
+ * and (re)authorization did not succeed. Thrown from the HTTP transport's 401 /
+ * 403-revoked paths after a re-auth attempt fails; the client transitions to the
+ * `needs-auth` state so the manager/UI can surface a "requires authentication,
+ * use /mcp to authenticate" affordance (parity with Claude Code flipping a client
+ * to `needs-auth` on McpAuthError).
+ */
+export class McpAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'McpAuthError';
+  }
+}
+
+/**
+ * URL-elicitation descriptor carried in a `-32042` error's `data.elicitations`.
+ * Extract + validate the url-mode entries so the tool-call retry loop only acts
+ * on well-formed server requests (parity with Claude Code's
+ * `ElicitRequestURLParams` runtime filter).
+ */
+export interface McpUrlElicitation {
+  mode: 'url';
+  url: string;
+  elicitationId: string;
+  message: string;
+}
+
+export function extractUrlElicitations(data: unknown): McpUrlElicitation[] {
+  if (data == null || typeof data !== 'object') return [];
+  const raw = (data as { elicitations?: unknown }).elicitations;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((e): e is McpUrlElicitation => {
+    if (e == null || typeof e !== 'object') return false;
+    const o = e as Record<string, unknown>;
+    return o.mode === 'url'
+      && typeof o.url === 'string'
+      && typeof o.elicitationId === 'string'
+      && typeof o.message === 'string';
+  });
+}
 
 // Only codes classifyError() can actually PRODUCE are advertised here (audit #8: the old
 // 'SESSION_EXPIRED' was never produced — no MCP transport emitted it — so it was removed to
@@ -916,12 +994,69 @@ export class McpClient extends EventEmitter {
     // Never let the heartbeat timer keep the event loop alive on its own.
     heartbeat.unref?.();
     try {
-      const result = await this.sendRequestAuto('tools/call', { name, arguments: args }, options?.signal, options?.timeoutMs);
-      // Sanitize untrusted tool result content before it reaches the model (H26).
-      return recursivelySanitizeUnicode(result);
+      // URL-elicitation-required (-32042) retry loop: a server can refuse a tool
+      // call until the user opens one or more URLs, returning the elicitations in
+      // the error's `data`. Drive each elicitation (url mode) via the injected
+      // handler, then re-run the call — bounded to MAX_MCP_URL_ELICITATION_RETRIES
+      // so a server that keeps re-requesting cannot loop forever (parity with
+      // Claude Code's callMCPToolWithUrlElicitationRetry).
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const result = await this.sendRequestAuto('tools/call', { name, arguments: args }, options?.signal, options?.timeoutMs);
+          // Sanitize untrusted tool result content before it reaches the model (H26).
+          return recursivelySanitizeUnicode(result);
+        } catch (err) {
+          if (!(err instanceof McpRpcError) || err.code !== MCP_URL_ELICITATION_REQUIRED_CODE) throw err;
+          if (attempt >= MAX_MCP_URL_ELICITATION_RETRIES) throw err;
+          const elicitations = extractUrlElicitations(err.data);
+          // A -32042 with no well-formed url elicitations is unactionable — surface
+          // the original error rather than silently retrying an identical call.
+          if (elicitations.length === 0 || !this.onElicitation) throw err;
+          const aborted = await this.resolveUrlElicitations(elicitations, options?.signal);
+          // A declined/cancelled elicitation ends the call with an informative
+          // (non-throwing) result — the user chose not to complete the step.
+          if (aborted) return aborted;
+          // All elicitations accepted — loop retries the tool call.
+        }
+      }
     } finally {
       clearInterval(heartbeat);
     }
+  }
+
+  /**
+   * Present each URL elicitation from a `-32042` tool-call error to the user via
+   * the injected {@link onElicitation} handler. Returns `undefined` when every
+   * elicitation is accepted (caller retries the tool call), or a terminal MCP tool
+   * result describing the decline/cancel otherwise (parity with Claude Code
+   * returning an informative content block instead of throwing).
+   */
+  private async resolveUrlElicitations(
+    elicitations: McpUrlElicitation[],
+    signal?: AbortSignal,
+  ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError: true } | undefined> {
+    for (const e of elicitations) {
+      if (signal?.aborted) throw new Error('MCP tool call aborted');
+      const result = await this.onElicitation!({
+        message: e.message,
+        requestedSchema: {},
+        mode: 'url',
+        url: e.url,
+        elicitationId: e.elicitationId,
+        signal,
+      });
+      if (result.action !== 'accept') {
+        const verb = result.action === 'decline' ? 'declined' : 'cancelled';
+        return {
+          content: [{
+            type: 'text',
+            text: `URL elicitation was ${verb}. The tool could not complete because it requires opening ${e.url}.`,
+          }],
+          isError: true,
+        };
+      }
+    }
+    return undefined;
   }
 
   async listResources(): Promise<McpResource[]> {
@@ -1186,6 +1321,21 @@ export class McpClient extends EventEmitter {
     }
   }
 
+  /**
+   * Transition to the `needs-auth` state and emit `needs-auth` after an
+   * unrecoverable authentication failure (401 / 403-revoked that re-auth could not
+   * fix), returning the {@link McpAuthError} to reject with. The manager surfaces
+   * this as the per-server `needs-auth` status so the UI can prompt the user to
+   * re-authenticate via `/mcp` (parity with Claude Code's needs-auth client
+   * state). A subsequent successful connect/reconnect flips the state back to
+   * `ready`, clearing the flag.
+   */
+  private flagNeedsAuth(message: string): McpAuthError {
+    this._state = 'needs-auth';
+    this.emit('needs-auth');
+    return new McpAuthError(message);
+  }
+
   private async sendRequestAuto(method: string, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs?: number): Promise<unknown> {
     if ((this.transport === 'sse' || this.transport === 'http') && this.sseUrl) {
       return this.sendHttpRequest(method, params, signal, false, timeoutMs);
@@ -1251,7 +1401,7 @@ export class McpClient extends EventEmitter {
               if (ok) {
                 this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
               } else {
-                reject(new Error('MCP HTTP 401 Unauthorized (authorization failed)'));
+                reject(this.flagNeedsAuth('MCP HTTP 401 Unauthorized (authorization failed)'));
               }
             }).catch(reject);
             return;
@@ -1269,7 +1419,7 @@ export class McpClient extends EventEmitter {
                 if (ok) {
                   this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
                 } else {
-                  reject(new Error('MCP HTTP 403 Forbidden (token revoked — re-authorization failed)'));
+                  reject(this.flagNeedsAuth('MCP HTTP 403 Forbidden (token revoked — re-authorization failed)'));
                 }
               }).catch(reject);
               return;
@@ -1309,7 +1459,7 @@ export class McpClient extends EventEmitter {
                 reject(new McpSessionExpiredError());
                 return;
               }
-              reject(new Error(`MCP error ${parsed.error.code}: ${parsed.error.message}`));
+              reject(new McpRpcError(parsed.error.code, parsed.error.message, parsed.error.data));
             } else {
               resolve(parsed.result);
             }
@@ -1757,7 +1907,7 @@ export class McpClient extends EventEmitter {
         pending.reject(new McpSessionExpiredError());
         return;
       }
-      pending.reject(new Error(`MCP error ${response.error.code}: ${response.error.message}`));
+      pending.reject(new McpRpcError(response.error.code, response.error.message, response.error.data));
     } else {
       pending.resolve(response.result);
     }

@@ -899,6 +899,14 @@ export class McpManager extends EventEmitter {
       }
     });
     client.on('ready', () => this.emit('server-ready', name));
+    // An unrecoverable auth failure on a live tool call flips the client to the
+    // `needs-auth` state — surface it as a server-state change so the /mcp view can
+    // prompt a re-auth (parity with Claude Code flipping a client to needs-auth on
+    // McpAuthError during tool execution).
+    client.on('needs-auth', () => {
+      coreLog('mcp', `MCP '${name}' needs re-authentication (token revoked/expired)`);
+      this.emit('server-state-changed', name, 'needs-auth');
+    });
     client.on('notification', (method: string, params: unknown) => this.emit('notification', name, method, params));
 
     client.on('terminal-error', (classified: McpTerminalError) => {
@@ -1357,6 +1365,10 @@ export class McpManager extends EventEmitter {
     if (client.state === 'ready') return 'ready';
     if (client.state === 'connecting') return 'connecting';
     if (client.state === 'error') return 'error';
+    // A connected client whose token died mid-session (a tool call hit an
+    // unrecoverable 401/403) is parked in `needs-auth` so the UI can prompt a
+    // re-auth via /mcp, rather than reporting a generic `stopped`/`error`.
+    if (client.state === 'needs-auth') return 'needs-auth';
     return 'stopped';
   }
 
@@ -1441,6 +1453,9 @@ export class McpManager extends EventEmitter {
       uptime: client.uptime,
       containerBacked: !!config?.containerConfig,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
+      // Surface the per-server needs-auth affordance when a connected client's
+      // token died mid-session (parity with the pending-server needs-auth flag).
+      needsAuth: client.state === 'needs-auth' || undefined,
       ...this.reconnectProgress(name),
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),

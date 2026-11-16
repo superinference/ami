@@ -34,8 +34,8 @@ export type {
 } from './reference-journal';
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
 export { safeReadFile, safeLstat, FILE_ENCODINGS } from './tools/tool-utils';
-export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES, MCP_TRANSPORTS, MCP_CLIENT_STATES, MCP_TERMINAL_ERROR_CODES, MCP_ELICITATION_ACTIONS, MCP_ELICITATION_MODES, MCP_LOG_LEVELS } from './mcp/client';
-export type { McpTransport } from './mcp/client';
+export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES, MCP_TRANSPORTS, MCP_CLIENT_STATES, MCP_TERMINAL_ERROR_CODES, MCP_ELICITATION_ACTIONS, MCP_ELICITATION_MODES, MCP_LOG_LEVELS, McpRpcError, McpAuthError, MCP_URL_ELICITATION_REQUIRED_CODE, MAX_MCP_URL_ELICITATION_RETRIES, extractUrlElicitations } from './mcp/client';
+export type { McpTransport, McpUrlElicitation } from './mcp/client';
 export { MCP_SERVER_STATES, matchMcpAutoAllow } from './mcp/manager';
 export type { McpServerState } from './mcp/manager';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
