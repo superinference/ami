@@ -65,12 +65,23 @@ export interface ShutdownRequest {
   // receives one to echo back. Mirrors Claude Code's SendMessageTool, which
   // never requires the caller to invent a request id for a *request*.
   requestId?: string;
+  // The requesting agent's identity, stamped from the trusted sender at send
+  // time so the shutdown payload is self-contained (the recipient knows who
+  // asked without reading the envelope). Mirrors Claude Code's
+  // ShutdownRequestMessage `from` field (createShutdownRequestMessage).
+  from?: string;
 }
 export interface ShutdownResponse {
   type: 'shutdown_response';
   requestId: string;
   approve: boolean;
   reason?: string;
+  // Teardown-routing hints echoed back to the lead so it can tear down the right
+  // backend/pane for the exiting teammate without a lookup. Both optional (an
+  // in-process teammate has neither). Mirrors Claude Code's
+  // ShutdownApprovedMessage `paneId` / `backendType`.
+  paneId?: string;
+  backendType?: string;
 }
 export interface PlanApprovalRequest {
   type: 'plan_approval_request';
@@ -102,6 +113,44 @@ export interface PermissionResponse {
   type: 'permission_response';
   requestId: string;
   approve: boolean;
+}
+/**
+ * A worker asks the lead to approve network egress to a specific host that the
+ * sandbox blocked. Routed to the lead (like permission_request). Mirrors Claude
+ * Code's SandboxPermissionRequestMessage — AMI flattens Claude's `hostPattern`
+ * to a bare `host` and derives the worker identity from the trusted sender
+ * rather than carrying workerId/workerName on the wire.
+ */
+export interface SandboxPermissionRequest {
+  type: 'sandbox_permission_request';
+  // Optional on the wire — auto-generated before queueing when omitted.
+  requestId?: string;
+  host: string;
+}
+/**
+ * The lead's decision on a worker's blocked-host egress request, routed back to
+ * the named worker. Mirrors Claude Code's SandboxPermissionResponseMessage
+ * (requestId / host / allow).
+ */
+export interface SandboxPermissionResponse {
+  type: 'sandbox_permission_response';
+  requestId: string;
+  host: string;
+  allow: boolean;
+}
+/**
+ * The lead broadcasts (or directs) a permission-rule change to teammates so the
+ * whole team adopts an "always allow/deny/ask" decision without re-prompting
+ * each worker. Lead-only. Mirrors Claude Code's TeamPermissionUpdateMessage
+ * (permissionUpdate.rules/behavior + directoryPath + toolName), flattened to the
+ * fields AMI's permission layer consumes.
+ */
+export interface TeamPermissionUpdate {
+  type: 'team_permission_update';
+  toolName: string;
+  behavior: 'allow' | 'deny' | 'ask';
+  rule?: string;
+  directoryPath?: string;
 }
 /**
  * A lead assigns a unit of work to a teammate. Routed to the named teammate (not
@@ -148,6 +197,9 @@ export type StructuredMessage =
   | PlanApprovalResponse
   | PermissionRequest
   | PermissionResponse
+  | SandboxPermissionRequest
+  | SandboxPermissionResponse
+  | TeamPermissionUpdate
   | TaskAssignment
   | IdleNotification
   | ModeSetRequest;
@@ -155,11 +207,14 @@ export type StructuredMessage =
 const STRUCTURED_TYPES = new Set([
   'shutdown_request', 'shutdown_response', 'plan_approval_request',
   'plan_approval_response', 'permission_request', 'permission_response',
+  'sandbox_permission_request', 'sandbox_permission_response',
+  'team_permission_update',
   'task_assignment', 'idle_notification', 'mode_set_request',
 ]);
 
 const IDLE_REASONS = new Set(['available', 'interrupted', 'failed']);
 const COMPLETED_STATUSES = new Set(['resolved', 'blocked', 'failed']);
+const PERMISSION_BEHAVIORS = new Set(['allow', 'deny', 'ask']);
 
 /**
  * Providers sometimes serialize booleans as strings; accept both. The decision
@@ -190,10 +245,22 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
   const optionalReqId = typeof requestId === 'string' ? requestId : undefined;
   switch (type) {
     case 'shutdown_request':
-      return { type, requestId: optionalReqId, reason: typeof o.reason === 'string' ? o.reason : undefined };
+      return {
+        type,
+        requestId: optionalReqId,
+        reason: typeof o.reason === 'string' ? o.reason : undefined,
+        from: typeof o.from === 'string' ? o.from : undefined,
+      };
     case 'shutdown_response':
       if (typeof requestId !== 'string') return { error: 'shutdown_response requires a requestId' };
-      return { type, requestId, approve: coerceApprove(o), reason: typeof o.reason === 'string' ? o.reason : undefined };
+      return {
+        type,
+        requestId,
+        approve: coerceApprove(o),
+        reason: typeof o.reason === 'string' ? o.reason : undefined,
+        paneId: typeof o.paneId === 'string' ? o.paneId : undefined,
+        backendType: typeof o.backendType === 'string' ? o.backendType : undefined,
+      };
     case 'plan_approval_request':
       if (typeof o.planContent !== 'string' || !o.planContent.trim()) return { error: 'plan_approval_request requires planContent' };
       return { type, requestId: optionalReqId, planContent: o.planContent, planFilePath: typeof o.planFilePath === 'string' ? o.planFilePath : undefined };
@@ -214,6 +281,48 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
     case 'permission_response':
       if (typeof requestId !== 'string') return { error: 'permission_response requires a requestId' };
       return { type, requestId, approve: coerceApprove(o) };
+    case 'sandbox_permission_request': {
+      // Accept both AMI's flat `host` and Claude's nested `hostPattern.host` so a
+      // cross-framework payload parses identically.
+      const hostPattern = (o.hostPattern && typeof o.hostPattern === 'object')
+        ? (o.hostPattern as Record<string, unknown>).host
+        : undefined;
+      const host = typeof o.host === 'string' ? o.host : (typeof hostPattern === 'string' ? hostPattern : undefined);
+      if (!host || !host.trim()) return { error: 'sandbox_permission_request requires a host' };
+      return { type, requestId: optionalReqId, host };
+    }
+    case 'sandbox_permission_response': {
+      if (typeof requestId !== 'string') return { error: 'sandbox_permission_response requires a requestId' };
+      if (typeof o.host !== 'string' || !o.host.trim()) return { error: 'sandbox_permission_response requires a host' };
+      // `allow` is the decision key here (not `approve`), mirroring Claude's schema.
+      const allow = o.allow === true || o.allow === 'true';
+      return { type, requestId, host: o.host, allow };
+    }
+    case 'team_permission_update': {
+      // Accept both AMI's flat shape and Claude's nested permissionUpdate.{rules,behavior}.
+      const pu = (o.permissionUpdate && typeof o.permissionUpdate === 'object')
+        ? (o.permissionUpdate as Record<string, unknown>)
+        : undefined;
+      let toolName = typeof o.toolName === 'string' ? o.toolName : undefined;
+      let rule = typeof o.rule === 'string' ? o.rule : (typeof o.ruleContent === 'string' ? o.ruleContent : undefined);
+      if (pu && Array.isArray(pu.rules) && pu.rules.length > 0) {
+        const first = pu.rules[0] as Record<string, unknown>;
+        if (!toolName && typeof first.toolName === 'string') toolName = first.toolName;
+        if (!rule && typeof first.ruleContent === 'string') rule = first.ruleContent;
+      }
+      const behavior = typeof o.behavior === 'string' ? o.behavior : (pu && typeof pu.behavior === 'string' ? pu.behavior : undefined);
+      if (!toolName || !toolName.trim()) return { error: 'team_permission_update requires a toolName' };
+      if (!behavior || !PERMISSION_BEHAVIORS.has(behavior)) {
+        return { error: `team_permission_update behavior must be one of: ${[...PERMISSION_BEHAVIORS].join(', ')}` };
+      }
+      return {
+        type,
+        toolName,
+        behavior: behavior as TeamPermissionUpdate['behavior'],
+        rule,
+        directoryPath: typeof o.directoryPath === 'string' ? o.directoryPath : undefined,
+      };
+    }
     case 'task_assignment': {
       if (typeof o.taskId !== 'string' || !o.taskId.trim()) return { error: 'task_assignment requires a taskId' };
       if (typeof o.subject !== 'string' || !o.subject.trim()) return { error: 'task_assignment requires a subject' };
@@ -279,13 +388,21 @@ export function isStructuredProtocolMessage(content: string): boolean {
 export function getShutdownMessageSummary(content: string, from?: string): string | null {
   const parsed = parseStructuredMessage(content);
   if (!parsed || 'error' in parsed) return null;
-  const who = from ? ` from ${from}` : '';
   if (parsed.type === 'shutdown_request') {
+    // Prefer the self-describing payload `from` (set at send time) over the
+    // envelope sender so the summary names the requester even when read off a
+    // relayed/forwarded copy. Mirrors Claude reading `from` off the payload.
+    const requester = parsed.from ?? from;
+    const who = requester ? ` from ${requester}` : '';
     return `[Shutdown Request${who}]${parsed.reason ? ` ${parsed.reason}` : ''}`;
   }
   if (parsed.type === 'shutdown_response') {
     if (parsed.approve) {
-      return `[Shutdown Approved]${from ? ` ${from} is now exiting` : ''}`;
+      // Teardown-routing hint so the lead knows which backend/pane to reclaim.
+      const teardown = parsed.backendType || parsed.paneId
+        ? ` (teardown: ${[parsed.backendType, parsed.paneId].filter(Boolean).join(' ')})`
+        : '';
+      return `[Shutdown Approved]${from ? ` ${from} is now exiting` : ''}${teardown}`;
     }
     // Rejection carries the required reason plus the non-fatal fallback boundary
     // ("continue working; request again later") so a requester reading the queue
@@ -323,6 +440,15 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
       return `[Permission Request] tool "${m.tool}"${m.description ? `: ${m.description}` : ''}`;
     case 'permission_response':
       return m.approve ? '[Permission Granted]' : '[Permission Denied]';
+    case 'sandbox_permission_request':
+      return `[Sandbox Permission Request]${from ? ` from ${from}` : ''} — network access to "${m.host}"`;
+    case 'sandbox_permission_response':
+      return `[Sandbox Access ${m.allow ? 'Allowed' : 'Denied'}] host "${m.host}"`;
+    case 'team_permission_update': {
+      const scope = m.directoryPath ? ` in ${m.directoryPath}` : '';
+      const ruleTag = m.rule ? ` (${m.rule})` : '';
+      return `[Team Permission Update] ${m.behavior} "${m.toolName}"${ruleTag}${scope}`;
+    }
     case 'task_assignment':
       return `[Task Assigned] #${m.taskId} - ${m.subject}`;
     case 'idle_notification': {
@@ -685,12 +811,30 @@ export function receiveMessage(
   });
 }
 
-export function pollMailbox(agentName: string): AgentMessage[] {
+/**
+ * Drain an agent's mailbox. With no predicate it removes and returns EVERY queued
+ * message (the common relay path). With a predicate it drains only the matching
+ * messages and leaves the rest queued, so a consumer can selectively consume one
+ * class of message (e.g. only control traffic) without discarding the others.
+ * Mirrors Claude Code's useMailboxBridge predicate/filter on the mailbox poll.
+ */
+export function pollMailbox(
+  agentName: string,
+  fn?: (msg: AgentMessage) => boolean,
+): AgentMessage[] {
   const messages = mailboxes.get(agentName) || [];
-  if (messages.length > 0) {
+  if (messages.length === 0) return messages;
+  if (!fn) {
     mailboxes.set(agentName, []);
+    return messages;
   }
-  return messages;
+  const taken: AgentMessage[] = [];
+  const kept: AgentMessage[] = [];
+  for (const m of messages) {
+    (fn(m) ? taken : kept).push(m);
+  }
+  if (taken.length > 0) mailboxes.set(agentName, kept);
+  return taken;
 }
 
 /**
@@ -811,7 +955,10 @@ export const sendMessageTool: ToolDefinition = {
     'rejection requires a reason/feedback). Approving a shutdown terminates you — do NOT originate a ' +
     'shutdown_request unless explicitly asked to. To submit your own plan for review, send a ' +
     '"plan_approval_request" (with planContent, optional planFilePath) to the reviewer. The protocol also carries ' +
-    'permission_request/permission_response for forwarding a worker\'s permission prompt to the lead. ' +
+    'permission_request/permission_response for forwarding a worker\'s permission prompt to the lead, and ' +
+    'sandbox_permission_request/sandbox_permission_response (host, allow) for forwarding a blocked network-egress ' +
+    'host to the lead. The lead can push a team-wide rule to everyone with a "team_permission_update" ' +
+    '(toolName, behavior allow/deny/ask, optional rule/directoryPath), sent to one teammate or "*". ' +
     'The lead can assign work with a "task_assignment" (taskId, subject, description) or ask a teammate to switch ' +
     'permission posture with a "mode_set_request" (mode); a teammate reports it has finished its turn with an ' +
     '"idle_notification" (optional idleReason/completedTaskId/completedStatus/summary) sent to the lead. Approving a ' +
@@ -985,16 +1132,22 @@ export const sendMessageTool: ToolDefinition = {
       return { output: `Error: ${structured.error}`, isError: true };
     }
     if (structured) {
-      if (toRaw === '*') {
+      // A team_permission_update is the ONE structured message that is a
+      // team-wide decision, so (lead-only) it may broadcast; every other
+      // structured message is a point-to-point control message and may not.
+      if (toRaw === '*' && structured.type !== 'team_permission_update') {
         return { output: 'Error: structured messages cannot be broadcast (to: "*").', isError: true };
       }
       switch (structured.type) {
         case 'shutdown_request': {
           // Auto-generate a structured request id when the model omits one, and
-          // rewrite the queued payload so the recipient always receives an id to
-          // echo back in its shutdown_response (mirrors Claude's generateRequestId).
+          // stamp the trusted sender as `from` so the payload is self-contained;
+          // rewrite the queued payload so the recipient always receives both an id
+          // to echo back (mirrors Claude's generateRequestId) and the requester.
           const reqId = structured.requestId || generateRequestId('shutdown', toRaw);
-          const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
+          const wire = (structured.requestId && structured.from === from)
+            ? content
+            : JSON.stringify({ ...structured, requestId: reqId, from });
           enqueue(to, { from, to, content: wire, timestamp: Date.now() });
           return { output: `Shutdown request sent to ${toRaw} (id: ${reqId}) [from: ${from}]` };
         }
@@ -1099,6 +1252,50 @@ export const sendMessageTool: ToolDefinition = {
           const originTag = requestOriginTag(structured.requestId);
           enqueue(to, { from, to, content, timestamp: Date.now() });
           return { output: `Permission ${structured.approve ? 'granted' : 'denied'} to ${toRaw} (id: ${structured.requestId})${originTag}` };
+        }
+        case 'sandbox_permission_request': {
+          // A worker whose sandbox blocked egress to a host asks the lead to
+          // approve it. Always routed to the lead; the request id is keyed on the
+          // requester so the lead's sandbox_permission_response routes back.
+          const reqId = structured.requestId || generateRequestId('sandbox', from);
+          const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
+          enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content: wire, timestamp: Date.now() });
+          return { output: `Sandbox network request for host "${structured.host}" forwarded to ${TEAM_LEAD_NAME} (id: ${reqId}) [from: ${from}]` };
+        }
+        case 'sandbox_permission_response': {
+          // Only the lead may approve/deny a host-egress request; routed back to
+          // the named worker which resumes (or aborts) the blocked connection.
+          if (!isSenderLead) {
+            return { output: 'Error: only the team lead can answer a sandbox network request.', isError: true };
+          }
+          const originTag = requestOriginTag(structured.requestId);
+          enqueue(to, { from, to, content, timestamp: Date.now() });
+          return { output: `Sandbox access to "${structured.host}" ${structured.allow ? 'allowed' : 'denied'} for ${toRaw} (id: ${structured.requestId})${originTag}` };
+        }
+        case 'team_permission_update': {
+          // A team-wide permission decision. Lead-only; may be directed to one
+          // teammate or broadcast ("*") to the whole roster.
+          if (!isSenderLead) {
+            return { output: 'Error: only the team lead can broadcast a team permission update.', isError: true };
+          }
+          if (toRaw === '*') {
+            const fromLc = from.toLowerCase();
+            const roster = new Set<string>();
+            for (const name of mailboxes.keys()) roster.add(name);
+            for (const name of mailboxNotifiers.keys()) roster.add(name);
+            const recipients: string[] = [];
+            for (const name of roster) {
+              if (name.toLowerCase() === fromLc) continue;
+              enqueue(name, { from, to: name, content, timestamp: Date.now() });
+              recipients.push(name);
+            }
+            if (recipients.length === 0) {
+              return { output: 'No teammates to broadcast the permission update to (no other agents are reachable).' };
+            }
+            return { output: `Team permission update (${structured.behavior} "${structured.toolName}") broadcast to ${recipients.length} agent(s): ${recipients.join(', ')}` };
+          }
+          enqueue(to, { from, to, content, timestamp: Date.now() });
+          return { output: `Team permission update (${structured.behavior} "${structured.toolName}") sent to ${toRaw} [from: ${from}]` };
         }
       }
     }

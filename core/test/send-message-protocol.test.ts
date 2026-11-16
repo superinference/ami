@@ -24,12 +24,15 @@ describe('send_message structured protocol', () => {
     assert.equal(parseStructuredMessage('plain text'), null);
     assert.equal(parseStructuredMessage('{"type":"unknown"}'), null);
     const sr = parseStructuredMessage('{"type":"shutdown_request","requestId":"r1"}');
-    assert.deepEqual(sr, { type: 'shutdown_request', requestId: 'r1', reason: undefined });
+    // `from` is part of the self-describing shutdown-request payload (w67) —
+    // present-but-undefined when the wire payload omits it.
+    assert.deepEqual(sr, { type: 'shutdown_request', requestId: 'r1', reason: undefined, from: undefined });
     const bad = parseStructuredMessage('{"type":"shutdown_response"}');
     assert.ok(bad && 'error' in bad);
     // approve accepts the string "true"
     const resp = parseStructuredMessage('{"type":"shutdown_response","requestId":"r1","approve":"true"}');
-    assert.deepEqual(resp, { type: 'shutdown_response', requestId: 'r1', approve: true, reason: undefined });
+    // paneId/backendType are the w67 teardown-routing fields (undefined when absent).
+    assert.deepEqual(resp, { type: 'shutdown_response', requestId: 'r1', approve: true, reason: undefined, paneId: undefined, backendType: undefined });
   });
 
   it('rejects "@" addresses and broadcast of structured messages', async () => {
