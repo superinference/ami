@@ -1327,6 +1327,10 @@ export interface CommandHookConfig {
   /** 'block' = a hook that times out or errors denies the action (fail-closed);
    *  default 'allow' preserves today's fail-open behavior. */
   onFailure?: 'block' | 'allow';
+  /** Human-readable label shown in progress/introspection surfaces in place of the
+   *  raw command (Claude Code's getHookDisplayText `statusMessage`). Lets a hook
+   *  present e.g. 'Running security scan…' instead of leaking the shell command. */
+  statusMessage?: string;
 }
 
 export interface PromptHookConfig {
@@ -1338,6 +1342,8 @@ export interface PromptHookConfig {
   if?: string;
   async?: boolean;
   asyncRewake?: boolean;
+  /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
+  statusMessage?: string;
 }
 
 export interface HttpHookConfig {
@@ -1354,6 +1360,8 @@ export interface HttpHookConfig {
   if?: string;
   async?: boolean;
   asyncRewake?: boolean;
+  /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
+  statusMessage?: string;
 }
 
 /**
@@ -1375,6 +1383,8 @@ export interface AgentHookConfig {
   if?: string;
   async?: boolean;
   asyncRewake?: boolean;
+  /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
+  statusMessage?: string;
 }
 
 export interface HookDecisionOutput {
@@ -1396,6 +1406,11 @@ export interface HookConfigEntry {
   hook: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig;
   matcher?: string;
   _source?: 'project' | 'user' | 'config';
+  /** Name of the plugin bundle that contributed this hook, when it came from a
+   *  plugin (Claude Code's per-hook `pluginName`/`pluginId` provenance). Absent
+   *  for filesystem (.ami/.claude/config) hooks. Retained so a hook can be
+   *  attributed to — and audited per — the plugin that installed it. */
+  pluginName?: string;
 }
 
 export interface HookConfigFile {
@@ -1417,6 +1432,78 @@ export interface HookDescriptor {
   source: string;
   /** The hook's command, prompt, or URL (sanitized of secret-looking tokens). */
   content: string;
+  /** Plugin bundle name when the hook came from a plugin (Claude Code's per-hook
+   *  plugin attribution). Absent for filesystem/config hooks. */
+  pluginName?: string;
+  /** The hook author's friendly status label (Claude Code `statusMessage`), when
+   *  set — surfaced in progress/audit views instead of the raw command. */
+  statusMessage?: string;
+}
+
+/**
+ * Per-hook-type display label for the hook's primary content field — Claude Code's
+ * ViewHookMode label resolution: command→'Command', http→'URL', and BOTH prompt
+ * and agent hooks reuse the 'Prompt' label (an agent hook is a prompt-driven
+ * verification agent). Pure; used by {@link HookManager.getHookAuditView}.
+ */
+export function hookContentLabel(type: HookConfigType): string {
+  switch (type) {
+    case 'command': return 'Command';
+    case 'http': return 'URL';
+    case 'prompt':
+    case 'agent': return 'Prompt';
+  }
+}
+
+/**
+ * Human-readable text to show WHILE a hook runs / in an audit row (Claude Code's
+ * getHookDisplayText): the author-supplied `statusMessage` when present, else the
+ * hook's own content (command/prompt/url). Never leaks a secret the content
+ * sanitizer already stripped. Pure; used by {@link HookManager.getHookAuditView}.
+ */
+export function getHookDisplayText(d: { statusMessage?: string; content: string }): string {
+  const sm = d.statusMessage?.trim();
+  return sm ? sm : d.content;
+}
+
+/**
+ * Human-readable provenance string for a hook's source tier, with Claude Code's
+ * plugin special-case: a plugin-contributed hook appends `(pluginName)` so the
+ * user sees WHICH plugin installed it (SelectHookMode /
+ * hookSourceDescriptionDisplayString). Pure; used by
+ * {@link HookManager.getHookAuditView}.
+ */
+export function hookSourceDisplayString(source: string, pluginName?: string): string {
+  const base = ((): string => {
+    switch (source) {
+      case 'project': return 'Project settings';
+      case 'user': return 'User settings';
+      case 'config': return 'Project config';
+      case 'managed': return 'Managed policy';
+      case 'plugin': return 'Plugin';
+      default: return source;
+    }
+  })();
+  return pluginName ? `${base} (${pluginName})` : base;
+}
+
+/** A single hook's full audit row (Claude Code's ViewHookMode): identity, matcher,
+ *  typed content with its display label, plugin attribution, and the human-readable
+ *  source + display text. */
+export interface HookAuditRow {
+  event: string;
+  type: HookConfigType;
+  matcher?: string;
+  source: string;
+  /** Human-readable source description incl. `(pluginName)` for plugin hooks. */
+  sourceLabel: string;
+  pluginName?: string;
+  /** Per-type content label ('Command' | 'Prompt' | 'URL'). */
+  contentLabel: string;
+  /** The sanitized command / prompt / url. */
+  content: string;
+  /** What to show while the hook runs (statusMessage || content). */
+  displayText: string;
 }
 
 /** One matcher group under an event in the introspection view. */
@@ -1924,7 +2011,7 @@ export class HookManager extends EventEmitter {
     // that the managed-only policy filter consults. `managed` = admin/policy
     // settings; `plugin` = plugin-bundle contributed. Both are admin-trusted
     // sources that bypass the strictPluginOnlyCustomization hooks lock.
-    const sources: Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind }> = [];
+    const sources: Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind; pluginName?: string }> = [];
     // Admin/managed settings (highest authority) — the ONLY source honored when
     // allowManagedHooksOnly is set.
     const managedPath = process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH;
@@ -1956,7 +2043,7 @@ export class HookManager extends EventEmitter {
             coreLog('hooks', `Skipping hooks from disabled plugin: ${bundle.root}`);
             continue;
           }
-          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, kind: 'plugin' });
+          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, kind: 'plugin', pluginName: bundle.name });
         }
       }
     } catch { /* plugins module optional */ }
@@ -1983,7 +2070,7 @@ export class HookManager extends EventEmitter {
     const alreadyAccepted = (entry: HookConfigEntry): boolean =>
       accepted.some(a => a.event === entry.event && entry.hook && isHookEqual(a.hook, entry.hook));
 
-    for (const { path: p, source } of effectiveSources) {
+    for (const { path: p, source, pluginName } of effectiveSources) {
       let raw: string;
       try {
         raw = fs.readFileSync(p, 'utf-8');
@@ -2000,6 +2087,9 @@ export class HookManager extends EventEmitter {
         if (!entries.length) continue;
         for (const entry of entries) {
           entry._source = source;
+          // Carry the plugin bundle's name onto each entry it contributed so the
+          // retained descriptor can attribute the hook to its plugin.
+          if (pluginName) entry.pluginName = pluginName;
           if (source === 'project' && !this._workspaceTrusted) {
             coreLog('hooks', `Skipping project hook (workspace not trusted): ${entry.event}`);
             continue;
@@ -2052,6 +2142,8 @@ export class HookManager extends EventEmitter {
           ...(matcher ? { matcher } : {}),
           source: tier,
           content: describeHookContent(hookConfig),
+          ...(entry.pluginName ? { pluginName: entry.pluginName } : {}),
+          ...(hookConfig.statusMessage ? { statusMessage: hookConfig.statusMessage } : {}),
         });
 
         switch (entry.event) {
@@ -3016,6 +3108,31 @@ export class HookManager extends EventEmitter {
    */
   describeHooks(): HookDescriptor[] {
     return this._descriptors.map(d => ({ ...d }));
+  }
+
+  /**
+   * Full per-hook audit view (Claude Code's ViewHookMode): for every retained
+   * hook, its typed content with the type-specific label (command→'Command',
+   * http→'URL', prompt/agent→'Prompt'), a human-readable source description with
+   * plugin attribution (`Plugin (name)`), and the progress display text
+   * (statusMessage || content). This is the canonical consumer of
+   * {@link hookContentLabel}, {@link hookSourceDisplayString} and
+   * {@link getHookDisplayText}, so `/hooks` + `--introspect` can reveal exactly
+   * what each configured hook runs, where it came from, and which plugin (if any)
+   * installed it. Returns copies; callers cannot mutate the retained set.
+   */
+  getHookAuditView(): HookAuditRow[] {
+    return this._descriptors.map(d => ({
+      event: d.event,
+      type: d.type,
+      ...(d.matcher ? { matcher: d.matcher } : {}),
+      source: d.source,
+      sourceLabel: hookSourceDisplayString(d.source, d.pluginName),
+      ...(d.pluginName ? { pluginName: d.pluginName } : {}),
+      contentLabel: hookContentLabel(d.type),
+      content: d.content,
+      displayText: getHookDisplayText(d),
+    }));
   }
 
   /**
