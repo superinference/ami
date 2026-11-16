@@ -1,10 +1,10 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before, after, mock, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
-import { gitCommitTool, buildFinalMessage, CO_AUTHOR_TRAILER, TRAILER_REGEX } from '../src/tools/git-commit';
+import { gitCommitTool, buildFinalMessage, CO_AUTHOR_TRAILER, TRAILER_REGEX, _gitCommitFs } from '../src/tools/git-commit';
 import type { ToolContext } from '../src/types';
 
 function ctx(cwd: string, overrides?: Partial<ToolContext>): ToolContext {
@@ -457,5 +457,41 @@ describe('git_commit — detached mode bypasses user hooks/signing', () => {
       assert.equal(result.isError, false, 'detached mode must bypass the blocking hook');
       assert.ok(git('log -1 --format=%B', dir).includes('feat: detached'));
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AMI_TMPDIR override — the commit-message temp file honors resolveTmpBase (U049)
+// ---------------------------------------------------------------------------
+
+describe('git_commit — AMI_TMPDIR override for the message temp file', () => {
+  afterEach(() => {
+    mock.restoreAll();
+    delete process.env.AMI_TMPDIR;
+  });
+
+  it('writes the commit-message temp file under AMI_TMPDIR', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-git-tmpbase-repo-'));
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-git-tmpbase-override-'));
+    process.env.AMI_TMPDIR = tmpBase;
+    const realWrite = _gitCommitFs.writeFileSync;
+    const seen: string[] = [];
+    mock.method(_gitCommitFs, 'writeFileSync', (p: string, data: string, opts: unknown) => {
+      seen.push(p);
+      return (realWrite as (...a: unknown[]) => unknown)(p, data, opts);
+    });
+    try {
+      git('init', repo);
+      git('config user.name "Test User"', repo);
+      git('config user.email "test@example.com"', repo);
+      fs.writeFileSync(path.join(repo, 'f.txt'), 'content\n');
+      const result = await gitCommitTool.execute({ message: 'feat: tmpbase', files: ['f.txt'] }, ctx(repo));
+      assert.equal(result.isError, false);
+      assert.equal(seen.length, 1, 'exactly one message temp file is written');
+      assert.equal(path.dirname(seen[0]), tmpBase, 'temp file lands under AMI_TMPDIR');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(tmpBase, { recursive: true, force: true });
+    }
   });
 });

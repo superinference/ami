@@ -2,9 +2,8 @@ import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { execCommand } from '../utils/shell';
+import { execCommand, resolveTmpBase } from '../utils/shell';
 import { scanForSecrets } from './tool-utils';
 
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
@@ -189,7 +188,9 @@ export const gitCommitTool: ToolDefinition = {
     // Write message to temp file to avoid shell escaping issues. Use an
     // unpredictable randomUUID name and the 'wx' (O_EXCL) flag so a pre-planted
     // symlink or a predictable-path attacker can't hijack the write target.
-    const tmpDir = os.tmpdir();
+    // Honor the AMI_TMPDIR / CLAUDE_CODE_TMPDIR override so operators with custom
+    // temp requirements can relocate the commit-message temp file.
+    const tmpDir = resolveTmpBase();
     const tmpFile = path.join(tmpDir, `ami-commit-${crypto.randomUUID()}.txt`);
 
     try {

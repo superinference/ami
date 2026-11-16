@@ -20,7 +20,60 @@ export const shellHooks = {
   accessSync: fs.accessSync as typeof fs.accessSync,
   existsSync: fs.existsSync as typeof fs.existsSync,
   kill: ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); }),
+  /**
+   * Slow-command diagnostic sink (see {@link SLOW_EXEC_THRESHOLD_ENV}). Default
+   * writes a single `[slow-exec]` line to stderr; it only ever fires when the
+   * opt-in threshold env is set AND exceeded, so default runs produce no output.
+   * Tests replace it via `mock.method(shellHooks, 'onSlowCommand', …)`.
+   */
+  onSlowCommand: ((info: SlowCommandInfo): void => {
+    process.stderr.write(`[slow-exec] ${Math.round(info.durationMs)}ms (threshold ${info.thresholdMs}ms): ${info.command.slice(0, 200)}\n`);
+  }),
 };
+
+/** Payload handed to {@link shellHooks.onSlowCommand} when a command runs slow. */
+export interface SlowCommandInfo {
+  command: string;
+  durationMs: number;
+  thresholdMs: number;
+}
+
+/**
+ * Env knob (ms) that turns on slow-command diagnostics. When set to a finite,
+ * non-negative number, any {@link execCommand} whose wall-clock duration reaches
+ * that many milliseconds is reported through {@link shellHooks.onSlowCommand}.
+ * Unset / blank / non-numeric / negative disables it (no diagnostic). Mirrors
+ * Claude Code's `slowLogging` exec wrapper (execFileNoThrowPortable.ts:L70),
+ * surfacing exec calls that silently run slow — an opt-in introspection surface
+ * per AMI's introspection-on-every-change invariant.
+ */
+export const SLOW_EXEC_THRESHOLD_ENV = 'AMI_SLOW_EXEC_MS';
+
+/**
+ * Parse {@link SLOW_EXEC_THRESHOLD_ENV} into an active threshold in ms, or `null`
+ * when slow-command diagnostics are disabled (unset / blank / NaN / negative).
+ */
+function slowExecThresholdMs(): number | null {
+  const raw = (process.env[SLOW_EXEC_THRESHOLD_ENV] || '').trim();
+  if (raw === '') return null;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  return ms;
+}
+
+/**
+ * Base directory for AMI's internal temp files, honoring an operator override.
+ * Mirrors Claude Code's `CLAUDE_CODE_TMPDIR` knob (Shell.ts:L204-207): an
+ * environment with custom temp requirements (read-only `/tmp`, a size-limited
+ * tmpfs, a dedicated scratch volume) relocates every AMI-created temp file by
+ * setting `AMI_TMPDIR` (`CLAUDE_CODE_TMPDIR` accepted as a fallback for parity).
+ * When the override is unset/blank it falls back to the platform temp dir
+ * ({@link os.tmpdir}), so default behavior is unchanged.
+ */
+export function resolveTmpBase(): string {
+  const override = (process.env.AMI_TMPDIR || process.env.CLAUDE_CODE_TMPDIR || '').trim();
+  return override || os.tmpdir();
+}
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 /** Bound captured output. Head plus tail so a long pytest log keeps its summary. */
@@ -262,6 +315,25 @@ export interface ExecCommandOptions {
    * command (e.g. `git apply`, `patch`, `gpg`) without shell interpolation.
    */
   input?: string;
+  /**
+   * stdin mode for the child when no {@link input} payload is supplied
+   * (`'ignore'` by default so interactive prompts are detected-and-killed by
+   * stall detection). `'inherit'` connects the parent terminal's stdin; `'pipe'`
+   * opens a pipe the caller drives. Ignored when `input` is set (that path always
+   * pipes). Parity with Claude Code's exec wrapper `stdin` option
+   * (execFileNoThrow.ts:L22).
+   */
+  stdin?: 'ignore' | 'inherit' | 'pipe';
+  /**
+   * When `false`, a command that exits with a non-zero code resolves with empty
+   * `stdout`/`stderr` (only the exit code/signal are kept). Useful for
+   * probe/detection commands whose noisy output on failure should be discarded.
+   * Defaults to `true` (output always preserved). Parity with Claude Code's
+   * `preserveOutputOnError` (execFileNoThrow.ts:L17). A timeout/abort/launch
+   * failure (`exitCode === null`) always keeps its output so the caller can see
+   * why it failed.
+   */
+  preserveOutputOnError?: boolean;
 }
 
 export interface ExecCommandResult {
@@ -288,6 +360,11 @@ export interface ExecCommandResult {
  *   the user's profile/rc files are sourced.
  * - `AMI_SHELL_PREFIX` / `CLAUDE_CODE_SHELL_PREFIX` — an executable+args that
  *   wraps the command, quoted per component (see {@link formatShellPrefixCommand}).
+ * - `AMI_SLOW_EXEC_MS` ({@link SLOW_EXEC_THRESHOLD_ENV}) — when set, report any
+ *   command whose wall-clock duration reaches that many ms via
+ *   {@link shellHooks.onSlowCommand} (opt-in slow-command diagnostics).
+ * - `AMI_TMPDIR` / `CLAUDE_CODE_TMPDIR` — relocate AMI's temp-file base
+ *   (see {@link resolveTmpBase}).
  *
  * - Respects timeout (default 120 000 ms) and abort signal.
  * - Kills the entire process tree on timeout or abort.
@@ -304,7 +381,18 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input } = options;
+  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError } = options;
+
+  // Wall-clock start for slow-command diagnostics (see SLOW_EXEC_THRESHOLD_ENV).
+  const startedAt = Date.now();
+  const reportSlowExec = (): void => {
+    const threshold = slowExecThresholdMs();
+    if (threshold === null) return;
+    const durationMs = Date.now() - startedAt;
+    if (durationMs >= threshold) {
+      shellHooks.onSlowCommand({ command, durationMs, thresholdMs: threshold });
+    }
+  };
 
   return new Promise<ExecCommandResult>((resolve) => {
     // If already aborted, short-circuit
@@ -373,9 +461,10 @@ export function execCommand(
     const shellArgs = isWindows ? ['/c', finalCommand] : [...loginArgs, '-c', finalCommand];
 
     const proc = shellHooks.spawn(shell, shellArgs, {
-      // Pipe stdin only when the caller supplies input; otherwise ignore it so
-      // interactive prompts are still detected-and-killed by stall detection.
-      stdio: [input != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      // Pipe stdin when the caller supplies input; otherwise honor the explicit
+      // `stdin` mode (default 'ignore' so interactive prompts are still
+      // detected-and-killed by stall detection).
+      stdio: [input != null ? 'pipe' : (stdin ?? 'ignore'), 'pipe', 'pipe'],
       cwd: effectiveCwd,
       detached: !isWindows,
       // Suppress the console window a spawned `cmd /c` would otherwise flash on
@@ -406,9 +495,14 @@ export function execCommand(
       if (settled) return;
       settled = true;
       cleanUp();
+      reportSlowExec();
+      // Optionally discard captured output on a genuine non-zero exit (probe
+      // commands). A timeout/abort/launch failure (exitCode === null) always
+      // keeps its output so the caller can tell WHY it failed.
+      const suppress = preserveOutputOnError === false && exitCode != null && exitCode !== 0;
       resolve({
-        stdout: stdoutBuf.value(),
-        stderr: stderrBuf.value(),
+        stdout: suppress ? '' : stdoutBuf.value(),
+        stderr: suppress ? '' : stderrBuf.value(),
         exitCode,
         signal,
       });
