@@ -21,10 +21,11 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
-import { isGatewayRejection, findErrorCode } from './error-classifier';
+import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES } from './error-classifier';
 import { getMTLSConfig, getTLSConnectOptions } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { isEnvTruthy } from './analytics';
+import { log } from './logger';
 
 /**
  * Retry-After from response headers, in SECONDS. Delegates to the shared
@@ -587,20 +588,76 @@ export const REQUEST_ID_HEADER = 'x-superinference-request-id';
 export const requestIdHooks: { generate: () => string } = { generate: randomUUID };
 
 /**
+ * Managed cloud gateways that log NO client request-id and whose strict proxies
+ * risk 4xx-rejecting an unknown header (inc-4029 class). Mirrors Claude Code's
+ * `getAPIProvider() === 'firstParty'` gate in buildFetch (client.ts:L364-367),
+ * which injects the correlation header ONLY on the first-party Anthropic path and
+ * never on Bedrock/Vertex/Foundry.
+ */
+const REQUEST_ID_INCOMPATIBLE_PROVIDERS: ReadonlySet<string> = new Set([
+  'amazon-bedrock',
+  'anthropic-vertex',
+  'google-vertex',
+  'azure-openai',
+]);
+
+/**
+ * True when the resolved endpoint is safe to carry AMI's client request-id
+ * header — i.e. a direct first-party-style API rather than a managed cloud
+ * gateway (Bedrock/Vertex/Foundry) that drops it and may reject unknown headers.
+ */
+export function endpointAcceptsClientRequestId(provider: string | undefined): boolean {
+  return !(provider !== undefined && REQUEST_ID_INCOMPATIBLE_PROVIDERS.has(provider));
+}
+
+/**
  * L6: build the client request-id header for an outgoing API call. Returns a
  * single `{ 'x-superinference-request-id': <uuid> }` entry so logs on both ends
  * can be correlated. Purely ADDITIVE: if the caller/config already set that
  * header (any casing), returns `{}` so the caller's value is never overwritten.
+ * Also returns `{}` when `inject` is false (the endpoint is a managed gateway
+ * that rejects unknown headers — see {@link endpointAcceptsClientRequestId}).
  */
 export function buildRequestIdHeader(
   existingHeaders?: Record<string, string>,
+  inject = true,
 ): Record<string, string> {
+  if (!inject) return {};
   if (existingHeaders) {
     for (const key of Object.keys(existingHeaders)) {
       if (key.toLowerCase() === REQUEST_ID_HEADER) return {};
     }
   }
   return { [REQUEST_ID_HEADER]: requestIdHooks.generate() };
+}
+
+/**
+ * Wrap a fetch so each outgoing API request emits a debug trace of its pathname
+ * and client request-id to the shared logger (gated by `AMI_DEBUG_LOG_LEVEL` /
+ * component filter, like every other `log()` call — no new env knob). The id is
+ * generated specifically so TIMEOUTS, which return no server request-id, can
+ * still be correlated with server logs. Mirrors Claude Code's `[API REQUEST]`
+ * buildFetch trace (client.ts:L380-383). Never throws — tracing can't perturb the
+ * live request. No-op passthrough when `baseFetch` is undefined and no wrapper is
+ * otherwise needed is handled by the caller.
+ */
+export function withRequestIdDebugTrace(
+  baseFetch: typeof globalThis.fetch | undefined,
+  source: string,
+): typeof globalThis.fetch {
+  const base = baseFetch ?? globalThis.fetch;
+  return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    try {
+      const url = requestUrl(input as string | URL | { url?: unknown });
+      const headers = new Headers(init?.headers as Record<string, string> | undefined);
+      const id = headers.get(REQUEST_ID_HEADER);
+      const pathname = url ? new URL(url).pathname : '<unknown>';
+      log('api', `[API REQUEST] ${pathname}${id ? ` ${REQUEST_ID_HEADER}=${id}` : ''} source=${source}`);
+    } catch {
+      // Never let tracing crash the fetch.
+    }
+    return base(input, init);
+  }) as typeof globalThis.fetch;
 }
 
 export function withExtraHeaders(
@@ -906,6 +963,33 @@ export function computeAnthropicBetas(
 }
 
 /**
+ * Betas that Bedrock accepts ONLY through `extraBodyParams` (the request body),
+ * NEVER as `anthropic-beta` headers. Mirrors Claude Code's
+ * `BEDROCK_EXTRA_PARAMS_HEADERS` (constants/betas.ts:L38-42): Bedrock's gateway
+ * rejects these as headers, so routing a Claude model via Bedrock must carry them
+ * in the body instead. Only the subset AMI computes for a model is sent.
+ */
+export const BEDROCK_EXTRA_PARAMS_BETAS: ReadonlySet<string> = new Set([
+  INTERLEAVED_THINKING_BETA,
+  ONE_MILLION_CONTEXT_BETA,
+]);
+
+/**
+ * Compute the `extraBody` fragment carrying Bedrock's allowed betas for a Claude
+ * model, or `undefined` when none apply. The betas come from the SAME canonical
+ * {@link computeAnthropicBetas} source as the header paths, then are filtered to
+ * the Bedrock-extra-params subset and emitted under `anthropic_beta` (Bedrock's
+ * body field) rather than a header. Non-Claude Bedrock models get `undefined`.
+ */
+export function computeBedrockBetaExtraBody(modelId: string): Record<string, unknown> | undefined {
+  if (!modelId.toLowerCase().includes('claude')) return undefined;
+  const betas = computeAnthropicBetas(modelId, { includeCacheTtlBeta: false })
+    .filter(b => BEDROCK_EXTRA_PARAMS_BETAS.has(b));
+  if (betas.length === 0) return undefined;
+  return { anthropic_beta: betas };
+}
+
+/**
  * Wrap a fetch so every outgoing request carries `betaToken` in its
  * `anthropic-beta` header, comma-joined with any token already set (never
  * duplicated). Used to add the 1M-context beta on the anthropic-vertex path,
@@ -1169,6 +1253,35 @@ export function withDynamicBoundaryStrip(
   }) as typeof globalThis.fetch;
 }
 
+/**
+ * Wrap a fetch so requests open a FRESH undici connection with HTTP keep-alive
+ * effectively disabled (`pipelining:0`, minimal keep-alive timeouts) via a new
+ * Agent dispatcher. Used by the stale-socket recovery path: after an
+ * ECONNRESET/EPIPE the pooled socket is poisoned, so the next attempt must not
+ * reuse it. A fresh Agent is created once per wrapper (i.e. once per retry's
+ * resolveModel call), abandoning the old pool. No-op passthrough (never sets a
+ * dispatcher) when undici is unavailable or the caller already set one.
+ */
+export function withFreshConnection(
+  baseFetch: typeof globalThis.fetch | undefined,
+): typeof globalThis.fetch {
+  const base = baseFetch ?? globalThis.fetch;
+  let agentPromise: Promise<unknown> | undefined;
+  return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const callerDispatcher = init && typeof init === 'object' ? (init as { dispatcher?: unknown }).dispatcher : undefined;
+    if (!callerDispatcher) {
+      if (!agentPromise) {
+        agentPromise = loadUndiciAgentCtor().then(Ctor =>
+          Ctor ? new Ctor({ pipelining: 0, keepAliveTimeout: 1, keepAliveMaxTimeout: 1 }) : null,
+        );
+      }
+      const agent = await agentPromise;
+      if (agent) return base(input, { ...init, dispatcher: agent } as RequestInit);
+    }
+    return base(input, init);
+  }) as typeof globalThis.fetch;
+}
+
 /** Default Vertex AI region waterfall: CLOUD_ML_REGION → GOOGLE_VERTEX_LOCATION → us-east5. */
 function getDefaultVertexRegion(): string {
   return process.env.CLOUD_ML_REGION || process.env.GOOGLE_VERTEX_LOCATION || 'us-east5';
@@ -1227,19 +1340,37 @@ export function resolveModel(config: ProviderConfig) {
   const baseUrl = config.baseUrl || (isOpenRouterModel ? PROVIDER_BASE_URLS.openrouter! : inferred?.defaultBaseUrl || '');
   // Proxy routing (HTTPS_PROXY/HTTP_PROXY/NO_PROXY). A no-op when no proxy env
   // is set, so proxyFetch === globalThis.fetch and behavior is unchanged.
-  const proxyFetch = withProxyDispatcher(globalThis.fetch)!;
-  const proxyActive = proxyFetch !== globalThis.fetch;
+  let proxyFetch = withProxyDispatcher(globalThis.fetch)!;
+  let proxyActive = proxyFetch !== globalThis.fetch;
+  // Stale keep-alive socket recovery: when a prior attempt failed with
+  // ECONNRESET/EPIPE, open a FRESH connection with keep-alive disabled so the
+  // retry does not reuse the poisoned pooled socket (mirrors Claude Code's
+  // disableKeepAlive()). Only when no proxy/mTLS agent is already managing the
+  // dispatcher; `proxyActive` then marks the fresh transport as a custom base so
+  // the composedFetch fallback preserves it.
+  if (config.forceFreshConnection && !proxyActive) {
+    proxyFetch = withFreshConnection(globalThis.fetch);
+    proxyActive = true;
+  }
   // L6: attach a client-generated request-id header for log correlation /
   // traceability, unless the caller already set one. Additive — merged into the
-  // same extra-header fetch wrapper so it rides every outgoing API request.
-  const headersWithRequestId = { ...(config.extraHeaders ?? {}), ...buildRequestIdHeader(config.extraHeaders) };
+  // same extra-header fetch wrapper so it rides every outgoing API request. Gated
+  // to direct first-party-style endpoints: managed cloud gateways (Bedrock/Vertex/
+  // Foundry) drop it and their strict proxies may reject unknown headers, so the
+  // header is omitted there (mirrors Claude Code's firstParty-only injection).
+  const injectRequestId = endpointAcceptsClientRequestId(provider);
+  const headersWithRequestId = { ...(config.extraHeaders ?? {}), ...buildRequestIdHeader(config.extraHeaders, injectRequestId) };
   const headerFetch = withExtraHeaders(headersWithRequestId, proxyFetch);
   const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? proxyFetch);
   const composedFetch = bodyFetch ?? headerFetch ?? (proxyActive ? proxyFetch : undefined);
   // L22: on the anthropic-vertex path the boundary is consumed by the cache
   // splitter; everywhere else strip it so the model never sees the sentinel.
   const isVertexPath = provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured());
-  const fetch = isVertexPath ? composedFetch : withDynamicBoundaryStrip(composedFetch);
+  const strippedFetch = isVertexPath ? composedFetch : withDynamicBoundaryStrip(composedFetch);
+  // Per-request debug trace of pathname + request-id so a timeout (no server
+  // request-id) can still be correlated with server logs. Gated by the shared
+  // logger's level/component filter — a no-op on disk when debug logging is off.
+  const fetch = withRequestIdDebugTrace(strippedFetch, provider ?? 'inferred');
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
@@ -1301,7 +1432,12 @@ export function resolveModel(config: ProviderConfig) {
   // region-scoped profile (e.g. eu.anthropic.<model>-v1:0) is used when provisioned.
   if (provider === 'amazon-bedrock') {
     const bedrockModel = resolveBedrockModelId(model, getBedrockInferenceProfiles());
-    return createOpenAI({ apiKey, baseURL: baseUrl, fetch })(bedrockModel);
+    // Bedrock rejects `anthropic-beta` HEADERS, so route the model's allowed betas
+    // (interleaved-thinking / 1M-context) through the request BODY instead, mirroring
+    // Claude Code's BEDROCK_EXTRA_PARAMS_HEADERS set. No-op for non-Claude models.
+    const bedrockBetaBody = computeBedrockBetaExtraBody(bedrockModel);
+    const bedrockFetch = withExtraBody(bedrockBetaBody, fetch) ?? fetch;
+    return createOpenAI({ apiKey, baseURL: baseUrl, fetch: bedrockFetch })(bedrockModel);
   }
 
   // Native Vercel AI SDK providers — each has its own adapter with correct
@@ -2157,35 +2293,9 @@ export function isNetworkError(err: unknown): boolean {
 // SSL/TLS certificate error detection — fail fast with actionable hints
 // ---------------------------------------------------------------------------
 
-// OpenSSL/TLS failure codes treated as (non-retryable) certificate/handshake
-// errors. Mirrors Claude's SSL_ERROR_CODES breadth so a wrong-version /
-// handshake-timeout / revoked-cert failure is classified as SSL rather than a
-// generic network error.
-const SSL_ERROR_CODES = new Set([
-  // Certificate verification
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
-  'UNABLE_TO_GET_ISSUER_CERT',
-  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
-  'CERT_SIGNATURE_FAILURE',
-  'CERT_NOT_YET_VALID',
-  'CERT_HAS_EXPIRED',
-  'CERT_REVOKED',
-  'CERT_REJECTED',
-  'CERT_UNTRUSTED',
-  // Self-signed
-  'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'SELF_SIGNED_CERT_IN_CHAIN',
-  // Chain
-  'CERT_CHAIN_TOO_LONG',
-  'PATH_LENGTH_EXCEEDED',
-  // Hostname / altname
-  'ERR_TLS_CERT_ALTNAME_INVALID',
-  'HOSTNAME_MISMATCH',
-  // TLS handshake
-  'ERR_TLS_HANDSHAKE_TIMEOUT',
-  'ERR_SSL_WRONG_VERSION_NUMBER',
-  'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
-]);
+// OpenSSL/TLS failure codes are the single canonical SSL_ERROR_CODES set in
+// error-classifier.ts (imported above) so provider.ts and classifyError share
+// one source of truth — no parallel table that can drift.
 
 export function isSslError(err: unknown): boolean {
   // Walk the cause chain: TLS errors (CERT_HAS_EXPIRED, …) are nested under
@@ -2194,6 +2304,21 @@ export function isSslError(err: unknown): boolean {
   if (code && SSL_ERROR_CODES.has(code)) return true;
   const msg = err instanceof Error ? err.message : '';
   return /self signed certificate|certificate has expired|unable to get local issuer certificate/i.test(msg);
+}
+
+/**
+ * True when the error is a STALE pooled keep-alive socket (ECONNRESET/EPIPE) —
+ * the connection was reused after the far end had already dropped it. Mirrors
+ * Claude Code's `isStaleConnectionError` (services/api/withRetry.ts:L112-118).
+ * Distinguished from a generic network error because the recovery is different:
+ * the dead socket must be dropped (keep-alive disabled, fresh client) before the
+ * next attempt, or the retry grabs the same poisoned socket and fails again.
+ */
+export function isStaleConnectionError(err: unknown): boolean {
+  const code = findErrorCode(err);
+  if (code === 'ECONNRESET' || code === 'EPIPE') return true;
+  const msg = err instanceof Error ? err.message : (typeof err === 'string' ? err : '');
+  return /ECONNRESET|EPIPE/i.test(msg);
 }
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
@@ -2263,6 +2388,7 @@ export async function* streamChatCompletionWithRetry(
     let contentStarted = false;
     let timedOut = false;
     let networkRetry = false;
+    let staleConnection = false;
 
     // Inactivity watchdog: kill a stream that goes quiet (connection open, no
     // bytes) far sooner than the total request timeout. Reset on every chunk.
@@ -2393,6 +2519,10 @@ export async function* streamChatCompletionWithRetry(
         );
       } else if (!contentStarted && attempt < maxRetries && isNetworkError(err)) {
         networkRetry = true;
+        // A STALE pooled keep-alive socket (ECONNRESET/EPIPE) must be dropped, not
+        // reused, or the retry grabs the same dead socket — flag the next attempt
+        // to open a fresh connection with keep-alive disabled.
+        staleConnection = isStaleConnectionError(err);
       } else {
         throw err;
       }
@@ -2438,6 +2568,11 @@ export async function* streamChatCompletionWithRetry(
       if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
         yield { type: 'error', error: 'Network error (retry time limit exceeded)' };
         return;
+      }
+      // Stale keep-alive socket (ECONNRESET/EPIPE): force the next attempt onto a
+      // fresh, keep-alive-disabled connection so it cannot reuse the dead socket.
+      if (staleConnection) {
+        config = { ...config, forceFreshConnection: true };
       }
       const netDelay = jitteredDelay(Math.min(baseDelay * Math.pow(2, attempt), maxDelay));
       if (options?.onRetry) {

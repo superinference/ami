@@ -45,6 +45,52 @@ export function findErrorCode(err: unknown, maxDepth = 5): string | undefined {
  * Mirrors Claude's isAbortError. Exported so the engine/provider can share one
  * definition instead of ad-hoc `message.includes('abort')` checks.
  */
+/**
+ * Canonical OpenSSL/TLS failure-code set (used by both Node.js and Bun),
+ * mirroring Claude Code's `SSL_ERROR_CODES` breadth (services/api/errorUtils.ts).
+ * The SINGLE source of the TLS-code knowledge for the whole codebase: both this
+ * module's `classifyError` ssl branch AND `provider.ts`'s `isSslError` match
+ * against it, so a wrong-version / handshake-timeout / revoked / untrusted-chain
+ * failure is classified as SSL rather than a generic network error — in one
+ * place, with no parallel tables that can drift.
+ */
+export const SSL_ERROR_CODES: ReadonlySet<string> = new Set([
+  // Certificate verification
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_SIGNATURE_FAILURE',
+  'CERT_NOT_YET_VALID',
+  'CERT_HAS_EXPIRED',
+  'CERT_REVOKED',
+  'CERT_REJECTED',
+  'CERT_UNTRUSTED',
+  // Self-signed
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  // Chain
+  'CERT_CHAIN_TOO_LONG',
+  'PATH_LENGTH_EXCEEDED',
+  // Hostname / altname
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'HOSTNAME_MISMATCH',
+  // TLS handshake
+  'ERR_TLS_HANDSHAKE_TIMEOUT',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
+]);
+
+const SSL_ERROR_CODES_LOWER: readonly string[] = [...SSL_ERROR_CODES].map(c => c.toLowerCase());
+
+/**
+ * True when a (lower-cased) error string contains any canonical OpenSSL/TLS code.
+ * Keeps the `classifyError` ssl branch in lock-step with `SSL_ERROR_CODES`
+ * (adding a code to the set is picked up here with no second edit).
+ */
+export function matchesSslErrorCode(lowerMessage: string): boolean {
+  return SSL_ERROR_CODES_LOWER.some(code => lowerMessage.includes(code));
+}
+
 export function isAbortError(err: unknown): boolean {
   if (typeof err === 'string') {
     const m = err.toLowerCase();
@@ -545,22 +591,17 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
     return { category: 'server_error', message: errorString, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 3000 };
   }
 
-  // SSL/TLS certificate error — not retryable (configuration issue, not transient)
+  // SSL/TLS certificate error — not retryable (configuration issue, not transient).
+  // Codes are matched from the single canonical SSL_ERROR_CODES set so the branch
+  // stays in lock-step with provider.ts; the message heuristics catch the
+  // human-readable (spaced) forms the SDK sometimes surfaces without a code.
   if (
-    lower.includes('unable_to_verify_leaf_signature') ||
-    lower.includes('depth_zero_self_signed_cert') ||
-    lower.includes('self_signed_cert_in_chain') ||
-    lower.includes('cert_has_expired') ||
-    lower.includes('cert_not_yet_valid') ||
-    lower.includes('cert_revoked') ||
-    lower.includes('unable_to_get_issuer_cert') ||
-    lower.includes('unable_to_get_local_issuer_cert') ||
-    lower.includes('err_tls_cert_altname_invalid') ||
+    matchesSslErrorCode(lower) ||
     lower.includes('unable to get local issuer certificate') ||
     (lower.includes('certificate') &&
       (lower.includes('expired') || lower.includes('invalid') || lower.includes('self-signed') ||
        lower.includes('verify') || lower.includes('not yet valid') || lower.includes('revoked') ||
-       lower.includes('hostname')))
+       lower.includes('hostname') || lower.includes('untrusted') || lower.includes('rejected')))
   ) {
     return { category: 'ssl_error', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
   }
@@ -662,6 +703,31 @@ export function getSSLErrorHint(message: string): string {
       lower.includes('unable_to_verify_leaf_signature') || lower.includes('unable to get local issuer certificate') ||
       lower.includes('unable to verify')) {
     return 'SSL/TLS certificate chain could not be verified — if you are behind a corporate proxy, set NODE_EXTRA_CA_CERTS to your CA bundle.';
+  }
+  if (lower.includes('cert_signature_failure')) {
+    return "SSL/TLS certificate signature is invalid — the certificate failed signature verification against its issuer. Verify the server's certificate chain or your CA bundle (NODE_EXTRA_CA_CERTS).";
+  }
+  if (lower.includes('cert_revoked')) {
+    return 'SSL/TLS certificate has been revoked — do not bypass this; contact your provider.';
+  }
+  if (lower.includes('cert_rejected') || lower.includes('cert_untrusted') ||
+      (lower.includes('certificate') && (lower.includes('rejected') || lower.includes('untrusted')))) {
+    return 'SSL/TLS certificate was rejected / is untrusted — add the issuing CA to your trust store (NODE_EXTRA_CA_CERTS) or check your provider base URL.';
+  }
+  if (lower.includes('cert_chain_too_long') || lower.includes('path_length_exceeded')) {
+    return 'SSL/TLS certificate chain is too long (path-length constraint exceeded) — the server is presenting an invalid chain. Contact your provider or proxy administrator.';
+  }
+  if (lower.includes('hostname_mismatch')) {
+    return 'SSL/TLS certificate hostname mismatch — the certificate does not match the server name. Check your provider base URL.';
+  }
+  if (lower.includes('err_tls_handshake_timeout')) {
+    return 'SSL/TLS handshake timed out — the connection stalled during the TLS handshake. Check your proxy/gateway and network path, then retry.';
+  }
+  if (lower.includes('err_ssl_wrong_version_number')) {
+    return 'SSL/TLS wrong version number — a plain-HTTP endpoint is being reached over HTTPS (or vice versa). Check that your provider base URL uses the correct scheme and port.';
+  }
+  if (lower.includes('err_ssl_decryption_failed_or_bad_record_mac')) {
+    return 'SSL/TLS decryption failed (bad record MAC) — the TLS stream is corrupt, usually a mis-configured TLS-inspecting proxy. Check your proxy/gateway TLS settings.';
   }
   return FRIENDLY_MESSAGES.ssl_error!;
 }

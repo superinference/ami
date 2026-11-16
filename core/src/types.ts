@@ -553,6 +553,13 @@ export interface ProviderConfig {
    *  headers (request class, agent type, compaction state). */
   extraHeaders?: Record<string, string>;
   fallbackModel?: string;
+  /**
+   * Internal recovery flag set by `streamChatCompletionWithRetry` after a STALE
+   * keep-alive socket error (ECONNRESET/EPIPE): forces the next attempt to open a
+   * FRESH connection with HTTP keep-alive disabled, so the retry does not grab the
+   * same poisoned pooled socket. Not user-facing; off by default (pooling stays on).
+   */
+  forceFreshConnection?: boolean;
 }
 
 export const STREAM_CHUNK_TYPES = ['content_delta', 'tool_call_delta', 'thinking_delta', 'done', 'error'] as const;
