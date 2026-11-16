@@ -27,7 +27,7 @@ function defaultWorktreeName(worktreesBase: string): string {
 // Strict-input allow-list (parity with exit_worktree's ALLOWED_KEYS): any key
 // outside this set is rejected rather than silently ignored, so a typo'd or
 // hallucinated parameter surfaces loudly instead of being dropped.
-const ALLOWED_KEYS = new Set(['name', 'path', 'base_ref', 'pr']);
+const ALLOWED_KEYS = new Set(['name', 'path', 'base_ref', 'pr', 'description']);
 
 /**
  * Run git with NO SHELL (execFile with an argv array) so a branch name, path, or
@@ -72,6 +72,17 @@ export const _enterWorktreeHooks = {
    *  list is used verbatim. */
   symlinkLargeDirs: (sourceCwd: string, worktreePath: string, dirs?: string[]): void =>
     require('../worktree-manager').symlinkLargeDirectories(sourceCwd, worktreePath, dirs),
+  /** Derive a readable kebab-case worktree/branch slug from a free-form task
+   *  description via a deterministic auxiliary model call (parity with Claude's
+   *  teleport generateTitleAndBranch). Routed through the seam so tests can inject
+   *  a deterministic slug (or a failure) without a live provider. Delegates to the
+   *  canonical generateBranchName in title-generator (one branch-naming impl). */
+  branchNameFromDescription: (
+    description: string,
+    provider: import('../types').ProviderConfig,
+    signal?: AbortSignal,
+  ): Promise<string> =>
+    require('../title-generator').generateBranchName(description, provider, undefined, undefined, signal),
 };
 
 /**
@@ -263,7 +274,8 @@ export const enterWorktreeTool: ToolDefinition = {
     'WHEN NOT TO USE: ordinary edits in the current tree, or when the user did not ask for isolation — a worktree adds branch/cwd bookkeeping overhead. ' +
     'Use exit_worktree (action "keep" or "remove") to leave. ' +
     'Requires a git repository; outside one, configure WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation. ' +
-    'Pass pr (a PR URL or #N) to base the worktree on a pull request.',
+    'Pass pr (a PR URL or #N) to base the worktree on a pull request. ' +
+    'Pass description (a short task summary) instead of name to auto-derive a readable branch name (e.g. "fix-mobile-login-button").',
   inputSchema: {
     type: 'object',
     properties: {
@@ -282,6 +294,10 @@ export const enterWorktreeTool: ToolDefinition = {
       pr: {
         type: 'string',
         description: 'Pull request to base the new worktree on — a PR URL (https://<host>/owner/repo/pull/N) or "#N". Fetches origin pull/N/head and bases the worktree on it; names it pr-N if name is omitted. Mutually exclusive with path and base_ref.',
+      },
+      description: {
+        type: 'string',
+        description: 'Short task summary used to auto-derive a readable kebab-case branch/worktree name when name is omitted (e.g. "fix the mobile login button" -> "fix-mobile-login-button"). Falls back to a random word slug if generation fails. Mutually exclusive with name, path, and pr.',
       },
     },
   },
@@ -318,9 +334,25 @@ export const enterWorktreeTool: ToolDefinition = {
     const baseRefProvided = typeof input.base_ref === 'string' && input.base_ref.trim() !== '';
     const rawPr = typeof input.pr === 'string' ? input.pr.trim() : '';
     const prProvided = rawPr !== '';
+    const rawDescription = typeof input.description === 'string' ? input.description.trim() : '';
+    const descriptionProvided = rawDescription !== '';
 
     if (name && existingPath) {
       return { output: 'Error: name and path are mutually exclusive.', isError: true };
+    }
+
+    // `description` only auto-DERIVES a name when creating a fresh worktree with no
+    // explicit name, so it cannot be combined with name (which already names it),
+    // path (entering an existing worktree), or pr (which names it pr-N). Reject the
+    // combinations loudly rather than silently ignoring the description.
+    if (descriptionProvided && name) {
+      return { output: 'Error: description and name are mutually exclusive (name already sets the worktree name).', isError: true };
+    }
+    if (descriptionProvided && existingPath) {
+      return { output: 'Error: description cannot be combined with path (description only derives a name when creating a new worktree).', isError: true };
+    }
+    if (descriptionProvided && prProvided) {
+      return { output: 'Error: description and pr are mutually exclusive (a pull request already names the worktree pr-N).', isError: true };
     }
 
     // base_ref only has meaning when CREATING a new worktree; entering an
@@ -426,9 +458,27 @@ export const enterWorktreeTool: ToolDefinition = {
       };
     }
 
-    // Default name: an explicit name wins; otherwise a PR reference names the
-    // worktree `pr-<N>` (parity with Claude), falling back to a memorable word slug.
-    const slug = name || (prNumber != null ? `pr-${prNumber}` : defaultWorktreeName(path.join(context.cwd, '.ami', 'worktrees')));
+    // Descriptive auto-name (parity with Claude's teleport generateTitleAndBranch):
+    // when the model supplies a task `description` (and no explicit name/pr) and a
+    // provider is available, derive a readable kebab-case slug from it instead of a
+    // random word slug. Any failure (no provider, LLM/parse error) is swallowed so
+    // creation still proceeds with the random word-slug default below.
+    let derivedName: string | undefined;
+    if (descriptionProvided && prNumber == null && context._providerConfig) {
+      try {
+        const candidate = await _enterWorktreeHooks.branchNameFromDescription(
+          rawDescription,
+          context._providerConfig,
+          context.abortSignal,
+        );
+        if (candidate && validateSlug(candidate)) derivedName = candidate;
+      } catch { /* fall back to the random word slug below */ }
+    }
+
+    // Default name: an explicit name wins; otherwise a description-derived slug, then
+    // a PR reference names the worktree `pr-<N>` (parity with Claude), falling back to
+    // a memorable word slug.
+    const slug = name || derivedName || (prNumber != null ? `pr-${prNumber}` : defaultWorktreeName(path.join(context.cwd, '.ami', 'worktrees')));
     if (!validateSlug(slug)) {
       return { output: `Error: invalid worktree name "${slug}". Use letters, digits, dots, underscores, dashes (max 64 chars per segment).`, isError: true };
     }

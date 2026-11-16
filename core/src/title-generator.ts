@@ -212,6 +212,23 @@ export const TITLE_GENERATION_PROMPT =
  * free-form sanitize pipeline.
  */
 export function parseTitleJson(raw: string): string | undefined {
+  return extractJsonStringField(raw, ['title', 'name']);
+}
+
+/**
+ * Shared, tolerant "read a single non-empty string field out of the model's raw
+ * output" extractor used by BOTH the title path (`parseTitleJson`) and the
+ * branch-name path (`parseBranchJson`) so there is ONE canonical JSON-field
+ * reader (no semantic duplication). Tolerant like Claude's `safeParseJSON`:
+ *   - parses a clean JSON object first;
+ *   - else extracts the first `{...}` block so a model that wrapped the JSON in
+ *     prose or ```json fences still parses;
+ *   - `fields` are tried in order (first present, non-empty string wins).
+ * Returns `undefined` when there is no usable JSON object (bare string, array,
+ * non-string field, empty, or non-JSON text) — the caller then falls back to the
+ * free-form sanitize pipeline.
+ */
+function extractJsonStringField(raw: string, fields: readonly string[]): string | undefined {
   const text = raw.trim();
   if (!text) return undefined;
   const fromObject = (s: string): string | undefined => {
@@ -219,10 +236,11 @@ export function parseTitleJson(raw: string): string | undefined {
     try { parsed = JSON.parse(s); } catch { return undefined; }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
     const rec = parsed as Record<string, unknown>;
-    const value = rec.title ?? rec.name;
-    if (typeof value !== 'string') return undefined;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
+    for (const field of fields) {
+      const value = rec[field];
+      if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+    }
+    return undefined;
   };
   const direct = fromObject(text);
   if (direct !== undefined) return direct;
@@ -324,4 +342,152 @@ export async function generateTitle(
   // Word-boundary-aware truncation; fall back to the sanitised user message when the
   // model produced nothing usable (same fallback as before, now also word-aware).
   return truncateTitle(title) || truncateTitle(sanitizeTitle(cleaned));
+}
+
+/**
+ * Coerce ANY string into a safe, readable git-branch slug (kebab-case): lowercase,
+ * ASCII `[a-z0-9]` words joined by single dashes, no leading/trailing dashes,
+ * truncated on a dash boundary to `max` chars. Parity with Claude's
+ * teleport `generateTitleAndBranch` branch shape ("all lower case, words
+ * separated by dashes") and its truncation fallback, minus the vendor `claude/`
+ * prefix — AMI's worktree branches live under `worktree/<slug>`, so the slug here
+ * is the descriptive tail only. A single leading `prefix/` segment the model may
+ * have emitted (e.g. `claude/` or `feature/`) is dropped so it never leaks into
+ * the name. Used by {@link generateBranchName} to make the model's raw output a
+ * valid slug by construction (so it passes the enter_worktree slug validators),
+ * and to build the deterministic fallback from the task description itself.
+ * Returns '' when nothing usable survives (caller substitutes its own fallback).
+ */
+export function sanitizeBranchSlug(raw: string, max = 40): string {
+  if (!raw) return '';
+  let t = raw.trim().toLowerCase();
+  // Drop a single leading `<segment>/` prefix (vendor/namespace like `claude/`).
+  t = t.replace(/^[a-z0-9][a-z0-9-]*\//, '');
+  // Everything that is not an ASCII alnum becomes a word boundary.
+  t = t.replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  if (t.length > max) {
+    t = t.slice(0, max);
+    const lastDash = t.lastIndexOf('-');
+    if (lastDash >= Math.floor(max * 0.6)) t = t.slice(0, lastDash);
+    t = t.replace(/-+$/, '');
+  }
+  return t;
+}
+
+/**
+ * Parse a structured branch slug out of the model's raw output: the
+ * branch-name prompt asks for `{"branch": "..."}`. Delegates to the shared
+ * {@link extractJsonStringField} reader (same tolerant JSON handling as the title
+ * path) so there is one canonical structured-output reader. Returns `undefined`
+ * when no usable `branch` string is present.
+ */
+export function parseBranchJson(raw: string): string | undefined {
+  return extractJsonStringField(raw, ['branch']);
+}
+
+/**
+ * Branch-name generation prompt. Parity with Claude's teleport
+ * `SESSION_TITLE_AND_BRANCH_PROMPT` branch half (utils/teleport.tsx:L75-L92):
+ * a short, all-lowercase, dash-separated slug of ≤4 words describing the task,
+ * via a JSON-constrained `{"branch": "..."}` output so the model emits a clean
+ * single field by construction. The vendor `claude/` prefix Claude prepends is
+ * intentionally omitted — AMI names worktree branches `worktree/<slug>`, so only
+ * the descriptive tail is requested here.
+ */
+export const BRANCH_NAME_GENERATION_PROMPT =
+  `Generate a short, descriptive git branch name slug for this coding task. ` +
+  `Use all-lowercase words separated by single dashes (kebab-case), no more than 4 words, ` +
+  `max 40 characters, no slashes, no leading or trailing dashes, no other punctuation. ` +
+  `It should read like a concise summary of the task.\n\n` +
+  `Return ONLY JSON with a single "branch" field — no prose, no markdown, no code fences.\n\n` +
+  `Good examples:\n` +
+  `{"branch": "fix-mobile-login-button"}\n` +
+  `{"branch": "add-oauth-authentication"}\n` +
+  `{"branch": "update-readme"}\n\n` +
+  `Bad (has slash prefix): {"branch": "feature/login"}\n` +
+  `Bad (too long): {"branch": "fix-the-issue-where-the-login-button-does-not-respond"}\n` +
+  `Bad (spaces/caps): {"branch": "Fix Login Button"}`;
+
+/**
+ * Derive a readable, kebab-case git-branch slug from a free-form task description
+ * via a deterministic auxiliary model call. Parity with Claude's
+ * `generateTitleAndBranch` (utils/teleport.tsx:L99-L166): a JSON-schema-constrained
+ * Haiku-class call that yields a human-readable branch like
+ * `fix-mobile-login-button`, with a GRACEFUL FALLBACK to a slug derived from the
+ * description itself (then the literal `task`) on any LLM/parse failure or empty
+ * output — so a worktree created from a task description gets a meaningful branch
+ * name instead of an opaque random one, and never fails merely because the model
+ * misbehaved.
+ *
+ * Mirrors {@link generateTitle}: same deterministic (`temperature:0`) auxiliary
+ * provider, same 30s internal timeout linked to the caller's `signal`, same
+ * injectable `_streamChatCompletion` seam, and the same `<think>`-strip →
+ * structured-JSON → sanitise pipeline — reusing those helpers rather than
+ * re-implementing them. The returned slug is ALWAYS safe for use as an
+ * enter_worktree name (passes its slug validators) because it is funnelled
+ * through {@link sanitizeBranchSlug}.
+ */
+export async function generateBranchName(
+  description: string,
+  provider: ProviderConfig,
+  model?: string,
+  // Test seam (behaviour-preserving): defaults to the real streamer.
+  _streamChatCompletion: typeof streamChatCompletion = streamChatCompletion,
+  // External cancellation (same contract as generateTitle): an already-aborted
+  // signal short-circuits; a later abort propagates; the listener is cleaned up.
+  signal?: AbortSignal,
+): Promise<string> {
+  const cleaned = stripDisplayTags(description).trim();
+  // Deterministic fallback derived from the description itself (parity: Claude's
+  // `fallbackBranch`/description-derived slug), with a final literal `task` floor.
+  const fallback = sanitizeBranchSlug(cleaned) || 'task';
+  if (!cleaned) return fallback;
+
+  const branchProvider: ProviderConfig = {
+    ...provider,
+    model: model || provider.model,
+    maxTokens: 50,
+    temperature: 0,
+  };
+  const messages = [{
+    role: 'user' as const,
+    content: `${BRANCH_NAME_GENERATION_PROMPT}\n\nTask:\n"""\n${cleaned.slice(0, 1000)}\n"""`,
+  }];
+
+  let out = '';
+  try {
+    const ac = new AbortController();
+    const onExternalAbort = () => ac.abort();
+    if (signal) {
+      if (signal.aborted) ac.abort();
+      else signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    const timer = setTimeout(() => ac.abort(), 30000);
+    try {
+      for await (const chunk of _streamChatCompletion(branchProvider, messages, [], ac.signal)) {
+        if (chunk.type === 'content_delta' && chunk.text) out += chunk.text;
+        if (chunk.type === 'done' || chunk.type === 'error') break;
+      }
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onExternalAbort);
+    }
+  } catch {}
+
+  const stripped = out
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<think>[\s\S]*$/g, '')
+    .trim();
+  const structured = parseBranchJson(stripped);
+  // Prefer the structured `branch` field. Only treat the RAW output as the slug
+  // when it is NOT a JSON object — otherwise a model that emitted structured
+  // output with an empty/missing branch (e.g. `{"branch": "  "}`) would sanitise
+  // to a nonsense slug like "branch"; in that case fall back instead.
+  let slug = '';
+  if (structured !== undefined) {
+    slug = sanitizeBranchSlug(structured);
+  } else if (!stripped.startsWith('{')) {
+    slug = sanitizeBranchSlug(stripped);
+  }
+  return slug || fallback;
 }
