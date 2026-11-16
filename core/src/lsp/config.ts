@@ -15,19 +15,46 @@
  */
 import * as fs from 'fs';
 
+/**
+ * Communication transport between the client and the language-server process.
+ * Only `stdio` is implemented; `socket` is accepted as a configuration value for
+ * Claude-Code schema parity but rejected at spawn time with a clear error rather
+ * than being silently treated as stdio.
+ */
+export type LspTransport = 'stdio' | 'socket';
+
 export interface LspServerConfig {
   /** Executable to spawn (required). */
   command: string;
   /** Arguments passed to the server. */
   args?: string[];
+  /**
+   * Communication transport mechanism. Defaults to `stdio` when absent. `socket`
+   * is a recognized value (schema parity) but unsupported at runtime.
+   */
+  transport?: LspTransport;
   /** Extra env for the server process (merged over the scrubbed base env). */
   env?: Record<string, string>;
   /** Workspace root; defaults to the request cwd when absent. */
   workspaceFolder?: string;
   /** Server-specific `initializationOptions` (e.g. required by vue). */
   initializationOptions?: Record<string, unknown>;
+  /**
+   * Server-specific settings pushed to the server via
+   * `workspace/didChangeConfiguration` immediately after the initialize
+   * handshake completes (parity with Claude Code's per-server `settings`).
+   */
+  settings?: unknown;
   /** Milliseconds to wait for `initialize` before giving up. */
   startupTimeout?: number;
+  /** Milliseconds to wait for a graceful `shutdown` reply before force-killing. */
+  shutdownTimeout?: number;
+  /**
+   * Whether to respawn the server after a crash. Defaults to `true` (bounded by
+   * `maxRestarts`). Set `false` to leave a crashed server down until the session
+   * restarts, matching Claude Code's `restartOnCrash` knob.
+   */
+  restartOnCrash?: boolean;
   /** Max crash-recovery respawns before refusing to restart. */
   maxRestarts?: number;
   /**
@@ -163,14 +190,21 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   if (r.args !== undefined && (!Array.isArray(r.args) || !r.args.every((a) => typeof a === 'string'))) {
     throw new Error(`LSP server "${name}": "args" must be an array of strings`);
   }
+  if (r.transport !== undefined && r.transport !== 'stdio' && r.transport !== 'socket') {
+    throw new Error(`LSP server "${name}": "transport" must be "stdio" or "socket"`);
+  }
   const config: LspServerConfig = { command: r.command };
   if (r.args) config.args = r.args as string[];
+  if (r.transport === 'stdio' || r.transport === 'socket') config.transport = r.transport;
   if (r.env && typeof r.env === 'object') config.env = r.env as Record<string, string>;
   if (typeof r.workspaceFolder === 'string') config.workspaceFolder = r.workspaceFolder;
   if (r.initializationOptions && typeof r.initializationOptions === 'object') {
     config.initializationOptions = r.initializationOptions as Record<string, unknown>;
   }
+  if (r.settings !== undefined) config.settings = r.settings;
   if (typeof r.startupTimeout === 'number') config.startupTimeout = r.startupTimeout;
+  if (typeof r.shutdownTimeout === 'number') config.shutdownTimeout = r.shutdownTimeout;
+  if (typeof r.restartOnCrash === 'boolean') config.restartOnCrash = r.restartOnCrash;
   if (typeof r.maxRestarts === 'number') config.maxRestarts = r.maxRestarts;
   if (r.extensionToLanguage && typeof r.extensionToLanguage === 'object') {
     const map: Record<string, string> = {};

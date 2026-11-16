@@ -123,6 +123,35 @@ describe('validateLspServerConfig', () => {
     assert.equal(c.extensionToLanguage, undefined);
   });
 
+  it('parses the full ScopedLspServerConfig knob set (transport/settings/timeouts/restartOnCrash)', () => {
+    const c = validateLspServerConfig('x', {
+      command: 'srv',
+      transport: 'stdio',
+      settings: { srv: { strict: true } },
+      shutdownTimeout: 250,
+      restartOnCrash: false,
+    });
+    assert.equal(c.transport, 'stdio');
+    assert.deepEqual(c.settings, { srv: { strict: true } });
+    assert.equal(c.shutdownTimeout, 250);
+    assert.equal(c.restartOnCrash, false);
+  });
+
+  it('accepts the socket transport value (schema parity) even though runtime refuses it', () => {
+    const c = validateLspServerConfig('x', { command: 'srv', transport: 'socket' });
+    assert.equal(c.transport, 'socket');
+  });
+
+  it('rejects an unknown transport value', () => {
+    assert.throws(() => validateLspServerConfig('x', { command: 'c', transport: 'ipc' }), /"transport" must be "stdio" or "socket"/);
+  });
+
+  it('ignores a non-boolean restartOnCrash and non-number shutdownTimeout', () => {
+    const c = validateLspServerConfig('x', { command: 'c', restartOnCrash: 'yes', shutdownTimeout: '5s' });
+    assert.equal(c.restartOnCrash, undefined);
+    assert.equal(c.shutdownTimeout, undefined);
+  });
+
   it('skips non-string entries in extensionToLanguage', () => {
     const c = validateLspServerConfig('x', {
       command: 'c',

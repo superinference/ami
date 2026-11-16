@@ -224,6 +224,17 @@ export class LSPClient implements DiagnosticSource {
     const config = this.configFor(language);
     if (!config) return false;
 
+    // Only stdio transport is implemented. `socket` is a valid config value
+    // (Claude-Code schema parity) but we refuse to spawn rather than silently
+    // treat it as stdio, so a misconfiguration fails loudly and visibly.
+    if (config.transport && config.transport !== 'stdio') {
+      this.recordError(
+        language,
+        `LSP server "${language}" transport "${config.transport}" is not supported (only "stdio")`,
+      );
+      return false;
+    }
+
     // Supply-chain guard: never let npx auto-fetch a server from the registry.
     try {
       assertNoAutoFetch(config);
@@ -236,6 +247,16 @@ export class LSPClient implements DiagnosticSource {
     // crash bumps it, and exceeding `maxRestarts` leaves the server in `error`.
     const maxRestarts = config.maxRestarts ?? DEFAULT_MAX_RESTARTS;
     const restartCount = this.crashCounts.get(language) ?? 0;
+    // Honor `restartOnCrash: false` — a server that has crashed at least once
+    // stays down for the rest of the session instead of being respawned on the
+    // next incidental file event (parity with Claude's `restartOnCrash` knob).
+    if (restartCount > 0 && config.restartOnCrash === false) {
+      this.recordError(
+        language,
+        `LSP server "${language}" crashed and restartOnCrash is disabled; not respawning`,
+      );
+      return false;
+    }
     if (restartCount > maxRestarts) {
       this.recordError(
         language,
@@ -344,6 +365,12 @@ export class LSPClient implements DiagnosticSource {
       conn.capabilities = (result as { capabilities?: unknown })?.capabilities;
       this.rawNotify(conn, 'initialized', {});
       conn.initialized = true;
+      // Push per-server settings via workspace/didChangeConfiguration once the
+      // handshake is complete (LSP requires the server be initialized first).
+      // Mirrors Claude Code's per-server `settings` knob.
+      if (config.settings !== undefined) {
+        this.rawNotify(conn, 'workspace/didChangeConfiguration', { settings: config.settings });
+      }
       this.crashCounts.set(language, 0);
       // Successful handshake: reset restartCount and mark the server running.
       this.setStatus(language, { state: 'running', startTime: Date.now(), restartCount: 0, lastError: undefined, exitCode: undefined });
@@ -633,16 +660,40 @@ export class LSPClient implements DiagnosticSource {
     });
   }
 
-  private rawNotify(conn: ServerConn, method: string, params: unknown): void {
+  /**
+   * Fire-and-forget framed notification. Returns `true` on a successful stdin
+   * write, `false` when the write throws (server gone / broken pipe). Lifecycle
+   * notifications (initialized/exit/didClose/didChangeConfiguration) ignore the
+   * result; document-sync notifications route through `syncNotify` so the failure
+   * is propagated to the caller instead of silently dropped.
+   */
+  private rawNotify(conn: ServerConn, method: string, params: unknown): boolean {
     const body = JSON.stringify({ jsonrpc: '2.0', method, params });
     log('lsp', `[LSP PROTOCOL ${conn.language}] → notify ${method}`, undefined, 'verbose');
     try {
       conn.proc.stdin?.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      return true;
     } catch (e) {
-      // Notifications are fire-and-forget, but a write failure (server gone mid-sync)
-      // is still worth a contextual debug line instead of a silent swallow.
+      // A write failure (server gone mid-sync) is worth a contextual debug line
+      // instead of a silent swallow; the boolean lets sync callers propagate it.
       log('lsp', `LSP server "${conn.language}" notification "${method}" failed: ${(e as Error).message}`);
+      return false;
     }
+  }
+
+  /**
+   * Document-sync notification (didOpen/didChange/didSave) whose write failure
+   * MUST NOT be silently swallowed: on a failed stdin write we record a contextual
+   * error on the server's status (so `/doctor` surfaces the desync) and throw so
+   * the caller learns the document is no longer in sync — parity with Claude's
+   * LSPServerManager, which logs `Failed to sync file <action> <path>` and
+   * re-throws rather than leaving AMI believing the document is synced.
+   */
+  private syncNotify(conn: ServerConn, method: string, params: unknown, action: string, filePath: string): void {
+    if (this.rawNotify(conn, method, params)) return;
+    const message = `Failed to sync file ${action} ${filePath}: LSP server "${conn.language}" write failed`;
+    this.recordError(conn.language, message);
+    throw new Error(message);
   }
 
   /**
@@ -732,10 +783,10 @@ export class LSPClient implements DiagnosticSource {
     // (which some servers silently drop).
     const version = (this.documentVersions.get(uri) ?? 1) + 1;
     this.documentVersions.set(uri, version);
-    this.rawNotify(conn, 'textDocument/didChange', {
+    this.syncNotify(conn, 'textDocument/didChange', {
       textDocument: { uri, version },
       contentChanges: [{ text: content }],
-    });
+    }, 'change', filePath);
   }
 
   async notifyDidSave(filePath: string, cwd: string): Promise<void> {
@@ -745,7 +796,7 @@ export class LSPClient implements DiagnosticSource {
     if (!ok) return;
     const conn = this.servers.get(lang)!;
     this.ensureDidOpen(conn, filePath);
-    this.rawNotify(conn, 'textDocument/didSave', { textDocument: { uri: this.fileUri(filePath) } });
+    this.syncNotify(conn, 'textDocument/didSave', { textDocument: { uri: this.fileUri(filePath) } }, 'save', filePath);
   }
 
   // ---- diagnostics (DiagnosticSource) -----------------------------------
@@ -900,7 +951,8 @@ export class LSPClient implements DiagnosticSource {
       }, EXIT_GRACE_MS);
       if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
     };
-    this.rawRequest(conn, 'shutdown', null, DEFAULT_SHUTDOWN_TIMEOUT_MS).then(finish, finish);
+    const shutdownTimeout = this.configFor(language)?.shutdownTimeout ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    this.rawRequest(conn, 'shutdown', null, shutdownTimeout).then(finish, finish);
   }
 }
 
