@@ -239,6 +239,53 @@ export function resolveSessionSummary(
   return undefined;
 }
 
+/**
+ * Classification of how a session is being run, persisted so the resume/picker
+ * paths can discriminate a plain interactive session from a backgrounded or
+ * daemon-owned one (parity: Claude's `SessionKind` in concurrentSessions.ts):
+ *  - `'interactive'` — a normal foreground TUI / `--prompt` run (the default);
+ *  - `'bg'` — a user-backgrounded session that should keep running when its
+ *    frontend detaches (and must NOT be auto-picked as "the most recent" by a
+ *    no-arg `--continue`);
+ *  - `'daemon'` / `'daemon-worker'` — a long-lived service session and its
+ *    workers, likewise excluded from the ordinary resume picker.
+ * Orthogonal to {@link Session.entrypoint} (which records the invocation surface,
+ * e.g. `cli`/`detached`/`sdk`): a `detached` run can still be `interactive`.
+ */
+export type SessionKind = 'interactive' | 'bg' | 'daemon' | 'daemon-worker';
+
+/** The valid {@link SessionKind} values, exported so a consumer (CLI/introspection)
+ *  can validate an override without duplicating the union. */
+export const SESSION_KINDS: readonly SessionKind[] = ['interactive', 'bg', 'daemon', 'daemon-worker'];
+
+/**
+ * Read the session-kind override from the environment, if any. Honors the AMI
+ * knob `AMI_SESSION_KIND` and — consistent with the dual-env convention used
+ * elsewhere in this file ({@link isSessionPersistenceDisabled}) — Claude's
+ * `CLAUDE_CODE_SESSION_KIND`, taking the AMI value first. Returns `undefined`
+ * when unset or not one of {@link SESSION_KINDS}, so a bad value falls back to
+ * the caller's default instead of persisting garbage. Parity: Claude's
+ * `envSessionKind`.
+ */
+export function envSessionKind(env: NodeJS.ProcessEnv = process.env): SessionKind | undefined {
+  const raw = env.AMI_SESSION_KIND ?? env.CLAUDE_CODE_SESSION_KIND;
+  if (typeof raw !== 'string') return undefined;
+  const v = raw.trim() as SessionKind;
+  return SESSION_KINDS.includes(v) ? v : undefined;
+}
+
+/**
+ * True when a session is a background/daemon kind — one that keeps running on
+ * frontend detach and must be skipped when a no-arg `--continue` auto-picks the
+ * most-recent resumable session (parity: Claude's `isBgSession`, which flips exit
+ * semantics for `--bg`/daemon sessions). An absent `kind` is treated as the
+ * foreground default (`false`), so legacy sessions written before this field are
+ * still resumable.
+ */
+export function isBgSession(session: { kind?: SessionKind }): boolean {
+  return session.kind === 'bg' || session.kind === 'daemon' || session.kind === 'daemon-worker';
+}
+
 export interface Session {
   id: SessionId;
   /** A user-set rename. Always wins over {@link aiTitle} and is never
@@ -280,6 +327,12 @@ export interface Session {
    *  filtering/analytics discriminate how a session was launched (parity: Claude's
    *  CLAUDE_CODE_ENTRYPOINT `entrypoint` discriminator). */
   entrypoint?: string;
+  /** How the session is being run ({@link SessionKind}): a foreground
+   *  `'interactive'` session vs a `'bg'`/`'daemon'`(-worker) one that keeps
+   *  running on detach and is skipped by a no-arg `--continue`. Stamped on save()
+   *  from the caller-supplied value, else {@link envSessionKind}, else
+   *  `'interactive'`. Parity: Claude's persisted `SessionKind`. */
+  kind?: SessionKind;
   /** Subagent/sidechain transcript marker: when true this session is a task
    *  sub-engine's conversation and is excluded from the resume picker by default
    *  (parity: Claude filters `isSidechain` logs out of the resumable list). */
@@ -374,6 +427,9 @@ export interface SessionListEntry {
   worktree?: string;
   /** Invocation surface that last wrote the session, when recorded. */
   entrypoint?: string;
+  /** How the session is being run ({@link SessionKind}) — lets the picker tell a
+   *  foreground session from a `'bg'`/`'daemon'` one, when recorded. */
+  kind?: SessionKind;
   /** Persisted permission mode, when recorded. */
   permissionMode?: string;
   /** True when this entry is a subagent sidechain transcript (only present when
@@ -528,6 +584,9 @@ export class SessionManager {
       gitBranch: session.gitBranch ?? this.gitBranch(),
       projectPath: session.projectPath ?? this.cwd,
       version: session.version ?? AMI_VERSION,
+      // Classify the run: a caller-supplied kind wins; else honor an env override
+      // (AMI_SESSION_KIND / CLAUDE_CODE_SESSION_KIND); else default foreground.
+      kind: session.kind ?? envSessionKind() ?? 'interactive',
     };
     // Crash-safe + owner-only: a truncated/corrupt newest session can never
     // result from an interrupted write, and transcripts stay 0o600 on shared hosts.
@@ -612,7 +671,7 @@ export class SessionManager {
   /**
    * Load the most recently modified session file.
    */
-  loadLatest(): Session | null {
+  loadLatest(opts: { skipBackground?: boolean } = {}): Session | null {
     const files = this.listFiles();
     if (files.length === 0) return null;
 
@@ -627,10 +686,15 @@ export class SessionManager {
 
     // Return the first file that parses successfully, falling through past any
     // corrupt/truncated newest file (e.g. a save() interrupted mid-write) so
-    // intact older sessions are not hidden by a single unreadable file.
+    // intact older sessions are not hidden by a single unreadable file. With
+    // `skipBackground` (the no-arg `--continue` path) a `'bg'`/`'daemon'` session
+    // is passed over so auto-resume picks the most-recent FOREGROUND session, not
+    // a still-running backgrounded one (parity: Claude's --continue bg skip).
     for (const file of files) {
       const session = this.readSessionFile(file);
-      if (session) return session;
+      if (!session) continue;
+      if (opts.skipBackground && isBgSession(session)) continue;
+      return session;
     }
     return null;
   }
@@ -751,6 +815,7 @@ export class SessionManager {
         pr: session.pr,
         worktree: session.worktreeState ? session.worktreeState.worktreePath : undefined,
         entrypoint: session.entrypoint,
+        kind: session.kind,
         permissionMode: session.settings?.permissionMode,
         isSidechain: session.isSidechain,
         parentSessionId: session.parentSessionId,
@@ -1727,23 +1792,43 @@ export function safeAppendTranscript(
   filePath: string,
   entry: Record<string, unknown>,
 ): void {
-  try {
-    secureMkdirSync(path.dirname(filePath));
-    // NDJSON-safe: escape U+2028/U+2029 so an entry can never be split into two lines.
-    const line = ndjsonSafeStringify(entry) + '\n';
+  // NDJSON-safe: escape U+2028/U+2029 so an entry can never be split into two lines.
+  const line = ndjsonSafeStringify(entry) + '\n';
+
+  // The lock+fsync critical section. Isolated so the retry below can recreate the
+  // parent dir and run it a second time without duplicating the body.
+  const appendOnce = (): void => {
     const release = acquireAppendLock(filePath + '.lock');
     try {
-      const fd = fs.openSync(filePath, 'a', OWNER_ONLY_FILE_MODE);
+      // File ops go through the fsHooks DI seam so the recreate-and-retry fallback
+      // below is deterministically testable (mock.method(fsHooks,'openSync',…)).
+      const fd = fsHooks.openSync(filePath, 'a', OWNER_ONLY_FILE_MODE);
       try {
         fs.writeSync(fd, line);
-        fs.fsyncSync(fd);
+        fsHooks.fsyncSync(fd);
       } finally {
-        fs.closeSync(fd);
+        fsHooks.closeSync(fd);
       }
     } finally {
       release?.();
     }
+  };
+
+  try {
+    secureMkdirSync(path.dirname(filePath));
+    appendOnce();
   } catch {
-    /* best effort — transcript loss is preferable to crashing the session */
+    // The append (or the pre-mkdir) failed. Rather than discriminate on an error
+    // code — NFS-like filesystems surface unexpected codes for a vanished parent
+    // dir — recreate the parent dir and RETRY the append once, so a transient /
+    // racing-rmdir failure still lands the entry instead of silently dropping it
+    // (parity: Claude's appendToFile mkdir-and-retry). Only if the retry also
+    // throws do we give up (transcript loss is preferable to crashing).
+    try {
+      secureMkdirSync(path.dirname(filePath));
+      appendOnce();
+    } catch {
+      /* best effort — transcript loss is preferable to crashing the session */
+    }
   }
 }
