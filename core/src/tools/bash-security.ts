@@ -597,8 +597,11 @@ function extractSedExpressions(seg: string): string[] {
 }
 
 // Address prefix that can precede a bare sed command (line number, range, `$`,
-// `/regex/`), reused by the write/execute command detectors.
-const SED_ADDR = '(?:[0-9]+(?:~[0-9]+)?(?:\\s*,\\s*(?:[0-9]+|\\$|\\/[^/\\n]*\\/))?|\\$|\\/[^/\\n]*\\/)';
+// `/regex/`), reused by the write/execute command detectors. The range's second
+// operand also models GNU relative/offset forms `,+N` (addr1,+N) and `,~N`
+// (addr1,~N) — without them `/pat/,+2 w FILE` evaded the address-aware write/exec
+// detectors (Claude Code sedValidation.ts L524-527 rejects comma-offset ranges).
+const SED_ADDR = '(?:[0-9]+(?:~[0-9]+)?(?:\\s*,\\s*(?:[+~]?[0-9]+|\\$|\\/[^/\\n]*\\/))?|\\$|\\/[^/\\n]*\\/(?:\\s*,\\s*(?:[+~]?[0-9]+|\\$|\\/[^/\\n]*\\/))?)';
 
 /** Inspect a single extracted sed expression for write/execute commands. */
 function checkSedExpression(expr: string): string | null {
@@ -614,6 +617,19 @@ function checkSedExpression(expr: string): string | null {
   const sWrite = /\bs([^\\\n])(?:\\.|(?!\1)[^\n])*?\1(?:\\.|(?!\1)[^\n])*?\1[a-zA-Z0-9]*w\s+\S/;
   if (sWrite.test(expr)) {
     return "sed substitution 'w' flag writes the result to a file";
+  }
+
+  // Backslash-DELIMITED substitution carrying a write/execute op. The sExec /
+  // sWrite detectors above require a non-backslash delimiter (`[^\\\n]`), so a
+  // substitution that uses `\` itself as the delimiter — `s\pat\rep\w FILE`,
+  // `s\pat\rep\e` — slipped past them. Anchored to a command boundary (start,
+  // `;`, `{`/`}`, or an address) so a literal `s\` inside a normal replacement
+  // (e.g. `s/a/pas\s/`) is NOT misread as a delimiter (Claude Code
+  // sedValidation.ts L532 rejects backslash alternate-delimiter tricks).
+  // eslint-disable-next-line security/detect-unsafe-regex -- delimiter is a literal `\`; sections are (?:\\.|[^\\\n])* whose two arms are disjoint on the first char (backslash vs non-backslash), so matching is linear with no ambiguous overlap
+  const sBackslash = new RegExp(`(?:^|[;{}])\\s*(?:${SED_ADDR})?\\s*s\\\\(?:\\\\.|[^\\\\\\n])*\\\\(?:\\\\.|[^\\\\\\n])*\\\\[a-zA-Z0-9]*(?:[wWe]|\\s+[wWeR])`);
+  if (sBackslash.test(expr)) {
+    return 'sed substitution using a backslash delimiter can hide a write/execute operation from pattern-based checks';
   }
 
   const bare = stripSedSubCommands(expr);
