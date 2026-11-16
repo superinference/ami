@@ -6,6 +6,7 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 import { coerceBool, coerceNumber } from '../utils/coerce';
+import { resolveRipgrepConfig } from './ripgrep-config';
 
 /**
  * Optional numeric tool-arg: tolerate a model-quoted number ("5") via the shared
@@ -84,6 +85,7 @@ export const grepHooks: {
   sigkillEscalationMs: number;
   platform: NodeJS.Platform;
   searchFilesForPattern: typeof searchFilesForPattern;
+  inProcessBudgetMs: number;
 } = {
   spawn,
   timeoutMs: grepTimeoutMs(),
@@ -92,6 +94,11 @@ export const grepHooks: {
   platform: process.platform,
   // Hoisted function declaration (defined later in this module).
   searchFilesForPattern,
+  // Wall-clock budget for the in-process fallback walk. A catastrophic-backtracking
+  // (ReDoS) pattern against a huge tree can't hang the process forever: the walk
+  // aborts once this elapses. Mirrors the subprocess RG_TIMEOUT for the no-rg/no-grep
+  // path. Tests shrink it to exercise the deadline branch deterministically.
+  inProcessBudgetMs: grepTimeoutMs(),
 };
 
 // eslint-disable-next-line security/detect-unsafe-regex -- [lcrniw] and \s are disjoint sets, no overlap
@@ -164,7 +171,8 @@ Usage:
 - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default, most token-efficient), "count" shows match counts per file.
 - Pattern syntax uses ripgrep (not basic grep): literal braces need escaping (use "interface\\{\\}" to find "interface{}" in Go code).
 - Multiline matching: by default patterns match within a single line only. For cross-line patterns like "struct \\{[\\s\\S]*?field", pass multiline: true.
-- Prefer this tool over invoking \`grep\`/\`rg\` through the bash tool: it enforces read permissions, VCS exclusions and result caps, and returns matching lines with file paths and line numbers.`,
+- Prefer this tool over invoking \`grep\`/\`rg\` through the bash tool: it enforces read permissions, VCS exclusions and result caps, and returns matching lines with file paths and line numbers.
+- For an open-ended search that needs multiple rounds of grep/glob (you are not confident a single pattern will find the right match), delegate to the \`task\` tool (subagent) instead of running many searches yourself.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -205,7 +213,7 @@ Usage:
       },
       context_lines: {
         type: 'number',
-        description: 'Number of context lines before and after each match. Only used in content mode.',
+        description: 'Number of context lines before and after each match (rg -C). Requires output_mode: "content", ignored otherwise.',
       },
       multiline: {
         type: 'boolean',
@@ -214,7 +222,7 @@ Usage:
       },
       line_numbers: {
         type: 'boolean',
-        description: 'Show line numbers in content mode. Default true.',
+        description: 'Show line numbers in output (rg -n). Requires output_mode: "content", ignored otherwise. Default true.',
       },
       head_limit: {
         type: 'number',
@@ -230,11 +238,31 @@ Usage:
       },
       before_context: {
         type: 'number',
-        description: 'Lines of context before each match (rg -B). Overrides context_lines for before.',
+        description: 'Lines of context before each match (rg -B). Requires output_mode: "content", ignored otherwise. Overrides context_lines for before.',
       },
       after_context: {
         type: 'number',
-        description: 'Lines of context after each match (rg -A). Overrides context_lines for after.',
+        description: 'Lines of context after each match (rg -A). Requires output_mode: "content", ignored otherwise. Overrides context_lines for after.',
+      },
+      '-A': {
+        type: 'number',
+        description: 'Alias for after_context (Claude Code canonical name). Lines of context after each match (rg -A). Requires output_mode: "content".',
+      },
+      '-B': {
+        type: 'number',
+        description: 'Alias for before_context (Claude Code canonical name). Lines of context before each match (rg -B). Requires output_mode: "content".',
+      },
+      '-C': {
+        type: 'number',
+        description: 'Alias for context_lines (Claude Code canonical name). Lines of context before and after each match (rg -C). Requires output_mode: "content".',
+      },
+      '-n': {
+        type: 'boolean',
+        description: 'Alias for line_numbers (Claude Code canonical name). Show line numbers (rg -n). Requires output_mode: "content".',
+      },
+      '-i': {
+        type: 'boolean',
+        description: 'Alias for case_insensitive (Claude Code canonical name). Case-insensitive matching (rg -i).',
       },
     },
     required: ['pattern'],
@@ -253,16 +281,19 @@ Usage:
     // serialize (`"true"`, `"5"`) — a model emitting `"head_limit":"5"` must behave
     // like `5`, and `"case_insensitive":"false"` must be false (not truthy). Mirrors
     // Claude Code's semanticNumber/semanticBoolean coercion.
+    // Accept Claude Code's canonical single-letter aliases (-A/-B/-C/-n/-i) as
+    // synonyms for AMI's descriptive names, so a tool call authored against the
+    // Claude schema runs unchanged. The descriptive name wins when both are given.
     const fixedStrings = coerceBool(input.fixed_strings);
-    const lineNumbers = optionalBool(input.line_numbers);
-    const caseInsensitive = coerceBool(input.case_insensitive);
-    const contextLines = optionalNumber(input.context_lines);
+    const lineNumbers = optionalBool(input.line_numbers ?? input['-n']);
+    const caseInsensitive = coerceBool(input.case_insensitive ?? input['-i']);
+    const contextLines = optionalNumber(input.context_lines ?? input['-C']);
     const multiline = coerceBool(input.multiline);
     const headLimit = optionalNumber(input.head_limit) ?? MAX_LINES;
     const offset = optionalNumber(input.offset) ?? 0;
     const fileType = input.type as string | undefined;
-    const beforeContext = optionalNumber(input.before_context);
-    const afterContext = optionalNumber(input.after_context);
+    const beforeContext = optionalNumber(input.before_context ?? input['-B']);
+    const afterContext = optionalNumber(input.after_context ?? input['-A']);
     const searchPath = (input.path ?? input.file_path) as string | undefined;
     // UNC-path guard: short-circuit BEFORE any filesystem access (NTLM leak risk).
     if (typeof searchPath === 'string' && isUNCPath(searchPath)) {
@@ -296,12 +327,15 @@ Usage:
     // Ask for one past the page so formatResult can say the list was cut.
     // --max-count equal to head_limit hid later matches and dropped offset.
     const fetchLimit = headLimit === 0 ? 0 : offset + Math.max(headLimit, 1) + 1;
+    // Resolve which ripgrep binary to spawn (honors USE_BUILTIN_RIPGREP /
+    // AMI_RIPGREP_PATH, shared with the glob tool). Falls back to the bare name `rg`.
+    const rgCommand = resolveRipgrepConfig().command;
     const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers, fixedStrings);
-    let rgOutcome = await runSearch(rgArgs, 'rg', context, grepHooks.timeoutMs);
+    let rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs);
 
     if (rgOutcome.eagain) {
       rgArgs.push('-j', '1');
-      rgOutcome = await runSearch(rgArgs, 'rg', context, grepHooks.timeoutMs);
+      rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs);
     }
 
     if (rgOutcome.timedOut) {
@@ -409,6 +443,12 @@ export function searchFilesForPattern(
   const matches: string[] = [];
   const page = opts.headLimit && opts.headLimit > 0 ? opts.headLimit : MAX_LINES;
   const cap = opts.headLimit === 0 ? Number.POSITIVE_INFINITY : (opts.offset ?? 0) + page + 1;
+  // Wall-clock deadline: a pathological (ReDoS) pattern or an enormous tree can't
+  // pin the process — the walk and per-line matching bail once this elapses.
+  const deadline = Date.now() + Math.max(grepHooks.inProcessBudgetMs, 0);
+  // `>=` so a zero budget aborts within the same millisecond (and a real multi-second
+  // budget only trips once the elapsed time actually reaches it).
+  const expired = (): boolean => Date.now() >= deadline;
 
   // Phase 1: collect candidate files (respecting VCS/skip dirs, the include filter,
   // and the file-count ceiling), capturing each file's mtime so matches can be
@@ -416,7 +456,7 @@ export function searchFilesForPattern(
   // (a bare directory walk otherwise returns readdir order, which varies by OS/FS).
   const candidates: { filePath: string; mtimeMs: number; size: number }[] = [];
   const collect = (dir: string): void => {
-    if (candidates.length >= FALLBACK_MAX_FILES) return;
+    if (candidates.length >= FALLBACK_MAX_FILES || expired()) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -424,7 +464,7 @@ export function searchFilesForPattern(
       return;
     }
     for (const entry of entries) {
-      if (candidates.length >= FALLBACK_MAX_FILES) return;
+      if (candidates.length >= FALLBACK_MAX_FILES || expired()) return;
       if (entry.isDirectory()) {
         if (FALLBACK_SKIP_DIRS.has(entry.name)) continue;
         collect(path.join(dir, entry.name));
@@ -436,7 +476,12 @@ export function searchFilesForPattern(
       }
       const filePath = path.join(dir, entry.name);
       try {
-        const stat = fs.statSync(filePath);
+        // TOCTOU guard: `lstat` (not `stat`) so a regular file swapped for a symlink
+        // between readdir and now is detected and skipped — we never follow a symlink
+        // planted mid-walk out of the tree. Mirrors outputsScanner's post-readdir
+        // lstat re-check and AMI's other file tools.
+        const stat = fs.lstatSync(filePath);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
         candidates.push({ filePath, mtimeMs: stat.mtimeMs, size: stat.size });
       } catch {
         // A stat failure (deleted between readdir and stat, permission) sorts last.
@@ -449,6 +494,9 @@ export function searchFilesForPattern(
     if (size > FALLBACK_MAX_FILE_BYTES) return;
     let text: string;
     try {
+      // Re-check immediately before reading: close the collect→read window where the
+      // candidate could be replaced by a symlink pointing outside the tree (TOCTOU).
+      if (fs.lstatSync(filePath).isSymbolicLink()) return;
       text = fs.readFileSync(filePath, 'utf8');
     } catch {
       return;
@@ -456,7 +504,7 @@ export function searchFilesForPattern(
     const rel = path.relative(root, filePath) || path.basename(filePath);
     const fileLines = text.split('\n');
     for (let i = 0; i < fileLines.length; i++) {
-      if (matches.length >= cap) return;
+      if (matches.length >= cap || expired()) return;
       if (re.test(fileLines[i])) {
         matches.push(`${rel}:${i + 1}:${fileLines[i]}`);
       }
@@ -483,7 +531,7 @@ export function searchFilesForPattern(
   // deterministically.
   candidates.sort((a, b) => (b.mtimeMs - a.mtimeMs) || a.filePath.localeCompare(b.filePath));
   for (const c of candidates) {
-    if (matches.length >= cap) break;
+    if (matches.length >= cap || expired()) break;
     searchFile(c.filePath, c.size);
   }
   return matches.join('\n');
@@ -694,6 +742,14 @@ export function runSearch(
         settle({ output: null, eagain: true });
         return;
       }
+      // Critical errors mean the searcher is broken, not "binary missing" — surface
+      // them instead of silently falling through to the next searcher (which would
+      // hide a real permission problem). ENOENT (binary not installed) still falls
+      // back. Mirrors Claude Code's CRITICAL_ERROR_CODES distinction.
+      if (err.code === 'EACCES' || err.code === 'EPERM') {
+        settle({ output: null, searchError: `${command}: ${err.code} ${err.message ?? ''}`.trim() });
+        return;
+      }
       settle({ output: null });
     });
 
@@ -717,7 +773,9 @@ export function runSearch(
 
       // Non-zero exit caused by rg failing to spawn worker threads (EAGAIN) — detected
       // from rg's own stderr, since no 'error' event fires in this mode. Retry single-threaded.
-      if (command === 'rg' && isEagainStderr(stderr)) {
+      // `command !== 'grep'` identifies the ripgrep invocation whether it is the bare
+      // name `rg` or an operator-configured AMI_RIPGREP_PATH.
+      if (command !== 'grep' && isEagainStderr(stderr)) {
         settle({ output: null, eagain: true });
         return;
       }
@@ -766,6 +824,19 @@ function partialOnTimeout(
   return result;
 }
 
+/**
+ * Extract the file-path portion from a ripgrep/grep output line. Content lines look
+ * like `path:LINENO:text` and count lines like `path:COUNT`; both are split on the
+ * first `:<digits>` boundary. A naive `line.split(':')[0]` mis-parses Windows
+ * drive-letter paths (`C:\dir\file.ts:5:text` → `C`), inflating the per-file count.
+ * files_with_matches mode emits bare paths with no `:N`, so the whole line is the
+ * path. Mirrors Claude Code's drive-safe `^(.*?):(\d+):` parse (GlobalSearchDialog).
+ */
+export function grepLineFilePath(line: string): string {
+  const m = line.match(/^(.*?):\d+(?::|$)/);
+  return m ? m[1] : line;
+}
+
 function isSuiteLogLine(line: string): boolean {
   return /"Action"\s*:/.test(line) && /"(?:Test|Package|Elapsed)"/.test(line);
 }
@@ -805,7 +876,7 @@ function formatResult(output: string, pattern: string, limit: number = MAX_LINES
   }
 
   const result = sliced.join('\n');
-  const fileSet = new Set(allLines.map(l => l.split(':')[0]));
+  const fileSet = new Set(allLines.map(grepLineFilePath));
   const fileCount = fileSet.size;
   const matchCount = totalLines;
   const truncated = sliced.length < totalLines;

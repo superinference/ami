@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { EventEmitter } from 'node:events';
-import { grepTool, grepHooks, searchFilesForPattern } from '../src/tools/grep';
+import { grepTool, grepHooks, searchFilesForPattern, runSearch, grepLineFilePath } from '../src/tools/grep';
 import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
@@ -17,6 +17,7 @@ const savedTimeoutMs = grepHooks.timeoutMs;
 const savedKillGraceMs = grepHooks.killGraceMs;
 const savedEscalationMs = grepHooks.sigkillEscalationMs;
 const savedPlatform = grepHooks.platform;
+const savedBudgetMs = grepHooks.inProcessBudgetMs;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-grep-u055-'));
@@ -28,6 +29,7 @@ afterEach(() => {
   grepHooks.killGraceMs = savedKillGraceMs;
   grepHooks.sigkillEscalationMs = savedEscalationMs;
   grepHooks.platform = savedPlatform;
+  grepHooks.inProcessBudgetMs = savedBudgetMs;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -179,5 +181,191 @@ describe('searchFilesForPattern – mtime ordering (parity)', () => {
     const lines = out.split('\n').filter(Boolean);
     assert.match(lines[0], /a\.txt/, 'equal mtime → filename order');
     assert.match(lines[1], /b\.txt/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: Claude-Code-compatible single-letter param aliases (-A/-B/-C/-n/-i)
+// ---------------------------------------------------------------------------
+/** Mock grepHooks.spawn to capture the rg args and resolve as an empty (no-match) run. */
+function captureRgArgs(): { args: string[][] } {
+  const captured: string[][] = [];
+  mock.method(grepHooks, 'spawn', (_cmd: string, args: string[]) => {
+    captured.push(args);
+    const child: any = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    // exit 0 with no stdout → "No matches" (no grep/in-process fallback triggered)
+    queueMicrotask(() => { child.emit('close', 0, null); });
+    return child;
+  });
+  return { args: captured };
+}
+
+describe('grep – Claude-Code single-letter aliases translate to rg flags (parity)', () => {
+  it('-C maps to context_lines, -i to case_insensitive', async () => {
+    const cap = captureRgArgs();
+    await grepTool.execute!(
+      { pattern: 'x', output_mode: 'content', '-C': 3, '-i': true },
+      ctx(),
+    );
+    const args = cap.args[0];
+    assert.ok(args.includes('-C') && args[args.indexOf('-C') + 1] === '3', 'alias -C → rg -C 3');
+    assert.ok(args.includes('-i'), 'alias -i → rg -i');
+  });
+
+  it('-n:false maps to line_numbers:false (suppresses --line-number)', async () => {
+    const cap = captureRgArgs();
+    await grepTool.execute!(
+      { pattern: 'x', output_mode: 'content', '-n': false },
+      ctx(),
+    );
+    assert.ok(!cap.args[0].includes('--line-number'), 'alias -n:false → no rg --line-number');
+  });
+
+  it('-A and -B map to after/before context', async () => {
+    const cap = captureRgArgs();
+    await grepTool.execute!(
+      { pattern: 'x', output_mode: 'content', '-A': 2, '-B': 1 },
+      ctx(),
+    );
+    const args = cap.args[0];
+    assert.ok(args.includes('-A') && args[args.indexOf('-A') + 1] === '2', 'alias -A → rg -A 2');
+    assert.ok(args.includes('-B') && args[args.indexOf('-B') + 1] === '1', 'alias -B → rg -B 1');
+  });
+
+  it('the descriptive name wins when both it and the alias are supplied', async () => {
+    const cap = captureRgArgs();
+    await grepTool.execute!(
+      { pattern: 'x', output_mode: 'content', context_lines: 5, '-C': 9 },
+      ctx(),
+    );
+    const args = cap.args[0];
+    assert.equal(args[args.indexOf('-C') + 1], '5', 'context_lines must take precedence over -C');
+  });
+
+  it('end-to-end: `-i` alias performs a real case-insensitive search (no mocks)', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'a.ts'), 'const HELLO = 1;\n');
+    const res = await grepTool.execute!(
+      { pattern: 'hello', '-i': true, output_mode: 'content' },
+      ctx(),
+    );
+    assert.notEqual(res.isError, true);
+    assert.match(res.output, /HELLO/, 'the -i alias must enable case-insensitive matching end to end');
+  });
+
+  it('schema advertises the Claude aliases and content-mode-only warnings', () => {
+    const props = (grepTool.inputSchema as any).properties;
+    for (const k of ['-A', '-B', '-C', '-n', '-i']) {
+      assert.ok(props[k], `schema must advertise alias ${k}`);
+    }
+    assert.match(props.before_context.description, /Requires output_mode: "content"/);
+    assert.match(props.line_numbers.description, /Requires output_mode: "content"/);
+    // Affordance hint delegating open-ended multi-round searches to the task subagent.
+    assert.match(grepTool.description, /task.*subagent|subagent.*task/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: Windows-drive-safe ripgrep line parsing (first :<digits>: boundary)
+// ---------------------------------------------------------------------------
+describe('grepLineFilePath – drive-safe file-path extraction (parity)', () => {
+  it('extracts the path up to the first :<digits>: in a content line', () => {
+    assert.equal(grepLineFilePath('src/a.ts:42:const x = 1;'), 'src/a.ts');
+  });
+  it('does not shred a Windows drive-letter path', () => {
+    assert.equal(grepLineFilePath('C:\\dir\\file.ts:5:text'), 'C:\\dir\\file.ts');
+  });
+  it('extracts the path from a count line (path:COUNT)', () => {
+    assert.equal(grepLineFilePath('src/a.ts:3'), 'src/a.ts');
+  });
+  it('returns the whole line for a bare files_with_matches path', () => {
+    assert.equal(grepLineFilePath('src/a.ts'), 'src/a.ts');
+    assert.equal(grepLineFilePath('C:\\dir\\file.ts'), 'C:\\dir\\file.ts');
+  });
+  it('a Windows path is counted as ONE file, not inflated by the drive colon', () => {
+    // Two matches in the SAME drive-letter file must report a single file.
+    const out = 'C:\\dir\\file.ts:1:a\nC:\\dir\\file.ts:2:b';
+    const files = new Set(out.split('\n').map(grepLineFilePath));
+    assert.equal(files.size, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: critical error-code distinction (EACCES/EPERM surfaced, not swallowed)
+// ---------------------------------------------------------------------------
+describe('runSearch – EACCES/EPERM surfaced as search error (parity)', () => {
+  function spawnError(code: string) {
+    mock.method(grepHooks, 'spawn', () => {
+      const child: any = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => true;
+      queueMicrotask(() => child.emit('error', Object.assign(new Error('boom'), { code })));
+      return child;
+    });
+  }
+
+  it('EACCES becomes a searchError (so the real permission problem is reported)', async () => {
+    spawnError('EACCES');
+    const outcome = await runSearch(['x', tmpDir], 'rg', ctx(), 0);
+    assert.equal(outcome.output, null);
+    assert.match(outcome.searchError ?? '', /EACCES/);
+  });
+
+  it('EPERM becomes a searchError', async () => {
+    spawnError('EPERM');
+    const outcome = await runSearch(['x', tmpDir], 'rg', ctx(), 0);
+    assert.match(outcome.searchError ?? '', /EPERM/);
+  });
+
+  it('ENOENT (binary missing) still falls back silently (no searchError)', async () => {
+    spawnError('ENOENT');
+    const outcome = await runSearch(['x', tmpDir], 'rg', ctx(), 0);
+    assert.equal(outcome.output, null);
+    assert.equal(outcome.searchError, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: ReDoS-safe in-process fallback — wall-clock deadline aborts the walk
+// ---------------------------------------------------------------------------
+describe('searchFilesForPattern – wall-clock deadline (ReDoS guard)', () => {
+  it('returns [] / stops immediately when the budget is already exhausted', () => {
+    for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(tmpDir, `f${i}.txt`), 'needle\n');
+    grepHooks.inProcessBudgetMs = 0; // deadline = now → first expired() check bails
+    const out = searchFilesForPattern(tmpDir, 'needle', {});
+    assert.equal(out, '', 'an exhausted budget must abort the walk with no matches');
+  });
+
+  it('with a normal budget it still finds matches (deadline not hit)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'needle\n');
+    grepHooks.inProcessBudgetMs = 20_000;
+    const out = searchFilesForPattern(tmpDir, 'needle', {});
+    assert.match(out, /needle/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: TOCTOU symlink re-check in the recursive fallback walk
+// ---------------------------------------------------------------------------
+describe('searchFilesForPattern – symlink TOCTOU guard (parity)', () => {
+  it('does not follow a symlink encountered during the walk', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'si-grep-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'needle_secret\n');
+      fs.writeFileSync(path.join(tmpDir, 'real.txt'), 'needle_real\n');
+      try {
+        fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(tmpDir, 'link.txt'));
+      } catch {
+        return; // platform without symlink permission — skip
+      }
+      const out = searchFilesForPattern(tmpDir, 'needle', {});
+      assert.match(out, /needle_real/, 'the real in-tree file is searched');
+      assert.ok(!/needle_secret/.test(out), 'the symlinked outside file must NOT be followed');
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

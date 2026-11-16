@@ -8,6 +8,7 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 import { isEagainStderr } from './grep';
+import { resolveRipgrepConfig } from './ripgrep-config';
 import { collectGitignoreGlobs } from '../workspace-indexer';
 
 const MAX_RESULTS = 100;
@@ -108,7 +109,8 @@ function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal): Pro
     // expiry execFile sends SIGTERM (killSignal). Forward the turn's AbortSignal too so
     // a cancelled turn (Esc / engine abort) kills the running rg child.
     const child = globHooks.execFileImpl(
-      'rg',
+      // Shared ripgrep resolution (USE_BUILTIN_RIPGREP / AMI_RIPGREP_PATH), same as grep.
+      resolveRipgrepConfig().command,
       args,
       { cwd, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGTERM', signal },
       (err, stdout, stderr) => {

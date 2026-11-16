@@ -233,7 +233,17 @@ export type {
   TurnMetricsSnapshot,
 } from './turn-metrics';
 export { TurnMetrics } from './turn-metrics';
-export { isGrepNoMatchExit, stripGrepFlags } from './tools/grep';
+export { isGrepNoMatchExit, stripGrepFlags, grepLineFilePath } from './tools/grep';
+export {
+  resolveRipgrepConfig,
+  getRipgrepStatus,
+  probeRipgrep,
+  resetRipgrepStatus,
+  ripgrepHooks,
+  USE_BUILTIN_RIPGREP_ENV,
+  RIPGREP_PATH_ENV,
+} from './tools/ripgrep-config';
+export type { RipgrepConfig, RipgrepMode } from './tools/ripgrep-config';
 export { expandBraces, estimateBraceExpansions } from './brace-expansion';
 export { SubagentLimiter } from './subagent-limiter';
 
