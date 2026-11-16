@@ -34,6 +34,7 @@ import {
   detectInvokeItem,
   detectScriptBlockInjection,
   detectDynamicCommandName,
+  detectInvokeExpression,
 } from '../src/tools/powershell-security';
 import { validateBashSecurity, detectPowerShellExecution } from '../src/tools/bash-security';
 
@@ -393,6 +394,46 @@ describe('detectStopParsingToken', () => {
     assert.equal(detectStopParsingToken("sed 's/--%/x/' file").blocked, false);
     assert.equal(detectStopParsingToken('printf -- %s done').blocked, false);
     assert.equal(detectStopParsingToken('Get-ChildItem').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectInvokeExpression — standalone eval primitive (Claude checkInvokeExpression).
+// ---------------------------------------------------------------------------
+describe('detectInvokeExpression', () => {
+  it('flags a bare Invoke-Expression with no download/base64 feeding it', () => {
+    assert.equal(detectInvokeExpression('Invoke-Expression $payload').blocked, true);
+    // Pipeline command position: $code | Invoke-Expression.
+    assert.equal(detectInvokeExpression('$code | Invoke-Expression').blocked, true);
+    // After a statement separator.
+    assert.equal(detectInvokeExpression('$x = 1; Invoke-Expression $x').blocked, true);
+  });
+
+  it('carries an explanatory eval reason', () => {
+    assert.match(detectInvokeExpression('Invoke-Expression $x').reason!, /eval|arbitrary/i);
+  });
+
+  it('does not flag Invoke-Expression appearing only as an argument', () => {
+    assert.equal(detectInvokeExpression('Write-Output Invoke-Expression').blocked, false);
+  });
+
+  it('POSIX-safety: does not flag the Elixir iex binary', () => {
+    assert.equal(detectInvokeExpression('iex -S mix').blocked, false);
+    assert.equal(detectInvokeExpression('iex').blocked, false);
+  });
+
+  it('leaves non-eval commands alone', () => {
+    assert.equal(detectInvokeExpression('Get-ChildItem').blocked, false);
+    assert.equal(detectInvokeExpression('git commit -m x').blocked, false);
+  });
+
+  it('is wired end-to-end through detectPowerShellExecution + validateBashSecurity', () => {
+    // RED on revert: without detectInvokeExpression in the chain a bare
+    // Invoke-Expression (no downloader/base64) passes both gates.
+    assert.equal(detectPowerShellExecution('Invoke-Expression $payload').blocked, true);
+    assert.equal(validateBashSecurity('Invoke-Expression $payload').safe, false);
+    // Elixir iex stays allowed through the full bash path.
+    assert.equal(validateBashSecurity('iex -S mix').safe, true);
   });
 });
 

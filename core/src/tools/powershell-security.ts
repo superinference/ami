@@ -974,6 +974,35 @@ export function detectInvokeItem(command: string): PsDetection {
 }
 
 /**
+ * Standalone `Invoke-Expression` eval (mirrors Claude's checkInvokeExpression):
+ * `Invoke-Expression` runs an arbitrary string as PowerShell code — the eval
+ * primitive. The existing download-cradle / base64 checks in
+ * detectPowerShellExecution only surface it when *combined* with a downloader or
+ * `[Convert]::FromBase64String`; a bare `Invoke-Expression $payload` (or
+ * `$code | Invoke-Expression`) is equally arbitrary code execution and is
+ * surfaced here regardless of what feeds it.
+ *
+ * SECURITY/POSIX-SAFETY: only the unambiguous hyphenated cmdlet name
+ * `invoke-expression` is matched. The `iex` alias is intentionally NOT flagged
+ * here because `iex` is also the Elixir interactive-shell binary (`iex -S mix`)
+ * and detectPowerShellExecution runs over POSIX-shell commands too — flagging
+ * bare `iex` would false-positive on Linux. Same no-POSIX-collision rationale as
+ * the `sv`/`sc`/`rm` omissions in ALIAS_HIJACK_CMDLETS / ENV_WRITE_CMDLETS. The
+ * `iex` alias is still surfaced in the download-cradle and base64 combinations
+ * (where the surrounding PowerShell signals disambiguate it from Elixir).
+ */
+export function detectInvokeExpression(command: string): PsDetection {
+  if (cmdletInCommandPosition(command, ['invoke-expression'])) {
+    return {
+      blocked: true,
+      reason:
+        'PowerShell Invoke-Expression runs an arbitrary string as code (eval) — cannot be statically validated',
+    };
+  }
+  return PS_PASS;
+}
+
+/**
  * Script-block injection (mirrors Claude's checkScriptBlockInjection, denylist
  * half): when a `{ … }` script block is present as an argument, any
  * DANGEROUS_SCRIPT_BLOCK_CMDLETS cmdlet (Invoke-Command, Start-Job, Register-*
@@ -1038,6 +1067,7 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
     detectDangerousPsCmdlets,
     detectStopParsingToken,
     detectDynamicCommandName,
+    detectInvokeExpression,
     detectScriptBlockInjection,
     detectFilePathExecution,
     detectForEachMemberName,
