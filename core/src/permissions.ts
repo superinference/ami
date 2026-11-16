@@ -296,6 +296,17 @@ export interface PermissionPromptResult {
    * next") — extra guidance delivered alongside the allowed result.
    */
   acceptFeedback?: string;
+  /**
+   * Tool input the user EDITED at the prompt (or an IDE "apply changes" flow
+   * rewrote) before approving — applied in place of the model's original input
+   * when the decision is an allow. Honored only on `allow_once` / `allow_pattern`;
+   * ignored on deny/cancelled. The executor validates it against the tool schema
+   * (dropping undeclared keys) before substituting it, so the UI cannot smuggle
+   * unknown parameters. Mirrors Claude's `onAllow(updatedInput)` /
+   * `ideDiffSupport.applyChanges` (the permission dialog returns the user's
+   * modified edits instead of a plain allow).
+   */
+  updatedInput?: Record<string, unknown>;
 }
 
 export interface PermissionPromptHandler {
