@@ -4050,6 +4050,36 @@ export class PermissionManager {
   }
 
   /**
+   * Re-sync the live rule set from disk after an on-disk settings change, mirroring
+   * Claude Code's `loadAllPermissionRulesFromDisk` + `syncPermissionRulesFromDisk`
+   * (applySettingsChange.ts L37-48): drop every rule that ORIGINATED from a persisted
+   * tier (`policySettings`/`localSettings`/`projectSettings`/`userSettings`), reset
+   * the managed-rules-only lockdown so a removed policy file no longer locks down,
+   * then reload all tiers fresh via {@link loadTieredRules}. In-memory sources
+   * (`session`, `cliArg`, `flagSettings`, `command`) — runtime grants a user made
+   * this session — are PRESERVED, so a mid-session reload neither duplicates
+   * disk rules (repeated syncs are idempotent) nor wipes session grants. The policy
+   * memo is cleared so the new allow/deny rules take effect on the very next check
+   * instead of serving a stale ≤5s-TTL verdict. Returns collected warnings.
+   *
+   * This is what makes a mid-session edit to on-disk permission rules (an admin
+   * adding a `deny`, a user widening `allow`) apply to the RUNNING session without a
+   * restart. Safe to call repeatedly from a settings-change watcher.
+   */
+  syncRulesFromDisk(cwd: string): string[] {
+    const DISK_TIERS: ReadonlySet<PermissionRuleSource> = new Set<PermissionRuleSource>([
+      'policySettings', 'localSettings', 'projectSettings', 'userSettings',
+    ]);
+    this.rules = this.rules.filter(r => r.source === undefined || !DISK_TIERS.has(r.source));
+    // A managed lockdown is re-derived from disk on reload; clearing it first lets a
+    // now-removed policy file release the lockdown instead of leaving it latched on.
+    this._managedRulesOnly = false;
+    const warnings = this.loadTieredRules(cwd);
+    this._memo?.clear();
+    return warnings;
+  }
+
+  /**
    * Persist the rules whose `source` matches `destination` to that tier's file
    * (in-memory tiers session/cliArg are a no-op). Returns {ok,error}; a persist
    * failure is surfaced, never silently lost (see {@link saveRules}).

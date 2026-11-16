@@ -71,6 +71,18 @@ function skillPayload(skill: SkillDefinition): Record<string, unknown> {
   };
 }
 
+/**
+ * Render ONE deferred tool as a line for the `<available-deferred-tools>` roster
+ * the engine shows the model, so it knows the exact name to pass to
+ * `tool_search select:<name>`. Mirrors Claude Code's `formatDeferredToolLine`
+ * (tools/ToolSearchTool/prompt.ts L115) — just the bare tool name; search hints
+ * are deliberately not rendered (Claude's hint A/B showed no benefit). Centralized
+ * here so every announcement site renders a deferred tool identically.
+ */
+export function formatDeferredToolLine(tool: ToolDefinition): string {
+  return tool.name;
+}
+
 /** Hard cap (chars) on a tool_search result before it is truncated, mirroring
  *  Claude's `ToolSearchTool.maxResultSizeChars` (100k). A `select:` multi-load
  *  can emit many full JSON schemas and a keyword hit can list pathologically

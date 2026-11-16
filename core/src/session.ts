@@ -353,6 +353,12 @@ export interface Session {
      *  instead of silently reverting to the flag-derived default (parity: Claude's
      *  SessionIndexEntry.permissionMode). */
     permissionMode?: string;
+    /** Active plan state when the session was saved: the on-disk plan file path and
+     *  whether plan mode was engaged. Persisted so `--resume` restores the active
+     *  plan (re-entering plan mode + re-pointing at the plan file), recovering from
+     *  the transcript if the file is missing. Parity: Claude's copyPlanForResume
+     *  plan-slug restoration. Absent when the session was never in plan mode. */
+    plan?: { filePath: string; active: boolean };
   };
 }
 
