@@ -88,7 +88,7 @@ export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS 
 export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';
 export { Profiler, FpsTracker, slowWarning } from './profiler';
-export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts } from './profiler';
+export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, FormatTimelineOpts, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts } from './profiler';
 export { WorkspaceIndexer, findProjectRoot } from './workspace-indexer';
 export { isGeneratedFile, filterGeneratedFiles } from './generated-files';
 export { ProviderCoordinator } from './provider-coordinator';

@@ -127,9 +127,11 @@ describe('Profiler – getStatistics', () => {
     assert.equal(stats.minMs, 1);
     assert.equal(stats.maxMs, 100);
     assert.equal(stats.totalMs, 5050);
-    assert.equal(stats.p50Ms, 50);
-    assert.equal(stats.p95Ms, 95);
-    assert.equal(stats.p99Ms, 99);
+    // Linear-interpolation percentiles (Claude stats.tsx parity): for [1..100],
+    // p50 = 50.5, p95 = 95.05, p99 = 99.01.
+    assert.equal(stats.p50Ms, 50.5);
+    assert.equal(stats.p95Ms, 95.05);
+    assert.equal(stats.p99Ms, 99.01);
     assert.ok(stats.stddevMs > 0);
   });
 
@@ -365,10 +367,11 @@ describe('computeStatistics', () => {
     assert.equal(stats.count, 100);
     assert.equal(stats.minMs, 1);
     assert.equal(stats.maxMs, 100);
-    assert.equal(stats.p50Ms, 50);
-    assert.equal(stats.p75Ms, 75);
-    assert.equal(stats.p95Ms, 95);
-    assert.equal(stats.p99Ms, 99);
+    // Linear interpolation (Claude stats.tsx parity).
+    assert.equal(stats.p50Ms, 50.5);
+    assert.equal(stats.p75Ms, 75.25);
+    assert.equal(stats.p95Ms, 95.05);
+    assert.equal(stats.p99Ms, 99.01);
     assert.ok(Math.abs(stats.avgMs - 50.5) < 0.1);
     assert.ok(stats.stddevMs > 28 && stats.stddevMs < 30);
   });
@@ -400,14 +403,23 @@ describe('percentile', () => {
     assert.equal(percentile([42], 99), 42);
   });
 
-  it('computes P50 of sorted array', () => {
+  it('computes P50 of sorted array (linear interpolation)', () => {
     const sorted = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    assert.equal(percentile(sorted, 50), 5);
+    // index = 0.5 * 9 = 4.5 → interpolate sorted[4]=5 and sorted[5]=6 → 5.5.
+    assert.equal(percentile(sorted, 50), 5.5);
   });
 
-  it('computes P95 of sorted array', () => {
+  it('computes P95 of sorted array (linear interpolation)', () => {
     const sorted = Array.from({ length: 20 }, (_, i) => i + 1);
-    assert.equal(percentile(sorted, 95), 19);
+    // index = 0.95 * 19 = 18.05 → interpolate sorted[18]=19 and sorted[19]=20 → 19.05.
+    assert.equal(percentile(sorted, 95), 19.05);
+  });
+
+  it('interpolates an unsorted sample and ignores non-finite entries (canonical consolidation)', () => {
+    // Delegates to utils/reservoir.percentile: input need not be pre-sorted and
+    // NaN/Infinity are filtered — proving ONE shared percentile algorithm.
+    assert.equal(percentile([5, 1, 3, 2, 4], 50), 3);
+    assert.equal(percentile([1, Number.NaN, 2, 3, 4, 5], 50), 3);
   });
 
   it('P0 returns first element', () => {

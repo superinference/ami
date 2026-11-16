@@ -33,6 +33,14 @@ export interface TimelineEntry {
   heapBytes: number;
 }
 
+/** Column-alignment knobs for {@link Profiler.formatTimeline}. */
+export interface FormatTimelineOpts {
+  /** padStart width for the cumulative-ms column (default 7). */
+  totalPad?: number;
+  /** padStart width for the per-step delta-ms column (default 6). */
+  deltaPad?: number;
+}
+
 /** A recorded slow-operation anomaly. */
 export interface SlowOperation {
   operation: string;
@@ -203,6 +211,12 @@ export interface ProfilerOpts {
   maxTurns?: number;
   /** RNG injection for deterministic reservoir sampling (testability). */
   rand?: () => number;
+  /**
+   * Labels whose name starts with any of these prefixes are NEVER flagged as a
+   * slow operation (Claude excludes the model-prompt op from its slow-sync
+   * watchdog so the LLM's own latency doesn't drown the signal). Default empty.
+   */
+  slowExcludePrefixes?: string[];
 }
 
 export class Profiler {
@@ -223,6 +237,7 @@ export class Profiler {
   private _slowThresholds = new Map<string, number>();
   private _slowOps: SlowOperation[] = [];
   private _maxSlowOps: number;
+  private _slowExcludePrefixes: string[];
 
   // --- generic counter / gauge / set metrics ---
   private _counters = new Map<string, number>();
@@ -232,6 +247,7 @@ export class Profiler {
   constructor(opts?: ProfilerOpts) {
     this._slowThresholdMs = opts?.slowThresholdMs ?? 1000;
     this._maxSlowOps = Math.max(1, opts?.maxSlowOps ?? 50);
+    this._slowExcludePrefixes = opts?.slowExcludePrefixes ?? [];
     this._mem = opts?.memSnapshot ?? defaultMem;
     this._maxSamples = Math.max(1, opts?.maxSamples ?? DEFAULT_RESERVOIR_SIZE);
     this._maxTurns = Math.max(1, opts?.maxTurns ?? 10_000);
@@ -292,6 +308,9 @@ export class Profiler {
   }
 
   private _maybeFlagSlow(label: string, durationMs: number): void {
+    // Excluded operations (e.g. the model-prompt op) never register as "slow":
+    // their latency is expected and would drown the watchdog signal.
+    if (this._slowExcludePrefixes.some(p => label.startsWith(p))) return;
     const threshold = this._slowThresholds.get(label) ?? this._slowThresholdMs;
     if (durationMs > threshold) {
       this._slowOps.push({ operation: label, durationMs, timestamp: Date.now(), thresholdMs: threshold });
@@ -299,9 +318,18 @@ export class Profiler {
     }
   }
 
-  /** Recent slow operations (most-recent last), optionally limited to the last `limit`. */
-  getSlowOperations(limit?: number): SlowOperation[] {
-    const all = [...this._slowOps];
+  /**
+   * Recent slow operations (most-recent last). `limit` keeps only the last N;
+   * `maxAgeMs` (TTL) drops entries older than that many ms relative to now, so a
+   * live diagnostic surfaces only *recent* anomalies rather than the whole
+   * session's backlog (mirrors Claude's DevBar recent-slow-ops window).
+   */
+  getSlowOperations(limit?: number, maxAgeMs?: number): SlowOperation[] {
+    let all = [...this._slowOps];
+    if (maxAgeMs !== undefined && maxAgeMs >= 0) {
+      const cutoff = Date.now() - maxAgeMs;
+      all = all.filter(op => op.timestamp >= cutoff);
+    }
     return limit && limit > 0 ? all.slice(-limit) : all;
   }
 
@@ -331,13 +359,21 @@ export class Profiler {
     });
   }
 
-  /** Render the timeline as aligned text (label, +cumulative, Δdelta, heap MB). */
-  formatTimeline(): string {
+  /**
+   * Render the timeline as aligned text (label, +cumulative, Δdelta, heap MB).
+   * `totalPad`/`deltaPad` control the padStart widths of the cumulative and delta
+   * columns so callers can align to their expected magnitude (Claude's
+   * formatTimelineLine uses 8/7 for startup, 10/9 for query); defaults match the
+   * previous hard-coded 7/6 so existing callers are unchanged.
+   */
+  formatTimeline(opts?: FormatTimelineOpts): string {
     const rows = this.getTimeline();
     if (rows.length === 0) return '(no checkpoints)';
+    const totalPad = opts?.totalPad ?? 7;
+    const deltaPad = opts?.deltaPad ?? 6;
     const pad = Math.max(...rows.map(r => r.label.length));
     return rows
-      .map(r => `${r.label.padEnd(pad)}  ${String(r.cumulativeMs).padStart(7)}ms  Δ${String(r.deltaMs).padStart(6)}ms  ${(r.heapBytes / 1_048_576).toFixed(1)}MB`)
+      .map(r => `${r.label.padEnd(pad)}  ${String(r.cumulativeMs).padStart(totalPad)}ms  Δ${String(r.deltaMs).padStart(deltaPad)}ms  ${(r.heapBytes / 1_048_576).toFixed(1)}MB`)
       .join('\n');
   }
 
@@ -612,12 +648,16 @@ export class FpsTracker {
   }
 }
 
-/** Compute percentile from a sorted array using nearest-rank method. */
-export function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  if (sorted.length === 1) return sorted[0];
-  const idx = Math.ceil((p / 100) * sorted.length) - 1;
-  return sorted[Math.max(0, Math.min(idx, sorted.length - 1))];
+/**
+ * Percentile of a numeric sample using linear interpolation between neighbouring
+ * ranks — the NIST/"linear" method Claude's stats.tsx percentile() uses
+ * (`index = p/100*(n-1)`; interpolate between floor/ceil). Delegates to the ONE
+ * canonical implementation in utils/reservoir so core carries a single percentile
+ * algorithm instead of a nearest-rank vs linear split (no-duplication). Input need
+ * not be pre-sorted; non-finite entries are ignored and `p` is clamped to [0,100].
+ */
+export function percentile(values: number[], p: number): number {
+  return linearPercentile(values, p);
 }
 
 /** Compute full statistics from a duration array. */
