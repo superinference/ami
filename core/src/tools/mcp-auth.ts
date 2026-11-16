@@ -124,6 +124,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
     async execute(_input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
       const mcpManager = (context as unknown as { _mcpManager?: {
         reconnect?: (name: string) => Promise<void>;
+        startAuth?: (name: string, opts?: { signal?: AbortSignal }) => Promise<{ authUrl?: string }>;
         getServerConfig?: (name: string) => McpAuthServerConfig | undefined;
         getServerStatus?: (name: string) => { state: string } | null;
         getPendingAuthUrl?: (name: string) => string | undefined;
@@ -142,8 +143,22 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
       }
 
       const before = mcpManager.getServerStatus?.(serverName)?.state;
+      // Active, model-driven OAuth: when the manager exposes the non-blocking
+      // `startAuth` entry point, start the flow and get the authorization URL back
+      // as soon as the consent leg produces one (status "auth_url") WITHOUT hanging
+      // on the interactive browser leg — the reconnect/tool-swap finishes in the
+      // background. A detached/headless run can then relay the URL to the user,
+      // mirroring Claude Code's skipBrowserOpen McpAuthTool. The call honors
+      // `context.abortSignal` so an in-flight flow can be cancelled. Managers that
+      // only expose `reconnect` fall back to the blocking re-establish path below.
+      let activeAuthUrl: string | undefined;
       try {
-        await mcpManager.reconnect?.(serverName);
+        if (typeof mcpManager.startAuth === 'function') {
+          const res = await mcpManager.startAuth(serverName, { signal: context.abortSignal });
+          activeAuthUrl = res?.authUrl;
+        } else {
+          await mcpManager.reconnect?.(serverName);
+        }
       } catch (err) {
         const reason = redactSecrets(err instanceof Error ? err.message : String(err));
         const errorKind = classifyMcpAuthError(reason);
@@ -169,6 +184,17 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
           output: `Authentication failed for "${serverName}": ${reason}.${kindHint}${urlLine}`,
           isError: true,
           metadata: { status: 'error' satisfies McpAuthStatus, error_kind: errorKind, transport, ...(authUrl ? { auth_url: authUrl } : {}) },
+        };
+      }
+      // Active non-blocking flow surfaced a consent URL before the background
+      // reconnect finished — relay it immediately (status "auth_url") so the model
+      // can share it, exactly like Claude Code's skipBrowserOpen McpAuthTool. The
+      // URL is scrubbed of any embedded credential before it reaches the model.
+      if (activeAuthUrl) {
+        const authUrl = redactAuthUrl(activeAuthUrl);
+        return {
+          output: `Authorization required for "${serverName}". Open this URL in a browser to complete consent, then re-run authenticate (or ${MCP_COMMAND_HINT}):\n${authUrl}`,
+          metadata: { status: 'auth_url' satisfies McpAuthStatus, transport, auth_url: authUrl },
         };
       }
       // Tri-state post-reconnect reporting (connected / needs-auth / failed):

@@ -1013,6 +1013,70 @@ export class McpManager extends EventEmitter {
     }
   }
 
+  /**
+   * Non-blocking, model-driven OAuth entry point for the `authenticate` tool.
+   *
+   * FUNCTIONAL FIX (parity, U102): unlike {@link reconnect} — which BLOCKS until
+   * the full browser-consent flow settles — this starts the (re)connect in the
+   * BACKGROUND and resolves as soon as EITHER the consent leg produces an
+   * authorization URL (returned so a detached/headless agent can relay it to the
+   * user) OR the flow completes silently (a cached/XAA token authenticated
+   * without consent → `authUrl` undefined). The background reconnect runs to
+   * completion and swaps the server's real tools in on success. This mirrors
+   * Claude Code's `skipBrowserOpen` McpAuthTool (start → capture URL → return
+   * immediately → reconnect in background) instead of hanging the tool call on
+   * an interactive browser leg that a detached agent can never complete.
+   *
+   * The `oauth-authorization-url` event fires BEFORE the authorizer is awaited
+   * (see {@link registerClient}), so the URL reliably wins the race against the
+   * still-blocked consent leg. A pre-URL reconnect failure is folded into the
+   * race so it surfaces to the caller. An optional AbortSignal cancels the wait:
+   * if it fires before a URL or completion, the returned promise rejects with an
+   * abort error (the detached reconnect is left to settle/clean up on its own).
+   */
+  async startAuth(name: string, opts?: { signal?: AbortSignal }): Promise<{ authUrl?: string }> {
+    const signal = opts?.signal;
+    if (signal?.aborted) {
+      throw new Error(`OAuth flow for "${name}" was aborted before it started`);
+    }
+
+    let urlListener: ((n: string, url: string) => void) | undefined;
+    const urlPromise = new Promise<string>((resolve) => {
+      urlListener = (n, url) => { if (n === name) resolve(url); };
+      this.on('oauth-authorization-url', urlListener);
+    });
+
+    // Background (re)connect. The consent leg emits 'oauth-authorization-url'
+    // before it blocks on the authorizer, so urlPromise typically wins the race
+    // well before this settles. A failure BEFORE any URL was emitted rejects the
+    // race so the tool can report it instead of claiming success.
+    const reconnectPromise = this.reconnect(name);
+    const completion = reconnectPromise.then(() => null as string | null);
+
+    let abortListener: (() => void) | undefined;
+    const abortPromise = signal
+      ? new Promise<never>((_resolve, reject) => {
+          abortListener = () => reject(new Error(`OAuth flow for "${name}" was aborted`));
+          signal.addEventListener('abort', abortListener, { once: true });
+        })
+      : undefined;
+
+    try {
+      const raced = await Promise.race<string | null>([
+        urlPromise,
+        completion,
+        ...(abortPromise ? [abortPromise] : []),
+      ]);
+      return { authUrl: raced ?? undefined };
+    } finally {
+      if (urlListener) this.off('oauth-authorization-url', urlListener);
+      if (abortListener) signal?.removeEventListener('abort', abortListener);
+      // Never leak an unhandled rejection from the detached reconnect once the
+      // race has already been decided (URL surfaced or aborted).
+      reconnectPromise.catch(() => {});
+    }
+  }
+
   isPending(name: string): boolean {
     const pending = this.pendingServers.get(name);
     if (!pending || this.clients.has(name)) return false;
