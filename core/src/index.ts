@@ -1,5 +1,5 @@
-export { SessionManager, MAX_SESSION_READ_BYTES, isSessionPersistenceDisabled, detectTurnInterruption } from './session';
-export type { Session, SessionListEntry, TurnInterruption } from './session';
+export { SessionManager, MAX_SESSION_READ_BYTES, isSessionPersistenceDisabled, detectTurnInterruption, buildConversationChain, selectNewestLeaf, getSessionMessages, appendResumeSentinel, NO_RESPONSE_REQUESTED, getSessionDisplayTitle, getSessionLockInfo, getAllLockInfo } from './session';
+export type { Session, SessionListEntry, TurnInterruption, GetSessionMessagesOptions, LockInfo } from './session';
 export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall, describeProviders } from './provider';
 export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';

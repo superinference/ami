@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync as childExecSync } from 'child_process';
-import type { Message, ProviderConfig, SessionId } from './types';
+import type { Message, ProviderConfig, SessionId, UserMessage, AssistantMessage } from './types';
 import { asSessionId } from './types';
 import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot } from './reference-journal';
 import { assertPathWithin } from './path-safety';
@@ -284,6 +284,11 @@ export interface Session {
    *  sub-engine's conversation and is excluded from the resume picker by default
    *  (parity: Claude filters `isSidechain` logs out of the resumable list). */
   isSidechain?: boolean;
+  /** The session this one was forked/regenerated from — e.g. the pre-`/clear`
+   *  session recorded as the fresh session's parent for lineage tracking (parity:
+   *  Claude's `regenerateSessionId({ setCurrentAsParent })` + `STATE.parentSessionId`).
+   *  Lets analytics/resume walk the chain of related sessions a user cleared through. */
+  parentSessionId?: SessionId;
   /** Per-session settings saved on disk so /resume can restore them. */
   settings?: {
     skill?: string;
@@ -304,6 +309,38 @@ export function resolveSessionTitle(session: {
   aiTitle?: string;
 }): string | undefined {
   return session.customTitle ?? session.aiTitle;
+}
+
+/**
+ * Deterministic display title for the /resume + /sessions picker with the full
+ * fallback chain, so a session ALWAYS renders a sensible label even when it has
+ * no title and no meaningful prompt. Order:
+ *   1. {@link resolveSessionSummary} — customTitle > aiTitle > lastPrompt > firstPrompt
+ *      (display tags stripped so a command-only turn can't leak raw XML);
+ *   2. an explicit `defaultTitle` the caller supplies;
+ *   3. `'Autonomous session'` when the session was launched detached (`entrypoint`
+ *      `'detached'`) and nothing above resolved — an autonomous run with no real
+ *      user prompt still gets a human label instead of a bare id;
+ *   4. the first 8 chars of the session id (lite entries with no metadata).
+ * Returns `''` only for a session with no summary, no defaultTitle, not detached,
+ * and no id. Consolidates with {@link resolveSessionSummary} (no duplicated
+ * precedence logic). Parity: Claude's getLogDisplayTitle (defaultTitle param,
+ * autonomous-session special-case, sessionId.slice(0,8) fallback).
+ */
+export function getSessionDisplayTitle(
+  session: { id?: SessionId | string; customTitle?: string; aiTitle?: string; entrypoint?: string },
+  prompts: { lastPrompt?: string; firstPrompt?: string } = {},
+  defaultTitle?: string,
+): string {
+  const summary = resolveSessionSummary(session, prompts);
+  if (summary) {
+    const cleaned = stripDisplayTags(summary).trim();
+    return cleaned || summary;
+  }
+  if (typeof defaultTitle === 'string' && defaultTitle.trim()) return defaultTitle.trim();
+  if (session.entrypoint === 'detached') return 'Autonomous session';
+  const id = session.id ? String(session.id) : '';
+  return id.slice(0, 8);
 }
 
 export interface SessionListEntry {
@@ -342,6 +379,9 @@ export interface SessionListEntry {
   /** True when this entry is a subagent sidechain transcript (only present when
    *  {@link SessionManager.list} is called with `includeSidechain`). */
   isSidechain?: boolean;
+  /** The session this one was forked/regenerated from, when recorded — lets a
+   *  picker/analytics show the lineage of a cleared-through chain of sessions. */
+  parentSessionId?: SessionId;
 }
 
 export function safeCharSlice(s: string, start: number, end?: number): string {
@@ -713,6 +753,7 @@ export class SessionManager {
         entrypoint: session.entrypoint,
         permissionMode: session.settings?.permissionMode,
         isSidechain: session.isSidechain,
+        parentSessionId: session.parentSessionId,
       });
     }
 
@@ -949,6 +990,24 @@ export class SessionManager {
   }
 
   /**
+   * Mint a fresh session id for a conversation reset (e.g. `/clear`), optionally
+   * recording the outgoing session as the new one's parent for lineage tracking.
+   * With `setCurrentAsParent` + `currentId`, the returned descriptor carries
+   * `parentSessionId` so the caller can stamp it onto the new {@link Session} and
+   * the cleared-through chain stays walkable. Parity: Claude's
+   * `regenerateSessionId({ setCurrentAsParent })` which sets `STATE.parentSessionId`.
+   */
+  static regenerateSessionId(
+    opts: { setCurrentAsParent?: boolean; currentId?: SessionId } = {},
+  ): { id: SessionId; parentSessionId?: SessionId } {
+    const id = SessionManager.newId();
+    if (opts.setCurrentAsParent && opts.currentId) {
+      return { id, parentSessionId: opts.currentId };
+    }
+    return { id };
+  }
+
+  /**
    * Return the session directory path (useful for testing).
    */
   getSessionDir(): string {
@@ -1060,6 +1119,134 @@ export function detectTurnInterruption(messages: Message[]): TurnInterruption {
     }
   }
   return { interrupted: pendingToolCallIds.length > 0, pendingToolCallIds };
+}
+
+// ---------------------------------------------------------------------------
+// Transcript DAG reconstruction (parentUuid threading)
+// ---------------------------------------------------------------------------
+
+/**
+ * The single-glyph assistant sentinel appended after a trailing user turn on
+ * resume, so a transcript that ends on an unanswered user prompt is still a
+ * valid request/response conversation if --resume takes no action. Parity:
+ * Claude's `NO_RESPONSE_REQUESTED` (createAssistantMessage sentinel in
+ * conversationRecovery.deserializeMessages).
+ */
+export const NO_RESPONSE_REQUESTED = '[No response requested]';
+
+/**
+ * Select the newest resumable LEAF of a transcript's parentUuid DAG: the latest
+ * (last-in-order) non-sidechain message that is not referenced as any message's
+ * `parentUuid` (i.e. has no child). A sidechain leaf is skipped so resume follows
+ * the MAIN conversation, not a subagent branch (parity: Claude's newest
+ * non-sidechain leaf selection in the --resume chain walk). Returns `undefined`
+ * for an empty list or one with only sidechain messages.
+ */
+export function selectNewestLeaf(messages: Message[]): Message | undefined {
+  const parents = new Set<string>();
+  for (const m of messages) {
+    if (typeof m.parentUuid === 'string') parents.add(m.parentUuid);
+  }
+  let leaf: Message | undefined;
+  for (const m of messages) {
+    if (m.isSidechain) continue;
+    if (typeof m.uuid === 'string' && parents.has(m.uuid)) continue; // has a child
+    leaf = m; // keep the last candidate in order → newest
+  }
+  return leaf;
+}
+
+/**
+ * Reconstruct a linear conversation by walking the `parentUuid` chain from a leaf
+ * back to its root, then returning it in chronological order (root → leaf). The
+ * walk is cycle-safe: a `parentUuid` cycle (corrupt transcript) terminates the
+ * walk at the repeat and returns the partial chain instead of looping forever
+ * (parity: Claude's `buildConversationChain` cycle guard). When `leafUuid` is
+ * omitted the {@link selectNewestLeaf newest non-sidechain leaf} is used, so a
+ * loaded transcript resolves to its main-thread conversation. Branch/sidechain
+ * aware: only messages on the chosen leaf's ancestor chain are returned, so a
+ * forked/sidechain branch never bleeds into the reconstructed main thread.
+ * Returns `[]` when no leaf exists.
+ */
+export function buildConversationChain(messages: Message[], leafUuid?: string): Message[] {
+  const byUuid = new Map<string, Message>();
+  for (const m of messages) {
+    if (typeof m.uuid === 'string') byUuid.set(m.uuid, m);
+  }
+  const leaf = leafUuid !== undefined ? byUuid.get(leafUuid) : selectNewestLeaf(messages);
+  if (!leaf) return [];
+  const chain: Message[] = [];
+  const seen = new Set<string>();
+  let cur: Message | undefined = leaf;
+  while (cur) {
+    const id = cur.uuid;
+    if (typeof id === 'string') {
+      if (seen.has(id)) break; // cycle — return the partial chain
+      seen.add(id);
+    }
+    chain.push(cur);
+    cur = typeof cur.parentUuid === 'string' ? byUuid.get(cur.parentUuid) : undefined;
+  }
+  chain.reverse();
+  return chain;
+}
+
+/** Options for {@link getSessionMessages} (parity: Claude's
+ *  `GetSessionMessagesOptions` — `includeSystemMessages`, `limit`, `offset`). */
+export interface GetSessionMessagesOptions {
+  /** Include `system` messages in the result. Default `false` — only the
+   *  user/assistant/tool conversation is returned, matching the SDK default. */
+  includeSystemMessages?: boolean;
+  /** Max number of messages to return (after offset). */
+  limit?: number;
+  /** Number of messages to skip from the start (for pagination). */
+  offset?: number;
+}
+
+/**
+ * Read a session's conversation messages with SDK-style filtering/pagination:
+ * drops `system` messages unless `includeSystemMessages`, then applies
+ * `offset`/`limit`. Pure over an already-ordered message array (AMI persists the
+ * transcript in chronological order), so a caller can page a long session without
+ * materializing the whole thing downstream. Parity: Claude's `getSessionMessages`
+ * (includeSystemMessages / limit / offset).
+ */
+export function getSessionMessages(messages: Message[], opts: GetSessionMessagesOptions = {}): Message[] {
+  let out = opts.includeSystemMessages ? messages.slice() : messages.filter(m => m.role !== 'system');
+  const offset = opts.offset !== undefined && opts.offset > 0 ? opts.offset : 0;
+  if (offset > 0) out = out.slice(offset);
+  if (opts.limit !== undefined) out = out.slice(0, Math.max(0, opts.limit));
+  return out;
+}
+
+/**
+ * Append a synthetic assistant sentinel ({@link NO_RESPONSE_REQUESTED}) after a
+ * transcript that ends on an unanswered user prompt, so the restored conversation
+ * is a valid request/response sequence if --resume takes no further action. The
+ * LAST turn-relevant message is found by skipping trailing `system` messages; a
+ * sentinel is added only when it is a genuine user prompt — a `isMeta` control
+ * turn or a `[Previous conversation summary]` compaction turn is NOT a real
+ * prompt and is left as-is. Returns a NEW array (input untouched); a transcript
+ * already ending on an assistant/tool message is returned unchanged. Parity:
+ * Claude's deserializeMessages synthetic-sentinel insertion.
+ */
+export function appendResumeSentinel(messages: Message[]): Message[] {
+  const out = messages.slice();
+  let idx = -1;
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i].role === 'system') continue;
+    idx = i;
+    break;
+  }
+  if (idx === -1) return out;
+  const last = out[idx];
+  if (last.role !== 'user') return out;
+  const u = last as UserMessage;
+  if (u.isMeta) return out;
+  if (typeof u.content === 'string' && u.content.startsWith(COMPACTION_SUMMARY_PREFIX)) return out;
+  const sentinel: AssistantMessage = { role: 'assistant', content: NO_RESPONSE_REQUESTED };
+  out.splice(idx + 1, 0, sentinel);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,6 +1542,70 @@ export function isSessionLocked(
   const payload = readLockPayload(lockPath);
   if (!payload) return false;
   return lockHolderActive(payload, deps);
+}
+
+/** Introspection snapshot of one session lock, for diagnostics / a `/doctor`-style
+ *  surface. `active` reflects {@link lockHolderActive} (a dead/sentinel/reused/
+ *  cross-host-stale holder reads as inactive, i.e. reclaimable). Parity: Claude's
+ *  pidLock `LockInfo` + `getAllLockInfo` diagnostics. */
+export interface LockInfo {
+  /** Absolute path of the lock file. */
+  path: string;
+  pid: number;
+  startedAt: number;
+  execPath: string;
+  /** Milliseconds since the lock was acquired (by the deps clock). */
+  ageMs: number;
+  /** True when a live, verified holder currently owns the lock. */
+  active: boolean;
+  /** True when the lock is held by THIS process. */
+  self: boolean;
+}
+
+/**
+ * Diagnostics for the session lock in `sessionDir`: returns a {@link LockInfo}
+ * snapshot, or `null` when no lock file exists or it is corrupt/unparseable.
+ * Read-only — never acquires, reclaims, or deletes. Parity: Claude's per-lock
+ * diagnostics read.
+ */
+export function getSessionLockInfo(
+  sessionDir: string,
+  depsOverride?: Partial<SessionLockDeps>,
+): LockInfo | null {
+  const deps: SessionLockDeps = { ...DEFAULT_LOCK_DEPS, ...depsOverride };
+  const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
+  if (!fs.existsSync(lockPath)) return null;
+  const payload = readLockPayload(lockPath);
+  if (!payload) return null;
+  return {
+    path: lockPath,
+    pid: payload.pid,
+    startedAt: payload.startedAt,
+    execPath: payload.execPath,
+    ageMs: deps.now() - payload.startedAt,
+    active: lockHolderActive(payload, deps),
+    self: payload.pid === process.pid,
+  };
+}
+
+/**
+ * Bulk lock introspection across several session directories: returns a
+ * {@link LockInfo} for every dir that currently holds a (parseable) lock, skipping
+ * dirs with no/corrupt lock. Per-dir errors are isolated so one unreadable dir
+ * never aborts the sweep. Parity: Claude's `getAllLockInfo` bulk diagnostics.
+ */
+export function getAllLockInfo(
+  sessionDirs: string[],
+  depsOverride?: Partial<SessionLockDeps>,
+): LockInfo[] {
+  const out: LockInfo[] = [];
+  for (const dir of sessionDirs) {
+    try {
+      const info = getSessionLockInfo(dir, depsOverride);
+      if (info) out.push(info);
+    } catch { /* best effort — skip an unreadable dir */ }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
