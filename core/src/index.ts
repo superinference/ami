@@ -210,6 +210,8 @@ export type { SettingsTier, SettingsSource } from './settings-guard';
 export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS, isBypassPermissionsModeDisabled, isAllHooksDisabled, isManagedHooksOnly } from './settings-guard';
 export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged, formatDangerousSettingsList } from './settings-guard';
 export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
+export { getSettingsTierShortName, getSettingsTierDisplayName, getSettingsTierDisplayNameLowercase, getSettingsTierLabels, getManagedSettingsSources } from './settings-guard';
+export type { ManagedSettingsSource } from './settings-guard';
 export { reviewManagedSettings, managedApprovalPath, loadManagedApproval, saveManagedApproval, MANAGED_SETTINGS_DECISIONS } from './managed-settings-guard';
 export type { ManagedSettingsDecision, ManagedSettingsReview } from './managed-settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';

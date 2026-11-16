@@ -4,6 +4,65 @@ export const SETTINGS_TIERS = ['managed', 'global', 'project', 'local', 'env', '
 export type SettingsTier = (typeof SETTINGS_TIERS)[number];
 
 // ---------------------------------------------------------------------------
+// Human-readable setting-source display names (parity: Claude's
+// utils/settings/constants.ts getSourceDisplayName / getSettingSourceName /
+// getSettingSourceDisplayNameLowercase / …Capitalized). A raw tier token
+// ('managed', 'local', …) is fine for machine logic but unreadable in a UI, a
+// `/doctor` finding, or a blocked-override message. These mappers turn each tier
+// into prose ("Enterprise managed settings", "project local settings", …) so a
+// user reads WHERE a setting came from instead of an opaque token. There is ONE
+// canonical table; the three accessors are thin lenses over it.
+// ---------------------------------------------------------------------------
+
+/** Canonical prose for each {@link SettingsTier}, in three register variants. */
+const SETTINGS_TIER_DISPLAY: Record<
+  SettingsTier,
+  { short: string; lower: string; capitalized: string }
+> = {
+  managed: { short: 'Managed', lower: 'enterprise managed settings', capitalized: 'Enterprise managed settings' },
+  global: { short: 'User', lower: 'user settings', capitalized: 'User settings' },
+  project: { short: 'Project', lower: 'shared project settings', capitalized: 'Shared project settings' },
+  local: { short: 'Local', lower: 'project local settings', capitalized: 'Project local settings' },
+  env: { short: 'Env', lower: 'environment variables', capitalized: 'Environment variables' },
+  cli: { short: 'CLI', lower: 'command line arguments', capitalized: 'Command line arguments' },
+};
+
+/** Short capitalized label for a tier ('Managed'/'User'/'Project'/…) — compact UI. */
+export function getSettingsTierShortName(tier: SettingsTier): string {
+  return SETTINGS_TIER_DISPLAY[tier].short;
+}
+
+/** Full capitalized prose for a tier ('Enterprise managed settings', …) — UI labels. */
+export function getSettingsTierDisplayName(tier: SettingsTier): string {
+  return SETTINGS_TIER_DISPLAY[tier].capitalized;
+}
+
+/** Full lowercase prose for a tier ('enterprise managed settings', …) — inline use. */
+export function getSettingsTierDisplayNameLowercase(tier: SettingsTier): string {
+  return SETTINGS_TIER_DISPLAY[tier].lower;
+}
+
+/**
+ * Every tier paired with its prose labels, in merge-priority order
+ * (managed → global → project → local → env → cli). Surfaced in `/settings-guard`
+ * introspection and `ami --introspect` so a user/admin can see the labeled,
+ * priority-ordered source cascade rather than raw tokens.
+ */
+export function getSettingsTierLabels(): Array<{
+  tier: SettingsTier;
+  short: string;
+  lower: string;
+  capitalized: string;
+}> {
+  return SETTINGS_TIERS.map(tier => ({
+    tier,
+    short: getSettingsTierShortName(tier),
+    lower: getSettingsTierDisplayNameLowercase(tier),
+    capitalized: getSettingsTierDisplayName(tier),
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Dangerous-settings classifier (parity: Claude's ManagedSettingsSecurityDialog
 // utils.ts + managedEnvConstants.ts). Managed / remote / untrusted settings can
 // carry knobs that execute arbitrary shell (statusLine, auth helpers), inject
@@ -125,6 +184,27 @@ export function formatDangerousSettingsList(dangerous: DangerousSettings): strin
 export interface SettingsSource {
   tier: SettingsTier;
   path?: string;
+}
+
+/** A managed-settings origin: an on-disk location paired with a prose label. */
+export interface ManagedSettingsSource {
+  path: string;
+  label: string;
+}
+
+/**
+ * The managed-settings sources AMI reads, in priority order (highest-precedence
+ * first). Drop-ins under `<managedBase>/config.d/*.json` layer OVER the base file
+ * (last-wins in `loadManagedConfig`), so they outrank it. Paired with prose labels
+ * so `/settings-guard` / `ami --introspect` can show the labeled, ordered cascade
+ * instead of a single opaque "managed" tier. Parity: Claude's getMacOSPlistPaths()
+ * labeled, priority-ordered managed-source list (adapted to AMI's Linux layout).
+ */
+export function getManagedSettingsSources(basePath: string, dropInDir: string): ManagedSettingsSource[] {
+  return [
+    { path: dropInDir, label: 'managed settings drop-ins' },
+    { path: basePath, label: 'system-wide managed settings' },
+  ];
 }
 
 export const MANAGED_ONLY_KEYS = new Set([

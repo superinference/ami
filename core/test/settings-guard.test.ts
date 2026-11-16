@@ -14,6 +14,12 @@ import {
   isBypassPermissionsModeDisabled,
   isAllHooksDisabled,
   isManagedHooksOnly,
+  SETTINGS_TIERS,
+  getSettingsTierShortName,
+  getSettingsTierDisplayName,
+  getSettingsTierDisplayNameLowercase,
+  getSettingsTierLabels,
+  getManagedSettingsSources,
 } from '../src/settings-guard';
 import { isDangerousSettingsEnvVar } from '../src/env-protection';
 
@@ -398,5 +404,67 @@ describe('formatDangerousSettingsList', () => {
   });
   it('empty for a clean settings object', () => {
     assert.deepEqual(formatDangerousSettingsList(extractDangerousSettings({})), []);
+  });
+});
+
+describe('setting-source display names (parity: Claude settings/constants.ts mappers)', () => {
+  it('maps the managed tier to enterprise prose in all three registers', () => {
+    assert.equal(getSettingsTierShortName('managed'), 'Managed');
+    assert.equal(getSettingsTierDisplayName('managed'), 'Enterprise managed settings');
+    assert.equal(getSettingsTierDisplayNameLowercase('managed'), 'enterprise managed settings');
+  });
+
+  it('maps local/project/global/env/cli tiers to distinct human prose', () => {
+    assert.equal(getSettingsTierDisplayName('global'), 'User settings');
+    assert.equal(getSettingsTierDisplayName('project'), 'Shared project settings');
+    assert.equal(getSettingsTierDisplayName('local'), 'Project local settings');
+    assert.equal(getSettingsTierDisplayName('env'), 'Environment variables');
+    assert.equal(getSettingsTierDisplayName('cli'), 'Command line arguments');
+    assert.equal(getSettingsTierDisplayNameLowercase('cli'), 'command line arguments');
+    assert.equal(getSettingsTierShortName('cli'), 'CLI');
+  });
+
+  it('returns a prose label for every known tier (no token leaks through)', () => {
+    for (const tier of SETTINGS_TIERS) {
+      const cap = getSettingsTierDisplayName(tier);
+      const low = getSettingsTierDisplayNameLowercase(tier);
+      const short = getSettingsTierShortName(tier);
+      // capitalized differs from the raw token; lowercase is its lowercase sibling.
+      assert.notEqual(cap, tier);
+      assert.equal(low, low.toLowerCase());
+      assert.ok(short.length > 0);
+    }
+  });
+});
+
+describe('getSettingsTierLabels — priority-ordered labeled cascade', () => {
+  it('lists every tier once, in merge-priority order (managed first, cli last)', () => {
+    const labels = getSettingsTierLabels();
+    assert.deepEqual(labels.map(l => l.tier), [...SETTINGS_TIERS]);
+    assert.equal(labels[0].tier, 'managed');
+    assert.equal(labels[labels.length - 1].tier, 'cli');
+  });
+
+  it('pairs each tier with its short/lower/capitalized prose', () => {
+    const managed = getSettingsTierLabels().find(l => l.tier === 'managed')!;
+    assert.equal(managed.short, 'Managed');
+    assert.equal(managed.lower, 'enterprise managed settings');
+    assert.equal(managed.capitalized, 'Enterprise managed settings');
+  });
+});
+
+describe('getManagedSettingsSources — labeled, priority-ordered managed origins', () => {
+  it('lists drop-ins ahead of the base file (drop-ins outrank the base)', () => {
+    const sources = getManagedSettingsSources('/etc/superinference/config.json', '/etc/superinference/config.d');
+    assert.equal(sources.length, 2);
+    assert.equal(sources[0].path, '/etc/superinference/config.d');
+    assert.equal(sources[0].label, 'managed settings drop-ins');
+    assert.equal(sources[1].path, '/etc/superinference/config.json');
+    assert.equal(sources[1].label, 'system-wide managed settings');
+  });
+
+  it('echoes the caller-supplied paths verbatim (no hard-coded path)', () => {
+    const sources = getManagedSettingsSources('/custom/base.json', '/custom/d');
+    assert.deepEqual(sources.map(s => s.path), ['/custom/d', '/custom/base.json']);
   });
 });
