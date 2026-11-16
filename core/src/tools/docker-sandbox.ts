@@ -18,6 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { shellHooks } from '../utils/shell';
+import { BARE_GIT_REPO_FILES } from './bash-sandbox';
 
 // The project's own agent sandbox image, built from the core submodule's
 // Dockerfile (core/Dockerfile → `openshell-ami`) and published by
@@ -109,6 +110,26 @@ export const DOCKER_PROBE_TIMEOUT_MS = 5000;
  *  guarantees sandboxed commands write temp files into the writable jail and that
  *  an image `ENV TMPDIR=…` pointing elsewhere cannot repoint them out of it. */
 export const DOCKER_SANDBOX_TMPDIR = '/tmp';
+
+/**
+ * PARITY (seccomp syscall filtering / privilege-escalation isolation layer —
+ * Claude's bwrap seccomp profile): Docker `--security-opt` flags applied to EVERY
+ * sandbox container, as a defense-in-depth isolation layer on top of the mount /
+ * network jail.
+ *
+ * - `no-new-privileges=true` sets the kernel `PR_SET_NO_NEW_PRIVS` bit so a
+ *   sandboxed process can never gain privileges via a setuid/setgid binary — the
+ *   classic in-container escalation step.
+ *
+ * Crucially, these flags are ADDED, never a `seccomp=unconfined`: Docker's DEFAULT
+ * seccomp profile (which blocks the dangerous syscall surface) stays applied, so
+ * the container keeps syscall filtering. The Unix-domain-socket escape that
+ * Claude's seccomp profile targets is additionally closed here by the deny-all
+ * socket-mount design (no host socket is bind-mounted unless explicitly
+ * allowlisted — see {@link DockerSandboxConfig.allowUnixSockets}). Exported for
+ * the `/sandbox` introspection surface and tests.
+ */
+export const DOCKER_SECURITY_OPTS: readonly string[] = ['no-new-privileges=true'];
 
 let _dockerAvailable: boolean | null = null;
 let _dockerCause: DockerUnavailableCause | undefined;
@@ -355,6 +376,26 @@ export function defaultDenyWritePaths(projectDir: string): string[] {
 }
 
 /**
+ * PARITY (bare-repo .git-file poisoning defense — Claude's CVE-#29316 guard):
+ * absolute paths of the files git's `is_git_directory()` keys on — HEAD, objects,
+ * refs, hooks, config — that ALREADY EXIST directly at `cwd` (the project root,
+ * NOT under `.git/`). A directory containing these is treated by git as a (bare)
+ * repo, and a planted/pre-existing `config` with `core.fsmonitor` (or a `hooks`
+ * entry) runs an arbitrary command the next time an UNsandboxed host `git` runs
+ * there — a sandbox escape. Returning the existing markers lets
+ * {@link wrapWithDocker} bind each read-only so a sandboxed command cannot modify
+ * a planted marker. Non-existing markers are omitted (Docker would otherwise
+ * auto-create a 0-byte host stub that itself breaks git). The marker list is
+ * shared with the unshare backend ({@link BARE_GIT_REPO_FILES}) — no duplicate.
+ */
+export function bareGitRepoDenyPaths(cwd: string): string[] {
+  const base = path.resolve(cwd || '.');
+  return BARE_GIT_REPO_FILES
+    .map((f) => path.join(base, f))
+    .filter((p) => fs.existsSync(p));
+}
+
+/**
  * Recover a git worktree's MAIN-repo root from `cwd/.git`.
  *
  * A linked worktree has a `.git` FILE (not a directory) of the form
@@ -416,13 +457,25 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
     '-w', shSingleQuote(workdir),
   ];
 
+  // PARITY (seccomp / privilege-escalation isolation layer): apply the hardened
+  // --security-opt flags to EVERY container (no-new-privileges), on top of the
+  // kept-default seccomp syscall filter. See {@link DOCKER_SECURITY_OPTS}.
+  for (const opt of DOCKER_SECURITY_OPTS) parts.push('--security-opt', opt);
+
   // PARITY (write-deny carve-outs): bind-remount each privileged-autoload default
   // (settings/skills/commands/agents) PLUS any operator-configured denyWrite path
   // read-only ON TOP of the project RW mount. A nested, more-specific bind shadows
   // the broader project mount, so these stay unwritable inside an otherwise-writable
   // project — closing the config-rewrite / SKILL-plant sandbox-escape vectors.
+  // bareGitRepoDenyPaths(workdir) folds in any planted/pre-existing bare-repo
+  // marker (HEAD/objects/refs/hooks/config) at the container cwd so it is bound
+  // read-only too — closing the bare-repo `core.fsmonitor` poisoning escape.
   const denyWriteSeen = new Set<string>();
-  for (const p of [...defaultDenyWritePaths(project), ...(cfg.denyWritePaths ?? [])]) {
+  for (const p of [
+    ...defaultDenyWritePaths(project),
+    ...bareGitRepoDenyPaths(workdir),
+    ...(cfg.denyWritePaths ?? []),
+  ]) {
     const abs = path.resolve(p);
     if (denyWriteSeen.has(abs) || !fs.existsSync(abs)) continue;
     denyWriteSeen.add(abs);

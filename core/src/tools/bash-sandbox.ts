@@ -643,7 +643,7 @@ export function buildConfigWriteGuard(cwd: string, cfg: SandboxConfig): string {
  * objects/ + refs/ is treated as a (bare) repo, and a planted `config`/`hooks`
  * can run code when an UNsandboxed git later runs there.
  */
-const BARE_GIT_REPO_FILES = ['HEAD', 'objects', 'refs', 'hooks', 'config'];
+export const BARE_GIT_REPO_FILES = ['HEAD', 'objects', 'refs', 'hooks', 'config'] as const;
 
 /**
  * PARITY (bare-repo .git-file poisoning defense): ro-bind any existing bare-repo

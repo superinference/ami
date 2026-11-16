@@ -72,6 +72,7 @@ describe('wrapWithDocker — exact argv assembly', () => {
       '--tmpfs', '/tmp', '--tmpfs', '/root', '--tmpfs', '/home',
       '-v', `'${p}:${p}'`,
       '-w', `'${p}'`,
+      '--security-opt', 'no-new-privileges=true',
       '--memory', '512m',
       '--pids-limit', '128',
       '-e', `'TMPDIR=/tmp'`,
@@ -91,6 +92,7 @@ describe('wrapWithDocker — exact argv assembly', () => {
       '--tmpfs', '/tmp', '--tmpfs', '/root', '--tmpfs', '/home',
       '-v', `'${p}:${p}'`,
       '-w', `'${p}'`,
+      '--security-opt', 'no-new-privileges=true',
       '-e', `'TMPDIR=/tmp'`,
       `'alpine:3.20'`, '-c', `'ls -la'`,
     ].join(' ');
