@@ -2110,21 +2110,69 @@ export function getFirstWordPrefix(command: string): string | null {
 }
 
 /**
+ * Strip shell output/input redirection clauses (`> out.txt`, `>>log`, `2>&1`,
+ * `&> both`, `< in`, `<<<here`) from a command so a redirect *target filename*
+ * never leaks into a derived permission-rule prefix (turning `npm test > out.txt`
+ * into a bogus `Bash(out.txt)` rule). Quote-aware: a `>` inside single/double
+ * quotes is preserved. Mirrors Claude's `commandTransform` hook on
+ * `generateShellSuggestionsLabel` (shellPermissionHelpers: "Bash strips output
+ * redirections so filenames don't show as commands"). Best-effort for display /
+ * rule derivation only — it never participates in a security decision.
+ */
+export function stripOutputRedirections(command: string): string {
+  let out = '';
+  let i = 0;
+  let quote: string | null = null;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i]!;
+    if (quote) {
+      out += ch;
+      if (ch === quote && command[i - 1] !== '\\') quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; out += ch; i++; continue; }
+    // Optional leading file-descriptor digits (`2>`, `1>>`), then an operator.
+    let j = i;
+    while (j < n && command[j]! >= '0' && command[j]! <= '9') j++;
+    // `>&`/`<&` and `&>` must be tried before the plain `>>?`/`<<?<?` so
+    // `2>&1` is consumed as one operator (not `>` + leftover `&1`).
+    const op = /^(?:>&|<&|&>>?|>>?|<<?<?)/.exec(command.slice(j));
+    // Require a real redirection: either fd digits were consumed (`2>`), or the
+    // char itself is a redirection lead (`<`/`>`/`&>`). A lone `&`/`&&` (control
+    // operator) and digits that are just an argument are left untouched.
+    if (op && (j > i || ch === '<' || ch === '>' || (ch === '&' && op[0].startsWith('&')))) {
+      i = j + op[0].length;
+      while (i < n && /\s/.test(command[i]!)) i++;          // skip whitespace
+      while (i < n && !/[\s|;&<>()]/.test(command[i]!)) i++; // skip target token
+      if (out && !out.endsWith(' ')) out += ' ';
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Derive a narrow, scoped "allow always" prefix for a bash command, or null if
  * none is safe to suggest (the caller then falls back to the exact command).
  * Prefers the two-word `command subcommand` form; falls back to the first word
  * ONLY when that root is neither subcommand-aware nor a shell/interpreter/
  * wrapper. This is the single canonical prefix-derivation helper — it replaces
  * ad-hoc "first N words" heuristics and enforces the bare-root + NEVER_SUGGEST
- * guards in one place.
+ * guards in one place. Output redirections are stripped first so a redirect
+ * target filename never becomes the suggested rule prefix.
  */
 export function suggestAllowPrefix(command: string): string | null {
-  const two = getSimpleCommandPrefix(command);
+  const cleaned = stripOutputRedirections(command);
+  const two = getSimpleCommandPrefix(cleaned);
   // Guard the two-word path too: `start-process notepad*` would match
   // `start-process notepad.exe & evil`, so a dangerous PowerShell spawner as
   // the ROOT word is never offered even with a scoped subcommand.
   if (two) return isPowerShellNeverSuggest(two.split(' ')[0]!) ? null : two;
-  const one = getFirstWordPrefix(command);
+  const one = getFirstWordPrefix(cleaned);
   if (one && !SUBCOMMAND_AWARE_ROOTS.has(one)) return one;
   return null;
 }
@@ -2319,6 +2367,46 @@ export type PermissionUpdate =
   | { type: 'setMode'; mode: PermissionMode; destination?: PermissionUpdateDestination }
   | { type: 'addDirectories'; directories: string[]; destination?: PermissionUpdateDestination }
   | { type: 'removeDirectories'; directories: string[]; destination?: PermissionUpdateDestination };
+
+/**
+ * Compute the pre-baked {@link PermissionUpdate} *suggestions* to attach to an
+ * ask/deny permission decision — the "always allow X" candidates a prompt can
+ * offer for one-click acceptance (Claude's `permissionResult.suggestions`, parsed
+ * by `extractRules`/`extractDirectories`). For a bash call it derives a scoped
+ * allow rule per (mutating) subcommand via {@link getCompoundCommandPrefixes}
+ * (sharing the single canonical prefix helper — no duplicate heuristic); for a
+ * read-shaped file tool it suggests widening the read boundary to the file's
+ * directory; for a mutating file tool it suggests an allow rule for that path.
+ * Returns `[]` when nothing safe can be suggested (the caller then offers only
+ * the plain one-off allow). All suggestions default to the ephemeral `session`
+ * destination — persistence is a separate, explicit choice.
+ */
+export function buildPermissionSuggestions(
+  toolName: string,
+  input: Record<string, unknown>,
+): PermissionUpdate[] {
+  const canonical = normalizeToolName(toolName);
+  if (canonical === 'bash') {
+    const command = typeof input.command === 'string' ? input.command : undefined;
+    if (!command) return [];
+    const rules: PermissionRuleValue[] = getCompoundCommandPrefixes(command)
+      .map(prefix => ({ toolName: 'bash', ruleContent: `${prefix}*` }));
+    return rules.length > 0
+      ? [{ type: 'addRules', behavior: 'allow', destination: 'session', rules }]
+      : [];
+  }
+  const filePath = (input.file_path ?? input.path) as unknown;
+  if (typeof filePath === 'string' && filePath.length > 0) {
+    if (canonical === 'file_read' || canonical === 'glob' || canonical === 'grep' || canonical === 'list_dir') {
+      return [{ type: 'addDirectories', destination: 'session', directories: [path.dirname(filePath)] }];
+    }
+    return [{
+      type: 'addRules', behavior: 'allow', destination: 'session',
+      rules: [{ toolName: canonical, ruleContent: filePath }],
+    }];
+  }
+  return [];
+}
 
 /**
  * Build the model-facing "grant-and-retry" message for a set of just-approved,
@@ -2914,11 +3002,35 @@ export class PermissionManager {
   async checkWithReason(
     toolName: string,
     input: Record<string, unknown>,
-  ): Promise<{ decision: 'allow' | 'deny' | 'ask'; reason?: PermissionDecisionReason; message?: string }> {
+  ): Promise<{
+    decision: 'allow' | 'deny' | 'ask';
+    reason?: PermissionDecisionReason;
+    message?: string;
+    /**
+     * Pre-baked "always allow X" rule candidates ({@link buildPermissionSuggestions})
+     * a prompt can offer for one-click acceptance (Claude's
+     * `permissionResult.suggestions`). Omitted when nothing safe can be suggested.
+     */
+    suggestions?: PermissionUpdate[];
+    /**
+     * A hard, turn-aborting denial: when set the whole agentic turn should be
+     * interrupted, not just the single tool call blocked. Set for `hardline`
+     * (blocked-command) denials. Mirrors Claude's deny-branch `interrupt` flag
+     * (PermissionResultSchema). Omitted otherwise.
+     */
+    interrupt?: boolean;
+  }> {
     const decision = await this.check(toolName, input);
     if (decision === 'allow') return { decision };
     const reason = this.deriveDecisionReason(toolName, input, decision);
-    return { decision, reason, message: createPermissionRequestMessage(reason) };
+    const suggestions = buildPermissionSuggestions(toolName, input);
+    return {
+      decision,
+      reason,
+      message: createPermissionRequestMessage(reason),
+      ...(suggestions.length > 0 ? { suggestions } : {}),
+      ...(decision === 'deny' && reason.type === 'hardline' ? { interrupt: true } : {}),
+    };
   }
 
   /** Best-effort attribution of a deny/ask verdict to a structured reason. */
