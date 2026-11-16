@@ -1793,6 +1793,25 @@ export function buildRepairToolCall(tools: ToolDefinition[]): ToolCallRepairFunc
   };
 }
 
+/**
+ * Sentinel error text for an empty / degenerate response stream — the stream
+ * ended without producing ANY content, tool call, or finish-step. Mirrors Claude
+ * Code's "Stream ended without receiving any events" (claude.ts), which treats
+ * two proxy failure modes as a retryable failure rather than a silent empty turn:
+ * (1) no events at all — a proxy returned HTTP 200 with a non-SSE body; and
+ * (2) a message_start was received but zero content blocks completed AND no
+ * stop_reason arrived — a truncated SSE body. A legitimate structured-output
+ * "end_turn with no content blocks" response carries a stop_reason, so it ends on
+ * a finish-step above and never reaches this sentinel (no false positive).
+ */
+export const EMPTY_STREAM_ERROR =
+  'Empty response stream: completed with no content, tool call, or finish reason';
+
+/** True when an error chunk carries the empty/degenerate-stream sentinel. */
+export function isEmptyStreamError(errorText: string | undefined): boolean {
+  return errorText === EMPTY_STREAM_ERROR;
+}
+
 export async function* streamChatCompletion(
   config: ProviderConfig,
   messages: Message[],
@@ -1932,11 +1951,16 @@ export async function* streamChatCompletion(
 
     // Track tool call indices so engine.ts can accumulate them by index
     let toolCallIndex = 0;
+    // Whether the stream produced ANY assistant output (content / tool-call /
+    // reasoning). Drives empty-stream detection after the loop: a stream that
+    // ends with neither output nor a finish-step/error is degenerate.
+    let producedOutput = false;
 
     const stream = result.stream;
     for await (const part of stream) {
       switch (part.type) {
         case 'text-delta':
+          producedOutput = true;
           yield { type: 'content_delta', text: part.text };
           break;
 
@@ -1944,6 +1968,7 @@ export async function* streamChatCompletion(
           // The AI SDK delivers a complete tool-call (not deltas).
           // We emit a single tool_call_delta with the full payload so
           // engine.ts's accumulator can build the final ToolCallContent.
+          producedOutput = true;
           yield {
             type: 'tool_call_delta',
             toolCall: {
@@ -2000,6 +2025,7 @@ export async function* streamChatCompletion(
         }
 
         case 'reasoning-delta':
+          producedOutput = true;
           yield { type: 'thinking_delta', text: (part as { text?: string }).text ?? '' };
           break;
 
@@ -2009,7 +2035,19 @@ export async function* streamChatCompletion(
       }
     }
 
-    // If we reach here without a finish-step (shouldn't happen), emit done
+    // The stream ended without a finish-step or terminal error. If it produced
+    // NO assistant output at all — and it was NOT aborted (an abort/idle-timeout
+    // ends silently too, but must stay the retry wrapper's timeout path via a
+    // bare `done`) — it is a degenerate/empty stream (proxy 200 with a non-SSE
+    // body, or a truncated SSE body with no completed content blocks and no
+    // stop_reason): surface a retryable sentinel error so
+    // streamChatCompletionWithRetry retries instead of yielding a silent, empty
+    // `done` turn. If some output was produced but the finish-step was lost, keep
+    // the prior behavior and emit `done` (content is already committed upstream).
+    if (!producedOutput && !abortSignal.aborted) {
+      yield { type: 'error', error: EMPTY_STREAM_ERROR };
+      return;
+    }
     yield { type: 'done' };
   } catch (err: unknown) {
     if (abortSignal.aborted) {
@@ -2265,9 +2303,13 @@ export async function* streamChatCompletionWithRetry(
         // A streamed overload may lose its 529 status; detect it from the body so it
         // is still retried (unless the API explicitly says x-should-retry: false).
         const bodyOverloaded = statusCode === null && isOverloadedError(chunk.error ?? '');
+        // An empty/degenerate stream (streamChatCompletion's EMPTY_STREAM_ERROR
+        // sentinel) is a transient proxy failure — retry it with backoff, matching
+        // Claude's non-streaming-fallback-on-empty-stream behavior.
+        const emptyStream = statusCode === null && isEmptyStreamError(chunk.error);
         const retryAllowed = shouldRetryHdr === 'false'
           ? false
-          : (shouldRetryHdr === 'true' || bodyOverloaded || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
+          : (shouldRetryHdr === 'true' || bodyOverloaded || emptyStream || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
         if (retryAllowed && attempt < maxRetries) {
           if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
             yield chunk;
