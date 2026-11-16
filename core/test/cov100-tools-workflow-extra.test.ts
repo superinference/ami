@@ -35,7 +35,8 @@ function makeProcessManager() {
     },
     registerAgent(taskId: string, opts: any) {
       calls.registered.push({ taskId, opts });
-      // Exercise the registered abort callback (the ()=>{} abortFn).
+      // Exercise the registered abort callback (now wired to the per-agent
+      // AbortController — invoking it aborts that agent's sub-engine).
       if (typeof opts.abortFn === 'function') {
         opts.abortFn();
         calls.abortInvoked++;
@@ -90,15 +91,16 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
     assert.equal(calls.agentsAddedTo.length, 1);
     assert.equal(calls.agentsAddedTo[0].flowId, calls.flows[0]);
 
-    // The agent was registered with a hex taskId and the label-derived command.
+    // The agent was registered with a self-describing, high-entropy taskId
+    // (label prefix + randomBytes(8) = 16 hex chars) and the label-derived command.
     assert.equal(calls.registered.length, 1);
     const reg = calls.registered[0];
-    assert.match(reg.taskId, /^agent-[0-9a-f]{8}$/);
+    assert.match(reg.taskId, /^agent-MyStep-[0-9a-f]{16}$/);
     assert.match(reg.opts.command, /\[agent\] MyStep/);
     assert.match(reg.opts.description, /Workflow agent: MyStep/);
     assert.equal(calls.agentsAddedTo[0].taskId, reg.taskId);
 
-    // The registered abortFn is a real (no-op) function and is invokable.
+    // The registered abortFn is a real function wired to the per-agent controller.
     assert.equal(calls.abortInvoked, 1);
 
     // The prompt sent to the sub-engine is the return-and-stop framed prompt.

@@ -1,11 +1,10 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { projectStateDir } from '../reference-journal';
 import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache } from './workflow-runtime';
-import { SUBAGENT_RETURN_DIRECTIVE } from './task';
+import { SUBAGENT_RETURN_DIRECTIVE, generateTaskId } from './task';
 import { normalizePermissionMode } from '../permissions';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 
 /**
  * Write a workflow sub-agent's captured output WITHOUT following a symlink at
@@ -38,6 +37,15 @@ export function writeTaskOutputNoFollow(filePath: string, data: string): void {
  * (Parity hardening — Claude Code's Workflow tool guards script size.)
  */
 export const MAX_WORKFLOW_SCRIPT_BYTES = 512 * 1024;
+
+/**
+ * Minimum gap between on-disk flushes of a running agent's partial output. The
+ * first chunk is flushed immediately; subsequent flushes are throttled to this
+ * interval so a chatty agent does not thrash the filesystem while still letting
+ * `task_output` tail live progress (parity: the reference streams incremental
+ * agent output rather than revealing it only on completion).
+ */
+export const PROGRESS_FLUSH_INTERVAL_MS = 500;
 
 /** Reduce an opaque caller-supplied id to a single safe path segment so a
  *  runId / resumeKey can never escape the `.ami/workflows/` tree. Mirrors the
@@ -252,20 +260,45 @@ export const workflowTool: ToolDefinition = {
     const fm = pm?.flowManager;
     const workflowFlowId = fm ? fm.createFlow(meta.name) : undefined;
 
+    // Aggregate usage across every agent this workflow spawns, plus the run's
+    // wall-clock duration — reported on the completion output (parity: the
+    // reference agent result surfaces tool uses, tokens, and duration).
+    let totalAgentTokens = 0;
+    let totalToolUses = 0;
+    const workflowStartedAt = Date.now();
+
     const agentHandler = async (prompt: string, opts?: any): Promise<string> => {
       if (!context._engineFactory) return `[Agent not available: no engine factory]`;
+      // Per-agent cancellation (parity: AgentTool per-agent abort). Each agent
+      // gets its OWN AbortController wired to the process-manager entry's abortFn,
+      // so cancelling a single workflow agent (task_kill / UI) actually tears down
+      // its sub-engine instead of leaving it running. The workflow-level
+      // abortSignal is forwarded into it so an outer cancel still stops every
+      // in-flight agent; the listener is removed once the agent settles.
+      const ac = new AbortController();
+      const forwardAbort = (): void => ac.abort();
+      if (context.abortSignal.aborted) ac.abort();
+      else context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
+
+      const label = String(opts?.label || prompt).slice(0, 80);
       let taskId: string | undefined;
       let outputPath: string | undefined;
+      let result = '';
       if (pm) {
-        taskId = `agent-${crypto.randomBytes(4).toString('hex')}`;
-        const label = String(opts?.label || prompt).slice(0, 80);
+        // Self-describing, high-entropy agent id (parity: createAgentId's optional
+        // label + 8-byte entropy). generateTaskId renders randomBytes(8) = 2^64
+        // combinations (closing the brute-force symlink race the old randomBytes(4)
+        // left open); the sanitized label is embedded as a prefix so a running
+        // agent reads as `agent-<label>-<hex>` in task lists and on disk.
+        const slug = sanitizeWorkflowRunId(label).slice(0, 24).replace(/^_+|_+$/g, '');
+        taskId = generateTaskId(slug ? `agent-${slug}` : 'agent');
         outputPath = path.join(projectStateDir(context.cwd, 'tasks'), `${taskId}.out`);
         try { fs.mkdirSync(path.dirname(outputPath), { recursive: true }); } catch { /* ok */ }
         pm.registerAgent(taskId, {
           command: `[agent] ${label}`,
           description: `Workflow agent: ${label}`,
           outputPath,
-          abortFn: () => {},
+          abortFn: forwardAbort,
         });
         if (fm && workflowFlowId) fm.addAgent(workflowFlowId, taskId);
       }
@@ -285,25 +318,48 @@ export const workflowTool: ToolDefinition = {
         cwd: context.cwd,
         permissionMode,
         tools: opts?.tools,
+        abortController: ac,
       });
       // Same return-and-stop framing as task sub-agents: a workflow agent should
       // complete its step and return, not run the full never-stop coding loop.
       const framedPrompt = `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
+      // Live progress: flush accumulated text to the on-disk output file as it
+      // streams (first chunk immediately, then throttled) so `task_output` can
+      // tail a running workflow agent rather than seeing nothing until it ends.
+      let lastFlushAt = 0;
+      const flushProgress = (): void => {
+        if (!pm || !taskId || !outputPath) return;
+        const now = Date.now();
+        if (lastFlushAt !== 0 && now - lastFlushAt < PROGRESS_FLUSH_INTERVAL_MS) return;
+        lastFlushAt = now;
+        try { writeTaskOutputNoFollow(outputPath, result || '(no output)'); } catch { /* dir gone / symlink */ }
+      };
       const finish = (status: 'completed' | 'failed', text: string): void => {
         if (!pm || !taskId) return;
         try { if (outputPath) writeTaskOutputNoFollow(outputPath, text || '(no output)'); } catch { /* dir gone or symlink planted at the path */ }
         pm.updateEntry(taskId, { status, exitCode: status === 'failed' ? 1 : 0 });
       };
-      let result = '';
+      let agentTokens = 0;
       try {
         for await (const event of subEngine.submit(framedPrompt)) {
-          if (event.type === 'text_delta') result += event.text;
+          if (event.type === 'text_delta') { result += event.text; flushProgress(); }
+          else if (event.type === 'tool_use_start') { totalToolUses++; }
+          else if (event.type === 'usage_update') {
+            // usage_update carries the agent's cumulative token total; keep the
+            // latest and mirror it onto the process entry as a live token count.
+            agentTokens = event.stats?.totalTokens ?? agentTokens;
+            if (pm && taskId) pm.updateEntry(taskId, { tokenCount: agentTokens });
+          }
         }
       } catch (err) {
+        context.abortSignal.removeEventListener('abort', forwardAbort);
+        totalAgentTokens += agentTokens;
         finish('failed', result);
         (subEngine as any).shutdown?.();
         throw err;
       }
+      context.abortSignal.removeEventListener('abort', forwardAbort);
+      totalAgentTokens += agentTokens;
       (subEngine as any).shutdown?.();
       finish('completed', result);
       return result || '[Agent produced no output]';
@@ -345,9 +401,11 @@ export const workflowTool: ToolDefinition = {
         cache,
       });
 
+      const durationS = ((Date.now() - workflowStartedAt) / 1000).toFixed(1);
       const output = [
         `Workflow '${meta.name}' completed.`,
         `Agents spawned: ${result.agentCount}`,
+        `Tokens: ${totalAgentTokens} · Tool uses: ${totalToolUses} · Duration: ${durationS}s`,
         effectiveRunId ? `Run id: ${effectiveRunId}` : '',
         result.logs.length > 0 ? `\nLogs:\n${result.logs.map(l => `  - ${l}`).join('\n')}` : '',
         result.result !== null ? `\nResult: ${JSON.stringify(result.result, null, 2)}` : '',
