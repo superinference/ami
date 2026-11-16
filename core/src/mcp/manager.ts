@@ -8,6 +8,7 @@ import { getMcpToolTimeout, normalizeMcpNameSegment } from '../tools/mcp-tool';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
@@ -531,6 +532,15 @@ export class McpManager extends EventEmitter {
   private _serverScopes = new Map<string, McpServerScope>();
   /** Absolute config-file path a server was loaded from (undefined for dynamic). */
   private _serverSources = new Map<string, string>();
+  /**
+   * Content hash of the RAW config entry each config-loaded server was last
+   * registered from (Claude-parity config-hash change detection,
+   * useManageMCPConnections excludeStalePluginClients). {@link reloadFromConfig}
+   * diffs a re-read file against these hashes so an UNCHANGED server is left
+   * running untouched while a server whose entry CHANGED is torn down and
+   * re-registered with the fresh config. Keyed by server name; absent for a
+   * programmatically-added (dynamic) server. */
+  private _serverConfigHashes = new Map<string, string>();
   /** Per-server non-fatal config diagnostics (e.g. unset referenced env vars) — H35. */
   private _configWarnings = new Map<string, string[]>();
   /**
@@ -1462,6 +1472,7 @@ export class McpManager extends EventEmitter {
     this.configs.delete(name);
     this._serverScopes.delete(name);
     this._serverSources.delete(name);
+    this._serverConfigHashes.delete(name);
     this.invalidateToolCache(name);
   }
 
@@ -1636,6 +1647,16 @@ export class McpManager extends EventEmitter {
    * error (or a failure of the retry itself) propagates to the per-server catch.
    */
   private async listResourcesWithReconnect(name: string, client: McpClient): Promise<McpResource[]> {
+    // Claude-parity `ensureConnectedClient(client)` before the fetch: a server that
+    // was dropped by `onclose` (its client is no longer `ready`) is transparently
+    // re-opened FIRST so its resources still appear in THIS same list call, instead
+    // of being skipped until a later async health tick. A no-op when already ready;
+    // a reconnect failure propagates to the per-server catch in {@link listResources}.
+    if (client.state !== 'ready') {
+      coreLog('mcp', `listResources: "${name}" not ready (${client.state}); reconnecting before fetch`);
+      await client.reconnect();
+      await this.refreshToolsForServer(name);
+    }
     try {
       return await client.listResources();
     } catch (err) {
@@ -1985,6 +2006,7 @@ export class McpManager extends EventEmitter {
     this.serverErrors.clear();
     this._serverScopes.clear();
     this._serverSources.clear();
+    this._serverConfigHashes.clear();
     this._lastUsedAt.clear();
     this._deniedServers = [];
   }
@@ -2000,11 +2022,34 @@ export class McpManager extends EventEmitter {
    * For user/global-tier configs (the default), every server is added as before.
    */
   loadFromConfig(configPath: string, opts?: { projectScoped?: boolean; scope?: McpServerScope }): void {
+    const servers = this._readServerMap(configPath);
+    if (!servers) return;
+    // The scope a server from this file belongs to: an explicit scope wins; else
+    // a projectScoped (under-cwd) file is `project`, and any other file is `user`.
+    const scope: McpServerScope = opts?.scope ?? (opts?.projectScoped ? 'project' : 'user');
+    this.loadServerEntries(servers, {
+      projectScoped: opts?.projectScoped,
+      scope,
+      sourcePath: configPath,
+    });
+  }
+
+  /**
+   * Read + parse an MCP config file into its `{ name: entry }` server map, with the
+   * same diagnostics as {@link loadFromConfig}: a MISSING file returns `null`
+   * silently (expected); an UNREADABLE file (EACCES/EISDIR) and a MALFORMED file
+   * (invalid JSON) each record a distinct fatal {@link McpConfigError} + emit
+   * `config-error` and return `null`; a clean parse clears any stale error for the
+   * path and returns the server map (or `null` when the top level is not an object).
+   * Shared by {@link loadFromConfig} and {@link reloadFromConfig} so the two never
+   * drift in how they read, strip comments, or report a broken config.
+   */
+  private _readServerMap(configPath: string): Record<string, unknown> | null {
     // A missing config file is expected (silent); only a file that EXISTS but is
     // malformed is a diagnosable error (surfaced below).
     if (!fs.existsSync(configPath)) {
       this._configErrors.delete(configPath);
-      return;
+      return null;
     }
     // Read the file first, in its own guard: an UNREADABLE file (a permission
     // problem, or a directory where a file was expected) is a distinct, actionable
@@ -2024,23 +2069,16 @@ export class McpManager extends EventEmitter {
       this._configErrors.set(configPath, diag);
       coreLog('mcp', message);
       this.emit('config-error', diag);
-      return;
+      return null;
     }
     try {
       const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
       const config = JSON.parse(stripped);
       // Parsed cleanly — clear any stale parse error for this path.
       this._configErrors.delete(configPath);
-      const servers = config.mcpServers ?? config;
-      if (typeof servers !== 'object') return;
-      // The scope a server from this file belongs to: an explicit scope wins; else
-      // a projectScoped (under-cwd) file is `project`, and any other file is `user`.
-      const scope: McpServerScope = opts?.scope ?? (opts?.projectScoped ? 'project' : 'user');
-      this.loadServerEntries(servers as Record<string, unknown>, {
-        projectScoped: opts?.projectScoped,
-        scope,
-        sourcePath: configPath,
-      });
+      const servers = config?.mcpServers ?? config;
+      if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return null;
+      return servers as Record<string, unknown>;
     } catch (err) {
       // The file exists but is malformed (invalid JSON). Surface it as a fatal
       // diagnostic + event instead of silently dropping every server it declared,
@@ -2056,7 +2094,82 @@ export class McpManager extends EventEmitter {
       this._configErrors.set(configPath, diag);
       coreLog('mcp', message);
       this.emit('config-error', diag);
+      return null;
     }
+  }
+
+  /**
+   * Hot-reload an MCP config file, diffing the freshly-read entries against the
+   * LIVE servers previously loaded from the SAME file (Claude-parity
+   * `excludeStalePluginClients` / config-hash reload, useManageMCPConnections):
+   *
+   *  - a server whose entry is byte-for-byte UNCHANGED (same content hash) is LEFT
+   *    running untouched — no needless disconnect / respawn / OAuth re-consent;
+   *  - a server whose entry CHANGED is torn down (its reconnect timer cancelled by
+   *    {@link removeServer}) and re-registered with the fresh config;
+   *  - a server now ABSENT from the file is removed, so an edited-out server does
+   *    not keep running as a ghost with stale tools;
+   *  - a newly-added entry is registered (connect/approval-gated exactly like a
+   *    first-time {@link loadFromConfig}).
+   *
+   * Only servers whose recorded source path equals `configPath` are considered for
+   * removal, so reloading one scope never disturbs servers from another file. A
+   * missing/unreadable/malformed file is handled exactly as in {@link loadFromConfig}
+   * (its diagnostics are recorded) and treated as "no servers" — i.e. every server
+   * that came from that path becomes stale and is removed. Returns the diff and
+   * emits `config-reloaded` so a `/mcp reload` view / introspection can report it.
+   */
+  reloadFromConfig(
+    configPath: string,
+    opts?: { projectScoped?: boolean; scope?: McpServerScope },
+  ): { added: string[]; changed: string[]; removed: string[]; unchanged: string[] } {
+    const scope: McpServerScope = opts?.scope ?? (opts?.projectScoped ? 'project' : 'user');
+    const servers = this._readServerMap(configPath) ?? {};
+    const newNames = new Set(Object.keys(servers));
+    // Snapshot the servers previously loaded from THIS file BEFORE any teardown
+    // (removeServer mutates _serverSources), so absent-now servers are detectable.
+    const previouslyFromThisFile = [...this._serverSources]
+      .filter(([, p]) => p === configPath)
+      .map(([n]) => n);
+
+    const added: string[] = [];
+    const changed: string[] = [];
+    const removed: string[] = [];
+    const unchanged: string[] = [];
+
+    const toLoad: Record<string, unknown> = {};
+    for (const [name, entry] of Object.entries(servers)) {
+      const hash = hashMcpServerEntry(entry);
+      const isLive = this.clients.has(name) || this.pendingServers.has(name);
+      if (isLive && this._serverConfigHashes.get(name) === hash) {
+        unchanged.push(name);
+        continue;
+      }
+      if (isLive) {
+        // Config changed under a live server: tear it down (cancels its reconnect
+        // timer + defuses the onclose auto-reconnect via _intentionalDisconnect)
+        // so the fresh entry re-registers cleanly instead of hitting the
+        // "already registered" guard.
+        this.removeServer(name);
+        changed.push(name);
+      } else {
+        added.push(name);
+      }
+      toLoad[name] = entry;
+    }
+    // Servers that were loaded from this file but are no longer declared in it are
+    // stale ghosts — remove them (changed servers are in `newNames`, so excluded).
+    for (const name of previouslyFromThisFile) {
+      if (!newNames.has(name)) {
+        this.removeServer(name);
+        removed.push(name);
+      }
+    }
+    if (Object.keys(toLoad).length > 0) {
+      this.loadServerEntries(toLoad, { projectScoped: opts?.projectScoped, scope, sourcePath: configPath });
+    }
+    this.emit('config-reloaded', configPath, { added, changed, removed, unchanged });
+    return { added, changed, removed, unchanged };
   }
 
   /**
@@ -2133,6 +2246,10 @@ export class McpManager extends EventEmitter {
           // Tag the server with its config-source scope + path BEFORE registering it
           // so the add paths see the recorded scope rather than defaulting to dynamic.
           this.recordServerScope(name, opts.scope, opts.sourcePath);
+          // Record the RAW entry's content hash for config-reload change detection
+          // (see {@link reloadFromConfig}) so a later reload can tell this server's
+          // entry apart from an edited one.
+          this._serverConfigHashes.set(name, hashMcpServerEntry(serverConfig));
           // M14 (U018) — gate project-tier servers by their resolved approval
           // status: `pending` awaits explicit approval; `approved` (an approval
           // entry OR the blanket enableAllProjectServers flag) connects normally.
@@ -2454,6 +2571,28 @@ export function expandEnvVarsTracked(value: string): { expanded: string; missing
 
 export function expandEnvVars(value: string): string {
   return expandEnvVarsTracked(value).expanded;
+}
+
+/**
+ * Deterministic content hash of a raw MCP server config entry, used by
+ * {@link McpManager.reloadFromConfig} to detect whether a server's config changed
+ * across a config-file reload (Claude-parity config-hash diff). Object keys are
+ * sorted recursively so two logically-equal configs that differ only in JSON key
+ * order hash identically (a reload of an unchanged-but-reformatted file does not
+ * needlessly tear a server down and respawn it).
+ */
+function hashMcpServerEntry(entry: unknown): string {
+  return createHash('sha256').update(stableStringifyForHash(entry)).digest('hex');
+}
+
+/** Stable JSON serialization with recursively sorted object keys (helper for
+ *  {@link hashMcpServerEntry}). */
+function stableStringifyForHash(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return '[' + value.map(stableStringifyForHash).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringifyForHash(obj[k])).join(',') + '}';
 }
 
 /**
