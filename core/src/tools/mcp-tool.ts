@@ -133,7 +133,7 @@ export function createMcpTool(
       if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
 
       if (mcpManager.isDisabled?.(serverName)) {
-        return { output: `MCP server '${serverName}' is disabled. Use /mcp start ${serverName} to re-enable it.`, isError: true };
+        return { output: `MCP server '${serverName}' is disabled. Re-enable it from the /mcp panel before connecting.`, isError: true };
       }
 
       if (mcpManager.isPending?.(serverName)) {

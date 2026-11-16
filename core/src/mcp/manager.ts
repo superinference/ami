@@ -1190,7 +1190,7 @@ export class McpManager extends EventEmitter {
 
     const pending = this.pendingServers.get(name);
     if (pending?.state === 'disabled') {
-      throw new Error(`MCP server '${name}' is disabled. Use /mcp start ${name} to re-enable it.`);
+      throw new Error(`MCP server '${name}' is disabled. Re-enable it from the /mcp panel before connecting.`);
     }
     // M14 — a not-yet-approved project-tier server must not be connected on demand
     // (e.g. by the mcp-connect tool); it stays pending until explicitly approved.
@@ -2121,7 +2121,7 @@ export class McpManager extends EventEmitter {
       return null;
     }
     try {
-      const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
+      const stripped = stripJsonBom(raw).replace(/^\s*\/\/.*$/gm, '');
       const config = JSON.parse(stripped);
       // Parsed cleanly — clear any stale parse error for this path.
       this._configErrors.delete(configPath);
@@ -2620,6 +2620,20 @@ export function expandEnvVarsTracked(value: string): { expanded: string; missing
 
 export function expandEnvVars(value: string): string {
   return expandEnvVarsTracked(value).expanded;
+}
+
+/**
+ * Strip a leading UTF-8 byte-order mark (U+FEFF) from a string before it is
+ * handed to `JSON.parse` (Claude-parity `stripBOM`, utils/json.ts +
+ * remoteManagedSettings/syncCacheState.ts). PowerShell 5.x (and some Windows
+ * editors) write UTF-8 files WITH a leading BOM, so an `.mcp.json` generated /
+ * hand-edited there begins with an invisible `﻿` that makes `JSON.parse`
+ * throw ("Unexpected token in JSON at position 0") and silently drops EVERY
+ * server the file declared. Removing the BOM first makes such a config load
+ * normally. A string without a BOM is returned unchanged (cheap char-code check).
+ */
+export function stripJsonBom(raw: string): string {
+  return raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
 }
 
 /**

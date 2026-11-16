@@ -291,7 +291,10 @@ describe('createMcpTool.execute guards', () => {
     const res = await tool.execute({}, makeContext(mgr));
     assert.equal(res.isError, true);
     assert.match(res.output, /is disabled/);
-    assert.match(res.output, /\/mcp start srv/);
+    // The hint points at the real /mcp panel, not the non-existent /mcp start
+    // subcommand (U018 w68 parity fix).
+    assert.match(res.output, /\/mcp panel/);
+    assert.doesNotMatch(res.output, /\/mcp start/);
   });
 
   it('auto-connects a pending server, then calls the tool', async () => {
