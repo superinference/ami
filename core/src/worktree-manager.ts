@@ -150,6 +150,38 @@ export function worktreeBranchName(slug: string): string {
   return `worktree-${flattenSlug(slug)}`;
 }
 
+/**
+ * Parse a pull-request reference into its PR number, or `null` when the string is
+ * not a recognized PR reference (parity with Claude's `parsePRReference`,
+ * utils/worktree.ts). Accepts two shapes:
+ *   - a GitHub-style PR URL `https://<host>/owner/repo/pull/<N>` (host-agnostic,
+ *     with an optional trailing slash / query / hash) — the `/pull/N` path shape is
+ *     specific to GitHub & GHE (GitLab uses `/-/merge_requests/N`, Bitbucket
+ *     `/pull-requests/N`), so matching any host here is safe; and
+ *   - the shorthand `#N`.
+ * Lets a worktree be based on a pull request: the caller fetches
+ * `origin pull/<N>/head` and bases the new worktree on FETCH_HEAD, naming it
+ * `pr-<N>` when no explicit name is given.
+ */
+export function parsePRReference(input: string): number | null {
+  // `#N` shorthand.
+  const hashMatch = /^#(\d+)$/.exec(input);
+  if (hashMatch) return parseInt(hashMatch[1], 10);
+  // PR URL `https://<host>/owner/repo/pull/<N>` (host-agnostic, optional trailing
+  // slash / query / hash). Parsed by splitting on `/` — each segment is bounded, so
+  // there is no backtracking (ReDoS-free), unlike a single catch-all regex.
+  const scheme = /^https?:\/\//i.exec(input);
+  if (!scheme) return null;
+  const pathPart = input.slice(scheme[0].length).split(/[?#]/, 1)[0];
+  const segs = pathPart.split('/');
+  // Exactly host / owner / repo / "pull" / N, allowing a single trailing slash.
+  const len = segs.length === 6 && segs[5] === '' ? 5 : segs.length;
+  if (len !== 5) return null;
+  if (!segs[0] || !segs[1] || !segs[2] || segs[3] !== 'pull') return null;
+  if (!/^\d+$/.test(segs[4])) return null;
+  return parseInt(segs[4], 10);
+}
+
 export function createWorktreeSession(cwd: string, name: string): WorktreeSession {
   const startMs = Date.now();
   // Resolve to the canonical main repo root so creation works even when invoked

@@ -27,7 +27,7 @@ function defaultWorktreeName(worktreesBase: string): string {
 // Strict-input allow-list (parity with exit_worktree's ALLOWED_KEYS): any key
 // outside this set is rejected rather than silently ignored, so a typo'd or
 // hallucinated parameter surfaces loudly instead of being dropped.
-const ALLOWED_KEYS = new Set(['name', 'path', 'base_ref']);
+const ALLOWED_KEYS = new Set(['name', 'path', 'base_ref', 'pr']);
 
 /**
  * Run git with NO SHELL (execFile with an argv array) so a branch name, path, or
@@ -66,10 +66,33 @@ export const _enterWorktreeHooks = {
   generateSlug: (): string => require('../words').generateShortWordSlug(),
   /** Post-add setup step (symlink large dirs into the new worktree). Routed
    *  through the seam so tests can inject a post-add failure and exercise the
-   *  half-created-worktree teardown path. */
-  symlinkLargeDirs: (sourceCwd: string, worktreePath: string): void =>
-    require('../worktree-manager').symlinkLargeDirectories(sourceCwd, worktreePath),
+   *  half-created-worktree teardown path. `dirs` honors the opt-in
+   *  `settings.worktree.symlinkDirectories` knob: when undefined the underlying
+   *  helper keeps AMI's `['node_modules']` default; an explicit (possibly empty)
+   *  list is used verbatim. */
+  symlinkLargeDirs: (sourceCwd: string, worktreePath: string, dirs?: string[]): void =>
+    require('../worktree-manager').symlinkLargeDirectories(sourceCwd, worktreePath, dirs),
 };
+
+/**
+ * Resolve the opt-in `settings.worktree.symlinkDirectories` list (parity with
+ * Claude's `getInitialSettings().worktree?.symlinkDirectories`). Project config
+ * (`<cwd>/.ami/config.json`) takes precedence over the global config
+ * (`~/.ami/config.json`); either may configure the list. Returns `undefined` when
+ * NEITHER tier configures the key, so the caller keeps AMI's default of symlinking
+ * `node_modules`. An explicitly-configured list (including an empty array → symlink
+ * nothing) is returned verbatim. Config-read failures fall back to the default.
+ */
+function resolveSymlinkDirs(cwd: string): string[] | undefined {
+  try {
+    const { loadProjectConfig, loadGlobalConfig } = require('../config');
+    const proj = loadProjectConfig(cwd)?.worktree?.symlinkDirectories;
+    if (Array.isArray(proj)) return proj;
+    const glob = loadGlobalConfig()?.worktree?.symlinkDirectories;
+    if (Array.isArray(glob)) return glob;
+  } catch { /* unreadable config → fall back to the default */ }
+  return undefined;
+}
 
 function validateSlug(name: string): boolean {
   if (name.length > 64) return false;
@@ -118,6 +141,7 @@ async function createViaWorktreeHook(
   name: string | undefined,
   existingPath: string | undefined,
   baseRefProvided: boolean,
+  prProvided: boolean,
 ): Promise<ToolResult> {
   const cwd = context.cwd || process.cwd();
   const hookCount = context._hookManager?.getSummary?.().worktreeCreate ?? 0;
@@ -132,6 +156,11 @@ async function createViaWorktreeHook(
   // A git ref cannot be resolved outside git, so base_ref is meaningless here.
   if (baseRefProvided) {
     return { output: 'Error: base_ref requires a git repository (a hook-based worktree cannot resolve a git ref).', isError: true };
+  }
+  // A pull request is fetched from a git remote, so it cannot seed a non-git,
+  // hook-based worktree (parity: Claude's PR path is git-only via `git fetch origin pull/N/head`).
+  if (prProvided) {
+    return { output: 'Error: pr requires a git repository (a hook-based worktree cannot fetch a pull request).', isError: true };
   }
 
   // Entering an existing hook-created worktree needs no git: if the directory is
@@ -204,7 +233,8 @@ export const enterWorktreeTool: ToolDefinition = {
     'WHEN TO USE: isolating risky or parallel changes from the main working tree (a large refactor you may want to throw away, work you want on its own branch). ' +
     'WHEN NOT TO USE: ordinary edits in the current tree, or when the user did not ask for isolation — a worktree adds branch/cwd bookkeeping overhead. ' +
     'Use exit_worktree (action "keep" or "remove") to leave. ' +
-    'Requires a git repository; outside one, configure WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation.',
+    'Requires a git repository; outside one, configure WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation. ' +
+    'Pass pr (a PR URL or #N) to base the worktree on a pull request.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -219,6 +249,10 @@ export const enterWorktreeTool: ToolDefinition = {
       base_ref: {
         type: 'string',
         description: 'Git ref (branch/tag/commit) to base the new worktree on. Defaults to origin/<default-branch>, then HEAD.',
+      },
+      pr: {
+        type: 'string',
+        description: 'Pull request to base the new worktree on — a PR URL (https://<host>/owner/repo/pull/N) or "#N". Fetches origin pull/N/head and bases the worktree on it; names it pr-N if name is omitted. Mutually exclusive with path and base_ref.',
       },
     },
   },
@@ -239,6 +273,8 @@ export const enterWorktreeTool: ToolDefinition = {
     const name = typeof rawName === 'string' ? (rawName.trim() || undefined) : (rawName as string | undefined);
     const existingPath = input.path as string | undefined;
     const baseRefProvided = typeof input.base_ref === 'string' && input.base_ref.trim() !== '';
+    const rawPr = typeof input.pr === 'string' ? input.pr.trim() : '';
+    const prProvided = rawPr !== '';
 
     if (name && existingPath) {
       return { output: 'Error: name and path are mutually exclusive.', isError: true };
@@ -249,6 +285,27 @@ export const enterWorktreeTool: ToolDefinition = {
     // combination instead of silently ignoring base_ref.
     if (existingPath && baseRefProvided) {
       return { output: 'Error: base_ref cannot be combined with path (base_ref only applies when creating a new worktree).', isError: true };
+    }
+
+    // A PR reference only makes sense when CREATING a worktree, and it IS the base,
+    // so it cannot be combined with an existing path or an explicit base_ref. Reject
+    // the combination loudly rather than silently ignoring one input.
+    if (prProvided && existingPath) {
+      return { output: 'Error: pr cannot be combined with path (pr only applies when creating a new worktree).', isError: true };
+    }
+    if (prProvided && baseRefProvided) {
+      return { output: 'Error: pr and base_ref are mutually exclusive (a pull request already specifies the base).', isError: true };
+    }
+
+    // Parse the PR reference up front so an unrecognized value fails before any git
+    // work (parity: Claude's parsePRReference accepts a PR URL or "#N").
+    let prNumber: number | null = null;
+    if (prProvided) {
+      const { parsePRReference } = require('../worktree-manager');
+      prNumber = parsePRReference(rawPr);
+      if (prNumber == null) {
+        return { output: `Error: invalid pr "${rawPr}". Use a PR URL (https://<host>/owner/repo/pull/N) or "#N".`, isError: true };
+      }
     }
 
     let insideGit = true;
@@ -265,7 +322,7 @@ export const enterWorktreeTool: ToolDefinition = {
       // fallback): the hook performs the actual VCS-specific worktree creation.
       // With no such hook we fail loud and NAME the cwd so the user knows which
       // directory is not a repo and how to enable the escape hatch.
-      return createViaWorktreeHook(context, name, existingPath, baseRefProvided);
+      return createViaWorktreeHook(context, name, existingPath, baseRefProvided, prProvided);
     }
 
     // Nested-isolation guard: refuse to create a NEW worktree while the current
@@ -319,7 +376,9 @@ export const enterWorktreeTool: ToolDefinition = {
       };
     }
 
-    const slug = name || defaultWorktreeName(path.join(context.cwd, '.ami', 'worktrees'));
+    // Default name: an explicit name wins; otherwise a PR reference names the
+    // worktree `pr-<N>` (parity with Claude), falling back to a memorable word slug.
+    const slug = name || (prNumber != null ? `pr-${prNumber}` : defaultWorktreeName(path.join(context.cwd, '.ami', 'worktrees')));
     if (!validateSlug(slug)) {
       return { output: `Error: invalid worktree name "${slug}". Use letters, digits, dots, underscores, dashes (max 64 chars per segment).`, isError: true };
     }
@@ -392,13 +451,27 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).${shallowHint}`, isError: true };
       }
     }
-    // Default base (no explicit base_ref): prefer the current branch's upstream
+    // PR base (parity with Claude's getOrCreateWorktree({prNumber})): fetch the PR
+    // head from origin and base the new worktree on FETCH_HEAD. The fetch is the
+    // only network step; its failure is surfaced with the same actionable wording
+    // Claude uses (the PR may not exist, or there may be no "origin" remote).
+    let prBaseRef: string | undefined;
+    if (prNumber != null) {
+      try {
+        _enterWorktreeHooks.exec(['fetch', 'origin', `pull/${prNumber}/head`], { cwd: context.cwd, stdio: 'ignore', env: gitEnv, timeout: 60000 });
+      } catch {
+        return { output: `Error: failed to fetch PR #${prNumber}: the PR may not exist or the repository may not have a remote named "origin".`, isError: true };
+      }
+      prBaseRef = 'FETCH_HEAD';
+    }
+
+    // Default base (no explicit base_ref / PR): prefer the current branch's upstream
     // tracking ref (`@{u}`), then origin/HEAD, then the conventional candidate
     // list (findRemoteBase, all local refs — never contacts the network),
     // falling back to origin/<default-branch> only when none of those resolve.
     // This matches git's own base-selection priority so a worktree branches from
     // the ref the user is actually tracking rather than a hardcoded origin/main.
-    const baseRef = requestedBaseRef || findRemoteBase(context.cwd) || `origin/${defaultBranch}`;
+    const baseRef = prBaseRef || requestedBaseRef || findRemoteBase(context.cwd) || `origin/${defaultBranch}`;
     try {
       try {
         _enterWorktreeHooks.exec(['rev-parse', '--verify', baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
@@ -427,7 +500,9 @@ export const enterWorktreeTool: ToolDefinition = {
     try {
       session = createWorktreeSession(context.cwd, flatSlug);
       setWorktreeSession(session);
-      _enterWorktreeHooks.symlinkLargeDirs(context.cwd, session.worktreePath);
+      // Honor the opt-in settings.worktree.symlinkDirectories knob; undefined keeps
+      // AMI's default of symlinking node_modules.
+      _enterWorktreeHooks.symlinkLargeDirs(context.cwd, session.worktreePath, resolveSymlinkDirs(context.cwd));
     } catch (e) {
       // Post-add setup failed: `git worktree add` already registered the worktree
       // on disk and reset the branch, but the session/symlink wiring is broken.
@@ -456,7 +531,7 @@ export const enterWorktreeTool: ToolDefinition = {
       context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
     }
 
-    const baseLabel = baseRef;
+    const baseLabel = prNumber != null ? `PR #${prNumber}` : baseRef;
     return {
       output:
         `Worktree created (session switched to it):\n` +

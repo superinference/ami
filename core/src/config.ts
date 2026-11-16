@@ -125,6 +125,15 @@ export interface ProjectConfig {
   migrationVersion?: number;
   /** Override the composer-hint surface: inject custom hints / drop the built-ins. */
   composerHintsOverride?: { hints?: Array<{ key: string; label: string; learnedAfter: number }>; excludeDefault?: boolean };
+  /**
+   * Worktree behavior knobs (parity: Claude Code's `settings.worktree`).
+   * `symlinkDirectories` is an opt-in list of directories to symlink from the
+   * source checkout into a freshly-created worktree (avoids disk bloat for large,
+   * reproducible dirs like `node_modules`, `vendor`, `.venv`). When this key is
+   * CONFIGURED (including as an empty array → symlink nothing), it is honored
+   * exactly; when ABSENT, AMI keeps its default of symlinking `node_modules`.
+   */
+  worktree?: { symlinkDirectories?: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +449,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['superinference', 'object'], ['managedMcpServers', 'object'],
   ['enabledPlugins', 'object'], ['env', 'object'],
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
+  ['worktree', 'object'],
 ];
 
 /**
@@ -591,6 +601,16 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
       if (si[flag] !== undefined && typeof si[flag] !== 'boolean') {
         issues.push({ field: `superinference.${flag}`, message: `must be a boolean (got ${describeJsonType(si[flag])})`, value: si[flag], tip: getConfigValidationTip(`superinference.${flag}`, { kind: 'type', type: 'boolean' }) });
       }
+    }
+  }
+  // 5. Nested `worktree.symlinkDirectories` must be a string[] when present. Step 1
+  //    only guards that `worktree` is an object; a non-array (or non-string element)
+  //    value would otherwise flow into the worktree symlink step and either no-op or
+  //    throw at symlink time. Skip when the outer object type was already flagged.
+  if (config.worktree !== undefined && !typeInvalid.has('worktree')) {
+    const wt = config.worktree as Record<string, unknown>;
+    if (wt.symlinkDirectories !== undefined && !matchesConfigFieldType(wt.symlinkDirectories, 'string[]')) {
+      issues.push({ field: 'worktree.symlinkDirectories', message: `must be a string[] (got ${describeJsonType(wt.symlinkDirectories)})`, value: wt.symlinkDirectories, tip: getConfigValidationTip('worktree.symlinkDirectories', { kind: 'type', type: 'string[]' }) });
     }
   }
   return issues;
