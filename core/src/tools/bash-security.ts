@@ -1,4 +1,4 @@
-import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes } from './bash-parser';
+import { parseBashAST, extractCommands, extractDeclaredAssignments, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powershell-security';
 import { redactCredentials } from '../credential-guard';
@@ -2280,6 +2280,20 @@ export function detectCodeLoadingEnvSet(command: string): { blocked: boolean; va
       const varName = m[1];
       if (varName && PINNED_VARIABLES_UPPER.has(varName.toUpperCase())) {
         return { blocked: true, variable: varName };
+      }
+    }
+  }
+
+  // Structural pass: the regex above misses declaration keywords other than
+  // `export`/`declare -x`/`unset` — a pinned variable set via `readonly`,
+  // `local`, `typeset`, or `declare` (without `-x`) would otherwise slip through
+  // (e.g. `readonly LD_PRELOAD=/evil.so`). Recover them from the parsed AST's
+  // declaration commands so every declaration form is covered uniformly.
+  const ast = parseBashAST(command);
+  if (ast && ast !== PARSE_ABORTED) {
+    for (const { variable } of extractDeclaredAssignments(ast)) {
+      if (PINNED_VARIABLES_UPPER.has(variable.toUpperCase())) {
+        return { blocked: true, variable };
       }
     }
   }

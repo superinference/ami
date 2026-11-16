@@ -254,6 +254,42 @@ function countNode(state: ParseState): void {
   }
 }
 
+/**
+ * Declaration commands (`export FOO=bar`, `declare -x X`, `readonly Y=1`,
+ * `local Z`, `typeset W`, `unset V`, `unsetenv V`). bash/tree-sitter model these
+ * as a distinct `declaration_command` node whose operands are variable
+ * *declarations*, not ordinary command arguments. AMI's hand-rolled parser emits
+ * them as `simple` nodes, so this set lets consumers recover that structure:
+ * {@link extractDeclaredAssignments} walks the AST and, for any simple node whose
+ * command is a declaration keyword, returns the variable name touched by each
+ * operand (`FOO=bar` → `FOO`, bare `FOO` → `FOO`), skipping option flags.
+ *
+ * The security consumer (`detectCodeLoadingEnvSet`) uses this to block pinned
+ * code-loading variables assigned via declaration keywords the textual regex
+ * misses — e.g. `readonly LD_PRELOAD=/evil.so`, `typeset LD_LIBRARY_PATH=/x`,
+ * `local PATH=/x`, `declare LD_PRELOAD=/evil.so` (no `-x`).
+ *
+ * Mirrors Claude Code's DECLARATION_COMMANDS allow-set
+ * (utils/bash/parser.ts L20-28, extractCommandArguments L189-196).
+ */
+export const DECLARATION_COMMANDS = new Set([
+  'export',
+  'declare',
+  'typeset',
+  'readonly',
+  'local',
+  'unset',
+  'unsetenv',
+]);
+
+/** One variable touched by a declaration command, with the keyword that did it. */
+export interface DeclaredAssignment {
+  /** The declaration keyword (`export`, `declare`, `readonly`, …). */
+  command: string;
+  /** The variable name declared/assigned/unset (without any `=value` suffix). */
+  variable: string;
+}
+
 // Shell keywords/control-structure tokens. A keyword that leads a simple-command
 // node means the node's real command is hidden behind it (e.g. `then nc …`,
 // `do socat …`, `{ insmod …`). extractCommands uses these sets to recover the
@@ -639,6 +675,38 @@ export function extractCommands(node: CommandNode): string[] {
 
   walk(node);
   return commands;
+}
+
+/**
+ * Walk a parsed AST and recover every variable touched by a declaration command
+ * (see {@link DECLARATION_COMMANDS}). For each simple node whose command is a
+ * declaration keyword, every operand is interpreted as a declaration operand:
+ * `FOO=bar` yields `FOO` and a bare `FOO` (e.g. `unset FOO`) yields `FOO`.
+ * Option flags (`-x`, `-g`, `--`, …) are skipped. Walks nested subshells /
+ * command substitutions so `$(export LD_PRELOAD=x)` is seen too.
+ *
+ * This is the structural counterpart to the textual code-loading regex: it lets
+ * security consumers match pinned variables set via `readonly`/`local`/`typeset`/
+ * `declare` (without `-x`) — declaration keywords the regex does not cover.
+ * Mirrors Claude Code's declaration-command argument extraction.
+ */
+export function extractDeclaredAssignments(node: CommandNode): DeclaredAssignment[] {
+  const out: DeclaredAssignment[] = [];
+
+  function walk(n: CommandNode): void {
+    if (n.type === 'simple' && n.command && DECLARATION_COMMANDS.has(n.command)) {
+      for (const arg of n.args ?? []) {
+        if (arg.startsWith('-')) continue; // option flag, not a variable operand
+        const eq = arg.indexOf('=');
+        const variable = eq === -1 ? arg : arg.slice(0, eq);
+        if (/^[A-Za-z_]\w*$/.test(variable)) out.push({ command: n.command, variable });
+      }
+    }
+    n.children?.forEach(walk);
+  }
+
+  walk(node);
+  return out;
 }
 
 export function extractCommandsFromString(input: string, budget?: ParseBudget): string[] {
