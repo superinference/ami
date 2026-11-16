@@ -2541,6 +2541,41 @@ export class PermissionManager {
   }
 
   /**
+   * PARITY (Claude's `/add-dir` → `SandboxManager.refreshConfig()` sync — add-dir.tsx
+   * L86-94): project the given base sandbox policy with the CURRENT dynamic
+   * `allowedReadRoots` folded into `filesystem.allowWrite`, so a directory widened
+   * into the workspace at runtime (via `/add-dir`, `--context-file`/`--image`, or an
+   * approved out-of-workspace read) is ALSO mounted into the bash container, not just
+   * granted in the in-process permission layer.
+   *
+   * Without this the two guard layers diverge: the permission surface reports the
+   * added directory as allowed while the container sandbox still mounts only
+   * `projectDir`, so a sandboxed `bash` silently cannot reach a directory the user
+   * believes was added (and `/remove-dir` likewise narrows the mount set again, since
+   * the projection is recomputed from the live root set each turn).
+   *
+   * Returns `base` unchanged when there is no policy (bash runs on the host, already
+   * covered by the permission layer) or when no extra roots have been granted — the
+   * fold only ever ADDS roots. Caller-supplied `filesystem.allowWrite` entries are
+   * preserved and de-duplicated with the roots.
+   */
+  getEffectiveSandboxPolicy(base: SandboxPolicy | undefined): SandboxPolicy | undefined {
+    if (!base) return base;
+    const roots = [...this.allowedReadRoots];
+    if (roots.length === 0) return base;
+    const existing = base.filesystem?.allowWrite ?? [];
+    const merged = [...existing];
+    const seen = new Set(existing.map((p) => path.normalize(p)));
+    for (const r of roots) {
+      const norm = path.normalize(r);
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      merged.push(r);
+    }
+    return { ...base, filesystem: { ...base.filesystem, allowWrite: merged } };
+  }
+
+  /**
    * Thread the active bash isolation policy into the permission layer so
    * {@link SandboxPolicy.autoAllowBashIfSandboxed} can be honored in {@link check}.
    * The engine calls this once at construction with its `EngineConfig.sandbox`.

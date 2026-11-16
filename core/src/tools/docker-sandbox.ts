@@ -21,6 +21,7 @@ import type { SandboxPolicy } from '../types';
 import { shellHooks } from '../utils/shell';
 import { BARE_GIT_REPO_FILES, isValidProxyPort } from './bash-sandbox';
 import { sandboxViolationStore, wrapSandboxViolations } from './sandbox-violations';
+import { isSandboxHostGranted } from './sandbox-permission-registry';
 
 // The project's own agent sandbox image, built from the core submodule's
 // Dockerfile (core/Dockerfile → `openshell-ami`) and published by
@@ -355,6 +356,51 @@ const NETWORK_OFF_SIGNATURES: RegExp[] = [
  *  path under them is NOT a sandbox-isolation artifact. */
 const CONTAINER_TMPFS_PREFIXES = ['/tmp', '/root', '/home'];
 
+/**
+ * Patterns that name the specific HOST a blocked outbound call was trying to reach,
+ * ordered most-specific first. Used by {@link extractBlockedHost} to turn a generic
+ * network-failure stderr into the concrete host the worker must escalate for egress
+ * approval. Each capture group 1 is the candidate host.
+ */
+const BLOCKED_HOST_SIGNATURES: RegExp[] = [
+  /could ?n[o']?t resolve host:?\s*'?([a-z0-9.-]+)/i,
+  /resolving timed out after.*?'?([a-z0-9.-]+)'?/i,
+  /failed to connect to ([a-z0-9.-]+)\b/i,
+  /connect to ([a-z0-9.-]+) port \d+/i,
+  /name or service not known.*?'?([a-z0-9.-]+)'?/i,
+];
+
+/** Hosts that are NOT a real egress target (loopback / the host-gateway alias the
+ *  proxy uses), so they are never surfaced as an escalation candidate. */
+const NON_EGRESS_HOSTS = new Set(['localhost', '127.0.0.1', '::1', DOCKER_HOST_GATEWAY_ALIAS]);
+
+/**
+ * Extract the concrete network HOST a blocked outbound command was trying to reach,
+ * from the command's stderr (preferred — it names the host the resolver/connection
+ * failed on) and, failing that, from an `http(s)://host` URL in the command itself.
+ * Returns the lowercased host, or `null` when no real egress host can be identified
+ * (so a generic "network is unreachable" with no host does not invent one). Loopback
+ * and the host-gateway proxy alias are ignored. This is the detection half of the
+ * per-host sandbox-egress delegation: the host it returns is what a worker escalates
+ * to the leader for an allow/deny decision.
+ */
+export function extractBlockedHost(command: string, stderr: string): string | null {
+  for (const re of BLOCKED_HOST_SIGNATURES) {
+    const m = stderr.match(re);
+    if (m && m[1]) {
+      const host = m[1].toLowerCase().replace(/[.:]+$/, '');
+      if (host && !NON_EGRESS_HOSTS.has(host)) return host;
+    }
+  }
+  // Fall back to a URL host in the command (e.g. `curl https://api.example.com/x`).
+  const url = command.match(/https?:\/\/([a-z0-9.-]+)/i);
+  if (url && url[1]) {
+    const host = url[1].toLowerCase().replace(/[.:]+$/, '');
+    if (host && !NON_EGRESS_HOSTS.has(host)) return host;
+  }
+  return null;
+}
+
 /** True if `stderr` references an absolute path that is NOT inside the project
  *  mount nor one of the container tmpfs dirs — i.e. a host path that genuinely
  *  does not exist inside the container. */
@@ -393,15 +439,29 @@ export function annotateStderrWithSandboxFailures(
   sandboxViolationStore.setIgnoreViolations(cfg.ignoreViolations);
   const notes: string[] = [];
   if (!cfg.allowNetwork && NETWORK_OFF_SIGNATURES.some((re) => re.test(stderr))) {
+    // Per-host egress delegation (worker→leader): name the concrete host the call
+    // was trying to reach (when identifiable) and point the worker at the escalation
+    // path — ask the lead to approve this host via a `sandbox_permission_request`
+    // send_message and retry; an approved host is reachable on the next command
+    // (processSandboxPermissionResponse records the grant, which the container
+    // backend then stops blocking).
+    const blockedHost = extractBlockedHost(command, stderr);
+    const hostClause = blockedHost ? ` (host "${blockedHost}")` : '';
+    const escalateClause = blockedHost
+      ? ` If host "${blockedHost}" is legitimately needed, ask the lead to approve egress to it `
+        + '(send a sandbox_permission_request via send_message) and retry after it is granted.'
+      : '';
     notes.push(
-      '[sandbox: network is disabled for this container (--network none); the error above may be '
+      `[sandbox: network is disabled for this container (--network none)${hostClause}; the error above may be `
         + 'caused by blocked network access, not a real failure. Retry with '
-        + 'dangerouslyDisableSandbox: true if this command legitimately needs the network.]',
+        + `dangerouslyDisableSandbox: true if this command legitimately needs the network.${escalateClause}]`,
     );
     sandboxViolationStore.record({
       kind: 'network',
       command,
-      detail: 'outbound network blocked (--network none)',
+      detail: blockedHost
+        ? `outbound network blocked (--network none) — host "${blockedHost}"`
+        : 'outbound network blocked (--network none)',
     });
   }
   if (/no such file or directory/i.test(stderr) && mentionsPathOutsideProject(stderr, cfg.projectDir)) {
@@ -649,6 +709,11 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
       const host = h.trim();
       if (host.length === 0 || deniedSeen.has(host)) continue;
       deniedSeen.add(host);
+      // Per-host egress delegation: a host the leader has GRANTED for this session
+      // is no longer blackholed, so the worker's subsequent command reaches it
+      // (the grant was recorded by processSandboxPermissionResponse on the worker's
+      // mailbox poll). Deny still wins for every host that was not explicitly granted.
+      if (isSandboxHostGranted(host)) continue;
       parts.push('--add-host', shSingleQuote(`${host}:0.0.0.0`));
     }
     // A host-gateway alias lets the container reach a proxy listening on the host.

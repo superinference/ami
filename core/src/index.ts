@@ -188,8 +188,16 @@ export {
   DEFAULT_DOCKER_IMAGE,
   DOCKER_PROBE_TIMEOUT_MS,
   DOCKER_SANDBOX_TMPDIR,
+  extractBlockedHost,
   _resetDockerAvailableCache,
 } from './tools/docker-sandbox';
+export {
+  recordSandboxHostGrant,
+  isSandboxHostGranted,
+  getGrantedSandboxHosts,
+  processSandboxPermissionResponse,
+  clearSandboxPermissionGrants,
+} from './tools/sandbox-permission-registry';
 export type {
   DockerSandboxConfig,
   DockerAvailability,
