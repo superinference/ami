@@ -196,6 +196,61 @@ export function isBlockedRedirectTarget(url: string): boolean {
   } catch { return true; }
 }
 
+/**
+ * True iff following `redirectUrl` from `originalUrl` would cross a security
+ * boundary that must never be auto-followed, independent of host privateness:
+ *
+ *  - a **protocol change** — in particular the `https`→`http` TLS *downgrade* a
+ *    server-controlled `Location` header can force, stripping transport
+ *    encryption and exposing the follow-up request to MITM/interception (and
+ *    any other scheme switch);
+ *  - a **same-host port change** — a redirect that keeps the host but moves to a
+ *    different port can pivot an approved fetch onto a different (e.g. internal,
+ *    admin, debug) service listening on the SAME host.
+ *
+ * Mirrors the protocol/port arms of Claude Code's `isPermittedRedirect`
+ * (`WebFetchTool/utils.ts`), which refuses any redirect whose protocol or port
+ * differs from the original (within its same-origin follow policy). Ports are
+ * compared on their raw `URL.port` (so an explicit non-default port differs from
+ * an implied default, exactly as `new URL` yields in the reference).
+ * (The embedded-credentials arm of the reference is already enforced upstream by
+ * `isBlockedRedirectTarget` / `validateUrlSafety` via `urlHasUserinfo`, so it is
+ * NOT re-checked here — one canonical credential guard, no duplication.)
+ *
+ * INTENTIONAL AMI SUPERSET DIVERGENCE: unlike the reference, AMI does NOT require
+ * same-origin — AMI deliberately *follows* a cross-host redirect after
+ * re-validating the target through `validateUrlSafety` (SSRF + DNS-pin), a kept
+ * AMI differentiator. Because of that, the port check applies only when the host
+ * is UNCHANGED (a cross-host port difference is just part of a cross-host redirect
+ * that AMI re-validates). The protocol check applies to every host — the TLS
+ * downgrade must be blocked regardless of destination. The private-host /
+ * scheme-allowlist / credential checks live in `isBlockedRedirectTarget` and the
+ * SSRF re-validation in the follow path. ADDITIVE.
+ */
+export function redirectCrossesSecurityBoundary(originalUrl: string, redirectUrl: string): boolean {
+  let original: URL;
+  let redirect: URL;
+  try {
+    original = new URL(originalUrl);
+    redirect = new URL(redirectUrl);
+  } catch {
+    // An unparseable original or target is never safe to follow.
+    return true;
+  }
+  // Protocol change — blocks the https→http TLS downgrade and any scheme switch,
+  // on ANY host.
+  if (redirect.protocol.toLowerCase() !== original.protocol.toLowerCase()) return true;
+  // Same-host port pivot — raw-port comparison (reference parity). A cross-host
+  // port difference is left to the SSRF re-validation of the cross-host follow.
+  if (
+    original.hostname.toLowerCase() === redirect.hostname.toLowerCase() &&
+    redirect.port !== original.port
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** DNS lookup signature used by validateUrlSafety — a dependency seam so tests
  *  can simulate a resolution that yields no usable (valid) addresses. Defaults
  *  to the real dns.lookup; production never overrides it. */
@@ -561,6 +616,19 @@ function httpGetInternal(
           }
           // Resolve relative redirects against the original URL
           const redirectUrl = new URL(res.headers.location, url).toString();
+          // Refuse to auto-follow a redirect that crosses a protocol/port
+          // boundary — e.g. an https→http TLS downgrade forced by a
+          // server-controlled Location header, or a pivot to a different port on
+          // the same host. This runs BEFORE the private-host check so a
+          // downgrade/port-change to a PUBLIC host is still refused. (Cross-host
+          // redirects to the same protocol/port are still followed, after SSRF
+          // re-validation; embedded credentials are refused by the check below.)
+          if (redirectCrossesSecurityBoundary(url, redirectUrl)) {
+            reject(new Error(
+              `Blocked: redirect "${url}" → "${redirectUrl}" crosses a protocol/port boundary`,
+            ));
+            return;
+          }
           if (isBlockedRedirectTarget(redirectUrl)) {
             reject(new Error(`Blocked: redirect to private/internal URL "${redirectUrl}"`));
             return;
