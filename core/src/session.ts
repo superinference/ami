@@ -71,20 +71,105 @@ function isSessionBlobRef(v: unknown): v is SessionBlobRef {
  * (multimodal) first message produced an empty title/preview, so a fork or the
  * /resume picker showed a generic placeholder instead of the user's actual text.
  */
-export function contentToText(raw: unknown): string {
-  if (isSessionBlobRef(raw)) return raw.preview;
-  if (typeof raw === 'string') return raw;
+export function contentToTexts(raw: unknown): string[] {
+  if (isSessionBlobRef(raw)) return raw.preview ? [raw.preview] : [];
+  if (typeof raw === 'string') return raw ? [raw] : [];
   if (Array.isArray(raw)) {
-    const textBlock = raw.find(
-      (b): b is { type: 'text'; text: string } =>
+    const out: string[] = [];
+    for (const b of raw) {
+      if (
         !!b &&
         typeof b === 'object' &&
         (b as { type?: unknown }).type === 'text' &&
-        typeof (b as { text?: unknown }).text === 'string',
-    );
-    return textBlock ? textBlock.text : '';
+        typeof (b as { text?: unknown }).text === 'string'
+      ) {
+        out.push((b as { text: string }).text);
+      }
+    }
+    return out;
   }
-  return '';
+  return [];
+}
+
+export function contentToText(raw: unknown): string {
+  const texts = contentToTexts(raw);
+  return texts.length > 0 ? texts[0] : '';
+}
+
+/**
+ * Matches an auto-generated / system first-line that must be skipped when
+ * deriving the picker preview: anything that STARTS with a lowercase XML-like
+ * tag (IDE context `<ide_opened_file>`/`<ide_selection>`, hook output, task
+ * notifications, channel messages) or a synthetic `[Request interrupted by
+ * user]` marker. Parity: Claude's SKIP_FIRST_PROMPT_PATTERN
+ * (sessionStoragePortable.extractFirstPromptFromHead /
+ * sessionStorage.getFirstMeaningfulUserMessageTextContent). */
+const SKIP_FIRST_PROMPT_PATTERN =
+  /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/;
+
+/** Captures the command name from a `<command-name>…</command-name>` wrapper so a
+ *  slash-command-only turn becomes a clean label fallback instead of raw XML. */
+const COMMAND_NAME_RE = /<command-name>(.*?)<\/command-name>/;
+
+/** Captures bash-mode input so a `! cmd` turn is labelled as the user typed it. */
+const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/;
+
+/** Compaction summaries are the ONLY record of the pre-compaction conversation.
+ *  They are kept inline in full (never offloaded) so a missing blob can never
+ *  cost us the summarized history on --resume. */
+const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
+
+/**
+ * Derive a clean, meaningful one-line preview from a transcript's messages for
+ * the /resume + /sessions picker — the single canonical first-prompt extractor.
+ *
+ * Walks user turns in order and, per Claude's getFirstMeaningfulUserMessageText-
+ * Content / extractFirstPromptFromHead, skips noise so the label shows what the
+ * user actually asked, not framing:
+ *  - synthetic/ephemeral turns (`isMeta`, transcript-only) and subagent sidechains;
+ *  - compaction-summary turns (the `[Previous conversation summary]` sentinel);
+ *  - every text block of a multimodal/array message is scanned so a real prompt
+ *    hidden behind an `<ide_selection>`/`<ide_opened_file>` block is still found;
+ *  - a `<command-name>` slash-command turn is remembered as a FALLBACK but kept
+ *    scanning for a real prompt (so `/clear`-only sessions still get a label);
+ *  - a `<bash-input>` turn is formatted as `! <cmd>` (checked before the XML skip);
+ *  - any line matching {@link SKIP_FIRST_PROMPT_PATTERN} (leading lowercase XML
+ *    tag / interrupt marker) is dropped.
+ * Returns `'(no messages)'` when nothing meaningful exists. Result is collapsed
+ * to one line and capped at 100 chars with an ellipsis.
+ */
+export function extractMeaningfulPreview(messages: Message[]): string {
+  let commandFallback = '';
+  for (const msg of messages) {
+    if (msg.role !== 'user') continue;
+    const m = msg as { isMeta?: boolean; isSidechain?: boolean; isVisibleInTranscriptOnly?: boolean; content?: unknown };
+    if (m.isMeta || m.isSidechain || m.isVisibleInTranscriptOnly) continue;
+
+    for (const rawText of contentToTexts(m.content)) {
+      const flat = rawText.replace(/\n/g, ' ').trim();
+      if (!flat) continue;
+
+      // Compaction summaries are history, not a prompt — never a picker label.
+      if (flat.startsWith(COMPACTION_SUMMARY_PREFIX)) continue;
+
+      // Slash command: remember the first as a fallback, keep looking for a prompt.
+      const cmd = COMMAND_NAME_RE.exec(flat);
+      if (cmd) {
+        if (!commandFallback) commandFallback = cmd[1].trim();
+        continue;
+      }
+
+      // Bash input: label as typed — checked BEFORE the generic XML-tag skip.
+      const bash = BASH_INPUT_RE.exec(flat);
+      if (bash) return `! ${bash[1].trim()}`;
+
+      if (SKIP_FIRST_PROMPT_PATTERN.test(flat)) continue;
+
+      return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;
+    }
+  }
+  if (commandFallback) return commandFallback;
+  return '(no messages)';
 }
 
 export interface Session {
@@ -141,11 +226,6 @@ export interface SessionListEntry {
   /** Resolved display title (user rename ?? AI title), when present. */
   title?: string;
 }
-
-/** Compaction summaries are the ONLY record of the pre-compaction conversation.
- *  They are kept inline in full (never offloaded) so a missing blob can never
- *  cost us the summarized history on --resume. */
-const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
 
 export function safeCharSlice(s: string, start: number, end?: number): string {
   let result = s.slice(start, end);
@@ -639,15 +719,7 @@ export class SessionManager {
   }
 
   private extractPreview(session: Session): string {
-    const firstUser = session.messages.find(m => m.role === 'user');
-    if (!firstUser) return '(no messages)';
-    // An over-long first message is stored as a blob ref — use its preview; a
-    // multimodal (array) message yields its first text block.
-    const raw = (firstUser as { content?: unknown }).content;
-    const text = contentToText(raw);
-    const flat = text.replace(/\n/g, ' ').trim();
-    if (!flat) return '(no messages)';
-    return flat.length > 100 ? flat.slice(0, 100) + '...' : flat;
+    return extractMeaningfulPreview(session.messages);
   }
 }
 
