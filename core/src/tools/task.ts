@@ -885,7 +885,7 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   isolation: {
     type: 'string',
     enum: ['worktree'],
-    description: 'Run the subagent in an isolated git worktree.',
+    description: 'Run the subagent in an isolated git worktree. Mutually exclusive with "cwd" (the worktree is created from the base cwd) — pass one or the other, not both.',
   },
   subagent_type: {
     type: 'string',
@@ -921,7 +921,7 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   },
   cwd: {
     type: 'string',
-    description: 'Override working directory for the subagent. Must be an absolute path.',
+    description: 'Override working directory for the subagent. Must be an absolute path. Mutually exclusive with isolation:"worktree".',
   },
   name: {
     type: 'string',
@@ -981,7 +981,24 @@ export const taskTool: ToolDefinition = {
     'several task calls in one turn. The result is not shown to the user automatically — summarize it back. ' +
     'With run_in_background:true the agent runs detached and you collect it with task_output. Set ' +
     'isolation:"worktree" to give the agent an isolated copy of the repo (auto-removed if it makes no changes). ' +
-    'Use resume with an agent id/name to continue a prior agent with its context preserved.',
+    'Use resume with an agent id/name to continue a prior agent with its context preserved.\n' +
+    '\n' +
+    'Example usage:\n' +
+    '\n' +
+    '<example>\n' +
+    'A well-briefed research delegation (no named agent — starts fresh, so the prompt carries full context):\n' +
+    'task({\n' +
+    '  description: "Audit auth middleware",\n' +
+    '  subagent_type: "code-reviewer",\n' +
+    '  prompt: "Review src/auth/middleware.ts for session-fixation risks. Context: we rotate the session id on login (line 88) but I am not sure the old id is invalidated server-side. I have already confirmed cookies are httpOnly+secure. Report: is the old session invalidated, and if not, exactly where to fix it? Under 200 words."\n' +
+    '})\n' +
+    '</example>\n' +
+    '\n' +
+    '<example>\n' +
+    'Launch several explorations concurrently (issue the calls in ONE turn):\n' +
+    'task({ description: "Find all API routes", mode: "explore", prompt: "List every HTTP route handler under src/api and the file:line each is defined at." })\n' +
+    'task({ description: "Find all DB models", mode: "explore", prompt: "List every ORM model class under src/models and its table name." })\n' +
+    '</example>',
   // Rebuilt per advertisement so `run_in_background` can be dynamically OMITTED
   // when background tasks are disabled via CLAUDE_CODE_DISABLE_BACKGROUND_TASKS —
   // the model is then never offered the flag (mirrors Claude Code's
@@ -991,7 +1008,12 @@ export const taskTool: ToolDefinition = {
     if (isBackgroundTasksDisabled()) {
       delete properties.run_in_background;
     }
-    return { type: 'object', properties, required: ['prompt'] };
+    // `description` is REQUIRED (parity with Claude's baseInputSchema, where
+    // `description: z.string()` is not optional): every spawned agent must carry an
+    // explicit short human-readable label for UI/tracking rather than falling back
+    // to a truncated raw prompt. execute() keeps a prompt-slice fallback for defense
+    // in depth, but the schema now mandates the model supply a real label.
+    return { type: 'object', properties, required: ['prompt', 'description'] };
   },
   isReadOnly: false,
 
@@ -1318,6 +1340,16 @@ export const taskTool: ToolDefinition = {
     // definition's `isolation` default (parity: Claude's agent isolation field).
     const isolation = (input.isolation as string | undefined) ?? agentIsolationDefault;
     const requestedCwd = input.cwd as string | undefined;
+    // `cwd` and `isolation:"worktree"` are mutually exclusive (parity: Claude's
+    // documented cwd contract). A worktree is created FROM the base cwd, so honoring
+    // both would silently root the worktree at the override and defeat one of the two
+    // conflicting intents — reject the combination explicitly instead.
+    if (requestedCwd && isolation === 'worktree') {
+      return {
+        output: 'Error: `cwd` and `isolation:"worktree"` are mutually exclusive — a worktree is always created from the base working directory, so pass one or the other, not both.',
+        isError: true,
+      };
+    }
     if (requestedCwd) {
       // The subagent's working directory is bounded by the PARENT's trusted
       // permission context — a model-chosen cwd cannot escape it.
@@ -1662,14 +1694,10 @@ export const taskTool: ToolDefinition = {
         }
         // Completion usage summary (parity: Claude's async-agent usage block) — the
         // tokens / tool-uses / duration the model would otherwise only get from a
-        // foreground run, plus the worktree path+branch when the agent ran isolated
-        // and left changes behind, so the model knows where its work landed.
+        // foreground run. The worktree outcome (cleaned-up / retained) is appended
+        // below AFTER the agent is marked terminal, so cleanup can run.
         const bgDurationS = ((Date.now() - bgStartedAt) / 1000).toFixed(1);
         let bgFooter = `\n[Agent stats: ${bgToolUseCount} tool calls, ${bgTotalTokens} tokens, ${bgDurationS}s]`;
-        if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
-          bgFooter += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
-        }
-        try { fs.appendFileSync(outputPath, bgFooter); } catch { /* dir removed */ }
         // The teammate has finished — mark it idle so team_delete no longer
         // treats it as an active member blocking teardown, and fire TeammateIdle.
         markTeammateIdle(context, taskId);
@@ -1687,6 +1715,22 @@ export const taskTool: ToolDefinition = {
           context.processManager.updateEntry(taskId, { status: terminalStatus, exitCode });
           context.processManager.emit('complete', { taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}` });
         }
+        // Tear down the isolated worktree on the background completion path too
+        // (parity: Claude cleans the worktree when an async agent finishes). Done
+        // AFTER updateEntry() flips this agent out of the 'running' state so it no
+        // longer counts against runningAgentCount() for its OWN worktree; the
+        // shouldRemoveWorktree() guard still keeps a dirty/unpushed worktree or one
+        // another live agent is using. Append the outcome to the footer so a reader
+        // of the output file learns where the work landed (or that it was cleaned up).
+        if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
+          const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
+          if (removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
+            bgFooter += '\n[Agent worktree cleaned up — no changes detected]';
+          } else {
+            bgFooter += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
+          }
+        }
+        try { fs.appendFileSync(outputPath, bgFooter); } catch { /* dir removed */ }
       })().catch(() => {});
 
       return { output: `Background agent started: ${taskId}\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
@@ -1733,6 +1777,11 @@ export const taskTool: ToolDefinition = {
     // The chosen deliverable (final turn text, else accumulated fallback) plus any
     // status markers; assembled after the loop and returned to the parent.
     let deliverable = '';
+    // Whether this subagent's isolated worktree was torn down during cleanup. Set in
+    // the `finally` so the removal runs on EVERY exit path (success, error, abort,
+    // stall), mirroring Claude's cleanupWorktreeIfNeeded() living in finally — the
+    // success-path notice below reads this instead of re-running cleanup.
+    let worktreeRemoved = false;
 
     const stallTimeoutMs = parsePositiveIntEnv(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS, SUBAGENT_STALL_TIMEOUT_MS);
     let stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1817,6 +1866,15 @@ export const taskTool: ToolDefinition = {
       // Foreground teammate finished (success or error) — mark it idle so it no
       // longer blocks team_delete, and fire TeammateIdle.
       markTeammateIdle(context, taskId);
+      // Tear down the isolated worktree here in `finally` so it runs on the error /
+      // abort / stall paths too — not only the success return (parity: Claude runs
+      // cleanupWorktreeIfNeeded in finally "to handle abort/error paths"). The
+      // shouldRemoveWorktree() guard inside removeWorktreeIfClean still keeps a dirty
+      // or unpushed worktree, and a worktree with a live background agent in it.
+      if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
+        const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
+        worktreeRemoved = removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents);
+      }
     }
     context.abortSignal.removeEventListener('abort', forwardAbort);
 
@@ -1825,8 +1883,9 @@ export const taskTool: ToolDefinition = {
     }
 
     if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
-      const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
-      if (removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
+      // Cleanup already ran in the `finally` above (so it also covers error/abort);
+      // here we only surface the OUTCOME on the success path.
+      if (worktreeRemoved) {
         deliverable += '\n[Agent worktree cleaned up — no changes detected]';
       } else {
         // Worktree RETAINED (it has changes / unpushed commits / a live agent):
