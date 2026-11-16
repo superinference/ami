@@ -156,7 +156,8 @@ describe('notebook-edit — uncovered paths', () => {
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.match(result.output, /not found/);
+    // numeric-but-out-of-range cell_id alias gets a specific message (Claude parity)
+    assert.match(result.output, /does not exist/);
   });
 
   it('treats a non-numeric cell-N alias as a non-matching id', async () => {
@@ -185,7 +186,7 @@ describe('notebook-edit — uncovered paths', () => {
       ],
     });
     const result = await notebookEditTool.execute!(
-      { notebook_path: file, cell_id: 'aaa', new_source: 'INSERTED', edit_mode: 'insert' },
+      { notebook_path: file, cell_id: 'aaa', new_source: 'INSERTED', cell_type: 'code', edit_mode: 'insert' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -202,7 +203,7 @@ describe('notebook-edit — uncovered paths', () => {
       cells: [{ cell_type: 'code', source: 'a', metadata: {}, execution_count: null, outputs: [] }],
     });
     const result = await notebookEditTool.execute!(
-      { notebook_path: file, new_source: 'new', edit_mode: 'insert' },
+      { notebook_path: file, new_source: 'new', cell_type: 'code', edit_mode: 'insert' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);
@@ -262,7 +263,7 @@ describe('notebook-edit — uncovered paths', () => {
       cells: [{ cell_type: 'code', source: 'a', metadata: {}, execution_count: null, outputs: [] }],
     });
     const result = await notebookEditTool.execute!(
-      { notebook_path: file, cell_number: null, new_source: 'appended', edit_mode: 'insert' },
+      { notebook_path: file, cell_number: null, new_source: 'appended', cell_type: 'code', edit_mode: 'insert' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);

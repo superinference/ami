@@ -349,21 +349,26 @@ describe('process-manager ProcessManager signal/timer paths', () => {
     assert.match(out.output, /exceeded .*time limit/);
   });
 
-  it('kills a stalled process that emits an interactive prompt (stall interval)', async () => {
+  it('notifies (does not kill) a stalled process that emits an interactive prompt (stall interval)', async () => {
     mock.timers.enable({ apis: ['setInterval'] });
     let pm: ProcessManager;
     let id: string;
+    let stalled = false;
     try {
       pm = mk();
+      pm.on('stalled', () => { stalled = true; });
       id = pm.spawn("printf 'Continue? (y/n) '; sleep 30", { cwd: (pm as any).tasksDir });
       // real setTimeout still works (only setInterval is mocked); let output land
       await new Promise(r => setTimeout(r, 400));
       mock.timers.tick(45000); // first tick: output changed since 0 -> records size
-      mock.timers.tick(45000); // second tick: size stable + prompt-like -> kill
+      mock.timers.tick(45000); // second tick: size stable + prompt-like -> notify (not kill)
+      // Claude parity: a stalled task is surfaced to the model, not silently killed.
+      assert.equal(pm.get(id)!.status, 'running');
+      assert.ok(stalled, 'a one-shot stalled event is emitted');
+      pm.kill(id); // clean up the backgrounded sleep
     } finally {
       mock.timers.reset();
     }
-    assert.equal(pm!.get(id!)!.status, 'killed');
     await waitForComplete(pm!, id!);
   });
 

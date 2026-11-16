@@ -133,13 +133,15 @@ describe('shell.ts — streaming via injected child process', () => {
     assert.ok(r.stderr.includes('stderr-broke'));
   });
 
-  it('a process "error" event is captured in stderr with null exit', async () => {
+  it('a process "error" event is a launch failure captured in stderr with exit 126', async () => {
     const fake = new FakeProc();
     installFakeSpawn(fake);
     const p = execCommand('x', { cwd: '/tmp', stallTimeoutMs: 0 });
     fake.emit('error', new Error('spawn-exploded'));
     const r = await p;
-    assert.equal(r.exitCode, null);
+    // A spawn/pre-exec 'error' is a launch failure (parity: SPAWN_FAILURE_EXIT_CODE),
+    // distinct from a timeout/abort which yields null.
+    assert.equal(r.exitCode, 126);
     assert.ok(r.stderr.includes('spawn-exploded'));
   });
 });
