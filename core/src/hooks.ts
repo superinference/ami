@@ -6,7 +6,13 @@ import { spawn } from 'child_process';
 import type { Message, AssistantMessage } from './types';
 import { log as coreLog } from './logger';
 import { EventEmitter } from 'events';
-import { canHookEvent, shouldSkipHookDueToTrust } from './hook-protection';
+import {
+  canHookEvent,
+  shouldSkipHookDueToTrust,
+  canRunHookUnderManagedOnly,
+  filterManagedOnlyHooks,
+  type HookSourceKind,
+} from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
@@ -1685,27 +1691,29 @@ export class HookManager extends EventEmitter {
     const filePath = path.join(cwd, '.ami', 'hooks.json');
     const userHooksPath = path.join(os.homedir(), '.ami', 'hooks.json');
 
-    // `managed` = admin/policy settings; `plugin` = plugin-bundle contributed. Both
-    // are admin-trusted sources that bypass the strictPluginOnlyCustomization hooks lock.
-    const sources: Array<{ path: string; source: 'project' | 'user'; managed?: boolean; plugin?: boolean }> = [];
+    // Each source carries a provenance `kind` (hook-protection.ts HookSourceKind)
+    // that the managed-only policy filter consults. `managed` = admin/policy
+    // settings; `plugin` = plugin-bundle contributed. Both are admin-trusted
+    // sources that bypass the strictPluginOnlyCustomization hooks lock.
+    const sources: Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind }> = [];
     // Admin/managed settings (highest authority) — the ONLY source honored when
     // allowManagedHooksOnly is set.
     const managedPath = process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH;
-    if (managedPath) sources.push({ path: managedPath, source: 'user', managed: true });
+    if (managedPath) sources.push({ path: managedPath, source: 'user', kind: 'managed' });
     sources.push(
-      { path: filePath, source: 'project' },
-      { path: userHooksPath, source: 'user' },
+      { path: filePath, source: 'project', kind: 'project' },
+      { path: userHooksPath, source: 'user', kind: 'user' },
       // Claude Code compatibility: load hooks from .claude/settings.json
       // ({ "hooks": { "PreToolUse": [{ matcher, hooks: [...] }] } }). The
       // map-keyed `hooks` field is handled by normalizeMapKeyedHooks below, and
       // project-scoped entries are gated by workspace trust. (R2-M8)
-      { path: path.join(cwd, '.claude', 'settings.json'), source: 'project' },
-      { path: path.join(os.homedir(), '.claude', 'settings.json'), source: 'user' },
+      { path: path.join(cwd, '.claude', 'settings.json'), source: 'project', kind: 'project' },
+      { path: path.join(os.homedir(), '.claude', 'settings.json'), source: 'user', kind: 'user' },
     );
 
     // Plugin bundles contribute hooks.json (project-scoped ones gated by trust).
     // Skipped entirely under allowManagedHooksOnly (only managed hooks run).
-    if (!this._allowManagedHooksOnly) try {
+    if (canRunHookUnderManagedOnly('plugin', this._allowManagedHooksOnly)) try {
       const { discoverPlugins } = require('./plugins');
       const pluginDirs: Array<[string, 'user' | 'project']> = [
         [path.join(resolveConfigDir(), 'plugins'), 'user'],
@@ -1719,14 +1727,16 @@ export class HookManager extends EventEmitter {
             coreLog('hooks', `Skipping hooks from disabled plugin: ${bundle.root}`);
             continue;
           }
-          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, plugin: true });
+          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, kind: 'plugin' });
         }
       }
     } catch { /* plugins module optional */ }
 
     // Org policy: when allowManagedHooksOnly is set, drop every non-managed source
-    // so only admin/managed-settings hooks execute.
-    let effectiveSources = this._allowManagedHooksOnly ? sources.filter(s => s.managed) : sources;
+    // so only admin/managed-settings hooks execute. The provenance-based decision
+    // is owned by hook-protection.ts (filterManagedOnlyHooks), the single authority
+    // for "may this source kind run under the policy".
+    let effectiveSources = filterManagedOnlyHooks(sources, this._allowManagedHooksOnly);
 
     // Managed per-surface lock: `strictPluginOnlyCustomization` (admin/managed-only
     // policy) can confine the `hooks` surface to plugin- and managed-provided sources
@@ -1734,7 +1744,7 @@ export class HookManager extends EventEmitter {
     // allowManagedHooksOnly (which is stricter — managed only). Parity: Claude Code's
     // strictPluginOnlyCustomization. The policy lives in the managed settings file.
     if (managedPath && isRestrictedToPluginOnly('hooks', this.readManagedPluginOnlyPolicy(managedPath))) {
-      effectiveSources = effectiveSources.filter(s => s.managed || s.plugin);
+      effectiveSources = effectiveSources.filter(s => s.kind === 'managed' || s.kind === 'plugin');
       coreLog('hooks', "strictPluginOnlyCustomization locks the 'hooks' surface: loading plugin/managed hooks only");
     }
 
@@ -1777,7 +1787,7 @@ export class HookManager extends EventEmitter {
       }
     }
 
-    if (!this._allowManagedHooksOnly) try {
+    if (canRunHookUnderManagedOnly('config', this._allowManagedHooksOnly)) try {
       const configPath = path.join(cwd, '.ami', 'config.json');
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf-8');

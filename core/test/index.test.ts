@@ -383,6 +383,18 @@ describe('index exports', () => {
     assert.equal(typeof core.HookChainGuard, 'function');
   });
 
+  it('exports isManagedHookSource', () => {
+    assert.equal(typeof core.isManagedHookSource, 'function');
+  });
+
+  it('exports canRunHookUnderManagedOnly', () => {
+    assert.equal(typeof core.canRunHookUnderManagedOnly, 'function');
+  });
+
+  it('exports filterManagedOnlyHooks', () => {
+    assert.equal(typeof core.filterManagedOnlyHooks, 'function');
+  });
+
   it('exports ManagedModsEnforcer', () => {
     assert.equal(typeof core.ManagedModsEnforcer, 'function');
   });

@@ -200,7 +200,8 @@ export { isPinnedVariable, getPinCategory, getAllPinnedVariables, EnvProtectionG
 export type { PinCategory, EnvSetAttempt, EnvCheckResult } from './env-protection';
 export { SAFE_ENV_VARS, isSafeEnvVar, isDangerousSettingsEnvVar, PROVIDER_MANAGED_ENV_VARS, isProviderManagedEnvVar, ENV_REJECT_REASONS, ENV_TRUST_TIERS, filterSettingsEnv, isHostManagedProvider, NETWORK_TRUST_VARS, isNetworkTrustEnvVar, classifyUntrustedEnvVar, CODE_LOADING_PREFIXES } from './env-protection';
 export type { EnvRejectReason, EnvTrustTier, SettingsEnvFilterResult } from './env-protection';
-export { isProtectedEvent, canHookEvent, PROTECTED_EVENTS, PASSTHROUGH_EVENTS, HOOK_TIERS, sortHooksByTier, isStricterVerdict, HookChainGuard } from './hook-protection';
+export { isProtectedEvent, canHookEvent, PROTECTED_EVENTS, PASSTHROUGH_EVENTS, HOOK_TIERS, sortHooksByTier, isStricterVerdict, HookChainGuard, isManagedHookSource, canRunHookUnderManagedOnly, filterManagedOnlyHooks } from './hook-protection';
+export type { HookSourceKind } from './hook-protection';
 export type { HookTier, HookRegistration } from './hook-protection';
 export { isModAllowed, isModBlockedByPolicy, getManagedPluginNames, parseModId, normalizeModName, modNamesMatch, validateModId, ManagedModsEnforcer } from './managed-mods';
 export type { ModInfo, ManagedModsPolicy } from './managed-mods';

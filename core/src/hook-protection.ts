@@ -64,6 +64,52 @@ export function shouldSkipHookDueToTrust(trusted: boolean, interactive: boolean)
   return !trusted;
 }
 
+/**
+ * Provenance of a hook registration, used by the managed-only policy filter.
+ *
+ * Mirrors Claude Code's distinction between admin/managed-settings hooks and
+ * lower-trust sources (plugin bundles, session/frontmatter-derived agent/skill
+ * hooks, and user/project filesystem hooks) that `allowManagedHooksOnly` must
+ * strip so they cannot bypass org policy. AMI's tier model (see {@link HookTier})
+ * can only reorder sources; this kind lets a loader EXCLUDE a source entirely by
+ * where it came from.
+ */
+export type HookSourceKind = 'managed' | 'plugin' | 'project' | 'user' | 'config';
+
+/**
+ * The only provenance an `allowManagedHooksOnly` policy permits to run:
+ * admin/managed-settings hooks. Everything else (plugin, project, user, config)
+ * is non-managed and stripped when the policy is on.
+ */
+export function isManagedHookSource(kind: HookSourceKind): boolean {
+  return kind === 'managed';
+}
+
+/**
+ * Managed-only policy predicate: returns true iff a hook from `kind` may run.
+ *
+ * When `managedOnly` is OFF every provenance runs; when ON only admin/managed
+ * hooks run — plugin, project, user, and config (and any session/frontmatter-
+ * derived) hooks are stripped BEFORE they enter the chain, not merely reordered.
+ * Parity: Claude Code's getHooksConfig → shouldAllowManagedHooksOnly branch,
+ * which skips plugin matchers and session hooks entirely under the policy.
+ */
+export function canRunHookUnderManagedOnly(kind: HookSourceKind, managedOnly: boolean): boolean {
+  return managedOnly ? isManagedHookSource(kind) : true;
+}
+
+/**
+ * Filter any provenance-tagged registration list down to those permitted under
+ * the managed-only policy. Identity-preserving (keeps the original objects) so
+ * callers can carry their own per-source metadata on each entry.
+ */
+export function filterManagedOnlyHooks<T extends { kind: HookSourceKind }>(
+  hooks: readonly T[],
+  managedOnly: boolean,
+): T[] {
+  return hooks.filter((h) => canRunHookUnderManagedOnly(h.kind, managedOnly));
+}
+
 export function sortHooksByTier(hooks: HookRegistration[]): HookRegistration[] {
   return [...hooks].sort((a, b) => {
     const tierDiff = TIER_PRIORITY[a.tier] - TIER_PRIORITY[b.tier];
