@@ -412,14 +412,16 @@ describe('tool_search — select: multi-name (M4a)', () => {
 describe('tool_search — +required keyword terms (M4b)', () => {
   beforeEach(() => { setSearchableTools(mockTools); });
 
-  it('restricts matches to tools whose name contains the +term, ranked by the rest', async () => {
+  it('restricts matches to items whose name OR description contains the +term, ranked by the rest', async () => {
     const result = await toolSearchTool.execute({ query: '+file read' }, ctx);
     assert.equal(result.isError, false);
     assert.ok(result.output.includes('file_read'));
     assert.ok(result.output.includes('file_write'));
-    // bash/grep names lack "file" so they are excluded even if desc/rank match.
+    // Parity (U106): the +term gate also matches the DESCRIPTION — grep's
+    // description "Search for patterns in files" contains "file", so it qualifies.
+    assert.ok(result.output.includes('**grep**'));
+    // bash has "file" in neither its name nor description, so it is still excluded.
     assert.ok(!result.output.includes('**bash**'));
-    assert.ok(!result.output.includes('**grep**'));
     // "read" ranks file_read above file_write.
     assert.ok(result.output.indexOf('file_read') < result.output.indexOf('file_write'));
   });
@@ -621,22 +623,24 @@ describe('tool_search — parity enhancements', () => {
     assert.equal(result.metadata?.pending_mcp_servers, undefined);
   });
 
-  it('select: not-found surfaces pending MCP servers + metadata', async () => {
+  it('select: not-found surfaces pending MCP servers + metadata (non-error while pending)', async () => {
     const result = await toolSearchTool.execute(
       { query: 'select:nope' },
       { ...ctx, _mcpManager: pendingMgr([{ name: 'kali', state: 'connecting' }]) },
     );
-    assert.ok(result.isError);
+    // Parity (U106): a select-miss while a server is still connecting is NOT a
+    // hard error — the tool may simply not be registered yet, so the model retries.
+    assert.equal(result.isError, false);
     assert.ok(result.output.includes('kali'));
     assert.deepEqual(result.metadata?.pending_mcp_servers, ['kali']);
   });
 
-  it('multi-select all-missing surfaces pending MCP servers', async () => {
+  it('multi-select all-missing surfaces pending MCP servers (non-error while pending)', async () => {
     const result = await toolSearchTool.execute(
       { query: 'select:nope1, nope2' },
       { ...ctx, _mcpManager: pendingMgr([{ name: 'slack', state: 'pending' }]) },
     );
-    assert.ok(result.isError);
+    assert.equal(result.isError, false);
     assert.ok(result.output.includes('slack'));
     assert.deepEqual(result.metadata?.pending_mcp_servers, ['slack']);
   });

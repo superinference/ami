@@ -173,11 +173,28 @@ function parseName(name: string): { parts: string[]; full: string; isMcp: boolea
   return { parts: lower.split(/[_\-/.]+/).filter(Boolean), full: lower, isMcp: false };
 }
 
-/** Graded score of ranking terms against a tool/skill name + text, using
- *  part-based tokenization (exact part > partial part > full-name fallback).
- *  MCP tool-name parts score higher than regular ones (an MCP server/action
- *  name is a strong intent signal), mirroring Claude's MCP weighting. */
-function gradedScore(name: string, text: string, rankTerms: string[]): number {
+/**
+ * Does a required `+term` match an item? Parity with Claude's required-term
+ * pre-filter, which accepts a term appearing in the NAME parts OR the
+ * description OR the curated searchHint/whenToUse — not the name alone. Name is
+ * matched as a substring (so `+file` gates `file_read`); description/hint are
+ * matched at a word boundary (so `+shell` gates a "shell commands" description
+ * without false positives like "shellac").
+ */
+function requiredTermMatches(term: string, name: string, ...hints: string[]): boolean {
+  if (name.toLowerCase().includes(term)) return true;
+  return hints.some(h => h && matchesTerm(h, term));
+}
+
+/** Graded score of ranking terms against a tool/skill name + description +
+ *  optional curated hint, using part-based tokenization (exact part > partial
+ *  part > full-name fallback). MCP tool-name parts score higher than regular
+ *  ones (an MCP server/action name is a strong intent signal), mirroring
+ *  Claude's MCP weighting. A term that matches the curated `hint` scores higher
+ *  than one that only matches the description — the hint is a deliberately
+ *  authored capability phrase, a stronger signal than prose (parity: Claude
+ *  weights searchHint +4 vs description +2). */
+function gradedScore(name: string, description: string, hint: string, rankTerms: string[]): number {
   const { parts, full, isMcp } = parseName(name);
   // MCP server/action name parts are a strong intent signal, so they outrank an
   // equivalent regular tool. The MCP margin is +2 (not +1) over the regular
@@ -192,7 +209,8 @@ function gradedScore(name: string, text: string, rankTerms: string[]): number {
     if (parts.includes(k)) score += exactWeight;            // exact name-part match
     else if (parts.some(p => p.includes(k))) score += partialWeight; // partial name-part
     else if (full.includes(k)) score += 1;                  // full-name fallback
-    if (matchesTerm(text, kw)) score += 1;                  // word-boundary in text
+    if (matchesTerm(description, kw)) score += 1;            // word-boundary in description
+    if (hint && matchesTerm(hint, kw)) score += 2;          // curated hint outranks description
   }
   return score;
 }
@@ -246,7 +264,11 @@ async function runToolSearch(
       const pending = getPendingMcpServers(context);
       return {
         output: notFoundMessage([name], skills, context, pending),
-        isError: true,
+        // A select-miss while MCP servers are still connecting is NOT fatal — the
+        // requested tool may simply not be registered yet, so the model should
+        // retry rather than treat it as a hard error. Parity with Claude's
+        // buildSearchResult, which returns data (not an error) for a select-miss.
+        isError: pending.length === 0,
         metadata: missMetadata(query, pending),
       };
     }
@@ -273,7 +295,9 @@ async function runToolSearch(
       const pending = getPendingMcpServers(context);
       return {
         output: notFoundMessage(notFound, skills, context, pending),
-        isError: true,
+        // Same retry semantics as the single-name miss above: not an error while
+        // MCP servers are still connecting.
+        isError: pending.length === 0,
         metadata: missMetadata(query, pending),
       };
     }
@@ -315,13 +339,17 @@ async function runToolSearch(
   }
 
   const scoredTools = _allTools.map(tool => {
-    const nameLower = tool.name.toLowerCase();
-    // A +term must appear in the NAME (deliberate: keeps the gate precise).
-    if (!requiredTerms.every(rt => nameLower.includes(rt))) return { tool, score: 0 };
-    // Weigh the terse searchHint (synonyms NOT in the name/description) so a
-    // deferred tool is findable by intent. Parity: Claude's Tool.searchHint.
-    const text = `${tool.name} ${tool.description} ${tool.searchHint ?? ''}`.toLowerCase();
-    const score = requiredTerms.length * 2 + gradedScore(tool.name, text, rankTerms);
+    const hint = tool.searchHint ?? '';
+    // A +term must appear in the NAME, the description, OR the curated
+    // searchHint — matching Claude's required-term pre-filter scope (a tool
+    // whose intent lives in its description/hint is still gateable).
+    if (!requiredTerms.every(rt => requiredTermMatches(rt, tool.name, tool.description, hint))) {
+      return { tool, score: 0 };
+    }
+    // Weigh the terse searchHint (synonyms NOT in the name/description) above the
+    // description so a deferred tool is findable by intent. Parity: Claude's
+    // Tool.searchHint discovery surface.
+    const score = requiredTerms.length * 2 + gradedScore(tool.name, tool.description, hint, rankTerms);
     return { tool, score };
   })
   .filter(s => s.score > 0)
@@ -329,10 +357,15 @@ async function runToolSearch(
   .slice(0, maxResults);
 
   const scoredSkills = skills.map(skill => {
-    const nameLower = skill.name.toLowerCase();
-    if (!requiredTerms.every(rt => nameLower.includes(rt))) return { skill, score: 0 };
-    const text = `${skill.name} ${skill.description || ''} ${skill.whenToUse || ''}`.toLowerCase();
-    const score = requiredTerms.length * 2 + gradedScore(skill.name, text, rankTerms);
+    const description = skill.description || '';
+    const whenToUse = skill.whenToUse || '';
+    // A +term must appear in the skill NAME, description, OR whenToUse — the
+    // whenToUse is the skill's curated intent phrase (the hint analog), so it is
+    // both required-term eligible and weighted above the description.
+    if (!requiredTerms.every(rt => requiredTermMatches(rt, skill.name, description, whenToUse))) {
+      return { skill, score: 0 };
+    }
+    const score = requiredTerms.length * 2 + gradedScore(skill.name, description, whenToUse, rankTerms);
     return { skill, score };
   })
   .filter(s => s.score > 0)
