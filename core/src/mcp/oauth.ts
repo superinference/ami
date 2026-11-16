@@ -58,10 +58,40 @@ export function assertSecureUrl(url: string, label = 'OAuth endpoint'): void {
 
 /** A structured OAuth/token error with the server-reported error code. */
 export class OAuthError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string, readonly description?: string) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly description?: string,
+    /** RFC 6749 §5.2 `error_uri` — a human-readable page describing the error. */
+    readonly uri?: string,
+  ) {
     super(message);
     this.name = 'OAuthError';
   }
+}
+
+/**
+ * Extract the RFC 6749/8414 standard error envelope (`error`, `error_description`,
+ * `error_uri`) from a parsed JSON response body and render it as a message suffix
+ * so a failure surfaces the server's own explanation, not just an HTTP status.
+ * Returns the parts (for building an {@link OAuthError}) and a `suffix` string.
+ */
+export function extractOAuthErrorBody(doc: Record<string, unknown>): {
+  code?: string; description?: string; uri?: string; suffix: string;
+} {
+  const code = typeof doc.error === 'string' ? doc.error : undefined;
+  const description = typeof doc.error_description === 'string' ? doc.error_description : undefined;
+  const uri = typeof doc.error_uri === 'string' ? doc.error_uri : undefined;
+  let suffix = '';
+  if (code) {
+    suffix = `: ${code}`;
+    if (description) suffix += ` (${description})`;
+    if (uri) suffix += ` — see ${uri}`;
+  } else if (description) {
+    suffix = `: ${description}`;
+  }
+  return { code, description, uri, suffix };
 }
 
 /** Non-standard error codes some servers return that mean the grant is dead. */
@@ -73,11 +103,9 @@ const INVALID_GRANT_ALIASES = new Set(['invalid_grant', 'invalid_refresh_token',
  * `invalid_grant` aliases so callers can reason about one canonical code.
  */
 export function normalizeTokenError(status: number, doc: Record<string, unknown>): OAuthError {
-  const rawCode = typeof doc.error === 'string' ? doc.error : undefined;
+  const { code: rawCode, description, uri, suffix } = extractOAuthErrorBody(doc);
   const code = rawCode && INVALID_GRANT_ALIASES.has(rawCode) ? 'invalid_grant' : rawCode;
-  const description = typeof doc.error_description === 'string' ? doc.error_description : undefined;
-  const suffix = code ? `: ${code}${description ? ` (${description})` : ''}` : '';
-  return new OAuthError(`token endpoint error (${status})${suffix}`, status, code, description);
+  return new OAuthError(`token endpoint error (${status})${suffix}`, status, code, description, uri);
 }
 
 /** Run `promise`, rejecting if it does not settle within `ms` (0 = no limit). */
@@ -182,6 +210,14 @@ export interface AuthServerMetadata {
    * registration (`client_secret_post` / `client_secret_basic`).
    */
   tokenEndpointAuthMethodsSupported?: string[];
+  /**
+   * RFC 7009 `revocation_endpoint`. When advertised, access/refresh tokens can be
+   * invalidated server-side on sign-out / re-auth so a discarded or leaked token
+   * cannot keep minting access past its natural expiry.
+   */
+  revocationEndpoint?: string;
+  /** RFC 8414 `revocation_endpoint_auth_methods_supported` — client-auth methods the revocation endpoint accepts. */
+  revocationEndpointAuthMethodsSupported?: string[];
 }
 
 export interface OAuthTokens {
@@ -213,6 +249,12 @@ export interface McpOAuthProvider {
    * retried. A 403 that is NOT an insufficient_scope challenge returns false.
    */
   onForbidden(wwwAuthenticate: string | null): Promise<boolean>;
+  /**
+   * User-initiated sign-out: revoke the issued tokens server-side (RFC 7009,
+   * best-effort) and drop all local credential state. Optional — a provider that
+   * cannot revoke simply omits it.
+   */
+  revoke?(): Promise<void>;
 }
 
 const base64url = (buf: Buffer): string =>
@@ -364,7 +406,17 @@ export function wellKnown(baseUrl: string, suffix: string): string {
 
 async function getJson(fetchImpl: FetchLike, url: string): Promise<Record<string, unknown>> {
   const res = await fetchImpl(url, { headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`OAuth discovery failed (${res.status}) for ${url}`);
+  if (!res.ok) {
+    // RFC 8414/9728 error responses carry a JSON `{error, error_description,
+    // error_uri}` body; surface it so the failure explains WHY (e.g. an AS that
+    // rejects the discovery with `invalid_request`), not just the HTTP status.
+    let parts: ReturnType<typeof extractOAuthErrorBody> = { suffix: '' };
+    try { parts = extractOAuthErrorBody((await res.json()) as Record<string, unknown>); } catch { /* no/opaque body */ }
+    throw new OAuthError(
+      `OAuth discovery failed (${res.status}) for ${url}${parts.suffix}`,
+      res.status, parts.code, parts.description, parts.uri,
+    );
+  }
   // A captive portal or intercepting proxy answers 200 with an HTML interstitial;
   // parsing it as JSON throws an opaque SyntaxError mid-auth. Diagnose it so the
   // user knows the NETWORK — not the auth server — is the problem.
@@ -454,6 +506,9 @@ export async function discoverAuthServer(
       ? (doc.grant_types_supported as string[]) : undefined,
     tokenEndpointAuthMethodsSupported: Array.isArray(doc.token_endpoint_auth_methods_supported)
       ? (doc.token_endpoint_auth_methods_supported as string[]) : undefined,
+    revocationEndpoint: typeof doc.revocation_endpoint === 'string' ? doc.revocation_endpoint : undefined,
+    revocationEndpointAuthMethodsSupported: Array.isArray(doc.revocation_endpoint_auth_methods_supported)
+      ? (doc.revocation_endpoint_auth_methods_supported as string[]) : undefined,
   };
 }
 
@@ -479,7 +534,14 @@ export async function registerClient(
       token_endpoint_auth_method: pickRegistrationAuthMethod(supportedAuthMethods),
     }),
   });
-  if (!res.ok) throw new Error(`dynamic client registration failed (${res.status})`);
+  if (!res.ok) {
+    let parts: ReturnType<typeof extractOAuthErrorBody> = { suffix: '' };
+    try { parts = extractOAuthErrorBody((await res.json()) as Record<string, unknown>); } catch { /* no/opaque body */ }
+    throw new OAuthError(
+      `dynamic client registration failed (${res.status})${parts.suffix}`,
+      res.status, parts.code, parts.description, parts.uri,
+    );
+  }
   const doc = (await res.json()) as Record<string, unknown>;
   if (typeof doc.client_id !== 'string') throw new Error('registration response missing client_id');
   return { clientId: doc.client_id, clientSecret: typeof doc.client_secret === 'string' ? doc.client_secret : undefined };
@@ -620,15 +682,113 @@ export function refreshToken(
   return postForm(fetchImpl, params.tokenEndpoint, form, now);
 }
 
+/** Client-auth method a confidential client uses at the token/revocation endpoint. */
+export type ClientAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none';
+
+/**
+ * Pick the client-authentication method for a confidential request (RFC 7009
+ * revocation, RFC 6749 token), given the endpoint's advertised
+ * `*_auth_methods_supported` and whether a client secret is available. Prefers
+ * `client_secret_basic` (RFC 7009 default), then `client_secret_post`; falls back
+ * to `none` when there is no secret. With no advertised list, defaults to basic
+ * when a secret exists (the most widely accepted) else none.
+ */
+export function pickClientAuthMethod(supported: string[] | undefined, hasSecret: boolean): ClientAuthMethod {
+  if (!hasSecret) return 'none';
+  if (!supported || supported.length === 0) return 'client_secret_basic';
+  if (supported.includes('client_secret_basic')) return 'client_secret_basic';
+  if (supported.includes('client_secret_post')) return 'client_secret_post';
+  return 'client_secret_basic';
+}
+
+/**
+ * RFC 7009 token revocation. Revokes a single token (access or refresh) at the
+ * authorization server's `revocation_endpoint`. Client authentication follows
+ * `authMethod`: `client_secret_basic` sends an `Authorization: Basic` header,
+ * `client_secret_post` puts the credentials in the body, `none` sends only the
+ * `client_id`. A compliant server answers 200 even for an already-invalid token;
+ * a 401 from a non-RFC-7009 server triggers ONE retry authenticating with the
+ * token itself as a `Bearer` credential (some servers gate revocation that way).
+ * Returns true when the server accepted the revocation. Never throws on an HTTP
+ * error — revocation is best-effort — but a network throw propagates to the caller.
+ */
+export async function revokeToken(
+  fetchImpl: FetchLike,
+  params: {
+    revocationEndpoint: string;
+    token: string;
+    tokenTypeHint?: 'access_token' | 'refresh_token';
+    clientId?: string;
+    clientSecret?: string;
+    authMethod?: ClientAuthMethod;
+  },
+): Promise<boolean> {
+  assertSecureUrl(params.revocationEndpoint, 'revocation endpoint');
+  const method = params.authMethod ?? pickClientAuthMethod(undefined, !!params.clientSecret);
+  const form: Record<string, string> = { token: params.token };
+  if (params.tokenTypeHint) form.token_type_hint = params.tokenTypeHint;
+  if (params.clientId) form.client_id = params.clientId;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    Accept: 'application/json',
+  };
+  if (method === 'client_secret_post' && params.clientSecret) {
+    form.client_secret = params.clientSecret;
+  } else if (method === 'client_secret_basic' && params.clientSecret && params.clientId) {
+    headers.Authorization = `Basic ${Buffer.from(`${params.clientId}:${params.clientSecret}`).toString('base64')}`;
+  }
+  const res = await fetchImpl(params.revocationEndpoint, {
+    method: 'POST', headers, body: new URLSearchParams(form).toString(),
+  });
+  if (res.ok) return true;
+  // Non-RFC-7009 fallback: a server that returns 401 may gate revocation behind
+  // the bearer token itself rather than client auth. Retry once that way.
+  if (res.status === 401) {
+    const bearer = await fetchImpl(params.revocationEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+        Authorization: `Bearer ${params.token}`,
+      },
+      body: new URLSearchParams({ token: params.token, ...(params.tokenTypeHint ? { token_type_hint: params.tokenTypeHint } : {}) }).toString(),
+    });
+    return bearer.ok;
+  }
+  return false;
+}
+
 /** Holds the current tokens and answers "is the access token still usable?". */
 export class OAuthTokenStore {
   private tokens: OAuthTokens | null = null;
+  /**
+   * Monotonic generation counter bumped on every authoritative mutation
+   * (`set`/`clear`). A refresh captures the generation before its async POST and
+   * only commits via {@link applyRefresh} if it is unchanged — so a `clear()`
+   * (user sign-out / step-up / dead-grant) or a fresh `set()` that lands WHILE the
+   * refresh is in flight supersedes the stale result instead of being clobbered by it.
+   */
+  private generation = 0;
   /** Treat a token as expired this many ms before its real expiry (clock skew). */
   constructor(private readonly skewMs: number = 30_000) {}
 
-  set(tokens: OAuthTokens): void { this.tokens = tokens; }
+  set(tokens: OAuthTokens): void { this.tokens = tokens; this.generation++; }
   get(): OAuthTokens | null { return this.tokens; }
-  clear(): void { this.tokens = null; }
+  clear(): void { this.tokens = null; this.generation++; }
+
+  /** Current generation — capture before an async refresh, pass to {@link applyRefresh}. */
+  getGeneration(): number { return this.generation; }
+
+  /**
+   * Commit refreshed tokens only if no authoritative mutation happened since
+   * `capturedGeneration` was read. Returns true when applied, false when a
+   * concurrent clear/set superseded this (stale) refresh and it was discarded.
+   */
+  applyRefresh(tokens: OAuthTokens, capturedGeneration: number): boolean {
+    if (capturedGeneration !== this.generation) return false;
+    this.set(tokens);
+    return true;
+  }
 
   /** The Authorization header value, or null when there is no live token. */
   authorizationHeader(now: number): string | null {
@@ -733,6 +893,14 @@ export interface McpOAuthSessionOptions {
   loginHint?: string;
   /** Clock seam (epoch ms). Defaults to Date.now. */
   now?: () => number;
+  /**
+   * Proactive refresh-ahead window (ms): treat an access token as expired this many
+   * ms BEFORE its real expiry, so a long-running session refreshes ahead of time
+   * instead of presenting a token that expires mid-request (clock-skew guard).
+   * Applied to the DEFAULT in-memory store; ignored when an explicit `store` is
+   * supplied (that store carries its own buffer). Defaults to 30_000.
+   */
+  refreshBufferMs?: number;
   store?: OAuthTokenStore;
   /** Per-request HTTP timeout (ms). Defaults to OAUTH_HTTP_TIMEOUT_MS; 0 disables. */
   timeoutMs?: number;
@@ -768,7 +936,7 @@ export class McpOAuthSession implements McpOAuthProvider {
   }
 
   constructor(private readonly opts: McpOAuthSessionOptions) {
-    this.store = opts.store ?? new OAuthTokenStore();
+    this.store = opts.store ?? new OAuthTokenStore(opts.refreshBufferMs);
     this.now = opts.now ?? (() => Date.now());
     // Every OAuth HTTP call (discovery, DCR, token, refresh) is bounded by a
     // per-request timeout so a hung auth server cannot wedge the session. The
@@ -784,16 +952,26 @@ export class McpOAuthSession implements McpOAuthProvider {
     const live = this.store.authorizationHeader(this.now());
     if (live) return live;
     // Token present but expired, and we can refresh without user interaction.
-    if (this.store.hasRefreshToken() && this.authMeta && this.effectiveClientId) {
-      // Single-flight: a burst of requests arriving at expiry must not each POST
-      // the (typically single-use, rotating) refresh_token — all but one would
-      // get invalid_grant and corrupt the stored token. Concurrent callers share
-      // one in-flight refresh promise, cleared once it settles.
-      if (this.refreshInFlight) return this.refreshInFlight;
-      this.refreshInFlight = this.doRefresh().finally(() => { this.refreshInFlight = null; });
-      return this.refreshInFlight;
-    }
+    if (this.canSilentRefresh()) return this.refreshAccessToken();
     return null;
+  }
+
+  /** True when a silent (no-browser) refresh is possible: a refresh token, discovered AS, and a client id. */
+  private canSilentRefresh(): boolean {
+    return this.store.hasRefreshToken() && !!this.authMeta && !!this.effectiveClientId;
+  }
+
+  /**
+   * Single-flight silent refresh shared by the proactive (expired-header) path and
+   * the reactive (401 clock-drift) path. A burst of requests arriving at expiry
+   * must not each POST the (typically single-use, rotating) refresh_token — all but
+   * one would get invalid_grant and corrupt the stored token. Concurrent callers
+   * share one in-flight refresh promise, cleared once it settles.
+   */
+  private refreshAccessToken(): Promise<string | null> {
+    if (this.refreshInFlight) return this.refreshInFlight;
+    this.refreshInFlight = this.doRefresh().finally(() => { this.refreshInFlight = null; });
+    return this.refreshInFlight;
   }
 
   /** Perform one silent refresh of the stored tokens; returns the new header or null. */
@@ -801,6 +979,10 @@ export class McpOAuthSession implements McpOAuthProvider {
     const authMeta = this.authMeta!;
     const clientId = this.effectiveClientId!;
     const clientSecret = this.effectiveClientSecret;
+    // Capture the store generation BEFORE the async POST so a clear()/set() that
+    // lands while the refresh is in flight (sign-out, step-up, a fresh consent)
+    // supersedes this result instead of being overwritten by a stale token.
+    const generation = this.store.getGeneration();
     try {
       const refreshed = await retryWithBackoff(
         () => refreshToken(this.fetch, {
@@ -815,7 +997,8 @@ export class McpOAuthSession implements McpOAuthProvider {
         }, this.now()),
         { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
       );
-      this.store.set(refreshed);
+      // Discard a stale refresh whose generation was superseded mid-flight.
+      if (!this.store.applyRefresh(refreshed, generation)) return null;
       return this.store.authorizationHeader(this.now());
     } catch (error) {
       // A dead grant (invalid_grant) can never recover by retry — clear the
@@ -826,7 +1009,66 @@ export class McpOAuthSession implements McpOAuthProvider {
   }
 
   async onUnauthorized(wwwAuthenticate: string | null): Promise<boolean> {
+    // Reactive clock-drift recovery (parity with Claude's withOAuth401Retry): the
+    // server returned 401 even though the stored token may look locally valid.
+    // Attempt ONE silent refresh (RFC 6749 §6) before driving a full interactive
+    // re-consent — a drifted clock or an early server-side invalidation is fixed by
+    // a fresh access token with no browser round-trip. Only runs once authMeta is
+    // known (a prior auth happened) and a refresh token exists.
+    if (this.canSilentRefresh()) {
+      const header = await this.refreshAccessToken();
+      if (header) return true;
+    }
     return this.performAuthorization(wwwAuthenticate);
+  }
+
+  /**
+   * Revoke the session's tokens server-side (RFC 7009) and clear local state — a
+   * user-initiated "sign out of this MCP server". The AS revocation endpoint is
+   * discovered best-effort if not already known; the refresh token is revoked
+   * FIRST (the long-lived credential) then the access token, each independently
+   * best-effort so one failure does not abort the other. The local store is always
+   * cleared at the end (even when the server has no revocation endpoint or the
+   * revocation call fails), so a discarded credential never lingers.
+   */
+  async revoke(): Promise<void> {
+    const tokens = this.store.get();
+    try {
+      if (tokens) {
+        // Discover the AS (hence the revocation endpoint) if a prior 401 flow has
+        // not already populated it — otherwise there is nothing to revoke against.
+        if (!this.authMeta) {
+          try { await this.discoverAuthorizationServer(null); } catch { /* best-effort */ }
+        }
+        const endpoint = this.authMeta?.revocationEndpoint;
+        if (endpoint && this.effectiveClientId) {
+          const authMethod = pickClientAuthMethod(
+            this.authMeta!.revocationEndpointAuthMethodsSupported
+              ?? this.authMeta!.tokenEndpointAuthMethodsSupported,
+            !!this.effectiveClientSecret,
+          );
+          // Refresh token first (long-lived), then the access token — best-effort each.
+          for (const [token, hint] of [
+            [tokens.refreshToken, 'refresh_token'] as const,
+            [tokens.accessToken, 'access_token'] as const,
+          ]) {
+            if (!token) continue;
+            try {
+              await revokeToken(this.fetch, {
+                revocationEndpoint: endpoint,
+                token,
+                tokenTypeHint: hint,
+                clientId: this.effectiveClientId,
+                clientSecret: this.effectiveClientSecret,
+                authMethod,
+              });
+            } catch { /* best-effort — a failed revoke must not block sign-out */ }
+          }
+        }
+      }
+    } finally {
+      this.store.clear();
+    }
   }
 
   async onForbidden(wwwAuthenticate: string | null): Promise<boolean> {
@@ -837,7 +1079,10 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (parsed.error !== 'insufficient_scope') return false;
     // Drop the stale token so authorizationHeader() cannot silently refresh the
     // SAME insufficient scope and mask the step-up; force full interactive consent.
-    this.store.clear();
+    // A step-up IS a re-authentication, so revoke the abandoned token server-side
+    // (RFC 7009, best-effort — a no-op when the AS advertises no revocation
+    // endpoint) before re-consenting, matching Claude's revoke-then-reauth.
+    await this.revoke();
     return this.performAuthorization(wwwAuthenticate, parsed.scope);
   }
 
@@ -863,18 +1108,47 @@ export class McpOAuthSession implements McpOAuthProvider {
       // points at a different host to avoid an authorization mix-up attack.
       assertResourceMatch(prm.resource, this.opts.serverUrl);
       this.resource = prm.resource;
-      const issuer = prm.authorizationServers[0];
-      assertSecureUrl(issuer, 'authorization server issuer');
-      this.authMeta = await discoverAuthServer(this.fetch, issuer, this.opts.authServerMetadataUrl);
-      return { prmScopes: prm.scopesSupported };
+      // RFC 9728 lets a PRM advertise MULTIPLE authorization servers. Try each in
+      // order, skipping one whose metadata discovery fails or that cannot perform
+      // the authorization_code grant, and accumulate per-AS reasons — so a down or
+      // incapable primary AS does not sink the flow when a usable alternative is
+      // listed. Only after every candidate fails do we fall through to the error.
+      const servers = prm.authorizationServers;
+      const errors: string[] = [];
+      for (const issuer of servers) {
+        try {
+          assertSecureUrl(issuer, 'authorization server issuer');
+          const meta = await discoverAuthServer(this.fetch, issuer, this.opts.authServerMetadataUrl);
+          this.assertGrantCapable(meta);
+          this.authMeta = meta;
+          return { prmScopes: prm.scopesSupported };
+        } catch (asError) {
+          errors.push(`${issuer}: ${asError instanceof Error ? asError.message : String(asError)}`);
+        }
+      }
+      throw new Error(`no usable authorization server among ${servers.length} advertised (${errors.join('; ')})`);
     } catch (prmError) {
       if (this.opts.authServerMetadataUrl === undefined && hasUrlPath(this.opts.serverUrl)) {
         assertSecureUrl(this.opts.serverUrl, 'authorization server issuer');
-        this.authMeta = await discoverAuthServer(this.fetch, this.opts.serverUrl);
+        const meta = await discoverAuthServer(this.fetch, this.opts.serverUrl);
+        this.assertGrantCapable(meta);
+        this.authMeta = meta;
         this.resource = this.opts.serverUrl;
         return {};
       }
       throw prmError;
+    }
+  }
+
+  /**
+   * RFC 8414 grant-type capability check: if the AS advertises its supported
+   * grants, refuse to drive an authorization_code consent flow against one that
+   * cannot perform it (it could never complete). A server that omits the list is
+   * assumed capable (the common case).
+   */
+  private assertGrantCapable(meta: AuthServerMetadata): void {
+    if (meta.grantTypesSupported && !meta.grantTypesSupported.includes('authorization_code')) {
+      throw new Error('authorization server does not advertise the authorization_code grant');
     }
   }
 
@@ -889,12 +1163,9 @@ export class McpOAuthSession implements McpOAuthProvider {
     try {
       const { prmScopes } = await this.discoverAuthorizationServer(wwwAuthenticate);
       const authMeta = this.authMeta!;
-      // RFC 8414 grant-type capability check: if the server advertises its
-      // supported grants, refuse to drive an authorization_code consent flow
-      // against one that cannot perform it (it could never complete).
-      if (authMeta.grantTypesSupported && !authMeta.grantTypesSupported.includes('authorization_code')) {
-        throw new Error('authorization server does not advertise the authorization_code grant');
-      }
+      // The authorization server was already confirmed capable of the
+      // authorization_code grant during discovery (assertGrantCapable), so an
+      // incapable AS never reaches here.
 
       const redirectUri = await this.getRedirectUri();
       if (!this.effectiveClientId) {

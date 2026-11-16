@@ -1054,6 +1054,17 @@ export class McpClient extends EventEmitter {
     }));
   }
 
+  /**
+   * Revoke this server's OAuth tokens server-side (RFC 7009) and drop local
+   * credential state — a user-initiated "sign out of this MCP server". Best-effort
+   * and a no-op for a server without an OAuth provider. The manager calls this on
+   * {@link McpManager.removeServer} (forget/reject), NOT on a transient stop, so a
+   * temporarily-stopped server keeps its tokens.
+   */
+  async revokeAuth(): Promise<void> {
+    await this.oauth?.revoke?.();
+  }
+
   disconnect(): void {
     // Cancel any in-flight reconnect loop — but NOT when this disconnect is the
     // loop's own teardown of a failed connect attempt (reconnectConnecting), which

@@ -327,7 +327,7 @@ export interface McpServerConfig {
   url?: string;
   containerConfig?: ContainerConfig;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
-  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; scope?: string; authServerMetadataUrl?: string; loginHint?: string };
+  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; scope?: string; authServerMetadataUrl?: string; loginHint?: string; refreshBufferMs?: number };
 }
 
 export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled', 'needs-auth'] as const;
@@ -724,6 +724,9 @@ export class McpManager extends EventEmitter {
       // Persist tokens per server so authentication survives restarts (H22/H45).
       const tokenStore = new FileOAuthTokenStore(
         path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(name)),
+        // Proactive refresh-ahead window: refresh this many ms before real expiry
+        // so a long-running session never presents an expired token mid-request.
+        config.oauth.refreshBufferMs,
       );
       oauth = new McpOAuthSession({
         serverUrl: config.url,
@@ -1304,6 +1307,12 @@ export class McpManager extends EventEmitter {
     const client = this.clients.get(name);
     if (client) {
       this._intentionalDisconnect.add(name);
+      // Forgetting a server is a sign-out: revoke its OAuth tokens server-side
+      // (RFC 7009, best-effort) and drop the persisted credential before teardown,
+      // so a discarded refresh token cannot keep minting access. Fire-and-forget —
+      // a failed/slow revoke must not block removal. (A transient stopServer does
+      // NOT revoke; only an explicit remove/reject does.)
+      void client.revokeAuth().catch(() => {});
       client.disconnect();
       this.clients.delete(name);
     }
