@@ -6,6 +6,7 @@ import * as os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { glob } from 'tinyglobby';
+import { isGeneratedFile } from './generated-files';
 
 const execFileAsync = promisify(execFile);
 
@@ -567,6 +568,15 @@ export class WorkspaceIndexer {
         filePaths = [];
       }
     }
+    // Exclude generated/vendored files (committed lockfiles, *.d.ts, *.min.js,
+    // *.bundle.js, protobuf/gRPC/swagger output, build/vendor dirs, …). On the
+    // git path these are tracked and so survive discovery; on the glob path
+    // SKIP_DIRS/.gitignore only cover directories. Classifying by the
+    // workspace-RELATIVE path (never the absolute prefix) mirrors Claude Code's
+    // Linguist-style classifier and keeps machine-generated symbols out of both
+    // the index and the summary injected into the system prompt.
+    filePaths = filePaths.filter(fp => !isGeneratedFile(path.relative(this.cwd, fp)));
+
     const discoveryMs = Date.now() - discoveryStart;
 
     const maxFilesCapped = filePaths.length > MAX_FILES;
