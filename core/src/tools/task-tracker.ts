@@ -24,6 +24,44 @@ interface Task {
 export const DEFAULT_TASKS_MODE_TASK_LIST_ID = 'tasklist';
 
 /**
+ * Sanitize a task-list identifier for safe use in a file name — mirrors Claude
+ * Code's `sanitizeForFilePath`: strip everything but ASCII letters, digits,
+ * hyphen and underscore so a list id can never escape the state dir via
+ * traversal (`../`) or path separators. An id that sanitizes to empty is
+ * treated as unset.
+ */
+export function sanitizeTaskListId(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().replace(/[^A-Za-z0-9_-]/g, '');
+}
+
+/**
+ * Resolve the active task-list id (PARITY): an explicit argument wins, then the
+ * `AMI_TASK_LIST_ID` env knob, then the Claude-Code-compatible
+ * `CLAUDE_CODE_TASK_LIST_ID` (cross-framework compat), falling back to the
+ * default list. A scoped list lets teammates/teams share one named task file
+ * while isolated sessions keep separate state. Mirrors Claude Code's
+ * `getTaskListId()` priority waterfall.
+ */
+export function resolveTaskListId(explicit?: string): string {
+  return (
+    sanitizeTaskListId(explicit) ||
+    sanitizeTaskListId(process.env.AMI_TASK_LIST_ID) ||
+    sanitizeTaskListId(process.env.CLAUDE_CODE_TASK_LIST_ID) ||
+    DEFAULT_TASKS_MODE_TASK_LIST_ID
+  );
+}
+
+/**
+ * File name for a given task-list id. The default list keeps the canonical
+ * `tasks.json` path; any scoped list gets its own `tasks-<id>.json` so multiple
+ * named lists coexist in the same state dir without clobbering each other.
+ */
+function taskFileName(listId: string): string {
+  return listId === DEFAULT_TASKS_MODE_TASK_LIST_ID ? 'tasks.json' : `tasks-${listId}.json`;
+}
+
+/**
  * Hard cap on the characters a single task_tracker call may return, mirroring
  * Claude Code's `maxResultSizeChars` bound on the task tools. A runaway list of
  * thousands of tasks must not blow up the model's context — overflow is truncated
@@ -57,8 +95,9 @@ export function getTaskState(): Map<number, Task> {
   return tasks;
 }
 
-export function setTaskPersistPath(cwd: string): void {
-  persistPath = path.join(projectStateDir(cwd), 'tasks.json');
+export function setTaskPersistPath(cwd: string, listId?: string): void {
+  const resolved = resolveTaskListId(listId);
+  persistPath = path.join(projectStateDir(cwd), taskFileName(resolved));
   loadFromDisk();
 }
 
@@ -412,17 +451,18 @@ export const taskTrackerTool: ToolDefinition = {
   name: 'task_tracker',
   description:
     'Create and manage tasks to track progress on complex work. ' +
-    'Actions: "create" (new task), "update" (change status/details), "list" (show all), "get" (single task), "delete" (remove), "claim" (atomically assign and start), "next" (find the next available task to work on), "status" (per-owner idle/busy introspection). ' +
+    'Actions: "create" (new task), "update" (change status/details), "list" (show all), "get" (single task), "delete" (remove), "claim" (atomically assign and start), "release" (give up a claim: clear owner and revert in_progress back to pending), "next" (find the next available task to work on), "status" (per-owner idle/busy introspection). ' +
     'Supports task dependencies via addBlocks/addBlockedBy to express ordering constraints. ' +
     'Prefer tasks in id order (lowest id first). Check the list first to avoid creating duplicate tasks. ' +
-    'Pull-based teammates: call "next" (optionally with owner) to get the next pending/unowned/unblocked task, then "claim" it, work it, mark it completed, and repeat. ' +
+    'Pull-based teammates: call "next" (optionally with owner) to get the next pending/unowned/unblocked task, then "claim" it, work it, mark it completed, and repeat. If you claim a task but cannot start it, "release" it so another teammate can pick it up. ' +
+    'Staleness: in shared/multi-owner task lists others may change a task between your reads — re-read the latest state with action "get" before you "update" or "claim" a task you did not just create, so you do not act on stale data. ' +
     'Never mark a task completed on failure or error — leave it in_progress and fix the root cause first; if blocked, create a blocker task instead of closing.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['create', 'update', 'list', 'get', 'delete', 'claim', 'next', 'status'],
+        enum: ['create', 'update', 'list', 'get', 'delete', 'claim', 'release', 'next', 'status'],
         description: 'The action to perform.',
       },
       subject: {
@@ -439,7 +479,7 @@ export const taskTrackerTool: ToolDefinition = {
       },
       task_id: {
         type: 'string',
-        description: 'Task ID for update/get/delete/claim actions.',
+        description: 'Task ID for update/get/delete/claim/release actions.',
       },
       status: {
         type: 'string',
@@ -682,7 +722,12 @@ export const taskTrackerTool: ToolDefinition = {
         reloadForRead();
         const task = tasks.get(id);
         if (!task) {
-          return { output: `Error: task #${id} not found.`, isError: true };
+          // Graceful, NON-error "not found" on read (PARITY): Claude Code's
+          // TaskGet returns a normal tool result ("Task not found") for a missing
+          // id rather than an error — a read that finds nothing is a valid answer,
+          // not a tool failure. A teammate polling for a task it may have already
+          // completed/deleted must not see this as an error it has to recover from.
+          return { output: `Task #${id} not found.`, isError: false };
         }
         return { output: capOutput(formatTask(task)), isError: false };
       }
@@ -761,6 +806,42 @@ export const taskTrackerTool: ToolDefinition = {
         return { output: capOutput(out), isError: false };
       }
 
+      case 'release': {
+        // Claim rollback / orphaned-claim recovery (PARITY): a teammate that
+        // claimed a task but cannot start it (submission rejected, agent aborted,
+        // work failed to begin) gives the claim back — clear the owner and revert
+        // an in_progress task to pending so `next`/`claim` can surface it to the
+        // next worker. Mirrors Claude Code's watcher releasing a claim via
+        // updateTask(..., { owner: undefined }) when onSubmitTask returns false.
+        const id = parseTaskId(input.task_id);
+        if (id === null) {
+          return { output: 'Error: task_id is required for release action.', isError: true };
+        }
+        let notFound = false;
+        let alreadyCompleted = false;
+        const out = await mutate(() => {
+          const task = tasks.get(id);
+          if (!task) { notFound = true; return ''; }
+          if (task.status === 'completed') { alreadyCompleted = true; return ''; }
+          const hadOwner = task.owner;
+          const wasInProgress = task.status === 'in_progress';
+          task.owner = undefined;
+          if (wasInProgress) task.status = 'pending';
+          const changed: string[] = [];
+          if (hadOwner) changed.push('owner cleared');
+          if (wasInProgress) changed.push('reverted in_progress -> pending');
+          const detail = changed.length > 0 ? ` (${changed.join(', ')})` : ' (already unclaimed)';
+          return `Released task #${id}${detail}.\n${formatTask(task)}`;
+        });
+        if (notFound) {
+          return { output: `Error: task #${id} not found. [reason: task_not_found]`, isError: true };
+        }
+        if (alreadyCompleted) {
+          return { output: `Error: task #${id} is already completed — nothing to release. [reason: already_resolved]`, isError: true };
+        }
+        return { output: capOutput(out), isError: false };
+      }
+
       case 'next': {
         reloadForRead();
         const owner = input.owner as string | undefined;
@@ -786,7 +867,7 @@ export const taskTrackerTool: ToolDefinition = {
       }
 
       default:
-        return { output: `Error: unknown action "${action}". Must be one of: create, update, list, get, delete, claim, next, status.`, isError: true };
+        return { output: `Error: unknown action "${action}". Must be one of: create, update, list, get, delete, claim, release, next, status.`, isError: true };
     }
   },
 };

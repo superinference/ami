@@ -144,9 +144,10 @@ describe('taskTrackerTool — get', () => {
     assert.ok(result.output.includes('Do this thing'));
   });
 
-  it('returns error for non-existent task', async () => {
+  it('returns a graceful non-error "not found" for a non-existent task (PARITY)', async () => {
     const result = await taskTrackerTool.execute({ action: 'get', task_id: '99' }, ctx());
-    assert.equal(result.isError, true);
+    // Claude Code's TaskGet returns a normal result for a missing id, not an error.
+    assert.equal(result.isError, false);
     assert.ok(result.output.includes('not found'));
   });
 

@@ -166,7 +166,8 @@ describe('task-tracker: persistence + formatting behavior', () => {
 
     assert.equal(getTaskState().size, 1, 'invalid record dropped, valid kept');
     const bad = await taskTrackerTool.execute({ action: 'get', task_id: '1' }, ctx);
-    assert.equal(bad.isError, true);
+    // get on a missing id is a graceful non-error "not found" (PARITY).
+    assert.equal(bad.isError, false);
     assert.ok(bad.output.includes('not found'));
     const ok = await taskTrackerTool.execute({ action: 'get', task_id: '2' }, ctx);
     assert.equal(ok.isError, false);
