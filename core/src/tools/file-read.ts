@@ -11,7 +11,8 @@ import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 import { suggestSimilarPaths, suggestPathUnderCwd } from './path-suggest';
 import { formatFileSize } from '../utils/format';
-import { memoryAgeDays } from '../memory';
+import { estimateTokensForFileType, charsPerTokenForFileType } from '../utils/tokens';
+import { memoryFreshnessReminder } from '../memory';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
@@ -1277,9 +1278,12 @@ export const fileReadTool: ToolDefinition = {
       if (hasMore) {
         output += `\n\n[... output capped at ${limit} lines; more lines follow. Use offset=${offset + limit} to continue reading, or a larger limit.]`;
       }
-      const estimatedTokens = Math.ceil(output.length / 4);
+      // File-type-aware token estimate (dense JSON ≈ 2 chars/token) so an
+      // oversized JSON range is not under-counted past the budget; non-JSON
+      // reads use the generic ~4 ratio and keep identical behavior.
+      const estimatedTokens = estimateTokensForFileType(output, ext);
       if (estimatedTokens > MAX_FILE_READ_TOKENS) {
-        output = output.slice(0, MAX_FILE_READ_TOKENS * 4) + `\n\n[... truncated: exceeds ${MAX_FILE_READ_TOKENS} token budget. Narrow offset/limit.]`;
+        output = output.slice(0, MAX_FILE_READ_TOKENS * charsPerTokenForFileType(ext)) + `\n\n[... truncated: exceeds ${MAX_FILE_READ_TOKENS} token budget. Narrow offset/limit.]`;
       }
       // Record the exact window so an identical repeat read on an unchanged file
       // short-circuits above instead of re-streaming it.
@@ -1345,9 +1349,15 @@ export const fileReadTool: ToolDefinition = {
     parts.push(numbered);
 
     let output = parts.join('\n');
-    const estimatedTokens = Math.ceil(output.length / 4);
+    // Token-budget guard uses a FILE-TYPE-AWARE bytes/token ratio: dense
+    // structured text (.json/.jsonl/.jsonc) is dominated by single-char tokens,
+    // so the generic ~4 chars/token ratio badly UNDER-counts it and would let an
+    // oversized JSON payload slip past the budget. charsPerTokenForFileType()
+    // returns ~2 for JSON and ~4 for everything else, so non-JSON reads keep
+    // identical behavior. Mirrors Claude Code's roughTokenCountEstimationForFileType.
+    const estimatedTokens = estimateTokensForFileType(output, ext);
     if (estimatedTokens > MAX_FILE_READ_TOKENS) {
-      const truncateChars = MAX_FILE_READ_TOKENS * 4;
+      const truncateChars = MAX_FILE_READ_TOKENS * charsPerTokenForFileType(ext);
       output = output.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${MAX_FILE_READ_TOKENS} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
     }
 
@@ -1356,12 +1366,12 @@ export const fileReadTool: ToolDefinition = {
     }
 
     if (resolved.includes('.ami/') && (resolved.includes('/memory/') || resolved.includes('/sessions/'))) {
-      // Clamp future mtimes (clock skew / coarse fs granularity) via the single
-      // canonical helper in memory.ts — never render a negative "-N days" age.
-      const ageDays = memoryAgeDays(stat.mtimeMs);
-      if (ageDays > 1) {
-        output = `[Memory file — last modified ${ageDays} days ago. Verify before relying on this data.]\n${output}`;
-      }
+      // Staleness caveat for a read memory file, wrapped in <system-reminder>
+      // tags (file_read has no wrapper of its own) so the caveat carries
+      // system-level trust weight rather than reading as ordinary file text a
+      // planted memory could spoof. Future-mtime clamp + the >1-day gate live in
+      // the single canonical helper. Mirrors Claude Code's memoryFreshnessNote.
+      output = memoryFreshnessReminder(stat.mtimeMs) + output;
     }
 
     if ((context as any)._skillManager) {
@@ -1491,6 +1501,15 @@ export function coerceReadLineParam(
 export function classifyPdfError(message: string): string {
   if (/password|encrypt(ed|ion)?|\bdecrypt/i.test(message)) {
     return 'Error: PDF is password-protected or encrypted. Please provide an unprotected version.';
+  }
+  // A damaged/corrupt PDF gets its own actionable classification (distinct from
+  // the generic reader error) so the model/user knows the bytes themselves are
+  // bad and a re-download/regeneration is needed. Matches `damaged`/`corrupt`
+  // (incl. corrupted/corruption); bare "invalid" is intentionally excluded so a
+  // benign parser message like "Invalid xref table" stays the generic error.
+  // Mirrors Claude Code's pdf.ts corrupted branch (/damaged|corrupt|invalid/i).
+  if (/damaged|corrupt(ed|ion)?/i.test(message)) {
+    return 'Error: PDF file is corrupted or invalid. Please provide a valid PDF.';
   }
   return `Error reading PDF: ${message}`;
 }

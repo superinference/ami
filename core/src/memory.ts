@@ -638,6 +638,26 @@ export function memoryAgeDays(mtimeMs: number): number {
   return Math.max(0, Math.floor((Date.now() - mtimeMs) / (1000 * 60 * 60 * 24)));
 }
 
+/**
+ * Per-read staleness caveat for a memory FILE surfaced through a caller that
+ * does NOT add its own system-reminder wrapper (e.g. the file_read tool, which
+ * line-numbers and returns raw file content). The note is wrapped in
+ * `<system-reminder>…</system-reminder>\n` so the caveat carries system-level
+ * trust weight into the transcript rather than reading as ordinary file text a
+ * planted memory could spoof. Returns '' for files ≤ 1 day old (not stale).
+ *
+ * Distinct from read-memory.ts's `memoryFreshnessNote(ageDays)`, which returns a
+ * plain-markdown note for a surface that emits the body directly to the model;
+ * this variant is for the file_read code path and takes the file mtime so the
+ * age is computed via the single canonical {@link memoryAgeDays} clamp. Mirrors
+ * Claude Code's memdir/memoryAge.memoryFreshnessNote(mtimeMs).
+ */
+export function memoryFreshnessReminder(mtimeMs: number): string {
+  const ageDays = memoryAgeDays(mtimeMs);
+  if (ageDays <= 1) return '';
+  return `<system-reminder>Memory file — last modified ${ageDays} days ago. Verify before relying on this data.</system-reminder>\n`;
+}
+
 function memoryFreshness(ageDays: number): string {
   if (ageDays === 0) return 'today';
   if (ageDays === 1) return 'yesterday';
