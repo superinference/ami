@@ -114,3 +114,19 @@ export function whichSync(command: string): string | null {
   if (!command) return null;
   return fastPathLookup(command) ?? spawnLookup(command);
 }
+
+/**
+ * Resolve an executable *name* to its full PATH path, returning the spawn-ready
+ * `{ cmd, args }` pair (parity with Claude Code's `findExecutable`, which
+ * replaced spawn-rx's `findActualExecutable`). `cmd` is the resolved absolute
+ * path when found, else the original name unchanged (so `spawn` can still apply
+ * its own PATH lookup); `args` is passed through untouched. Resolving up front
+ * makes subprocess launches deterministic across platforms (notably Windows
+ * `PATHEXT`), instead of relying on each spawn site re-scanning PATH.
+ */
+export function findExecutable(
+  exe: string,
+  args: string[],
+): { cmd: string; args: string[] } {
+  return { cmd: whichSync(exe) ?? exe, args };
+}

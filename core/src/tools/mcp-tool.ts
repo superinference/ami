@@ -1,6 +1,6 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { spillToolText, getFormatDescription, isAlreadySpilled } from './spill-output';
-import { boundMcpResponse } from '../mcp/client';
+import { boundMcpResponse, getMaxMcpOutputChars } from '../mcp/client';
 import type { McpToolAnnotations } from '../mcp/client';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from './input-sanitizer';
 
@@ -178,9 +178,12 @@ export function createMcpTool(
         // Try structured content processing before falling back to JSON
         const processed = processMcpContent(result);
         const raw = processed ? processed.text : (typeof result === 'string' ? result : JSON.stringify(result, null, 2));
-        const maxResultChars = extractMaxResultSizeChars(result);
+        // Prefer the server's explicit per-result hint; otherwise fall back to the
+        // token-budget-derived default (MAX_MCP_OUTPUT_TOKENS × 4 chars) so every
+        // MCP result is bounded by the token cap instead of the 10 MB byte ceiling.
+        const maxResultChars = extractMaxResultSizeChars(result) ?? getMaxMcpOutputChars();
         const bounded = boundMcpResponse(raw, maxResultChars);
-        const spillCap = maxResultChars ? Math.min(maxResultChars, 500_000) : 100_000;
+        const spillCap = Math.min(maxResultChars, 500_000);
         const baseMeta = bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined;
         const mergedMeta = processed?.metadata ? { ...baseMeta, ...processed.metadata } : baseMeta;
         // Already a persisted-output banner (e.g. a replayed result) — don't

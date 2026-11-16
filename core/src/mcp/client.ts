@@ -4,11 +4,46 @@ import { AMI_CLIENT_INFO, AMI_CLIENT_NAME, AMI_VERSION } from '../version';
 import type { McpOAuthProvider } from './oauth';
 import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
+import { findExecutable } from '../utils/which';
 
 export const MCP_TRANSPORTS = ['stdio', 'sse', 'http'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
 
 export const DEFAULT_MCP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * Default token budget for a single MCP tool result (parity with Claude Code's
+ * `DEFAULT_MAX_MCP_OUTPUT_TOKENS`). A verbose MCP tool can return megabytes of
+ * JSON; capping by *tokens* (not just bytes) keeps a single result from
+ * dominating the model's context window regardless of how many raw bytes it is.
+ */
+export const DEFAULT_MAX_MCP_OUTPUT_TOKENS = 25000;
+
+/** Chars-per-token ratio used to convert the token cap into a byte/char cap. */
+export const MCP_CHARS_PER_TOKEN = 4;
+
+/**
+ * Resolve the per-result MCP output token cap. A single global override —
+ * `MAX_MCP_OUTPUT_TOKENS` (positive integer, matching Claude Code's
+ * `getMaxMcpOutputTokens`) — lets an operator widen/narrow how much a single MCP
+ * tool result may contribute to the context window. An absent/invalid/non-positive
+ * value falls back to {@link DEFAULT_MAX_MCP_OUTPUT_TOKENS}. `MAX_MCP_OUTPUT_TOKENS`
+ * is already allow-listed in env-protection (a tuning knob, no trust boundary).
+ */
+export function getMaxMcpOutputTokens(): number {
+  const n = parseInt(process.env.MAX_MCP_OUTPUT_TOKENS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_MCP_OUTPUT_TOKENS;
+}
+
+/**
+ * The token cap expressed as a character/byte budget ({@link getMaxMcpOutputTokens}
+ * × {@link MCP_CHARS_PER_TOKEN}). This is the default size passed to
+ * {@link boundMcpResponse} when a server does not carry an explicit
+ * `maxResultSizeChars` hint, so every MCP result is bounded by the token budget.
+ */
+export function getMaxMcpOutputChars(): number {
+  return getMaxMcpOutputTokens() * MCP_CHARS_PER_TOKEN;
+}
 
 /**
  * Latest MCP protocol version we request in `initialize`. Servers that only
@@ -63,6 +98,29 @@ export const MCP_MAX_STDIO_BUFFER = 16 * 1024 * 1024; // 16 MiB
 /** Hard cap on cursor-pagination pages per list call — a runaway-server backstop. */
 export const MCP_MAX_PAGES = 1000;
 
+/**
+ * Default interval (ms) between self-generated "still running" heartbeats for an
+ * in-flight MCP tool call (parity with Claude Code's 30s progress logging in
+ * `services/mcp/client.ts`). A slow MCP tool runs under a long tool-call
+ * timeout; without a heartbeat the UI/log goes silent for minutes. On each tick
+ * the client emits a `tool-heartbeat` event carrying the elapsed time so a
+ * frontend can show "<tool> still running (Ns elapsed)". Cleared the instant the
+ * call settles.
+ */
+export const DEFAULT_MCP_TOOL_HEARTBEAT_INTERVAL_MS = 30000;
+
+/**
+ * Resolve the tool-call heartbeat interval. `MCP_TOOL_HEARTBEAT_INTERVAL_MS`
+ * (positive integer) lets an operator tune how often the "still running"
+ * heartbeat fires; absent/invalid falls back to
+ * {@link DEFAULT_MCP_TOOL_HEARTBEAT_INTERVAL_MS}. Allow-listed in env-protection
+ * (a tuning knob, no trust boundary crossed).
+ */
+export function getMcpToolHeartbeatIntervalMs(): number {
+  const n = parseInt(process.env.MCP_TOOL_HEARTBEAT_INTERVAL_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MCP_TOOL_HEARTBEAT_INTERVAL_MS;
+}
+
 export function boundMcpResponse(
   content: string,
   maxBytes: number = DEFAULT_MCP_MAX_RESPONSE_BYTES,
@@ -77,7 +135,7 @@ export function boundMcpResponse(
   while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
   const truncated = buf.subarray(0, end).toString('utf-8');
   return {
-    content: `${truncated}\n\n[Response truncated: ${originalBytes} bytes → ${maxBytes} bytes. Set MCP_MAX_RESPONSE_BYTES to increase limit.]`,
+    content: `${truncated}\n\n[Response truncated: ${originalBytes} bytes → ${maxBytes} bytes. Set MCP_MAX_RESPONSE_BYTES to increase limit.]\n\nThe tool output was truncated. If this MCP server provides pagination or filtering tools, use them to retrieve specific portions of the data. If pagination is not available, inform the user that you are working with truncated output and results may be incomplete.`,
     truncated: true,
     originalBytes,
   };
@@ -497,7 +555,11 @@ export class McpClient extends EventEmitter {
     if (prefix) {
       return { command: prefix, args: [[this.command, ...this.args].join(' ')] };
     }
-    return { command: this.command, args: this.args };
+    // Resolve the executable name to its full PATH path up front so the launch is
+    // deterministic across platforms (Windows PATHEXT especially); falls back to
+    // the original name — spawn then applies its own PATH lookup — when unresolved.
+    const { cmd, args } = findExecutable(this.command, this.args);
+    return { command: cmd, args };
   }
 
   async connect(): Promise<void> {
@@ -771,10 +833,27 @@ export class McpClient extends EventEmitter {
       throw new Error('MCP tool call aborted');
     }
     // Tool calls use a separate (long) timeout so a slow tool is not killed by the
-    // short connect/request timeout (H25/H30).
-    const result = await this.sendRequestAuto('tools/call', { name, arguments: args }, options?.signal, options?.timeoutMs);
-    // Sanitize untrusted tool result content before it reaches the model (H26).
-    return recursivelySanitizeUnicode(result);
+    // short connect/request timeout (H25/H30). A slow tool would otherwise go
+    // silent for minutes; emit a periodic heartbeat so a frontend/log can show
+    // "<tool> still running (Ns elapsed)" (parity with Claude Code).
+    const startTime = Date.now();
+    const heartbeat = setInterval(() => {
+      const elapsedMs = Date.now() - startTime;
+      this.emit('tool-heartbeat', {
+        name,
+        elapsedMs,
+        elapsedSeconds: Math.floor(elapsedMs / 1000),
+      });
+    }, getMcpToolHeartbeatIntervalMs());
+    // Never let the heartbeat timer keep the event loop alive on its own.
+    heartbeat.unref?.();
+    try {
+      const result = await this.sendRequestAuto('tools/call', { name, arguments: args }, options?.signal, options?.timeoutMs);
+      // Sanitize untrusted tool result content before it reaches the model (H26).
+      return recursivelySanitizeUnicode(result);
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 
   async listResources(): Promise<McpResource[]> {
