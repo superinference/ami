@@ -236,12 +236,14 @@ describe('enterWorktreeTool.execute', () => {
     assert.match(r.output, /already exists/);
   });
 
-  it('generates a random slug when name is omitted', async () => {
+  it('generates a memorable word slug when name is omitted', async () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
     const r = await enterWorktreeTool.execute({}, ctx({ cwd: repo }));
     assert.equal(r.isError, undefined);
-    assert.match(r.output, /Branch: worktree\/wt-[0-9a-f]{8}/);
+    // Default name is a human-readable adjective-noun word slug (parity with
+    // Claude's getPlanSlug default), not an opaque wt-<hex> name.
+    assert.match(r.output, /Branch: worktree\/[a-z]+-[a-z]+/);
   });
 
   it('resolves the default branch from a configured remote', async () => {

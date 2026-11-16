@@ -7,6 +7,23 @@ import { findRemoteBase, isShallowClone } from '../utils/git';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
+/**
+ * Human-readable default worktree name (parity with Claude's EnterWorktreeTool
+ * `input.name ?? getPlanSlug()` default — when the model omits `name`, derive a
+ * memorable word slug like "graceful-unicorn" instead of an opaque random-hex
+ * name, so auto-created worktrees are easy to recognise in `git worktree list`).
+ * Retries on collision against the managed `.ami/worktrees/` area so a generated
+ * name never clobbers an in-flight worktree; after a bounded number of
+ * collisions it appends random hex to guarantee termination.
+ */
+function defaultWorktreeName(worktreesBase: string): string {
+  for (let i = 0; i < 20; i++) {
+    const candidate = _enterWorktreeHooks.generateSlug();
+    if (!fs.existsSync(path.join(worktreesBase, candidate))) return candidate;
+  }
+  return `${_enterWorktreeHooks.generateSlug()}-${crypto.randomBytes(2).toString('hex')}`;
+}
+
 // Strict-input allow-list (parity with exit_worktree's ALLOWED_KEYS): any key
 // outside this set is rejected rather than silently ignored, so a typo'd or
 // hallucinated parameter surfaces loudly instead of being dropped.
@@ -42,6 +59,16 @@ function runGit(
  */
 export const _enterWorktreeHooks = {
   exec: runGit,
+  /** Human-readable default-name generator (parity with Claude's getPlanSlug
+   *  default). Delegates to the shared words corpus; a mockable seam property so
+   *  tests can force a deterministic / colliding slug without monkeypatching the
+   *  frozen `../words` ESM namespace. */
+  generateSlug: (): string => require('../words').generateShortWordSlug(),
+  /** Post-add setup step (symlink large dirs into the new worktree). Routed
+   *  through the seam so tests can inject a post-add failure and exercise the
+   *  half-created-worktree teardown path. */
+  symlinkLargeDirs: (sourceCwd: string, worktreePath: string): void =>
+    require('../worktree-manager').symlinkLargeDirectories(sourceCwd, worktreePath),
 };
 
 function validateSlug(name: string): boolean {
@@ -117,7 +144,7 @@ async function createViaWorktreeHook(
     return { output: `Entered existing worktree at: ${existingPath}. Run exit_worktree when done.` };
   }
 
-  const slug = name || `wt-${crypto.randomBytes(4).toString('hex')}`;
+  const slug = name || defaultWorktreeName(path.join(cwd, '.ami', 'worktrees'));
   if (!validateSlug(slug)) {
     return { output: `Error: invalid worktree name "${slug}". Use letters, digits, dots, underscores, dashes (max 64 chars per segment).`, isError: true };
   }
@@ -292,7 +319,7 @@ export const enterWorktreeTool: ToolDefinition = {
       };
     }
 
-    const slug = name || `wt-${crypto.randomBytes(4).toString('hex')}`;
+    const slug = name || defaultWorktreeName(path.join(context.cwd, '.ami', 'worktrees'));
     if (!validateSlug(slug)) {
       return { output: `Error: invalid worktree name "${slug}". Use letters, digits, dots, underscores, dashes (max 64 chars per segment).`, isError: true };
     }
@@ -391,14 +418,29 @@ export const enterWorktreeTool: ToolDefinition = {
       commitHash = 'unknown';
     }
 
-    const { createWorktreeSession, setWorktreeSession, symlinkLargeDirectories } = require('../worktree-manager');
+    const { createWorktreeSession, setWorktreeSession } = require('../worktree-manager');
     // Pass the FLATTENED slug so the session's computed worktree dir matches the
     // one just created on disk (otherwise a '/'-containing slug would make
     // createWorktreeSession look for the raw nested path, miss it, and add a
     // second worktree).
-    const session = createWorktreeSession(context.cwd, flatSlug);
-    setWorktreeSession(session);
-    symlinkLargeDirectories(context.cwd, session.worktreePath);
+    let session;
+    try {
+      session = createWorktreeSession(context.cwd, flatSlug);
+      setWorktreeSession(session);
+      _enterWorktreeHooks.symlinkLargeDirs(context.cwd, session.worktreePath);
+    } catch (e) {
+      // Post-add setup failed: `git worktree add` already registered the worktree
+      // on disk and reset the branch, but the session/symlink wiring is broken.
+      // Tear the half-created worktree down (parity with Claude's tearDown in
+      // createWorktree — remove --force then drop the branch) so a broken
+      // worktree is never left behind to be mistaken for a healthy one on the
+      // next fast-resume. Both teardown steps are best-effort; the clearing of
+      // any partially-set session state is not.
+      try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
+      try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
+      setWorktreeSession(null);
+      return { output: `Error: worktree post-setup failed, rolled back: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+    }
 
     // Capture the pre-reassignment cwd so the cwd-changed hook reports the
     // correct oldCwd whether or not context.cwd was set (equivalent to the old

@@ -121,10 +121,11 @@ describe('enter_worktree — additive parity hardening', () => {
     assert.equal(fs.existsSync(path.join(repo, '.ami', 'worktrees', 'spaced')), true);
   });
 
-  it('treats a whitespace-only name as omitted (generates a random name)', async () => {
+  it('treats a whitespace-only name as omitted (generates a default word slug)', async () => {
     const r = await enterWorktreeTool.execute({ name: '   ' }, ctx({ cwd: repo }));
     assert.equal(r.isError, undefined, r.output);
     assert.match(r.output, /Worktree created/);
-    assert.match(r.output, /wt-[0-9a-f]{8}/);
+    // Whitespace-only collapses to omitted → human-readable adjective-noun slug.
+    assert.match(r.output, /Branch: worktree\/[a-z]+-[a-z]+/);
   });
 });
