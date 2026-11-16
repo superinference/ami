@@ -216,6 +216,30 @@ export function resolveReadDirs(env: NodeJS.ProcessEnv = process.env): string[] 
 export const MAX_SLUG_LENGTH = 200;
 
 /**
+ * Longest sanitized session/agent id we embed in a journal filename before
+ * switching to a truncated-plus-hash form. A caller-supplied session id (e.g. a
+ * resumed id, a workflow run id, or a hostile value) can be arbitrarily long;
+ * `<id>.jsonl` / `agent-<id>.jsonl` must stay within a single filesystem path
+ * component (commonly 255 bytes) or the append fails ENAMETOOLONG. Capped well
+ * below 255 to leave room for the `agent-` prefix + `.jsonl` suffix.
+ */
+export const MAX_SESSION_ID_LENGTH = 200;
+
+/**
+ * Truncate an already-transformed path component to `maxLen`, disambiguating the
+ * truncation with a short deterministic sha256 of the RAW (pre-transform) input
+ * so two distinct long inputs sharing a truncated prefix never collide and the
+ * mapping is stable across runs. The single canonical cap primitive — both the
+ * project slug and the session-id filename route through it so the truncation /
+ * hashing rule is defined exactly once (no per-site re-implementation).
+ */
+function cappedComponent(transformed: string, raw: string, maxLen: number): string {
+  if (transformed.length <= maxLen) return transformed;
+  const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8);
+  return transformed.slice(0, maxLen - 9) + '-' + hash;
+}
+
+/**
  * Canonicalize a filesystem path before it is used to derive a stable project
  * identity (parity: Claude's canonicalizePath). Two things make the RAW cwd an
  * unstable key: symlinks (two paths that are the same directory) and Unicode
@@ -305,14 +329,19 @@ function resolveGitRootUncached(cwd: string): string {
  *  sha256 of the raw cwd, so deep paths stay collision-resistant and within fs limits. */
 export function projectSlug(cwd: string): string {
   const slug = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-  if (slug.length <= MAX_SLUG_LENGTH) return slug;
-  const hash = crypto.createHash('sha256').update(cwd).digest('hex').slice(0, 8);
-  return slug.slice(0, MAX_SLUG_LENGTH - 9) + '-' + hash;
+  return cappedComponent(slug, cwd, MAX_SLUG_LENGTH);
 }
 
-/** Sanitize a session id for use as a filename (no separators / traversal). */
+/**
+ * Sanitize a session/agent id for use as a filename: neutralize separators /
+ * traversal, then bound the length ({@link cappedComponent}) so an arbitrarily
+ * long id can never overflow a filesystem path component (ENAMETOOLONG). The
+ * length cap hashes the RAW id, so two long ids differing only past the cap still
+ * map to distinct files.
+ */
 function sanitizeId(id: string): string {
-  return id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
+  const safe = id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
+  return cappedComponent(safe, id, MAX_SESSION_ID_LENGTH);
 }
 
 /**

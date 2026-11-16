@@ -20,7 +20,7 @@ export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, esti
 export { diffStringLists } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta, CacheBreakCause } from './cost-tracker';
 export {
-  resolveConfigDir, migrateLegacyDataDir, projectStateDir, projectSlug, MAX_SLUG_LENGTH, journalPathFor, subagentJournalPathFor,
+  resolveConfigDir, migrateLegacyDataDir, projectStateDir, projectSlug, MAX_SLUG_LENGTH, MAX_SESSION_ID_LENGTH, journalPathFor, subagentJournalPathFor,
   canonicalizePath, canonicalGitRoot,
   toReferenceToolName, toReferenceModelId, buildUsageFields,
   buildAssistantEntry, buildUserEntry, appendEntry, ndjsonSafeStringify,
