@@ -11,6 +11,15 @@ const WAIT_POLL_INTERVAL_MS = 400;
 const MAX_OUTPUT_CHARS = 100_000;
 /** Default number of tail lines returned when none is requested (mirrors Claude). */
 const DEFAULT_TAIL_LINES = 50;
+/**
+ * Byte ceiling for the task-output read. The process manager reads only the last
+ * `TASK_OUTPUT_READ_BYTES` of the on-disk log (a positioned tail read) instead of
+ * loading the whole file into memory on every poll — bounding memory/IO no matter
+ * how large the log grew (mirrors Claude Code's tailFile byte cap). Set well above
+ * MAX_OUTPUT_CHARS so the char cap, not the byte window, is the effective limit for
+ * normal output while still reporting how much earlier output was elided.
+ */
+const TASK_OUTPUT_READ_BYTES = 512 * 1024;
 
 /**
  * Byte/char cap: truncate from the FRONT (keep the latest tail) and mark it, so a
@@ -44,12 +53,13 @@ function filterAndTail(chunk: string, re: RegExp | undefined, tail: number): str
 function truncationIndicator(
   context: ToolContext,
   taskId: string,
-  shownBody: string,
+  result: { output: string; totalLinesEstimate?: number },
   filtered: boolean,
 ): string | undefined {
   if (filtered) return undefined;
   const pm = context.processManager;
   if (!pm || typeof pm.getOutputSize !== 'function') return undefined;
+  const shownBody = result.output;
   const bytesTotal = pm.getOutputSize(taskId);
   const shownBytes = Buffer.byteLength(shownBody, 'utf-8');
   if (!(bytesTotal > shownBytes)) return undefined;
@@ -57,6 +67,12 @@ function truncationIndicator(
   const shownLines = trimmedBody === '' ? 0 : trimmedBody.split('\n').length;
   const omitted = bytesTotal - shownBytes;
   let msg = `Showing ${shownLines} lines (${formatSize(shownBytes)}) of ${formatSize(bytesTotal)} total — tail only, ${formatSize(omitted)} of earlier output omitted`;
+  // PARITY (additive): when the process manager extrapolated a total line count
+  // from the tail sample (byte-bounded read), surface it so the model has a sense
+  // of how many lines exist above the shown window (Claude Code's progress counter).
+  if (typeof result.totalLinesEstimate === 'number' && result.totalLinesEstimate > shownLines) {
+    msg += ` (~${result.totalLinesEstimate} lines total)`;
+  }
   const outputPath = typeof pm.get === 'function' ? pm.get(taskId)?.outputPath : undefined;
   if (outputPath) msg += `; read ${outputPath} for the full log`;
   return msg + '.';
@@ -160,7 +176,7 @@ export const taskOutputTool: ToolDefinition = {
       ? input.timeout_ms : DEFAULT_WAIT_TIMEOUT_MS;
     const waitTimeoutMs = Math.min(requestedTimeout, MAX_WAIT_TIMEOUT_MS);
 
-    let result = context.processManager.getOutput(taskId, tail, filterRe);
+    let result = context.processManager.getOutput(taskId, tail, filterRe, TASK_OUTPUT_READ_BYTES);
     if (!result) {
       return { output: `Error: No background task found with ID "${taskId}". Use task_list to see all tasks.`, isError: true };
     }
@@ -180,7 +196,7 @@ export const taskOutputTool: ToolDefinition = {
         const secs = (result.elapsedMs / 1000).toFixed(0);
         context.onProgress?.(`waiting for task ${taskId} (${result.status}, ${secs}s elapsed)`);
         await new Promise(r => setTimeout(r, WAIT_POLL_INTERVAL_MS));
-        result = context.processManager.getOutput(taskId, tail, filterRe);
+        result = context.processManager.getOutput(taskId, tail, filterRe, TASK_OUTPUT_READ_BYTES);
       }
       if (!result) {
         return { output: `Error: background task "${taskId}" disappeared while waiting.`, isError: true };
@@ -251,7 +267,7 @@ export const taskOutputTool: ToolDefinition = {
     if (result.output.trim()) {
       const body = capBody(result.output.trim());
       lines.push('', `--- Output (${tailLabel}) ---`, body);
-      const indicator = truncationIndicator(context, taskId, result.output, filterRe !== undefined);
+      const indicator = truncationIndicator(context, taskId, result, filterRe !== undefined);
       if (indicator) lines.push(indicator);
     } else {
       lines.push('', filterRe ? '(no output matching filter yet)' : '(no output yet)');

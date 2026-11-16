@@ -241,6 +241,40 @@ function readOutputFileNoFollow(outputPath: string): string {
 }
 
 /**
+ * SECURITY + PERF (parity with Claude Code's tailFile): read ONLY the last
+ * `maxBytes` of a task-output file via a positioned read, so memory/IO stays
+ * bounded regardless of how large the log grew. Opens with O_NOFOLLOW so a
+ * planted symlink can't redirect the read. Returns the tail content, the total
+ * on-disk size (`bytesTotal`), the bytes actually read (`bytesRead`), and the
+ * skipped-prefix size (`bytesOmitted`, 0 when the whole file fit the window).
+ * Throws (propagated to getOutput's diagnostic catch) if the file is gone.
+ */
+function readOutputTailBytes(
+  outputPath: string,
+  maxBytes: number,
+): { content: string; bytesTotal: number; bytesRead: number; bytesOmitted: number } {
+  const size = fs.statSync(outputPath).size;
+  const start = size > maxBytes ? size - maxBytes : 0;
+  const length = size - start;
+  const fd = fs.openSync(outputPath, secureReadFlags());
+  try {
+    if (length <= 0) {
+      return { content: '', bytesTotal: size, bytesRead: 0, bytesOmitted: start };
+    }
+    const buf = Buffer.allocUnsafe(length);
+    const bytesRead = fs.readSync(fd, buf, 0, length, start);
+    return {
+      content: buf.subarray(0, bytesRead).toString('utf-8'),
+      bytesTotal: size,
+      bytesRead,
+      bytesOmitted: start,
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
  * Last-line patterns that suggest a background command is blocked waiting for
  * keyboard input. Used by the stall watchdog to gate the actionable "waiting for
  * interactive input" hint — we stay silent on commands that are merely slow and
@@ -774,7 +808,24 @@ export class ProcessManager extends EventEmitter {
     return removed;
   }
 
-  getOutput(taskId: string, tailLines = 50, filter?: string | RegExp): { status: string; exitCode: number | null; output: string; elapsedMs: number } | null {
+  getOutput(
+    taskId: string,
+    tailLines = 50,
+    filter?: string | RegExp,
+    maxReadBytes?: number,
+  ): {
+    status: string;
+    exitCode: number | null;
+    output: string;
+    elapsedMs: number;
+    /** Total on-disk size (bytes) of the output file at read time (undefined on a read error). */
+    bytesTotal?: number;
+    /** Bytes of EARLIER output skipped by a byte-bounded tail read (0 when the whole file was read). */
+    bytesOmitted?: number;
+    /** Estimated total line count: exact when the whole file was read, else extrapolated from the
+     *  tail sample (Math.round(bytesTotal/bytesRead * sampleLines)) so a progress counter can be shown. */
+    totalLinesEstimate?: number;
+  } | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
 
@@ -793,8 +844,34 @@ export class ProcessManager extends EventEmitter {
     }
 
     let output = '';
+    let bytesTotal: number | undefined;
+    let bytesOmitted: number | undefined;
+    let totalLinesEstimate: number | undefined;
     try {
-      const content = readOutputFileNoFollow(entry.outputPath);
+      // FUNCTIONAL (parity with Claude Code's getTaskOutput/tailFile): when a byte
+      // ceiling is supplied, read ONLY the last `maxReadBytes` of the file via a
+      // positioned read so memory/IO is bounded no matter how large the log grew
+      // (AMI previously read the WHOLE file into memory on every poll). The skipped
+      // prefix is reported as `bytesOmitted` and the total line count is
+      // extrapolated from the sample so the caller can show "~N lines" and an
+      // "earlier output omitted" affordance. Without a ceiling the whole file is
+      // read as before (bytesOmitted === 0, exact line count).
+      let content: string;
+      if (maxReadBytes !== undefined && Number.isFinite(maxReadBytes) && maxReadBytes > 0) {
+        const read = readOutputTailBytes(entry.outputPath, Math.floor(maxReadBytes));
+        content = read.content;
+        bytesTotal = read.bytesTotal;
+        bytesOmitted = read.bytesOmitted;
+        const sampleLines = content === '' ? 0 : content.split('\n').length;
+        totalLinesEstimate = bytesOmitted > 0 && read.bytesRead > 0
+          ? Math.round((bytesTotal / read.bytesRead) * sampleLines)
+          : sampleLines;
+      } else {
+        content = readOutputFileNoFollow(entry.outputPath);
+        bytesTotal = Buffer.byteLength(content, 'utf-8');
+        bytesOmitted = 0;
+        totalLinesEstimate = content === '' ? 0 : content.split('\n').length;
+      }
       let lines = content.split('\n');
       if (re) {
         lines = lines.filter((line) => re!.test(line));
@@ -827,6 +904,9 @@ export class ProcessManager extends EventEmitter {
       // Freeze at the terminal timestamp, discount paused time, and clamp negative
       // skew — the shared Claude-parity formula (see computeElapsedMs).
       elapsedMs: computeElapsedMs(entry.startTime, entry.endTime, entry.totalPausedMs ?? 0),
+      bytesTotal,
+      bytesOmitted,
+      totalLinesEstimate,
     };
   }
 
