@@ -768,34 +768,12 @@ describe('FileCache — getStats entries list', () => {
 // (atomic re-save / touch / git-checkout-to-identical-content)  [gap: avoid
 // spurious 'file modified since read' when only the timestamp changed]
 // ---------------------------------------------------------------------------
-describe('FileCache — identical-content mtime change is NOT a change', () => {
-  it('returns false when only the mtime moved but the bytes are identical', () => {
-    const tmpDir = makeTmpDir();
-    try {
-      const filePath = path.join(tmpDir, 'touched.txt');
-      fs.writeFileSync(filePath, 'identical bytes');
-      const stat = fs.statSync(filePath);
-
-      const cache = new FileCache();
-      cache.set(filePath, 'identical bytes', stat.mtimeMs);
-
-      // Re-write the SAME content and bump the mtime (simulates an atomic
-      // save / `touch` / a linter that rewrote identical bytes).
-      fs.writeFileSync(filePath, 'identical bytes');
-      const newMtime = stat.mtimeMs + 5000;
-      fs.utimesSync(filePath, stat.atimeMs / 1000, newMtime / 1000);
-
-      // The content hash is authoritative: identical bytes → not changed,
-      // even though the mtime moved. Pre-change code returned true here.
-      assert.equal(cache.hasChanged(filePath), false);
-      // get() still serves the cached content (not invalidated).
-      assert.ok(cache.get(filePath));
-      assert.equal(cache.get(filePath)!.content, 'identical bytes');
-    } finally {
-      cleanupDir(tmpDir);
-    }
-  });
-
+// NOTE: content-entry mtime changes are ALWAYS "modified since read" — even when
+// the bytes turn out identical — because AMI's read-before-edit safety contract
+// (exercised by tools-multi-edit/tools/fileops staleness tests) requires a re-read
+// whenever the file's mtime moves. (The content-suppression variant was dropped as
+// incompatible with that guard; mtime-only entries still floor sub-ms jitter.)
+describe('FileCache — content-entry mtime change is a change', () => {
   it('still reports changed when both mtime and content differ', () => {
     const tmpDir = makeTmpDir();
     try {
