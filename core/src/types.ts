@@ -577,6 +577,12 @@ export interface StreamChunk {
     reasoningTokens?: number;
     cachedPromptTokens?: number;
     cacheCreationTokens?: number;
+    /** Cache-WRITE tokens billed at the 5-minute ephemeral TTL (parity:
+     *  `cache_creation.ephemeral_5m_input_tokens`). */
+    cacheCreation5mTokens?: number;
+    /** Cache-WRITE tokens billed at the 1-hour ephemeral TTL (parity:
+     *  `cache_creation.ephemeral_1h_input_tokens`). */
+    cacheCreation1hTokens?: number;
     /** API service tier reported for this request (parity: `service_tier`). */
     serviceTier?: ServiceTier;
     /** Server-side web-search requests reported in this chunk's usage

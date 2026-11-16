@@ -608,6 +608,12 @@ export interface JournalUsageInput {
   reasoningTokens?: number;
   cachedPromptTokens?: number;
   cacheCreationTokens?: number;
+  /** Cache-creation tokens written at the 5-minute ephemeral TTL. When BOTH this
+   *  and {@link cacheCreation1hTokens} are omitted the full aggregate is treated
+   *  as a 5m write (the provider surfaced no per-TTL split). */
+  cacheCreation5mTokens?: number;
+  /** Cache-creation tokens written at the 1-hour ephemeral TTL. */
+  cacheCreation1hTokens?: number;
 }
 
 export interface JournalUsage {
@@ -623,19 +629,27 @@ export interface JournalUsage {
  * Map our usage into the dashboard's snake_case API usage. `input_tokens` is the FRESH
  * (uncached) prompt portion — total prompt minus cache-read and cache-creation — so the
  * dashboard's input + cache_read + cache_creation sum reconstructs the full prompt.
- * The full cache-creation total is attributed to the 5m TTL (correct for pricing) until
- * our provider layer surfaces the ephemeral 5m/1h split.
+ * Cache-creation is split per ephemeral TTL (parity: Claude's emptyUsage
+ * `cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`): when
+ * the provider surfaces an explicit 5m/1h split it is honored; otherwise the full
+ * cache-creation total is attributed to the 5m TTL (the default ephemeral window),
+ * which is correct for pricing and preserves prior behaviour.
  */
 export function buildUsageFields(u: JournalUsageInput): JournalUsage {
   const cacheRead = Math.max(0, u.cachedPromptTokens ?? 0);
   const cacheCreate = Math.max(0, u.cacheCreationTokens ?? 0);
   const input = Math.max(0, u.promptTokens - cacheRead - cacheCreate);
+  // Honor an explicit per-TTL split when the provider supplies either arm; with
+  // neither present, the whole aggregate is a 5m write (no 1h data surfaced).
+  const hasSplit = u.cacheCreation5mTokens !== undefined || u.cacheCreation1hTokens !== undefined;
+  const ephemeral5m = hasSplit ? Math.max(0, u.cacheCreation5mTokens ?? 0) : cacheCreate;
+  const ephemeral1h = hasSplit ? Math.max(0, u.cacheCreation1hTokens ?? 0) : 0;
   return {
     input_tokens: input,
     output_tokens: Math.max(0, u.completionTokens),
     cache_creation_input_tokens: cacheCreate,
     cache_read_input_tokens: cacheRead,
-    cache_creation: { ephemeral_5m_input_tokens: cacheCreate, ephemeral_1h_input_tokens: 0 },
+    cache_creation: { ephemeral_5m_input_tokens: ephemeral5m, ephemeral_1h_input_tokens: ephemeral1h },
     output_tokens_details: { thinking_tokens: Math.max(0, u.reasoningTokens ?? 0) },
   };
 }

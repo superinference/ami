@@ -1554,6 +1554,32 @@ export function extractCacheCreationTokens(part: unknown): number {
   );
 }
 
+/**
+ * Per-TTL split of cache-WRITE tokens (parity: Claude's emptyUsage
+ * `cache_creation.{ephemeral_1h_input_tokens, ephemeral_5m_input_tokens}`).
+ * Anthropic prices 1-hour and 5-minute prompt-cache writes differently, so the
+ * two TTL buckets must be surfaced independently rather than lumped together. The
+ * AI SDK exposes them under `providerMetadata.anthropic.cache_creation`
+ * (snake_case) or `.cacheCreation` (camelCase). When the provider surfaces NO
+ * per-TTL breakdown we attribute the whole cache-creation aggregate
+ * ({@link extractCacheCreationTokens}) to the 5-minute bucket — the standard
+ * ephemeral TTL — so no cache-write tokens are ever dropped. Each arm floors
+ * non-numeric / negative values to 0 (parity with the aggregate extractor).
+ */
+export function extractCacheCreationSplit(part: unknown): { ephemeral5m: number; ephemeral1h: number } {
+  const p = (part ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const pm = ((p.providerMetadata as Record<string, any> | undefined)?.anthropic ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const cc = (pm.cache_creation ?? pm.cacheCreation ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const n = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+  const h1 = n(cc.ephemeral_1h_input_tokens) ?? n(cc.ephemeral1hInputTokens);
+  const m5 = n(cc.ephemeral_5m_input_tokens) ?? n(cc.ephemeral5mInputTokens);
+  if (h1 !== undefined || m5 !== undefined) {
+    return { ephemeral5m: m5 ?? 0, ephemeral1h: h1 ?? 0 };
+  }
+  return { ephemeral5m: extractCacheCreationTokens(part), ephemeral1h: 0 };
+}
+
 export function extractReasoningTokens(usage: unknown): number {
   if (!usage || typeof usage !== 'object') return 0;
   const u = usage as Record<string, unknown>;
@@ -1921,7 +1947,8 @@ export async function* streamChatCompletion(
           };
           break;
 
-        case 'finish-step':
+        case 'finish-step': {
+          const cacheSplit = extractCacheCreationSplit(part);
           yield {
             type: 'done',
             finishReason: part.finishReason,
@@ -1934,10 +1961,13 @@ export async function* streamChatCompletion(
               reasoningTokens: extractReasoningTokens(part.usage),
               cachedPromptTokens: extractCachedPromptTokens(part),
               cacheCreationTokens: extractCacheCreationTokens(part),
+              cacheCreation5mTokens: cacheSplit.ephemeral5m,
+              cacheCreation1hTokens: cacheSplit.ephemeral1h,
             },
             responseHeaders: (part as { response?: { headers?: Record<string, string> } }).response?.headers,
           };
           return;
+        }
 
         case 'error': {
           const errObj = part.error as { statusCode?: number; responseHeaders?: Record<string, string>; message?: string; type?: string } | undefined;
