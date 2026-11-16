@@ -641,6 +641,51 @@ const MARKETPLACE_ONLY_MANIFEST_FIELDS = ['category', 'source', 'tags', 'strict'
 /** Optional component-path fields a manifest may declare. */
 const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'mcpServers'];
 
+/**
+ * Flag a single component-path string that would escape the plugin root — an
+ * absolute path, or one whose segments include `..`. `label` names the offending
+ * field (including an array index / record key for the richer forms).
+ */
+function validateComponentPathString(label: string, val: string, errors: PluginValidationIssue[]): void {
+  if (path.isAbsolute(val)) {
+    errors.push({ path: label, message: `Component path "${val}" must be relative to the plugin root.` });
+  } else if (val.split(/[/\\]/).includes('..')) {
+    errors.push({ path: label, message: `Component path "${val}" contains ".." and would escape the plugin directory.` });
+  }
+}
+
+/**
+ * Validate a manifest component-path field (skills/agents/commands/hooks/mcpServers)
+ * across ALL the forms Claude accepts (schemas.ts L429-497): a single relative-path
+ * string, an array of relative-path strings, or (commands) an object mapping a
+ * command name → { source, ... } metadata. Every path is traversal-checked via
+ * {@link validateComponentPathString}; a non-string array entry is flagged. AMI
+ * previously validated only the string form, so an array/record entry with `..` or
+ * an absolute path slipped past the traversal gate — this closes that hole.
+ */
+function validateComponentPathField(field: string, val: unknown, errors: PluginValidationIssue[]): void {
+  if (typeof val === 'string') {
+    validateComponentPathString(field, val, errors);
+  } else if (Array.isArray(val)) {
+    val.forEach((el, i) => {
+      if (typeof el !== 'string') {
+        errors.push({ path: `${field}[${i}]`, message: `Component path entry must be a string (got ${Array.isArray(el) ? 'array' : typeof el}).` });
+      } else {
+        validateComponentPathString(`${field}[${i}]`, el, errors);
+      }
+    });
+  } else if (val && typeof val === 'object') {
+    // Object-mapping form (Claude parity: commands record name → { source, ... }).
+    // Each entry's `source` is a relative command-file path; validate it when present.
+    for (const [key, meta] of Object.entries(val as Record<string, unknown>)) {
+      if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+        const src = (meta as Record<string, unknown>).source;
+        if (typeof src === 'string') validateComponentPathString(`${field}.${key}.source`, src, errors);
+      }
+    }
+  }
+}
+
 /** True when `value` parses as an absolute URL (parity with Claude's zod `.url()`
  *  refinement for homepage: a scheme-less `example.com` is rejected). */
 function isValidUrl(value: string): boolean {
@@ -707,6 +752,44 @@ function validateManifestMetadata(obj: Record<string, unknown>, errors: PluginVa
   if (obj.keywords !== undefined && (!Array.isArray(obj.keywords) || !obj.keywords.every(k => typeof k === 'string'))) {
     errors.push({ path: 'keywords', message: 'Plugin "keywords" must be an array of strings (e.g., ["cli", "git"]).' });
   }
+  validateManifestDependencies(obj.dependencies, errors);
+}
+
+/**
+ * Validate a manifest's optional `dependencies` — the plugins that must be enabled
+ * first (Claude parity: DependencyRefSchema, utils/plugins/schemas.ts L1367). Each
+ * entry is either a non-empty ref string (`name` or `name@marketplace`) or an
+ * object carrying a non-empty string `name` (AMI also accepts `plugin` as the ref
+ * key, matching its resolver) with an optional string `marketplace`. The common
+ * dependency resolver already CONSUMES these; this adds the author-facing VALIDATION
+ * so a malformed entry surfaces instead of being silently dropped.
+ */
+function validateManifestDependencies(deps: unknown, errors: PluginValidationIssue[]): void {
+  if (deps === undefined) return;
+  if (!Array.isArray(deps)) {
+    errors.push({ path: 'dependencies', message: 'Plugin "dependencies" must be an array of plugin refs (a "name"/"name@marketplace" string or a { name, marketplace? } object).' });
+    return;
+  }
+  deps.forEach((dep, i) => {
+    if (typeof dep === 'string') {
+      if (dep.trim() === '') {
+        errors.push({ path: `dependencies[${i}]`, message: 'Dependency ref cannot be an empty string.' });
+      }
+      return;
+    }
+    if (!dep || typeof dep !== 'object' || Array.isArray(dep)) {
+      errors.push({ path: `dependencies[${i}]`, message: 'Dependency must be a plugin-name string or an object with a "name" (and optional "marketplace").' });
+      return;
+    }
+    const d = dep as Record<string, unknown>;
+    const ref = d.name ?? d.plugin;
+    if (typeof ref !== 'string' || ref.trim() === '') {
+      errors.push({ path: `dependencies[${i}]`, message: 'Dependency object must have a non-empty "name".' });
+    }
+    if (d.marketplace !== undefined && typeof d.marketplace !== 'string') {
+      errors.push({ path: `dependencies[${i}].marketplace`, message: 'Dependency "marketplace" must be a string.' });
+    }
+  });
 }
 
 /**
@@ -744,13 +827,7 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   validateManifestMetadata(obj, errors);
 
   for (const field of COMPONENT_PATH_FIELDS) {
-    const val = obj[field];
-    if (typeof val !== 'string') continue;
-    if (path.isAbsolute(val)) {
-      errors.push({ path: field, message: `Component path "${val}" must be relative to the plugin root.` });
-    } else if (val.split(/[/\\]/).includes('..')) {
-      errors.push({ path: field, message: `Component path "${val}" contains ".." and would escape the plugin directory.` });
-    }
+    validateComponentPathField(field, obj[field], errors);
   }
 
   for (const field of MARKETPLACE_ONLY_MANIFEST_FIELDS) {
