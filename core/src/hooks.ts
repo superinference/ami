@@ -14,6 +14,7 @@ import {
   type HookSourceKind,
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
+import { stripBom } from './config';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 
@@ -72,7 +73,7 @@ export const HOOK_EVENTS = [
   'stop', 'error', 'sessionStart', 'sessionEnd',
   'subagentStart', 'subagentStop', 'preCompact', 'postCompact',
   'permissionRequest', 'permissionDenied', 'userPromptSubmit',
-  'taskCreated', 'taskCompleted', 'postToolUseFailure', 'notification',
+  'taskCreated', 'taskCompleted', 'teammateIdle', 'postToolUseFailure', 'notification',
   'setup', 'configChange', 'instructionsLoaded',
   'worktreeCreate', 'worktreeRemove', 'fileChanged', 'cwdChanged',
   'elicitation', 'elicitationResult', 'stopFailure',
@@ -251,6 +252,19 @@ export interface UserPromptContext {
   turnCount: number;
 }
 
+/**
+ * Context for the TeammateIdle hook (Claude Code's TeammateIdleHookInputSchema —
+ * `teammate_name` + `team_name`). Fires when a teammate agent in a multi-agent
+ * team finishes its run and transitions to idle, so a hook can react (notify,
+ * reassign work, record metrics) to an idle teammate. A `matcher` on a
+ * teammateIdle hook is tested against `teammateName`
+ * (HOOK_MATCHER_FIELD.teammateIdle) so a hook can scope to one teammate.
+ */
+export interface TeammateContext {
+  teammateName: string;
+  teamName: string;
+}
+
 export interface NotificationContext {
   message: string;
   notificationType?: string;
@@ -326,6 +340,11 @@ export interface UserPromptSubmitHookResult {
 }
 export type UserPromptHookFn = (context: UserPromptContext) => Promise<UserPromptSubmitHookResult | void>;
 export type NotificationHookFn = (context: NotificationContext) => Promise<void>;
+/** TeammateIdle hook: observational lifecycle hook fired when a teammate agent
+ *  goes idle (finished its run). Fire-and-forget — AMI surfaces the idle event
+ *  with the teammate/team identity (Claude Code parity on the event + payload).
+ */
+export type TeammateIdleHookFn = (context: TeammateContext) => Promise<void>;
 /** ConfigChange hook: a blocking hook can VETO a config change before it is
  *  applied (Claude Code's hasBlockingResult). */
 export type ConfigChangeHookFn = (context: ConfigChangeContext) => Promise<{ blockingError?: string } | void>;
@@ -856,13 +875,13 @@ const HOOK_EVENT_PASCAL: Record<string, string> = {
   subagentStop: 'SubagentStop', preCompact: 'PreCompact', postCompact: 'PostCompact',
   stop: 'Stop', error: 'Error', preSampling: 'PreSampling', postSampling: 'PostSampling',
   permissionRequest: 'PermissionRequest', permissionDenied: 'PermissionDenied',
-  setup: 'Setup',
+  setup: 'Setup', teammateIdle: 'TeammateIdle',
 };
 const HOOK_KEY_SNAKE: Record<string, string> = {
   toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_response',
   sessionId: 'session_id', subagentSessionId: 'subagent_session_id',
   durationMs: 'duration_ms', turnCount: 'turn_count', messageCount: 'message_count',
-  agentType: 'agent_type',
+  agentType: 'agent_type', teammateName: 'teammate_name', teamName: 'team_name',
 };
 
 export function serializeHookEvent(obj: Record<string, unknown>): string {
@@ -1070,6 +1089,9 @@ export const HOOK_MATCHER_FIELD: Record<string, string> = {
   elicitationResult: 'mcpServerName',
   configChange: 'source',
   instructionsLoaded: 'loadReason',
+  // TeammateIdle: scope on the teammate's name (Claude Code's TeammateIdle
+  // teammate_name field) so a hook can fire for just one teammate.
+  teammateIdle: 'teammateName',
   permissionRequest: 'toolName',
   permissionDenied: 'toolName',
 };
@@ -1232,6 +1254,7 @@ const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: st
   instructionsLoaded: { summary: 'When instruction files load', description: 'Input: JSON with filePath, loadReason.' + EXIT_CODE_OBSERVE },
   taskCreated: { summary: 'When a task is created', description: 'Input: JSON with taskId, subject.' + EXIT_CODE_OBSERVE },
   taskCompleted: { summary: 'When a task completes', description: 'Input: JSON with taskId, subject, status. A blocking hook vetoes completion.' + EXIT_CODE_BLOCKING },
+  teammateIdle: { summary: 'When a teammate goes idle', description: 'Input: JSON with teammate_name, team_name. Fires when a teammate agent finishes its run and becomes idle.' + EXIT_CODE_OBSERVE },
   worktreeCreate: { summary: 'When a worktree is created', description: 'Input: JSON with name, worktreePath.' + EXIT_CODE_OBSERVE },
   worktreeRemove: { summary: 'When a worktree is removed', description: 'Input: JSON with name, worktreePath.' + EXIT_CODE_OBSERVE },
   fileChanged: { summary: 'When a watched file changes', description: 'Input: JSON with filePath, fileEvent. May return watchPaths.' + EXIT_CODE_OBSERVE },
@@ -1633,7 +1656,7 @@ export class HookManager extends EventEmitter {
    */
   private readManagedPluginOnlyPolicy(managedPath: string): unknown {
     try {
-      const parsed = JSON.parse(fs.readFileSync(managedPath, 'utf-8'));
+      const parsed = JSON.parse(stripBom(fs.readFileSync(managedPath, 'utf-8')));
       return parsed && typeof parsed === 'object'
         ? (parsed as Record<string, unknown>).strictPluginOnlyCustomization
         : undefined;
@@ -1852,6 +1875,7 @@ export class HookManager extends EventEmitter {
   private userPromptSubmitHooks: UserPromptHookFn[] = [];
   private taskCreatedHooks: TaskEventHookFn[] = [];
   private taskCompletedHooks: TaskCompletedHookFn[] = [];
+  private teammateIdleHooks: TeammateIdleHookFn[] = [];
   private postToolUseFailureHooks: PostToolUseHookFn[] = [];
   private notificationHooks: NotificationHookFn[] = [];
   private setupHooks: SessionHookFn[] = [];
@@ -1960,7 +1984,7 @@ export class HookManager extends EventEmitter {
         continue;
       }
       try {
-        const config: HookConfigFile = JSON.parse(raw);
+        const config: HookConfigFile = JSON.parse(stripBom(raw));
         // Accept both AMI's array form and Claude Code's map-keyed form
         // ({ "PreToolUse": [{ matcher, hooks: [...] }] }).
         const entries = Array.isArray(config.hooks)
@@ -1989,7 +2013,7 @@ export class HookManager extends EventEmitter {
       const configPath = path.join(cwd, '.ami', 'config.json');
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf-8');
-        const config = JSON.parse(raw);
+        const config = JSON.parse(stripBom(raw));
         if (config.hooks && Array.isArray(config.hooks)) {
           for (const entry of config.hooks) {
             entry._source = 'config';
@@ -2288,6 +2312,15 @@ export class HookManager extends EventEmitter {
           this.onPostToolUseFailure(fn);
           break;
         }
+        case 'teammateIdle': {
+          const fn: TeammateIdleHookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('teammateIdle', matcher, ctx as unknown as Record<string, unknown>)) return;
+            const eventData = serializeHookEvent({ event: 'teammateIdle', teammateName: ctx.teammateName, teamName: ctx.teamName });
+            await this.runArmHook(hookConfig, cwd, eventData, undefined, this.teammateIdleHooks, fn, 'teammateIdle');
+          };
+          this.onTeammateIdle(fn);
+          break;
+        }
         case 'notification': {
           const fn: NotificationHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('notification', matcher, ctx as unknown as Record<string, unknown>)) return;
@@ -2443,6 +2476,7 @@ export class HookManager extends EventEmitter {
   onUserPromptSubmit(fn: UserPromptHookFn): void { this.userPromptSubmitHooks.push(fn); }
   onTaskCreated(fn: TaskEventHookFn): void { this.taskCreatedHooks.push(fn); }
   onTaskCompleted(fn: TaskCompletedHookFn): void { this.taskCompletedHooks.push(fn); }
+  onTeammateIdle(fn: TeammateIdleHookFn): void { this.teammateIdleHooks.push(fn); }
   onPostToolUseFailure(fn: PostToolUseHookFn): void { this.postToolUseFailureHooks.push(fn); }
   onNotification(fn: NotificationHookFn): void { this.notificationHooks.push(fn); }
   onSetup(fn: SessionHookFn): void { this.setupHooks.push(fn); }
@@ -2788,6 +2822,19 @@ export class HookManager extends EventEmitter {
     });
   }
 
+  /**
+   * Fire TeammateIdle hooks when a teammate agent finishes its run and goes idle.
+   * Observational (fire-and-forget); mirrors Claude Code's TeammateIdle event with
+   * the teammate/team identity payload (teammate_name / team_name).
+   */
+  async executeTeammateIdle(ctx: TeammateContext): Promise<void> {
+    return this.withConcurrencyGate('teammateIdle', async () => {
+      for (const hook of this.teammateIdleHooks) {
+        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+      }
+    });
+  }
+
   async executePostToolUseFailure(ctx: PostToolUseContext): Promise<void> {
     return this.withConcurrencyGate('postToolUseFailure', async () => {
       for (const hook of this.postToolUseFailureHooks) {
@@ -2933,6 +2980,7 @@ export class HookManager extends EventEmitter {
       userPromptSubmit: this.userPromptSubmitHooks.length,
       taskCreated: this.taskCreatedHooks.length,
       taskCompleted: this.taskCompletedHooks.length,
+      teammateIdle: this.teammateIdleHooks.length,
       postToolUseFailure: this.postToolUseFailureHooks.length,
       notification: this.notificationHooks.length,
       setup: this.setupHooks.length,

@@ -501,6 +501,21 @@ export function shouldAllowNestedTask(currentDepth: number, maxDepth: number): b
 }
 
 /**
+ * Mark a finished teammate idle AND fire the TeammateIdle lifecycle hook so a
+ * hook can react to an idle teammate (Claude Code's TeammateIdle event —
+ * teammate_name / team_name). Only fires when the id resolves to a real team
+ * member; best-effort/fire-and-forget so hook failures never break teardown.
+ */
+export function markTeammateIdle(context: ToolContext, taskId: string): void {
+  setTeamMemberActive(taskId, false);
+  const team = getCurrentTeam();
+  if (!team || !context._hookManager) return;
+  const member = team.members.find(m => m.name === taskId || m.agentId === taskId);
+  if (!member) return;
+  context._hookManager.executeTeammateIdle({ teammateName: member.name, teamName: team.name }).catch(() => {});
+}
+
+/**
  * Notice prepended to a subagent that runs in an isolated git worktree (mirrors
  * Claude Code's buildWorktreeNotice). It tells the child three concrete things:
  * (1) paths in any inherited/parent context refer to the PARENT's cwd and must be
@@ -1534,8 +1549,8 @@ export const taskTool: ToolDefinition = {
           try { fs.writeFileSync(outputPath, '(subagent produced no output)'); } catch { /* dir removed */ }
         }
         // The teammate has finished — mark it idle so team_delete no longer
-        // treats it as an active member blocking teardown.
-        setTeamMemberActive(taskId, false);
+        // treats it as an active member blocking teardown, and fire TeammateIdle.
+        markTeammateIdle(context, taskId);
         if (context.processManager) {
           const label = taskDescription || `${prompt.slice(0, 80)}`;
           context.processManager.updateEntry(taskId, {
@@ -1669,8 +1684,8 @@ export const taskTool: ToolDefinition = {
       // Release-on-finish: drop this sub-agent's isolated file cache.
       releaseFileCache(effectiveCwd, taskId);
       // Foreground teammate finished (success or error) — mark it idle so it no
-      // longer blocks team_delete.
-      setTeamMemberActive(taskId, false);
+      // longer blocks team_delete, and fire TeammateIdle.
+      markTeammateIdle(context, taskId);
     }
     context.abortSignal.removeEventListener('abort', forwardAbort);
 
