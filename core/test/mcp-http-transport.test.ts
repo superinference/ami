@@ -785,16 +785,17 @@ describe('MCP HTTP transport — server→client stream defensive branches (M13)
     assert.ok(getCount >= 2, `expected a reconnect after HTTP 500, saw ${getCount} GET(s)`);
   });
 
-  it('emits http-stream-closed when reconnect attempts are exhausted', { timeout: 5000 }, async () => {
+  it('emits http-stream-closed when the reconnect wall-clock budget is exhausted', { timeout: 5000 }, async () => {
     server = createStreamingMcpServer({ getStatus: 405 }); // degrade to POST-only, stays ready + open
     port = await listenOnRandom(server);
     client = new McpClient({ command: '', requestTimeout: 5000, connectTimeout: 5000 });
 
     await client.connectHTTP(`http://127.0.0.1:${port}/`);
     const closed = new Promise<void>((resolve) => client.on('http-stream-closed', () => resolve()));
-    // Push the attempt counter to the ceiling so the next schedule gives up.
-    const c = client as unknown as { httpStreamReconnectAttempts: number; maxReconnectAttempts: number; scheduleHttpStreamReconnect: () => void };
-    c.httpStreamReconnectAttempts = c.maxReconnectAttempts;
+    // Simulate a continuous outage that started longer ago than the give-up
+    // budget so the next schedule gives up (wall-clock budget, not attempt count).
+    const c = client as unknown as { httpStreamReconnectStartTime: number; scheduleHttpStreamReconnect: () => void };
+    c.httpStreamReconnectStartTime = Date.now() - 600000 - 1000;
     c.scheduleHttpStreamReconnect();
     let timer: ReturnType<typeof setTimeout>;
     const to = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('http-stream-closed not emitted')), 2000); });

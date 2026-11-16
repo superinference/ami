@@ -316,6 +316,46 @@ const HTTP_STREAM_RECONNECT_MAX_MS = 30000;
 const RECONNECT_JITTER_FRAC = 0.25;
 
 /**
+ * Liveness/idle timeout for the Streamable-HTTP server→client GET SSE stream.
+ * A compliant server sends keepalives (SSE comment frames) periodically; if NO
+ * bytes at all arrive for this long the connection is treated as dead (a
+ * half-open TCP socket silently dropped by a NAT/proxy/load-balancer with no
+ * FIN/RST). The timer is reset on EVERY incoming chunk (including keepalive
+ * comment frames), and on expiry the GET request is destroyed and a reconnect
+ * is scheduled. Mirrors Claude Code's SSETransport LIVENESS_TIMEOUT_MS (45s).
+ */
+const HTTP_STREAM_LIVENESS_TIMEOUT_MS = 45000;
+
+/**
+ * Wall-clock budget for re-opening the GET stream before giving up (10 minutes),
+ * measured from the first failure of a run of consecutive failures. A successful
+ * (re)connect resets the clock, so the stream survives any number of brief
+ * transient drops as long as no single outage lasts past the budget — unlike a
+ * small fixed attempt count that gives up after a few seconds of backoff.
+ * Mirrors Claude Code's SSETransport RECONNECT_GIVE_UP_MS.
+ */
+const HTTP_STREAM_RECONNECT_GIVE_UP_MS = 600000;
+
+/**
+ * HTTP status codes on the GET stream that indicate a PERMANENT server-side
+ * rejection of the credential — retrying would just re-send the same rejected
+ * bearer/session in a loop. On any of these the stream closes immediately
+ * without reconnecting. (404 is handled separately as "stream unsupported →
+ * degrade to POST-only", so it is NOT in this set.) Mirrors Claude Code's
+ * SSETransport PERMANENT_HTTP_CODES minus the 404 special-case.
+ */
+const PERMANENT_HTTP_STREAM_CODES = new Set([401, 403]);
+
+/**
+ * Cap on the dedup set of seen SSE sequence numbers before pruning, and how far
+ * below the high-water mark a pruned entry must be. Only sequence numbers near
+ * the high-water mark matter for duplicate detection, so older ones are dropped
+ * to keep the set bounded. Mirrors Claude Code's SSETransport pruning strategy.
+ */
+const HTTP_STREAM_SEEN_SEQ_CAP = 1000;
+const HTTP_STREAM_SEEN_SEQ_PRUNE_MARGIN = 200;
+
+/**
  * How many trailing stderr lines a stdio MCP server's output is retained for. On
  * an abnormal exit the tail is appended to the failure message so a consumer can
  * see WHY the child died (e.g. a stack trace it printed right before exiting)
@@ -378,6 +418,16 @@ export class McpClient extends EventEmitter {
   /** Set when the stream was closed intentionally (disconnect) — stops reconnect. */
   private httpStreamClosed = false;
   private httpStreamReconnectAttempts = 0;
+  /** Timestamp (ms) of the first failure in the current run of consecutive GET-stream failures; null while connected. */
+  private httpStreamReconnectStartTime: number | null = null;
+  /** Per-chunk liveness timer; fires if the GET stream goes silent past {@link httpStreamLivenessTimeout}. */
+  private httpStreamLivenessTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Idle budget (ms) for the GET stream before it is treated as half-open and reconnected. */
+  private readonly httpStreamLivenessTimeout: number;
+  /** High-water mark of SSE `id:` sequence numbers seen on the GET stream (for Last-Event-ID / from_sequence_num resumption). */
+  private httpStreamLastSequenceNum = 0;
+  /** Recently-seen SSE sequence numbers, for duplicate-frame detection across a resume/replay. */
+  private httpStreamSeenSequenceNums = new Set<number>();
 
   /** Injected by the manager/engine: resolve a server elicitation request. */
   onElicitation?: (request: McpElicitationRequest) => Promise<McpElicitationResult>;
@@ -393,6 +443,8 @@ export class McpClient extends EventEmitter {
     connectTimeout?: number;
     rootPaths?: string[];
     oauth?: McpOAuthProvider;
+    /** Override the GET-stream liveness/idle timeout (ms). Defaults to {@link HTTP_STREAM_LIVENESS_TIMEOUT_MS} (45s). */
+    httpStreamLivenessTimeout?: number;
   }) {
     super();
     this.command = options.command;
@@ -403,6 +455,7 @@ export class McpClient extends EventEmitter {
     this.connectTimeout = options.connectTimeout ?? getMcpConnectTimeout();
     this.rootPaths = options.rootPaths ?? [];
     this.oauth = options.oauth;
+    this.httpStreamLivenessTimeout = options.httpStreamLivenessTimeout ?? HTTP_STREAM_LIVENESS_TIMEOUT_MS;
   }
 
   /**
@@ -1104,9 +1157,18 @@ export class McpClient extends EventEmitter {
     if (this.transport !== 'http' || !this.sseUrl || this.httpStreamClosed) return;
     const http = this.sseUrl.startsWith('https') ? require('https') : require('http');
     const headers = await this.buildStreamHeaders('text/event-stream');
+    // Resume from where the last stream left off: the server replays only the
+    // missed tail (by sequence number) instead of from zero or dropping events
+    // across the gap. Sent both as a query param and the standard Last-Event-ID
+    // header so either server convention works.
+    const streamUrl = new URL(this.sseUrl);
+    if (this.httpStreamLastSequenceNum > 0) {
+      streamUrl.searchParams.set('from_sequence_num', String(this.httpStreamLastSequenceNum));
+      headers['Last-Event-ID'] = String(this.httpStreamLastSequenceNum);
+    }
     if (this.httpStreamClosed) return;
     this.httpStreamBuffer = '';
-    const req = http.request(new URL(this.sseUrl), { method: 'GET', headers }, (res: any) => {
+    const req = http.request(streamUrl, { method: 'GET', headers }, (res: any) => {
       const statusCode = res.statusCode;
       // 405 / 404 / 501 → the server does not offer the GET stream: POST-only.
       if (statusCode === 405 || statusCode === 404 || statusCode === 501) {
@@ -1115,22 +1177,37 @@ export class McpClient extends EventEmitter {
         this.emit('http-stream-unsupported', statusCode);
         return;
       }
+      // 401 / 403 → the credential is permanently rejected; retrying would just
+      // re-send the same rejected bearer in a loop. Stop for good.
+      if (PERMANENT_HTTP_STREAM_CODES.has(statusCode)) {
+        res.resume();
+        this.httpStreamReq = null;
+        this.httpStreamClosed = true;
+        this.emit('http-stream-closed', statusCode);
+        return;
+      }
       if (statusCode !== 200) {
         res.resume();
         this.httpStreamReq = null;
         this.scheduleHttpStreamReconnect();
         return;
       }
+      // A successful (re)connect clears the failure clock + attempt counter so a
+      // later brief drop gets the full wall-clock budget again.
       this.httpStreamReconnectAttempts = 0;
+      this.httpStreamReconnectStartTime = null;
+      this.resetHttpStreamLiveness();
       res.setEncoding('utf-8');
       res.on('data', (chunk: string) => {
+        // Any byte (including a `:keepalive` comment) proves the socket is alive.
+        this.resetHttpStreamLiveness();
         this.httpStreamBuffer += chunk;
         this.processHttpStreamBuffer();
       });
-      res.on('end', () => { this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
-      res.on('error', () => { this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
+      res.on('end', () => { this.clearHttpStreamLiveness(); this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
+      res.on('error', () => { this.clearHttpStreamLiveness(); this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
     });
-    req.on('error', () => { this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
+    req.on('error', () => { this.clearHttpStreamLiveness(); this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
     this.httpStreamReq = req;
     req.end();
   }
@@ -1159,9 +1236,34 @@ export class McpClient extends EventEmitter {
   /** Parse one SSE event's `data:` payload(s) and route the JSON-RPC message. */
   private handleSseStreamEvent(rawEvent: string): void {
     const dataParts: string[] = [];
+    let eventId: string | null = null;
     for (const line of rawEvent.split('\n')) {
       if (line.startsWith('data:')) {
         dataParts.push(line.slice(line.startsWith('data: ') ? 6 : 5));
+      } else if (line.startsWith('id:')) {
+        eventId = line.slice(line.startsWith('id: ') ? 4 : 3);
+      }
+    }
+    // Track the event's sequence number for resumption + dedup. A sequence
+    // already seen (a replay after a resume) is dropped so the server->client
+    // message is not processed twice.
+    if (eventId !== null) {
+      const seqNum = parseInt(eventId, 10);
+      if (!Number.isNaN(seqNum)) {
+        if (this.httpStreamSeenSequenceNums.has(seqNum)) {
+          this.emit('http-stream-duplicate', seqNum);
+          return;
+        }
+        this.httpStreamSeenSequenceNums.add(seqNum);
+        // Bound the dedup set: once large, drop sequence numbers well below the
+        // high-water mark (only recent ones can still arrive as duplicates).
+        if (this.httpStreamSeenSequenceNums.size > HTTP_STREAM_SEEN_SEQ_CAP) {
+          const threshold = this.httpStreamLastSequenceNum - HTTP_STREAM_SEEN_SEQ_PRUNE_MARGIN;
+          for (const s of this.httpStreamSeenSequenceNums) {
+            if (s < threshold) this.httpStreamSeenSequenceNums.delete(s);
+          }
+        }
+        if (seqNum > this.httpStreamLastSequenceNum) this.httpStreamLastSequenceNum = seqNum;
       }
     }
     if (dataParts.length === 0) return;
@@ -1180,7 +1282,11 @@ export class McpClient extends EventEmitter {
 
   private scheduleHttpStreamReconnect(): void {
     if (this.httpStreamClosed || this._state !== 'ready') return;
-    if (this.httpStreamReconnectAttempts >= this.maxReconnectAttempts) {
+    const now = Date.now();
+    if (this.httpStreamReconnectStartTime === null) this.httpStreamReconnectStartTime = now;
+    // Give up only after a continuous outage longer than the wall-clock budget —
+    // not after a small fixed attempt count — so brief transient drops recover.
+    if (now - this.httpStreamReconnectStartTime >= HTTP_STREAM_RECONNECT_GIVE_UP_MS) {
       this.emit('http-stream-closed');
       return;
     }
@@ -1193,9 +1299,36 @@ export class McpClient extends EventEmitter {
     timer.unref?.();
   }
 
+  /**
+   * Arm/refresh the GET-stream liveness timer. Called on every incoming chunk;
+   * if the stream falls silent past {@link HTTP_STREAM_LIVENESS_TIMEOUT_MS} the
+   * (likely half-open) connection is destroyed and a reconnect is scheduled.
+   */
+  private resetHttpStreamLiveness(): void {
+    this.clearHttpStreamLiveness();
+    const timer = setTimeout(() => {
+      this.httpStreamLivenessTimer = null;
+      this.emit('http-stream-liveness-timeout');
+      const req = this.httpStreamReq;
+      this.httpStreamReq = null;
+      if (req) { try { req.destroy(); } catch { /* already gone */ } }
+      this.scheduleHttpStreamReconnect();
+    }, this.httpStreamLivenessTimeout);
+    timer.unref?.();
+    this.httpStreamLivenessTimer = timer;
+  }
+
+  private clearHttpStreamLiveness(): void {
+    if (this.httpStreamLivenessTimer) {
+      clearTimeout(this.httpStreamLivenessTimer);
+      this.httpStreamLivenessTimer = null;
+    }
+  }
+
   /** Tear down the GET stream and stop any reconnect (called from disconnect). */
   private closeHttpStream(): void {
     this.httpStreamClosed = true;
+    this.clearHttpStreamLiveness();
     const req = this.httpStreamReq;
     this.httpStreamReq = null;
     if (req) {
