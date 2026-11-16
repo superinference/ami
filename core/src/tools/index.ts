@@ -209,7 +209,7 @@ export type { WorkflowRunRecord } from './workflow';
 export { briefTool } from './brief';
 export { WorkflowRuntime, executeWorkflow, parseWorkflowMeta } from './workflow-runtime';
 export type { WorkflowMeta, AgentHandler, AgentOptions, WorkflowBudget, WorkflowContext, WorkflowResolver } from './workflow-runtime';
-export { parseBashAST, extractCommands, extractCommandsFromString, PARSE_ABORTED, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes } from './bash-parser';
+export { parseBashAST, extractCommands, extractCommandsFromString, PARSE_ABORTED, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes, resolveShellWord } from './bash-parser';
 export type { CommandNode, ParseBudget, OutputRedirection } from './bash-parser';
 export {
   parsePowerShellCommand,

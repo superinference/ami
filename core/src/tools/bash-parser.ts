@@ -238,6 +238,40 @@ interface ParseState {
   deadline: number;
 }
 
+/**
+ * Resolve a single shell word to the LITERAL string the shell would use, by
+ * removing quoting and resolving backslash escapes — exactly the unquoting a
+ * shell performs before resolving a command name or argument. Specifically:
+ * surrounding/embedded single and double quotes are dropped (`"nc"`→`nc`,
+ * `r"m"`→`rm`, `in's'mod`→`insmod`), and a backslash outside single quotes
+ * escapes the next character (`\rm`→`rm`, `n\c`→`nc`); backslashes inside single
+ * quotes stay literal (`'a\b'`→`a\b`). Variable/command expansions (`$FOO`,
+ * `$(...)`) are left untouched — this resolves quoting only, never expands.
+ *
+ * SECURITY: the AST command name must be this trustworthy literal so the
+ * `AST_BLOCKED_COMMANDS` matcher in bash-security sees `nc`/`insmod`/… even when
+ * spelled with quotes or an escape (`"nc"`, `'insmod'`, `\rm`) — otherwise the
+ * quoted spelling parses to a token carrying the quotes and the blocklist match
+ * silently fails open. Mirrors Claude Code's ast.ts resolved-argv (quotes
+ * removed, backslash unescaped) that feeds the permission/security matcher.
+ */
+export function resolveShellWord(word: string): string {
+  let out = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i];
+    if (c === '\\' && !inSingle) {
+      if (i + 1 < word.length) { out += word[i + 1]; i++; }
+      continue;
+    }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    out += c;
+  }
+  return out;
+}
+
 /** Thrown internally when a {@link ParseBudget} is exceeded; caught at the top. */
 class ParseBudgetExceeded extends Error {}
 
@@ -474,7 +508,10 @@ function parseSimpleCommand(lexer: BashLexer, depth: number, state: ParseState):
     cmdIdx++;
   }
 
-  const command = words[cmdIdx] || '';
+  // Resolve quoting/escapes on the command NAME so the AST carries the literal
+  // executable name (`"nc"`→`nc`, `\rm`→`rm`) the shell would run — the security
+  // AST_BLOCKED_COMMANDS matcher depends on this trustworthy token.
+  const command = resolveShellWord(words[cmdIdx] || '');
   const args = words.slice(cmdIdx + 1);
 
   // Capture file-output redirections from this simple command's source span so
@@ -484,7 +521,7 @@ function parseSimpleCommand(lexer: BashLexer, depth: number, state: ParseState):
 
   return {
     type: 'simple',
-    command: command || (envVars.length > 0 ? envVars[0] : ''),
+    command: command || (envVars.length > 0 ? resolveShellWord(envVars[0]) : ''),
     args,
     redirections: redirections.length > 0
       ? redirections.map(({ target, operator }) => ({ target, operator }))
@@ -665,7 +702,9 @@ export function extractCommands(node: CommandNode): string[] {
       // `while …; do insmod …; done`, `case … ) mkfs … ;;` etc.
       if (SHELL_KEYWORDS.has(n.command)) {
         const recovered = recoverHiddenCommand([n.command, ...(n.args ?? [])]);
-        if (recovered) commands.push(recovered);
+        // The recovered token comes from raw args (unresolved), so resolve its
+        // quoting/escapes too — `{ "insmod" x; }` must surface `insmod`.
+        if (recovered) commands.push(resolveShellWord(recovered));
       }
     }
     if (n.children) {
