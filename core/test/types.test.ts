@@ -93,8 +93,28 @@ describe('runtime const arrays are non-empty', () => {
   it('CHAT_MODES has 3 values', () => {
     assert.equal(CHAT_MODES.length, 3);
   });
-  it('THEMES has 3 values', () => {
-    assert.equal(THEMES.length, 3);
+  it('THEMES exposes the full user-selectable settings vocabulary (parity: THEME_SETTINGS)', () => {
+    // Settings parity: follow-terminal sentinels + explicit schemes + the
+    // colorblind-friendly (daltonized) and ANSI-only (16-color) accessibility
+    // variants. Each is honored by the CLI resolver (see repl-theme parity test).
+    assert.deepEqual([...THEMES], [
+      'default',
+      'auto',
+      'dark',
+      'light',
+      'dark-daltonized',
+      'light-daltonized',
+      'dark-ansi',
+      'light-ansi',
+    ]);
+  });
+  it('THEMES includes the accessibility variants + the auto sentinel', () => {
+    for (const t of ['auto', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi']) {
+      assert.ok((THEMES as readonly string[]).includes(t), `THEMES missing ${t}`);
+    }
+  });
+  it('THEMES has no duplicate members', () => {
+    assert.equal(new Set(THEMES).size, THEMES.length);
   });
 });
 

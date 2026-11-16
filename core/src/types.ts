@@ -39,7 +39,31 @@ export type InputFormat = (typeof INPUT_FORMATS)[number];
 export const CHAT_MODES = ['ask', 'edit', 'agent'] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
 
-export const THEMES = ['default', 'dark', 'light'] as const;
+/**
+ * User-selectable theme SETTINGS — the canonical vocabulary accepted by `/theme`
+ * and the `AMI_THEME` env var (parity: Claude's `THEME_SETTINGS`, as distinct from
+ * the resolved `THEME_NAMES`). The CLI's `resolveThemeByName` turns each of these
+ * into a concrete palette at render time:
+ *   - `default` / `auto` — follow the terminal (auto-detect scheme + color tier);
+ *     `auto` is the Claude-parity alias of the historical AMI `default`.
+ *   - `dark` / `light` — force a scheme.
+ *   - `dark-daltonized` / `light-daltonized` — deuteranopia/protanopia-safe
+ *     ("colorblind-friendly") palettes.
+ *   - `dark-ansi` / `light-ansi` — force the coarse 16-color (ANSI-only) palette
+ *     even on a truecolor terminal (low-color SSH sessions / recordings).
+ * Every member is honored by `resolveThemeByName`; a drift guard (cli
+ * repl-theme-settings-parity test) asserts the enum and the resolver stay 1:1.
+ */
+export const THEMES = [
+  'default',
+  'auto',
+  'dark',
+  'light',
+  'dark-daltonized',
+  'light-daltonized',
+  'dark-ansi',
+  'light-ansi',
+] as const;
 export type Theme = (typeof THEMES)[number];
 
 /**
