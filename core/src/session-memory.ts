@@ -53,6 +53,19 @@ export interface SessionMemoryConfig {
   extractTokenThreshold: number;
   /** Tool-call delta since the last extraction that triggers a new pass. */
   extractToolCallThreshold: number;
+  /**
+   * Categories treated as critical. During eviction they receive a scoring boost
+   * (see {@link SessionMemoryConfig.criticalityBoost}) so important facts survive
+   * pruning even at lower confidence. Parity: Claude's eviction "preserves the most
+   * critical information", not confidence alone (SessionMemory/prompts.ts:L63-68).
+   */
+  criticalCategories: SessionFact['category'][];
+  /**
+   * Score boost added to a critical fact's confidence when ranking eviction
+   * survivors. Does NOT mutate the stored confidence — it only affects which facts
+   * are kept when the list is over `maxEntries`.
+   */
+  criticalityBoost: number;
 }
 
 export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
@@ -68,6 +81,8 @@ export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
   recencyProtectedCount: 20,
   extractTokenThreshold: 8_000,
   extractToolCallThreshold: 20,
+  criticalCategories: ['error_fix', 'decision', 'user_preference'],
+  criticalityBoost: 0.5,
 };
 
 export const MAX_MEMORY_ENTRIES = DEFAULT_SESSION_MEMORY_CONFIG.maxEntries;
@@ -142,6 +157,34 @@ export function redactSecrets(text: string): string {
   return out;
 }
 
+/**
+ * Convert unambiguous relative date terms ("today", "yesterday", "tomorrow") in a
+ * fact to absolute `YYYY-MM-DD` calendar dates, resolved against `now` (defaults to
+ * the current date). Parity: Claude's project-memory guidance mandates "Always
+ * convert relative dates in user messages to absolute dates when saving … so the
+ * memory remains interpretable after time passes" (memdir/memoryTypes.ts:79). A
+ * persisted fact like "freeze merges tomorrow" is meaningless when recalled days
+ * later; normalizing it to an absolute date keeps cross-turn memory durable.
+ *
+ * Only unambiguous terms are rewritten deterministically; genuinely ambiguous
+ * forms (bare weekday names like "Thursday") are left to the model, which is
+ * instructed to resolve them via {@link EXTRACTION_PROMPT}.
+ */
+export function normalizeRelativeDates(text: string, now: Date = new Date()): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const fmt = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const DAY_MS = 86_400_000;
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const replacements: Array<[RegExp, Date]> = [
+    [/\byesterday\b/gi, new Date(base.getTime() - DAY_MS)],
+    [/\btomorrow\b/gi, new Date(base.getTime() + DAY_MS)],
+    [/\btoday\b/gi, base],
+  ];
+  let out = text;
+  for (const [pattern, date] of replacements) out = out.replace(pattern, fmt(date));
+  return out;
+}
+
 export function validateMemoryEntry(entry: string): { valid: boolean; reason?: string } {
   if (!entry || entry.trim().length === 0) {
     return { valid: false, reason: 'empty' };
@@ -208,7 +251,7 @@ Categories:
 - error_fix: errors encountered and how they were resolved
 - convention: project conventions or patterns discovered
 
-Only include facts that would be genuinely useful in future turns. Be concise. Return ONLY the JSON array, no other text.`;
+Only include facts that would be genuinely useful in future turns. Be concise. Always convert relative dates (e.g. "today", "yesterday", "Thursday") to absolute calendar dates (YYYY-MM-DD) so facts stay interpretable in later sessions. If an existing-memory listing is provided below, do NOT repeat facts already present — only emit facts that are new or that update one of them. Return ONLY the JSON array, no other text.`;
 
 export class SessionMemoryExtractor {
   private provider: ProviderConfig;
@@ -223,6 +266,9 @@ export class SessionMemoryExtractor {
   /** Extraction watchdog timeout (ms). Seeded from `config.extractionTimeoutMs`;
    *  tests may override it to exercise the abort path without the full wait. */
   _timeoutMs: number;
+  /** Test seam: the clock used to resolve relative dates in extracted facts.
+   *  Defaults to the real wall clock; tests override it for determinism. */
+  _now: () => Date = () => new Date();
 
   constructor(provider: ProviderConfig, compactionModel?: string, config?: Partial<SessionMemoryConfig>) {
     this.provider = provider;
@@ -259,11 +305,18 @@ export class SessionMemoryExtractor {
    *
    * An optional caller `signal` is combined with the internal watchdog so a user
    * interrupt cancels extraction promptly instead of blocking up to the timeout.
+   *
+   * `existingFacts` (the facts already persisted for this session) are pre-injected
+   * into the prompt as a manifest so the extraction model dedupes/updates against
+   * them instead of re-deriving facts it already knows — parity with Claude's
+   * formatMemoryManifest, which pre-injects the memory listing "so the extraction
+   * agent doesn't spend a turn on `ls`" (memdir/memoryScan.ts:L24-34).
    */
   async extractFacts(
     toolResults: Array<{ toolName: string; output: string; isError: boolean }>,
     recentMessages: Message[],
     signal?: AbortSignal,
+    existingFacts?: SessionFact[],
   ): Promise<SessionFact[]> {
     // Only use the last N messages
     const contextMessages = recentMessages.slice(-this.config.contextWindowMessages);
@@ -282,7 +335,17 @@ export class SessionMemoryExtractor {
       })
       .join('\n');
 
-    const userContent = `## Tool Results\n${toolResultsSummary}\n\n## Recent Conversation\n${messageSummary}`;
+    // Pre-inject a manifest of already-persisted facts so the model can dedupe /
+    // update against them instead of re-emitting known facts. Capped at maxEntries
+    // and category-tagged, mirroring Claude's formatMemoryManifest affordance hint.
+    const existingManifest = existingFacts && existingFacts.length > 0
+      ? `\n\n## Existing Memory (already saved — do NOT repeat; only add new or updated facts)\n${existingFacts
+          .slice(0, this.config.maxEntries)
+          .map(f => `- [${f.category}] ${f.fact}`)
+          .join('\n')}`
+      : '';
+
+    const userContent = `## Tool Results\n${toolResultsSummary}\n\n## Recent Conversation\n${messageSummary}${existingManifest}`;
 
     // Use compaction model if available, otherwise primary model
     const effectiveConfig: ProviderConfig = this.compactionModel
@@ -381,13 +444,27 @@ export class SessionMemoryExtractor {
       const protectCount = Math.min(this.config.recencyProtectedCount, this.config.maxEntries);
       const recent = merged.slice(merged.length - protectCount);
       const older = merged.slice(0, merged.length - protectCount);
-      older.sort((a, b) => b.confidence - a.confidence);
+      // Rank eviction survivors by a criticality-aware score (confidence plus a
+      // boost for critical categories) rather than confidence alone, so important
+      // facts (errors, decisions, user preferences) are not crowded out by stale
+      // high-confidence noise. The stored confidence is never mutated.
+      older.sort((a, b) => this.evictionScore(b) - this.evictionScore(a));
       const survivors = [...older.slice(0, this.config.maxEntries - recent.length), ...recent];
       survivors.sort((a, b) => b.confidence - a.confidence);
       return survivors;
     }
 
     return merged;
+  }
+
+  /**
+   * Eviction ranking score for a fact: its confidence plus `criticalityBoost` when
+   * its category is in `criticalCategories`. Used only to choose survivors when the
+   * list exceeds `maxEntries`; it never mutates the fact's stored confidence.
+   */
+  private evictionScore(fact: SessionFact): number {
+    const critical = this.config.criticalCategories.includes(fact.category);
+    return fact.confidence + (critical ? this.config.criticalityBoost : 0);
   }
 
   /**
@@ -420,7 +497,10 @@ export class SessionMemoryExtractor {
             typeof obj.confidence === 'number' &&
             obj.confidence >= this.config.confidenceFloor
           );
-        });
+        })
+        // Normalize any unambiguous relative dates the model left in the fact text,
+        // so facts stay interpretable when recalled in a later session.
+        .map(f => ({ ...f, fact: normalizeRelativeDates(f.fact, this._now()) }));
     } catch {
       coreLog('session-memory', 'Failed to parse facts JSON from response');
       return [];
