@@ -4,7 +4,7 @@ import * as path from 'path';
 import { URL } from 'url';
 import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES } from './web-utils';
+import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES, EgressBlockedError } from './web-utils';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
 import { isPreapprovedHost } from './web-preapproved';
 
@@ -643,6 +643,17 @@ export const webFetchTool: ToolDefinition = {
 
       if (message === 'Aborted') {
         return { output: 'Fetch aborted.', isError: true };
+      }
+
+      // An egress-proxy allow-list block is not an origin error — the request
+      // never left the network boundary. Report it distinctly with the actionable
+      // remedy (allow-list the domain in the egress policy) instead of a generic
+      // "Error fetching …" that reads like the site itself failed.
+      if (err instanceof EgressBlockedError) {
+        return {
+          output: `Error: fetching "${sanitizedUrl}" was blocked by the network egress proxy — the domain "${err.domain}" is not on the egress allow-list. Add it to the egress policy to permit this fetch.`,
+          isError: true,
+        };
       }
 
       return {

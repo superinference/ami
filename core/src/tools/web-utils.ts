@@ -6,6 +6,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as dns from 'dns';
 import { URL } from 'url';
+import { AMI_VERSION } from '../version';
 
 export const BLOCKED_HOSTNAMES = new Set([
   'localhost', '127.0.0.1', '::1', '0.0.0.0',
@@ -459,7 +460,13 @@ export function stripHtml(html: string): string {
 // (Claude Code's identify-yourself policy). Override with SUPERINFERENCE_WEB_USER_AGENT
 // (e.g. a browser UA) for sites that require it. Read at call time so the env var
 // takes effect regardless of import order and is unit-testable.
-export const DEFAULT_WEB_USER_AGENT = 'SuperInference-AMI/1.0 (+https://superinference.org)';
+//
+// The product token embeds the REAL build version from the single-source
+// `AMI_VERSION` macro (core/src/version.ts), not a hardcoded "1.0" — so the
+// traffic AMI emits is attributable to the exact release and a version bump
+// flows through here automatically (parity with Claude's
+// `claude-code/${MACRO.VERSION}` single-source User-Agent). ADDITIVE.
+export const DEFAULT_WEB_USER_AGENT = `SuperInference-AMI/${AMI_VERSION} (+https://superinference.org)`;
 export function getUserAgent(): string {
   return process.env.SUPERINFERENCE_WEB_USER_AGENT || DEFAULT_WEB_USER_AGENT;
 }
@@ -509,6 +516,30 @@ export function isMetadataEndpoint(url: string): boolean {
     return METADATA_HOSTS.has(host);
   } catch {
     return false;
+  }
+}
+
+/**
+ * A network egress proxy in front of the agent signals an allow-list block with a
+ * `403` whose `X-Proxy-Error` header is exactly `blocked-by-allowlist`. That is a
+ * fundamentally different failure from an origin's own `403 Forbidden` (the origin
+ * was never reached), so it must be surfaced distinctly: the fix is to allow-list
+ * the domain in the egress policy, not to change the request. Header name/value
+ * mirror Claude Code's egress-proxy contract (`WebFetchTool/utils.ts`). ADDITIVE.
+ */
+export const EGRESS_PROXY_ERROR_HEADER = 'x-proxy-error';
+export const EGRESS_PROXY_BLOCKED_VALUE = 'blocked-by-allowlist';
+
+/**
+ * Raised when the egress proxy refused the fetch (403 + the blocked-by-allowlist
+ * marker above) rather than the origin returning a 403. Carries the blocked
+ * `domain` so a consumer can tell the user exactly what to allow-list. Mirrors
+ * Claude Code's `EgressBlockedError`.
+ */
+export class EgressBlockedError extends Error {
+  constructor(public readonly domain: string) {
+    super(`Access to ${domain} is blocked by the network egress proxy (allow-list).`);
+    this.name = 'EgressBlockedError';
   }
 }
 
@@ -641,6 +672,29 @@ function httpGetInternal(
             }
             httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, ssrfResult.resolvedIP, raw).then(resolve, reject);
           }, reject);
+          return;
+        }
+
+        // Egress-proxy allow-list block: a 403 whose X-Proxy-Error header marks it
+        // as blocked-by-allowlist did NOT come from the origin — the request never
+        // left the egress boundary. Surface it as a distinct EgressBlockedError
+        // (carrying the blocked host) so the consumer reports "allow-list the
+        // domain", not a misleading origin "Forbidden". An ordinary 403 from the
+        // origin (no such header) is unaffected and flows through as a normal body.
+        // Egress-proxy allow-list block: a 403 whose X-Proxy-Error header marks it
+        // as blocked-by-allowlist did NOT come from the origin — the request never
+        // left the egress boundary. Surface it as a distinct EgressBlockedError
+        // (carrying the blocked host) so the consumer reports "allow-list the
+        // domain", not a misleading origin "Forbidden". An ordinary 403 from the
+        // origin (no such header) is unaffected and flows through as a normal body.
+        if (
+          statusCode === 403 &&
+          res.headers[EGRESS_PROXY_ERROR_HEADER] === EGRESS_PROXY_BLOCKED_VALUE
+        ) {
+          res.resume();
+          let domain = url;
+          try { domain = new URL(url).hostname; } catch { /* keep raw url */ }
+          reject(new EgressBlockedError(domain));
           return;
         }
 
