@@ -263,6 +263,116 @@ export function trySerialize(value: unknown): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// OTEL exporter / protocol / cadence configuration knobs (Claude-Code parity)
+// ---------------------------------------------------------------------------
+
+/** OTLP wire protocols AMI recognizes (only `http/json` is actually emitted). */
+export const OTLP_PROTOCOLS = ['http/json', 'http/protobuf', 'grpc'] as const;
+export type OtlpProtocol = (typeof OTLP_PROTOCOLS)[number];
+
+/**
+ * Parse an `OTEL_*_EXPORTER` value into an ordered exporter-type list. Per the OTEL
+ * spec the literal `none` means "no automatically configured exporter for this
+ * signal", so `none` tokens are filtered out (a bare `none` yields `[]` → disabled).
+ * Blanks are dropped. An unset/empty value yields `[]` so the caller can apply its
+ * own default. Mirrors Claude's parseExporterTypes.
+ */
+export function parseExporterTypes(value: string | undefined): string[] {
+  return (value || '')
+    .trim()
+    .split(',')
+    .map(t => t.trim())
+    .filter(t => t !== '' && t !== 'none');
+}
+
+/**
+ * Resolve the OTLP wire protocol for one signal, honoring the per-signal
+ * `OTEL_EXPORTER_OTLP_{SIGNAL}_PROTOCOL` knob then the generic
+ * `OTEL_EXPORTER_OTLP_PROTOCOL`, defaulting to `http/json` when unset. Throws on an
+ * unrecognized value (mirrors Claude's switch default). Case/whitespace-insensitive.
+ */
+export function resolveOtlpProtocol(
+  env: NodeJS.ProcessEnv,
+  signal: 'logs' | 'metrics' | 'traces',
+): OtlpProtocol {
+  const perSignal = env[`OTEL_EXPORTER_OTLP_${signal.toUpperCase()}_PROTOCOL`];
+  const raw = (perSignal ?? env.OTEL_EXPORTER_OTLP_PROTOCOL ?? '').trim().toLowerCase();
+  if (!raw) return 'http/json';
+  if ((OTLP_PROTOCOLS as readonly string[]).includes(raw)) return raw as OtlpProtocol;
+  throw new Error(`Unknown OTLP protocol: ${raw}`);
+}
+
+/**
+ * Whether telemetry EGRESS (OTLP POST / console dump) must be suppressed because
+ * this is a test run. Defaults to on under `NODE_ENV==='test'` (so a test harness
+ * never ships real telemetry — mirrors Claude's logOTelEvent NODE_ENV guard); an
+ * explicit `AMI_TELEMETRY_ALLOW_IN_TEST` opts back in. Local in-memory/disk records
+ * are unaffected — only off-machine/stdout egress is gated.
+ */
+export function isTelemetrySuppressedForTest(env: NodeJS.ProcessEnv): boolean {
+  if (env.NODE_ENV !== 'test') return false;
+  return !isEnvTruthy(env.AMI_TELEMETRY_ALLOW_IN_TEST);
+}
+
+/** Per-signal export-cadence defaults (ms): logs/traces fast, metrics slow. */
+export const DEFAULT_EXPORT_INTERVALS: Record<'logs' | 'metrics' | 'traces', number> = {
+  logs: 5000,
+  metrics: 60000,
+  traces: 5000,
+};
+
+const EXPORT_INTERVAL_ENV_KEYS: Record<'logs' | 'metrics' | 'traces', string> = {
+  logs: 'OTEL_LOGS_EXPORT_INTERVAL',
+  metrics: 'OTEL_METRIC_EXPORT_INTERVAL',
+  traces: 'OTEL_TRACES_EXPORT_INTERVAL',
+};
+
+/**
+ * Resolve the export flush interval (ms) for a signal from its env knob, falling
+ * back to {@link DEFAULT_EXPORT_INTERVALS} for an unset / non-positive / unparseable
+ * value. Lets an operator tune export cadence per signal (Claude parity).
+ */
+export function resolveExportIntervalMs(
+  signal: 'logs' | 'metrics' | 'traces',
+  env: NodeJS.ProcessEnv,
+): number {
+  const raw = env[EXPORT_INTERVAL_ENV_KEYS[signal]];
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_EXPORT_INTERVALS[signal];
+}
+
+/** Default overall shutdown-flush budget (ms) for the whole OTLP drain. */
+export const DEFAULT_FLUSH_TIMEOUT_MS = 5000;
+
+/**
+ * Resolve the overall flush/shutdown budget (ms) the OTLP drain may block for,
+ * from `AMI_OTEL_FLUSH_TIMEOUT_MS`, defaulting to {@link DEFAULT_FLUSH_TIMEOUT_MS}.
+ * A literal `0` is honored (meaning "no time to flush"); a non-finite/negative
+ * value falls back to the default (mirrors Claude's CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS).
+ */
+export function resolveFlushTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.AMI_OTEL_FLUSH_TIMEOUT_MS;
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_FLUSH_TIMEOUT_MS;
+}
+
+/**
+ * Actionable, numbered remediation shown when the OTLP flush exceeds its budget —
+ * so a user pointing AMI at an unreachable/slow collector gets a self-correcting
+ * hint instead of silence (mirrors Claude's flush-timeout guidance; AGENTS.md
+ * requires failures to surface a remedy).
+ */
+export function formatFlushTimeoutGuidance(timeoutMs: number): string {
+  return [
+    `Telemetry flush exceeded its ${timeoutMs}ms budget; remaining events were re-queued.`,
+    'To resolve this, you can:',
+    '  1. Increase the timeout by setting AMI_OTEL_FLUSH_TIMEOUT_MS to a larger value.',
+    '  2. Check that your OTLP collector endpoint is reachable and healthy.',
+    '  3. Disable telemetry by unsetting the OTLP endpoint (or OTEL_LOGS_EXPORTER=none).',
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Telemetry environment fingerprint, stable install id, and low-cardinality
 // derivations attached to OTLP resource / log attributes. All are
 // provider-neutral and let a self-hosted collector segment and estimate usage
@@ -510,6 +620,20 @@ export interface AnalyticsTrackerOpts {
   /** Sleep + RNG injection for deterministic tests. */
   sleepImpl?: (ms: number) => Promise<void>;
   rand?: () => number;
+  /** Monotonic clock injection (ms) for deterministic flush-budget tests. Default Date.now. */
+  now?: () => number;
+  /**
+   * Diagnostic bridge for one-time telemetry warnings (no sink configured,
+   * unsupported protocol, flush-timeout remediation). A consumer wires this to its
+   * logger; unset → silent (best-effort, like {@link onBatchDropped}).
+   */
+  onDiagnostic?: (message: string) => void;
+  /**
+   * Sink for the `console` exporter type (OTEL_LOGS_EXPORTER=console): invoked with a
+   * one-line JSON dump of each event's redacted payload for local introspection with
+   * no collector. Defaults to writing a line to process.stdout.
+   */
+  consoleSink?: (line: string) => void;
 }
 
 export class AnalyticsTracker {
@@ -545,6 +669,20 @@ export class AnalyticsTracker {
   private _otlpResourceAttrs: Record<string, string>;
   private _sleep: (ms: number) => Promise<void>;
   private _rand: () => number;
+  private _now: () => number;
+  private _onDiagnostic: ((message: string) => void) | undefined;
+  private _consoleSink: (line: string) => void;
+  /** Resolved egress-exporter flags from OTEL_LOGS_EXPORTER + protocol gating. */
+  private _otlpExport: boolean;
+  private _consoleExport: boolean;
+  /** Resolved per-signal (logs) export interval, threaded into the batch sender. */
+  private _exportIntervalMs: number;
+  /** Set true once shutdown() has run its final flush — rejects all later egress. */
+  private _shutdown = false;
+  /** One-time latch for the "no telemetry sink configured" diagnostic. */
+  private _warnedNoSink = false;
+  /** One-time latch for the unsupported-protocol diagnostic. */
+  private _warnedProtocol = false;
   /** Serializes mid-session (onBatch) sends so concurrent boundary flushes don't interleave. */
   private _sendChain: Promise<void> = Promise.resolve();
 
@@ -590,6 +728,62 @@ export class AnalyticsTracker {
     }
     this._sleep = opts?.sleepImpl ?? ((ms) => new Promise(r => setTimeout(r, ms)));
     this._rand = opts?.rand ?? Math.random;
+    this._now = opts?.now ?? Date.now;
+    this._onDiagnostic = opts?.onDiagnostic;
+    this._consoleSink = opts?.consoleSink ?? ((line) => process.stdout.write(line + '\n'));
+
+    // Exporter-type selection (OTEL_LOGS_EXPORTER): an unset value keeps AMI's
+    // endpoint-driven OTLP default; 'none' disables all egress; 'console' enables a
+    // local stdout dump. Unsupported/unknown types warn once (no crash).
+    const rawExporter = this._env.OTEL_LOGS_EXPORTER;
+    const exporterTypes = rawExporter === undefined ? ['otlp'] : parseExporterTypes(rawExporter);
+    this._otlpExport = exporterTypes.includes('otlp');
+    this._consoleExport = exporterTypes.includes('console');
+    for (const ty of exporterTypes) {
+      if (ty !== 'otlp' && ty !== 'console') {
+        this._diag(`[telemetry] Unsupported OTEL_LOGS_EXPORTER type '${ty}' ignored (supported: otlp, console).`);
+      }
+    }
+
+    // Protocol gating: AMI emits OTLP/HTTP+JSON only. A grpc / http/protobuf (or
+    // unknown) protocol can't be honored → disable OTLP export and warn once rather
+    // than silently POSTing JSON a protobuf/gRPC-only collector would reject.
+    if (this._otlpExport) {
+      let protocol: OtlpProtocol | null = null;
+      try {
+        protocol = resolveOtlpProtocol(this._env, 'logs');
+      } catch (e) {
+        this._warnProtocol(`[telemetry] ${(e as Error).message}; OTLP export disabled (AMI supports http/json only).`);
+        this._otlpExport = false;
+      }
+      if (protocol && protocol !== 'http/json') {
+        this._warnProtocol(`[telemetry] OTLP protocol '${protocol}' is not supported; OTLP export disabled (AMI supports http/json only).`);
+        this._otlpExport = false;
+      }
+    }
+
+    this._exportIntervalMs = resolveExportIntervalMs('logs', this._env);
+  }
+
+  /** Emit a diagnostic through the injected bridge (best-effort, never throws). */
+  private _diag(message: string): void {
+    try { this._onDiagnostic?.(message); } catch { /* best effort */ }
+  }
+
+  private _warnProtocol(message: string): void {
+    if (this._warnedProtocol) return;
+    this._warnedProtocol = true;
+    this._diag(message);
+  }
+
+  /** Resolved logs export interval (ms) — introspection + batch-sender cadence. */
+  getExportIntervalMs(): number {
+    return this._exportIntervalMs;
+  }
+
+  /** Whether this tracker has been shut down (post-shutdown export guard). */
+  isShutdown(): boolean {
+    return this._shutdown;
   }
 
   /** The resolved privacy level (default | no-telemetry | essential-traffic). */
@@ -670,24 +864,51 @@ export class AnalyticsTracker {
       ? sanitizeAnalyticsData(recordData, { env: this._env })
       : markAnalyticsSafe(recordData);
 
-    // Mirror into the OTLP batch sender when an endpoint is configured AND the
-    // user has not opted out of telemetry. Lazily created so the batch carries
-    // the (by-then-known) session id. A size/byte boundary flush is POSTed
-    // mid-session via the onBatch hook instead of being buffered until shutdown.
-    if (this._otlpEndpoint && !isTelemetryDisabled(this._env)) {
+    this._appendEgress(event, egressData);
+
+    // Telemetry EGRESS (off-machine OTLP / stdout console dump) is suppressed in a
+    // test environment by default, and entirely after shutdown — local in-memory +
+    // disk records above still happen.
+    const suppressed = isTelemetrySuppressedForTest(this._env);
+    if (suppressed || this._shutdown) return;
+
+    // Console exporter (OTEL_LOGS_EXPORTER=console): a human-readable live dump of
+    // the redacted payload for local introspection with no collector wired.
+    if (this._consoleExport) {
+      const dump = trySerialize({ type, ...(this._sessionId ? { sessionId: this._sessionId } : {}), data: egressData });
+      if (dump !== null) this._consoleSink(dump);
+    }
+
+    // Warn ONCE if an event has nowhere durable to go (no disk log, no active OTLP
+    // export, no console exporter) — surfacing a misconfigured/absent sink instead
+    // of silently losing telemetry (mirrors Claude's hasWarnedNoEventLogger latch).
+    const hasSink = !!this.logFile
+      || (!!this._otlpEndpoint && this._otlpExport && !isTelemetryDisabled(this._env))
+      || this._consoleExport;
+    if (!hasSink && !this._warnedNoSink) {
+      this._warnedNoSink = true;
+      this._diag(`[telemetry] Event dropped (no telemetry sink configured): ${type}`);
+    }
+
+    // Mirror into the OTLP batch sender when an endpoint is configured, the exporter
+    // selection keeps OTLP enabled, AND the user has not opted out of telemetry.
+    // Lazily created so the batch carries the (by-then-known) session id; a
+    // size/byte boundary flush is POSTed mid-session via the onBatch hook, and the
+    // resolved per-signal interval drives the periodic timer flush.
+    if (this._otlpEndpoint && this._otlpExport && !isTelemetryDisabled(this._env)) {
       if (!this._telemetry) {
         this._telemetry = new TelemetryBatchSender({
           sessionId: this._sessionId ?? 'unknown',
           endpoint: this._otlpEndpoint,
           maxBatchSize: this._telemetryMaxBatchSize,
           maxBatchBytes: this._telemetryMaxBatchBytes,
+          flushIntervalMs: this._exportIntervalMs,
           onBatch: (batch) => this._scheduleSend(batch),
         });
+        this._telemetry.startAutoFlush();
       }
       this._telemetry.enqueue(type, egressData, event.sequence);
     }
-
-    this._appendEgress(event, egressData);
   }
 
   /**
@@ -734,10 +955,14 @@ export class AnalyticsTracker {
   }
 
   /** Drain any queued telemetry and POST it to the configured OTLP endpoint with
-   *  bounded retry. No-op (and never throws) when no endpoint is set, or when the
-   *  user has opted out of telemetry. Best-effort. */
+   *  bounded retry. No-op (and never throws) when no endpoint is set, OTLP export is
+   *  disabled, the tracker has been shut down, or the user has opted out of
+   *  telemetry. The whole drain is bounded by an overall flush budget
+   *  ({@link resolveFlushTimeoutMs}); on exhaustion the remaining batches are
+   *  re-queued (at-least-once) and an actionable remediation diagnostic is emitted
+   *  so a slow/unreachable collector never blocks exit unboundedly. Best-effort. */
   async flushOtlp(): Promise<void> {
-    if (!this._otlpEndpoint || !this._telemetry) return;
+    if (!this._otlpEndpoint || !this._otlpExport || this._shutdown || !this._telemetry) return;
     // Let any in-flight mid-session (onBatch) sends settle first so a boundary
     // batch is never POSTed concurrently with the shutdown drain.
     await this._sendChain;
@@ -747,7 +972,17 @@ export class AnalyticsTracker {
     const batches = this._telemetry.drain();
     if (isTelemetryDisabled(this._env)) return; // opted out: drop without sending
     const maxCons = this._maxConsecutiveFailures;
+    // Overall flush budget: the whole drain must finish within this many ms (each
+    // batch is also per-request bounded by otlpTimeoutMs). When the deadline passes
+    // mid-drain, requeue the remainder and surface numbered remediation guidance.
+    const budgetMs = resolveFlushTimeoutMs(this._env);
+    const deadline = this._now() + budgetMs;
     for (let i = 0; i < batches.length; i++) {
+      if (this._now() >= deadline) {
+        this._telemetry.requeueFront(batches.slice(i));
+        this._diag(formatFlushTimeoutGuidance(budgetMs));
+        return;
+      }
       const ok = await this._sendWithRetry(batches[i]);
       if (ok) {
         this._consecutiveFailures = 0; // success breaks the failure streak
@@ -769,6 +1004,20 @@ export class AnalyticsTracker {
         break;
       }
     }
+  }
+
+  /**
+   * Gracefully shut the telemetry pipeline down: run one final {@link flushOtlp}
+   * while still live, then latch `_shutdown` so every later {@link log} egress and
+   * {@link flushOtlp} is rejected and the batch sender refuses further events — a
+   * post-shutdown export guard mirroring Claude's exporter `isShutdown` flag. Safe
+   * to call more than once. Best-effort: never throws.
+   */
+  async shutdown(): Promise<void> {
+    if (this._shutdown) return;
+    await this.flushOtlp();
+    this._shutdown = true;
+    this._telemetry?.shutdown();
   }
 
   /**
@@ -865,6 +1114,8 @@ export class TelemetryBatchSender {
   private _totalDropped = 0;
   private _maxQueueSize: number;
   private _onBatch: ((batch: TelemetryBatch) => void) | null;
+  /** Latched by shutdown() — rejects all further enqueue()/flush() (export guard). */
+  private _shutdown = false;
 
   constructor(opts: TelemetryBatchSenderOpts) {
     this._sessionId = opts.sessionId;
@@ -877,6 +1128,10 @@ export class TelemetryBatchSender {
   }
 
   enqueue(type: string, data: Record<string, unknown>, sequence?: number): boolean {
+    if (this._shutdown) {
+      this._totalDropped++;
+      return false;
+    }
     if (this._queue.length >= this._maxQueueSize) {
       this._totalDropped++;
       return false;
@@ -917,6 +1172,7 @@ export class TelemetryBatchSender {
   }
 
   flush(): TelemetryBatch | null {
+    if (this._shutdown) return null;
     const events = this.takeBatch();
     if (events.length === 0) return null;
     const batch: TelemetryBatch = {
@@ -948,6 +1204,19 @@ export class TelemetryBatchSender {
       this._timer = null;
     }
   }
+
+  /**
+   * Tear the sender down: stop the auto-flush timer and latch the shutdown guard so
+   * any further enqueue()/flush() is rejected (mirrors an OTEL exporter's isShutdown
+   * flag — telemetry emitted after teardown is never queued or sent). Idempotent.
+   */
+  shutdown(): void {
+    this._shutdown = true;
+    this.stopAutoFlush();
+  }
+
+  /** Whether this sender has been shut down (post-shutdown export guard). */
+  get isShutdown(): boolean { return this._shutdown; }
 
   get queueSize(): number { return this._queue.length; }
   get totalSent(): number { return this._totalSent; }

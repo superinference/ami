@@ -72,7 +72,11 @@ export {
   detectTerminalType, getHostPlatformForAnalytics, HOST_PLATFORM_OVERRIDES, getEnvironmentFingerprint,
   getCiContext, getOrCreateUserId, USER_ID_FILE, getUserBucket, NUM_USER_BUCKETS,
   bucketHttpStatus, deriveHttpStatusFields,
+  parseExporterTypes, resolveOtlpProtocol, OTLP_PROTOCOLS, isTelemetrySuppressedForTest,
+  resolveExportIntervalMs, DEFAULT_EXPORT_INTERVALS, resolveFlushTimeoutMs,
+  DEFAULT_FLUSH_TIMEOUT_MS, formatFlushTimeoutGuidance,
 } from './analytics';
+export type { OtlpProtocol } from './analytics';
 export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
 export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';
