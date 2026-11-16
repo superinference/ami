@@ -165,8 +165,20 @@ export function isPrivateIP(ip: string): boolean {
   if (/^169\.254\./.test(ip)) return true;
   // AWS/GCP/Azure metadata
   if (ip === '169.254.169.254') return true;
-  // IPv6 private
-  if (ip === '::1' || ip.startsWith('fe80:') || ip.startsWith('fc00:') || ip.startsWith('fd')) return true;
+  // IPv6 private ranges (only meaningful for colon-form addresses; a v4 literal
+  // can never start with the hex letters below). Mirrors Claude Code's
+  // ssrfGuard isBlockedV6 ranges so the WHOLE link-local / unique-local space is
+  // caught, not just the fe80:/fc00: string prefixes.
+  if (ip.includes(':')) {
+    if (ip === '::1') return true;
+    // fc00::/7 — unique-local (fc00:: through fdff::): first hex pair fc or fd.
+    // Previously only `fc00:` matched, so fc01::..fcff:: were treated as public.
+    if (ip.startsWith('fc') || ip.startsWith('fd')) return true;
+    // fe80::/10 — link-local: first hextet in the fe80..febf range. Previously
+    // only the literal `fe80:` prefix matched, so fe81::..febf:: slipped through.
+    const firstHextet = ip.split(':')[0];
+    if (firstHextet.length === 4 && firstHextet >= 'fe80' && firstHextet <= 'febf') return true;
+  }
   return false;
 }
 
@@ -288,6 +300,21 @@ export async function validateUrlSafety(
 
   if (BLOCKED_HOSTNAMES.has(hostname) && !(allowLoopback && isLoopbackHost(hostname))) {
     return { error: `Blocked: "${hostname}" is a private/metadata hostname` };
+  }
+
+  // Reject single-label (dot-less) hostnames before any DNS/network work. A bare
+  // "intranet" / "wiki" style name is not publicly resolvable and, via a
+  // search-domain suffix, typically expands to a privileged internal host — so it
+  // is an SSRF surface that must be refused pre-DNS. IP literals (v4 dotted or v6
+  // colon-form) and, under allowLoopback, loopback names are exempt. Mirrors
+  // Claude Code's validateURL publicly-resolvable filter (WebFetchTool/utils.ts
+  // parts.length < 2). ADDITIVE — normal multi-label public hosts are unaffected.
+  if (
+    !isValidIP(hostname) &&
+    !(allowLoopback && isLoopbackHost(hostname)) &&
+    hostname.split('.').length < 2
+  ) {
+    return { error: `Blocked: "${hostname}" is a single-label (non-publicly-resolvable) hostname` };
   }
 
   // Resolve hostname and check for private IPs — return the resolved IP
