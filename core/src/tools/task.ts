@@ -1596,6 +1596,10 @@ export const taskTool: ToolDefinition = {
           description: `Background agent: ${label}`,
           outputPath,
           abortFn: () => { subAbort.abort(); },
+          // Store the agent's abort signal so processManager.isActive() can report
+          // composite liveness (running AND not-yet-aborted), catching an agent
+          // signalled to abort before its status flips.
+          abortSignal: subAbort.signal,
         });
         const fm = context.processManager.flowManager;
         if (fm) {
@@ -1608,6 +1612,10 @@ export const taskTool: ToolDefinition = {
       (async () => {
         let result = '';
         let sawError = false;
+        // First failure message captured, surfaced on the task entry's dedicated
+        // `error` field so a reader (task_list) learns WHY the agent failed without
+        // scraping the output tail.
+        let bgError: string | undefined;
         // Live usage accounting for the background completion summary (parity with
         // Claude's runAsyncAgentLifecycle usage block: tokens / tool uses / duration).
         let bgToolUseCount = 0;
@@ -1663,6 +1671,7 @@ export const taskTool: ToolDefinition = {
             }
             if (event.type === 'error') {
               sawError = true;
+              if (bgError === undefined) bgError = String(event.error);
               const errText = `\nError: ${event.error}`;
               result += errText;
               w(errText);
@@ -1671,12 +1680,15 @@ export const taskTool: ToolDefinition = {
           if (bgStalled) {
             sawError = true;
             const msg = `\n[Subagent stalled — no events for ${Math.round(bgStallMs / 1000)}s, terminated]`;
+            if (bgError === undefined) bgError = msg.trim().replace(/^\[|\]$/g, '');
             result += msg;
             w(msg);
           }
         } catch (err) {
           sawError = true;
-          const errText = `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
+          const emsg = err instanceof Error ? err.message : String(err);
+          if (bgError === undefined) bgError = emsg;
+          const errText = `\nSubagent error: ${emsg}`;
           result += errText;
           w(errText);
         } finally {
@@ -1712,7 +1724,13 @@ export const taskTool: ToolDefinition = {
           const killed = bgStalled || subAbort.signal.aborted;
           const terminalStatus = killed ? 'killed' : sawError ? 'failed' : 'completed';
           const exitCode = terminalStatus === 'completed' ? 0 : 1;
-          context.processManager.updateEntry(taskId, { status: terminalStatus, exitCode });
+          context.processManager.updateEntry(taskId, {
+            status: terminalStatus,
+            exitCode,
+            // Attach the captured failure reason only on a genuine failure, so a
+            // task_list reader sees WHY it failed in a dedicated channel.
+            ...(terminalStatus === 'failed' && bgError ? { error: bgError } : {}),
+          });
           context.processManager.emit('complete', { taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}` });
         }
         // Tear down the isolated worktree on the background completion path too

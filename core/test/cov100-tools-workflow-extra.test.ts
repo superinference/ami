@@ -144,9 +144,10 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
     assert.equal(r.isError, false);
     assert.doesNotMatch(r.output, /\nResult:/);
 
-    // finish('failed', ...) marked the entry failed with exitCode 1.
+    // finish('failed', ...) marked the entry failed with exitCode 1 and surfaced
+    // the sub-engine failure reason on the dedicated error channel.
     assert.equal(calls.updates.length, 1);
-    assert.deepEqual(calls.updates[0].updates, { status: 'failed', exitCode: 1 });
+    assert.deepEqual(calls.updates[0].updates, { status: 'failed', exitCode: 1, error: 'stream exploded' });
 
     // The failed agent still wrote its (empty) output as '(no output)'.
     const reg = calls.registered[0];

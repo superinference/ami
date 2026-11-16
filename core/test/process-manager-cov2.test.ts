@@ -85,9 +85,11 @@ describe('ProcessManager – spawn error path', () => {
 });
 
 // ---------------------------------------------------------------------------
-// spawn: writeChunk 5MB disk-cap truncation
-//   covers: subarray truncation, the cap-reached message, and the early
-//   `bytesWritten >= MAX_OUTPUT_BYTES` return for later chunks.
+// spawn: writeChunk output-cap runaway watchdog
+//   covers: subarray truncation to the cap, the cap-breach note, the early
+//   `bytesWritten >= cap` return for later chunks, and the KILL-on-breach
+//   watchdog (parity with Claude Code's ShellCommand size watchdog — a producer
+//   that blows past the cap is stopped, not silently truncated-and-left-running).
 // ---------------------------------------------------------------------------
 
 describe('ProcessManager – output disk cap', () => {
@@ -95,17 +97,22 @@ describe('ProcessManager – output disk cap', () => {
   let pm: ProcessManager;
   afterEach(async () => { await cleanupPm(pm); fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('truncates output at the 5MB cap and records the truncation notice', async () => {
+  it('kills a producer that exceeds the output cap and records the breach notice', async () => {
     tmpDir = makeTmpDir();
     pm = new ProcessManager(tmpDir);
-    // Emit ~6MB so the writer crosses the 5MB cap mid-stream.
-    const id = pm.spawn('head -c 6291456 /dev/zero', { cwd: tmpDir });
-    await waitForComplete(pm, id);
-    const size = pm.getOutputSize(id);
-    // Byte accounting stops exactly at the 5MB cap.
-    assert.equal(size, 5 * 1024 * 1024);
+    // Small cap so the breach is fast + deterministic; emit well past it.
+    pm.maxOutputBytes = 1024;
+    const id = pm.spawn('head -c 65536 /dev/zero', { cwd: tmpDir });
+    const event = await waitForComplete(pm, id);
+    // Byte accounting stops exactly at the cap (the breach note is not counted).
+    assert.equal(pm.getOutputSize(id), 1024);
+    // The runaway producer was KILLED, not left to finish (status killed).
+    assert.equal(event.status, 'killed');
     const result = pm.getOutput(id, 0);
-    assert.ok(result!.output.includes('output truncated'), 'truncation notice must be appended');
+    assert.ok(
+      result!.output.includes('output exceeded 1KB cap — task killed'),
+      'cap-breach kill notice must be appended',
+    );
   });
 });
 

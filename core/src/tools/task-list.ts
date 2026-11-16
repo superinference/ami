@@ -165,12 +165,27 @@ export const taskListTool: ToolDefinition = {
         if ((agentNameCounts.get(name) ?? 0) > 1) {
           ref += ` [ambiguous: address by id ${t.taskId}]`;
         }
+        // Composite liveness (parity: InProcessBackend.isActive): a running agent
+        // whose abort signal has fired but whose status has not yet flipped is
+        // "aborting" — surface that transient state so a reader isn't misled into
+        // thinking it is still doing work. Optional-chained so a liveness-unaware
+        // process manager (older mocks) simply omits the marker (treated as live).
+        const live = context.processManager!.isActive?.(t.taskId) ?? true;
+        if (t.status === 'running' && !live) {
+          ref += ' [aborting]';
+        }
         parts.push(ref);
         if (typeof t.tokenCount === 'number' && t.tokenCount > 0) {
           parts.push(formatTokenCount(t.tokenCount));
         }
       } else {
         parts.push(t.description);
+      }
+
+      // Dedicated failure-reason channel (parity: AsyncAgentDetailDialog error
+      // field): show WHY a failed task failed without the reader scraping output.
+      if (t.status === 'failed' && t.error) {
+        parts.push(`— error: ${t.error}`);
       }
 
       return parts.join('  ');

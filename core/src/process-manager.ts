@@ -11,11 +11,16 @@ import { killTree } from './utils/shell';
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024; // 5 MB per task
 
 /**
- * Human-readable form of {@link MAX_OUTPUT_BYTES}, derived from the numeric cap so
- * the truncation message can never drift out of sync with the limit actually
- * enforced in writeChunk (previously the "5MB" string was hard-coded separately).
+ * Human-readable byte-cap label, derived from the numeric value so the
+ * truncation/kill message can never drift out of sync with the limit actually
+ * enforced in writeChunk. Renders MB for a megabyte-scale cap and raw bytes for a
+ * small (e.g. test-tuned) cap, so `maxOutputBytes = 20` reads as `20B` not `0MB`.
  */
-const MAX_OUTPUT_DISPLAY = `${Math.round(MAX_OUTPUT_BYTES / (1024 * 1024))}MB`;
+export function formatByteCap(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))}MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)}KB`;
+  return `${bytes}B`;
+}
 
 /**
  * SECURITY (parity with Claude Code's generateTaskId): build a task id with enough
@@ -218,27 +223,38 @@ export function formatStoppedByUserNotification(descriptions: string[]): string 
 }
 
 /**
- * FUNCTIONAL (parity): the status-aware model-facing note for a drained background
- * completion, mirroring Claude Code's enqueueShellNotification which branches the
- * summary on the terminal status rather than always saying "completed":
- *   - completed → `completed (exit code N)`   (exit code only when known)
+ * FUNCTIONAL (parity): the SHORT human-readable outcome phrase for a terminal
+ * task, branched on status + exit code, mirroring Claude Code's
+ * enqueueShellNotification wording:
+ *   - completed → `completed (exit code: N)`  (exit code only when known)
  *   - failed    → `failed with exit code N`   (exit code only when known)
  *   - killed    → `was stopped`               (no exit code — a deliberate stop)
- * Keeps AMI's task_output guidance (the differentiator) and output-file reference.
  * A legacy/unknown status falls back to the completed wording. Pure + exported so
- * the engine drain loop and its tests share one source of truth.
+ * every consumer (the completion note below, the CompletedTaskEvent `summary`
+ * field set in emitComplete, analytics, tests) shares ONE phrasing source rather
+ * than re-deriving it (No-Duplication rule).
+ */
+export function buildCompletionSummary(
+  status: TaskStatus | undefined,
+  exitCode: number | null | undefined,
+): string {
+  const hasExit = exitCode !== null && exitCode !== undefined;
+  if (status === 'killed') return 'was stopped';
+  if (status === 'failed') return hasExit ? `failed with exit code ${exitCode}` : 'failed';
+  return hasExit ? `completed (exit code: ${exitCode})` : 'completed';
+}
+
+/**
+ * FUNCTIONAL (parity): the status-aware model-facing note for a drained background
+ * completion, mirroring Claude Code's enqueueShellNotification. Prefers the
+ * pre-computed {@link CompletedTaskEvent.summary} (set in emitComplete) so the
+ * wording is the single source of truth, falling back to {@link buildCompletionSummary}
+ * for a legacy emitter that omitted it. Keeps AMI's task_output guidance (the
+ * differentiator) and output-file reference.
  */
 export function formatBackgroundCompletionNote(event: CompletedTaskEvent): string {
   const outputInfo = event.outputPath ? ` Output file: ${event.outputPath}.` : '';
-  const hasExit = event.exitCode !== null && event.exitCode !== undefined;
-  let summary: string;
-  if (event.status === 'killed') {
-    summary = 'was stopped';
-  } else if (event.status === 'failed') {
-    summary = hasExit ? `failed with exit code ${event.exitCode}` : 'failed';
-  } else {
-    summary = hasExit ? `completed (exit code: ${event.exitCode})` : 'completed';
-  }
+  const summary = event.summary ?? buildCompletionSummary(event.status, event.exitCode);
   return (
     `[Background task "${event.taskId}" ${summary}. Command: ${event.description}.${outputInfo} ` +
     `Use task_output({ task_id: "${event.taskId}" }) to read the output.]`
@@ -399,6 +415,14 @@ export interface BackgroundProcess {
   /** Cumulative token usage for background agents (undefined for bash tasks). */
   tokenCount?: number;
   /**
+   * Dedicated error message for a FAILED task/agent (parity with Claude Code's
+   * AsyncAgentDetailDialog error field). Set via {@link ProcessManager.updateEntry}
+   * when a background agent ends in a 'failed' state, so a consumer (task_list,
+   * agent drill-down) can surface WHY it failed in its own channel instead of the
+   * reader having to scrape the output tail. Undefined for a healthy/killed task.
+   */
+  error?: string;
+  /**
    * Dedup latch (parity with Claude Code's `task.notified`): true once the model
    * has already been told about this task's termination — either because it
    * explicitly killed it via task_kill (kill() latches bash tasks) or because it
@@ -436,6 +460,15 @@ export interface CompletedTaskEvent {
   /** Terminal lifecycle status at completion; defaults to 'completed' when a
    *  legacy emitter omits it (e.g. the MCP monitor's bare 'complete'). */
   status?: TaskStatus;
+  /**
+   * SHORT human-readable outcome phrase (e.g. `completed (exit code: 0)`,
+   * `failed with exit code 1`, `was stopped`), set by emitComplete via
+   * {@link buildCompletionSummary}. Lets a consumer (completion note, analytics,
+   * task-complete surfacing) read a ready-made summary without re-deriving the
+   * status/exit-code phrasing. Mirrors Claude Code attaching a summary string to
+   * its shell-notification events. Undefined only on a legacy direct emit.
+   */
+  summary?: string;
 }
 
 /**
@@ -472,6 +505,14 @@ interface InternalProcess extends BackgroundProcess {
    *  `kill` is an abort callback. kill() MUST invoke that callback and must NEVER
    *  run `process.kill(-pid)` on it (that targets the app's own process group). */
   _registered?: boolean;
+  /**
+   * The abort signal of a registered in-process agent's AbortController, stored so
+   * {@link ProcessManager.isActive} can cross-check liveness against the signal
+   * (not just the coarse status) — catching an agent that was signalled to abort
+   * but whose status has not yet flipped to killed/failed. Only set for
+   * registerAgent()-backed tasks that supplied a signal; undefined otherwise.
+   */
+  _abortSignal?: AbortSignal;
   /** Wall-clock ms at which the current (open) pause began, or undefined when the
    *  clock is running. resumeTask() folds (now - _pausedAt) into totalPausedMs. */
   _pausedAt?: number;
@@ -504,6 +545,16 @@ export class ProcessManager extends EventEmitter {
    * touching the module constant. spawn() enforces it; see atCapacity().
    */
   maxBackgroundProcesses: number = MAX_BACKGROUND_PROCESSES;
+
+  /**
+   * Per-task output-size cap in bytes (parity with Claude Code's
+   * MAX_TASK_OUTPUT_BYTES / ShellCommand size watchdog). Defaults to
+   * {@link MAX_OUTPUT_BYTES}; exposed as a mutable field so a caller/test can tune
+   * the ceiling without touching the module constant. writeChunk enforces it: once
+   * a task's written bytes reach this cap the producer is KILLED (not silently
+   * truncated) — a stuck append loop would otherwise burn CPU/IO forever.
+   */
+  maxOutputBytes: number = MAX_OUTPUT_BYTES;
 
   constructor(cwd: string) {
     super();
@@ -576,13 +627,23 @@ export class ProcessManager extends EventEmitter {
     this.processes.set(taskId, entry);
 
     const writeChunk = (data: Buffer) => {
-      if (entry.bytesWritten >= MAX_OUTPUT_BYTES) return;
-      const remaining = MAX_OUTPUT_BYTES - entry.bytesWritten;
+      const cap = this.maxOutputBytes;
+      if (entry.bytesWritten >= cap) return;
+      const remaining = cap - entry.bytesWritten;
       const chunk = data.length <= remaining ? data : data.subarray(0, remaining);
       if (!this.safeWrite(fd, chunk)) return;
       entry.bytesWritten += chunk.length;
-      if (entry.bytesWritten >= MAX_OUTPUT_BYTES) {
-        this.safeWrite(fd, Buffer.from(`\n[output truncated: exceeded ${MAX_OUTPUT_DISPLAY} disk cap]\n`));
+      if (entry.bytesWritten >= cap) {
+        // Runaway-output watchdog (parity with Claude Code's ShellCommand size
+        // watchdog, which SIGKILLs a task whose output file exceeds the cap).
+        // Previously AMI silently truncated and let the producer keep running — a
+        // stuck `while true; do echo x; done` would then burn CPU/IO forever while
+        // we dropped every byte. FUNCTIONAL CHANGE: write a diagnostic note, then
+        // KILL the task with a reason so the model learns it was stopped (and why)
+        // rather than seeing a frozen, truncated log from a still-live process.
+        const label = formatByteCap(cap);
+        this.safeWrite(fd, Buffer.from(`\n[output exceeded ${label} cap — task killed]\n`));
+        this.kill(taskId, { reason: `output exceeded ${label} cap` });
       }
     };
 
@@ -689,6 +750,12 @@ export class ProcessManager extends EventEmitter {
     // the durable buffer / 'complete' listeners.
     const entry = this.processes.get(payload.taskId);
     if (entry?.notified) return;
+    // Attach the status-aware human-readable summary (single phrasing source —
+    // buildCompletionSummary) so every downstream consumer reads a ready-made
+    // outcome string instead of re-deriving it from status/exitCode.
+    if (payload.summary === undefined) {
+      payload.summary = buildCompletionSummary(payload.status, payload.exitCode);
+    }
     // Bounded buffer (parity with Claude Code's sdkEventQueue): evict the oldest
     // entry at the cap so the durable buffer can never grow without bound across a
     // long silent turn with active producers (see MAX_COMPLETED_BUFFER).
@@ -1209,14 +1276,36 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, ...rest } = entry;
     return rest;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's InProcessBackend.isActive): composite
+   * liveness for a tracked task — is it genuinely still doing work?
+   *   - unknown id / non-running status  → false
+   *   - registered in-process agent      → running AND its abort signal exists and
+   *                                        is NOT aborted (missing signal defaults
+   *                                        to INACTIVE, mirroring Claude's
+   *                                        `abortController?.signal.aborted ?? true`)
+   *   - bash / monitor                   → running status is liveness (no signal)
+   * Catches an agent that was signalled to abort but whose status has not yet
+   * flipped to killed/failed — a window where the coarse `status === 'running'`
+   * check alone would wrongly report it as live.
+   */
+  isActive(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running') return false;
+    if (entry._registered) {
+      return !(entry._abortSignal?.aborted ?? true);
+    }
+    return true;
   }
 
   getOutputSize(taskId: string): number {
@@ -1258,6 +1347,10 @@ export class ProcessManager extends EventEmitter {
      *  killTasksForAgent() can reap it if the parent exits first. Undefined for a
      *  top-level agent spawned from the main thread. */
     agentId?: string;
+    /** The agent's AbortController signal, stored for composite liveness checks
+     *  ({@link isActive}). Pass the same signal whose abort the {@link abortFn}
+     *  triggers so liveness reflects an in-flight cancel. */
+    abortSignal?: AbortSignal;
   }): void {
     this.processes.set(taskId, {
       taskId,
@@ -1270,6 +1363,7 @@ export class ProcessManager extends EventEmitter {
       outputPath: opts.outputPath,
       startTime: Date.now(),
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
+      ...(opts.abortSignal ? { _abortSignal: opts.abortSignal } : {}),
       proc: { pid: process.pid, kill: opts.abortFn } as any,
       outputFd: null,
       bytesWritten: 0,
@@ -1278,7 +1372,7 @@ export class ProcessManager extends EventEmitter {
     });
   }
 
-  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount'>>): void {
+  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'error'>>): void {
     const entry = this.processes.get(taskId);
     if (!entry) return;
     if (updates.status !== undefined) {
@@ -1292,6 +1386,8 @@ export class ProcessManager extends EventEmitter {
     }
     if (updates.exitCode !== undefined) entry.exitCode = updates.exitCode;
     if (updates.tokenCount !== undefined) entry.tokenCount = updates.tokenCount;
+    // Dedicated failure-reason channel for a failed agent (see BackgroundProcess.error).
+    if (updates.error !== undefined) entry.error = updates.error;
   }
 
   monitorMcp(serverId: string, checkFn: () => Promise<boolean>, intervalMs: number = 30000): string {

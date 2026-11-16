@@ -358,6 +358,8 @@ export const workflowTool: ToolDefinition = {
           description: `Workflow agent: ${label}`,
           outputPath,
           abortFn: forwardAbort,
+          // Store the agent's abort signal for composite liveness (isActive).
+          abortSignal: ac.signal,
         });
         if (fm && workflowFlowId) fm.addAgent(workflowFlowId, taskId);
       }
@@ -427,10 +429,15 @@ export const workflowTool: ToolDefinition = {
         lastFlushAt = now;
         try { writeTaskOutputNoFollow(outputPath, result || '(no output)'); } catch { /* dir gone / symlink */ }
       };
-      const finish = (status: 'completed' | 'failed', text: string): void => {
+      const finish = (status: 'completed' | 'failed', text: string, error?: string): void => {
         if (!pm || !taskId) return;
         try { if (outputPath) writeTaskOutputNoFollow(outputPath, text || '(no output)'); } catch { /* dir gone or symlink planted at the path */ }
-        pm.updateEntry(taskId, { status, exitCode: status === 'failed' ? 1 : 0 });
+        pm.updateEntry(taskId, {
+          status,
+          exitCode: status === 'failed' ? 1 : 0,
+          // Surface the failure reason on the entry's dedicated error channel.
+          ...(status === 'failed' && error ? { error } : {}),
+        });
       };
       let agentTokens = 0;
       try {
@@ -447,7 +454,7 @@ export const workflowTool: ToolDefinition = {
       } catch (err) {
         context.abortSignal.removeEventListener('abort', forwardAbort);
         totalAgentTokens += agentTokens;
-        finish('failed', result);
+        finish('failed', result, err instanceof Error ? err.message : String(err));
         (subEngine as any).shutdown?.();
         cleanupWorktree();
         throw err;
