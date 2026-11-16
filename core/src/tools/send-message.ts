@@ -339,6 +339,94 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
   }
 }
 
+// --- Receive-side relay router ----------------------------------------------
+// A consumer draining a mailbox must NOT feed every message verbatim into the
+// model's context. Claude Code runs an ordered router over each incoming teammate
+// message (components/messages/UserTeammateMessage.tsx L62-136): it pre-filters
+// exit/lifecycle signals (shutdown-approved, teammate_terminated), silently drops
+// `idle_notification`, renders a completed task as a terse `✓ Completed task #id`
+// line, and summarizes every other structured control message — only plain text
+// is relayed verbatim. This is the single canonical receive-side equivalent.
+
+/**
+ * The verdict for relaying ONE incoming mailbox message into a consumer's
+ * context, produced by the canonical receive-side router {@link relayIncomingMessage}.
+ * `drop: true` marks a lifecycle control signal that is processed silently and
+ * MUST NOT be surfaced to the model; otherwise `text` is the concise body to relay.
+ */
+export interface IncomingRelay {
+  drop: boolean;
+  text?: string;
+}
+
+/**
+ * Terse one-line completion marker for a finished task, mirroring Claude Code's
+ * `✓ Completed task #id (subject)` render (UserTeammateMessage L117-136). The
+ * subject is parenthesized only when present.
+ */
+function formatTaskCompleted(taskId: string | undefined, subject?: string): string {
+  const subj = subject ? ` (${subject})` : '';
+  return `✓ Completed task #${taskId ?? '?'}${subj}`;
+}
+
+/**
+ * Ordered receive-side router: given a raw mailbox message, decide whether it is
+ * relayed into the consumer's context and, if so, as what concise body. Mirrors
+ * Claude Code's UserTeammateMessage ordered dispatch so a raw control-plane JSON
+ * blob is never fed to the model. Resolution order (first match wins):
+ *  1. `teammate_terminated` (Claude-compatible exit notice) → dropped (handled by
+ *     the process layer, never surfaced as chatter).
+ *  2. an APPROVED `shutdown_response` → dropped (the teammate is exiting; the
+ *     approval is processed silently, mirroring Claude's isShutdownApproved pre-filter).
+ *  3. `idle_notification` → a terse `✓ Completed task #id` line when it carries a
+ *     completed task (AMI folds Claude's separate `task_completed` into
+ *     idle_notification's `completedTaskId`), otherwise dropped (silent "I'm idle").
+ *  4. any other structured control message → its concise summary (never raw JSON).
+ *  5. a Claude-compatible `task_completed` message (not part of AMI's own union,
+ *     but a cross-framework peer may emit it) → the same terse completion line.
+ *  6. plain conversational text → relayed verbatim.
+ */
+export function relayIncomingMessage(content: string, from?: string): IncomingRelay {
+  // Probe for a JSON discriminator covering BOTH AMI's structured protocol and
+  // Claude-compatible lifecycle types a cross-framework peer may emit.
+  let type: string | undefined;
+  let obj: Record<string, unknown> | undefined;
+  try {
+    const p = JSON.parse(content);
+    if (p && typeof p === 'object') {
+      obj = p as Record<string, unknown>;
+      if (typeof obj.type === 'string') type = obj.type;
+    }
+  } catch { /* plain conversational text */ }
+
+  if (type === 'teammate_terminated') return { drop: true };
+
+  const parsed = parseStructuredMessage(content);
+  if (parsed && !('error' in parsed)) {
+    if (parsed.type === 'shutdown_response' && parsed.approve) return { drop: true };
+    if (parsed.type === 'idle_notification') {
+      if (parsed.completedTaskId) {
+        return { drop: false, text: formatTaskCompleted(parsed.completedTaskId, parsed.summary) };
+      }
+      return { drop: true };
+    }
+    return { drop: false, text: summarizeStructuredMessage(content, from) ?? content };
+  }
+
+  if (type === 'task_completed' && obj) {
+    const taskId = typeof obj.taskId === 'string' ? obj.taskId : undefined;
+    const subject = typeof obj.taskSubject === 'string'
+      ? obj.taskSubject
+      : (typeof obj.subject === 'string' ? obj.subject : undefined);
+    return { drop: false, text: formatTaskCompleted(taskId, subject) };
+  }
+  // A malformed/foreign idle_notification JSON (rejected by AMI's parser) is still
+  // a silent lifecycle signal, never relayed as raw JSON.
+  if (type === 'idle_notification') return { drop: true };
+
+  return { drop: false, text: content };
+}
+
 // --- Structured request identifiers ----------------------------------------
 // A request id is self-describing: `{requestType}-{timestamp}@{agentId}`, e.g.
 // `shutdown-1702500000000@researcher`. It encodes who the request is about and
