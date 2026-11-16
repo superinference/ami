@@ -2137,6 +2137,50 @@ export function permissionRuleValueToString(ruleValue: PermissionRuleValue): str
   return `${ruleValue.toolName}(${escapeRuleContent(ruleValue.ruleContent)})`;
 }
 
+/** The three behaviors a permission rule can carry. Mirrors Claude's
+ *  `permissionBehavior` enum; identical to {@link PermissionRule.action}. */
+export type PermissionBehavior = 'allow' | 'deny' | 'ask';
+
+/**
+ * A structured, declarative mutation of a {@link PermissionManager}'s live rule
+ * set / mode / workspace boundary — the canonical representation of "what to
+ * change" that a permission prompt, slash command, or hook can hand back as a
+ * one-click SUGGESTION (or a batch of them). Mirrors Claude Code's
+ * `PermissionUpdate` discriminated union (utils/permissions/PermissionUpdate.ts
+ * + PermissionUpdateSchema.ts):
+ *  - `addRules`        — append allow/deny/ask rules to a destination tier;
+ *  - `replaceRules`    — atomically swap ALL rules of a (behavior, destination);
+ *  - `removeRules`     — drop rules (normalized parse→serialize match, so a
+ *                         `Bash(*)` suggestion removes a stored tool-wide `Bash`);
+ *  - `setMode`         — change the permission mode;
+ *  - `addDirectories`/`removeDirectories` — widen/shrink the read-access boundary.
+ *
+ * `destination` tags which trust tier the change belongs to (the rule `source`,
+ * or the directory grant's origin). It is a parity-faithful subset of
+ * {@link PERMISSION_UPDATE_DESTINATIONS}. Applying an update is purely in-memory
+ * (matching Claude's context transform); persistence is a separate step
+ * ({@link PermissionManager.saveRulesToDestination}).
+ */
+export type PermissionUpdate =
+  | { type: 'addRules'; rules: PermissionRuleValue[]; behavior: PermissionBehavior; destination?: PermissionUpdateDestination }
+  | { type: 'replaceRules'; rules: PermissionRuleValue[]; behavior: PermissionBehavior; destination?: PermissionUpdateDestination }
+  | { type: 'removeRules'; rules: PermissionRuleValue[]; behavior: PermissionBehavior; destination?: PermissionUpdateDestination }
+  | { type: 'setMode'; mode: PermissionMode; destination?: PermissionUpdateDestination }
+  | { type: 'addDirectories'; directories: string[]; destination?: PermissionUpdateDestination }
+  | { type: 'removeDirectories'; directories: string[]; destination?: PermissionUpdateDestination };
+
+/**
+ * Build the model-facing "grant-and-retry" message for a set of just-approved,
+ * previously-denied commands, so the agent knows it may re-attempt them. Mirrors
+ * Claude's `createPermissionRetryMessage` (utils/messages.ts): the content is
+ * `Allowed <cmd>, <cmd>, …`. Returns an empty-but-valid notice when the list is
+ * empty so callers never have to special-case it.
+ */
+export function createPermissionRetryMessage(commands: string[]): string {
+  if (commands.length === 0) return 'No denied commands to retry';
+  return `Allowed ${commands.join(', ')}`;
+}
+
 /**
  * Validate a user-supplied permission-rule string, returning an actionable
  * diagnostic. Catches empty rules, mismatched / empty parentheses, empty tool
@@ -3449,6 +3493,113 @@ export class PermissionManager {
     const before = this.rules.length;
     this.rules = this.rules.filter(r => !predicate(r));
     return before - this.rules.length;
+  }
+
+  /**
+   * Apply ONE structured {@link PermissionUpdate} to the live manager. This is the
+   * single canonical path for turning a declarative rule/mode/directory mutation
+   * (a permission-prompt suggestion, a `/permissions allow|deny|remove` command, a
+   * hook-returned update) into state, so callers never hand-roll the addRule /
+   * removeRule / setMode / registerAllowedRoot plumbing. Mirrors Claude's
+   * `applyPermissionUpdate`; purely in-memory (persistence is a separate step).
+   * Returns the number of rules/directories affected. Rule removal matches on the
+   * NORMALIZED canonical string (parse→serialize) so a `Bash(*)` suggestion
+   * removes a stored tool-wide `bash` rule and vice-versa.
+   */
+  applyUpdate(update: PermissionUpdate): { applied: number } {
+    switch (update.type) {
+      case 'setMode':
+        return { applied: this.setMode(update.mode) ? 1 : 0 };
+      case 'addRules': {
+        let applied = 0;
+        const source = update.destination as PermissionRuleSource | undefined;
+        // Preserve suggestion order: addRule prepends, so insert in reverse.
+        for (const rv of [...update.rules].reverse()) {
+          const before = this.rules.length;
+          this.addRule({ tool: normalizeToolName(rv.toolName), pattern: rv.ruleContent, action: update.behavior, source });
+          if (this.rules.length > before) applied++;
+        }
+        return { applied };
+      }
+      case 'replaceRules': {
+        const source = update.destination as PermissionRuleSource | undefined;
+        // Atomically clear every rule of this (behavior, destination) first, then
+        // add the replacements — mirrors Claude's per-(behavior,destination) swap.
+        this.removeRule(r => r.action === update.behavior && r.source === source);
+        return this.applyUpdate({ type: 'addRules', rules: update.rules, behavior: update.behavior, destination: update.destination });
+      }
+      case 'removeRules': {
+        // Canonicalize both sides through parse→serialize so a `Bash(*)` / `Bash()`
+        // suggestion matches a stored tool-wide `bash` rule (and vice-versa).
+        const canon = (toolName: string, ruleContent?: string): string =>
+          permissionRuleValueToString(permissionRuleValueFromString(permissionRuleValueToString({ toolName, ruleContent })));
+        const targets = new Set(update.rules.map(rv => canon(normalizeToolName(rv.toolName), rv.ruleContent)));
+        const applied = this.removeRule(r =>
+          r.action === update.behavior &&
+          targets.has(canon(r.tool, r.pattern)));
+        return { applied };
+      }
+      case 'addDirectories': {
+        let applied = 0;
+        for (const dir of update.directories) {
+          const before = this.getAllowedReadRoots().length;
+          this.registerAllowedRoot(dir);
+          if (this.getAllowedReadRoots().length > before) applied++;
+        }
+        return { applied };
+      }
+      case 'removeDirectories': {
+        let applied = 0;
+        for (const dir of update.directories) {
+          const abs = path.isAbsolute(dir) ? dir : path.resolve(dir);
+          if (this.removeAllowedRoot(abs)) applied++;
+        }
+        return { applied };
+      }
+    }
+  }
+
+  /**
+   * Apply a BATCH of {@link PermissionUpdate}s in order (the one-click
+   * "accept all suggestions" affordance). Mirrors Claude's
+   * `applyPermissionUpdates`. Returns the total number of rules/directories
+   * affected across every update.
+   */
+  applyUpdates(updates: PermissionUpdate[]): { applied: number } {
+    let applied = 0;
+    for (const update of updates) applied += this.applyUpdate(update).applied;
+    return { applied };
+  }
+
+  /**
+   * Grant-and-retry recovery for previously-denied commands: for each selected
+   * entry in the recent-denials log (all of them when `selected` is omitted),
+   * derive a scoped allow rule ({@link suggestAllowPrefix}) and apply it via
+   * {@link applyUpdate}, then drop those entries from the log so they are not
+   * offered again. Returns the retried commands and the model-facing
+   * {@link createPermissionRetryMessage} so the caller can tell the agent it may
+   * re-attempt them. Mirrors Claude's `/permissions` "retry denials" affordance
+   * (onRetryDenials → createPermissionRetryMessage), extended to actually seed the
+   * allow rule so the retry succeeds instead of prompting again.
+   */
+  grantRetryForDenials(selected?: string[]): { commands: string[]; message: string } {
+    const selectedSet = selected && selected.length > 0 ? new Set(selected) : undefined;
+    const chosen = selectedSet
+      ? this._recentDenials.filter(d => selectedSet.has(d.display))
+      : [...this._recentDenials];
+    const commands: string[] = [];
+    const rules: PermissionRuleValue[] = [];
+    for (const d of chosen) {
+      commands.push(d.display);
+      const prefix = suggestAllowPrefix(d.display);
+      if (prefix) rules.push({ toolName: 'bash', ruleContent: `${prefix}*` });
+    }
+    if (rules.length > 0) {
+      this.applyUpdate({ type: 'addRules', behavior: 'allow', destination: 'session', rules });
+    }
+    const granted = new Set(commands);
+    this._recentDenials = this._recentDenials.filter(d => !granted.has(d.display));
+    return { commands, message: createPermissionRetryMessage(commands) };
   }
 
   /**
