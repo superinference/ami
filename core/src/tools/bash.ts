@@ -969,6 +969,15 @@ export const bashTool: ToolDefinition = {
         image: context.sandbox.image || DEFAULT_DOCKER_IMAGE,
         projectDir: context.sandbox.projectDir || context.cwd,
         allowNetwork: context.sandbox.allowNetwork !== false,
+        // PARITY: thread the granular filesystem/network carve-outs into the
+        // container backend (previously honored only by the unshare backend), so
+        // deny-write (config/skill escape guard), deny-read, extra writable mounts
+        // (/add-dir, worktree main .git) and the Unix-socket allowlist apply in
+        // container mode too.
+        denyWritePaths: context.sandbox.filesystem?.denyWrite,
+        denyReadPaths: context.sandbox.filesystem?.denyRead,
+        allowWritePaths: context.sandbox.filesystem?.allowWrite,
+        allowUnixSockets: context.sandbox.network?.allowUnixSockets,
       });
     } else {
       // coerceBool: providers serialize booleans as strings; a strict `=== true`

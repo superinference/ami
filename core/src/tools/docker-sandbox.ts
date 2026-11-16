@@ -15,6 +15,7 @@
  * If Docker is unavailable, callers MUST fail closed (refuse to run) rather than
  * fall back to the host — that is the whole point of enforcement.
  */
+import * as fs from 'fs';
 import * as path from 'path';
 import { shellHooks } from '../utils/shell';
 
@@ -32,6 +33,41 @@ export interface DockerSandboxConfig {
   allowNetwork: boolean;
   maxMemoryMB?: number;
   maxProcesses?: number;
+  /**
+   * PARITY (filesystem write-deny — Claude's `SandboxFilesystemConfig.denyWrite`
+   * / `getFsWriteConfig.denyWithinAllow`): absolute paths that must stay READ-ONLY
+   * inside the container even though they sit inside the otherwise-writable project
+   * mount. Each existing path is bind-remounted `:ro` ON TOP of the project RW
+   * mount — a more-specific nested bind shadows the broader one, so a sandboxed
+   * command cannot write it (e.g. protect `project/.git` or `project/.env` while
+   * the rest of the project stays writable). Non-existing paths are skipped so
+   * Docker does not auto-create a spurious empty source on the host.
+   */
+  denyWritePaths?: string[];
+  /**
+   * PARITY (filesystem read-deny — Claude's `SandboxFilesystemConfig.denyRead`):
+   * absolute FILE paths hidden from reads inside the container by bind-mounting
+   * `/dev/null` over each (a read returns empty). Only existing regular files are
+   * applied; directories/missing paths are skipped.
+   */
+  denyReadPaths?: string[];
+  /**
+   * PARITY (filesystem write-allow — Claude's `SandboxFilesystemConfig.allowWrite`
+   * + the `/add-dir` sandbox-mount sync): extra absolute paths bind-mounted
+   * WRITABLE in addition to the project. Used to widen the container's writable set
+   * to a directory granted outside the project (e.g. via `/add-dir`). Only existing
+   * paths outside the project mount are added.
+   */
+  allowWritePaths?: string[];
+  /**
+   * PARITY (Unix-socket allowlist — Claude's
+   * `SandboxNetworkConfig.allowUnixSockets` / `getAllowUnixSockets`): host
+   * Unix-socket paths explicitly GRANTED into the container. The container mounts
+   * NO host socket by default (deny-all — the Docker daemon, SSH/GPG-agent sockets
+   * are unreachable, closing a classic sandbox-escape vector), so only the paths
+   * listed here are bind-mounted in. Only existing sockets are applied.
+   */
+  allowUnixSockets?: string[];
 }
 
 /**
@@ -281,6 +317,76 @@ function shSingleQuote(s: string): string {
 }
 
 /**
+ * Project-relative paths that are auto-discovered, auto-loaded, and executed LATER
+ * with full agent privilege — the settings files that feed the sandbox policy
+ * itself, and the skills/commands/agents directories whose contents run as the
+ * agent. A sandboxed command that rewrites any of these escapes the sandbox on the
+ * next load (flip `sandbox.mode` off, plant a project-tier SKILL.md/agent that then
+ * loads at highest priority, …). The container therefore mounts each of them
+ * read-only. Mirrors Claude's unconditional `denyWrite` of settings.json +
+ * `.claude/skills` / `commands` / `agents` (CVE-class config-rewrite / privilege-
+ * escalation escape).
+ */
+export const PRIVILEGED_AUTOLOAD_RELPATHS: readonly string[] = [
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.claude/skills',
+  '.claude/commands',
+  '.claude/agents',
+  '.ami/settings.json',
+  '.ami/settings.local.json',
+  '.ami/skills',
+  '.ami/commands',
+  '.ami/agents',
+];
+
+/**
+ * The always-on read-only carve-out set for a project: every
+ * {@link PRIVILEGED_AUTOLOAD_RELPATHS} entry that actually EXISTS under
+ * `projectDir`. Non-existing paths are omitted so Docker does not auto-create a
+ * spurious empty source directory on the host. Exported for the `/sandbox`
+ * introspection surface and tests.
+ */
+export function defaultDenyWritePaths(projectDir: string): string[] {
+  const project = path.resolve(projectDir);
+  return PRIVILEGED_AUTOLOAD_RELPATHS
+    .map((rel) => path.join(project, rel))
+    .filter((p) => fs.existsSync(p));
+}
+
+/**
+ * Recover a git worktree's MAIN-repo root from `cwd/.git`.
+ *
+ * A linked worktree has a `.git` FILE (not a directory) of the form
+ * `gitdir: <mainrepo>/.git/worktrees/<name>`. When `cwd` is such a worktree, the
+ * main repo's `.git` lives OUTSIDE the project mount, so a sandboxed `git commit`
+ * / `git add` cannot write `index.lock` etc. and fails. This parses the `.git`
+ * file, resolves the gitdir, and uses `lastIndexOf` of the exact marker
+ * `${sep}.git${sep}worktrees${sep}` (deliberately NOT `indexOf('.git')`, which
+ * would false-match paths like `/home/user/.github-projects/`) to recover the main
+ * repo root so it can be added to the writable mount set. Returns `null` when
+ * `cwd` is not a linked worktree. Mirrors Claude's `detectWorktreeMainRepoPath`.
+ */
+export function detectWorktreeMainRepoPath(cwd: string): string | null {
+  const gitPath = path.join(path.resolve(cwd || '.'), '.git');
+  let content: string;
+  try {
+    if (!fs.statSync(gitPath).isFile()) return null; // a real .git dir → not a linked worktree
+    content = fs.readFileSync(gitPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const m = content.match(/^gitdir:\s*(.+)$/m);
+  if (!m) return null;
+  let gitdir = m[1].trim();
+  if (!path.isAbsolute(gitdir)) gitdir = path.resolve(cwd, gitdir);
+  const marker = `${path.sep}.git${path.sep}worktrees${path.sep}`;
+  const idx = gitdir.lastIndexOf(marker);
+  if (idx === -1) return null;
+  return gitdir.slice(0, idx);
+}
+
+/**
  * Build the host command string that runs `command` inside a locked-down
  * container. Only `projectDir` is bind-mounted read-write; `/tmp`, `/root`, and
  * `/home` are tmpfs; the working directory is clamped to inside the project.
@@ -309,6 +415,55 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
     '-v', shSingleQuote(`${project}:${project}`),
     '-w', shSingleQuote(workdir),
   ];
+
+  // PARITY (write-deny carve-outs): bind-remount each privileged-autoload default
+  // (settings/skills/commands/agents) PLUS any operator-configured denyWrite path
+  // read-only ON TOP of the project RW mount. A nested, more-specific bind shadows
+  // the broader project mount, so these stay unwritable inside an otherwise-writable
+  // project — closing the config-rewrite / SKILL-plant sandbox-escape vectors.
+  const denyWriteSeen = new Set<string>();
+  for (const p of [...defaultDenyWritePaths(project), ...(cfg.denyWritePaths ?? [])]) {
+    const abs = path.resolve(p);
+    if (denyWriteSeen.has(abs) || !fs.existsSync(abs)) continue;
+    denyWriteSeen.add(abs);
+    parts.push('-v', shSingleQuote(`${abs}:${abs}:ro`));
+  }
+
+  // PARITY (write-allow carve-outs): widen the writable set to directories granted
+  // OUTSIDE the project (e.g. via /add-dir), and auto-include a git worktree's
+  // main-repo root so sandboxed `git` can write the shared `.git` (index.lock, the
+  // worktree's own `.git/worktrees/<name>` metadata). Paths inside the project are
+  // already writable, and missing paths are skipped (Docker would auto-create them).
+  const allowWriteSeen = new Set<string>([project]);
+  const mainRepo = detectWorktreeMainRepoPath(workdir);
+  for (const p of [...(mainRepo ? [mainRepo] : []), ...(cfg.allowWritePaths ?? [])]) {
+    const abs = path.resolve(p);
+    if (allowWriteSeen.has(abs) || abs === project || abs.startsWith(project + path.sep)) continue;
+    if (!fs.existsSync(abs)) continue;
+    allowWriteSeen.add(abs);
+    parts.push('-v', shSingleQuote(`${abs}:${abs}`));
+  }
+
+  // PARITY (read-deny): hide specific files from reads inside the container by
+  // bind-mounting /dev/null over each existing regular file.
+  for (const p of cfg.denyReadPaths ?? []) {
+    const abs = path.resolve(p);
+    let isFile = false;
+    try { isFile = fs.statSync(abs).isFile(); } catch { isFile = false; }
+    if (isFile) parts.push('-v', shSingleQuote(`/dev/null:${abs}:ro`));
+  }
+
+  // PARITY (Unix-socket allowlist): the container mounts NO host socket by default
+  // (deny-all — Docker daemon / agent sockets are unreachable). Grant ONLY the
+  // existing sockets the operator explicitly allowlisted.
+  const socketSeen = new Set<string>();
+  for (const s of cfg.allowUnixSockets ?? []) {
+    const abs = path.resolve(s);
+    if (socketSeen.has(abs) || !fs.existsSync(abs)) continue;
+    socketSeen.add(abs);
+    parts.push('-v', shSingleQuote(`${abs}:${abs}`));
+  }
+
   if (cfg.maxMemoryMB && cfg.maxMemoryMB > 0) {
     parts.push('--memory', `${cfg.maxMemoryMB}m`);
   }
