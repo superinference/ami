@@ -706,6 +706,28 @@ export function isHttpHookUrlAllowed(url: string, allowed: string[] | undefined)
 }
 
 /**
+ * Stable error code for an HTTP hook whose target was refused by the SSRF guard
+ * (resolves to a private/link-local/metadata address, or is otherwise unsafe).
+ * Mirrors Claude Code's `ssrfError` code so the block is machine-identifiable in
+ * logs and surfaced messages regardless of the human-readable reason text.
+ */
+export const ERR_HTTP_HOOK_BLOCKED_ADDRESS = 'ERR_HTTP_HOOK_BLOCKED_ADDRESS';
+
+/**
+ * Build the user-facing message for an SSRF-blocked HTTP hook, mirroring Claude
+ * Code's `ssrfError` wording (names the blocked host, explains loopback is
+ * allowed) and tagging it with the stable {@link ERR_HTTP_HOOK_BLOCKED_ADDRESS}
+ * code. `reason` is the detail from the URL-safety validator (which already names
+ * the resolved private IP). The host is extracted from the URL so the message
+ * names the offending target even when the validator reason is generic.
+ */
+export function formatHttpHookBlockedMessage(url: string, reason: string): string {
+  let host = url;
+  try { host = new URL(url).hostname || url; } catch { /* non-parseable URL: keep raw */ }
+  return `HTTP hook blocked: ${host} — ${reason}. Loopback (127.0.0.1, ::1) is allowed for local dev. [${ERR_HTTP_HOOK_BLOCKED_ADDRESS}]`;
+}
+
+/**
  * Strip CR, LF, and NUL bytes from an HTTP-hook header value to prevent HTTP
  * header (CRLF) injection via an env-var value or a hook-configured header
  * template (Claude Code's sanitizeHeaderValue). A malicious env var such as
@@ -3275,8 +3297,14 @@ export class HookManager extends EventEmitter {
     // webhook servers), matching Claude Code's ssrfGuardedLookup. No separate impl.
     const safety = await this._validateUrlSafety(config.url, undefined, { allowLoopback: true });
     if ('error' in safety) {
-      coreLog('hooks', `HTTP hook blocked (SSRF): ${safety.error}`);
-      return onFail();
+      // User-facing, code-tagged block message (Claude Code's ssrfError): always
+      // inform why the hook was refused — fail-closed DENY when onFailure:block,
+      // otherwise a non-blocking SYSTEM notice so the target is never silently
+      // dropped (the affordance Claude surfaces to the user).
+      const msg = formatHttpHookBlockedMessage(config.url, safety.error);
+      coreLog('hooks', msg);
+      if (outcome) outcome.success = false;
+      return config.onFailure === 'block' ? `DENY:${msg}` : `SYSTEM:${msg}`;
     }
 
     const url = new URL(config.url);
