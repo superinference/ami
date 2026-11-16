@@ -31,6 +31,21 @@ export const shellHooks = {
   onSlowCommand: ((info: SlowCommandInfo): void => {
     process.stderr.write(`[slow-exec] ${Math.round(info.durationMs)}ms (threshold ${info.thresholdMs}ms): ${info.command.slice(0, 200)}\n`);
   }),
+  mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
+  /**
+   * Shell-command-assembly debug sink (see {@link SHELL_DEBUG_ENV}). Default
+   * writes a single `[shell-debug]` line to stderr, but ONLY when
+   * {@link SHELL_DEBUG_ENV} is set, so default runs produce no output. Surfaces
+   * the snapshot-missing login-shell fallback, the `-l` login-flag skip, and the
+   * snapshot-source decision — an opt-in introspection surface for the shell
+   * command-assembly decisions (parity with Claude Code's `logForDebugging` in
+   * bashProvider.ts). Tests replace it via `mock.method(shellHooks, 'onShellDebug', …)`.
+   */
+  onShellDebug: ((message: string): void => {
+    if ((process.env[SHELL_DEBUG_ENV] || '').trim() !== '') {
+      process.stderr.write(`[shell-debug] ${message}\n`);
+    }
+  }),
 };
 
 /** Payload handed to {@link shellHooks.onSlowCommand} when a command runs slow. */
@@ -360,6 +375,168 @@ export function findSuitableShell(): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Shell-environment snapshot (user aliases / functions / options / PATH)
+//
+// Parity with Claude Code's ShellSnapshot.ts + bashProvider.ts snapshot sourcing.
+// A command run through `bash -c '<cmd>'` does NOT see the user's interactive
+// aliases/functions (those live in ~/.bashrc / ~/.zshrc, which a non-login,
+// non-interactive shell never sources). Claude captures them ONCE per session
+// into a snapshot file and `source`s it before each command, so model-run
+// commands behave like the user's interactive shell WITHOUT paying a full
+// login-shell startup per command. AMI mirrors this as an OPT-IN capability
+// (env knob {@link SHELL_SNAPSHOT_ENV}) so default behavior is unchanged:
+// - enabled → create+source the snapshot, spawn WITHOUT `-l`;
+// - enabled but snapshot creation failed → gracefully fall back to a login
+//   shell (`-l`) so the profile/rc files are at least sourced;
+// - disabled → current behavior (login only when `AMI_LOGIN_SHELL` is set).
+// Aliases are re-applied via `eval` (a second parse pass) because the shell
+// parses a whole command line before executing, so an alias sourced on the same
+// line would not expand — the exact reason Claude wraps the user command in
+// `eval` after sourcing the snapshot.
+// ---------------------------------------------------------------------------
+
+/**
+ * Env knob (opt-in) that turns on per-command shell-environment snapshots. When
+ * truthy (`1`/`true`/`on`/`yes`), {@link execCommand}'s bash path captures the
+ * user's shell config (aliases, functions, options, PATH) once per session and
+ * sources it before every command so model-run commands see the user's
+ * interactive environment. Unset/blank/falsey leaves the current behavior
+ * unchanged. Mirrors Claude Code's always-on snapshot (ShellSnapshot.ts); AMI
+ * makes it opt-in to keep the default command environment deterministic.
+ */
+export const SHELL_SNAPSHOT_ENV = 'AMI_SHELL_SNAPSHOT';
+
+/**
+ * Env knob that enables verbose shell-command-assembly debug logging through
+ * {@link shellHooks.onShellDebug} (snapshot-missing login fallback, `-l` skip,
+ * snapshot-source decision). Unset/blank disables it. Parity with Claude Code's
+ * `logForDebugging` tracing in bashProvider.ts.
+ */
+export const SHELL_DEBUG_ENV = 'AMI_SHELL_DEBUG';
+
+/** True when {@link SHELL_SNAPSHOT_ENV} names an enabled value. */
+function shellSnapshotEnabled(): boolean {
+  const raw = (process.env[SHELL_SNAPSHOT_ENV] || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
+}
+
+/** How long the one-shot snapshot-capture shell may run before giving up (ms). */
+const SNAPSHOT_CREATION_TIMEOUT_MS = 10_000;
+
+/**
+ * The user shell config file a snapshot sources, chosen from the shell family:
+ * zsh → `~/.zshrc`, bash → `~/.bashrc`, anything else → `~/.profile`. Parity
+ * with Claude Code's `getConfigFile` (ShellSnapshot.ts).
+ */
+function snapshotConfigFile(shellPath: string): string {
+  const fileName = shellPath.includes('zsh')
+    ? '.zshrc'
+    : shellPath.includes('bash')
+      ? '.bashrc'
+      : '.profile';
+  return path.join(os.homedir(), fileName);
+}
+
+/**
+ * The capture script that, when run by the user's shell as a login shell, writes
+ * a sourceable snapshot of their functions, shell options, aliases and PATH to
+ * `$SNAPSHOT_FILE`. Faithful to Claude Code's `getSnapshotScript` /
+ * `getUserSnapshotContent`: zsh and bash use their respective introspection
+ * (`typeset` vs `declare`, `setopt` vs `shopt`), completion functions
+ * (single-underscore prefix) are filtered out while `__`-prefixed helpers are
+ * kept, each capture is head-capped at 1000 lines, and `expand_aliases` is
+ * force-enabled so a sourced alias expands in the subsequent `eval` pass.
+ */
+function buildSnapshotScript(shellPath: string, configFileExists: boolean): string {
+  const isZsh = shellPath.includes('zsh');
+  const functions = isZsh
+    ? `typeset -f > /dev/null 2>&1
+typeset +f | grep -vE '^_[^_]' | while read func; do typeset -f "$func" >> "$SNAPSHOT_FILE"; done`
+    : `declare -f > /dev/null 2>&1
+declare -F | cut -d' ' -f3 | grep -vE '^_[^_]' | while read func; do declare -f "$func" >> "$SNAPSHOT_FILE"; done`;
+  const options = isZsh
+    ? `setopt | sed 's/^/setopt /' | head -n 1000 >> "$SNAPSHOT_FILE"
+echo "setopt aliases" >> "$SNAPSHOT_FILE"`
+    : `shopt -p | head -n 1000 >> "$SNAPSHOT_FILE"
+echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"`;
+  const userContent = configFileExists
+    ? `echo "# Functions" >> "$SNAPSHOT_FILE"
+${functions}
+echo "# Shell Options" >> "$SNAPSHOT_FILE"
+${options}
+echo "# Aliases" >> "$SNAPSHOT_FILE"
+alias | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_FILE"`
+    : isZsh
+      ? '# No user config file to source'
+      : 'echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"';
+  const configFile = snapshotConfigFile(shellPath);
+  return `SNAPSHOT_FILE="$AMI_SNAPSHOT_FILE"
+${configFileExists ? `source ${shQuote(configFile)} < /dev/null` : '# No user config file to source'}
+echo "# Snapshot file" >| "$SNAPSHOT_FILE"
+echo "unalias -a 2>/dev/null || true" >> "$SNAPSHOT_FILE"
+${userContent}
+echo "export PATH=${shQuote(process.env.PATH || '')}" >> "$SNAPSHOT_FILE"
+if [ ! -f "$SNAPSHOT_FILE" ]; then echo "snapshot not created" >&2; exit 1; fi`;
+}
+
+/**
+ * Capture a shell-environment snapshot for `shellPath` and return the path to
+ * the sourceable snapshot file, or `null` if capture failed (missing shell,
+ * timeout, permission error — the caller then falls back to a login shell).
+ * Runs the user's shell as a login shell (`-l`) so profile/rc files are sourced,
+ * then records the resulting aliases/functions/options/PATH. Parity with Claude
+ * Code's `createAndSaveSnapshot`, except it is synchronous (so {@link execCommand}
+ * can assemble the command string before spawning) and returns `null` instead of
+ * throwing on failure.
+ */
+export function createShellSnapshot(shellPath: string): string | null {
+  try {
+    const configFile = snapshotConfigFile(shellPath);
+    const configFileExists = shellHooks.existsSync(configFile);
+    const dir = path.join(resolveTmpBase(), 'ami-shell-snapshots');
+    shellHooks.mkdirSync(dir, { recursive: true });
+    const shellType = shellPath.includes('zsh') ? 'zsh' : shellPath.includes('bash') ? 'bash' : 'sh';
+    const file = path.join(dir, `snapshot-${shellType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sh`);
+    const script = buildSnapshotScript(shellPath, configFileExists);
+    shellHooks.execFileSync(shellPath, ['-c', '-l', script], {
+      timeout: SNAPSHOT_CREATION_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      env: { ...process.env, AMI_SNAPSHOT_FILE: file, GIT_EDITOR: 'true' },
+    });
+    if (!shellHooks.existsSync(file)) {
+      shellHooks.onShellDebug(`Snapshot file was not created: ${file}`);
+      return null;
+    }
+    return file;
+  } catch (err) {
+    shellHooks.onShellDebug(`Failed to create shell snapshot: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+// Memoize the snapshot per shell path so capture (a login-shell subprocess) runs
+// at most once per session per shell — parity with Claude's one-snapshot-per-session.
+const shellSnapshotCache = new Map<string, string | null>();
+
+/**
+ * Memoized {@link createShellSnapshot}. The snapshot is captured once per shell
+ * path per session. Parity with Claude Code's per-session snapshot promise.
+ */
+export function getCachedShellSnapshot(shellPath: string): string | null {
+  const cached = shellSnapshotCache.get(shellPath);
+  if (cached !== undefined) return cached;
+  const created = createShellSnapshot(shellPath);
+  shellSnapshotCache.set(shellPath, created);
+  return created;
+}
+
+/** Reset the memoized snapshot(s) (tests / after a config change). */
+export function resetShellSnapshotCache(): void {
+  shellSnapshotCache.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Cross-shell provider abstraction (PowerShell as a first-class shell type)
 //
 // Mirrors Claude Code's `src/utils/shell/*` provider split (shellProvider.ts
@@ -666,6 +843,14 @@ export interface ExecCommandOptions {
    * the resolver / env override is used.
    */
   shellPath?: string;
+  /**
+   * When `true`, skip shell-environment snapshot sourcing for this call even if
+   * {@link SHELL_SNAPSHOT_ENV} is enabled (the command runs with a plain
+   * non-login shell). Used for probe/internal commands that must not inherit the
+   * user's aliases/functions. Parity with Claude Code's `createBashShellProvider({
+   * skipSnapshot })` (bashProvider.ts). No effect when snapshots are disabled.
+   */
+  skipSnapshot?: boolean;
 }
 
 export interface ExecCommandResult {
@@ -722,7 +907,7 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError, shellType, shellPath } = options;
+  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError, shellType, shellPath, skipSnapshot } = options;
 
   // Wall-clock start for slow-command diagnostics (see SLOW_EXEC_THRESHOLD_ENV).
   const startedAt = Date.now();
@@ -824,13 +1009,39 @@ export function execCommand(
       // bash `2>nul` would otherwise create a literal `nul` file in the cwd.
       const normalizedCommand = rewriteWindowsNullRedirect(command);
 
+      // Optional shell-environment snapshot sourcing (opt-in via AMI_SHELL_SNAPSHOT):
+      // capture the user's aliases/functions/options/PATH once per session and
+      // source them before the command so model-run commands match the user's
+      // interactive shell. Aliases only expand on a second parse pass, so the
+      // command is wrapped in `eval` after the source (parity with Claude Code's
+      // bashProvider). When the snapshot is requested but unavailable (creation
+      // failed or the file vanished mid-session) we gracefully fall back to a
+      // login shell (`-l`) so the profile/rc files are at least sourced.
+      const snapshotRequested = shellSnapshotEnabled() && skipSnapshot !== true;
+      let snapshotPath: string | null = null;
+      if (snapshotRequested) {
+        snapshotPath = getCachedShellSnapshot(shell);
+        if (snapshotPath && !shellHooks.existsSync(snapshotPath)) {
+          shellHooks.onShellDebug(`Snapshot file missing, falling back to login shell: ${snapshotPath}`);
+          snapshotPath = null;
+        }
+      }
+      const snapshotFallbackLogin = snapshotRequested && snapshotPath === null;
+      const assembledCommand = snapshotPath
+        ? `source ${shQuote(snapshotPath)} 2>/dev/null || true && eval ${shQuote(normalizedCommand)}`
+        : normalizedCommand;
+      if (snapshotPath) shellHooks.onShellDebug('Sourcing shell snapshot; spawning without login (-l skipped)');
+
       // Optional command wrapping via a configured shell prefix. The Claude-Code
       // name (CLAUDE_CODE_SHELL_PREFIX) is accepted as a fallback for parity.
       const prefix = process.env.AMI_SHELL_PREFIX || process.env.CLAUDE_CODE_SHELL_PREFIX;
-      const finalCommand = prefix ? formatShellPrefixCommand(prefix, normalizedCommand) : normalizedCommand;
+      const finalCommand = prefix ? formatShellPrefixCommand(prefix, assembledCommand) : assembledCommand;
 
-      // Login-shell flag sources profile/rc files when requested (POSIX + git-bash).
-      const loginArgs = process.env.AMI_LOGIN_SHELL ? ['-l'] : [];
+      // Login-shell flag sources profile/rc files when requested (POSIX + git-bash),
+      // or as the snapshot-unavailable fallback above.
+      const useLogin = !!process.env.AMI_LOGIN_SHELL || snapshotFallbackLogin;
+      if (snapshotFallbackLogin) shellHooks.onShellDebug('Shell snapshot unavailable; spawning login shell (-l) as fallback');
+      const loginArgs = useLogin ? ['-l'] : [];
       shellArgs = [...loginArgs, '-c', finalCommand];
     }
 
