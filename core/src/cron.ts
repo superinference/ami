@@ -73,11 +73,18 @@ export function isProcessRunning(pid: number): boolean {
   }
 }
 
-function computeJitter(cronExpression: string, jobId: string, cfg: CronJitterConfig = DEFAULT_CRON_JITTER): number {
+/** Deterministic per-job forward jitter for a recurring fire, proportional to the
+ *  ACTUAL gap between its next two fires — so at the defaults an hourly job spreads
+ *  across minutes while a per-minute job spreads by only a few seconds — capped by
+ *  cfg.recurringCapMs. A null/zero gap (no second match, e.g. a pinned yearly date)
+ *  carries no herd risk, so it gets no jitter. Mirrors Claude's jitteredNextCronRunMs
+ *  (src/utils/cronTasks.ts), which proportions jitter against `t2 - t1` rather than a
+ *  crude per-pattern period estimate. */
+function computeJitter(gapMs: number | null, jobId: string, cfg: CronJitterConfig = DEFAULT_CRON_JITTER): number {
+  if (gapMs === null || gapMs <= 0) return 0;
   const hash = jobId.split('').reduce((a, c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0);
   const normalizedHash = Math.abs(hash) / 2147483647;
-  const estimatedPeriodMs = estimatePeriod(cronExpression);
-  const maxJitterMs = Math.min(estimatedPeriodMs * cfg.recurringFrac, cfg.recurringCapMs);
+  const maxJitterMs = Math.min(gapMs * cfg.recurringFrac, cfg.recurringCapMs);
   return Math.floor(normalizedHash * maxJitterMs);
 }
 
@@ -118,15 +125,6 @@ function validateCronField(spec: string, min: number, max: number): string | nul
     }
   }
   return null;
-}
-
-function estimatePeriod(cron: string): number {
-  // Crons reaching here are always validated (5 fields), so min/hour exist.
-  const [min, hour] = cron.split(/\s+/);
-  if (min.startsWith('*/')) return parseInt(min.slice(2), 10) * 60000;
-  if (hour.startsWith('*/')) return parseInt(hour.slice(2), 10) * 3600000;
-  if (hour === '*') return 3600000;
-  return 86400000;
 }
 
 export function wrapPromptSafely(prompt: string): string {
@@ -393,8 +391,11 @@ export class CronScheduler {
     for (const job of this.jobs.values()) {
       if (!job.nextRun) continue;
       if (job.recurring) {
-        // Forward jitter spreads recurring fires to avoid thundering herds.
-        const jitter = computeJitter(job.cron, job.id, this.jitterConfig);
+        // Forward jitter spreads recurring fires to avoid thundering herds; the
+        // window is proportional to the REAL gap between this fire and the next.
+        const nextAfter = this.safeComputeNextRun(job.cron, job.nextRun);
+        const gap = nextAfter !== null ? nextAfter - job.nextRun : null;
+        const jitter = computeJitter(gap, job.id, this.jitterConfig);
         if (now >= job.nextRun + jitter) due.push(job);
       } else {
         // One-shot: small BACKWARD (early) jitter, gated to non-pinned minutes so
@@ -711,8 +712,12 @@ export class CronScheduler {
     check.setSeconds(0, 0);
     check.setMinutes(check.getMinutes() + 1);
 
-    const domRestricted = domSpec !== '*';
-    const dowRestricted = dowSpec !== '*';
+    // A field that matches EVERY value in its range (e.g. "1-31" for day-of-month,
+    // "0-6"/"0-7"/"*/1" for day-of-week) is a semantic wildcard, not a restriction —
+    // so the dom/dow OR-matching below must treat it as unrestricted. Mirrors Claude's
+    // expand-to-set then length===rangeSize wildcard detection (src/utils/cron.ts).
+    const domRestricted = !fieldCoversFullRange(domSpec, 1, 31);
+    const dowRestricted = !fieldCoversFullRange(dowSpec, 0, 6);
 
     // Coarse skip-ahead search. The former implementation walked strictly
     // minute-by-minute and re-matched all five fields on every candidate, burning
@@ -766,10 +771,14 @@ export class CronScheduler {
         hour !== '*' && !hour.includes('/') && !hour.includes(',') && !hour.includes('-')) {
       pieces.push(`at ${to12Hour(parseInt(hour, 10), parseInt(min, 10))}`);
     } else {
-      if (min.startsWith('*/')) pieces.push(`every ${min.slice(2)} minutes`);
-      else if (min !== '*') pieces.push(`at minute ${min}`);
-      if (hour.startsWith('*/')) pieces.push(`every ${hour.slice(2)} hours`);
-      else if (hour !== '*') pieces.push(`at hour ${hour}`);
+      if (min.startsWith('*/')) {
+        const n = min.slice(2);
+        pieces.push(n === '1' ? 'every minute' : `every ${n} minutes`);
+      } else if (min !== '*') pieces.push(`at minute ${min}`);
+      if (hour.startsWith('*/')) {
+        const n = hour.slice(2);
+        pieces.push(n === '1' ? 'every hour' : `every ${n} hours`);
+      } else if (hour !== '*') pieces.push(`at hour ${hour}`);
     }
     if (dom !== '*') pieces.push(`on day ${dom}`);
     if (mon !== '*') pieces.push(`in month ${mon}`);
@@ -941,6 +950,20 @@ export function matchField(value: number, spec: string, min: number, max: number
     }
   }
   return false;
+}
+
+/** True when a cron field, although not the literal "*", still matches EVERY value
+ *  in [min,max] — e.g. "1-31" for day-of-month, "0-6"/"0-7"/"*​/1" for day-of-week.
+ *  Such a field is a semantic wildcard: day-of-month/day-of-week OR-matching must
+ *  treat it as unrestricted, otherwise "0 9 1-31 * 1" (every DOM AND Monday) would
+ *  wrongly fire every day instead of only on Mondays. Mirrors Claude's expand-to-set
+ *  then length===rangeSize wildcard detection (src/utils/cron.ts). */
+export function fieldCoversFullRange(spec: string, min: number, max: number): boolean {
+  if (spec === '*') return true;
+  for (let v = min; v <= max; v++) {
+    if (!matchField(v, spec, min, max)) return false;
+  }
+  return true;
 }
 
 // Release handlers for cron locks held by THIS process, run on graceful exit so a
