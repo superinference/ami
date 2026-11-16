@@ -6,6 +6,32 @@ import { TEAM_LEAD_NAME, clearMailbox } from './send-message';
 import { PERMISSION_MODES, normalizePermissionMode, PermissionMode } from '../permissions';
 import { unassignTeammateTasks } from './task-tracker';
 import { log as coreLog } from '../logger';
+import { gitExec } from '../worktree-manager';
+
+/**
+ * Format a deterministic agent id as `agentName@teamName` (mirrors Claude Code's
+ * `formatAgentId` in utils/agentId.ts). The `@` separator makes the id
+ * reproducible — the same name in the same team always yields the same id — which
+ * enables reconnection after a crash/restart and lets a lead COMPUTE a teammate's
+ * id without a lookup. Agent names must not contain `@` (see `sanitizeAgentName`).
+ */
+export function formatAgentId(agentName: string, teamName: string): string {
+  return `${agentName}@${teamName}`;
+}
+
+/**
+ * Parse a deterministic agent id back into its parts, splitting on the FIRST `@`
+ * (mirrors Claude Code's `parseAgentId`). Splitting on the first `@` means a team
+ * name may itself contain `@` while the agent name (which never does) is always
+ * recovered intact. Returns null when there is no `@` separator (not one of our
+ * ids), so callers can treat a bare name/opaque id as unparseable rather than
+ * crash.
+ */
+export function parseAgentId(agentId: string): { agentName: string; teamName: string } | null {
+  const at = agentId.indexOf('@');
+  if (at === -1) return null;
+  return { agentName: agentId.slice(0, at), teamName: agentId.slice(at + 1) };
+}
 
 /** Max length of a user-supplied team name (mirrors Claude's identifier bounds). */
 const MAX_TEAM_NAME_LEN = 64;
@@ -51,6 +77,10 @@ export interface TeamMember {
   cwd?: string;
   subscriptions?: string[];
   permissionMode?: string;
+  /** Absolute path of the git worktree this teammate runs in, when it was spawned
+   *  into a dedicated worktree. Removed on team_delete (parity: Claude Code's
+   *  cleanupTeamDirectories tears down per-teammate worktrees, not just dirs). */
+  worktreePath?: string;
   joinedAt: string;
   /** false => idle/finished/crashed; undefined/true => active. */
   isActive?: boolean;
@@ -104,9 +134,68 @@ export interface TeamFile {
 let currentTeam: TeamFile | null = null;
 let currentTeamDir: string | null = null;
 
-/** Deterministic, reproducible lead agent id derived from the team name. */
+/**
+ * Deterministic, reproducible lead agent id derived from the team name. Uses the
+ * canonical `agentName@teamName` scheme ({@link formatAgentId}) so the lead's id
+ * is consistent with every other agent id and request id in the swarm subsystem
+ * (send-message's structured request ids embed an `agentName@teamName` agent id).
+ */
 function leadAgentIdFor(teamName: string): string {
-  return `lead-${teamName}`;
+  return formatAgentId(TEAM_LEAD_NAME, teamName);
+}
+
+/**
+ * Resolve a team member by a bare name, a stored agentId, OR a deterministic
+ * `agentName@teamName` id for THIS team ({@link parseAgentId}). The deterministic
+ * fallback lets a lead address a teammate by its computed id even when the member
+ * was registered under an opaque spawn/task id. Single canonical lookup shared by
+ * every per-member mutation below (no duplicated `.find` predicates).
+ */
+function findMember(team: TeamFile, nameOrId: string): TeamMember | undefined {
+  const direct = team.members.find(m => m.name === nameOrId || m.agentId === nameOrId);
+  if (direct) return direct;
+  const parsed = parseAgentId(nameOrId);
+  if (parsed && parsed.teamName === team.name) {
+    return team.members.find(m => m.name === parsed.agentName);
+  }
+  return undefined;
+}
+
+/**
+ * Dependency seam for the destructive worktree teardown in {@link teamDeleteTool}
+ * (mirrors `_exitWorktreeHooks`). `exec` is worktree-manager's hardened, no-shell
+ * git runner, so production behaviour is identical to the exit-worktree path and a
+ * teammate worktree path can never be a shell metacharacter. Tests inject a mock
+ * to exercise removal + the rmSync/prune fallback without touching real git.
+ */
+export const _teamHooks = {
+  exec: gitExec,
+  existsSync: fs.existsSync as typeof fs.existsSync,
+  rmSync: fs.rmSync as typeof fs.rmSync,
+};
+
+/**
+ * Remove a single teammate's git worktree (parity: Claude Code's
+ * cleanupTeamDirectories removes per-teammate worktrees). Mirrors the exit-worktree
+ * teardown: `git worktree remove --force`, falling back to an fs removal + prune
+ * when git's own removal fails. Best-effort — returns true when the worktree is
+ * gone (by either path), false when both strategies fail.
+ */
+function removeMemberWorktree(worktreePath: string, repoCwd: string): boolean {
+  try {
+    _teamHooks.exec(['worktree', 'remove', '--force', worktreePath], { cwd: worktreePath, stdio: 'pipe' });
+    return true;
+  } catch {
+    try {
+      if (_teamHooks.existsSync(worktreePath)) {
+        _teamHooks.rmSync(worktreePath, { recursive: true, force: true });
+      }
+      _teamHooks.exec(['worktree', 'prune'], { cwd: repoCwd, stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 function teamFilePath(dir: string): string {
@@ -322,6 +411,16 @@ export const teamDeleteTool: ToolDefinition = {
       };
     }
 
+    // Tear down each teammate's git worktree before the team dir (parity: Claude
+    // Code's cleanupTeamDirectories removes directories AND per-teammate worktrees).
+    // Best-effort: a failed worktree removal must not block disbanding the team.
+    let worktreesRemoved = 0;
+    for (const m of currentTeam.members) {
+      if (m.worktreePath && removeMemberWorktree(m.worktreePath, context.cwd)) {
+        worktreesRemoved += 1;
+      }
+    }
+
     const teamDir = currentTeamDir || path.join(context.cwd, '.ami', 'teams', name);
     // Surface cleanup failures instead of silently reporting success.
     try {
@@ -339,7 +438,10 @@ export const teamDeleteTool: ToolDefinition = {
 
     currentTeam = null;
     currentTeamDir = null;
-    return { output: `Team "${name}" deleted (directories cleaned up).` };
+    const wtNote = worktreesRemoved > 0
+      ? ` and ${worktreesRemoved} worktree${worktreesRemoved === 1 ? '' : 's'}`
+      : '';
+    return { output: `Team "${name}" deleted (directories${wtNote} cleaned up).` };
   },
 };
 
@@ -371,7 +473,7 @@ export function registerTeamMember(member: Omit<TeamMember, 'joinedAt' | 'isActi
  */
 export function setTeamMemberActive(nameOrId: string, active: boolean): void {
   if (!currentTeam) return;
-  const m = currentTeam.members.find(x => x.name === nameOrId || x.agentId === nameOrId);
+  const m = findMember(currentTeam, nameOrId);
   if (!m) return;
   // Write-if-changed: skip the persist entirely when the stored flag already
   // matches (mirrors Claude's `if (member.isActive === isActive) return`).
@@ -415,7 +517,7 @@ export function setMemberMode(nameOrId: string, mode: string): PermissionMode | 
   if (!currentTeam) return null;
   const valid = normalizePermissionMode(mode);
   if (!valid) return null;
-  const m = currentTeam.members.find(x => x.name === nameOrId || x.agentId === nameOrId);
+  const m = findMember(currentTeam, nameOrId);
   if (!m) return null;
   // Write-if-changed: a no-op mode set does not touch disk (mirrors Claude's
   // `if (member.mode === mode) return true`).
@@ -431,7 +533,7 @@ export function setMemberMode(nameOrId: string, mode: string): PermissionMode | 
  */
 export function cycleMemberMode(nameOrId: string): PermissionMode | null {
   if (!currentTeam) return null;
-  const m = currentTeam.members.find(x => x.name === nameOrId || x.agentId === nameOrId);
+  const m = findMember(currentTeam, nameOrId);
   if (!m) return null;
   const next = getNextPermissionMode(m.permissionMode);
   m.permissionMode = next;
@@ -503,11 +605,33 @@ export function cycleAllMemberModes(): PermissionMode | null {
  */
 export function removeTeamMember(nameOrId: string): TeamMember | null {
   if (!currentTeam) return null;
-  const idx = currentTeam.members.findIndex(m => m.name === nameOrId || m.agentId === nameOrId);
-  if (idx === -1) return null;
-  if (currentTeam.members[idx].name === TEAM_LEAD_NAME) return null;
+  const m = findMember(currentTeam, nameOrId);
+  if (!m) return null;
+  if (m.name === TEAM_LEAD_NAME) return null;
+  const idx = currentTeam.members.indexOf(m);
   const [removed] = currentTeam.members.splice(idx, 1);
   persistTeam();
+  return removed;
+}
+
+/**
+ * Remove every idle (non-lead) teammate from the active team in one atomic batch
+ * (parity: Claude Code's TeamsDialog "p prune idle" action, which kills all
+ * teammates whose status is `idle`). A member is idle when its run-state projects
+ * to `'idle'` — i.e. `isActive === false` (same default-to-active rule as
+ * {@link getTeammateStatuses}). The lead is never pruned. The team file is
+ * persisted only when at least one member was removed. Returns the removed
+ * members (empty when there is no active team or nothing is idle).
+ */
+export function pruneIdleMembers(): TeamMember[] {
+  if (!currentTeam) return [];
+  const removed: TeamMember[] = [];
+  currentTeam.members = currentTeam.members.filter(m => {
+    const idle = m.name !== TEAM_LEAD_NAME && m.isActive === false;
+    if (idle) removed.push(m);
+    return !idle;
+  });
+  if (removed.length > 0) persistTeam();
   return removed;
 }
 

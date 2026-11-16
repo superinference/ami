@@ -34,14 +34,15 @@ describe('team rich structure + guards', () => {
     assert.equal(r.isError, undefined);
     const team = getCurrentTeam()!;
     assert.equal(team.name, 'squad');
-    assert.equal(team.leadAgentId, 'lead-squad');
+    // Deterministic lead id: formatAgentId(TEAM_LEAD_NAME, team) === `main@squad`.
+    assert.equal(team.leadAgentId, 'main@squad');
     assert.equal(team.leadSessionId, 'sess-1');
     assert.equal(team.members.length, 1);
     assert.equal(team.members[0].name, TEAM_LEAD_NAME);
     assert.equal(team.members[0].agentType, 'lead');
     // persisted
     const file = JSON.parse(fs.readFileSync(path.join(tmp, '.ami', 'teams', 'squad', 'team.json'), 'utf-8'));
-    assert.equal(file.leadAgentId, 'lead-squad');
+    assert.equal(file.leadAgentId, 'main@squad');
     assert.ok(Array.isArray(file.members));
   });
 

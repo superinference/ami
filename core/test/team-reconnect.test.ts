@@ -80,7 +80,7 @@ describe('team reconnection + disband inbox flush', () => {
       const t = readTeamFile(teamDir('alpha'));
       assert.ok(t);
       assert.equal(t.name, 'alpha');
-      assert.equal(t.leadAgentId, 'lead-alpha');
+      assert.equal(t.leadAgentId, 'main@alpha');
       assert.ok(Array.isArray(t.members));
     });
   });
