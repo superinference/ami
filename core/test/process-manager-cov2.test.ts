@@ -118,7 +118,7 @@ describe('ProcessManager – getOutput missing file', () => {
   let pm: ProcessManager;
   afterEach(async () => { await cleanupPm(pm); fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('returns empty output (not null) when the backing file is gone', async () => {
+  it('surfaces a diagnostic (not silent empty) when the backing file is gone', async () => {
     tmpDir = makeTmpDir();
     pm = new ProcessManager(tmpDir);
     const id = pm.spawn('echo gone-soon', { cwd: tmpDir });
@@ -126,7 +126,11 @@ describe('ProcessManager – getOutput missing file', () => {
     fs.rmSync(pm.get(id)!.outputPath, { force: true });
     const result = pm.getOutput(id);
     assert.ok(result, 'task still tracked, so result object is returned');
-    assert.equal(result!.output, '');
+    // A spawned task's output file is created up-front, so a missing file means it
+    // was deleted/tampered with mid-run — surface a diagnostic rather than a silent
+    // empty read (parity with Claude Code's #readStdoutFromFile).
+    assert.match(result!.output, /task output unavailable/i);
+    assert.match(result!.output, /ENOENT/);
     assert.equal(result!.status, 'completed');
   });
 });

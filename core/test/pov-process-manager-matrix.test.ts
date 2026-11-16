@@ -68,7 +68,7 @@ describe('POV pm — spawn / list / output / completion', () => {
 
   it('spawn returns a bg- id that list() reports as running', () => {
     const id = pm.spawn('sleep 2', { cwd: tmpDir });
-    assert.match(id, /^bg-[0-9a-f]{8}$/);
+    assert.match(id, /^bg-[0-9a-f]{16}$/);
     const tasks = pm.list();
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0].taskId, id);

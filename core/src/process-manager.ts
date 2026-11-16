@@ -9,6 +9,25 @@ import { FlowManager } from './flow-manager';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024; // 5 MB per task
 
+/**
+ * Human-readable form of {@link MAX_OUTPUT_BYTES}, derived from the numeric cap so
+ * the truncation message can never drift out of sync with the limit actually
+ * enforced in writeChunk (previously the "5MB" string was hard-coded separately).
+ */
+const MAX_OUTPUT_DISPLAY = `${Math.round(MAX_OUTPUT_BYTES / (1024 * 1024))}MB`;
+
+/**
+ * SECURITY (parity with Claude Code's generateTaskId): build a task id with enough
+ * entropy to resist a brute-force symlink attack on the derived output-file path.
+ * Claude draws randomBytes(8); AMI previously used randomBytes(4) (2^32 ≈ 4.3B —
+ * ~1/650th the entropy). We draw 8 random bytes (2^64) rendered as hex behind a
+ * short, self-describing type prefix (e.g. `bg`, `monitor-<server>`). Shared so
+ * every call site produces ids with the same collision/attack resistance.
+ */
+export function generateTaskId(prefix: string): string {
+  return `${prefix}-${crypto.randomBytes(8).toString('hex')}`;
+}
+
 /** Time to wait after SIGTERM before escalating to SIGKILL. */
 export const GRACEFUL_SHUTDOWN_MS = 1500;
 
@@ -221,6 +240,26 @@ function readOutputFileNoFollow(outputPath: string): string {
   }
 }
 
+/**
+ * Last-line patterns that suggest a background command is blocked waiting for
+ * keyboard input. Used by the stall watchdog to gate the actionable "waiting for
+ * interactive input" hint — we stay silent on commands that are merely slow and
+ * only notify when the tail looks like an interactive prompt the model can act on.
+ * Mirrors Claude Code's PROMPT_PATTERNS (LocalShellTask): the directed-question
+ * matcher catches "Do you want to continue? " and friends that carry no explicit
+ * (y/n) marker, and "Press (any key|Enter)" covers "Press any key" (not just Enter).
+ */
+const PROMPT_PATTERNS: RegExp[] = [
+  /\(y\/n\)/i,
+  /\[y\/n\]/i,
+  /\(yes\/no\)/i,
+  /\b(?:Do you|Would you|Shall I|Are you sure|Ready to)\b.*\? *$/i,
+  /Press (any key|Enter)/i,
+  /Continue\?/i,
+  /Overwrite\?/i,
+  /password:/i,
+];
+
 export interface BackgroundProcess {
   taskId: string;
   pid: number;
@@ -323,7 +362,7 @@ export class ProcessManager extends EventEmitter {
         `wait for one to finish or kill one before starting another`,
       );
     }
-    const taskId = `bg-${crypto.randomBytes(4).toString('hex')}`;
+    const taskId = generateTaskId('bg');
     const outputPath = path.join(this.tasksDir, `${taskId}.output`);
 
     const isWindows = osHooks.platform() === 'win32';
@@ -371,7 +410,7 @@ export class ProcessManager extends EventEmitter {
       if (!this.safeWrite(fd, chunk)) return;
       entry.bytesWritten += chunk.length;
       if (entry.bytesWritten >= MAX_OUTPUT_BYTES) {
-        this.safeWrite(fd, Buffer.from('\n[output truncated: exceeded 5MB disk cap]\n'));
+        this.safeWrite(fd, Buffer.from(`\n[output truncated: exceeded ${MAX_OUTPUT_DISPLAY} disk cap]\n`));
       }
     };
 
@@ -392,6 +431,10 @@ export class ProcessManager extends EventEmitter {
     const stallCheck = setInterval(() => {
       lastOutputSize = this.stallTick(taskId, lastOutputSize);
     }, 45_000);
+    // Observation-only timer: unref() so a still-registered task's poller can never
+    // by itself keep the Node event loop alive and block clean process exit
+    // (parity with Claude Code unref-ing its progress-poll interval).
+    stallCheck.unref();
 
     let bgTimeout: ReturnType<typeof setTimeout> | undefined;
     if (opts.timeoutMs && opts.timeoutMs > 0) {
@@ -401,6 +444,8 @@ export class ProcessManager extends EventEmitter {
           this.kill(taskId);
         }
       }, opts.timeoutMs);
+      // Watchdog timer must not pin the loop open on its own either.
+      bgTimeout.unref();
     }
 
     // Finalize exactly once: record the terminal status/code/endTime, close the
@@ -759,7 +804,21 @@ export class ProcessManager extends EventEmitter {
       } else {
         output = re ? lines.join('\n') : content;
       }
-    } catch { /* file may not exist yet */ }
+    } catch (err) {
+      // SECURITY/OBSERVABILITY (parity with Claude Code's #readStdoutFromFile):
+      // a spawned bash task's output file is created up-front (O_CREAT|O_EXCL), so
+      // a read failure here means it was deleted/tampered with mid-run — e.g. a
+      // concurrent process in the shared project dir removed it. Surface a
+      // diagnostic (with the errno) instead of a silent empty read, which is
+      // indistinguishable from "no output yet". A registered agent's file is
+      // written externally and may legitimately not exist yet, so ENOENT there
+      // stays an empty (non-diagnostic) read.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const notYetCreated = (!!entry._registered || !entry.outputPath) && code === 'ENOENT';
+      if (entry.outputPath && !notYetCreated) {
+        output = `<task output unavailable: ${entry.outputPath} could not be read (${code ?? 'unknown'})>`;
+      }
+    }
 
     return {
       status: entry.status,
@@ -833,7 +892,7 @@ export class ProcessManager extends EventEmitter {
     // always defined — no nullish fallback branch needed.
     const lines = text.trim().split('\n');
     const lastLine = lines[lines.length - 1];
-    return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|Press Enter|Continue\?|Overwrite\?|password:/i.test(lastLine);
+    return PROMPT_PATTERNS.some((p) => p.test(lastLine));
   }
 
   runningCount(): number {
@@ -892,7 +951,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   monitorMcp(serverId: string, checkFn: () => Promise<boolean>, intervalMs: number = 30000): string {
-    const taskId = `monitor-${serverId}-${Date.now()}`;
+    const taskId = generateTaskId(`monitor-${serverId}`);
     const interval = setInterval(async () => {
       try {
         const healthy = await checkFn();
@@ -905,6 +964,8 @@ export class ProcessManager extends EventEmitter {
         this.emit('complete', { taskId, exitCode: 1, command: `monitor:${serverId}`, description: `MCP monitor: ${serverId}`, outputPath: '' });
       }
     }, intervalMs);
+    // Observation-only health poller: unref() so it never blocks process exit.
+    interval.unref();
     this.processes.set(taskId, {
       taskId,
       pid: 0,
