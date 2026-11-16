@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { spillToolText } from './spill-output';
+import { spillToolText, getFormatDescription, isAlreadySpilled } from './spill-output';
 import { boundMcpResponse } from '../mcp/client';
 import type { McpToolAnnotations } from '../mcp/client';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from './input-sanitizer';
@@ -183,7 +183,16 @@ export function createMcpTool(
         const spillCap = maxResultChars ? Math.min(maxResultChars, 500_000) : 100_000;
         const baseMeta = bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined;
         const mergedMeta = processed?.metadata ? { ...baseMeta, ...processed.metadata } : baseMeta;
-        return { output: spillToolText(context.cwd, 'mcp', bounded.content, spillCap), metadata: mergedMeta };
+        // Already a persisted-output banner (e.g. a replayed result) — don't
+        // re-spill and re-wrap it.
+        if (isAlreadySpilled(bounded.content)) {
+          return { output: bounded.content, metadata: mergedMeta };
+        }
+        // When the result must spill to disk, tell the model the file's format so
+        // it can parse/jq it, and emit the sequential-read protocol.
+        const formatDescription = processed?.format
+          ?? (typeof result === 'string' ? 'Plain text' : getFormatDescription('structuredContent'));
+        return { output: spillToolText(context.cwd, 'mcp', bounded.content, spillCap, { formatDescription }), metadata: mergedMeta };
       } catch (err) {
         clearTimeout(timer!);
         if (onAbort && abortSignal) abortSignal.removeEventListener('abort', onAbort);
@@ -225,18 +234,18 @@ const TEXT_RESOURCE_PATTERN = /^(text\/|application\/json|application\/xml)/;
  *  `toolResult` string, then a `structuredContent` object, then the `content`
  *  array. The first two are otherwise lost to a raw stringify of the whole
  *  wrapper object (empty content array / _meta and all). */
-export function processMcpContent(result: unknown): { text: string; metadata?: Record<string, unknown> } | null {
+export function processMcpContent(result: unknown): { text: string; metadata?: Record<string, unknown>; format?: string } | null {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
   const obj = result as Record<string, unknown>;
 
   // Priority 1: legacy `toolResult` plain-string shape.
   if (typeof obj.toolResult === 'string') {
-    return { text: obj.toolResult };
+    return { text: obj.toolResult, format: getFormatDescription('toolResult') };
   }
   // Priority 2: `structuredContent` object — emit the structured payload as JSON
   // so it survives instead of being dropped to a stringify of the whole wrapper.
   if (obj.structuredContent && typeof obj.structuredContent === 'object') {
-    return { text: JSON.stringify(obj.structuredContent, null, 2) };
+    return { text: JSON.stringify(obj.structuredContent, null, 2), format: getFormatDescription('structuredContent') };
   }
 
   if (!Array.isArray(obj.content)) return null;
@@ -297,5 +306,7 @@ export function processMcpContent(result: unknown): { text: string; metadata?: R
 
   if (parts.length === 0) return null;
   const metadata = images.length > 0 ? { mcpImages: images } : undefined;
-  return { text: parts.join('\n'), metadata };
+  // The content array is flattened to newline-joined text, so the persisted
+  // file is plain text (not a raw JSON array).
+  return { text: parts.join('\n'), metadata, format: getFormatDescription('toolResult') };
 }

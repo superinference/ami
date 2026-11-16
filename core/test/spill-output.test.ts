@@ -5,7 +5,16 @@ import * as path from 'path';
 import * as os from 'os';
 import { createHash } from 'crypto';
 
-import { spillToolText, formatSize, spillErrorReason, buildSpillBanner } from '../src/tools/spill-output';
+import {
+  spillToolText,
+  formatSize,
+  spillErrorReason,
+  buildSpillBanner,
+  getFormatDescription,
+  isAlreadySpilled,
+  PERSISTED_OUTPUT_OPEN,
+  PERSISTED_OUTPUT_CLOSE,
+} from '../src/tools/spill-output';
 import { projectStateDir } from '../src/reference-journal';
 
 describe('spillToolText', () => {
@@ -322,5 +331,78 @@ describe('spillToolText', () => {
       fs.chmodSync(roData, 0o755);
       fs.rmSync(roData, { recursive: true, force: true });
     }
+  });
+});
+
+describe('getFormatDescription', () => {
+  it('maps result types to a format description', () => {
+    assert.equal(getFormatDescription('toolResult'), 'Plain text');
+    assert.equal(getFormatDescription('structuredContent'), 'JSON');
+    assert.equal(getFormatDescription('contentArray'), 'JSON array');
+  });
+  it('appends a compact schema signature when provided', () => {
+    assert.equal(getFormatDescription('structuredContent', '{id:number}'), 'JSON with schema: {id:number}');
+    assert.equal(getFormatDescription('contentArray', '{id:number}'), 'JSON array with schema: {id:number}');
+  });
+});
+
+describe('isAlreadySpilled', () => {
+  it('detects a real spill banner but not incidental tag mentions', () => {
+    const banner = buildSpillBanner(1234, '/tmp/x.txt', undefined, 5000, { formatDescription: 'JSON' });
+    assert.ok(isAlreadySpilled(`head\n${banner}tail`), 'a produced banner is detected');
+    // A file that merely mentions the tag (e.g. reading this source) is not a spill.
+    assert.equal(isAlreadySpilled(`const T = '${PERSISTED_OUTPUT_OPEN}';`), false);
+    assert.equal(isAlreadySpilled('plain text with no markers'), false);
+  });
+});
+
+describe('buildSpillBanner read-back instructions', () => {
+  it('emits sentinel-wrapped sequential-read guidance when a format is given', () => {
+    const b = buildSpillBanner(900, '/tmp/out.txt', undefined, 4000, { formatDescription: 'JSON' });
+    assert.ok(b.includes(PERSISTED_OUTPUT_OPEN), 'has open sentinel');
+    assert.ok(b.includes(PERSISTED_OUTPUT_CLOSE), 'has close sentinel');
+    assert.ok(b.includes('Format: JSON'), 'states the format');
+    assert.ok(b.includes('jq'), 'mentions jq for structured queries');
+    assert.ok(b.includes('sequential chunks until 100%'), 'requires full sequential read');
+    assert.ok(b.includes('explicitly describe what portion'), 'requires completeness attestation');
+    // Still keeps the compact signals the display/other callers rely on.
+    assert.ok(b.includes('persisted to /tmp/out.txt'));
+    assert.ok(b.includes('truncated'));
+  });
+  it('notes the per-read cap when maxReadLength is given', () => {
+    const b = buildSpillBanner(900, '/tmp/out.txt', undefined, 4000, { maxReadLength: 30000 });
+    assert.ok(b.includes('Each read is bounded to 30,000 chars'), 'states the chunk bound');
+  });
+  it('stays compact (no sentinel) when no read-back options are given', () => {
+    const b = buildSpillBanner(900, '/tmp/out.txt', undefined, 4000);
+    assert.ok(!b.includes(PERSISTED_OUTPUT_OPEN), 'no sentinel in the compact banner');
+    assert.ok(!b.includes('sequential chunks'), 'no instructions in the compact banner');
+  });
+});
+
+describe('spillToolText read-back instructions', () => {
+  let tmpDir: string;
+  before(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-rich-')); });
+  after(() => { fs.rmSync(tmpDir, { recursive: true }); });
+
+  it('emits the rich sentinel-wrapped banner for a large spill with a format', () => {
+    const text = 'HEAD' + 'x'.repeat(200_000) + 'TAIL';
+    const result = spillToolText(tmpDir, 'rich', text, 100_000, { formatDescription: 'JSON' });
+    assert.ok(result.startsWith('HEAD'), 'head preserved');
+    assert.ok(result.endsWith('TAIL'), 'tail preserved');
+    assert.ok(result.includes(PERSISTED_OUTPUT_OPEN) && result.includes(PERSISTED_OUTPUT_CLOSE), 'sentinel-wrapped');
+    assert.ok(result.includes('Format: JSON'), 'format surfaced');
+    assert.ok(result.includes('sequential chunks until 100%'), 'sequential-read protocol surfaced');
+    assert.ok(result.length <= 100_000, 'output stays within the budget');
+  });
+
+  it('falls back to the compact banner when the budget is too small for instructions', () => {
+    const text = 'HEAD' + 'y'.repeat(5000) + 'TAIL';
+    // limit 1000 cannot afford the instruction block, so it degrades gracefully.
+    const result = spillToolText(tmpDir, 'small', text, 1000, { formatDescription: 'JSON' });
+    assert.ok(result.startsWith('HEAD') && result.endsWith('TAIL'), 'preview preserved');
+    assert.ok(!result.includes(PERSISTED_OUTPUT_OPEN), 'no sentinel when it would crowd out the preview');
+    assert.ok(result.includes('truncated'), 'still a valid truncation banner');
+    assert.ok(result.length <= 1000, 'output stays within the budget');
   });
 });

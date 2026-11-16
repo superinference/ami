@@ -250,12 +250,19 @@ describe('processMcpContent', () => {
     const out = processMcpContent({ toolResult: 'plain legacy text', content: [] });
     assert.ok(out, 'toolResult should be surfaced, not lost to a stringify of the wrapper');
     assert.equal(out!.text, 'plain legacy text');
+    assert.equal(out!.format, 'Plain text');
   });
 
   it('emits structuredContent as JSON (before content array)', () => {
     const out = processMcpContent({ structuredContent: { a: 1, b: ['x'] }, content: [] });
     assert.ok(out, 'structuredContent should be surfaced');
     assert.deepEqual(JSON.parse(out!.text), { a: 1, b: ['x'] });
+    assert.equal(out!.format, 'JSON');
+  });
+
+  it('labels a flattened content array as plain text', () => {
+    const out = processMcpContent({ content: [{ type: 'text', text: 'alpha' }] });
+    assert.equal(out!.format, 'Plain text');
   });
 
   it('still returns null for a wrapper with no renderable shape', () => {
@@ -379,6 +386,36 @@ describe('createMcpTool.execute result shaping', () => {
     const meta = res.metadata as any;
     assert.equal(meta.mcpTruncated, true);
     assert.ok(meta.mcpImages, 'image metadata should survive the merge');
+  });
+
+  it('spills a large structured result with a JSON format banner + sequential-read protocol', async () => {
+    const big = { rows: Array.from({ length: 20000 }, (_, i) => ({ i, v: `value-${i}` })) };
+    const mgr = new MockManager(async () => ({ structuredContent: big }));
+    const tool = createMcpTool('srv', 'tl', 'desc', {});
+    const res = await tool.execute({}, makeContext(mgr));
+    assert.ok(res.output.includes('<persisted-output>'), 'persisted-output sentinel present');
+    assert.ok(res.output.includes('Format: JSON'), 'JSON format surfaced to the model');
+    assert.ok(res.output.includes('sequential chunks until 100%'), 'sequential-read protocol surfaced');
+    assert.ok(res.output.includes('jq'), 'jq querying guidance surfaced');
+    assert.ok(res.output.includes('persisted to'), 'spill path surfaced');
+  });
+
+  it('spills a large plain-string result with a Plain text format banner', async () => {
+    const mgr = new MockManager(async () => 'Z'.repeat(250_000));
+    const tool = createMcpTool('srv', 'tl', 'desc', {});
+    const res = await tool.execute({}, makeContext(mgr));
+    assert.ok(res.output.includes('Format: Plain text'), 'plain-text format surfaced');
+    assert.ok(res.output.includes('<persisted-output>'));
+  });
+
+  it('does not re-spill content that is already a persisted-output banner (replay guard)', async () => {
+    // A tool whose server echoes a prior spill banner must be returned verbatim.
+    const prior =
+      'head\n\n<persisted-output>\n[... 900 chars persisted to /tmp/x.txt (900 B of 4.0 KB) — truncated, use file_read to view the rest ...]\nFormat: JSON\n</persisted-output>\n\ntail';
+    const mgr = new MockManager(async () => prior);
+    const tool = createMcpTool('srv', 'tl', 'desc', {});
+    const res = await tool.execute({}, makeContext(mgr));
+    assert.equal(res.output, prior, 'already-spilled content is returned unchanged');
   });
 });
 
