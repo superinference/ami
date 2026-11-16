@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { whichSync } from '../src/utils/which';
+import { whichSync, findOnPath } from '../src/utils/which';
 
 // ---------------------------------------------------------------------------
 // whichSync — cross-platform executable resolution (no-spawn fast path,
@@ -144,5 +144,45 @@ describe('whichSync', () => {
     process.env.AMI_WHICH_TIMEOUT_MS = '0';
     process.env.PATH = dir;
     assert.equal(whichSync('also-not-here'), null);
+  });
+});
+
+describe('findOnPath — no-spawn lookup with injectable env', () => {
+  it('returns null for an empty command', () => {
+    assert.equal(findOnPath('', { PATH: dir }), null);
+  });
+
+  it('resolves against the PASSED env.PATH, not process.env', () => {
+    const exe = makeExe('injtool');
+    // process.env.PATH does NOT contain `dir`, but the injected env does.
+    process.env.PATH = '';
+    assert.equal(findOnPath('injtool', { PATH: dir }), exe);
+  });
+
+  it('returns null when the injected PATH has no match', () => {
+    makeExe('present');
+    assert.equal(findOnPath('absent', { PATH: dir }), null);
+  });
+
+  it('returns null for an empty injected PATH', () => {
+    assert.equal(findOnPath('anything', { PATH: '' }), null);
+  });
+
+  it('never executes the candidate — a non-zero-exit script still resolves', () => {
+    const p = path.join(dir, 'failing');
+    fs.writeFileSync(p, '#!/bin/sh\nexit 3\n');
+    fs.chmodSync(p, 0o755);
+    assert.equal(findOnPath('failing', { PATH: dir }), p);
+  });
+
+  it('resolves a path-separated command without consulting PATH', () => {
+    const exe = makeExe('sep');
+    assert.equal(findOnPath(exe, { PATH: '' }), exe);
+  });
+
+  it('defaults to process.env when no env is supplied', () => {
+    const exe = makeExe('deftool');
+    process.env.PATH = dir;
+    assert.equal(findOnPath('deftool'), exe);
   });
 });

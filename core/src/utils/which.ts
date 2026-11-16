@@ -51,10 +51,18 @@ function isExecutableFile(candidate: string): boolean {
   }
 }
 
-/** No-spawn fast path: resolve `command` by scanning PATH (plus PATHEXT on
- *  win32) directly, or — when `command` already contains a path separator — by
- *  probing it as a path. Returns the first executable match, else null. */
-function fastPathLookup(command: string): string | null {
+/**
+ * No-spawn PATH lookup: resolve `command` by scanning the given environment's
+ * `PATH` (plus `PATHEXT` on win32) directly, or — when `command` already contains
+ * a path separator — by probing it as a path. Returns the first executable match,
+ * else null. NEVER executes anything: it only `stat`s/`access`es candidate files,
+ * which is the security-correct way to probe for a tool (a `git --version`-style
+ * exec would run an attacker-planted binary from an untrusted cwd). `env` is
+ * injectable so a caller can probe a specific `PATH` deterministically (e.g. a
+ * git-availability gate) without mutating `process.env`.
+ */
+export function findOnPath(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (!command) return null;
   const exts = pathExtensions();
   const hasSep = command.includes('/') || (isWindows() && command.includes('\\'));
   if (hasSep) {
@@ -64,7 +72,7 @@ function fastPathLookup(command: string): string | null {
     }
     return null;
   }
-  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  const dirs = (env.PATH ?? '').split(path.delimiter).filter(Boolean);
   for (const dir of dirs) {
     for (const ext of exts) {
       const candidate = path.join(dir, command + ext);
@@ -72,6 +80,12 @@ function fastPathLookup(command: string): string | null {
     }
   }
   return null;
+}
+
+/** No-spawn fast path for {@link whichSync}: delegates to {@link findOnPath}
+ *  against the live `process.env`. */
+function fastPathLookup(command: string): string | null {
+  return findOnPath(command, process.env);
 }
 
 /** Subprocess fallback mirroring the platform-native probe: `where.exe` on
