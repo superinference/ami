@@ -75,8 +75,15 @@ export {
   parseExporterTypes, resolveOtlpProtocol, OTLP_PROTOCOLS, isTelemetrySuppressedForTest,
   resolveExportIntervalMs, DEFAULT_EXPORT_INTERVALS, resolveFlushTimeoutMs,
   DEFAULT_FLUSH_TIMEOUT_MS, formatFlushTimeoutGuidance,
+  isToolContentLoggingEnabled, truncateToolInputValue, extractToolInputForTelemetry,
+  TOOL_INPUT_STRING_TRUNCATE_AT, TOOL_INPUT_STRING_TRUNCATE_TO, TOOL_INPUT_MAX_JSON_CHARS,
+  TOOL_INPUT_MAX_COLLECTION_ITEMS, TOOL_INPUT_MAX_DEPTH,
+  resolveBetaTracingConfig, filterEventForEgress, TelemetryContentDedup,
+  DEDUP_MIN_CONTENT_LEN, DEDUP_PREVIEW_LEN,
+  OtelHeadersHelper, validateOtelHeaders, resolveOtelHeadersDebounceMs, DEFAULT_OTEL_HEADERS_DEBOUNCE_MS,
+  raceWithTimeout, CLOSE_GRACE_MS,
 } from './analytics';
-export type { OtlpProtocol } from './analytics';
+export type { OtlpProtocol, BetaTracingConfig, EgressAllowlist, OtelHeadersHelperDeps } from './analytics';
 export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
 export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';

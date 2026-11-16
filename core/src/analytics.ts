@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { execSync } from 'child_process';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
@@ -56,13 +57,92 @@ export const MAX_ANALYTICS_STRING_LEN = 2048;
 const MAX_SANITIZE_DEPTH = 6;
 
 const TOOL_NAME_KEYS = new Set(['tool', 'toolname', 'tool_name', 'name']);
-/** Keys that may carry raw code / prompt / output text (redacted to length-only by default). */
-const SENSITIVE_CONTENT_KEYS = new Set([
-  'prompt', 'user_prompt', 'message', 'content', 'output', 'system_prompt', 'text', 'input', 'result',
-]);
+/** Keys carrying raw user/model prose (prompts, messages) — redacted unless user-prompt logging is opted in. */
+const USER_PROMPT_KEYS = new Set(['prompt', 'user_prompt', 'message', 'system_prompt', 'text']);
+/**
+ * Keys carrying raw tool input/output CONTENT — redacted to length-only unless
+ * tool-content logging is opted in (OTEL_LOG_TOOL_CONTENT) OR user-prompt logging /
+ * beta detailed tracing is on. Kept distinct from {@link USER_PROMPT_KEYS} so an
+ * operator can export tool IO content for debugging without also exporting prompts.
+ */
+const TOOL_CONTENT_KEYS = new Set(['content', 'output', 'input', 'result']);
+/** Keys carrying structured tool INPUT arguments — bounded-serialized (not length-only) when tool details are on. */
+const TOOL_INPUT_KEYS = new Set(['tool_input', 'arguments']);
 
 function toolDetailsEnabled(env: NodeJS.ProcessEnv): boolean {
   return isEnvTruthy(env.AMI_LOG_TOOL_DETAILS) || isEnvTruthy(env.OTEL_LOG_TOOL_DETAILS);
+}
+
+/**
+ * Whether raw tool input/output CONTENT may be exported — an explicit opt-in via
+ * `OTEL_LOG_TOOL_CONTENT` (mirrors Claude's isToolContentLoggingEnabled). Distinct
+ * from tool-DETAILS (which only unlocks the structured tool-input serializer) and
+ * from user-prompt logging (which unlocks prompts/messages).
+ */
+export function isToolContentLoggingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env.OTEL_LOG_TOOL_CONTENT);
+}
+
+// Tunable bounds for telemetry tool-input serialization (mirror Claude's metadata.ts).
+/** Strings longer than this (chars) are clipped in bounded tool-input serialization. */
+export const TOOL_INPUT_STRING_TRUNCATE_AT = 512;
+/** Clipped tool-input strings keep this many leading chars (+ a length marker). */
+export const TOOL_INPUT_STRING_TRUNCATE_TO = 128;
+/** Hard cap (chars) on the final serialized tool-input JSON. */
+export const TOOL_INPUT_MAX_JSON_CHARS = 4 * 1024;
+/** Max array entries / object keys kept per level (+ an overflow count marker). */
+export const TOOL_INPUT_MAX_COLLECTION_ITEMS = 20;
+/** Max nesting depth walked before collapsing to `<nested>`. */
+export const TOOL_INPUT_MAX_DEPTH = 2;
+
+/**
+ * Bounds-safe recursive serializer for an arbitrary tool-input value before it
+ * enters telemetry: long strings are clipped (keeping a `[N chars]` marker), arrays
+ * and objects are capped at {@link TOOL_INPUT_MAX_COLLECTION_ITEMS} entries (with an
+ * overflow marker), nesting is bounded at {@link TOOL_INPUT_MAX_DEPTH}, and internal
+ * marker keys (`_*`) are stripped. Mirrors Claude's `truncateToolInputValue` —
+ * defends against pathological (huge / deep / wide) payloads.
+ */
+export function truncateToolInputValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') {
+    if (value.length > TOOL_INPUT_STRING_TRUNCATE_AT) {
+      return `${value.slice(0, TOOL_INPUT_STRING_TRUNCATE_TO)}…[${value.length} chars]`;
+    }
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
+    return value;
+  }
+  if (depth >= TOOL_INPUT_MAX_DEPTH) return '<nested>';
+  if (Array.isArray(value)) {
+    const mapped: unknown[] = value.slice(0, TOOL_INPUT_MAX_COLLECTION_ITEMS).map(v => truncateToolInputValue(v, depth + 1));
+    if (value.length > TOOL_INPUT_MAX_COLLECTION_ITEMS) mapped.push(`…[${value.length} items]`);
+    return mapped;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([k]) => !k.startsWith('_'));
+    const mapped: Array<[string, unknown]> = entries
+      .slice(0, TOOL_INPUT_MAX_COLLECTION_ITEMS)
+      .map(([k, v]) => [k, truncateToolInputValue(v, depth + 1)]);
+    if (entries.length > TOOL_INPUT_MAX_COLLECTION_ITEMS) mapped.push(['…', `${entries.length} keys`]);
+    return Object.fromEntries(mapped);
+  }
+  return String(value);
+}
+
+/**
+ * Serialize a tool's input arguments to a bounded JSON string for telemetry,
+ * returning undefined unless tool-detail logging is enabled (OTEL_LOG_TOOL_DETAILS /
+ * AMI_LOG_TOOL_DETAILS). The value is first bounded-serialized via
+ * {@link truncateToolInputValue} then hard-capped at {@link TOOL_INPUT_MAX_JSON_CHARS}.
+ * Mirrors Claude's `extractToolInputForTelemetry`.
+ */
+export function extractToolInputForTelemetry(input: unknown, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!toolDetailsEnabled(env)) return undefined;
+  const truncated = truncateToolInputValue(input);
+  let json = trySerialize(truncated) ?? 'null';
+  if (json.length > TOOL_INPUT_MAX_JSON_CHARS) json = json.slice(0, TOOL_INPUT_MAX_JSON_CHARS) + '…[truncated]';
+  return json;
 }
 
 /**
@@ -163,8 +243,14 @@ export function sanitizeAnalyticsValue(value: unknown, depth = 0): unknown {
 
 export interface SanitizeOpts {
   env?: NodeJS.ProcessEnv;
-  /** When false (default), free-text content keys are redacted to length-only. */
+  /** When false (default), user-prompt keys (prompt/message/…) are redacted to length-only. */
   logUserPrompts?: boolean;
+  /**
+   * When false (default), tool input/output CONTENT keys are redacted to length-only.
+   * Defaults to `logUserPrompts || OTEL_LOG_TOOL_CONTENT || beta detailed tracing`, so
+   * an operator can export tool IO content for debugging without exporting prompts.
+   */
+  logToolContent?: boolean;
   logToolDetails?: boolean;
 }
 
@@ -198,15 +284,28 @@ export function markAnalyticsSafe(data: Record<string, unknown>): AnalyticsSafeM
  * to disk or exported off-machine:
  *  - internal marker keys (`_*`) are dropped
  *  - tool-name fields are MCP-sanitized
- *  - free-text content keys are redacted to `<REDACTED>` + a `<key>_length` unless
- *    OTEL_LOG_USER_PROMPTS / SUPERINFERENCE_LOG_USER_PROMPTS opts in
+ *  - user-prompt keys are redacted to `<REDACTED>` + a `<key>_length` unless
+ *    OTEL_LOG_USER_PROMPTS / SUPERINFERENCE_LOG_USER_PROMPTS (or beta detailed tracing) opts in
+ *  - tool input/output CONTENT keys are redacted the same way unless additionally
+ *    OTEL_LOG_TOOL_CONTENT opts in
+ *  - structured tool-INPUT keys are bounded-serialized when tool details are on, else
+ *    redacted to length-only
  *  - all remaining string values are credential-redacted and length-capped
  */
 export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: SanitizeOpts = {}): AnalyticsSafeMetadata {
   const env = opts.env ?? process.env;
-  const logUserPrompts = opts.logUserPrompts ?? (isEnvTruthy(env.OTEL_LOG_USER_PROMPTS) || isEnvTruthy(env.SUPERINFERENCE_LOG_USER_PROMPTS));
+  const beta = resolveBetaTracingConfig(env);
+  // Beta detailed tracing emits full content, so it unlocks prompts AND tool content.
+  const logUserPrompts = opts.logUserPrompts
+    ?? (isEnvTruthy(env.OTEL_LOG_USER_PROMPTS) || isEnvTruthy(env.SUPERINFERENCE_LOG_USER_PROMPTS) || beta.enabled);
+  const logToolContent = opts.logToolContent ?? (logUserPrompts || isToolContentLoggingEnabled(env) || beta.enabled);
   const logToolDetails = opts.logToolDetails ?? toolDetailsEnabled(env);
   const out: Record<string, unknown> = {};
+  const redactToLength = (key: string, value: unknown): void => {
+    const len = typeof value === 'string' ? value.length : JSON.stringify(value ?? '').length;
+    out[key] = '<REDACTED>';
+    out[`${key}_length`] = len;
+  };
   for (const [key, value] of Object.entries(data)) {
     if (key.startsWith('_')) continue;
     const lk = key.toLowerCase();
@@ -214,10 +313,18 @@ export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: Sanit
       out[key] = sanitizeToolNameForAnalytics(value, { logToolDetails });
       continue;
     }
-    if (SENSITIVE_CONTENT_KEYS.has(lk) && !logUserPrompts) {
-      const len = typeof value === 'string' ? value.length : JSON.stringify(value ?? '').length;
-      out[key] = '<REDACTED>';
-      out[`${key}_length`] = len;
+    if (TOOL_INPUT_KEYS.has(lk)) {
+      const serialized = extractToolInputForTelemetry(value, env);
+      if (serialized !== undefined) out[key] = serialized;
+      else redactToLength(key, value);
+      continue;
+    }
+    if (USER_PROMPT_KEYS.has(lk) && !logUserPrompts) {
+      redactToLength(key, value);
+      continue;
+    }
+    if (TOOL_CONTENT_KEYS.has(lk) && !logToolContent) {
+      redactToLength(key, value);
       continue;
     }
     out[key] = sanitizeAnalyticsValue(value, 0);
@@ -260,6 +367,242 @@ export function trySerialize(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Beta detailed content tracing toggle (Claude-Code parity)
+// ---------------------------------------------------------------------------
+
+/** Resolved detailed-content-tracing configuration. */
+export interface BetaTracingConfig {
+  /** True only when BOTH the opt-in flag is truthy AND a dedicated endpoint is set. */
+  enabled: boolean;
+  /** The dedicated tracing endpoint (BETA_TRACING_ENDPOINT), or null when unset. */
+  endpoint: string | null;
+}
+
+/**
+ * Resolve the detailed-content-tracing toggle: Claude gates full-content tracing on
+ * an explicit boolean (`ENABLE_BETA_TRACING_DETAILED`, via isEnvTruthy) AND a
+ * dedicated endpoint (`BETA_TRACING_ENDPOINT`) — detailed tracing is enabled only
+ * when both are present, so a stray flag with no endpoint stays off (and vice-versa).
+ * Mirrors Claude's `isBetaTracingEnabled` base gate.
+ */
+export function resolveBetaTracingConfig(env: NodeJS.ProcessEnv = process.env): BetaTracingConfig {
+  const endpoint = env.BETA_TRACING_ENDPOINT?.trim() || null;
+  const enabled = isEnvTruthy(env.ENABLE_BETA_TRACING_DETAILED) && endpoint !== null;
+  return { enabled, endpoint };
+}
+
+// ---------------------------------------------------------------------------
+// Egress allowlist (Claude-Code datadog.ts parity): a double gate limiting WHICH
+// event names and WHICH data fields are allowed to leave the machine.
+// ---------------------------------------------------------------------------
+
+/** A double egress gate: an optional event-name allowlist and an optional field allowlist. */
+export interface EgressAllowlist {
+  /** When set, ONLY events whose TYPE is listed are exported (others are dropped). */
+  events?: ReadonlySet<string> | readonly string[];
+  /** When set, ONLY these data FIELDS survive on the exported copy (others removed). */
+  fields?: ReadonlySet<string> | readonly string[];
+}
+
+function toSet(v: ReadonlySet<string> | readonly string[] | undefined): ReadonlySet<string> | null {
+  if (v === undefined) return null;
+  return v instanceof Set ? v : new Set(v);
+}
+
+/**
+ * Apply an egress allowlist to one event just before it leaves the machine. Returns
+ * null when the event TYPE is not on the event allowlist (drop it entirely); else
+ * returns the data filtered to the FIELD allowlist (unlisted fields removed). An
+ * unset axis means "no restriction on that axis". Mirrors Claude's datadog.ts
+ * DATADOG_ALLOWED_EVENTS (event-name gate) + TAG_FIELDS (field gate) double control.
+ */
+export function filterEventForEgress(
+  type: string,
+  data: Record<string, unknown>,
+  allow: EgressAllowlist,
+): Record<string, unknown> | null {
+  const eventSet = toSet(allow.events);
+  if (eventSet && !eventSet.has(type)) return null;
+  const fieldSet = toSet(allow.fields);
+  if (!fieldSet) return data;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (fieldSet.has(k)) out[k] = v;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Hash-based content deduplication (Claude-Code betaSessionTracing.ts parity):
+// large/repeated content (system prompts, tool schemas) is logged in full only the
+// first time its SHA-256 is seen; thereafter only a compact stand-in is emitted.
+// ---------------------------------------------------------------------------
+
+/** Minimum string length (chars) before a field is eligible for content dedup. */
+export const DEDUP_MIN_CONTENT_LEN = 1024;
+/** How many leading chars of a de-duplicated value are kept as a preview. */
+export const DEDUP_PREVIEW_LEN = 500;
+
+/**
+ * Session-scoped content-deduplication cache. For each long string field, the full
+ * value is emitted the FIRST time its 12-char SHA-256 prefix is seen; every later
+ * occurrence of the same content is collapsed to a `<key>` preview plus `<key>_hash`
+ * and `<key>_length` — so large repeated bodies cost one full log per unique hash
+ * per session, not one per event. Mirrors Claude's `seenHashes` dedup. Reset per
+ * session via {@link reset}.
+ */
+export class TelemetryContentDedup {
+  private _seen = new Set<string>();
+  constructor(
+    private readonly _minLen: number = DEDUP_MIN_CONTENT_LEN,
+    private readonly _previewLen: number = DEDUP_PREVIEW_LEN,
+  ) {}
+
+  /** Forget all hashes (start of a new session). */
+  reset(): void {
+    this._seen.clear();
+  }
+
+  /** Number of distinct content hashes seen this session. */
+  get seenCount(): number {
+    return this._seen.size;
+  }
+
+  /**
+   * De-duplicate every long string field of `data`. Short strings and non-strings
+   * pass through untouched. Returns the original object when nothing changed (so a
+   * caller can cheaply detect a no-op).
+   */
+  dedupe(data: Record<string, unknown>): Record<string, unknown> {
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value === 'string' && value.length >= this._minLen) {
+        const hash = crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
+        if (this._seen.has(hash)) {
+          out[key] = value.slice(0, this._previewLen);
+          out[`${key}_hash`] = hash;
+          out[`${key}_length`] = value.length;
+          changed = true;
+          continue;
+        }
+        this._seen.add(hash);
+      }
+      out[key] = value;
+    }
+    return changed ? out : data;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// otelHeadersHelper (Claude-Code auth.ts parity): OTLP auth headers produced
+// dynamically by running a user-configured command, debounced-cached.
+// ---------------------------------------------------------------------------
+
+/** Default debounce window reused between otelHeadersHelper invocations (29 min). */
+export const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS = 29 * 60 * 1000;
+
+/**
+ * Resolve the otelHeadersHelper debounce window (ms) from
+ * `AMI_OTEL_HEADERS_HELPER_DEBOUNCE_MS` (then the Claude-compatible
+ * `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS`), defaulting to
+ * {@link DEFAULT_OTEL_HEADERS_DEBOUNCE_MS}. A literal `0` is honored (always re-run);
+ * a non-finite/negative value falls back to the default.
+ */
+export function resolveOtelHeadersDebounceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AMI_OTEL_HEADERS_HELPER_DEBOUNCE_MS ?? env.CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS;
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_OTEL_HEADERS_DEBOUNCE_MS;
+}
+
+/** Injected dependencies for {@link OtelHeadersHelper} (command runner + clock + env). */
+export interface OtelHeadersHelperDeps {
+  /** Run the helper command and return its stdout (throws on non-zero exit / spawn failure). */
+  exec?: (command: string) => string;
+  env?: NodeJS.ProcessEnv;
+  now?: () => number;
+}
+
+/**
+ * Validate that `parsed` is a JSON object of string→string header pairs (throwing
+ * the same actionable errors Claude's getOtelHeadersFromHelper does). Exported so a
+ * direct caller can reuse the validation without the caching wrapper.
+ */
+export function validateOtelHeaders(parsed: unknown): Record<string, string> {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('otelHeadersHelper must return a JSON object with string key-value pairs');
+  }
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value !== 'string') {
+      throw new Error(`otelHeadersHelper returned non-string value for key "${key}": ${typeof value}`);
+    }
+  }
+  return parsed as Record<string, string>;
+}
+
+/**
+ * Resolve OTLP auth headers from a user-configured helper command whose stdout is a
+ * JSON object of string→string header pairs (enterprise OTLP backends often need a
+ * freshly-minted bearer token). The parsed result is cached and reused until the
+ * debounce window ({@link resolveOtelHeadersDebounceMs}, default 29 min) elapses, so
+ * the (potentially expensive) auth call is not made per export. Mirrors Claude's
+ * `getOtelHeadersFromHelper`. The command runner is injected for testability; the
+ * default runs it with a 30s timeout.
+ */
+export class OtelHeadersHelper {
+  private _cache: Record<string, string> | null = null;
+  private _ts = 0;
+  private readonly _exec: (command: string) => string;
+  private readonly _env: NodeJS.ProcessEnv;
+  private readonly _now: () => number;
+
+  constructor(private readonly _command: string, deps: OtelHeadersHelperDeps = {}) {
+    this._exec = deps.exec ?? ((cmd) => execSync(cmd, { timeout: 30_000, encoding: 'utf8' }).toString());
+    this._env = deps.env ?? process.env;
+    this._now = deps.now ?? Date.now;
+  }
+
+  /**
+   * Return the headers, running the helper command only when there is no fresh
+   * cached result. Throws (propagating the command/validation error) when the helper
+   * produces no output or invalid JSON — the caller decides whether to degrade.
+   */
+  get(): Record<string, string> {
+    if (!this._command) return {};
+    const now = this._now();
+    const debounce = resolveOtelHeadersDebounceMs(this._env);
+    if (this._cache && now - this._ts < debounce) return this._cache;
+    const raw = this._exec(this._command)?.toString().trim();
+    if (!raw) throw new Error('otelHeadersHelper did not return a valid value');
+    const headers = validateOtelHeaders(JSON.parse(raw));
+    this._cache = headers;
+    this._ts = now;
+    return headers;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded graceful shutdown drain (Claude-Code HybridTransport.ts parity).
+// ---------------------------------------------------------------------------
+
+/** Default best-effort drain window (ms) given to queued telemetry on close. */
+export const CLOSE_GRACE_MS = 3000;
+
+/**
+ * Await the first of `promise` (settled, success OR failure) or a `ms` timeout —
+ * so a best-effort drain cannot block shutdown beyond `ms`. Mirrors Claude's
+ * `Promise.race([flush(), timeout(CLOSE_GRACE_MS)])` graceful-close bound. The sleep
+ * is injectable for deterministic tests.
+ */
+export async function raceWithTimeout(
+  promise: Promise<unknown>,
+  ms: number,
+  sleepImpl: (ms: number) => Promise<void> = (m) => new Promise(r => setTimeout(r, m)),
+): Promise<void> {
+  await Promise.race([promise.then(() => undefined, () => undefined), sleepImpl(ms)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +977,30 @@ export interface AnalyticsTrackerOpts {
    * no collector. Defaults to writing a line to process.stdout.
    */
   consoleSink?: (line: string) => void;
+  /**
+   * Egress event-name allowlist: when set, ONLY events of these types ever leave the
+   * machine (disk JSONL / console / OTLP); others stay in-memory only. Mirrors
+   * Claude's DATADOG_ALLOWED_EVENTS hard allowlist.
+   */
+  egressEventAllowlist?: readonly string[];
+  /**
+   * Egress field allowlist: when set, ONLY these data fields survive on the exported
+   * copy of every event (others are stripped). Mirrors Claude's TAG_FIELDS gate.
+   */
+  egressFieldAllowlist?: readonly string[];
+  /**
+   * When true, large/repeated string content is de-duplicated per session before
+   * egress: the full body is logged once per unique SHA-256, then collapsed to a
+   * preview + hash + length. Mirrors Claude's seenHashes content dedup.
+   */
+  dedupeContent?: boolean;
+  /**
+   * A command whose JSON-object stdout supplies OTLP auth headers, merged over the
+   * static headers on every export and debounced-cached (29 min). `exec`/`now` are
+   * injectable for tests; the default runs the command with a 30s timeout. Mirrors
+   * Claude's otelHeadersHelper setting.
+   */
+  otlpHeadersHelper?: { command: string; exec?: (command: string) => string; now?: () => number };
 }
 
 export class AnalyticsTracker {
@@ -672,6 +1039,14 @@ export class AnalyticsTracker {
   private _now: () => number;
   private _onDiagnostic: ((message: string) => void) | undefined;
   private _consoleSink: (line: string) => void;
+  /** Resolved egress allowlist (event names + fields); null when no restriction. */
+  private _egressAllowlist: EgressAllowlist | null;
+  /** Per-session content-dedup cache, lazily created when dedupeContent is enabled. */
+  private _dedup: TelemetryContentDedup | null;
+  /** Dynamic OTLP auth-header helper, created when otlpHeadersHelper is configured. */
+  private _headersHelper: OtelHeadersHelper | null;
+  /** One-time latch for the otelHeadersHelper failure diagnostic. */
+  private _warnedHeadersHelper = false;
   /** Resolved egress-exporter flags from OTEL_LOGS_EXPORTER + protocol gating. */
   private _otlpExport: boolean;
   private _consoleExport: boolean;
@@ -731,6 +1106,20 @@ export class AnalyticsTracker {
     this._now = opts?.now ?? Date.now;
     this._onDiagnostic = opts?.onDiagnostic;
     this._consoleSink = opts?.consoleSink ?? ((line) => process.stdout.write(line + '\n'));
+
+    // Egress allowlist: only build the double gate when at least one axis is set,
+    // so the common (no-restriction) path stays a cheap null check.
+    this._egressAllowlist = (opts?.egressEventAllowlist || opts?.egressFieldAllowlist)
+      ? { events: opts?.egressEventAllowlist, fields: opts?.egressFieldAllowlist }
+      : null;
+    this._dedup = opts?.dedupeContent ? new TelemetryContentDedup() : null;
+    this._headersHelper = opts?.otlpHeadersHelper
+      ? new OtelHeadersHelper(opts.otlpHeadersHelper.command, {
+          exec: opts.otlpHeadersHelper.exec,
+          now: opts.otlpHeadersHelper.now,
+          env: this._env,
+        })
+      : null;
 
     // Exporter-type selection (OTEL_LOGS_EXPORTER): an unset value keeps AMI's
     // endpoint-driven OTLP default; 'none' disables all egress; 'console' enables a
@@ -860,9 +1249,25 @@ export class AnalyticsTracker {
 
     // Branded so only redaction-verified (or explicitly-marked) metadata can reach
     // the disk/OTLP egress sinks; the redact=false path opts out via the escape hatch.
-    const egressData: AnalyticsSafeMetadata = this._redact
+    let egressData: AnalyticsSafeMetadata = this._redact
       ? sanitizeAnalyticsData(recordData, { env: this._env })
       : markAnalyticsSafe(recordData);
+
+    // Egress allowlist (Claude datadog double gate): drop the whole event from every
+    // egress sink when its TYPE is not allowed (it stays in-memory), else strip the
+    // payload to the allowed fields. Applied before dedup/append so disk + console +
+    // OTLP all see the identical minimized copy.
+    if (this._egressAllowlist) {
+      const filtered = filterEventForEgress(type, egressData, this._egressAllowlist);
+      if (filtered === null) return;
+      egressData = markAnalyticsSafe(filtered);
+    }
+
+    // Content dedup: collapse large repeated bodies to a preview+hash+length after the
+    // first time their SHA-256 is seen this session (re-branded; filtering only shrinks).
+    if (this._dedup) {
+      egressData = markAnalyticsSafe(this._dedup.dedupe(egressData));
+    }
 
     this._appendEgress(event, egressData);
 
@@ -952,6 +1357,38 @@ export class AnalyticsTracker {
 
   reset(): void {
     this.events = [];
+    // A reset begins a fresh logical session, so forget deduped content hashes —
+    // content seen before reset should log in full again afterwards.
+    this._dedup?.reset();
+  }
+
+  /** The resolved beta detailed-content-tracing config (flag + dedicated endpoint). */
+  getBetaTracingConfig(): BetaTracingConfig {
+    return resolveBetaTracingConfig(this._env);
+  }
+
+  /**
+   * Total telemetry events not yet successfully exported (queued + retained ready
+   * batches), readable even after {@link shutdown} — exit/shutdown diagnostics.
+   * Mirrors Claude's SerialBatchEventUploader.pendingCount.
+   */
+  getPendingTelemetryCount(): number {
+    return this._telemetry?.pendingCount ?? 0;
+  }
+
+  /**
+   * Bounded graceful close: give the final {@link flushOtlp} a best-effort `graceMs`
+   * window (racing it against a timeout) before latching shutdown, so a slow/hung
+   * collector can never block exit beyond the grace period. Mirrors Claude's
+   * HybridTransport close() `Promise.race([flush(), timeout(CLOSE_GRACE_MS)])`. Any
+   * events still queued are left for a later process to recover. Idempotent;
+   * best-effort (never throws).
+   */
+  async closeWithGrace(graceMs: number = CLOSE_GRACE_MS): Promise<void> {
+    if (this._shutdown) return;
+    await raceWithTimeout(this.flushOtlp(), graceMs, this._sleep);
+    this._shutdown = true;
+    this._telemetry?.shutdown();
   }
 
   /** Drain any queued telemetry and POST it to the configured OTLP endpoint with
@@ -1041,9 +1478,30 @@ export class AnalyticsTracker {
     await this._sendChain;
   }
 
+  /**
+   * Resolve the OTLP headers for a POST: the static headers, with any dynamically
+   * minted otelHeadersHelper headers merged over them (helper wins). A failing helper
+   * never aborts the export — it warns once and the static headers are used.
+   */
+  private _resolveHeaders(): Record<string, string> | undefined {
+    let merged = this._otlpHeaders;
+    if (this._headersHelper) {
+      try {
+        const dynamic = this._headersHelper.get();
+        merged = { ...this._otlpHeaders, ...dynamic };
+      } catch (e) {
+        if (!this._warnedHeadersHelper) {
+          this._warnedHeadersHelper = true;
+          this._diag(`[telemetry] otelHeadersHelper failed; using static headers only: ${(e as Error).message}`);
+        }
+      }
+    }
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }
+
   /** POST one batch, retrying retryable failures with capped quadratic backoff + jitter. */
   private async _sendWithRetry(batch: TelemetryBatch): Promise<boolean> {
-    const headers = Object.keys(this._otlpHeaders).length > 0 ? this._otlpHeaders : undefined;
+    const headers = this._resolveHeaders();
     const resourceAttrs = this._otlpResourceAttrs;
     for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
       const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs, timeoutMs: this._otlpTimeoutMs });
@@ -1224,6 +1682,15 @@ export class TelemetryBatchSender {
   get batchId(): number { return this._batchId; }
   /** Number of auto-flushed batches currently awaiting drain() (no onBatch wired). */
   get readyCount(): number { return this._ready.length; }
+  /**
+   * Total events not yet drained: the live queue plus every event retained in
+   * ready-but-undrained batches. Readable after {@link shutdown} (which leaves the
+   * queue intact) so exit diagnostics can report un-exported depth. Mirrors Claude's
+   * SerialBatchEventUploader.pendingCount.
+   */
+  get pendingCount(): number {
+    return this._queue.length + this._ready.reduce((n, b) => n + b.events.length, 0);
+  }
 
   drain(): TelemetryBatch[] {
     const batches: TelemetryBatch[] = this._ready;
