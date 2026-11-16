@@ -222,8 +222,8 @@ export type { EnvAccessTier, EnvOperation, EnvAccessEvent } from './env-access-g
 export { SENSITIVE_ENV_VARS } from './env-access-guard';
 export { containsCredential, redactCredentials, findCredentials, getCredentialLabel, CredentialGuard, REDACT_PLACEHOLDER } from './credential-guard';
 export type { CredentialMatch } from './credential-guard';
-export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, SafeModeGuard, BLOCKED_RESOURCES } from './safe-mode';
-export type { SafeModeConfig, BlockedResource } from './safe-mode';
+export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, SafeModeGuard, BLOCKED_RESOURCES, resourceTier, describeBlocked, RESOURCE_DESCRIPTIONS, SAFE_MODE_GUIDANCE } from './safe-mode';
+export type { SafeModeConfig, BlockedResource, ResourceTier, BlockedResourceInfo } from './safe-mode';
 export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS } from './request-signature';
 export type { RequestSignature, SignatureAlgorithm } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';

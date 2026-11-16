@@ -298,7 +298,7 @@ export function isHomeDirectory(cwd: string): boolean {
   }
 }
 
-export const BLOCKED_RESOURCES = ['prompt_override', 'project_memory', 'project_skills', 'project_config', 'mcp_servers', 'hooks', 'plugins'] as const;
+export const BLOCKED_RESOURCES = ['prompt_override', 'project_memory', 'project_skills', 'project_config', 'mcp_servers', 'hooks', 'plugins', 'dangerous_env_vars'] as const;
 export type BlockedResource = (typeof BLOCKED_RESOURCES)[number];
 
 const BLOCKED_IN_SAFE_MODE = new Set<BlockedResource>([
@@ -308,6 +308,11 @@ const BLOCKED_IN_SAFE_MODE = new Set<BlockedResource>([
   'mcp_servers',
   'hooks',
   'plugins',
+  // Project-supplied env vars outside the SAFE_ENV_VARS allowlist (PATH/LD_PRELOAD/
+  // NODE_OPTIONS/… hijack vectors) are an arbitrary-code-execution surface; safe mode
+  // treats them as a first-class blocked resource (parity with Claude's TrustDialog
+  // dangerous-env-var trust signal), surfaced alongside the other blocked categories.
+  'dangerous_env_vars',
 ]);
 
 const PARTIALLY_BLOCKED = new Set<BlockedResource>([
@@ -320,6 +325,67 @@ export function isBlockedInSafeMode(resource: BlockedResource): boolean {
 
 export function isPartiallyBlocked(resource: BlockedResource): boolean {
   return PARTIALLY_BLOCKED.has(resource);
+}
+
+/** Trust tier of a resource under safe mode: `blocked` (never honored),
+ *  `restricted` (partially honored), or `allowed` (unaffected). Single static
+ *  classifier shared by {@link SafeModeGuard} and disclosure consumers so the
+ *  partial tier is actually enforced/surfaced, not merely declared. */
+export type ResourceTier = 'blocked' | 'restricted' | 'allowed';
+
+export function resourceTier(resource: BlockedResource): ResourceTier {
+  if (isBlockedInSafeMode(resource)) return 'blocked';
+  if (isPartiallyBlocked(resource)) return 'restricted';
+  return 'allowed';
+}
+
+/**
+ * Human-readable description of each project-local resource the trust boundary
+ * governs — what it is and why it is risky. Lets a frontend explain to the user
+ * exactly what safe mode is withholding, mirroring Claude's TrustDialog risk
+ * disclosure (which enumerates each execution vector in prose).
+ */
+export const RESOURCE_DESCRIPTIONS: Record<BlockedResource, string> = {
+  prompt_override: 'Project-supplied system-prompt override',
+  project_memory: 'Project-local memory/instructions (AGENTS.md / CLAUDE.md)',
+  project_skills: 'Project-local skills (can run arbitrary tool calls)',
+  project_config: 'Project-local configuration (model, permissions, settings)',
+  mcp_servers: 'Project-declared MCP servers (can execute arbitrary code)',
+  hooks: 'Project lifecycle hooks (shell out on tool/session events)',
+  plugins: 'Project-installed plugin bundles (skills, commands, hooks)',
+  dangerous_env_vars: 'Project-supplied environment variables outside the safe allowlist',
+};
+
+/**
+ * Actionable next-step shown with the blocked-resource notice: how to review the
+ * project and opt back in once trusted. Parity with Claude's TrustDialog
+ * "Security guide" affordance / "take a moment to review what's in this folder".
+ */
+export const SAFE_MODE_GUIDANCE =
+  'Safe mode is withholding untrusted project-local resources. Review the project\'s '
+  + '.ami/.claude settings, hooks, and MCP config before trusting this folder, then set '
+  + '"safeMode": false in your config to load them.';
+
+/** One disclosure row per governed resource: its tier and a human-readable label. */
+export interface BlockedResourceInfo {
+  resource: BlockedResource;
+  tier: ResourceTier;
+  label: string;
+}
+
+/**
+ * Structured disclosure of every project-local resource the trust boundary affects
+ * under safe mode, each with its {@link ResourceTier} and human-readable label.
+ * A frontend renders this to tell the user precisely what is blocked vs restricted
+ * and why — the data behind the `/safe-mode` view. Mirrors Claude's TrustDialog
+ * per-vector risk enumeration.
+ */
+export function describeBlocked(): BlockedResourceInfo[] {
+  return BLOCKED_RESOURCES.map((resource) => ({
+    resource,
+    tier: resourceTier(resource),
+    label: RESOURCE_DESCRIPTIONS[resource],
+  }));
 }
 
 export function shouldEnableSafeMode(cwd: string, indicators: TrustIndicators): boolean {
@@ -340,6 +406,7 @@ export class SafeModeGuard {
   private _enabled: boolean;
   private _reason: string;
   private _blocked: Array<{ resource: BlockedResource; path?: string; timestamp: number }> = [];
+  private _restricted: Array<{ resource: BlockedResource; path?: string; timestamp: number }> = [];
 
   constructor(config: SafeModeConfig) {
     this._enabled = config.enabled;
@@ -354,13 +421,41 @@ export class SafeModeGuard {
     return this._reason;
   }
 
+  /**
+   * Resolve the effective tier for a resource given the guard's enabled state:
+   * `allowed` when safe mode is off (everything loads), otherwise the resource's
+   * static {@link resourceTier}. Single source of truth for both {@link check} and
+   * {@link checkTier}.
+   */
+  tierFor(resource: BlockedResource): ResourceTier {
+    if (!this._enabled) return 'allowed';
+    return resourceTier(resource);
+  }
+
   check(resource: BlockedResource, path?: string): boolean {
-    if (!this._enabled) return true;
-    if (isBlockedInSafeMode(resource)) {
+    if (this.tierFor(resource) === 'blocked') {
       this._blocked.push({ resource, path, timestamp: Date.now() });
       return false;
     }
     return true;
+  }
+
+  /**
+   * Tier-aware access check that actually ENFORCES the partial tier: a fully-blocked
+   * resource returns `blocked` (recorded as blocked), a partially-blocked resource
+   * returns `restricted` (recorded separately) so the caller can honor it in a
+   * degraded/read-only way instead of silently treating it as fully allowed, and
+   * anything else returns `allowed`. Mirrors Claude's distinction between denied and
+   * restricted project capabilities.
+   */
+  checkTier(resource: BlockedResource, path?: string): ResourceTier {
+    const tier = this.tierFor(resource);
+    if (tier === 'blocked') {
+      this._blocked.push({ resource, path, timestamp: Date.now() });
+    } else if (tier === 'restricted') {
+      this._restricted.push({ resource, path, timestamp: Date.now() });
+    }
+    return tier;
   }
 
   getBlocked(): ReadonlyArray<{ resource: BlockedResource; path?: string; timestamp: number }> {
@@ -369,6 +464,14 @@ export class SafeModeGuard {
 
   getBlockedCount(): number {
     return this._blocked.length;
+  }
+
+  getRestricted(): ReadonlyArray<{ resource: BlockedResource; path?: string; timestamp: number }> {
+    return this._restricted;
+  }
+
+  getRestrictedCount(): number {
+    return this._restricted.length;
   }
 
   enable(reason: string): void {
@@ -387,5 +490,6 @@ export class SafeModeGuard {
 
   clear(): void {
     this._blocked = [];
+    this._restricted = [];
   }
 }
