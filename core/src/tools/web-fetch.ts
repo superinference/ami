@@ -4,7 +4,8 @@ import * as path from 'path';
 import { URL } from 'url';
 import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validateUrlSafety, stripHtml, httpGet, MAX_HTTP_BODY_BYTES, EgressBlockedError } from './web-utils';
+import { validateUrlSafety, stripHtml, httpGet, httpGetWithRetry, MAX_HTTP_BODY_BYTES, EgressBlockedError } from './web-utils';
+import type { IncomingHttpHeaders } from 'http';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
 import { isPreapprovedHost } from './web-preapproved';
 
@@ -229,6 +230,32 @@ export function makeSecondaryModelPrompt(
   return `Given this web page content, answer the following question/instruction:\n\nQuestion: ${prompt}\n\nContent:\n${content}\n\n${guidelines}`;
 }
 
+/**
+ * Detect an enterprise network egress/allowlist proxy block and, if present,
+ * build a machine-readable structured error for it. Many corporate egress
+ * proxies answer a disallowed destination with HTTP 403 plus a proxy-origin
+ * header (e.g. `X-Proxy-Error: blocked-by-allowlist`, Squid's `X-Squid-Error`),
+ * which is indistinguishable from an ordinary site 403 unless the header is
+ * inspected. When detected we return a JSON payload (`error_type: EGRESS_BLOCKED`)
+ * so the model/caller can tell "your network blocked this" apart from "the site
+ * forbade you" and react accordingly (parity with Claude Code's EgressBlockedError).
+ * Returns null when the response is not an egress-proxy block.
+ */
+export function detectEgressBlock(
+  statusCode: number,
+  headers: IncomingHttpHeaders | undefined,
+  domain: string,
+): string | null {
+  if (statusCode !== 403 || !headers) return null;
+  const proxyError = headers['x-proxy-error'] ?? headers['x-squid-error'];
+  if (proxyError === undefined) return null;
+  return JSON.stringify({
+    error_type: 'EGRESS_BLOCKED',
+    domain,
+    message: `Access to ${domain} is blocked by the network egress proxy.`,
+  });
+}
+
 export const webFetchTool: ToolDefinition = {
   name: 'web_fetch',
   description:
@@ -284,9 +311,11 @@ export const webFetchTool: ToolDefinition = {
     let url = input.url as string;
     const prompt = (input.prompt as string) ?? '';
     const textOffset = (input.offset as number) ?? 0;
-    // Test-only dependency seam (defaults to the real httpGet). Lets a test drive
-    // the cross-host-redirect branch and other response shapes deterministically.
-    const doHttpGet = (context._webFetchHttpGet as typeof httpGet | undefined) ?? httpGet;
+    // Test-only dependency seam (defaults to the retrying httpGetWithRetry, which
+    // transparently retries transient network/5xx failures with exponential
+    // backoff). Lets a test drive the cross-host-redirect branch and other
+    // response shapes deterministically.
+    const doHttpGet = (context._webFetchHttpGet as typeof httpGet | undefined) ?? httpGetWithRetry;
 
     // Operator kill-switch (Claude Code parity): disable outbound web_fetch.
     if (process.env.CLAUDE_CODE_DISABLE_WEB_FETCH === '1' || process.env.SUPERINFERENCE_DISABLE_WEB_FETCH === '1') {
@@ -401,11 +430,19 @@ export const webFetchTool: ToolDefinition = {
       : deadlineSignal;
 
     try {
-      const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated } = await doHttpGet(
+      const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated, headers } = await doHttpGet(
         url,
         fetchSignal,
         { resolvedIP: pinnedIP, raw: true },
       );
+
+      // Distinguish a network egress-proxy/allowlist block (403 + proxy header)
+      // from an ordinary site 403, returning a machine-readable structured error
+      // so the caller can tell the two apart.
+      const egress = detectEgressBlock(statusCode, headers, host);
+      if (egress) {
+        return { output: egress, isError: true };
+      }
 
       if (statusCode >= 500) {
         return {

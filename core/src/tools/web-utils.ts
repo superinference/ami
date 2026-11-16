@@ -581,7 +581,7 @@ export function httpGet(
      *  decoding — required for PDFs/images/other binary content. */
     raw?: boolean;
   },
-): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
+): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean; headers: http.IncomingHttpHeaders }> {
   const maxRedirects = options?.maxRedirects ?? 5;
   const timeoutMs = options?.timeoutMs ?? 30000;
 
@@ -595,7 +595,7 @@ function httpGetInternal(
   timeoutMs: number,
   resolvedIP?: string,
   raw?: boolean,
-): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean }> {
+): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean; headers: http.IncomingHttpHeaders }> {
   const MAX_RESPONSE_LENGTH = 50000;
 
   return new Promise((resolve, reject) => {
@@ -714,6 +714,7 @@ function httpGetInternal(
             statusCode,
             contentType: res.headers['content-type'] ?? '',
             finalUrl: url,
+            headers: res.headers,
             ...(truncated ? { truncated: true } : {}),
           });
         };
@@ -763,4 +764,91 @@ function httpGetInternal(
       signal.removeEventListener('abort', onAbort);
     });
   });
+}
+
+/**
+ * Exponential-backoff delays (ms) for transient HTTP GET failures: 5 total
+ * attempts (1 initial + 4 retries). Mirrors Claude Code's teleport retry schedule
+ * (TELEPORT_RETRY_DELAYS = 2s, 4s, 8s, 16s).
+ */
+export const DEFAULT_HTTP_RETRY_DELAYS_MS: readonly number[] = [2000, 4000, 8000, 16000];
+
+/**
+ * Classify a thrown fetch error as a TRANSIENT network error worth retrying.
+ * Parity with Claude Code's `isTransientNetworkError`: retry on no-response
+ * network failures (connection refused/reset, DNS, socket timeout) but NOT on
+ * deterministic, non-transient conditions — an aborted/deadline signal, an SSRF
+ * "Blocked:" refusal, an unparseable URL, or a redirect loop. (5xx server
+ * responses are classified at the status-code level by httpGetWithRetry, since
+ * httpGet resolves — rather than throws — on a 5xx.)
+ */
+export function isTransientHttpError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const m = err.message;
+  if (m === 'Aborted') return false;
+  if (m.startsWith('Blocked:')) return false;
+  if (m === 'Too many redirects') return false;
+  if (m.startsWith('Invalid URL')) return false;
+  return true;
+}
+
+/** Abort-aware delay used between retry attempts; rejects with `Aborted` if the
+ *  signal fires while waiting so a cancelled fetch stops backing off immediately. */
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('Aborted'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Error('Aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * `httpGet` with automatic exponential-backoff retry for TRANSIENT failures
+ * (no-response network errors and 5xx server responses), parity with Claude
+ * Code's `axiosGetWithRetry`. Non-transient outcomes (4xx, SSRF blocks, abort,
+ * bad URL) return/throw immediately — they are never retried. A cancelled/aborted
+ * signal stops the backoff at once. ADDITIVE: a single successful first attempt
+ * behaves exactly like `httpGet`.
+ */
+export async function httpGetWithRetry(
+  url: string,
+  signal: AbortSignal,
+  options?: Parameters<typeof httpGet>[2] & {
+    retryDelaysMs?: readonly number[];
+    /** Test seam: overrides the abort-aware backoff delay. */
+    _delay?: (ms: number, signal: AbortSignal) => Promise<void>;
+  },
+): ReturnType<typeof httpGet> {
+  const delays = options?.retryDelaysMs ?? DEFAULT_HTTP_RETRY_DELAYS_MS;
+  const sleep = options?._delay ?? delay;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    if (signal.aborted) throw new Error('Aborted');
+    try {
+      const res = await httpGet(url, signal, options);
+      // A 5xx is a transient server error: retry it (httpGet resolves on 5xx).
+      if (res.statusCode >= 500 && attempt < delays.length) {
+        await sleep(delays[attempt], signal);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (!isTransientHttpError(err) || attempt >= delays.length) throw err;
+      await sleep(delays[attempt], signal);
+    }
+  }
+  // Unreachable in practice (the loop either returns or throws), but satisfies
+  // the type checker and surfaces the final transient error if it ever is.
+  throw lastError;
 }
