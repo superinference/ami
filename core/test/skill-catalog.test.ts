@@ -490,6 +490,72 @@ describe('validateCatalogIndex', () => {
     assert.deepEqual(result.index!.skills[0].files, ['good.md', 'also-good.md']);
     assert.ok(result.errors.some(e => /unsafe file path/.test(e)));
   });
+
+  it('retains an executable list of declared safe files', () => {
+    const result = validateCatalogIndex({
+      skills: [
+        {
+          name: 'has-script',
+          files: ['SKILL.md', 'bin/run.sh', 'bin/setup.sh'],
+          executable: ['bin/run.sh', 'bin/setup.sh'],
+        },
+      ],
+    });
+    assert.equal(result.valid, true);
+    assert.ok(result.index);
+    assert.deepEqual(result.index!.skills[0].executable, ['bin/run.sh', 'bin/setup.sh']);
+  });
+
+  it('leaves executable undefined when absent', () => {
+    const result = validateCatalogIndex({
+      skills: [{ name: 'plain', files: ['SKILL.md'] }],
+    });
+    assert.equal(result.valid, true);
+    assert.equal(result.index!.skills[0].executable, undefined);
+  });
+
+  it('dedupes repeated executable entries', () => {
+    const result = validateCatalogIndex({
+      skills: [
+        { name: 'dup', files: ['SKILL.md', 'run.sh'], executable: ['run.sh', 'run.sh'] },
+      ],
+    });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.index!.skills[0].executable, ['run.sh']);
+  });
+
+  it('drops an executable entry for an unknown/undeclared file and records an error', () => {
+    const result = validateCatalogIndex({
+      skills: [
+        { name: 'bad-exec', files: ['SKILL.md'], executable: ['ghost.sh'] },
+      ],
+    });
+    assert.equal(result.valid, true);
+    assert.equal(result.index!.skills[0].executable, undefined);
+    assert.ok(result.errors.some(e => /executable entry for unknown\/unsafe file/.test(e)));
+  });
+
+  it('drops a non-string executable entry and records an error', () => {
+    const result = validateCatalogIndex({
+      skills: [
+        { name: 'bad-exec-type', files: ['run.sh'], executable: [42] },
+      ],
+    });
+    assert.equal(result.valid, true);
+    assert.equal(result.index!.skills[0].executable, undefined);
+    assert.ok(result.errors.some(e => /executable entry must be a string/.test(e)));
+  });
+
+  it('rejects a non-array executable field with an error', () => {
+    const result = validateCatalogIndex({
+      skills: [
+        { name: 'bad-exec-shape', files: ['run.sh'], executable: 'run.sh' },
+      ],
+    });
+    assert.equal(result.valid, true);
+    assert.equal(result.index!.skills[0].executable, undefined);
+    assert.ok(result.errors.some(e => /"executable" must be an array/.test(e)));
+  });
 });
 
 // ---------------------------------------------------------------------------
