@@ -305,10 +305,24 @@ describe('pov-model-caps-matrix: buildThinkingOptions emits the correct shape', 
     }
   });
 
-  it('thinking disabled → always {} even for adaptive/legacy models', () => {
-    for (const id of ['claude-opus-5', 'claude-sonnet-4-5', 'gpt-4o', 'o3', 'gemini-2.5-pro']) {
+  it('thinking disabled → {} for adaptive/legacy models that are NOT always-on', () => {
+    // claude-sonnet-4-6 is adaptive but NOT always-on; -4-5 is legacy; the rest
+    // are non-Claude. All honor "off" by emitting no thinking options.
+    for (const id of ['claude-sonnet-4-6', 'claude-sonnet-4-5', 'gpt-4o', 'o3', 'gemini-2.5-pro']) {
       assert.deepEqual(buildThinkingOptions(id, { enabled: false, level: 'high' }), {});
       assert.deepEqual(buildThinkingOptions(id, undefined), {});
+    }
+  });
+
+  it('thinking disabled → adaptive-low floor for an always-on model (5.x line)', () => {
+    // The 5.x Claude line (alwaysOnThinking) rejects a disabled-thinking request and
+    // reasons regardless, so AMI still sends a minimal adaptive config on "off".
+    for (const id of ['claude-opus-5', 'claude-sonnet-5']) {
+      assert.deepEqual(
+        buildThinkingOptions(id, { enabled: false, level: 'high' }),
+        { providerOptions: { anthropic: { thinking: { type: 'adaptive' }, effort: 'low' } } },
+        `${id} must emit the adaptive-low floor`,
+      );
     }
   });
 

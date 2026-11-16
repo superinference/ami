@@ -17,7 +17,7 @@ import { createCerebras } from '@ai-sdk/cerebras';
 import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
-import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, normalizeModelStringForAPI } from './model-capabilities';
+import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, modelAlwaysOnThinking, normalizeModelStringForAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
@@ -1979,7 +1979,17 @@ export function buildThinkingOptions(
   modelId: string,
   thinking: ThinkingConfig | undefined,
 ): Record<string, unknown> {
-  if (!thinking?.enabled) return {};
+  if (!thinking?.enabled) {
+    // An always-on-thinking model (the 5.x Claude line) REJECTS a disabled-thinking
+    // request and reasons regardless — so even when the user turned thinking off we
+    // must still send a thinking config, at the minimal 'low' effort floor, rather
+    // than omit it. Mirrors Claude's AntModel.alwaysOnThinking handling. Every other
+    // model honors "off" by sending no thinking options.
+    if (modelAlwaysOnThinking(modelId)) {
+      return { providerOptions: { anthropic: { thinking: { type: 'adaptive' as const }, effort: 'low' } } };
+    }
+    return {};
+  }
   const caps = getModelCapabilities(modelId);
 
   // Anthropic Claude (adaptive family: Opus 4.x / Sonnet 4.x) — adaptive thinking

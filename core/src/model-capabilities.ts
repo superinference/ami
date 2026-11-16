@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { formatTokenCount } from './token-format';
 
 export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
@@ -45,6 +47,15 @@ export interface ModelCapabilities {
   maxOutputTokens?: number;
   supportsVision?: boolean;
   supportsToolUse?: boolean;
+  /**
+   * The model defaults to adaptive thinking and REJECTS a request to disable it
+   * (`thinking: { type:'disabled' }`) — reasoning cannot be turned off. Mirrors
+   * Claude Code's AntModel `alwaysOnThinking` knob (utils/model/antModels.ts:L14-15).
+   * When true, callers that build the per-provider thinking request must still send
+   * a thinking config even on the `off` level (the model reasons regardless), and
+   * UIs should not advertise `off` as an effective choice for such a model.
+   */
+  alwaysOnThinking?: boolean;
 }
 
 /** Used when the server omits a length and the model id is not in the table. */
@@ -531,10 +542,15 @@ export function claudeReasoningCapabilities(modelId: string): ModelCapabilities 
   // Current reasoning scope: Opus / Sonnet. Other families (haiku, …) stay non-reasoning.
   if (v.family !== 'opus' && v.family !== 'sonnet') return null;
   const supportsAdaptiveThinking = v.major >= 5 || (v.major === 4 && v.minor >= 6);
+  // The 5.x Claude line defaults to adaptive thinking and rejects a disabled-thinking
+  // request — reasoning cannot be turned off (Claude's AntModel.alwaysOnThinking). The
+  // 4.x family (including the adaptive 4.6+) still accepts an off/disabled request.
+  const alwaysOnThinking = v.major >= 5;
   return {
     reasoning: true,
     defaultThinkingLevel: 'medium',
     supportsAdaptiveThinking,
+    alwaysOnThinking,
     requiresTemperatureOne: true,
     temperatureMustBeUnset: false,
     // The thinking budget must stay strictly below the model's real output cap —
@@ -625,6 +641,7 @@ export function registerModelCapabilities(modelId: string, caps: ModelCapabiliti
 export function clearDynamicCapabilities(): void {
   dynamicCapabilities.clear();
   dynamicOutputCaps.clear();
+  cacheReadMemo.clear();
 }
 
 const OPENAI_REASONING_PATTERN = /^o[1-9]($|-)/;
@@ -700,6 +717,197 @@ export function discoverFromModelList(records: Record<string, unknown>[]): {
     }
   }
   return { registered, contextWindows, outputCaps };
+}
+
+// ---------------------------------------------------------------------------
+// Persistent on-disk cache of provider-advertised model capabilities
+// ---------------------------------------------------------------------------
+//
+// A provider's live /models listing advertises each model's context window and
+// completion cap. Re-fetching that on every cold start is wasteful and leaves the
+// FIRST turn under-sized (compaction can fire too early) until discovery lands.
+// Mirroring Claude Code's refreshModelCapabilities (utils/model/modelCapabilities.ts
+// :L60-118), AMI persists the discovered windows/caps to a JSON file so the next
+// run can WARM them before — or in lieu of — a network fetch. The file carries a
+// timestamp, is written with a sorted, stable model list, is skipped when nothing
+// changed (no spurious mtime churn), and is created 0600 (owner-only) because it
+// records which models an operator uses.
+//
+// Opt-in by directory: the cache is active only when a directory is resolved via
+// SUPERINFERENCE_MODEL_CACHE_DIR (read at call time). With it unset every function
+// here is a no-op, so default behavior and existing discovery are unchanged.
+
+/** One cached model's advertised windows (either field may be absent). */
+export interface ModelCapabilityCacheEntry {
+  id: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+/** On-disk cache payload: the sorted model list plus the write timestamp (ms). */
+export interface ModelCapabilityCacheFile {
+  models: ModelCapabilityCacheEntry[];
+  timestamp: number;
+}
+
+/** Basename of the cache file inside the resolved cache directory. */
+export const MODEL_CAPABILITIES_CACHE_FILE = 'model-capabilities.json';
+
+/** Memoized reads, keyed by absolute cache-file path, so repeated warm calls in
+ *  one process touch the disk once. Cleared by {@link clearDynamicCapabilities}. */
+const cacheReadMemo = new Map<string, ModelCapabilityCacheFile | null>();
+
+/**
+ * The directory the capabilities cache lives in, or `undefined` when caching is
+ * not enabled. Resolved from `SUPERINFERENCE_MODEL_CACHE_DIR` at call time so a
+ * test/process can toggle it. A blank value disables the cache (→ undefined).
+ */
+export function modelCapabilitiesCacheDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.SUPERINFERENCE_MODEL_CACHE_DIR;
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  return raw.trim();
+}
+
+/** Absolute path to the cache file inside `dir`. */
+export function modelCapabilitiesCachePath(dir: string): string {
+  return path.join(dir, MODEL_CAPABILITIES_CACHE_FILE);
+}
+
+/** Parse/validate a raw JSON value into a cache payload, or null when malformed. */
+function parseCacheFile(raw: unknown): ModelCapabilityCacheFile | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.timestamp !== 'number' || !Array.isArray(obj.models)) return null;
+  const models: ModelCapabilityCacheEntry[] = [];
+  for (const item of obj.models) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.id !== 'string' || !rec.id) continue;
+    const entry: ModelCapabilityCacheEntry = { id: rec.id };
+    const cw = positiveTokenCount(rec.contextWindow);
+    if (cw !== undefined) entry.contextWindow = cw;
+    const mo = positiveTokenCount(rec.maxOutputTokens);
+    if (mo !== undefined) entry.maxOutputTokens = mo;
+    models.push(entry);
+  }
+  return { models, timestamp: obj.timestamp };
+}
+
+/**
+ * Read the persisted capability cache from `dir`, or null when caching is off,
+ * the file is absent, or its contents are unreadable/malformed. Memoized per
+ * path for the process lifetime (a fresh read happens after a write or a
+ * {@link clearDynamicCapabilities}).
+ */
+export function readModelCapabilitiesCache(dir: string | undefined): ModelCapabilityCacheFile | null {
+  if (!dir) return null;
+  const file = modelCapabilitiesCachePath(dir);
+  if (cacheReadMemo.has(file)) return cacheReadMemo.get(file) ?? null;
+  let parsed: ModelCapabilityCacheFile | null = null;
+  try {
+    parsed = parseCacheFile(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch {
+    parsed = null;
+  }
+  cacheReadMemo.set(file, parsed);
+  return parsed;
+}
+
+/** Stable-sort entries by id so the written file is deterministic (and the
+ *  skip-when-unchanged compare below is order-independent). */
+function sortCacheEntries(models: ModelCapabilityCacheEntry[]): ModelCapabilityCacheEntry[] {
+  return models.slice().sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** Compare two sorted model lists for equality, ignoring the timestamp. */
+function sameCacheModels(a: ModelCapabilityCacheEntry[], b: ModelCapabilityCacheEntry[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].contextWindow !== b[i].contextWindow || a[i].maxOutputTokens !== b[i].maxOutputTokens) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Persist the given model windows/caps to the cache file in `dir`. No-op (returns
+ * false) when caching is off. The list is sorted by id and the write is SKIPPED
+ * when the model set is byte-identical to what is already on disk (only the
+ * timestamp would change) — so an unchanged model list never churns the mtime.
+ * Otherwise it is written atomically (temp file + rename) with owner-only perms
+ * (dir 0700, file 0600). Returns true when a new file was written, false when the
+ * write was skipped or failed. Invalidates the read memo on a successful write.
+ */
+export function writeModelCapabilitiesCache(
+  dir: string | undefined,
+  models: ModelCapabilityCacheEntry[],
+  now: number = Date.now(),
+): boolean {
+  if (!dir) return false;
+  const sorted = sortCacheEntries(models);
+  const existing = readModelCapabilitiesCache(dir);
+  if (existing && sameCacheModels(existing.models, sorted)) return false;
+  const file = modelCapabilitiesCachePath(dir);
+  const tmp = `${file}.${process.pid}.tmp`;
+  const payload: ModelCapabilityCacheFile = { models: sorted, timestamp: now };
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    cacheReadMemo.set(file, payload);
+    return true;
+  } catch {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort cleanup */ }
+    return false;
+  }
+}
+
+/**
+ * Seed the in-memory context-window / output-cap tables from the persisted cache
+ * so a cold start (or an offline run whose /models fetch fails) is sized from the
+ * last-known advertised windows instead of the static defaults. Returns the number
+ * of models whose windows were warmed; 0 when caching is off or the cache is empty.
+ * Only fills runtime tables (never mutates the static family table beyond the same
+ * keys discoverFromModelList would add), so a subsequent live discovery still wins.
+ */
+export function warmModelCapabilitiesFromCache(dir: string | undefined): number {
+  const cache = readModelCapabilitiesCache(dir);
+  if (!cache) return 0;
+  let warmed = 0;
+  for (const entry of cache.models) {
+    let touched = false;
+    if (entry.contextWindow !== undefined) {
+      CONTEXT_WINDOWS[entry.id] = entry.contextWindow;
+      touched = true;
+    }
+    if (entry.maxOutputTokens !== undefined) {
+      dynamicOutputCaps.set(entry.id.toLowerCase(), entry.maxOutputTokens);
+      touched = true;
+    }
+    if (touched) warmed++;
+  }
+  return warmed;
+}
+
+/**
+ * Convert a {@link discoverFromModelList} result into cache entries (merging the
+ * context-window and output-cap maps by id) ready for {@link writeModelCapabilitiesCache}.
+ */
+export function discoveryToCacheEntries(discovery: {
+  contextWindows: Record<string, number>;
+  outputCaps: Record<string, number>;
+}): ModelCapabilityCacheEntry[] {
+  const byId = new Map<string, ModelCapabilityCacheEntry>();
+  for (const [id, contextWindow] of Object.entries(discovery.contextWindows)) {
+    byId.set(id, { id, contextWindow });
+  }
+  for (const [id, maxOutputTokens] of Object.entries(discovery.outputCaps)) {
+    const entry = byId.get(id);
+    if (entry) entry.maxOutputTokens = maxOutputTokens;
+    else byId.set(id, { id, maxOutputTokens });
+  }
+  return [...byId.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -1191,6 +1399,21 @@ export function modelSupportsMaxEffort(modelId: string): boolean {
   const v = parseClaudeVersion(modelId);
   if (!v || v.family !== 'opus') return false;
   return v.major >= 5 || (v.major === 4 && v.minor >= 6);
+}
+
+/**
+ * Whether the model defaults to adaptive thinking and REJECTS a request to turn
+ * reasoning off (`thinking: { type:'disabled' }`). Resolves from the model's
+ * detected {@link ModelCapabilities} `alwaysOnThinking` flag (the 5.x Claude line);
+ * an honored `thinking`/`effort` 3rd-party override that enables reasoning on a
+ * pinned gateway model does NOT by itself make it always-on. Used by the provider
+ * request builder to still send a thinking config on the `off` level for such a
+ * model, and by UIs to avoid offering an `off` choice that the endpoint ignores.
+ * An empty/unknown id is not always-on.
+ */
+export function modelAlwaysOnThinking(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  return getModelCapabilities(modelId)?.alwaysOnThinking === true;
 }
 
 /**

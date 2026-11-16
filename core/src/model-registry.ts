@@ -3,7 +3,13 @@ import * as http from 'http';
 import { URL } from 'url';
 import type { ProviderConfig } from './types';
 import { MODEL_PREFERENCE } from './provider';
-import { discoverFromModelList } from './model-capabilities';
+import {
+  discoverFromModelList,
+  modelCapabilitiesCacheDir,
+  warmModelCapabilitiesFromCache,
+  writeModelCapabilitiesCache,
+  discoveryToCacheEntries,
+} from './model-capabilities';
 import { redactSecrets } from './tools/tool-utils';
 import { isEssentialTrafficOnly } from './analytics';
 import { log } from './logger';
@@ -147,6 +153,13 @@ function staticModelList(provider: string): ModelInfo[] {
 
 export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
   const provider = detectProvider(config);
+
+  // Warm the in-memory context-window / output-cap tables from the persisted
+  // capability cache (opt-in via SUPERINFERENCE_MODEL_CACHE_DIR) so even a cold
+  // start — or a run whose live /models fetch is skipped/fails below — is sized
+  // from the last-known advertised windows. A successful live discovery still wins.
+  const cacheDir = modelCapabilitiesCacheDir();
+  if (cacheDir) warmModelCapabilitiesFromCache(cacheDir);
 
   // Providers with known static model lists (no API listing endpoint)
   if (STATIC_MODEL_PROVIDERS.has(provider)) {
@@ -305,6 +318,14 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
     owned_by: m.owned_by,
   }));
   const discovery = discoverFromModelList(models as unknown as Record<string, unknown>[]);
+  // Persist the freshly-advertised windows/caps to the on-disk cache (opt-in via
+  // SUPERINFERENCE_MODEL_CACHE_DIR) so the next cold start can warm them without a
+  // round-trip. Skipped automatically when the model set is unchanged (no mtime churn).
+  const cacheDir = modelCapabilitiesCacheDir();
+  if (cacheDir) {
+    const entries = discoveryToCacheEntries(discovery);
+    if (entries.length > 0) writeModelCapabilitiesCache(cacheDir, entries);
+  }
   // Debug/introspection: report the outcome of capability discovery (how many
   // models the endpoint returned and how many advertised a context window), so
   // operators can see which models/windows were learned. Mirrors Claude Code's
