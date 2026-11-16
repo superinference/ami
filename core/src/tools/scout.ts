@@ -2,7 +2,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { projectStateDir } from '../reference-journal';
 import { redactSecrets } from './tool-utils';
 import { GIT_NO_PROMPT_ENV, validateGitSource, isScpLikeGitSource } from '../plugins';
-import * as child_process from 'child_process';
+import { execSyncWatched, execFileSyncWatched } from '../utils/shell';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -119,14 +119,9 @@ export function normalizeRepoUrl(url: string): string {
  * validate-repo-at-path check before trusting a cached clone.
  */
 export function cachedCloneMatches(localPath: string, repoUrl: string): boolean {
-  try {
-    const origin = (scoutHooks.execFileSync('git', ['-C', localPath, 'remote', 'get-url', 'origin'], {
-      encoding: 'utf-8', timeout: 5000, stdio: 'pipe',
-    }) as string).trim();
-    return normalizeRepoUrl(origin) === normalizeRepoUrl(repoUrl);
-  } catch {
-    return false;
-  }
+  const origin = detectCloneRemoteUrl(localPath);
+  if (!origin) return false;
+  return normalizeRepoUrl(origin) === normalizeRepoUrl(repoUrl);
 }
 
 /** Resolve the clone timeout from input (`timeout_ms`) or env, falling back to the default. */
@@ -144,13 +139,61 @@ export function scoutCloneTimeoutMs(input: Record<string, unknown>, env: NodeJS.
  * child_process/fs functions, so behavior is unchanged.
  */
 export const scoutHooks = {
-  execFileSync: child_process.execFileSync,
-  execSync: child_process.execSync,
+  // Route scout's synchronous git/find/grep calls through the centralized
+  // slow-exec watchdog boundary so a clone/find that blocks the event loop past
+  // AMI_SLOW_EXEC_MS is surfaced via the shared onSlowCommand diagnostic (the
+  // same sink the async exec path uses). Tests swap these for fakes.
+  execFileSync: execFileSyncWatched,
+  execSync: execSyncWatched,
   existsSync: fs.existsSync,
   mkdirSync: fs.mkdirSync,
   readFileSync: fs.readFileSync,
   rmSync: fs.rmSync,
 };
+
+/**
+ * Per-clone cache of the `origin` remote URL detected at a cache path. A value of
+ * `null` is a NEGATIVE result — the path was probed and has no readable git origin
+ * — cached so a repeated scout of the same cache dir does not re-spawn
+ * `git remote get-url`. Mirrors Claude Code's detectRepository cwd-keyed cache
+ * (detectRepository.ts): both success and failure are memoised, with a try/catch
+ * fallback that stores `null` rather than throwing.
+ */
+const cloneRemoteCache = new Map<string, string | null>();
+
+/**
+ * Invalidate scout's remote-detection cache. Called before a cache path is purged
+ * and re-cloned so the fresh clone's remote is re-detected instead of served from
+ * a stale (possibly negative) entry. With no argument, clears the whole cache.
+ */
+export function clearScoutRepoCache(localPath?: string): void {
+  if (localPath === undefined) cloneRemoteCache.clear();
+  else cloneRemoteCache.delete(localPath);
+}
+
+/**
+ * Detect the `origin` remote URL of the git clone at `localPath`, memoised with a
+ * try/catch fallback and negative-result caching: a path with no readable origin
+ * caches (and returns) `null`, so repeated calls never re-spawn git. Mirrors
+ * Claude Code's detectCurrentRepositoryWithHost cache semantics. The cache is
+ * invalidated by {@link clearScoutRepoCache} whenever scout purges/re-clones a path.
+ */
+export function detectCloneRemoteUrl(localPath: string): string | null {
+  if (cloneRemoteCache.has(localPath)) {
+    return cloneRemoteCache.get(localPath) ?? null;
+  }
+  try {
+    const origin = (scoutHooks.execFileSync('git', ['-C', localPath, 'remote', 'get-url', 'origin'], {
+      encoding: 'utf-8', timeout: 5000, stdio: 'pipe',
+    }) as string).trim();
+    const result = origin || null;
+    cloneRemoteCache.set(localPath, result);
+    return result;
+  } catch {
+    cloneRemoteCache.set(localPath, null);
+    return null;
+  }
+}
 
 export const scoutTool: ToolDefinition = {
   name: 'scout',
@@ -207,6 +250,9 @@ export const scoutTool: ToolDefinition = {
       if (scoutHooks.existsSync(localPath)
           && (!scoutHooks.existsSync(path.join(localPath, '.git')) || !cachedCloneMatches(localPath, repoUrl))) {
         scoutHooks.rmSync(localPath, { recursive: true, force: true });
+        // Drop the (now-stale) cached origin so the fresh clone below is re-detected
+        // rather than matched against the purged repo's remote.
+        clearScoutRepoCache(localPath);
       }
       if (!scoutHooks.existsSync(localPath)) {
         scoutHooks.mkdirSync(cacheDir, { recursive: true });
@@ -228,6 +274,9 @@ export const scoutTool: ToolDefinition = {
           if (scoutHooks.existsSync(localPath)) {
             try { scoutHooks.rmSync(localPath, { recursive: true, force: true }); } catch { /* best effort */ }
           }
+          // A failed clone leaves no valid remote; drop any cached detection so a
+          // later retry re-probes instead of trusting a stale entry.
+          clearScoutRepoCache(localPath);
           const e = cloneErr as { signal?: string; code?: string | number; message?: string };
           if (e?.signal === 'SIGTERM' || e?.code === 'ETIMEDOUT') {
             return {

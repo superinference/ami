@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { scoutTool, scoutHooks, normalizeRepoUrl, cachedCloneMatches } from '../src/tools/scout';
+import { scoutTool, scoutHooks, normalizeRepoUrl, cachedCloneMatches, clearScoutRepoCache } from '../src/tools/scout';
 import type { ToolContext } from '../src/types';
 
 function ctx(): ToolContext {
@@ -8,7 +8,7 @@ function ctx(): ToolContext {
 }
 
 const orig = { ...scoutHooks };
-afterEach(() => { Object.assign(scoutHooks, orig); });
+afterEach(() => { Object.assign(scoutHooks, orig); clearScoutRepoCache(); });
 
 describe('scout – normalizeRepoUrl', () => {
   it('drops credentials, trailing .git and slashes', () => {
@@ -25,8 +25,9 @@ describe('scout – cachedCloneMatches', () => {
     scoutHooks.execFileSync = (() => 'https://github.com/o/r.git\n') as typeof scoutHooks.execFileSync;
     assert.equal(cachedCloneMatches('/x', 'https://github.com/o/r'), true);
     assert.equal(cachedCloneMatches('/x', 'https://github.com/o/OTHER'), false);
+    // Distinct path so the negative (throwing) probe is not served from /x's cache.
     scoutHooks.execFileSync = (() => { throw new Error('not a repo'); }) as typeof scoutHooks.execFileSync;
-    assert.equal(cachedCloneMatches('/x', 'https://github.com/o/r'), false);
+    assert.equal(cachedCloneMatches('/err', 'https://github.com/o/r'), false);
   });
 });
 

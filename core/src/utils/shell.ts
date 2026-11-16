@@ -62,6 +62,61 @@ function slowExecThresholdMs(): number | null {
 }
 
 /**
+ * Single slow-command diagnostic boundary, shared by the async {@link execCommand}
+ * path and the synchronous {@link execSyncWatched}/{@link execFileSyncWatched}
+ * wrappers so there is ONE place that decides a command ran slow. Reports through
+ * {@link shellHooks.onSlowCommand} only when {@link SLOW_EXEC_THRESHOLD_ENV} is set
+ * AND the elapsed wall-clock time (since `startedAt`) reaches it; a no-op otherwise.
+ */
+function reportSlowExecIfSlow(command: string, startedAt: number): void {
+  const threshold = slowExecThresholdMs();
+  if (threshold === null) return;
+  const durationMs = Date.now() - startedAt;
+  if (durationMs >= threshold) {
+    shellHooks.onSlowCommand({ command, durationMs, thresholdMs: threshold });
+  }
+}
+
+/**
+ * Centralized synchronous-exec watchdog boundary for `child_process.execSync`.
+ *
+ * A synchronous exec BLOCKS the event loop for its whole duration, so a slow one
+ * is strictly worse than a slow async spawn. This wrapper times the call and, when
+ * {@link SLOW_EXEC_THRESHOLD_ENV} is set and exceeded, reports it through the SAME
+ * {@link shellHooks.onSlowCommand} sink the async path uses — no second diagnostic
+ * mechanism. The command's return value and any thrown error pass through
+ * unchanged; reporting runs in `finally`, so a slow command that also throws (e.g.
+ * a non-zero exit) is still flagged. This is the sync counterpart of Claude Code's
+ * `execSync_DEPRECATED` slowLogging boundary (execSyncWrapper.ts). Prefer the async
+ * {@link execCommand} where possible; use this only for genuinely synchronous call
+ * sites that cannot be made async.
+ */
+export const execSyncWatched = ((command: string, options?: child_process.ExecSyncOptions): Buffer | string => {
+  const startedAt = Date.now();
+  try {
+    return child_process.execSync(command, options);
+  } finally {
+    reportSlowExecIfSlow(command, startedAt);
+  }
+}) as typeof child_process.execSync;
+
+/**
+ * Centralized synchronous-exec watchdog boundary for `child_process.execFileSync`
+ * (no-shell argv form). Same slow-command diagnostic contract as
+ * {@link execSyncWatched}; the reported command label is the file plus its args so
+ * a slow `git clone …` is identifiable in the diagnostic line.
+ */
+export const execFileSyncWatched = ((file: string, args?: readonly string[], options?: child_process.ExecFileSyncOptions): Buffer | string => {
+  const startedAt = Date.now();
+  const label = args && args.length ? `${file} ${args.join(' ')}` : file;
+  try {
+    return child_process.execFileSync(file, args as string[], options);
+  } finally {
+    reportSlowExecIfSlow(label, startedAt);
+  }
+}) as typeof child_process.execFileSync;
+
+/**
  * Base directory for AMI's internal temp files, honoring an operator override.
  * Mirrors Claude Code's `CLAUDE_CODE_TMPDIR` knob (Shell.ts:L204-207): an
  * environment with custom temp requirements (read-only `/tmp`, a size-limited
@@ -385,14 +440,7 @@ export function execCommand(
 
   // Wall-clock start for slow-command diagnostics (see SLOW_EXEC_THRESHOLD_ENV).
   const startedAt = Date.now();
-  const reportSlowExec = (): void => {
-    const threshold = slowExecThresholdMs();
-    if (threshold === null) return;
-    const durationMs = Date.now() - startedAt;
-    if (durationMs >= threshold) {
-      shellHooks.onSlowCommand({ command, durationMs, thresholdMs: threshold });
-    }
-  };
+  const reportSlowExec = (): void => reportSlowExecIfSlow(command, startedAt);
 
   return new Promise<ExecCommandResult>((resolve) => {
     // If already aborted, short-circuit
