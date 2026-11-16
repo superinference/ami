@@ -2,6 +2,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { isTerminalTaskStatus } from '../process-manager';
 import { normalizePermissionMode, PermissionMode, PERMISSION_MODES } from '../permissions';
 import { isTeammatesEnabled } from './tool-gates';
+import { processSandboxPermissionResponse } from './sandbox-permission-registry';
 
 interface AgentMessage {
   /**
@@ -294,8 +295,9 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
     case 'sandbox_permission_response': {
       if (typeof requestId !== 'string') return { error: 'sandbox_permission_response requires a requestId' };
       if (typeof o.host !== 'string' || !o.host.trim()) return { error: 'sandbox_permission_response requires a host' };
-      // `allow` is the decision key here (not `approve`), mirroring Claude's schema.
-      const allow = o.allow === true || o.allow === 'true';
+      // `allow` is the decision key; also accept Claude's `approved` field for
+      // cross-framework compatibility. Either may arrive as a boolean or string.
+      const allow = o.allow === true || o.allow === 'true' || o.approved === true || o.approved === 'true';
       return { type, requestId, host: o.host, allow };
     }
     case 'team_permission_update': {
@@ -441,9 +443,9 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
     case 'permission_response':
       return m.approve ? '[Permission Granted]' : '[Permission Denied]';
     case 'sandbox_permission_request':
-      return `[Sandbox Permission Request]${from ? ` from ${from}` : ''} — network access to "${m.host}"`;
+      return `[Sandbox Egress Request]${from ? ` from ${from}` : ''} — approve outbound network access to host "${m.host}"?`;
     case 'sandbox_permission_response':
-      return `[Sandbox Access ${m.allow ? 'Allowed' : 'Denied'}] host "${m.host}"`;
+      return `[Sandbox Egress ${m.allow ? 'Granted' : 'Denied'}] host "${m.host}"`;
     case 'team_permission_update': {
       const scope = m.directoryPath ? ` in ${m.directoryPath}` : '';
       const ruleTag = m.rule ? ` (${m.rule})` : '';
@@ -530,6 +532,15 @@ export function relayIncomingMessage(content: string, from?: string): IncomingRe
   const parsed = parseStructuredMessage(content);
   if (parsed && !('error' in parsed)) {
     if (parsed.type === 'shutdown_response' && parsed.approve) return { drop: true };
+    // A sandbox egress decision is APPLIED by the worker's poll: record the
+    // leader's grant in the session-scoped registry (so the worker's next
+    // sandboxed command can reach the host) and drop it — it is machinery, not
+    // conversational text. The request direction (seen by the leader) still
+    // summarizes below. Wires the U022 transport to the U117 grant registry.
+    if (parsed.type === 'sandbox_permission_response') {
+      processSandboxPermissionResponse({ requestId: parsed.requestId, host: parsed.host, allow: parsed.allow });
+      return { drop: true };
+    }
     if (parsed.type === 'idle_notification') {
       if (parsed.completedTaskId) {
         return { drop: false, text: formatTaskCompleted(parsed.completedTaskId, parsed.summary) };

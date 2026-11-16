@@ -333,21 +333,25 @@ describe('SessionManager — missing / corrupt handling', () => {
     assert.equal(sm.loadLatest(), null);
   });
 
-  it('sanitizes path-separator ids so saved files stay inside the session dir', () => {
+  it('sanitizes path-separator ids on save so files stay inside the session dir', () => {
     const s = makeSession('a/b/c', [{ role: 'user', content: 'nested id' }]);
     sm.save(s);
-    // Saved under the sanitized flat name, round-trips via the same raw id.
+    // save() sanitizes defensively → flat name inside the dir, keyed by the safe id.
     assert.ok(fs.existsSync(path.join(dir, 'a_b_c.json')));
-    const loaded = sm.load('a/b/c');
+    // load() now allowlist-REJECTS the raw slashed id (stronger than silent sanitize);
+    // the session round-trips via its sanitized key.
+    assert.equal(sm.load('a/b/c'), null);
+    const loaded = sm.load('a_b_c');
     assert.ok(loaded);
     assert.equal(loaded!.id, 'a_b_c');
   });
 
-  it('sanitizes traversal ids (..) so load cannot escape the dir', () => {
+  it('rejects traversal ids (..) on load so load cannot escape the dir', () => {
     const s = makeSession('../escape', [{ role: 'user', content: 'x' }]);
     sm.save(s);
     assert.ok(!fs.existsSync(path.join(path.dirname(dir), 'escape.json')));
-    assert.ok(sm.load('../escape'));
+    // Allowlist rejects a traversal id outright (no file is loaded from outside).
+    assert.equal(sm.load('../escape'), null);
   });
 });
 

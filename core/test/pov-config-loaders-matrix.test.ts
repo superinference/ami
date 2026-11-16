@@ -270,15 +270,17 @@ describe('mergeConfigs', () => {
     assert.equal(merged.model, 'proj');
   });
 
-  it('object fields are replaced wholesale by the higher layer (not deep-merged)', () => {
+  it('nested config objects deep-merge per-flag (higher layer wins per key)', () => {
     const merged = mergeConfigs(
       {},
       {},
       { superinference: { enforcing: true } },
       { superinference: { enforcing: false, useLLMCritic: true } },
     );
-    // project layer wins entirely; global's useLLMCritic is dropped
-    assert.deepEqual(merged.superinference, { enforcing: true });
+    // Per-flag deep-merge (parity with settings deep-merge): the higher layer's
+    // `enforcing: true` wins, while the lower layer's `useLLMCritic` is preserved
+    // rather than wiped by a wholesale object replacement.
+    assert.deepEqual(merged.superinference, { enforcing: true, useLLMCritic: true });
   });
 
   it('array fields accumulate (concat + dedupe) across layers', () => {

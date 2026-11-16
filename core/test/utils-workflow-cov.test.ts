@@ -166,7 +166,9 @@ describe('shell.ts — timeout + killTree (unix / windows / fallbacks)', () => {
     mock.method(shellHooks, 'platform', () => 'win32' as NodeJS.Platform);
     let cmd = '';
     mock.method(shellHooks, 'execSync', (c: string) => { cmd = c; return Buffer.from(''); });
-    const r = await execCommand('x', { cwd: '/tmp', timeout: 10, stallTimeoutMs: 0 });
+    // U049: on Windows AMI runs commands through git-bash's bash.exe — provide an
+    // explicit shellPath so resolution succeeds and we reach the timeout/killTree path.
+    const r = await execCommand('x', { cwd: '/tmp', timeout: 10, stallTimeoutMs: 0, shellPath: 'C:/git/bin/bash.exe' });
     assert.equal(r.exitCode, null);
     assert.ok(cmd.includes('taskkill'));
     assert.ok(cmd.includes('4242'));

@@ -55,7 +55,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       disableAllHooks: true, allowManagedHooksOnly: true, enabledPlugins: {}, allowManagedModsOnly: true,
       allowedMcpServers: ['a'], deniedMcpServers: ['a'], managedMcpServers: {}, statusLine: 'l', sandboxExcludedCommands: ['a'],
       env: {}, tipsEnabled: true, tipsOverride: {}, composerHintsEnabled: true, composerHintsOverride: {},
-      migrationVersion: 1, worktree: { symlinkDirectories: ['a'] },
+      migrationVersion: 1, worktree: { symlinkDirectories: ['a'] }, cleanupPeriodDays: 1,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).

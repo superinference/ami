@@ -81,11 +81,11 @@ describe('sandbox_permission_request / _response message', () => {
   it('summarizes both directions concisely', () => {
     assert.equal(
       summarizeStructuredMessage(JSON.stringify({ type: 'sandbox_permission_request', host: 'h' }), 'worker'),
-      '[Sandbox Permission Request] from worker — network access to "h"',
+      '[Sandbox Egress Request] from worker — approve outbound network access to host "h"?',
     );
     assert.equal(
       summarizeStructuredMessage(JSON.stringify({ type: 'sandbox_permission_response', requestId: 'r', host: 'h', allow: false })),
-      '[Sandbox Access Denied] host "h"',
+      '[Sandbox Egress Denied] host "h"',
     );
   });
 
@@ -258,7 +258,7 @@ describe('relayIncomingMessage routes the new control messages (not raw JSON)', 
   it('summarizes a sandbox request rather than dumping JSON', () => {
     const relay = relayIncomingMessage(JSON.stringify({ type: 'sandbox_permission_request', host: 'h' }), 'worker');
     assert.equal(relay.drop, false);
-    assert.equal(relay.text, '[Sandbox Permission Request] from worker — network access to "h"');
+    assert.equal(relay.text, '[Sandbox Egress Request] from worker — approve outbound network access to host "h"?');
   });
 
   it('summarizes a team_permission_update', () => {

@@ -107,6 +107,9 @@ describe('LSPClient — didOpen tracking', () => {
     // notification sink is rawNotify(conn, method, params)).
     (client as any).rawNotify = (_conn: any, method: string, params: any) => {
       notifications.push({ method, params });
+      // rawNotify's contract is a success boolean; syncNotify treats a falsy
+      // return as a write failure and throws, so the mock must report success.
+      return true;
     };
 
     seedServer('typescript');

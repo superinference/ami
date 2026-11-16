@@ -153,7 +153,7 @@ describe('fileEditTool – overwriting', () => {
       { file_path: file, content: 'a\nb\nc\n' },
       ctx(),
     );
-    assert.ok(result.output.includes('4 lines')); // 'a\nb\nc\n' => 4 lines
+    assert.ok(result.output.includes('3 lines')); // 'a\nb\nc\n' => 3 newline-terminated lines (wc -l semantics)
   });
 });
 
@@ -289,7 +289,11 @@ describe('fileEditTool – read-before-write enforcement', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – CRLF handling', () => {
-  it('preserves CRLF when overwriting CRLF file', async () => {
+  it('full-content write honors the content EOL, not the old file (U039 parity)', async () => {
+    // Parity with Claude Code's FileWriteTool: a full-content write is a deliberate
+    // replacement that writes the content's own line endings verbatim, rather than
+    // re-converting to the old file's EOL (which silently corrupted e.g. a CRLF→LF
+    // shell-script rewrite).
     const file = path.join(tmpDir, 'crlf.txt');
     fs.writeFileSync(file, 'old1\r\nold2\r\n');
 
@@ -299,8 +303,8 @@ describe('fileEditTool – CRLF handling', () => {
     );
     assert.ok(!result.isError);
     const content = fs.readFileSync(file, 'utf-8');
-    assert.ok(content.includes('\r\n'), 'Should preserve CRLF');
-    assert.equal(content, 'new1\r\nnew2\r\n');
+    assert.ok(!content.includes('\r\n'), 'content LF written verbatim, old CRLF replaced');
+    assert.equal(content, 'new1\nnew2\n');
   });
 
   it('preserves LF when overwriting LF file', async () => {
