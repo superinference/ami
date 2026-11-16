@@ -588,6 +588,34 @@ export function detectDangerousPsCmdlets(command: string): PsDetection {
 }
 
 /**
+ * Stop-parsing token (`--%`) detection. PowerShell's `--%` tells the parser to
+ * stop interpreting everything that follows and pass the remainder verbatim to
+ * the target command — defeating any structural/token analysis of the tail
+ * (a documented analysis-evasion / obfuscation technique). Like
+ * `-EncodedCommand`, the remainder is opaque to the security checks, so its
+ * presence is surfaced for approval (fail-safe: an un-analyzable command is
+ * never silently allowed).
+ *
+ * PowerShell's tokenizer (SpecialCharacters.IsDash) treats en-dash (U+2013),
+ * em-dash (U+2014) and horizontal-bar (U+2015) as dash-equivalents, so those
+ * variants are normalized to ASCII `-` before matching — mirroring Claude Code's
+ * parser token check `($tok.Text -replace '[–—―]','-') -eq '--%'`.
+ * The token must stand alone (bounded by start/whitespace/statement separators)
+ * so substrings like `git log --%H` or `sed 's/--%/x/'` do not match.
+ */
+export function detectStopParsingToken(command: string): PsDetection {
+  const normalized = command.replace(/[–—―]/g, '-');
+  if (/(?:^|[\s;|&(){}])--%(?=$|[\s;|&(){}])/.test(normalized)) {
+    return {
+      blocked: true,
+      reason:
+        'PowerShell stop-parsing token (--%) passes everything after it verbatim to the command — opaque to security analysis',
+    };
+  }
+  return PS_PASS;
+}
+
+/**
  * Aggregate of the PowerShell dangerous-pattern detectors added on top of the
  * download-cradle / encoded-command / CLM-cast checks already in
  * detectPowerShellExecution. Runs in a fixed order and returns the first block.
@@ -603,6 +631,7 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
     detectRuntimeStateHijack,
     detectEnvVarManipulation,
     detectDangerousPsCmdlets,
+    detectStopParsingToken,
   ];
   for (const check of checks) {
     const r = check(command);

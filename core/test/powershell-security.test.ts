@@ -15,6 +15,7 @@ import {
   detectRuntimeStateHijack,
   detectEnvVarManipulation,
   detectDangerousPsCmdlets,
+  detectStopParsingToken,
   detectDangerousPowerShellCommand,
 } from '../src/tools/powershell-security';
 import { validateBashSecurity, detectPowerShellExecution } from '../src/tools/bash-security';
@@ -348,6 +349,37 @@ describe('detectDangerousPsCmdlets', () => {
 });
 
 // ---------------------------------------------------------------------------
+// detectStopParsingToken — the `--%` stop-parsing / analysis-bypass boundary.
+// Mirrors Claude Code's parser token check (MinusMinus / dash-normalized '--%').
+// ---------------------------------------------------------------------------
+describe('detectStopParsingToken', () => {
+  it('flags a standalone --% stop-parsing token', () => {
+    assert.equal(detectStopParsingToken('cmd --% /c whoami').blocked, true);
+    assert.equal(detectStopParsingToken('pwsh --%').blocked, true);
+    assert.match(detectStopParsingToken('foo --% bar').reason!, /stop-parsing/);
+  });
+
+  it('flags alt-dash variants (en-dash / em-dash / horizontal-bar)', () => {
+    // PowerShell's tokenizer treats these as dash-equivalents.
+    assert.equal(detectStopParsingToken('cmd ––% args').blocked, true);
+    assert.equal(detectStopParsingToken('cmd ——% args').blocked, true);
+    assert.equal(detectStopParsingToken('cmd ――% args').blocked, true);
+  });
+
+  it('flags the token after a statement/pipeline separator', () => {
+    assert.equal(detectStopParsingToken('echo ok; cmd --% rest').blocked, true);
+    assert.equal(detectStopParsingToken('a | cmd --% rest').blocked, true);
+  });
+
+  it('does not match --% as a substring of another token', () => {
+    assert.equal(detectStopParsingToken('git log --%H').blocked, false);
+    assert.equal(detectStopParsingToken("sed 's/--%/x/' file").blocked, false);
+    assert.equal(detectStopParsingToken('printf -- %s done').blocked, false);
+    assert.equal(detectStopParsingToken('Get-ChildItem').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Aggregate + end-to-end wiring into detectPowerShellExecution /
 // validateBashSecurity. Red-green: reverting the detectDangerousPowerShellCommand
 // call in detectPowerShellExecution flips every `safe:false` here back to true.
@@ -372,13 +404,17 @@ describe('detectDangerousPowerShellCommand aggregate + permission-path wiring', 
     assert.equal(detectPowerShellExecution('$env:Path = "x"').blocked, true);
     // Alt-dash (en-dash) is normalized before the checks run.
     assert.equal(detectPowerShellExecution('Start-Process cmd \u2013Verb RunAs').blocked, true);
+    // Stop-parsing token (--%) \u2014 remainder is opaque to analysis.
+    assert.equal(detectPowerShellExecution('icacls C:\\ --% /grant everyone:F').blocked, true);
   });
 
   it('validateBashSecurity treats them as not auto-approvable, bash stays safe', () => {
     assert.equal(validateBashSecurity('New-Object System.Net.WebClient').safe, false);
     assert.equal(validateBashSecurity('Invoke-WmiMethod -Class Win32_Process -Name Create').safe, false);
+    assert.equal(validateBashSecurity('reg query HKLM --% /v Foo').safe, false);
     assert.equal(validateBashSecurity('echo hello').safe, true);
     assert.equal(validateBashSecurity('rm file.txt').safe, true);
     assert.equal(validateBashSecurity('set-content out.txt "data"').safe, true);
+    assert.equal(validateBashSecurity('git log --%H').safe, true);
   });
 });
