@@ -197,10 +197,12 @@ export class FileCache {
 
     try {
       const stat = fs.statSync(key);
-      // Floor both sides so sub-millisecond timestamp jitter is not a change.
-      const sameMtime = Math.floor(stat.mtimeMs) === Math.floor(cached.mtime);
-      // No content to compare (mtime-only / partial-view entry): mtime decides.
-      if (!cached.content) return !sameMtime;
+      // Any mtime change is treated as "modified since read" (safety guard: the
+      // read-before-edit contract rejects an edit when the file's mtime moved,
+      // even if content later proves identical — callers must re-read first).
+      if (stat.mtimeMs !== cached.mtime) return true;
+      // mtime matches but no content tracked (mtime-only / partial entry): fresh.
+      if (!cached.content) return false;
       // Bounded freshness check: never read a file larger than the cache's byte
       // ceiling just to hash it. Treat an over-cap file as changed so callers
       // re-read it through the normal size-limited read path.

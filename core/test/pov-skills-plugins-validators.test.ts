@@ -545,10 +545,11 @@ describe('discoverPlugins + loadCommands', () => {
     assert.deepEqual(loadCommands(path.join(tmpDir, 'nope')), []);
   });
 
-  it('loadCommands returns [] for a dir with no .toml files', () => {
+  it('loadCommands returns [] for a dir with no command files (.toml/.md)', () => {
     const dir = path.join(tmpDir, 'cmds-empty');
     fs.mkdirSync(dir);
-    fs.writeFileSync(path.join(dir, 'readme.md'), 'x');
+    // A non-command extension is ignored (.toml and .md ARE command formats now).
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'x');
     assert.deepEqual(loadCommands(dir), []);
   });
 
