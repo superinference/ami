@@ -4,6 +4,7 @@ import * as os from 'os';
 
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './privacy-level';
+import { isSafeSegment } from './skill-catalog';
 
 const DEFAULT_LOG_DIR = path.join(os.tmpdir(), 'superinference', 'core');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
@@ -14,6 +15,61 @@ const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 // the file 0600 (owner-only) — a data-minimization/least-exposure defense.
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+
+// ---------------------------------------------------------------------------
+// Configurable debug-payload formatter. ONE tunable limit governs how much of a
+// debug body (tool input/output, API payload, etc.) is persisted; both helpers
+// collapse newlines into `\n` and append a `... (N chars)` suffix that reveals
+// the ORIGINAL length so a truncated record is never mistaken for the whole
+// payload. Mirrors Claude Code's DEBUG_MSG_LIMIT / debugTruncate / debugBody
+// (bridge/debugUtils.ts) — a single knob instead of scattered magic slices.
+// ---------------------------------------------------------------------------
+const DEFAULT_DEBUG_MSG_LIMIT = 2000;
+
+/** Resolve the debug-body length cap (`AMI_DEBUG_MSG_LIMIT`, default 2000). */
+function getDebugMsgLimit(): number {
+  const raw = process.env.AMI_DEBUG_MSG_LIMIT;
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_DEBUG_MSG_LIMIT;
+}
+
+/**
+ * Collapse newlines and truncate a string for debug logging, appending
+ * `... (N chars)` with the original length when it overflows the limit. Mirrors
+ * Claude Code's `debugTruncate`.
+ */
+export function debugTruncate(s: string): string {
+  const flat = s.replace(/\r\n|\r|\n/g, '\\n');
+  const limit = getDebugMsgLimit();
+  if (flat.length <= limit) return flat;
+  return flat.slice(0, limit) + `... (${flat.length} chars)`;
+}
+
+/**
+ * Serialize a JSON-serializable value, REDACT credentials, THEN truncate to the
+ * limit (redact-before-truncate so a secret split across the cut boundary is
+ * still removed). Circular/unstringifiable values fall back to `String(data)`.
+ * Mirrors Claude Code's `debugBody`.
+ */
+export function debugBody(data: unknown): string {
+  let raw: string;
+  if (typeof data === 'string') {
+    raw = data;
+  } else {
+    try {
+      raw = JSON.stringify(data) ?? String(data);
+    } catch {
+      raw = String(data);
+    }
+  }
+  const s = redactCredentials(raw);
+  const limit = getDebugMsgLimit();
+  if (s.length <= limit) return s;
+  return s.slice(0, limit) + `... (${s.length} chars)`;
+}
 
 // ---------------------------------------------------------------------------
 // Severity levels (ordered) — a verbosity knob, not a new log channel.
@@ -214,7 +270,41 @@ function resolveLogTarget(): { dir: string; file: string } {
   }
   const dirOverride = (process.env.AMI_DEBUG_LOGS_DIR ?? process.env.CLAUDE_CODE_DEBUG_LOGS_DIR)?.trim();
   const dir = dirOverride || DEFAULT_LOG_DIR;
-  return { dir, file: path.join(dir, 'engine.log') };
+  return { dir, file: path.join(dir, logFileName()) };
+}
+
+/**
+ * Resolve the active log FILE NAME. When `AMI_DEBUG_SESSION_ID` is set to a
+ * path-safe segment, each session writes to its own `<sessionId>.log` so
+ * concurrent sessions never interleave and each run is independently readable;
+ * otherwise the shared `engine.log`. The id is validated with the same
+ * path-safety guard the skill catalog uses, so a malicious value cannot escape
+ * the log directory. Mirrors Claude Code's per-session `<sessionId>.txt`.
+ */
+function logFileName(): string {
+  const sid = process.env.AMI_DEBUG_SESSION_ID?.trim();
+  if (sid && isSafeSegment(sid)) return `${sid}.log`;
+  return 'engine.log';
+}
+
+/** Whether a per-session log file (not the shared `engine.log`) is active. */
+function hasPerSessionFile(): boolean {
+  const sid = process.env.AMI_DEBUG_SESSION_ID?.trim();
+  return !!sid && isSafeSegment(sid) && !process.env.AMI_DEBUG_FILE?.trim();
+}
+
+/**
+ * For per-session runs, maintain a `latest` symlink in the log directory that
+ * points at the active session file so a bug-report/`/doctor`/share flow can
+ * always jump straight to the current session's log. Best-effort: silently
+ * no-ops on a platform/filesystem that forbids symlinks. Mirrors Claude Code's
+ * `debug/latest` symlink affordance.
+ */
+function updateLatestSymlink(): void {
+  if (!hasPerSessionFile()) return;
+  const link = path.join(logDir, 'latest');
+  try { fsHooks.unlinkSync(link); } catch {}
+  try { fsHooks.symlinkSync(logFile, link); } catch {}
 }
 
 /**
@@ -232,6 +322,7 @@ export const fsHooks = {
   openSync: fs.openSync as typeof fs.openSync,
   readSync: fs.readSync as typeof fs.readSync,
   closeSync: fs.closeSync as typeof fs.closeSync,
+  symlinkSync: fs.symlinkSync as typeof fs.symlinkSync,
 };
 
 let initialized = false;
@@ -319,8 +410,27 @@ function ensureDir(): void {
     } catch {
       bytesWritten = 0;
     }
+    updateLatestSymlink();
     initialized = true;
   } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Output routing + at-rest persistence gate.
+// ---------------------------------------------------------------------------
+/**
+ * Whether debug output is routed to stderr instead of the on-disk file. Honors
+ * the `AMI_DEBUG_TO_STDERR` env flag and the Claude-compatible
+ * `--debug-to-stderr` / `-d2e` argv flags. When active, `log()` writes the
+ * formatted line to stderr and bypasses the file writer, so a user can stream
+ * debug output live without a log file. Mirrors Claude Code's `isDebugToStdErr`.
+ */
+function isDebugToStderr(): boolean {
+  return (
+    isEnvTruthy(process.env.AMI_DEBUG_TO_STDERR) ||
+    process.argv.includes('--debug-to-stderr') ||
+    process.argv.includes('-d2e')
+  );
 }
 
 export function log(
@@ -334,7 +444,6 @@ export function log(
   if (LEVEL_ORDER[level] < LEVEL_ORDER[getMinLogLevel()]) return;
   const filter = parseDebugFilter(process.env.AMI_DEBUG_COMPONENTS);
   if (!shouldShowDebugCategories(categoriesForLine(component, msg), filter)) return;
-  ensureDir();
   const ts = new Date().toISOString();
   const dataStr = data ? ' ' + JSON.stringify(data) : '';
   // Escape newlines in the free-form fields, then redact any credentials before
@@ -342,6 +451,20 @@ export function log(
   // API keys, Bearer headers, etc.).
   const composed = `[${ts}] [${level.toUpperCase()}] [${escapeLogField(component)}] ${escapeLogField(msg)}${dataStr}`;
   const line = redactCredentials(composed) + '\n';
+
+  // Live stderr routing: stream the formatted line to stderr and bypass the file
+  // writer entirely (parity with Claude's --debug-to-stderr).
+  if (isDebugToStderr()) {
+    try { process.stderr.write(line); } catch {}
+    return;
+  }
+
+  // Data-minimization opt-out: a user can disable at-rest debug-log persistence
+  // so sensitive tool inputs/outputs and error text never touch disk. Mirrors
+  // Claude Code's gating of whether debug messages are written at all.
+  if (isEnvTruthy(process.env.AMI_DISABLE_DEBUG_LOG)) return;
+
+  ensureDir();
   const size = Buffer.byteLength(line);
   // Continuous bound: rotate before the active file would exceed the cap.
   if (bytesWritten > 0 && bytesWritten + size > MAX_LOG_SIZE) {
@@ -369,11 +492,13 @@ export function logToolCall(
   isError: boolean,
   durationMs: number,
 ): void {
-  const inputStr = JSON.stringify(input).slice(0, 500);
-  const outputStr = output.slice(0, 1000);
+  // Route both payloads through the one configurable debug-payload formatter:
+  // the input is redacted-then-truncated (debugBody), the output is
+  // newline-collapsed-then-truncated (debugTruncate). Both reveal the original
+  // length via a `... (N chars)` suffix instead of silently clipping.
   log('tool', `${toolName} (${durationMs}ms) ${isError ? 'ERROR' : 'OK'}`, {
-    input: inputStr,
-    output: outputStr,
+    input: debugBody(input),
+    output: debugTruncate(output),
     isError,
     durationMs,
   });
@@ -581,8 +706,38 @@ export function shouldSurfaceToTelemetry(level: LogLevel): boolean {
  * in-memory error ring so warn/error diagnostics show up in bug reports while
  * low-severity chatter does not.
  */
+/**
+ * Append a structured `{timestamp, level, event, data}` JSONL record to the file
+ * named ONLY by `AMI_DIAGNOSTICS_FILE` (Claude-compatible
+ * `CLAUDE_CODE_DIAGNOSTICS_FILE` as a fallback). No-op — zero cost — when the env
+ * var is unset. This is a machine-monitored health channel SEPARATE from the
+ * human debug log and the analytics pipeline; by contract callers MUST NOT pass
+ * PII (file paths, prompts, project/repo names), only coarse level/event/data.
+ * JSON-encoded one-object-per-line so each record is independently parseable and
+ * cannot be split by embedded newlines. Mirrors Claude Code's
+ * `logForDiagnosticsNoPII`.
+ */
+export function logForDiagnosticsNoPII(level: LogLevel, event: string, data?: Record<string, unknown>): void {
+  const file = (process.env.AMI_DIAGNOSTICS_FILE ?? process.env.CLAUDE_CODE_DIAGNOSTICS_FILE)?.trim();
+  if (!file) return;
+  const entry = { timestamp: new Date().toISOString(), level, event, data: data ?? {} };
+  const line = JSON.stringify(entry) + '\n';
+  try {
+    fsHooks.appendFileSync(file, line);
+  } catch {
+    // The directory may not exist yet — create it and retry once.
+    try {
+      fsHooks.mkdirSync(path.dirname(file), { recursive: true });
+      fsHooks.appendFileSync(file, line);
+    } catch {}
+  }
+}
+
 export function recordDiagnostic(level: LogLevel, event: string, data?: Record<string, unknown>): void {
   log('diag', event, data, level);
+  // Also emit to the PII-free JSONL diagnostics channel (no-op when unconfigured)
+  // so the timing/lifecycle events this records feed container-side monitoring.
+  logForDiagnosticsNoPII(level, event, data);
   if (shouldSurfaceToTelemetry(level)) {
     const dataStr = data ? ' ' + JSON.stringify(data) : '';
     pushErrorRing(`[diag:${level}] ${event}${dataStr}`);

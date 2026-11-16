@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // getLogPath
@@ -91,27 +91,33 @@ describe('logToolCall', () => {
     assert.ok(newContent.includes('"isError":true'));
   });
 
-  it('truncates long input to 500 chars', () => {
-    const longInput = 'x'.repeat(1000);
+  it('truncates a long input via the debug-payload formatter with a revealing suffix', () => {
+    const longInput = 'x'.repeat(3000);
     const before = fs.existsSync(getLogPath()) ? fs.readFileSync(getLogPath(), 'utf-8') : '';
     logToolCall('test', { data: longInput }, 'ok', false, 10);
     const after = fs.readFileSync(getLogPath(), 'utf-8');
     const newContent = after.slice(before.length);
-    // The input field in the logged JSON should be at most 500 chars
-    const match = newContent.match(/"input":"([^"]*)"/);
-    assert.ok(match);
-    assert.ok(match![1].length <= 500);
+    // JSON of the input is >2000 chars, so debugBody appends the original length.
+    const raw = JSON.stringify({ data: longInput });
+    assert.ok(newContent.includes(`... (${raw.length} chars)`));
   });
 
-  it('truncates long output to 1000 chars', () => {
-    const longOutput = 'y'.repeat(2000);
+  it('truncates a long output via the debug-payload formatter with a revealing suffix', () => {
+    const longOutput = 'y'.repeat(3000);
     const before = fs.existsSync(getLogPath()) ? fs.readFileSync(getLogPath(), 'utf-8') : '';
     logToolCall('test', {}, longOutput, false, 10);
     const after = fs.readFileSync(getLogPath(), 'utf-8');
     const newContent = after.slice(before.length);
-    const match = newContent.match(/"output":"([^"]*)"/);
-    assert.ok(match);
-    assert.ok(match![1].length <= 1000);
+    assert.ok(newContent.includes(`... (${longOutput.length} chars)`));
+  });
+
+  it('leaves a short input/output untouched (no suffix under the limit)', () => {
+    const before = fs.existsSync(getLogPath()) ? fs.readFileSync(getLogPath(), 'utf-8') : '';
+    logToolCall('test', { k: 'v' }, 'short', false, 1);
+    const after = fs.readFileSync(getLogPath(), 'utf-8');
+    const newContent = after.slice(before.length);
+    assert.ok(!newContent.includes(' chars)'));
+    assert.ok(newContent.includes('"output":"short"'));
   });
 });
 
@@ -1069,5 +1075,288 @@ describe('withDiagnosticsTiming', () => {
     const s = capture();
     await withDiagnosticsTiming('fastop', async () => 'done');
     assert.ok(!s.written.join('').includes('SLOW OPERATION DETECTED'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configurable debug-payload formatter (debugBody / debugTruncate)
+// ---------------------------------------------------------------------------
+describe('debug-payload formatter', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => { delete process.env.AMI_DEBUG_MSG_LIMIT; process.env = { ...ORIG }; });
+
+  it('debugTruncate collapses newlines and leaves short strings intact', () => {
+    assert.equal(debugTruncate('a\nb\r\nc'), 'a\\nb\\nc');
+  });
+
+  it('debugTruncate appends the original length when over the limit', () => {
+    const s = 'z'.repeat(3000);
+    const out = debugTruncate(s);
+    assert.equal(out.length, 2000 + '... (3000 chars)'.length);
+    assert.ok(out.endsWith('... (3000 chars)'));
+  });
+
+  it('debugBody serializes, redacts, then truncates (secret removed even past the cut)', () => {
+    const out = debugBody({ authorization: 'Bearer sk-ant-SECRETVALUE1234567890' });
+    assert.ok(!out.includes('SECRETVALUE1234567890'));
+  });
+
+  it('debugBody passes through a short string unchanged', () => {
+    assert.equal(debugBody('hello'), 'hello');
+  });
+
+  it('debugBody falls back to String() for a circular value', () => {
+    const circ: Record<string, unknown> = {};
+    circ.self = circ;
+    assert.equal(debugBody(circ), '[object Object]');
+  });
+
+  it('AMI_DEBUG_MSG_LIMIT overrides the cut length', () => {
+    process.env.AMI_DEBUG_MSG_LIMIT = '10';
+    const out = debugTruncate('q'.repeat(50));
+    assert.ok(out.startsWith('qqqqqqqqqq... ('));
+  });
+
+  it('an invalid AMI_DEBUG_MSG_LIMIT falls back to the default', () => {
+    process.env.AMI_DEBUG_MSG_LIMIT = 'nope';
+    assert.equal(debugTruncate('x'.repeat(100)), 'x'.repeat(100));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Debug output routing: AMI_DEBUG_TO_STDERR / --debug-to-stderr / -d2e
+// ---------------------------------------------------------------------------
+describe('debug-to-stderr routing', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DEBUG_TO_STDERR;
+    process.env = { ...ORIG };
+  });
+
+  it('routes the line to stderr and bypasses the file writer when AMI_DEBUG_TO_STDERR is set', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_TO_STDERR = '1';
+    let appended = false;
+    const errOut: string[] = [];
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    mock.method(process.stderr, 'write', (s: string) => { errOut.push(String(s)); return true; });
+    log('comp', 'to stderr please');
+    assert.equal(appended, false);
+    assert.ok(errOut.join('').includes('to stderr please'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Data-minimization: AMI_DISABLE_DEBUG_LOG suppresses at-rest persistence
+// ---------------------------------------------------------------------------
+describe('disable at-rest log persistence', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DISABLE_DEBUG_LOG;
+    process.env = { ...ORIG };
+  });
+
+  it('writes nothing to disk when AMI_DISABLE_DEBUG_LOG is truthy', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DISABLE_DEBUG_LOG = 'true';
+    let appended = false;
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    log('comp', 'should not persist');
+    assert.equal(appended, false);
+  });
+
+  it('still persists when the flag is unset', () => {
+    __resetLoggerForTest();
+    let appended = false;
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    log('comp', 'persist me');
+    assert.equal(appended, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-session log file + latest symlink (AMI_DEBUG_SESSION_ID)
+// ---------------------------------------------------------------------------
+describe('per-session log file', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DEBUG_SESSION_ID;
+    delete process.env.AMI_DEBUG_LOGS_DIR;
+    process.env = { ...ORIG };
+  });
+
+  it('writes to <sessionId>.log when AMI_DEBUG_SESSION_ID is a safe segment', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess-'));
+    process.env.AMI_DEBUG_LOGS_DIR = dir;
+    process.env.AMI_DEBUG_SESSION_ID = 'abc-123';
+    try {
+      assert.equal(getLogPath(), path.join(dir, 'abc-123.log'));
+      log('comp', 'session line');
+      assert.ok(fs.readFileSync(path.join(dir, 'abc-123.log'), 'utf-8').includes('session line'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unsafe session id and falls back to engine.log', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess-'));
+    process.env.AMI_DEBUG_LOGS_DIR = dir;
+    process.env.AMI_DEBUG_SESSION_ID = '../escape';
+    try {
+      assert.equal(getLogPath(), path.join(dir, 'engine.log'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('maintains a `latest` symlink to the active session file', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-sess-'));
+    process.env.AMI_DEBUG_LOGS_DIR = dir;
+    process.env.AMI_DEBUG_SESSION_ID = 'sess-9';
+    try {
+      log('comp', 'hi');
+      const link = path.join(dir, 'latest');
+      assert.ok(fs.lstatSync(link).isSymbolicLink());
+      assert.equal(fs.readlinkSync(link), path.join(dir, 'sess-9.log'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT create a latest symlink for the shared engine.log', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-nosess-'));
+    process.env.AMI_DEBUG_LOGS_DIR = dir;
+    try {
+      log('comp', 'hi');
+      assert.ok(!fs.existsSync(path.join(dir, 'latest')));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PII-free JSONL diagnostics channel (logForDiagnosticsNoPII)
+// ---------------------------------------------------------------------------
+describe('logForDiagnosticsNoPII', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DIAGNOSTICS_FILE;
+    delete process.env.CLAUDE_CODE_DIAGNOSTICS_FILE;
+    process.env = { ...ORIG };
+  });
+
+  it('is a zero-cost no-op when no diagnostics file is configured', () => {
+    delete process.env.AMI_DIAGNOSTICS_FILE;
+    delete process.env.CLAUDE_CODE_DIAGNOSTICS_FILE;
+    let appended = false;
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    logForDiagnosticsNoPII('info', 'evt');
+    assert.equal(appended, false);
+  });
+
+  it('appends a structured {timestamp,level,event,data} JSONL record', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-diag-'));
+    const file = path.join(dir, 'diag.jsonl');
+    process.env.AMI_DIAGNOSTICS_FILE = file;
+    try {
+      logForDiagnosticsNoPII('warn', 'mcp_connected', { attempts: 2 });
+      const entry = JSON.parse(fs.readFileSync(file, 'utf-8').trim());
+      assert.equal(entry.level, 'warn');
+      assert.equal(entry.event, 'mcp_connected');
+      assert.deepEqual(entry.data, { attempts: 2 });
+      assert.ok(typeof entry.timestamp === 'string');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors CLAUDE_CODE_DIAGNOSTICS_FILE as a fallback and defaults data to {}', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-diag-'));
+    const file = path.join(dir, 'diag.jsonl');
+    process.env.CLAUDE_CODE_DIAGNOSTICS_FILE = file;
+    try {
+      logForDiagnosticsNoPII('error', 'boom');
+      const entry = JSON.parse(fs.readFileSync(file, 'utf-8').trim());
+      assert.deepEqual(entry.data, {});
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates the parent directory and retries once when the first append fails', () => {
+    process.env.AMI_DIAGNOSTICS_FILE = '/tmp/ami-diag-xyz/d.jsonl';
+    let mkdired = '';
+    const appends: boolean[] = [];
+    mock.method(fsHooks, 'appendFileSync', () => {
+      if (appends.length === 0) { appends.push(false); throw new Error('ENOENT'); }
+      appends.push(true);
+    });
+    mock.method(fsHooks, 'mkdirSync', (p: fs.PathLike) => { mkdired = String(p); return undefined as unknown as string; });
+    logForDiagnosticsNoPII('info', 'evt');
+    assert.equal(mkdired, '/tmp/ami-diag-xyz');
+    assert.deepEqual(appends, [false, true]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: recordDiagnostic / withDiagnosticsTiming feed the PII-free channel
+// ---------------------------------------------------------------------------
+describe('diagnostics channel integration', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DIAGNOSTICS_FILE;
+    delete process.env.AMI_DEBUG_LOGS_DIR;
+    process.env = { ...ORIG };
+  });
+
+  it('recordDiagnostic also emits to the PII-free JSONL channel', () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-diagwire-'));
+    process.env.AMI_DEBUG_LOGS_DIR = dir;
+    process.env.AMI_DIAGNOSTICS_FILE = path.join(dir, 'diag.jsonl');
+    try {
+      recordDiagnostic('info', 'thing_happened', { n: 1 });
+      const entry = JSON.parse(fs.readFileSync(path.join(dir, 'diag.jsonl'), 'utf-8').trim());
+      assert.equal(entry.event, 'thing_happened');
+      assert.deepEqual(entry.data, { n: 1 });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('withDiagnosticsTiming writes started + completed timing events to the channel', async () => {
+    __resetLoggerForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-timing-'));
+    process.env.AMI_DEBUG_LOGS_DIR = dir;
+    process.env.AMI_DIAGNOSTICS_FILE = path.join(dir, 'diag.jsonl');
+    try {
+      const r = await withDiagnosticsTiming('git_status', async () => 'clean');
+      assert.equal(r, 'clean');
+      const lines = fs.readFileSync(path.join(dir, 'diag.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      const started = lines.find((e) => e.event === 'git_status_started');
+      const completed = lines.find((e) => e.event === 'git_status_completed');
+      assert.ok(started);
+      assert.ok(completed);
+      assert.ok(typeof completed.data.duration_ms === 'number');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
