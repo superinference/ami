@@ -287,6 +287,60 @@ describe('agenticFetchTool — input validation', () => {
   });
 });
 
+describe('agenticFetchTool — quoted/garbage max_pages coercion (semanticNumber parity)', () => {
+  function promptFactory() {
+    let prompt = '';
+    const factory = (_c: any) => ({
+      submit: async function* (p: string) { prompt = p; yield { type: 'text_delta', text: 'ok' } as any; },
+      shutdown: () => {},
+    });
+    return { factory, getPrompt: () => prompt };
+  }
+
+  it('coerces a model-quoted numeric string max_pages ("5")', async () => {
+    const { factory, getPrompt } = promptFactory();
+    const r = await agenticFetchTool.execute({ query: 'valid', max_pages: '5' as any }, ctxWith(factory));
+    assert.equal(r.isError, undefined);
+    assert.ok(getPrompt().includes('up to 5'), getPrompt());
+  });
+
+  it('coerces a quoted fractional string then floors it ("2.9" -> 2)', async () => {
+    const { factory, getPrompt } = promptFactory();
+    await agenticFetchTool.execute({ query: 'valid', max_pages: '2.9' as any }, ctxWith(factory));
+    assert.ok(getPrompt().includes('up to 2'), getPrompt());
+  });
+
+  // Discriminators: a bare Number() coerced these to 0 (then clamped to 1) or 1,
+  // silently injecting a bogus page count. coerceNumber rejects them instead.
+  it('rejects an empty-string max_pages instead of silently clamping to 1', async () => {
+    const { factory } = promptFactory();
+    const r = await agenticFetchTool.execute({ query: 'valid', max_pages: '' as any }, ctxWith(factory));
+    assert.equal(r.isError, true);
+    assert.ok(r.output.includes('max_pages'));
+  });
+
+  it('rejects a boolean max_pages (false no longer becomes 1)', async () => {
+    const { factory } = promptFactory();
+    const r = await agenticFetchTool.execute({ query: 'valid', max_pages: false as any }, ctxWith(factory));
+    assert.equal(r.isError, true);
+    assert.ok(r.output.includes('max_pages'));
+  });
+
+  it('rejects a boolean true max_pages (no longer coerces to 1)', async () => {
+    const { factory } = promptFactory();
+    const r = await agenticFetchTool.execute({ query: 'valid', max_pages: true as any }, ctxWith(factory));
+    assert.equal(r.isError, true);
+    assert.ok(r.output.includes('max_pages'));
+  });
+
+  it('rejects an array max_pages (Number([]) no longer becomes 0/1)', async () => {
+    const { factory } = promptFactory();
+    const r = await agenticFetchTool.execute({ query: 'valid', max_pages: [] as any }, ctxWith(factory));
+    assert.equal(r.isError, true);
+    assert.ok(r.output.includes('max_pages'));
+  });
+});
+
 describe('agenticFetchTool — provider guard', () => {
   it('errors when provider config is missing even if a factory exists', async () => {
     const ctx = {

@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext, ExitReason } from '../types';
+import { coerceNumber } from '../utils/coerce';
 
 /** Hard cap on pages the research subagent may fetch (defense-in-depth bound). */
 const MAX_PAGES_LIMIT = 10;
@@ -30,9 +31,18 @@ export const agenticFetchTool: ToolDefinition = {
       return { output: 'Error: `query` is required and must be at least 2 characters.', isError: true };
     }
 
+    // Tolerate a model-quoted numeric string ("5") via the shared `coerceNumber`
+    // helper, but still REJECT non-numeric garbage. A bare `Number()` was a trap:
+    // Number('') / Number([]) / Number(false) all yield 0 (silently clamped to 1)
+    // instead of surfacing bad input, while Number(true) yields 1. coerceNumber
+    // returns the NaN fallback for every non-numeric shape (empty/garbage string,
+    // boolean, array, object), so those now error rather than injecting a bogus
+    // page count; only a real finite number or a numeric string literal is
+    // accepted. Mirrors Claude Code's semanticNumber (strict decimal coercion,
+    // reject-on-garbage) using AMI's canonical coerce helper.
     let maxPages = 3;
     if (input.max_pages !== undefined && input.max_pages !== null) {
-      const n = Number(input.max_pages);
+      const n = coerceNumber(input.max_pages, Number.NaN);
       if (!Number.isFinite(n)) {
         return { output: 'Error: `max_pages` must be a finite number.', isError: true };
       }
