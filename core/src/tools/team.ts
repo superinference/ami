@@ -10,6 +10,33 @@ import { log as coreLog } from '../logger';
 import { gitExec } from '../worktree-manager';
 import { isTeammatesEnabled } from './tool-gates';
 import { AGENT_COLORS, AgentColorName, parseAgentColor } from '../skills';
+import { getTeammateContext, isInProcessTeammate } from './teammate-context';
+
+/**
+ * Structured, prefixed diagnostic line for a team-state mutation (parity: Claude
+ * Code's `logForDebugging('[TeammateTool] …')`). Every add/remove/mode/active/
+ * cleanup/reconnect action emits one so the swarm lifecycle is observable via the
+ * `team` debug component (`AMI_DEBUG_COMPONENTS=team`), satisfying AMI's
+ * introspection-on-every-change rule. Routed through the shared core logger — NOT
+ * a second logging path.
+ */
+function teamDebug(msg: string): void {
+  coreLog('team', `[TeammateTool] ${msg}`);
+}
+
+/** Env-var fallback for a teammate identity field (parity: Claude's
+ *  env-var teammate identity, e.g. CLAUDE_CODE_AGENT_ID). Returns undefined for an
+ *  unset/empty value so it never shadows a bound dynamic/ALS identity. */
+function envIdentity(name: string): string | undefined {
+  const v = process.env[name];
+  return v && v.length > 0 ? v : undefined;
+}
+
+/** Env var names a spawned teammate process inherits its identity from. */
+const ENV_AGENT_ID = 'AMI_TEAMMATE_AGENT_ID';
+const ENV_AGENT_NAME = 'AMI_TEAMMATE_AGENT_NAME';
+const ENV_TEAM_NAME = 'AMI_TEAMMATE_TEAM_NAME';
+const ENV_COLOR = 'AMI_TEAMMATE_COLOR';
 
 /**
  * Format a deterministic agent id as `agentName@teamName` (mirrors Claude Code's
@@ -243,34 +270,119 @@ let currentTeam: TeamFile | null = null;
 let currentTeamDir: string | null = null;
 
 /**
- * This process's own agent identity within a team (parity: Claude Code's
- * per-session teammate identity — agentId + agentName — resolved from
- * AsyncLocalStorage/CLI args). The leader session binds this to the lead's id on
- * create/reconnect; a spawned teammate process binds its own. Used by
- * {@link isLeader} to tell leader from teammate and surfaced as an introspection
- * field so "who am I?" is answerable at runtime. Cleared on team teardown.
+ * This process's runtime team-join context (parity: Claude Code's
+ * `dynamicTeamContext` in utils/teammate.ts). It carries not just the bound
+ * agentId + agentName but the richer per-session knobs a joined teammate needs:
+ * the `teamName` it joined, its display `color`, whether `planModeRequired` is in
+ * force, and the lead's `parentSessionId` for transcript correlation. Installed
+ * when this session joins/creates a team at runtime and taking precedence over the
+ * env-var fallback below. The in-process {@link TeammateContext} (AsyncLocalStorage)
+ * takes precedence over THIS, so concurrent in-process teammates stay isolated.
  */
-interface SelfIdentity { agentId: string; agentName: string; }
-let selfIdentity: SelfIdentity | null = null;
+export interface DynamicTeamContext {
+  agentId: string;
+  agentName: string;
+  teamName?: string;
+  color?: AgentColorName;
+  planModeRequired: boolean;
+  parentSessionId?: string;
+}
+let dynamicTeamContext: DynamicTeamContext | null = null;
 
-/** Bind this process's agent identity within the active team. */
+/**
+ * Bind this process's agent identity within the active team (parity: the minimal
+ * identity install). Preserves any richer context fields (color/planMode/parent)
+ * already present so a plain id/name rebind does not drop them, and defaults
+ * `teamName` to the active team's name.
+ */
 export function setSelfIdentity(agentId: string, agentName: string): void {
-  selfIdentity = { agentId, agentName };
+  dynamicTeamContext = {
+    agentId,
+    agentName,
+    teamName: currentTeam?.name ?? dynamicTeamContext?.teamName,
+    color: dynamicTeamContext?.color,
+    planModeRequired: dynamicTeamContext?.planModeRequired ?? false,
+    parentSessionId: dynamicTeamContext?.parentSessionId,
+  };
 }
 
-/** This process's bound agent id, or undefined when unset (parity: getAgentId). */
+/**
+ * Install the FULL runtime team-join context (parity: setDynamicTeamContext),
+ * replacing any existing one. Passing null clears it (equivalent to
+ * {@link clearDynamicTeamContext}).
+ */
+export function setDynamicTeamContext(ctx: DynamicTeamContext | null): void {
+  dynamicTeamContext = ctx;
+}
+
+/** Tear down the runtime team-join context (parity: clearDynamicTeamContext). */
+export function clearDynamicTeamContext(): void {
+  dynamicTeamContext = null;
+}
+
+/**
+ * Inspect the current runtime team-join context (parity: getDynamicTeamContext —
+ * "for inspection/debugging"). Returns null when this session has not joined a
+ * team at runtime; the ALS/env layers are NOT folded in here (use the per-field
+ * accessors for the resolved value).
+ */
+export function getDynamicTeamContext(): DynamicTeamContext | null {
+  return dynamicTeamContext;
+}
+
+/**
+ * This process's resolved agent id, following the identity precedence chain
+ * (parity: getAgentId) — in-process {@link TeammateContext} (AsyncLocalStorage) >
+ * runtime {@link DynamicTeamContext} > `AMI_TEAMMATE_AGENT_ID` env var. Undefined
+ * when none is bound (a standalone, non-team session).
+ */
 export function getSelfAgentId(): string | undefined {
-  return selfIdentity?.agentId;
+  return getTeammateContext()?.agentId ?? dynamicTeamContext?.agentId ?? envIdentity(ENV_AGENT_ID);
 }
 
-/** This process's bound agent name, or undefined when unset (parity: getAgentName). */
+/** This process's resolved agent name (same precedence as {@link getSelfAgentId}). */
 export function getSelfAgentName(): string | undefined {
-  return selfIdentity?.agentName;
+  return getTeammateContext()?.agentName ?? dynamicTeamContext?.agentName ?? envIdentity(ENV_AGENT_NAME);
+}
+
+/**
+ * This process's resolved team name (parity: getTeamName), following ALS >
+ * dynamic > env, and finally falling back to the active team's name so a leader
+ * (which has no dynamic context by the teammate rule) still resolves a team name.
+ */
+export function getSelfTeamName(): string | undefined {
+  return getTeammateContext()?.teamName ?? dynamicTeamContext?.teamName
+    ?? envIdentity(ENV_TEAM_NAME) ?? currentTeam?.name;
+}
+
+/**
+ * This process's resolved display color (parity: getTeammateColor), following ALS
+ * > dynamic > env. Undefined when no color was assigned to this session.
+ */
+export function getSelfColor(): AgentColorName | undefined {
+  const fromCtx = getTeammateContext()?.color ?? dynamicTeamContext?.color;
+  if (fromCtx) return fromCtx;
+  return parseAgentColor(envIdentity(ENV_COLOR)) ?? undefined;
+}
+
+/**
+ * Whether THIS session is running as a (non-lead) teammate in a swarm (parity:
+ * isTeammate). True when executing inside an in-process teammate scope, OR when a
+ * bound id+team resolves to an agent that is NOT the team lead. The lead — which
+ * also binds a self identity on create — is deliberately NOT a teammate.
+ */
+export function isTeammate(): boolean {
+  if (isInProcessTeammate()) return true;
+  const myId = dynamicTeamContext?.agentId ?? envIdentity(ENV_AGENT_ID);
+  const teamName = dynamicTeamContext?.teamName ?? envIdentity(ENV_TEAM_NAME) ?? currentTeam?.name;
+  if (!myId || !teamName) return false;
+  if (currentTeam && myId === currentTeam.leadAgentId) return false;
+  return true;
 }
 
 /** Clear the bound self identity (team teardown / reset). */
 export function clearSelfIdentity(): void {
-  selfIdentity = null;
+  dynamicTeamContext = null;
 }
 
 /**
@@ -445,6 +557,115 @@ export function loadTeamFromDisk(cwd: string, name: string): { team: TeamFile; d
 export function restoreTeam(team: TeamFile, dir: string): void {
   currentTeam = team;
   currentTeamDir = dir;
+}
+
+/**
+ * Rebuild this session's team context from a resumed session (parity: Claude
+ * Code's `initializeTeammateContextFromSession` / `computeInitialTeamContext` in
+ * swarm/reconnection.ts). Given the `teamName` + `agentName` persisted in the
+ * transcript, it reads the team file off disk, rehydrates the in-memory singleton
+ * ({@link restoreTeam}), resolves this agent's deterministic id from the roster,
+ * rebinds the team-scoped task list, and installs the runtime
+ * {@link DynamicTeamContext} with the resolved self identity + leader flag. Emits an
+ * observable `[Reconnection] …` diagnostic for success, a missing-team-file
+ * failure, and the removed-member edge, so a resumed team session is never silently
+ * lost. Returns the installed context, or null when the team file is missing/corrupt.
+ */
+export function loadTeamFromSession(cwd: string, teamName: string, agentName: string): DynamicTeamContext | null {
+  const loaded = loadTeamFromDisk(cwd, teamName);
+  if (!loaded) {
+    teamDebug(`[Reconnection] Could not read team file for ${teamName} (agent: ${agentName})`);
+    return null;
+  }
+  restoreTeam(loaded.team, loaded.dir);
+  const member = findTeamMemberByName(loaded.team, agentName);
+  if (!member) {
+    teamDebug(`[Reconnection] Member ${agentName} not found in team ${teamName} - may have been removed`);
+  }
+  const agentId = member?.agentId ?? formatAgentId(agentName, loaded.team.name);
+  const isLead = agentName === TEAM_LEAD_NAME || agentId === loaded.team.leadAgentId;
+  const ctx: DynamicTeamContext = {
+    agentId,
+    agentName,
+    teamName: loaded.team.name,
+    color: member?.color,
+    planModeRequired: false,
+    parentSessionId: loaded.team.leadSessionId,
+  };
+  setDynamicTeamContext(ctx);
+  // Rebind the shared, team-scoped task list (Team = Project = TaskList) so
+  // task_tracker resolves to this team after the restart.
+  setTaskPersistPath(cwd, loaded.team.name);
+  teamDebug(
+    `[Reconnection] Initialized agent context from session for ` +
+    `${isLead ? `leader ${agentName}` : `teammate ${agentName}`} in team ${loaded.team.name}`,
+  );
+  return ctx;
+}
+
+/**
+ * Teams created THIS session that were not explicitly disbanded (parity: Claude
+ * Code's `sessionCreatedTeams` Set + registerTeamForSessionCleanup). On an abnormal
+ * exit (SIGINT/SIGTERM/crash) these are swept by {@link cleanupSessionTeams} so a
+ * `.ami/teams/<name>/` directory is never orphaned. An explicit team_delete
+ * unregisters its team ({@link unregisterTeamForSessionCleanup}) to avoid a
+ * double-cleanup. Reset between tests via {@link resetTeam}.
+ */
+const sessionCreatedTeams = new Set<string>();
+
+/** Mark a team created this session for orphan-cleanup on exit. */
+export function registerTeamForSessionCleanup(name: string): void {
+  sessionCreatedTeams.add(name);
+}
+
+/** Drop a team from session-cleanup tracking (already cleaned via team_delete). */
+export function unregisterTeamForSessionCleanup(name: string): void {
+  sessionCreatedTeams.delete(name);
+}
+
+/** The teams currently registered for session cleanup (introspection/tests). */
+export function getSessionCreatedTeams(): string[] {
+  return Array.from(sessionCreatedTeams);
+}
+
+/**
+ * Remove every team dir created this session that was never explicitly deleted
+ * (parity: Claude Code's `cleanupSessionTeams`, registered with gracefulShutdown).
+ * For each tracked team it tears down per-member worktrees FIRST (so teammate
+ * processes are not orphaned behind a deleted dir), then removes the team directory
+ * and its 1:1 task list. Best-effort and idempotent: a per-team failure is logged
+ * and skipped, the tracking Set is cleared afterward, and returns the names whose
+ * directory was removed. A no-op when nothing was registered.
+ */
+export function cleanupSessionTeams(cwd: string): string[] {
+  if (sessionCreatedTeams.size === 0) return [];
+  const names = Array.from(sessionCreatedTeams);
+  teamDebug(`cleanupSessionTeams: removing ${names.length} orphan team dir(s): ${names.join(', ')}`);
+  const removed: string[] = [];
+  for (const name of names) {
+    const dir = path.join(cwd, '.ami', 'teams', name);
+    // Tear down per-member worktrees before the dir (parity ordering).
+    const tf = readTeamFile(dir);
+    if (tf) {
+      for (const m of tf.members) {
+        if (m.worktreePath) removeMemberWorktree(m.worktreePath, cwd);
+      }
+    }
+    try {
+      if (_teamHooks.existsSync(dir)) {
+        _teamHooks.rmSync(dir, { recursive: true, force: true });
+        removed.push(name);
+        teamDebug(`cleanupSessionTeams: removed orphan team dir ${dir}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      teamDebug(`cleanupSessionTeams: failed to remove ${dir}: ${msg}`);
+    }
+    // Remove the team's 1:1 task list too (independent of dir removal).
+    deleteTaskList(cwd, name);
+  }
+  sessionCreatedTeams.clear();
+  return removed;
 }
 
 /** A teammate pre-declared in team_create's `members` input (post-validation). */
@@ -696,6 +917,7 @@ export const teamCreateTool: ToolDefinition = {
       // Re-bind the shared, team-scoped task list so task_tracker resolves to this
       // team's tasks (parity: Team = Project = TaskList) after the restart too.
       setTaskPersistPath(context.cwd, existing.team.name);
+      teamDebug(`Reconnected to existing team ${existing.team.name} (resumed session, ${existing.team.members.length} member(s))`);
       return {
         output: `Reconnected to existing team "${existing.team.name}" (resumed session). ` +
           `Team file: ${teamFilePath(existing.dir)}. Lead agent id: ${existing.team.leadAgentId}. ` +
@@ -774,6 +996,10 @@ export const teamCreateTool: ToolDefinition = {
     // Bind the shared, team-scoped task list (parity: Team = Project = TaskList) so
     // task_tracker calls persist to this team's own tasks file.
     setTaskPersistPath(context.cwd, name);
+    // Track this team for orphan-cleanup on an abnormal exit (parity:
+    // registerTeamForSessionCleanup) — team_delete unregisters it on a clean disband.
+    registerTeamForSessionCleanup(name);
+    teamDebug(`Created team ${name} (lead ${leadAgentId}, ${team.members.length} member(s))`);
 
     const renamed = name !== base ? ` (renamed from "${base}" — a team by that name already existed on disk)` : '';
     const declaredNote = parsedMembers.members.length > 0
@@ -836,6 +1062,7 @@ export const teamDeleteTool: ToolDefinition = {
     // Surface cleanup failures instead of silently reporting success.
     try {
       fs.rmSync(teamDir, { recursive: true, force: true });
+      teamDebug(`Cleaned up team directory: ${teamDir}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { output: `Error: failed to remove team directory ${teamDir}: ${msg}`, isError: true };
@@ -863,6 +1090,10 @@ export const teamDeleteTool: ToolDefinition = {
     // Unbind the team-scoped task list: subsequent task_tracker calls fall back to
     // the default list now that the team (and its 1:1 task list) is gone.
     setTaskPersistPath(context.cwd);
+    // Drop this team from session-cleanup tracking — it is already cleaned, so the
+    // shutdown sweep must not try again (parity: unregisterTeamForSessionCleanup).
+    unregisterTeamForSessionCleanup(name);
+    teamDebug(`Disbanded team ${name} (${worktreesRemoved} worktree(s) removed)`);
     const wtNote = worktreesRemoved > 0
       ? ` and ${worktreesRemoved} worktree${worktreesRemoved === 1 ? '' : 's'}`
       : '';
@@ -882,6 +1113,9 @@ export function resetTeam(): void {
   clearTeammateColors();
   // Drop any bound self identity so a fresh team/session starts clean.
   clearSelfIdentity();
+  // Clear session-cleanup tracking so a reset (and each test) starts with no
+  // registered orphan teams.
+  sessionCreatedTeams.clear();
 }
 
 /**
@@ -898,9 +1132,11 @@ export function registerTeamMember(member: Omit<TeamMember, 'joinedAt' | 'isActi
     // tinted so its output is distinguishable).
     const color = existing.color ?? member.color ?? assignTeammateColor(member.agentId || existing.agentId);
     Object.assign(existing, member, { isActive: member.isActive ?? true, color });
+    teamDebug(`Updated member ${member.name} in team ${currentTeam.name}`);
   } else {
     const color = member.color ?? assignTeammateColor(member.agentId);
     currentTeam.members.push({ ...member, color, joinedAt: member.joinedAt || new Date().toISOString(), isActive: member.isActive ?? true });
+    teamDebug(`Added member ${member.name} (${member.agentId}) to team ${currentTeam.name}`);
   }
   persistTeam();
 }
@@ -921,6 +1157,7 @@ export function setTeamMemberActive(nameOrId: string, active: boolean): void {
   m.isActive = active;
   m.idleSince = active ? undefined : new Date().toISOString();
   persistTeam();
+  teamDebug(`Set member ${m.name} in team ${currentTeam.name} to ${active ? 'active' : 'idle'}`);
   // Cancellation/abort boundary (PARITY): when a teammate goes inactive — it
   // finished, errored, stalled, or was killed — release any unresolved tasks it
   // still owns back to the pool so the work is not orphaned and an idle teammate
@@ -964,7 +1201,22 @@ export function setMemberMode(nameOrId: string, mode: string): PermissionMode | 
   if (m.permissionMode === valid) return valid;
   m.permissionMode = valid;
   persistTeam();
+  teamDebug(`Set member ${m.name} in team ${currentTeam.name} to mode: ${valid}`);
   return valid;
+}
+
+/**
+ * Sync THIS teammate's own permission mode into the shared team file so the lead
+ * sees it (parity: Claude Code's `syncTeammateMode`). A no-op unless this session
+ * is running as a (non-lead) teammate with a resolvable self name and an active
+ * team. Delegates to {@link setMemberMode} (write-if-changed + persist). Returns
+ * the applied mode, or null when it was a no-op or the mode string was invalid.
+ */
+export function syncTeammateMode(mode: string): PermissionMode | null {
+  if (!isTeammate()) return null;
+  const selfName = getSelfAgentName();
+  if (!selfName || !currentTeam) return null;
+  return setMemberMode(selfName, mode);
 }
 
 /**
@@ -978,6 +1230,7 @@ export function cycleMemberMode(nameOrId: string): PermissionMode | null {
   const next = getNextPermissionMode(m.permissionMode);
   m.permissionMode = next;
   persistTeam();
+  teamDebug(`Cycled member ${m.name} in team ${currentTeam.name} to mode: ${next}`);
   return next;
 }
 
@@ -1007,7 +1260,10 @@ export function setMultipleMemberModes(updates: Array<{ nameOrId: string; mode: 
       changed += 1;
     }
   }
-  if (changed > 0) persistTeam();
+  if (changed > 0) {
+    persistTeam();
+    teamDebug(`Set ${changed} member mode(s) in team ${currentTeam.name}`);
+  }
   return changed;
 }
 
@@ -1051,6 +1307,7 @@ export function removeTeamMember(nameOrId: string): TeamMember | null {
   const idx = currentTeam.members.indexOf(m);
   const [removed] = currentTeam.members.splice(idx, 1);
   persistTeam();
+  teamDebug(`Removed member ${removed.name} (${removed.agentId}) from team ${currentTeam.name}`);
   return removed;
 }
 
@@ -1071,7 +1328,10 @@ export function pruneIdleMembers(): TeamMember[] {
     if (idle) removed.push(m);
     return !idle;
   });
-  if (removed.length > 0) persistTeam();
+  if (removed.length > 0) {
+    persistTeam();
+    teamDebug(`Pruned ${removed.length} idle member(s) from team ${currentTeam.name}`);
+  }
   return removed;
 }
 
