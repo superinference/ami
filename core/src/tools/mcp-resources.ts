@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { spillToolText, formatSize } from './spill-output';
+import { spillToolText } from './spill-output';
+import { getBinaryBlobSavedMessage } from './mcp-output-storage';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -140,17 +141,6 @@ export const listMcpResourcesTool: ToolDefinition = {
   },
 };
 
-/**
- * Build the human/model-facing message describing where a decoded binary blob
- * was saved, mirroring Claude's `getBinaryBlobSavedMessage`:
- *   `[Resource from <server> at <uri>] Binary content (<mime>, <size>) saved to <path>`
- * The leading source description lets the model re-open the file with the Read
- * tool and know which resource it came from.
- */
-function blobSavedMessage(file: string, mimeType: string | undefined, size: number, source: string): string {
-  return `${source}Binary content (${mimeType || 'unknown type'}, ${formatSize(size)}) saved to ${file}`;
-}
-
 /** Normalize a raw resources/read result into text/blob entries, persisting blobs. */
 function normalizeResourceResult(result: unknown, dir: string, server: string): ResourceContent[] {
   const raw = (result && typeof result === 'object' ? (result as { contents?: unknown }).contents : undefined);
@@ -171,7 +161,7 @@ function normalizeResourceResult(result: unknown, dir: string, server: string): 
         // Keep both the structured path AND a legible saved-to-disk message so the
         // base64 is never inlined into the context (Claude-parity blob interception).
         const source = `[Resource from ${server} at ${it.uri ?? ''}] `;
-        return { uri: it.uri, mimeType: it.mimeType, blobSavedTo: file, text: blobSavedMessage(file, it.mimeType, bytes.length, source) };
+        return { uri: it.uri, mimeType: it.mimeType, blobSavedTo: file, text: getBinaryBlobSavedMessage(file, it.mimeType, bytes.length, source) };
       } catch (err) {
         // Persistence failed — degrade to a text note rather than throwing.
         const reason = err instanceof Error ? err.message : String(err);

@@ -253,11 +253,13 @@ describe('processMcpContent', () => {
     assert.equal(out!.format, 'Plain text');
   });
 
-  it('emits structuredContent as JSON (before content array)', () => {
+  it('emits structuredContent as JSON with a compact jq-friendly schema (before content array)', () => {
     const out = processMcpContent({ structuredContent: { a: 1, b: ['x'] }, content: [] });
     assert.ok(out, 'structuredContent should be surfaced');
     assert.deepEqual(JSON.parse(out!.text), { a: 1, b: ['x'] });
-    assert.equal(out!.format, 'JSON');
+    // Parity: Claude's transformMCPResult attaches inferCompactSchema() to the
+    // structuredContent format so a spilled result tells the model its shape.
+    assert.equal(out!.format, 'JSON with schema: {a: number, b: [string]}');
   });
 
   it('labels a flattened content array as plain text', () => {

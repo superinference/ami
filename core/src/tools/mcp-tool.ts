@@ -3,14 +3,22 @@ import { spillToolText, getFormatDescription, isAlreadySpilled } from './spill-o
 import { boundMcpResponse, getMaxMcpOutputChars } from '../mcp/client';
 import type { McpToolAnnotations } from '../mcp/client';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from './input-sanitizer';
+import { persistBinaryContent, getBinaryBlobSavedMessage } from './mcp-output-storage';
 
 /** Default MCP tool call timeout: 5 minutes (300 000 ms). */
 export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000;
 
-/** Read the MCP tool timeout from the environment, falling back to the default.
- *  Invalid or non-positive values are silently replaced by the default. */
+/** Read the MCP tool-call timeout (milliseconds) from the environment, falling
+ *  back to the default. Invalid or non-positive values are silently replaced by
+ *  the default.
+ *
+ *  Precedence: AMI's own `SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS` wins (kept as the
+ *  canonical knob), then Claude Code's standard `MCP_TOOL_TIMEOUT` env var is
+ *  honored for parity (managedEnvConstants.ts:L161 — both are milliseconds), so
+ *  a user who sets the industry-standard variable gets the expected behavior
+ *  without having to learn an AMI-specific name. */
 export function getMcpToolTimeout(): number {
-  const raw = process.env.SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS;
+  const raw = process.env.SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS ?? process.env.MCP_TOOL_TIMEOUT;
   if (raw === undefined || raw === '') return DEFAULT_MCP_TOOL_TIMEOUT_MS;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_MCP_TOOL_TIMEOUT_MS;
@@ -181,8 +189,10 @@ export function createMcpTool(
           return { output: extractMcpErrorText(result), isError: true };
         }
 
-        // Try structured content processing before falling back to JSON
-        const processed = processMcpContent(result);
+        // Try structured content processing before falling back to JSON. Pass the
+        // workspace cwd so binary resource blobs are persisted to the tool-results
+        // dir (and the model gets a readable path) rather than reported size-only.
+        const processed = processMcpContent(result, context.cwd);
         const raw = processed ? processed.text : (typeof result === 'string' ? result : JSON.stringify(result, null, 2));
         // Prefer the server's explicit per-result hint; otherwise fall back to the
         // token-budget-derived default (MAX_MCP_OUTPUT_TOKENS × 4 chars) so every
@@ -230,6 +240,31 @@ export function extractMaxResultSizeChars(result: unknown): number | undefined {
   return undefined;
 }
 
+/** Generate a compact, jq-friendly type signature for a value, e.g.
+ *  `{title: string, items: [{id: number, name: string}]}`. Mirrors Claude Code's
+ *  `inferCompactSchema` (services/mcp/client.ts:L2644-2660): descends at most
+ *  `depth` levels (deeper objects collapse to `{...}`), samples the first element
+ *  of an array, and caps an object at its first 10 keys (appending `, ...` when
+ *  more exist) so the signature stays short enough to prepend to a large-output
+ *  spill banner. Lets the model see the shape of a persisted structured result
+ *  and write a precise `jq` query without having to read the whole file first. */
+export function inferCompactSchema(value: unknown, depth = 2): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+    return `[${inferCompactSchema(value[0], depth - 1)}]`;
+  }
+  if (typeof value === 'object') {
+    if (depth <= 0) return '{...}';
+    const keys = Object.keys(value as Record<string, unknown>);
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, 10);
+    const props = entries.map(([k, v]) => `${k}: ${inferCompactSchema(v, depth - 1)}`);
+    const suffix = keys.length > 10 ? ', ...' : '';
+    return `{${props.join(', ')}${suffix}}`;
+  }
+  return typeof value;
+}
+
 /** Supported image MIME types for inline representation. */
 const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 /** Text-like MIME types that can be decoded and shown inline. */
@@ -243,7 +278,7 @@ const TEXT_RESOURCE_PATTERN = /^(text\/|application\/json|application\/xml)/;
  *  `toolResult` string, then a `structuredContent` object, then the `content`
  *  array. The first two are otherwise lost to a raw stringify of the whole
  *  wrapper object (empty content array / _meta and all). */
-export function processMcpContent(result: unknown): { text: string; metadata?: Record<string, unknown>; format?: string } | null {
+export function processMcpContent(result: unknown, cwd?: string): { text: string; metadata?: Record<string, unknown>; format?: string } | null {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
   const obj = result as Record<string, unknown>;
 
@@ -253,8 +288,12 @@ export function processMcpContent(result: unknown): { text: string; metadata?: R
   }
   // Priority 2: `structuredContent` object — emit the structured payload as JSON
   // so it survives instead of being dropped to a stringify of the whole wrapper.
+  // The format carries a compact jq-friendly schema signature so a spilled result
+  // tells the model the shape to query (Claude parity: transformMCPResult attaches
+  // inferCompactSchema() to structuredContent).
   if (obj.structuredContent && typeof obj.structuredContent === 'object') {
-    return { text: JSON.stringify(obj.structuredContent, null, 2), format: getFormatDescription('structuredContent') };
+    const schema = inferCompactSchema(obj.structuredContent);
+    return { text: JSON.stringify(obj.structuredContent, null, 2), format: getFormatDescription('structuredContent', schema) };
   }
 
   if (!Array.isArray(obj.content)) return null;
@@ -303,9 +342,21 @@ export function processMcpContent(result: unknown): { text: string; metadata?: R
             parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime})]`);
           }
         } else if (typeof resource.blob === 'string') {
-          // Binary resource — report size
-          const sizeBytes = Math.ceil(((resource.blob as string).length * 3) / 4);
-          parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime || 'unknown type'}, ${sizeBytes} bytes)]`);
+          // Binary resource — persist the raw bytes to the tool-results dir with a
+          // mime-correct extension (so the Read tool can later open the PDF/xlsx/
+          // image) and surface an actionable "saved to <path>" message instead of
+          // dropping the base64 into context. Mirrors Claude's persistBlobToTextBlock.
+          // Without a cwd (pure-function callers), fall back to a size placeholder.
+          let bytes: Buffer | null = null;
+          try { bytes = Buffer.from(resource.blob as string, 'base64'); } catch { bytes = null; }
+          const persisted = cwd && bytes ? persistBinaryContent(cwd, bytes, mime || undefined) : undefined;
+          if (persisted && !('error' in persisted)) {
+            const source = `[Resource from MCP at ${resource.uri ?? 'unknown'}] `;
+            parts.push(getBinaryBlobSavedMessage(persisted.filepath, mime || undefined, persisted.size, source));
+          } else {
+            const sizeBytes = bytes ? bytes.length : Math.ceil(((resource.blob as string).length * 3) / 4);
+            parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime || 'unknown type'}, ${sizeBytes} bytes)]`);
+          }
         } else {
           parts.push(`[Resource: ${resource.uri ?? 'unknown'}]`);
         }
