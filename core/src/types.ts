@@ -706,6 +706,16 @@ export interface ProviderConfig {
    */
   toolChoice?: 'auto' | 'required' | 'none' | { type: 'tool'; toolName: string };
   /**
+   * Generation stop strings. When the model emits ANY of these sequences the
+   * provider halts generation at that point (the sequence itself is not included
+   * in the output). Useful for bounded classifier / validator outputs and format
+   * fencing — a caller can terminate on a delimiter (e.g. `['</answer>']`).
+   * Forwarded verbatim as the AI SDK `stopSequences` option; omitted (no stop
+   * strings) when unset or empty. Mirrors Claude Code's `stop_sequences` request
+   * parameter (utils/sideQuery.ts).
+   */
+  stopSequences?: string[];
+  /**
    * Stable user/session identifier forwarded to the provider as the request
    * metadata user id — Anthropic `metadata.user_id`, OpenAI `user`. A non-lock-in
    * input parameter that drives abuse detection and can influence rate-limit

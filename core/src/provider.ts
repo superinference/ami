@@ -22,7 +22,7 @@ import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCall
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES } from './error-classifier';
-import { getMTLSConfig, getTLSConnectOptions } from './utils/mtls';
+import { getMTLSConfig, getTLSConnectOptions, MTLS_ENV } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { isEnvTruthy } from './analytics';
 import { log } from './logger';
@@ -678,6 +678,40 @@ export function buildRequestIdHeader(
     }
   }
   return { [REQUEST_ID_HEADER]: requestIdHooks.generate() };
+}
+
+/**
+ * Resolve the client request-id to use for a call: REUSE a caller-provided
+ * `x-superinference-request-id` header (any casing) so the id on the wire and the
+ * id surfaced on an error are the same, otherwise MINT a fresh one — but only when
+ * {@link endpointAcceptsClientRequestId} allows it (managed gateways get no id, as
+ * their strict proxies reject unknown headers). Returns undefined when no id should
+ * be used, so the gateway path stays header-free and unchanged.
+ */
+export function resolveClientRequestId(
+  config: Pick<ProviderConfig, 'extraHeaders'>,
+  provider: string | undefined,
+): string | undefined {
+  if (config.extraHeaders) {
+    for (const [k, v] of Object.entries(config.extraHeaders)) {
+      if (k.toLowerCase() === REQUEST_ID_HEADER && v) return v;
+    }
+  }
+  return endpointAcceptsClientRequestId(provider) ? requestIdHooks.generate() : undefined;
+}
+
+/**
+ * Append the client-generated request-id to a terminal API-error message so a user
+ * can hand it to their provider/gateway and find the exact failed call in server
+ * logs. The id is the ONLY correlation handle on a timeout/connection failure (the
+ * server returned no response id). Idempotent (never appends twice) and a no-op
+ * when there is no id. Mirrors Claude Code's `API error x-client-request-id=…` log.
+ */
+export function appendRequestIdToError(errorText: string | undefined, requestId: string | undefined): string {
+  const base = errorText ?? '';
+  if (!requestId || base.includes(REQUEST_ID_HEADER)) return base;
+  const hint = `(${REQUEST_ID_HEADER}=${requestId} — give this id to your provider/gateway to find this request in their logs)`;
+  return base ? `${base} ${hint}` : hint;
 }
 
 /**
@@ -1975,6 +2009,24 @@ const ADAPTIVE_EFFORT_BY_LEVEL: Record<string, 'low' | 'medium' | 'high' | 'xhig
   low: 'low', medium: 'medium', high: 'high', max: 'max',
 };
 
+/**
+ * Env knobs that FORCE the reasoning-effort parameter on for a model AMI's static
+ * capability detection did not recognize as a reasoning model (e.g. a brand-new
+ * third-party OpenAI-compatible reasoning model). Without this, an unrecognized
+ * model falls through to no-thinking even with `--thinking` set. AMI-native name
+ * first, Claude Code's name as a drop-in alias. Mirrors Claude Code's
+ * `modelSupportsEffort()` CLAUDE_CODE_ALWAYS_ENABLE_EFFORT gate (utils/effort.ts).
+ */
+export const ALWAYS_ENABLE_EFFORT_ENV_VARS = ['SUPERINFERENCE_ALWAYS_ENABLE_EFFORT', 'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT'] as const;
+
+/** True when any {@link ALWAYS_ENABLE_EFFORT_ENV_VARS} knob is set truthy. */
+export function alwaysEnableEffort(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ALWAYS_ENABLE_EFFORT_ENV_VARS.some(name => isEnvTruthy(env[name]));
+}
+
+/** Map a thinking level onto an OpenAI-compatible `reasoning_effort` value (max→high). */
+const OPENAI_EFFORT_BY_LEVEL: Record<string, string> = { low: 'low', medium: 'medium', high: 'high', max: 'high' };
+
 export function buildThinkingOptions(
   modelId: string,
   thinking: ThinkingConfig | undefined,
@@ -2034,14 +2086,22 @@ export function buildThinkingOptions(
 
   // OpenAI o-series — reasoning_effort via providerOptions
   if (caps?.temperatureMustBeUnset) {
-    const effortMap: Record<string, string> = { low: 'low', medium: 'medium', high: 'high', max: 'high' };
-    return { providerOptions: { openai: { reasoningEffort: effortMap[thinking.level] ?? 'medium' } } };
+    return { providerOptions: { openai: { reasoningEffort: OPENAI_EFFORT_BY_LEVEL[thinking.level] ?? 'medium' } } };
   }
 
   // Google Gemini 2.5 — thinkingConfig via providerOptions
   if (modelId.startsWith('gemini-2.5') || modelId.startsWith('gemini-3')) {
     const budgetTokens = thinking.budgetTokens ?? resolveThinkingBudget(thinking.level, modelId);
     return { providerOptions: { google: { thinkingConfig: { thinkingBudget: budgetTokens, includeThoughts: true } } } };
+  }
+
+  // Force-enable-effort override (parity: CLAUDE_CODE_ALWAYS_ENABLE_EFFORT). A model
+  // AMI did not statically recognize as a reasoning model (a new 3P OpenAI-compatible
+  // reasoning model) would otherwise fall through to NO effort even with --thinking
+  // set. When the env knob is on, emit the OpenAI-compatible `reasoning_effort` field
+  // (the near-universal 3P spelling) so the effort control still reaches the endpoint.
+  if (alwaysEnableEffort()) {
+    return { providerOptions: { openai: { reasoningEffort: OPENAI_EFFORT_BY_LEVEL[thinking.level] ?? 'medium' } } };
   }
 
   // DeepSeek / other: no special options needed, thinking comes via inline tags
@@ -2313,6 +2373,13 @@ export async function* streamChatCompletion(
       ? { toolChoice: config.toolChoice }
       : {};
 
+    // Generation stop strings (parity: Claude Code's `stop_sequences`). Forwarded
+    // verbatim to the AI SDK so the model halts when any sentinel is emitted;
+    // omitted when unset/empty so the request is byte-identical for the common case.
+    const stopSequencesOpt = (config.stopSequences && config.stopSequences.length > 0)
+      ? { stopSequences: config.stopSequences }
+      : {};
+
     // Request metadata user id (Anthropic metadata.user_id / OpenAI user) from
     // config or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID env knob.
     // Combine the prompt-cache, metadata, and thinking fragments into ONE
@@ -2330,6 +2397,7 @@ export async function* streamChatCompletion(
       messages: coreMessages,
       tools: toolsForModel,
       ...toolChoiceOpt,
+      ...stopSequencesOpt,
       maxOutputTokens: fitOutputTokens(
         // When the caller omits maxTokens, use the model's conservative DEFAULT
         // budget (Claude's getModelMaxOutputTokens().default) rather than a flat
@@ -2664,6 +2732,26 @@ export function formatTimeoutError(timeoutMs: number, partial: boolean): string 
     + `(SUPERINFERENCE_API_TIMEOUT_MS=${timeoutMs}ms, try increasing it)`;
 }
 
+/**
+ * Build the actionable SSL/TLS error message. Beyond the custom-CA-file hint
+ * (NODE_EXTRA_CA_CERTS), it names AMI's own trust/auth affordances so the fix is
+ * self-service: a custom CA bundle ({@link MTLS_ENV.ca}) for a corporate CA already
+ * trusted by the OS but not exported as a PEM file, and client-certificate / mutual
+ * TLS ({@link MTLS_ENV.cert}/{@link MTLS_ENV.key}) for a gateway that rejects the
+ * handshake for lack of a client cert. Mirrors Claude Code's caCerts.ts / mtls.ts
+ * remedy enumeration.
+ */
+export function formatSslError(original: string): string {
+  return (
+    `SSL/TLS certificate error: ${original}. Possible fixes: ` +
+    '(1) Set NODE_EXTRA_CA_CERTS=/path/to/ca-bundle.crt for corporate proxies ' +
+    '(2) Check if a TLS-inspecting proxy needs its CA certificate added ' +
+    "(3) Verify server certificates haven't expired " +
+    `(4) Trust a corporate/private CA already in your OS store by exporting it and setting ${MTLS_ENV.ca} to its PEM (path or inline) ` +
+    `(5) If the server requires a CLIENT certificate (mutual TLS), set ${MTLS_ENV.cert} and ${MTLS_ENV.key} (optionally ${MTLS_ENV.passphrase})`
+  );
+}
+
 export async function* streamChatCompletionWithRetry(
   config: ProviderConfig,
   messages: Message[],
@@ -2684,6 +2772,28 @@ export async function* streamChatCompletionWithRetry(
   // attempt and the recovery can actually succeed. Byte-identical when the env is
   // unset and when the caller already set config.cacheTtl.
   config = { ...config, cacheTtl: resolveCacheTtl(config.cacheTtl) };
+
+  // Client request-id for log correlation. Resolve/mint it ONCE (stable across all
+  // retry attempts) and pin it into extraHeaders so the SAME id rides every wire
+  // request (resolveModel's buildRequestIdHeader sees the existing header and does
+  // not overwrite) AND can be surfaced on a terminal failure — the only handle for
+  // a timeout, where the server returns no response id. Gated to first-party-style
+  // endpoints; a managed gateway yields no id and the header stays absent.
+  const reqProvider = config.provider
+    || inferProviderFromApiKey(config.apiKey)?.provider
+    || (config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl)?.provider : undefined)
+    || inferProviderFromEnv()?.provider;
+  const clientRequestId = resolveClientRequestId(config, reqProvider);
+  if (clientRequestId) {
+    config = { ...config, extraHeaders: { ...(config.extraHeaders ?? {}), [REQUEST_ID_HEADER]: clientRequestId } };
+  }
+  // Decorate a terminal ERROR chunk with the correlation id (never an abort, which
+  // is user-driven and needs no server lookup). Non-error chunks pass through.
+  const withRequestId = (chunk: StreamChunk): StreamChunk =>
+    (chunk.type === 'error' && chunk.error !== 'Request aborted')
+      ? { ...chunk, error: appendRequestIdToError(chunk.error, clientRequestId) }
+      : chunk;
+
   const envTimeout = envApiTimeoutMs(process.env);
   const timeoutMs = options?.requestTimeoutMs ?? (envTimeout > 0 ? envTimeout : DEFAULT_REQUEST_TIMEOUT_MS);
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
@@ -2727,7 +2837,7 @@ export async function* streamChatCompletionWithRetry(
         const statusCode = extractStatusCode(chunk.error ?? '');
 
         if (statusCode === 401) {
-          yield chunk;
+          yield withRequestId(chunk);
           return;
         }
 
@@ -2780,9 +2890,15 @@ export async function* streamChatCompletionWithRetry(
           : (shouldRetryHdr === 'true' || bodyOverloaded || emptyStream || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
         if (retryAllowed && attempt < maxRetries) {
           if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
-            yield chunk;
+            yield withRequestId(chunk);
             return;
           }
+
+          // Per-attempt diagnostic (parity: Claude Code's `API error (attempt X/Y)`
+          // logForDebugging): record the status + sanitized reason tied to the attempt
+          // number so a human reading the debug log can tell WHY it is retrying
+          // (overloaded_error vs 429 vs ECONNRESET vs timeout), not just a number.
+          log('api', `API retry (attempt ${attempt + 1}/${maxRetries}): status=${statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : 'none')} ${sanitizeErrorMessage(chunk.error ?? '')}`);
 
           let delayMs: number;
           const retryAfterSeconds = chunk.retryAfter;
@@ -2822,7 +2938,7 @@ export async function* streamChatCompletionWithRetry(
           break; // break inner loop to retry
         }
 
-        yield chunk;
+        yield withRequestId(chunk);
         return;
       }
 
@@ -2853,12 +2969,7 @@ export async function* streamChatCompletionWithRetry(
       } else if (isSslError(err)) {
         // SSL/TLS errors are not transient — fail immediately with actionable hints
         const original = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `SSL/TLS certificate error: ${original}. Possible fixes: ` +
-          '(1) Set NODE_EXTRA_CA_CERTS=/path/to/ca-bundle.crt for corporate proxies ' +
-          '(2) Check if a TLS-inspecting proxy needs its CA certificate added ' +
-          "(3) Verify server certificates haven't expired",
-        );
+        throw new Error(formatSslError(original));
       } else if (!contentStarted && attempt < maxRetries && isNetworkError(err)) {
         networkRetry = true;
         // A STALE pooled keep-alive socket (ECONNRESET/EPIPE) must be dropped, not
@@ -2881,13 +2992,13 @@ export async function* streamChatCompletionWithRetry(
 
     if (timedOut) {
       if (contentStarted) {
-        yield { type: 'error', error: formatTimeoutError(timeoutMs, true) };
+        yield withRequestId({ type: 'error', error: formatTimeoutError(timeoutMs, true) });
         return;
       }
       // No content yet — treat like a retryable error
       if (attempt < maxRetries) {
         if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
-          yield { type: 'error', error: `Retry time limit exceeded (${maxTotalWait}ms)` };
+          yield withRequestId({ type: 'error', error: `Retry time limit exceeded (${maxTotalWait}ms)` });
           return;
         }
         const timeoutDelay = jitteredDelay(Math.min(baseDelay * Math.pow(2, attempt), maxDelay));
@@ -2902,13 +3013,13 @@ export async function* streamChatCompletionWithRetry(
         }
         continue;
       }
-      yield { type: 'error', error: formatTimeoutError(timeoutMs, false) };
+      yield withRequestId({ type: 'error', error: formatTimeoutError(timeoutMs, false) });
       return;
     }
 
     if (networkRetry) {
       if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
-        yield { type: 'error', error: 'Network error (retry time limit exceeded)' };
+        yield withRequestId({ type: 'error', error: 'Network error (retry time limit exceeded)' });
         return;
       }
       // Stale keep-alive socket (ECONNRESET/EPIPE): force the next attempt onto a
@@ -2935,7 +3046,7 @@ export async function* streamChatCompletionWithRetry(
     }
   }
 
-  yield { type: 'error', error: `Max retries (${maxRetries}) exceeded` };
+  yield withRequestId({ type: 'error', error: `Max retries (${maxRetries}) exceeded` });
 }
 
 // ---------------------------------------------------------------------------
