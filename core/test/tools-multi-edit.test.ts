@@ -110,7 +110,9 @@ describe('fileEditTool – edits', () => {
     assert.ok(content.includes('const c = 30;'));
   });
 
-  it('applies edits sequentially', async () => {
+  it('rejects a later edit targeting a previous edit output (Claude substring guard)', async () => {
+    // Parity: Claude FileEditTool refuses an edit whose old_string is a substring of
+    // an earlier edit's new_string, so edit 1 applies and edit 2 is rejected.
     const file = path.join(tmpDir, 'seq.ts');
     fs.writeFileSync(file, 'AAA\n');
 
@@ -123,7 +125,8 @@ describe('fileEditTool – edits', () => {
     }, ctx());
 
     assert.ok(!result.isError);
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'CCC\n');
+    assert.ok(result.output.includes('1/2 edits applied'));
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'BBB\n');
   });
 
   it('reports partial success with failed edits', async () => {

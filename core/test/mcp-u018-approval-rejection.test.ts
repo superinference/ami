@@ -58,6 +58,7 @@ class FakeClient extends EventEmitter {
   async getPrompt() { return { messages: [] }; }
   async ping() {}
   async reconnect() {}
+  async revokeAuth() {}
   disconnect() {}
 }
 

@@ -37,6 +37,7 @@ class FakeClient extends EventEmitter {
   async connectSSE(): Promise<void> { if (this.throwOnConnect) throw this.throwOnConnect; }
   async listTools(): Promise<unknown[]> { return []; }
   async reconnect(): Promise<void> {}
+  async revokeAuth(): Promise<void> {}
   disconnect(): void {}
 }
 

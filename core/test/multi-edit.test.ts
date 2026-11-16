@@ -109,7 +109,9 @@ describe('multi_edit tool', () => {
     assert.ok(result.isError);
   });
 
-  it('applies edits sequentially (later sees earlier results)', async () => {
+  it('rejects a later edit whose old_string is a previous new_string (Claude substring guard)', async () => {
+    // Parity with Claude FileEditTool/utils.ts:301-308: an edit that targets text a
+    // previous edit just wrote is refused, so edit 1 applies and edit 2 is rejected.
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'AAA\n');
 
@@ -121,8 +123,9 @@ describe('multi_edit tool', () => {
       ],
     }, ctx());
 
-    assert.ok(!result.isError);
-    assert.ok(result.output.includes('2/2'));
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'CCC\n');
+    assert.ok(!result.isError); // edit 1 applied → partial success, not an error
+    assert.ok(result.output.includes('1/2'));
+    assert.match(result.output, /substring of a new_string from a previous edit/);
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'BBB\n');
   });
 });

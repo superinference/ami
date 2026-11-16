@@ -350,7 +350,7 @@ describe('process-manager ProcessManager signal/timer paths', () => {
   });
 
   it('notifies (does not kill) a stalled process that emits an interactive prompt (stall interval)', async () => {
-    mock.timers.enable({ apis: ['setInterval'] });
+    mock.timers.enable({ apis: ['setInterval', 'Date'] });
     let pm: ProcessManager;
     let id: string;
     let stalled = false;
@@ -358,7 +358,8 @@ describe('process-manager ProcessManager signal/timer paths', () => {
       pm = mk();
       pm.on('stalled', () => { stalled = true; });
       id = pm.spawn("printf 'Continue? (y/n) '; sleep 30", { cwd: (pm as any).tasksDir });
-      // real setTimeout still works (only setInterval is mocked); let output land
+      // real setTimeout still works (setInterval + Date are mocked so tick() advances
+      // the Date.now()-based stall threshold); let the child output land
       await new Promise(r => setTimeout(r, 400));
       mock.timers.tick(45000); // first tick: output changed since 0 -> records size
       mock.timers.tick(45000); // second tick: size stable + prompt-like -> notify (not kill)
