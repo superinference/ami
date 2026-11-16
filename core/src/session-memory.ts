@@ -49,10 +49,27 @@ export interface SessionMemoryConfig {
    * ones. Bounded by `maxEntries`.
    */
   recencyProtectedCount: number;
-  /** Token delta since the last extraction that triggers a new extraction pass. */
-  extractTokenThreshold: number;
-  /** Tool-call delta since the last extraction that triggers a new pass. */
-  extractToolCallThreshold: number;
+  /**
+   * Minimum total context-window tokens before the FIRST extraction is allowed.
+   * Until the conversation is at least this large, no extraction runs — there is
+   * nothing worth persisting yet. Parity: Claude's `minimumMessageTokensToInit`
+   * (default 10000), counted the same way as autocompact so the two features agree
+   * (SessionMemory/sessionMemoryUtils.ts:L18-35).
+   */
+  minInitContextTokens: number;
+  /**
+   * Minimum context-window GROWTH (in tokens) since the last extraction before the
+   * next one is allowed. Measures actual context growth, not cumulative API usage.
+   * Parity: Claude's `minimumTokensBetweenUpdate` (default 5000)
+   * (SessionMemory/sessionMemoryUtils.ts:L21-26, hasMetUpdateThreshold).
+   */
+  minTokensBetweenUpdate: number;
+  /**
+   * Number of tool calls since the last extraction before a new pass is allowed.
+   * Parity: Claude's `toolCallsBetweenUpdates` (default 3)
+   * (SessionMemory/sessionMemoryUtils.ts:L27).
+   */
+  toolCallsBetweenUpdate: number;
   /**
    * Categories treated as critical. During eviction they receive a scoring boost
    * (see {@link SessionMemoryConfig.criticalityBoost}) so important facts survive
@@ -79,8 +96,9 @@ export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
   extractionTimeoutMs: 30_000,
   dedupSimilarityThreshold: 0.85,
   recencyProtectedCount: 20,
-  extractTokenThreshold: 8_000,
-  extractToolCallThreshold: 20,
+  minInitContextTokens: 10_000,
+  minTokensBetweenUpdate: 5_000,
+  toolCallsBetweenUpdate: 3,
   criticalCategories: ['error_fix', 'decision', 'user_preference'],
   criticalityBoost: 0.5,
 };
@@ -270,6 +288,21 @@ export class SessionMemoryExtractor {
    *  Defaults to the real wall clock; tests override it for determinism. */
   _now: () => Date = () => new Date();
 
+  /**
+   * Whether session memory has crossed its initialization threshold at least once.
+   * Before this is true, {@link shouldExtractFacts} defers all extraction until the
+   * context reaches `config.minInitContextTokens` — the first extraction is held off
+   * until there is enough context to be worth persisting. Parity: Claude's
+   * `isSessionMemoryInitialized` / `markSessionMemoryInitialized`.
+   */
+  private _initialized = false;
+  /**
+   * Total context-window token count recorded at the last extraction, used to
+   * measure growth for the `minTokensBetweenUpdate` gate. Parity: Claude's
+   * `tokensAtLastExtraction` (0 until the first extraction).
+   */
+  private _tokensAtLastExtraction = 0;
+
   constructor(provider: ProviderConfig, compactionModel?: string, config?: Partial<SessionMemoryConfig>) {
     this.provider = provider;
     this.compactionModel = compactionModel;
@@ -278,24 +311,72 @@ export class SessionMemoryExtractor {
   }
 
   /**
-   * Threshold/cadence gate: whether enough has happened since the last extraction
-   * to warrant another pass. Mirrors Claude's dual-threshold logic — extract when
-   * either the token delta or the tool-call delta crosses its threshold — plus a
-   * natural-break special case: at a turn boundary, extract any pending work even
-   * if neither threshold has been reached, so facts are not lost at end of turn.
+   * Threshold/cadence gate: whether enough has happened to warrant an extraction
+   * pass, given the CURRENT total context-window token count. Mirrors Claude's
+   * `shouldExtractMemory` exactly:
+   *
+   * 1. **Init gate** — before the first extraction, defer until the context reaches
+   *    `config.minInitContextTokens`; there is nothing worth persisting from a tiny
+   *    conversation. Once crossed, the extractor is marked initialized (a one-way
+   *    latch) so later passes use only the growth gate.
+   * 2. **Token (growth) gate** — context growth since the last extraction must reach
+   *    `config.minTokensBetweenUpdate`. This gate is ALWAYS required: a burst of tool
+   *    calls alone never triggers extraction until the context has actually grown,
+   *    which prevents excessive extractions.
+   * 3. **Trigger** — extract when the growth gate is met AND either the tool-call
+   *    gate (`toolCallsSinceLast >= config.toolCallsBetweenUpdate`) is met, OR the
+   *    turn ended at a natural break (`naturalBreak`, i.e. no tool calls in the last
+   *    assistant turn) so pending work is captured at the boundary.
+   *
+   * This is a predicate with one documented side effect: it latches `initialized`
+   * when the init threshold is first met (matching the reference). Call
+   * {@link recordExtraction} after a pass actually runs to advance the growth
+   * baseline, and {@link resetExtractionState} to clear the latch (e.g. a new session).
    */
   shouldExtractFacts(opts: {
-    tokensSinceLast: number;
+    currentContextTokens: number;
     toolCallsSinceLast: number;
     naturalBreak?: boolean;
   }): boolean {
-    const { tokensSinceLast, toolCallsSinceLast, naturalBreak } = opts;
-    const pending = tokensSinceLast > 0 || toolCallsSinceLast > 0;
-    if (naturalBreak) return pending;
+    const { currentContextTokens, toolCallsSinceLast, naturalBreak } = opts;
+
+    // 1. Init gate (latches on first threshold-met).
+    if (!this._initialized) {
+      if (currentContextTokens < this.config.minInitContextTokens) return false;
+      this._initialized = true;
+    }
+
+    // 2. Token-growth gate — measured against the context size at the last pass.
+    const growth = currentContextTokens - this._tokensAtLastExtraction;
+    const hasMetTokenThreshold = growth >= this.config.minTokensBetweenUpdate;
+
+    // 3. Tool-call gate + natural-break special case. The token gate is always required.
+    const hasMetToolCallThreshold = toolCallsSinceLast >= this.config.toolCallsBetweenUpdate;
     return (
-      tokensSinceLast >= this.config.extractTokenThreshold ||
-      toolCallsSinceLast >= this.config.extractToolCallThreshold
+      (hasMetTokenThreshold && hasMetToolCallThreshold) ||
+      (hasMetTokenThreshold && naturalBreak === true)
     );
+  }
+
+  /**
+   * Record that an extraction pass ran at `currentContextTokens`, advancing the
+   * growth baseline for the next `minTokensBetweenUpdate` check and latching the
+   * initialized state. Parity: Claude's `recordExtractionTokenCount` +
+   * `markSessionMemoryInitialized`. Call this only after a pass actually completes.
+   */
+  recordExtraction(currentContextTokens: number): void {
+    this._initialized = true;
+    this._tokensAtLastExtraction = currentContextTokens;
+  }
+
+  /**
+   * Clear the extraction cadence state (initialized latch + growth baseline) so the
+   * init gate applies again — e.g. when switching to a fresh session. Parity:
+   * Claude's `resetSessionMemoryState`.
+   */
+  resetExtractionState(): void {
+    this._initialized = false;
+    this._tokensAtLastExtraction = 0;
   }
 
   /**

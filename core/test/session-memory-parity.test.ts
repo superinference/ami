@@ -22,39 +22,65 @@ function factGen(chunks: StreamChunk[]): SessionMemoryExtractor['_streamFn'] {
 // ---------------------------------------------------------------------------
 // Gap: threshold/cadence gate before extraction (shouldExtractFacts)
 // ---------------------------------------------------------------------------
-describe('SessionMemoryExtractor.shouldExtractFacts — dual threshold + natural break', () => {
-  const ex = new SessionMemoryExtractor(provider);
+describe('SessionMemoryExtractor.shouldExtractFacts — init gate + growth + tool-call + natural break', () => {
+  const INIT = DEFAULT_SESSION_MEMORY_CONFIG.minInitContextTokens; // 10000
+  const GROWTH = DEFAULT_SESSION_MEMORY_CONFIG.minTokensBetweenUpdate; // 5000
+  const TOOLS = DEFAULT_SESSION_MEMORY_CONFIG.toolCallsBetweenUpdate; // 3
 
-  it('is false when neither threshold is reached and no natural break', () => {
-    assert.equal(ex.shouldExtractFacts({ tokensSinceLast: 10, toolCallsSinceLast: 1 }), false);
+  it('defers all extraction until the context reaches the init threshold', () => {
+    const ex = new SessionMemoryExtractor(provider);
+    // Below init: never extract, even with many tool calls.
+    assert.equal(ex.shouldExtractFacts({ currentContextTokens: INIT - 1, toolCallsSinceLast: 99 }), false);
   });
 
-  it('is true once the token threshold is crossed', () => {
+  it('extracts once init + growth + tool-call gates are all met', () => {
+    const ex = new SessionMemoryExtractor(provider);
+    assert.equal(ex.shouldExtractFacts({ currentContextTokens: INIT, toolCallsSinceLast: TOOLS }), true);
+  });
+
+  it('requires the token-growth gate even when tool calls are plentiful', () => {
+    const ex = new SessionMemoryExtractor(provider);
+    // Latch init, then record so growth is measured from here.
+    ex.recordExtraction(INIT);
+    // Growth of GROWTH-1 is below the threshold → no extraction despite enough tool calls.
+    assert.equal(ex.shouldExtractFacts({ currentContextTokens: INIT + GROWTH - 1, toolCallsSinceLast: TOOLS }), false);
+    // Growth of exactly GROWTH → extraction allowed.
+    assert.equal(ex.shouldExtractFacts({ currentContextTokens: INIT + GROWTH, toolCallsSinceLast: TOOLS }), true);
+  });
+
+  it('natural break extracts when the growth gate is met but tool calls are below threshold', () => {
+    const ex = new SessionMemoryExtractor(provider);
     assert.equal(
-      ex.shouldExtractFacts({ tokensSinceLast: DEFAULT_SESSION_MEMORY_CONFIG.extractTokenThreshold, toolCallsSinceLast: 0 }),
+      ex.shouldExtractFacts({ currentContextTokens: INIT, toolCallsSinceLast: 0, naturalBreak: true }),
       true,
     );
   });
 
-  it('is true once the tool-call threshold is crossed', () => {
+  it('natural break does not extract when the growth gate is not met', () => {
+    const ex = new SessionMemoryExtractor(provider);
+    ex.recordExtraction(INIT);
     assert.equal(
-      ex.shouldExtractFacts({ tokensSinceLast: 0, toolCallsSinceLast: DEFAULT_SESSION_MEMORY_CONFIG.extractToolCallThreshold }),
-      true,
+      ex.shouldExtractFacts({ currentContextTokens: INIT + 1, toolCallsSinceLast: 0, naturalBreak: true }),
+      false,
     );
   });
 
-  it('natural break extracts any pending work below the thresholds', () => {
-    assert.equal(ex.shouldExtractFacts({ tokensSinceLast: 5, toolCallsSinceLast: 0, naturalBreak: true }), true);
+  it('respects custom threshold knobs from config', () => {
+    const tuned = new SessionMemoryExtractor(provider, undefined, {
+      minInitContextTokens: 0,
+      minTokensBetweenUpdate: 0,
+      toolCallsBetweenUpdate: 2,
+    });
+    assert.equal(tuned.shouldExtractFacts({ currentContextTokens: 0, toolCallsSinceLast: 2 }), true);
+    assert.equal(tuned.shouldExtractFacts({ currentContextTokens: 0, toolCallsSinceLast: 1 }), false);
   });
 
-  it('natural break with nothing pending does not extract', () => {
-    assert.equal(ex.shouldExtractFacts({ tokensSinceLast: 0, toolCallsSinceLast: 0, naturalBreak: true }), false);
-  });
-
-  it('respects a custom tool-call threshold from config', () => {
-    const tuned = new SessionMemoryExtractor(provider, undefined, { extractToolCallThreshold: 2 });
-    assert.equal(tuned.shouldExtractFacts({ tokensSinceLast: 0, toolCallsSinceLast: 2 }), true);
-    assert.equal(ex.shouldExtractFacts({ tokensSinceLast: 0, toolCallsSinceLast: 2 }), false);
+  it('resetExtractionState re-arms the init gate', () => {
+    const ex = new SessionMemoryExtractor(provider);
+    ex.recordExtraction(INIT); // initialized + baseline at INIT
+    ex.resetExtractionState();
+    // Init gate applies again: a context below INIT is deferred.
+    assert.equal(ex.shouldExtractFacts({ currentContextTokens: INIT - 1, toolCallsSinceLast: TOOLS }), false);
   });
 });
 
