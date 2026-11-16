@@ -4,7 +4,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { updateConfigFile, validateConfigJson, stripJsoncComments, getGlobalConfigPath, type ProjectConfig } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
 import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
-import { listProviders, MODEL_ALIASES, resolveModelAlias } from '../model-registry';
+import { listProviders, MODEL_ALIASES, resolveModelAlias, validateModel } from '../model-registry';
 
 /**
  * Metadata describing a single supported config setting. This registry is the
@@ -22,8 +22,52 @@ export interface SettingConfig {
   options?: readonly string[];
   /** Synchronous per-setting write validation (e.g. non-empty model). */
   validateOnWrite?: (v: unknown) => { valid: boolean; error?: string };
+  /**
+   * Optional ASYNC per-setting write validation, run after the synchronous
+   * checks and only when the write would actually change the value. Mirrors
+   * Claude Code's `validateOnWrite` hook (tools/ConfigTool/ConfigTool.ts): a
+   * semantic/reachability check that may need I/O — e.g. confirming a `model`
+   * id is actually served by the configured provider — so an invalid-but-
+   * well-formed value is rejected at write time instead of only failing later
+   * at inference. Receives the tool context so a validator can reach injected
+   * state (e.g. the resolved provider config). When no such context is
+   * available the validator should soft-allow (return valid) rather than block.
+   */
+  asyncValidateOnWrite?: (v: unknown, context: ToolContext) => Promise<{ valid: boolean; error?: string }>;
   /** Formats a value for display on read (e.g. undefined → "default"). */
   formatOnRead?: (v: unknown) => unknown;
+}
+
+/**
+ * Async write-validator for model-valued settings (model / fallbackModel /
+ * compactionModel). When the running engine has resolved provider credentials
+ * (`context._providerConfig`), the requested id is checked against the provider's
+ * live/known model list via the shared {@link validateModel} (the SAME check the
+ * /model switch path uses — no parallel validation logic), and a bad id is
+ * rejected before it is persisted, with the provider's suggestion / available
+ * list surfaced so the model can self-correct. Without a provider config (bare
+ * engine, offline edit, tests) it soft-allows: the synchronous non-empty guard
+ * already ran, and there is no reachable list to check against. `validateModel`
+ * itself also soft-allows transient network/API failures, so a blip never blocks
+ * a legitimate switch.
+ */
+async function validateModelOnWrite(
+  v: unknown,
+  context: ToolContext,
+): Promise<{ valid: boolean; error?: string }> {
+  const providerConfig = context._providerConfig;
+  if (!providerConfig) return { valid: true };
+  const modelId = String(v);
+  const result = await validateModel(providerConfig, modelId);
+  if (result.valid) return { valid: true };
+  const parts = [`"${modelId}" is not a valid model for the configured provider.`];
+  if (result.suggestion) {
+    parts.push(`Did you mean "${result.suggestion}"?`);
+  } else if (result.available.length > 0) {
+    parts.push(`Available: ${result.available.slice(0, 20).join(', ')}.`);
+  }
+  if (result.reason) parts.push(result.reason);
+  return { valid: false, error: parts.join(' ') };
 }
 
 const nonEmptyString = (label: string) => (v: unknown): { valid: boolean; error?: string } =>
@@ -46,6 +90,7 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     type: 'string',
     description: 'Override the default model (e.g. "claude-opus-4-8", "gpt-4o").',
     validateOnWrite: nonEmptyString('model'),
+    asyncValidateOnWrite: validateModelOnWrite,
     // An unset model falls back to the built-in default; surface that resolved
     // state on read instead of a bare `undefined` (mirrors Claude's model
     // null -> "default" formatting), so a `get model` on a fresh config is
@@ -81,11 +126,13 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     type: 'string',
     description: 'Model to fall back to on provider errors.',
     validateOnWrite: nonEmptyString('fallbackModel'),
+    asyncValidateOnWrite: validateModelOnWrite,
   },
   compactionModel: {
     type: 'string',
     description: 'Model used for context compaction.',
     validateOnWrite: nonEmptyString('compactionModel'),
+    asyncValidateOnWrite: validateModelOnWrite,
   },
   maxTurns: {
     type: 'number',
@@ -375,7 +422,7 @@ export const configTool: ToolDefinition = {
     }
 
     if (action === 'get') return handleGet(configPath, input.key as string | undefined, scope);
-    if (action === 'set') return handleSet(configPath, input, scope);
+    if (action === 'set') return handleSet(configPath, input, scope, context);
     return { output: 'Usage: action="get" [key] or action="set" key=... value=...', isError: true };
   },
 };
@@ -443,7 +490,7 @@ function handleGet(configPath: string, key: string | undefined, scope: 'project'
   return { output: JSON.stringify(config, null, 2), metadata: { operation: 'get', scope } };
 }
 
-function handleSet(configPath: string, input: Record<string, unknown>, scope: 'project' | 'global'): ToolResult {
+async function handleSet(configPath: string, input: Record<string, unknown>, scope: 'project' | 'global', context: ToolContext): Promise<ToolResult> {
   const key = input.key as string | undefined;
   const value = input.value;
   if (!key) {
@@ -508,9 +555,21 @@ function handleSet(configPath: string, input: Record<string, unknown>, scope: 'p
     }
   }
 
-  // No-op short-circuit when unchanged.
+  // No-op short-circuit when unchanged — do this BEFORE the (possibly I/O-bound)
+  // async validator so re-setting the current value never triggers a provider
+  // round-trip.
   if (previousValue === finalValue) {
     return { output: `${key} is already ${JSON.stringify(finalValue)} (no change).`, metadata: { operation: 'set', setting: key, previousValue, newValue: finalValue, scope } };
+  }
+
+  // Async per-setting write validation (e.g. the model id is actually served by
+  // the configured provider). Runs last, immediately before persisting, so a
+  // semantically-invalid value is rejected instead of committed and failing later.
+  if (settingConfig.asyncValidateOnWrite) {
+    const asyncResult = await settingConfig.asyncValidateOnWrite(finalValue, context);
+    if (!asyncResult.valid) {
+      return { output: asyncResult.error ?? `Invalid value for ${key}.`, isError: true };
+    }
   }
 
   const setWrite = writeConfigMutation(configPath, cfg => setValueByPath(cfg, settingPath, finalValue));
