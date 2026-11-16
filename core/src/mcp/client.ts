@@ -457,6 +457,22 @@ export class McpClient extends EventEmitter {
 
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  /** Wall-clock give-up budget (ms) for the client-level {@link reconnect} loop. */
+  private readonly reconnectGiveUpMs: number;
+  /**
+   * Set true by {@link disconnect} so an in-flight {@link reconnect} loop can be
+   * cancelled mid-retry (e.g. the server was stopped/disabled while a prior
+   * attempt was sleeping) instead of burning the whole attempt budget. Reset at
+   * the start of each reconnect run (after its own initial teardown).
+   */
+  private reconnectAborted = false;
+  /**
+   * True only while {@link reconnect} is inside its OWN connect attempt. A failed
+   * attempt calls {@link disconnect} to tear down the half-open connection; this
+   * flag lets disconnect() tell that internal teardown apart from an EXTERNAL
+   * disconnect/stopServer (which must abort the loop).
+   */
+  private reconnectConnecting = false;
   private hasTriggeredClose = false;
   private connectionStartTime: number | null = null;
   /** Rolling tail of the last {@link MCP_STDERR_TAIL_LINES} stdio-server stderr lines. */
@@ -503,6 +519,15 @@ export class McpClient extends EventEmitter {
     oauth?: McpOAuthProvider;
     /** Override the GET-stream liveness/idle timeout (ms). Defaults to {@link HTTP_STREAM_LIVENESS_TIMEOUT_MS} (45s). */
     httpStreamLivenessTimeout?: number;
+    /**
+     * Wall-clock budget (ms) for the client-level {@link reconnect} loop before it
+     * gives up, measured from the first attempt. Applied ALONGSIDE the attempt cap
+     * (whichever trips first ends the loop), so a flaky link keeps retrying for a
+     * bounded real-time window instead of only a few seconds of fixed-count
+     * backoff. Defaults to {@link HTTP_STREAM_RECONNECT_GIVE_UP_MS} (10 min),
+     * matching the GET-stream give-up budget.
+     */
+    reconnectGiveUpMs?: number;
   }) {
     super();
     this.command = options.command;
@@ -514,6 +539,7 @@ export class McpClient extends EventEmitter {
     this.rootPaths = options.rootPaths ?? [];
     this.oauth = options.oauth;
     this.httpStreamLivenessTimeout = options.httpStreamLivenessTimeout ?? HTTP_STREAM_LIVENESS_TIMEOUT_MS;
+    this.reconnectGiveUpMs = options.reconnectGiveUpMs ?? HTTP_STREAM_RECONNECT_GIVE_UP_MS;
   }
 
   /**
@@ -858,6 +884,12 @@ export class McpClient extends EventEmitter {
 
   async listResources(): Promise<McpResource[]> {
     this.assertReady();
+    // Serve the warm cache when populated — it is invalidated on
+    // notifications/resources/list_changed and on disconnect, so a cache hit here
+    // means the server's resource list has not changed since the last fetch
+    // (parity with Claude Code's LRU-cached fetchResourcesForClient). A server
+    // with zero resources leaves the cache empty and simply re-queries.
+    if (this._resources.length > 0) return [...this._resources];
     this._resources = recursivelySanitizeUnicode(await this.collectPaginated<McpResource>('resources/list', 'resources'));
     return this._resources;
   }
@@ -930,8 +962,20 @@ export class McpClient extends EventEmitter {
 
   async reconnect(): Promise<void> {
     this.disconnect();
+    // Our own teardown above flips the abort flag; clear it so THIS run can retry.
+    this.reconnectAborted = false;
+    const startTime = Date.now();
     while (this.reconnectAttempts < this.maxReconnectAttempts) {
       await new Promise(r => setTimeout(r, this.reconnectDelay(this.reconnectAttempts)));
+      // A disconnect()/stopServer landed while we were sleeping — abort gracefully
+      // instead of continuing to retry a server the caller no longer wants.
+      if (this.reconnectAborted) return;
+      // Give up once the continuous outage exceeds the wall-clock budget, even if
+      // attempts remain — a bounded real-time window rather than a fixed count.
+      if (Date.now() - startTime >= this.reconnectGiveUpMs) {
+        throw new Error(`MCP reconnection gave up after ${this.reconnectGiveUpMs}ms`);
+      }
+      this.reconnectConnecting = true;
       try {
         if (this.transport === 'sse' && this.sseUrl) {
           await this.connectSSE(this.sseUrl);
@@ -946,6 +990,8 @@ export class McpClient extends EventEmitter {
         return;
       } catch {
         this.reconnectAttempts++;
+      } finally {
+        this.reconnectConnecting = false;
       }
     }
     throw new Error(`MCP reconnection failed after ${this.maxReconnectAttempts} attempts`);
@@ -967,6 +1013,14 @@ export class McpClient extends EventEmitter {
   }
 
   disconnect(): void {
+    // Cancel any in-flight reconnect loop — but NOT when this disconnect is the
+    // loop's own teardown of a failed connect attempt (reconnectConnecting), which
+    // must keep retrying. An external disconnect/stopServer while the loop is
+    // sleeping aborts it. Invalidate the warm resource cache so a reconnected
+    // client re-fetches rather than serving a list captured before the outage
+    // (parity with Claude Code's onclose cache invalidation).
+    if (!this.reconnectConnecting) this.reconnectAborted = true;
+    this._resources = [];
     if (this.hasTriggeredClose && !this.process) return;
     const wasConnected = this._state === 'ready' || this._state === 'connecting';
     this.hasTriggeredClose = true;
