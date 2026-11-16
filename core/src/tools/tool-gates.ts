@@ -108,6 +108,48 @@ export function isGitInstructionsDisabled(env: NodeJS.ProcessEnv = process.env):
   return isEnvTruthy(env[DISABLE_GIT_INSTRUCTIONS_ENV]);
 }
 
+/**
+ * Env var that globally disables the lightweight host (unshare) auto-sandbox
+ * (default: ENABLED — the auto-wrap stays on). When truthy the bash tool never
+ * wraps a command with the unshare backend in the non-container branch, even
+ * when a SANDBOX_TRIGGER_PATTERN matches. Parity: Claude Code's
+ * `SandboxManager.isSandboxingEnabled()` — a single off-switch for all
+ * auto-sandboxing. Container mode (`sandbox.mode === 'container'`) is governed
+ * separately and is NOT affected. Per-call `SandboxPolicy.enabled === false`
+ * provides the same off-switch scoped to one engine config.
+ */
+export const DISABLE_HOST_SANDBOX_ENV = 'AMI_DISABLE_SANDBOX';
+
+/**
+ * True when the lightweight host sandbox is disabled by
+ * {@link DISABLE_HOST_SANDBOX_ENV}. Default OFF → the host auto-sandbox stays on.
+ */
+export function isHostSandboxDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[DISABLE_HOST_SANDBOX_ENV]);
+}
+
+/**
+ * Env var that forbids the `dangerouslyDisableSandbox` escape hatch entirely
+ * (default: ALLOWED — the parameter is advertised and honored). When truthy the
+ * bash tool (a) omits `dangerouslyDisableSandbox` from the model-facing input
+ * schema and (b) ignores it at runtime, so a model can never run a command
+ * outside the sandbox. Parity: Claude Code's
+ * `SandboxManager.areUnsandboxedCommandsAllowed()` policy knob, whose prompt
+ * states 'the `dangerouslyDisableSandbox` parameter is disabled by policy'. This
+ * is the env-level analogue of the per-config
+ * `SandboxPolicy.allowUnsandboxedCommands === false` runtime gate — either one
+ * locks out the override.
+ */
+export const DISABLE_SANDBOX_ESCAPE_ENV = 'AMI_DISABLE_SANDBOX_ESCAPE';
+
+/**
+ * True when the `dangerouslyDisableSandbox` escape hatch is forbidden by
+ * {@link DISABLE_SANDBOX_ESCAPE_ENV}. Default OFF → the override is available.
+ */
+export function isSandboxEscapeDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[DISABLE_SANDBOX_ESCAPE_ENV]);
+}
+
 /** Env var that toggles the workflow-scripts tool (default ON). */
 export const WORKFLOW_SCRIPTS_ENV = 'AMI_WORKFLOW_SCRIPTS';
 

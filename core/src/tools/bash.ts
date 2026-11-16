@@ -4,7 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { getSessionEnvironmentScript } from '../session-environment';
-import { execCommand } from '../utils/shell';
+import { execCommand, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
@@ -21,7 +21,7 @@ import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
-import { isBackgroundTasksDisabled, isGitInstructionsDisabled } from './tool-gates';
+import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isHostSandboxDisabled, isSandboxEscapeDisabled } from './tool-gates';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -75,6 +75,20 @@ export function resolveBashTimeout(inputTimeout?: unknown): number {
   // honored and any non-numeric/garbage shape falls back to the default.
   const requested = coerceNumber(inputTimeout, 0);
   return Math.min(requested > 0 ? requested : def, max);
+}
+
+/**
+ * Resolve the assistant/detached-mode blocking budget: the wall-clock ceiling
+ * after which a still-running FOREGROUND command is auto-moved to the background
+ * so the main agent stays responsive. Honors BASH_ASSISTANT_BLOCKING_BUDGET_MS
+ * (parity: Claude Code's ASSISTANT_BLOCKING_BUDGET_MS, advertised at ~15s). Only
+ * applied when running in detached/assistant mode; returns `undefined` when the
+ * knob is unset so the normal per-call/default timeout governs (preserving AMI's
+ * existing behavior unless an operator opts in). A value at/above the effective
+ * timeout is a no-op (the timeout already bounds the run).
+ */
+export function resolveAssistantBlockingBudget(): number | undefined {
+  return parseEnvMs('BASH_ASSISTANT_BLOCKING_BUDGET_MS');
 }
 
 let _cachedPermissionManager: InstanceType<typeof import('../permissions').PermissionManager> | null = null;
@@ -982,7 +996,7 @@ export function buildBashDescription(backgroundDisabled: boolean, gitDisabled = 
  * (parity: Claude's BashTool lazySchema omit behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
  * so the model cannot request a background run in a locked-down deployment.
  */
-export function buildBashInputSchema(backgroundDisabled: boolean): ToolInputSchema {
+export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeDisabled = false): ToolInputSchema {
   const schema: ToolInputSchema = {
     type: 'object',
     properties: {
@@ -1024,6 +1038,13 @@ export function buildBashInputSchema(backgroundDisabled: boolean): ToolInputSche
   if (backgroundDisabled) {
     delete schema.properties.run_in_background;
   }
+  // When policy forbids the escape hatch, omit it from the advertised schema so
+  // the model cannot even request it (parity: Claude's prompt states the
+  // parameter is 'disabled by policy' and drops it). The runtime also ignores a
+  // smuggled flag — see the execute() sandbox branch.
+  if (sandboxEscapeDisabled) {
+    delete schema.properties.dangerouslyDisableSandbox;
+  }
   return schema;
 }
 
@@ -1035,7 +1056,7 @@ export const bashTool: ToolDefinition = {
     return buildBashDescription(isBackgroundTasksDisabled(), isGitInstructionsDisabled());
   },
   get inputSchema(): ToolInputSchema {
-    return buildBashInputSchema(isBackgroundTasksDisabled());
+    return buildBashInputSchema(isBackgroundTasksDisabled(), isSandboxEscapeDisabled());
   },
   isReadOnly: false,
   isConcurrencySafe: false,
@@ -1094,6 +1115,11 @@ export const bashTool: ToolDefinition = {
       return {
         output: `Error: working directory "${context.cwd}" does not exist. It may have been deleted or moved. Use /add-dir to set a new working directory.`,
         isError: true,
+        // Discriminate a pre-spawn setup failure (the shell never ran) from a
+        // command that ran and exited non-zero/timed out, so callers can treat it
+        // as a tooling fault rather than a command result. Parity: Claude's
+        // dedicated preSpawnError result field (ShellCommand.createFailedCommand).
+        metadata: { preSpawnError: 'cwd-missing' },
       };
     }
     let cwdResetNote: string | null = null;
@@ -1282,9 +1308,17 @@ export const bashTool: ToolDefinition = {
       // PARITY (allowUnsandboxedCommands): when the policy sets it to exactly
       // false, the `dangerouslyDisableSandbox` escape hatch is COMPLETELY ignored
       // — every command must run sandboxed (a managed-deployment lockout).
-      const sandboxEscapeLocked = context.sandbox?.allowUnsandboxedCommands === false;
+      // The escape hatch is locked out by EITHER the per-config policy
+      // (allowUnsandboxedCommands === false) OR the global env knob
+      // (AMI_DISABLE_SANDBOX_ESCAPE) — both mirror Claude's
+      // areUnsandboxedCommandsAllowed() policy boundary.
+      const sandboxEscapeLocked = context.sandbox?.allowUnsandboxedCommands === false || isSandboxEscapeDisabled();
       const disableSandbox = sandboxEscapeLocked ? false : coerceBool(input.dangerouslyDisableSandbox);
-      const useSandbox = platformSandboxEnabled && !disableSandbox && _bashHooks.shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
+      // Global host-sandbox off-switch (parity: isSandboxingEnabled): the env knob
+      // or `sandbox.enabled === false` disables the lightweight auto-wrap entirely,
+      // so a trigger-pattern match no longer forces the unshare backend on.
+      const hostSandboxDisabled = isHostSandboxDisabled() || context.sandbox?.enabled === false;
+      const useSandbox = platformSandboxEnabled && !disableSandbox && !hostSandboxDisabled && _bashHooks.shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
       // PARITY (failIfUnavailable / allowUnsandboxedFallback): if the command must
       // be sandboxed but the host backend cannot actually start, a hard gate
       // (`failIfUnavailable`, or `allowUnsandboxedFallback === false`) REFUSES the
@@ -1345,9 +1379,17 @@ export const bashTool: ToolDefinition = {
       };
     }
 
+    // Assistant/detached blocking budget: in detached mode an operator-set
+    // BASH_ASSISTANT_BLOCKING_BUDGET_MS caps how long a foreground command may
+    // block the main agent before it is auto-moved to the background (the command
+    // keeps running). Only lowers the foreground ceiling; the normal per-call/
+    // default timeout still applies when the knob is unset or already smaller.
+    const assistantBudget = context.detachedMode ? resolveAssistantBlockingBudget() : undefined;
+    const foregroundTimeout = assistantBudget !== undefined ? Math.min(timeout, assistantBudget) : timeout;
+
     const result = await execCommandWithForkRetry(effectiveCommand, {
       cwd: context.cwd,
-      timeout,
+      timeout: foregroundTimeout,
       abortSignal: context.abortSignal,
       env: scrubEnv(context.skillEnv),
       onData: context.onProgress ? (chunk) => context.onProgress!(chunk) : undefined,
@@ -1383,14 +1425,26 @@ export const bashTool: ToolDefinition = {
           env: scrubEnv(context.skillEnv),
           agentId: context.agentId,
         });
+        const bgTask = context.processManager.get(taskId);
         return {
           output: sanitizeToolOutput(
-            formatTimeoutBackgroundOutput(presented.stdout, presented.stderr, timeout, taskId),
+            formatTimeoutBackgroundOutput(presented.stdout, presented.stderr, foregroundTimeout, taskId, {
+              detachedMode: context.detachedMode === true,
+              outputPath: bgTask?.outputPath,
+            }),
           ),
+          // Surface that a long foreground command was auto-backgrounded so the
+          // agent loop / introspection can see it happened. In detached/assistant
+          // mode this is the "assistant blocking budget" auto-background.
+          metadata: {
+            backgrounded: true,
+            taskId,
+            ...(context.detachedMode ? { assistantAutoBackgrounded: true } : {}),
+          },
         };
       }
       return {
-        output: sanitizeToolOutput(formatOutput(presented.stdout, presented.stderr, null, `Command timed out after ${formatDuration(timeout)}.`)),
+        output: sanitizeToolOutput(formatOutput(presented.stdout, presented.stderr, null, `Command timed out after ${formatDuration(foregroundTimeout)}.`)),
         isError: true,
       };
     }
@@ -1475,7 +1529,13 @@ export const bashTool: ToolDefinition = {
     return {
       output,
       isError: isRealError,
-      metadata: { readOnly },
+      // A SPAWN_FAILURE_EXIT_CODE (126) from the shell layer means the child
+      // process could not be started (pre-exec spawn 'error' event), not that a
+      // command ran and failed — tag it so callers can distinguish a tooling
+      // fault from a genuine non-zero exit. Parity: Claude's preSpawnError field.
+      metadata: result.exitCode === SPAWN_FAILURE_EXIT_CODE
+        ? { readOnly, preSpawnError: 'spawn-failure' }
+        : { readOnly },
     };
   },
 };
@@ -1732,10 +1792,24 @@ export function formatTimeoutBackgroundOutput(
   stderr: string,
   timeout: number,
   taskId: string,
+  opts?: { detachedMode?: boolean; outputPath?: string },
 ): string {
-  const notice =
+  let notice =
     `Command timed out after ${formatDuration(timeout)}. Auto-moved to background as task ${taskId}. ` +
     'The command is still running in the background — use task_output to check progress.';
+  // Surface where the full output is being written so the model can tail/re-read
+  // it (parity: Claude's background notice includes the output file path).
+  if (opts?.outputPath) {
+    notice += ` Output is being written to: ${opts.outputPath}.`;
+  }
+  // Assistant/detached-mode coaching: steer the main agent to keep itself
+  // responsive rather than blocking on the long task (parity: Claude's
+  // assistant-mode auto-background wording).
+  if (opts?.detachedMode) {
+    notice +=
+      ' In assistant mode, delegate long-running work to a subagent or use ' +
+      'run_in_background to keep this conversation responsive.';
+  }
   // Decide "nothing captured" from the raw streams, not by string-comparing
   // formatOutput's result to its '(no output)' sentinel — a command whose real
   // partial output is literally '(no output)' must still be surfaced.

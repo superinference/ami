@@ -263,6 +263,17 @@ export interface DiffHunk {
 export interface ToolResult {
   output: string;
   isError?: boolean;
+  /** Free-form structured hints attached to a result. Well-known keys the bash
+   *  tool sets (parity with Claude Code's shell result fields):
+   *  - `preSpawnError`: `'cwd-missing' | 'spawn-failure'` — the command never ran
+   *    because the shell could not be spawned (a deleted working directory, or a
+   *    pre-exec spawn failure). Distinguishes a setup failure from a command that
+   *    ran and exited non-zero or timed out, mirroring Claude's dedicated
+   *    `preSpawnError` result field (`ShellCommand.createFailedCommand`).
+   *  - `assistantAutoBackgrounded`: `true` when a long foreground command was
+   *    auto-moved to the background in assistant/detached mode so the main agent
+   *    stays responsive (Claude's `shouldAutoBackground` / assistant blocking
+   *    budget). Accompanied by `backgrounded: true` and the `taskId`. */
   metadata?: Record<string, unknown>;
   /** Structured per-hunk diff for a file-mutating result, carried alongside the
    *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */
@@ -326,6 +337,14 @@ export interface SandboxSeccompConfig {
  *  host. `mode: 'off'` (or undefined) runs on the host as before. */
 export interface SandboxPolicy {
   mode: 'off' | 'container';
+  /** Global off-switch for the lightweight host (unshare) auto-sandbox. When set
+   *  to exactly `false`, the non-container branch NEVER wraps a command with the
+   *  unshare backend even when a trigger pattern matches — the config-level
+   *  analogue of the {@link import('./tools/tool-gates').DISABLE_HOST_SANDBOX_ENV}
+   *  env knob. Default (unset/true) keeps the auto-wrap on. Parity: Claude Code's
+   *  `SandboxManager.isSandboxingEnabled()`. Does NOT affect `mode: 'container'`,
+   *  which is a separate, stronger boundary. */
+  enabled?: boolean;
   /** Container image (must contain the project toolchain). Default: node:26. */
   image?: string;
   /** The single writable mount (absolute). Defaults to the engine launch cwd. */

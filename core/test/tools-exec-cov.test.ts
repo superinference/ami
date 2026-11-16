@@ -204,7 +204,8 @@ describe('test-log', () => {
     const header = Array.from({ length: 8 }, (_, i) => `{"Action":"fail","Test":"T${i}"}`);
     const bulk = Array.from({ length: 2000 }, (_, i) => `{"Action":"fail","Test":"Big${i}","Output":"FAIL line ${i} ${'x'.repeat(40)}"}`);
     const out = compactTestLog([...header, ...bulk].join('\n'));
-    assert.match(out, /\.\.\.\[failing output truncated\]/);
+    // Marker now quantifies the dropped-line count (capSuite parity change).
+    assert.match(out, /\.\.\.\[\d+ lines of failing output truncated\]/);
   });
 
   test('compactTestLog: already-compacted passthrough', () => {

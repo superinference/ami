@@ -4,6 +4,8 @@
  * evaluation diff. Callers compact before any spill to disk.
  */
 
+import { countCharInString } from '../utils/string';
+
 // [parity] Expanded runner set so compaction kicks in for the JS/TS, Python,
 // Go, Rust, Elixir, Swift and Dart ecosystems Claude Code recognizes — not just
 // the original handful. Word-boundary anchored to avoid matching substrings
@@ -59,7 +61,16 @@ function actionName(line: string): string | null {
 }
 
 function capSuite(text: string): string {
-  if (text.length > SUITE_CAP) return text.slice(0, SUITE_CAP) + '\n...[failing output truncated]';
+  if (text.length > SUITE_CAP) {
+    // Quantify how much failing output was dropped so the model/caller can decide
+    // whether to re-read the full log from disk, instead of an opaque marker.
+    // Parity: Claude's formatOutput computes
+    // `remainingLines = countCharInString(content, '\n', maxOutputLength) + 1`
+    // and emits `... [N lines truncated] ...`. countCharInString's `start`
+    // argument counts only the elided tail without allocating a slice.
+    const remainingLines = countCharInString(text, '\n', SUITE_CAP) + 1;
+    return text.slice(0, SUITE_CAP) + `\n...[${remainingLines} lines of failing output truncated]`;
+  }
   return text;
 }
 
