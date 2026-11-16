@@ -69,6 +69,23 @@ export const exitWorktreeTool: ToolDefinition = {
     },
     required: ['action'],
   },
+  // Structured result shape (parity: Claude's ExitWorktreeTool outputSchema). A
+  // frontend / resume path can validate the machine-readable fields it carries
+  // alongside the human text before rendering. Object-root (ToolInputSchema) so it
+  // passes the provider's object-root-only exposure guard.
+  outputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['keep', 'merge', 'remove'], description: 'The action that was performed.' },
+      originalCwd: { type: 'string', description: 'The directory the session returned to.' },
+      worktreePath: { type: 'string', description: 'Absolute path of the worktree that was acted on.' },
+      worktreeBranch: { type: 'string', description: 'Branch the worktree was on, when known.' },
+      discardedFiles: { type: 'number', description: 'Count of uncommitted files discarded (remove action).' },
+      discardedCommits: { type: 'number', description: 'Count of unpushed commits discarded (remove action).' },
+      message: { type: 'string', description: 'Human-readable summary of what happened.' },
+    },
+    required: ['action', 'originalCwd', 'worktreePath', 'message'],
+  },
   isReadOnly: false,
 
   async execute(input, context): Promise<ToolResult> {

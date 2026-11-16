@@ -58,18 +58,28 @@ interface OpenAIToolFunction {
     name: string;
     description: string;
     parameters: ToolInputSchema;
+    /** Structured-result schema, emitted only for tools whose outputSchema has an
+     *  object root (parity: Claude's MCP tool outputSchema exposure guard). */
+    outputSchema?: ToolInputSchema;
   };
 }
 
 export function toolDefinitionsToOpenAI(tools: ToolDefinition[]): OpenAIToolFunction[] {
-  return tools.map((tool) => ({
-    type: 'function' as const,
-    function: {
+  return tools.map((tool) => {
+    const fn: OpenAIToolFunction['function'] = {
       name: tool.name,
       description: tool.description,
       parameters: tool.inputSchema,
-    },
-  }));
+    };
+    // Object-root-only guard: only advertise outputSchema when its root type is
+    // exactly `object`. A non-object root is dropped (not exposed) rather than
+    // emitted as an invalid structured-output declaration. Parity: Claude Code's
+    // mcp.ts, which exposes outputSchema only for object-rooted schemas.
+    if (tool.outputSchema && tool.outputSchema.type === 'object') {
+      fn.outputSchema = tool.outputSchema;
+    }
+    return { type: 'function' as const, function: fn };
+  });
 }
 
 // ---------------------------------------------------------------------------
