@@ -1751,6 +1751,17 @@ describe('permission modes are semantically distinct (no duplicates)', () => {
       const pm = new PermissionManager(mode);
       const out: string[] = [];
       for (const [t, i] of probes) out.push(await pm.check(t, i));
+      // Rule-sensitivity probes: the two blanket-allow modes are NOT duplicates —
+      // `auto-allow` (yolo) skips paramPattern deny rules and does not honor
+      // content-specific `ask` rules, whereas `bypassPermissions` honors both.
+      // Both now apply the sensitive-path safety check, so a rule-bearing probe is
+      // required to keep the distinctness gate meaningful.
+      const ruled = new PermissionManager(mode, [
+        { tool: 'bash', action: 'deny', paramPattern: { command: 'rm*' } },
+        { tool: 'bash', action: 'ask', pattern: 'curl*' },
+      ]);
+      out.push(await ruled.check('bash', { command: 'rm foo' }));
+      out.push(await ruled.check('bash', { command: 'curl example.com' }));
       return out.join('|');
     };
     const seen = new Map<string, string>();

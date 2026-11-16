@@ -170,9 +170,11 @@ describe('PermissionManager system dir guard — hardline precedence', () => {
     assert.equal(result, 'deny');
   });
 
-  it('auto-allow mode bypasses system dir guard (as designed)', async () => {
+  it('auto-allow (yolo) still prompts for a system/credential path write', async () => {
+    // Parity with Claude's safetyCheck, which fires in every mode: a write to a
+    // system/credential path is NOT silently auto-allowed even under yolo.
     const pm = new PermissionManager('auto-allow');
     const result = await pm.check('bash', { command: 'cp file /etc/passwd' });
-    assert.equal(result, 'allow');
+    assert.equal(result, 'ask');
   });
 });

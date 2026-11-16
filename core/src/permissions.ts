@@ -360,7 +360,57 @@ const SAFE_COMMANDS = new Set([
   'seq', 'expr', 'printf', 'comm', 'cmp', 'numfmt', 'getconf', 'tsort', 'pr', 'fmt',
 ]);
 
-const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean }> = {
+/**
+ * Per-flag argument-type classification (mirrors Claude Code's `FlagArgType`,
+ * readOnlyCommandValidation.ts). It tells the flag validator exactly how many
+ * tokens a flag consumes and how to validate the value, closing the parser
+ * differential where a flag's VALUE (or a bundled arg-taking flag's next token)
+ * is mis-read as a positional/target.
+ */
+export type FlagArgType =
+  | 'none'   // takes no argument (e.g. --hidden, -H)
+  | 'number' // integer argument (e.g. --max-depth 3)
+  | 'string' // any string argument (e.g. --type file)
+  | 'char'   // a single character (e.g. a delimiter)
+  | '{}'     // the literal "{}" only
+  | 'EOF';   // the literal "EOF" only
+
+/** Flag-shaped token detector, matching Claude's FLAG_PATTERN. */
+const FLAG_PATTERN = /^-[a-zA-Z0-9_-]/;
+
+/**
+ * Validate a flag's argument value against its declared {@link FlagArgType}.
+ * Mirrors Claude Code's `validateFlagArgument`. 'none' always returns false —
+ * it must never be called for a flag that takes no argument.
+ */
+export function validateFlagArgument(value: string, argType: FlagArgType): boolean {
+  switch (argType) {
+    case 'none': return false;
+    case 'number': return /^\d+$/.test(value);
+    case 'string': return true;
+    case 'char': return value.length === 1;
+    case '{}': return value === '{}';
+    case 'EOF': return value === 'EOF';
+    default: return false;
+  }
+}
+
+/**
+ * Arg-type map for `fd`/`fdfind` (shared). Depth flags are numeric, type/
+ * extension/exclude/glob/search-path flags are strings, the rest are no-arg.
+ * Modeled on Claude's FD_SAFE_FLAGS so the validator consumes the right number
+ * of tokens per flag and validates each value.
+ */
+const FD_ARG_TYPES: Record<string, FlagArgType> = {
+  '-H': 'none', '--hidden': 'none', '-I': 'none', '--no-ignore': 'none',
+  '-d': 'number', '--max-depth': 'number',
+  '-t': 'string', '--type': 'string',
+  '-e': 'string', '--extension': 'string',
+  '-E': 'string', '--exclude': 'string',
+  '-g': 'string', '-p': 'string',
+};
+
+const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType> }> = {
   jq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
     blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L', '--library-path']),
@@ -380,8 +430,8 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
   xargs: { allowed: new Set(['-n', '-P', '-I', '-0', '-d', '-t', '-p', '-r', '-L', '--max-procs', '--null']), blocked: new Set(['-i', '-e']) },
   ps: { allowed: new Set(['-e', '-f', '-a', '-u', '-x', '--sort', '-o', '--no-headers', '-p']), blocked: new Set(['e']) },
   tree: { allowed: new Set(['-L', '-d', '-f', '-a', '--dirsfirst', '-I', '--prune', '-P', '--charset', '-i']), blocked: new Set(['-R']) },
-  fd: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']) },
-  fdfind: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']) },
+  fd: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
+  fdfind: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
   find: { allowed: new Set(['-name', '-type', '-maxdepth', '-mindepth', '-path', '-iname', '-size', '-newer', '-print']), blocked: new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']) },
   date: { allowed: new Set(['-u', '--utc', '-d', '--date', '-R', '--rfc-email', '-I', '--iso-8601']), blocked: new Set(['-s', '--set']) },
   netstat: { allowed: new Set(['-t', '-u', '-l', '-n', '-p', '-a', '--tcp', '--udp', '--listening', '--numeric']), blocked: new Set([]) },
@@ -400,6 +450,16 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
   sort: { allowed: new Set([]), blocked: new Set(['-o', '--output']) },
 };
 
+/**
+ * Sensitive config/credential path fragments that must still prompt even under
+ * the blanket-allow modes (yolo/auto-allow and bypassPermissions). A write or
+ * edit to any of these is a self-reconfig / credential-exposure vector.
+ */
+const SENSITIVE_SAFETY_PATHS = [
+  '.git/', '.ami/', '.bashrc', '.zshrc', '.profile', '.gitconfig',
+  '.vscode/', '.ssh/', '.gnupg/', '.aws/', '.config/',
+];
+
 /** Safe target commands for xargs — only these can follow xargs. */
 const XARGS_SAFE_TARGETS = new Set([
   'echo', 'cat', 'ls', 'grep', 'wc', 'head', 'tail', 'basename', 'dirname',
@@ -408,6 +468,9 @@ const XARGS_SAFE_TARGETS = new Set([
 function validateCommandFlags(cmd: string, args: string[]): boolean {
   const flagDef = SAFE_COMMAND_FLAGS[cmd];
   if (!flagDef) return true;
+  // Commands with a per-flag arg-type map get getopt-accurate token consumption
+  // so each flag's VALUE is validated and not mis-read as a positional/target.
+  if (flagDef.argTypes) return validateTypedCommandFlags(flagDef, args);
   for (const arg of args) {
     if (arg.startsWith('-')) {
       const flag = arg.replace(/^--?/, '').split('=')[0];
@@ -417,6 +480,70 @@ function validateCommandFlags(cmd: string, args: string[]): boolean {
       // (falls through to a prompt) rather than silently auto-safe.
       if (flagDef.strict && !flagDef.allowed.has(dashedFlag)) return false;
     }
+  }
+  return true;
+}
+
+/**
+ * Getopt-accurate flag walk for a command whose flags carry {@link FlagArgType}
+ * metadata. Mirrors Claude's `validateFlags`:
+ *  - `--flag=value` validates the inline value (and rejects a value on a 'none' flag);
+ *  - an arg-taking flag consumes the NEXT token as its value (rejecting a missing
+ *    arg, a dash-led 'string' value — type confusion — and an invalid typed value);
+ *  - a bundled short cluster (e.g. `-He`) is only safe when EVERY member is a
+ *    known no-arg flag — a bundled arg-taking flag would consume the next token in
+ *    GNU getopt, a differential the validator cannot model, so it is rejected.
+ * Blocked flags always win. Unknown flags fall back to the allowed/strict rules.
+ */
+function validateTypedCommandFlags(
+  flagDef: { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType> },
+  args: string[],
+): boolean {
+  const argTypes = flagDef.argTypes!;
+  let i = 0;
+  while (i < args.length) {
+    const token = args[i]!;
+    if (!FLAG_PATTERN.test(token)) { i++; continue; } // positional
+    const hasEquals = token.includes('=');
+    const flag = token.split('=')[0]!;
+    const inlineValue = token.slice(flag.length + 1);
+    const bare = flag.replace(/^--?/, '');
+    if (flagDef.blocked.has(token) || flagDef.blocked.has(flag) || flagDef.blocked.has(bare)) return false;
+
+    const argType = argTypes[flag];
+    if (argType === undefined) {
+      // A short cluster like `-He` — safe only if every member is a known no-arg
+      // flag. Any arg-taking or unknown member means we cannot safely model the
+      // token consumption, so reject (conservative, matches Claude).
+      if (/^-[a-zA-Z0-9]{2,}$/.test(flag)) {
+        for (const ch of flag.slice(1)) {
+          if (argTypes['-' + ch] !== 'none') return false;
+        }
+        i++; continue;
+      }
+      // Unknown single flag: honor the strict allowlist like the untyped path.
+      if (flagDef.strict && !flagDef.allowed.has(flag)) return false;
+      i++; continue;
+    }
+
+    if (argType === 'none') {
+      if (hasEquals) return false; // a no-arg flag given `=value`
+      i++; continue;
+    }
+
+    // Arg-taking flag: resolve its value (inline after `=` or the next token).
+    let value: string;
+    if (hasEquals) {
+      value = inlineValue;
+      i++;
+    } else {
+      const next = args[i + 1];
+      if (next === undefined || (next.length > 1 && FLAG_PATTERN.test(next))) return false; // missing arg
+      value = next;
+      i += 2;
+    }
+    if (argType === 'string' && value.startsWith('-')) return false; // type confusion
+    if (!validateFlagArgument(value, argType)) return false;
   }
   return true;
 }
@@ -2044,6 +2171,32 @@ export class PermissionManager {
   // -------------------------------------------------------------------------
 
   /**
+   * Sensitive-path safety check shared by the blanket-allow modes
+   * (`auto-allow`/yolo and `bypassPermissions`). Returns true when the invocation
+   * touches a credential path, a system directory, or a sensitive config path and
+   * must therefore still prompt rather than be silently auto-allowed. Mirrors
+   * Claude's safetyCheck, which fires in every mode.
+   */
+  private sensitivePathRequiresPrompt(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): boolean {
+    if (toolName === 'bash' && typeof input.command === 'string') {
+      if (commandTargetsCredentialPath(input.command)) return true;
+      if (commandTargetsSystemDir(input.command)) return true;
+    }
+    if (toolName === 'bash' || toolName === 'file_edit' || toolName === 'file_write') {
+      const pathArg = (input.file_path || input.command || '');
+      if (typeof pathArg === 'string') {
+        for (const sp of SENSITIVE_SAFETY_PATHS) {
+          if (pathArg.includes(sp)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Check whether a tool invocation is allowed, denied, or needs user input.
    */
   async check(
@@ -2069,6 +2222,13 @@ export class PermissionManager {
     // fast-path (unchanged behavior); everything else is auto-allowed.
     if (this.mode === 'auto-allow') {
       if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
+      // Sensitive-path safety still fires even under yolo/auto-allow: a bash
+      // credential read/exfil or system-dir write, or an edit to a sensitive
+      // config path, must still prompt — mirroring Claude's safetyCheck (which
+      // is applied in every mode) and the bypassPermissions handling below. This
+      // closes the asymmetry where `cat ~/.ssh/id_rsa` was auto-allowed in yolo
+      // even though file_read of the same path is forbidden.
+      if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
       return 'allow';
     }
     if (this.mode === 'deny-all') return 'deny';
@@ -2083,16 +2243,7 @@ export class PermissionManager {
       // `{tool, action:'ask'}` rule still prompts, before the blanket allow, so an
       // explicit "always confirm this" is never silently overridden by bypass mode.
       if (this.anyAskMatches(toolName, input)) return 'ask';
-      const safetyPaths = [
-        '.git/', '.ami/', '.bashrc', '.zshrc', '.profile', '.gitconfig',
-        '.vscode/', '.ssh/', '.gnupg/', '.aws/', '.config/',
-      ];
-      if (toolName === 'bash' || toolName === 'file_edit' || toolName === 'file_write') {
-        const pathArg = (input.file_path || input.command || '') as string;
-        for (const sp of safetyPaths) {
-          if (typeof pathArg === 'string' && pathArg.includes(sp)) return 'ask';
-        }
-      }
+      if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
       return 'allow';
     }
 
