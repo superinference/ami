@@ -363,6 +363,13 @@ export type TeammateIdleHookFn = (context: TeammateContext) => Promise<void>;
 export type ConfigChangeHookFn = (context: ConfigChangeContext) => Promise<{ blockingError?: string } | void>;
 export type InstructionsHookFn = (context: InstructionsContext) => Promise<void>;
 export type WorktreeHookFn = (context: WorktreeContext) => Promise<void>;
+/** WorktreeCreate hook: a *provider* hook that can supply the filesystem path of
+ *  the worktree it created, from stdout (first non-empty line) or
+ *  `hookSpecificOutput.worktreePath` (Claude Code's executeWorktreeCreateHook).
+ *  The harness uses the returned path as the created worktree instead of the
+ *  default `.ami/worktrees/<slug>` location. A void return is the observe-only
+ *  case (the hook materialised the default path or merely reacted). */
+export type WorktreeCreateHookFn = (context: WorktreeContext) => Promise<{ worktreePath?: string } | void>;
 export type FileChangeHookFn = (context: FileChangeContext) => Promise<{ watchPaths?: string[] } | void>;
 export type CwdChangedHookFn = (context: CwdChangedContext) => Promise<{ watchPaths?: string[] } | void>;
 /** Elicitation action a hook may return to short-circuit the user prompt. */
@@ -1011,6 +1018,28 @@ export function extractAdditionalContexts(result: string): string[] {
     if (text) out.push(text);
   }
   return out;
+}
+
+/** Extract the worktree path a WorktreeCreate provider hook reported, matching
+ *  Claude Code's executeWorktreeCreateHook: prefer `hookSpecificOutput.worktreePath`
+ *  (http/JSON hooks), else the flattened top-level `worktreePath`, else the first
+ *  non-empty trimmed stdout line (command hooks that just `echo` the path). Returns
+ *  undefined when the hook produced no usable path (observe-only). */
+export function extractWorktreePath(result: string): string | undefined {
+  const obj = tryParseHookJson(result);
+  if (obj) {
+    const flat = unwrapHookSpecificOutput(obj) as Record<string, unknown>;
+    const wp = flat.worktreePath;
+    if (typeof wp === 'string' && wp.trim().length > 0) return wp.trim();
+    return undefined;
+  }
+  if (typeof result === 'string') {
+    for (const line of result.split('\n')) {
+      const t = line.trim();
+      if (t.length > 0) return t;
+    }
+  }
+  return undefined;
 }
 
 /** Decode an elicitation hook's output into a structured result: a programmatic
@@ -2036,7 +2065,7 @@ export class HookManager extends EventEmitter {
   private setupHooks: SessionHookFn[] = [];
   private configChangeHooks: ConfigChangeHookFn[] = [];
   private instructionsLoadedHooks: InstructionsHookFn[] = [];
-  private worktreeCreateHooks: WorktreeHookFn[] = [];
+  private worktreeCreateHooks: WorktreeCreateHookFn[] = [];
   private worktreeRemoveHooks: WorktreeHookFn[] = [];
   private cwdChangedHooks: CwdChangedHookFn[] = [];
   private fileChangedHooks: FileChangeHookFn[] = [];
@@ -2530,9 +2559,15 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'worktreeCreate': {
-          const fn: WorktreeHookFn = async (ctx) => {
+          const fn: WorktreeCreateHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'worktreeCreate', name: ctx.name, worktreePath: ctx.worktreePath });
-            await this.runArmHook(hookConfig, cwd, eventData, undefined, this.worktreeCreateHooks, fn, 'worktreeCreate');
+            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.worktreeCreateHooks, fn, 'worktreeCreate');
+            // A command/http WorktreeCreate hook acts as a provider: the path it
+            // emits (stdout or hookSpecificOutput.worktreePath) overrides the
+            // default worktree location (Claude Code parity).
+            const worktreePath = extractWorktreePath(result);
+            if (worktreePath) return { worktreePath };
+            return undefined;
           };
           this.onWorktreeCreate(fn);
           break;
@@ -2650,7 +2685,7 @@ export class HookManager extends EventEmitter {
   onSetup(fn: SessionHookFn): void { this.setupHooks.push(fn); }
   onConfigChange(fn: ConfigChangeHookFn): void { this.configChangeHooks.push(fn); }
   onInstructionsLoaded(fn: InstructionsHookFn): void { this.instructionsLoadedHooks.push(fn); }
-  onWorktreeCreate(fn: WorktreeHookFn): void { this.worktreeCreateHooks.push(fn); }
+  onWorktreeCreate(fn: WorktreeCreateHookFn): void { this.worktreeCreateHooks.push(fn); }
   onWorktreeRemove(fn: WorktreeHookFn): void { this.worktreeRemoveHooks.push(fn); }
   onCwdChanged(fn: CwdChangedHookFn): void { this.cwdChangedHooks.push(fn); }
   onFileChanged(fn: FileChangeHookFn): void { this.fileChangedHooks.push(fn); }
@@ -3056,10 +3091,20 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeWorktreeCreate(ctx: WorktreeContext): Promise<void> {
-    return this.withConcurrencyGate('worktreeCreate', async () => {
+  /**
+   * Execute WorktreeCreate hooks. A provider hook may return a `worktreePath`
+   * (from stdout or hookSpecificOutput.worktreePath); the FIRST non-empty path
+   * wins and is returned so the caller uses it as the created worktree (Claude
+   * Code's executeWorktreeCreateHook — first successful non-empty output). A plain
+   * void return across all hooks is the observe-only case.
+   */
+  async executeWorktreeCreate(ctx: WorktreeContext): Promise<{ worktreePath?: string } | void> {
+    return this.withConcurrencyGate('worktreeCreate', async (): Promise<{ worktreePath?: string } | void> => {
       for (const hook of this.worktreeCreateHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r?.worktreePath && r.worktreePath.trim().length > 0) return { worktreePath: r.worktreePath.trim() };
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
     });
   }

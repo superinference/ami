@@ -208,23 +208,29 @@ async function createViaWorktreeHook(
     return { output: `Error: worktree "${flatSlug}" already exists at ${worktreeDir}. Use path to enter an existing worktree.`, isError: true };
   }
 
+  let hookResult: { worktreePath?: string } | void;
   try {
-    await context._hookManager.executeWorktreeCreate({ name: slug, worktreePath: worktreeDir });
+    hookResult = await context._hookManager.executeWorktreeCreate({ name: slug, worktreePath: worktreeDir });
   } catch (e) {
     return { output: `Error: WorktreeCreate hook failed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
   }
+  // A provider hook may report the worktree path it actually created (stdout or
+  // hookSpecificOutput.worktreePath); use it as the created worktree instead of
+  // the default `.ami/worktrees/<slug>` location (Claude Code parity).
+  const effectiveDir = hookResult?.worktreePath ? path.resolve(hookResult.worktreePath) : worktreeDir;
+  const effectiveName = hookResult?.worktreePath ? path.basename(effectiveDir) : flatSlug;
   // The hook owns creation; if it did not materialise the directory, fail loud
   // rather than switching the session into a path that does not exist.
-  if (!fs.existsSync(worktreeDir)) {
-    return { output: `Error: the WorktreeCreate hook did not create ${worktreeDir}.`, isError: true };
+  if (!fs.existsSync(effectiveDir)) {
+    return { output: `Error: the WorktreeCreate hook did not create ${effectiveDir}.`, isError: true };
   }
 
-  switchHookSession(context, cwd, worktreeDir, flatSlug);
+  switchHookSession(context, cwd, effectiveDir, effectiveName);
   const createdMessage =
     `Worktree created via WorktreeCreate hook (session switched to it):\n` +
-    `  Path: ${worktreeDir}\n` +
+    `  Path: ${effectiveDir}\n` +
     '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).';
-  return { output: createdMessage, metadata: { worktreePath: worktreeDir, message: createdMessage } };
+  return { output: createdMessage, metadata: { worktreePath: effectiveDir, message: createdMessage } };
 }
 
 /** Record a hookBased worktree session and switch the context cwd into it,
