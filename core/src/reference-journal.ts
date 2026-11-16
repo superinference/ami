@@ -24,7 +24,7 @@ import { execSync } from 'child_process';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { log, logError } from './logger';
-import { getGlobalConfigPath, updateConfigFile } from './config';
+import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked } from './config';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
 export const COMPAT_VERSION = '2.1.307';
@@ -248,6 +248,99 @@ export async function migrateDeprecatedModelAlias(
     logError('migrate-model-alias', 'migration failed', { error: String(err) });
   }
   return null;
+}
+
+/**
+ * The current config-migration generation. The ordered startup migration set
+ * ({@link runStartupMigrations}) runs once per generation: it executes only while a
+ * user's persisted `migrationVersion` lags this constant, then stamps it. Bumping this
+ * number re-runs the WHOLE set for every existing user, so a NEW migration is added by
+ * appending its call to {@link runStartupMigrations} and incrementing this — an
+ * extensible, ordered, idempotent framework (parity: Claude Code's
+ * CURRENT_MIGRATION_VERSION / runMigrations(), replacing the previous single ad-hoc
+ * migrateLegacyDataDir() call that had no version counter or ordered dispatch).
+ */
+export const CURRENT_MIGRATION_VERSION = 1;
+
+/** The observable outcome of a {@link runStartupMigrations} pass. */
+export interface StartupMigrationResult {
+  /**
+   * The generation stamped into the global config after this run (always
+   * {@link CURRENT_MIGRATION_VERSION} when the set ran), or null when the set was
+   * SKIPPED because the stored version already matched — an idempotent no-op.
+   */
+  ranVersion: number | null;
+  /** Durable subdirs relocated out of `~/.superinference` by {@link migrateLegacyDataDir}. */
+  relocatedDirs: string[];
+  /** The deprecated→successor pinned-model rewrite applied to user settings, if any. */
+  modelAlias: ModelAliasMigration | null;
+}
+
+/**
+ * Versioned, ordered, run-once startup migration framework. Gates on the persisted
+ * `migrationVersion` in the GLOBAL settings: when it already equals
+ * {@link CURRENT_MIGRATION_VERSION} the whole set is a no-op (so steady-state startups
+ * skip the fs scans + settings read entirely); otherwise it runs the ordered batch —
+ *   1. {@link migrateLegacyDataDir} (relocate durable config out of `~/.superinference`)
+ *   2. {@link migrateDeprecatedModelAlias} (rewrite a stale pinned model id)
+ * — then stamps the version LAST (after the migrations' own writes, so a concurrent
+ * re-read in {@link updateConfigFile} lands on top of any model rewrite). Returns the
+ * structured outcome so the caller can show a ONE-TIME notice of what silently changed
+ * ({@link formatStartupMigrationNotices}); the stamp guarantees the notice appears at
+ * most once per generation. Without a resolvable global settings path the version can't
+ * be read/stamped, so the (individually idempotent) migrations run unconditionally and
+ * report their outcome with `ranVersion` set but nothing stamped. Best-effort: a failed
+ * stamp is logged, never thrown into startup.
+ */
+export async function runStartupMigrations(
+  env: NodeJS.ProcessEnv = process.env,
+  configPath: string | null = getGlobalConfigPath(),
+): Promise<StartupMigrationResult> {
+  if (configPath) {
+    const stored = loadConfigFileChecked(configPath).config?.migrationVersion ?? 0;
+    if (stored === CURRENT_MIGRATION_VERSION) {
+      return { ranVersion: null, relocatedDirs: [], modelAlias: null };
+    }
+  }
+  // Ordered migration set — append new migrations here and bump CURRENT_MIGRATION_VERSION.
+  const relocatedDirs = migrateLegacyDataDir(env);
+  const modelAlias = await migrateDeprecatedModelAlias(configPath);
+  if (configPath) {
+    try {
+      updateConfigFile(configPath, current =>
+        current.migrationVersion === CURRENT_MIGRATION_VERSION
+          ? current
+          : { ...current, migrationVersion: CURRENT_MIGRATION_VERSION },
+      );
+    } catch (err) {
+      logError('run-migrations', 'failed to stamp migration version', { error: String(err) });
+    }
+  }
+  return { ranVersion: CURRENT_MIGRATION_VERSION, relocatedDirs, modelAlias };
+}
+
+/**
+ * Human-readable one-time notices describing what {@link runStartupMigrations} silently
+ * changed on disk, so the startup surface can tell the user (parity: Claude's
+ * post-migration one-time notification driven by a persisted flag). Empty when the set
+ * was skipped (version already current) or ran but changed nothing — so a caller prints
+ * nothing on a steady-state startup, and the version stamp guarantees the notice shows at
+ * most once per generation.
+ */
+export function formatStartupMigrationNotices(result: StartupMigrationResult): string[] {
+  const notices: string[] = [];
+  if (result.relocatedDirs.length) {
+    notices.push(
+      `Relocated durable config (${result.relocatedDirs.join(', ')}) from ~/.superinference to ~/.ami.`,
+    );
+  }
+  if (result.modelAlias) {
+    notices.push(
+      `Updated your pinned model from "${result.modelAlias.from}" to "${result.modelAlias.to}" ` +
+        `(the previous id was retired) in ${result.modelAlias.path}.`,
+    );
+  }
+  return notices;
 }
 
 /**

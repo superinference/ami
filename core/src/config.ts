@@ -114,6 +114,14 @@ export interface ProjectConfig {
   tipsOverride?: { tips?: string[]; excludeDefault?: boolean };
   /** When false, the learn-once composer hints are suppressed entirely. */
   composerHintsEnabled?: boolean;
+  /**
+   * Internal, non-user-facing counter stamped by the versioned startup migration-set
+   * runner (reference-journal `runStartupMigrations` / `CURRENT_MIGRATION_VERSION`): the
+   * ordered one-time migration batch runs only while this stored value lags the current
+   * generation, then stamps it, so bumping the code constant re-runs the whole set once.
+   * Parity: Claude Code's persisted `migrationVersion`.
+   */
+  migrationVersion?: number;
   /** Override the composer-hint surface: inject custom hints / drop the built-ins. */
   composerHintsOverride?: { hints?: Array<{ key: string; label: string; learnedAfter: number }>; excludeDefault?: boolean };
 }
@@ -386,7 +394,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['compactionModel', 'string'], ['skill', 'string'], ['statusLine', 'string'],
   ['maxTurns', 'number'], ['tokenBudget', 'number'], ['maxBudgetUsd', 'number'],
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
-  ['maxWebSearchesPerSession', 'number'],
+  ['maxWebSearchesPerSession', 'number'], ['migrationVersion', 'number'],
   ['safeMode', 'boolean'], ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
   ['composerHintsEnabled', 'boolean'], ['disableBypassPermissionsMode', 'boolean'],
   ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
