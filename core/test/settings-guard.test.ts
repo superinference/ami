@@ -20,6 +20,7 @@ import {
   getSettingsTierDisplayNameLowercase,
   getSettingsTierLabels,
   getManagedSettingsSources,
+  filterManagedKeys,
 } from '../src/settings-guard';
 import { isDangerousSettingsEnvVar } from '../src/env-protection';
 
@@ -57,12 +58,23 @@ describe('MANAGED_ONLY_KEYS', () => {
   it('contains strictPluginOnlyCustomization', () => {
     assert.ok(MANAGED_ONLY_KEYS.has('strictPluginOnlyCustomization'));
   });
+  it('contains channelsEnabled (org opt-in gate for the channels feature)', () => {
+    assert.ok(MANAGED_ONLY_KEYS.has('channelsEnabled'));
+  });
+  it('contains allowedChannelPlugins (org-owned channel trust allowlist)', () => {
+    assert.ok(MANAGED_ONLY_KEYS.has('allowedChannelPlugins'));
+  });
 });
 
 describe('managed-only policy lockdown keys are enforced end-to-end', () => {
   // Each lockdown policy must be settable ONLY from the managed tier: a lower
   // tier attempting it is rejected by filterManagedKeys and blocked by the guard.
-  for (const key of ['allowManagedPermissionRulesOnly', 'strictPluginOnlyCustomization']) {
+  for (const key of [
+    'allowManagedPermissionRulesOnly',
+    'strictPluginOnlyCustomization',
+    'channelsEnabled',
+    'allowedChannelPlugins',
+  ]) {
     it(`${key}: non-managed override is denied and effective tier is managed-only`, () => {
       // canOverride: a non-managed source cannot set it, managed can.
       assert.equal(canOverride(key, 'project', 'managed'), false);
@@ -82,7 +94,21 @@ describe('managed-only policy lockdown keys are enforced end-to-end', () => {
       const guard = new SettingsGuard();
       assert.equal(guard.checkOverride(key, 'local', 'managed'), false);
       const [blocked] = guard.getBlockedOverrides();
-      assert.equal(blocked.reason, `"${key}" can only be set by managed config`);
+      assert.equal(
+        blocked.reason,
+        `"${key}" is managed by your organization and cannot be set here — contact your administrator.`,
+      );
+
+      // filterManagedKeys (the config-merge consumer): stripped from a lower tier,
+      // kept from the managed tier.
+      assert.deepEqual(filterManagedKeys({ [key]: true }, 'project'), {
+        filtered: {},
+        rejected: [key],
+      });
+      assert.deepEqual(filterManagedKeys({ [key]: true }, 'managed'), {
+        filtered: { [key]: true },
+        rejected: [],
+      });
     });
   }
 });
@@ -235,7 +261,7 @@ describe('SettingsGuard', () => {
     assert.equal(blocked.length, 1);
     assert.equal(blocked[0].key, 'allowedMcpServers');
     assert.equal(blocked[0].source, 'local');
-    assert.ok(blocked[0].reason.includes('managed config'));
+    assert.ok(blocked[0].reason.includes('managed by your organization'));
   });
   it('getBlockedOverrides includes reason for tier-locked', () => {
     const guard = new SettingsGuard();
@@ -243,6 +269,29 @@ describe('SettingsGuard', () => {
     const blocked = guard.getBlockedOverrides();
     assert.equal(blocked.length, 1);
     assert.ok(blocked[0].reason.includes('locked'));
+  });
+  it('managed-only block reason names the administrator remedy', () => {
+    // Parity: the block message must be ACTIONABLE — not just "refused" but what
+    // to do. Managed-only keys point the user at their administrator.
+    const guard = new SettingsGuard();
+    assert.equal(guard.checkOverride('allowedMcpServers', 'local', 'managed'), false);
+    const [blocked] = guard.getBlockedOverrides();
+    assert.equal(
+      blocked.reason,
+      '"allowedMcpServers" is managed by your organization and cannot be set here — contact your administrator.',
+    );
+    assert.ok(blocked.reason.includes('contact your administrator'));
+  });
+  it('tier-locked block reason names the tier to set it at instead', () => {
+    // Parity: the tier-locked remedy must name WHERE the write should go instead
+    // (the existing, higher-priority tier) rather than only reporting the refusal.
+    const guard = new SettingsGuard();
+    assert.equal(guard.checkOverride('permissionMode', 'local', 'global'), false);
+    const [blocked] = guard.getBlockedOverrides();
+    assert.equal(
+      blocked.reason,
+      '"permissionMode" is locked at tier "global" and cannot be overridden by "local" — set it at the "global" tier or higher.',
+    );
   });
   it('getBlockedCount returns correct count', () => {
     const guard = new SettingsGuard();

@@ -234,6 +234,17 @@ export const MANAGED_ONLY_KEYS = new Set([
   // of) the restriction on itself. Parity: Claude Code's
   // `strictPluginOnlyCustomization` policy.
   'strictPluginOnlyCustomization',
+  // Org opt-in gate for the MCP "channels" notification feature. Teams/enterprise
+  // orgs must explicitly enable it via `channelsEnabled: true` in managed settings
+  // — it is an admin trust/availability decision, so a project/local/env/cli file
+  // must not be able to self-enable the feature. Parity: Claude Code's
+  // `channelsEnabled` managed-settings policy gate.
+  'channelsEnabled',
+  // Org-owned allowlist of channel plugins that, when set in managed settings,
+  // REPLACES the local trust ledger (the admin owns the trust decision). A lower
+  // tier setting it would let the restricted scope grant itself trust, so it is
+  // managed-only. Parity: Claude Code's `allowedChannelPlugins` managed setting.
+  'allowedChannelPlugins',
 ]);
 
 /**
@@ -443,9 +454,16 @@ export class SettingsGuard {
 
   checkOverride(key: string, source: SettingsTier, existing: SettingsTier): boolean {
     if (canOverride(key, source, existing)) return true;
+    // Enrich the block reason with an ACTIONABLE remedy so a frontend can tell the
+    // user not just that the write was refused but what to do about it. Managed-only
+    // keys are org policy (remedy: contact the administrator); tier-locked keys name
+    // the tier the write must target instead. The structured {key,source,reason}
+    // shape is preserved so each UI can still render it however it likes. Parity:
+    // Claude Code's managed/policy-locked rule message ("configured by managed
+    // settings and cannot be modified — contact your system administrator").
     const reason = MANAGED_ONLY_KEYS.has(key)
-      ? `"${key}" can only be set by managed config`
-      : `"${key}" is locked at tier "${existing}" and cannot be overridden by "${source}"`;
+      ? `"${key}" is managed by your organization and cannot be set here — contact your administrator.`
+      : `"${key}" is locked at tier "${existing}" and cannot be overridden by "${source}" — set it at the "${existing}" tier or higher.`;
     this._blockedOverrides.push({ key, source, reason });
     return false;
   }
