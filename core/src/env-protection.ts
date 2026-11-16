@@ -76,6 +76,38 @@ export const TELEMETRY_VARIABLES = new Set([
 export const PIN_CATEGORIES = ['policy', 'code_loading', 'telemetry', 'dynamic_policy'] as const;
 export type PinCategory = (typeof PIN_CATEGORIES)[number];
 
+/**
+ * Plain-language risk explanation per pin category. A blocked env-var message
+ * must tell the user WHY the variable is dangerous rather than surfacing the raw
+ * internal category slug — the rationales already exist as code comments above
+ * (policy/code-loading/telemetry) but were previously discarded in the message.
+ *
+ * Parity: Claude's ManagedSettingsSecurityDialog / managedEnvConstants.ts, which
+ * explain the concrete threat ("can inject arbitrary code into child processes",
+ * "could allow … interception of your prompts and responses") instead of an
+ * opaque "cannot be modified".
+ */
+export const PIN_CATEGORY_RISK: Record<PinCategory, string> = {
+  policy: 'controls where policy/auth configuration is read from',
+  code_loading: 'can inject arbitrary code into child processes',
+  telemetry: 'controls telemetry/tracking behavior',
+  dynamic_policy: 'is pinned by managed policy',
+};
+
+/**
+ * Build the human-readable reason a pinned env-var write was blocked. Names the
+ * variable, keeps the auditable `pinned (<category>)` tokens, adds the
+ * category's plain-language risk, and points at the remediation (set it from a
+ * trusted source instead of letting untrusted code mutate it).
+ */
+export function explainPinnedBlock(variable: string, category: PinCategory): string {
+  return (
+    `Environment variable "${variable}" is pinned (${category}) and cannot be modified: ` +
+    `it ${PIN_CATEGORY_RISK[category]}. ` +
+    `Set it from a trusted source (global/user config, managed policy, or a CLI flag) instead.`
+  );
+}
+
 export function isPinnedVariable(name: string): boolean {
   const upper = name.toUpperCase();
   return (
@@ -364,7 +396,7 @@ export class EnvProtectionGuard {
       blocked: true,
       variable: variable.toUpperCase(),
       category: effectiveCategory,
-      reason: `Environment variable "${variable}" is pinned (${effectiveCategory}) and cannot be modified`,
+      reason: explainPinnedBlock(variable, effectiveCategory),
     };
   }
 
