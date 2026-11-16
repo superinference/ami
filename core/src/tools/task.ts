@@ -398,6 +398,44 @@ export function shouldRemoveWorktree(
 }
 
 /**
+ * Create an isolated git worktree for a sub-agent and prime it: a fresh worktree
+ * session off `baseCwd`, large dirs (node_modules) symlinked in, and the
+ * configured include-globs copied over. Returns the worktree path the child
+ * should run in. Throws on failure (non-git cwd, worktree limit reached, …) so
+ * the caller can convert it into its own clean error. Shared single-source setup
+ * for both the task tool and the workflow tool's per-agent isolation knob — no
+ * second parallel worktree-creation path.
+ */
+export function setupIsolatedWorktree(baseCwd: string, name: string): string {
+  const { createWorktreeSession, symlinkLargeDirectories, copyWorktreeIncludes } = require('../worktree-manager');
+  const session = createWorktreeSession(baseCwd, name);
+  symlinkLargeDirectories(baseCwd, session.worktreePath);
+  copyWorktreeIncludes(baseCwd, session.worktreePath);
+  return session.worktreePath;
+}
+
+/**
+ * Tear down an isolated worktree iff it is change-free (no dirty status, no
+ * unpushed commits) and no other agent is still running in it
+ * ({@link shouldRemoveWorktree}). Returns true when the worktree was removed.
+ * Shell-free (argv-only) and hardened with {@link GIT_HARDENING_ARGS} — the
+ * worktree's `.git/config` is untrusted. Best-effort: any git failure is
+ * swallowed and reported as "not removed". Shared by the task tool and the
+ * workflow tool so the cleanup policy lives in exactly one place.
+ */
+export function removeWorktreeIfClean(baseCwd: string, worktreePath: string, runningAgentCount: number): boolean {
+  try {
+    const status = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'status', '--porcelain'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
+    const unpushed = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
+    if (shouldRemoveWorktree(status, unpushed, runningAgentCount)) {
+      child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'worktree', 'remove', '--force', worktreePath], { cwd: baseCwd, timeout: 10000 });
+      return true;
+    }
+  } catch { /* best-effort cleanup */ }
+  return false;
+}
+
+/**
  * Check whether spawning a new agent is allowed under session and concurrency caps.
  * Returns null if allowed, or an error string if blocked.
  */
@@ -1060,12 +1098,7 @@ export const taskTool: ToolDefinition = {
     let effectiveCwd = requestedCwd || context.cwd;
     if (isolation === 'worktree') {
       try {
-        const { createWorktreeSession, symlinkLargeDirectories, copyWorktreeIncludes } = require('../worktree-manager');
-        const slug = `agent-${crypto.randomBytes(4).toString('hex')}`;
-        const session = createWorktreeSession(effectiveCwd, slug);
-        symlinkLargeDirectories(effectiveCwd, session.worktreePath);
-        copyWorktreeIncludes(effectiveCwd, session.worktreePath);
-        effectiveCwd = session.worktreePath;
+        effectiveCwd = setupIsolatedWorktree(effectiveCwd, generateTaskId('agent'));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { output: `Error: Failed to create worktree for isolated subagent: ${msg}`, isError: true };
@@ -1503,21 +1536,10 @@ export const taskTool: ToolDefinition = {
     }
 
     if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
-      try {
-        // Shell-free: pass the worktree path as an argv element to git, never
-        // interpolated into a shell command line. A worktree path with a space
-        // or shell metacharacter would otherwise let `execSync` run arbitrary
-        // commands during cleanup. GIT_HARDENING_ARGS additionally neutralizes
-        // config-driven code-execution vectors (fsmonitor/hooks/external-diff),
-        // since the worktree's `.git/config` is not a trusted input.
-        const status = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'status', '--porcelain'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
-        const unpushed = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: effectiveCwd, encoding: 'utf-8', timeout: 5000 }).trim();
-        const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
-        if (shouldRemoveWorktree(status, unpushed, runningAgents)) {
-          child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'worktree', 'remove', '--force', effectiveCwd], { cwd: context.cwd, timeout: 10000 });
-          deliverable += '\n[Agent worktree cleaned up — no changes detected]';
-        }
-      } catch {}
+      const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
+      if (removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
+        deliverable += '\n[Agent worktree cleaned up — no changes detected]';
+      }
     }
 
     // Cap the subagent transcript to the configured budget (spills overflow to

@@ -1,7 +1,14 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { projectStateDir } from '../reference-journal';
 import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache } from './workflow-runtime';
-import { SUBAGENT_RETURN_DIRECTIVE, generateTaskId } from './task';
+import {
+  SUBAGENT_RETURN_DIRECTIVE,
+  generateTaskId,
+  setupIsolatedWorktree,
+  removeWorktreeIfClean,
+  buildWorktreeNotice,
+} from './task';
+import { createDefaultTools } from './index';
 import { normalizePermissionMode } from '../permissions';
 import { isWorkflowScriptsEnabled } from './tool-gates';
 import * as fs from 'fs';
@@ -272,6 +279,55 @@ export const workflowTool: ToolDefinition = {
 
     const agentHandler = async (prompt: string, opts?: any): Promise<string> => {
       if (!context._engineFactory) return `[Agent not available: no engine factory]`;
+
+      // Per-agent specialized agent-type (parity: AgentTool `subagent_type`).
+      // Resolve the requested agentType to its definition and layer the agent's
+      // identity — system prompt, model, permission posture, and tool allowlist —
+      // onto the spawned sub-engine, so `agent(p, { agentType: 'reviewer' })` runs
+      // as that specialist instead of a generic engine. An explicit per-call opt
+      // (model / permissionMode / tools) still wins over the agent's default.
+      // Mirrors the resolution in task.ts so there is one agent-definition path.
+      let agentSystemPrompt: string | undefined;
+      let agentDefModel: string | undefined;
+      let agentDefPermissionMode: string | undefined;
+      let agentDefTools: ToolDefinition[] | undefined;
+      let agentDefMaxTurns: number | undefined;
+      const agentType = typeof opts?.agentType === 'string' ? opts.agentType.trim() : '';
+      if (agentType && context._skillManager) {
+        const def = context._skillManager.getAgent(agentType);
+        if (!def) {
+          const available = context._skillManager.listAgents().map(a => a.name).join(', ') || '(none)';
+          return `[Agent error: agentType "${agentType}" not found. Available agents: ${available}]`;
+        }
+        agentSystemPrompt = def.systemPrompt;
+        // 'inherit' is a sentinel for "use the parent's model" — leave undefined.
+        agentDefModel = def.model && def.model !== 'inherit' ? def.model : undefined;
+        agentDefPermissionMode = def.permissionMode;
+        agentDefMaxTurns = def.maxTurns;
+        if (def.tools && def.tools.length > 0) {
+          const everything = createDefaultTools(context.cwd).getAll();
+          if (def.tools.includes('*')) {
+            agentDefTools = everything;
+          } else {
+            const known = new Set(everything.map(t => t.name));
+            const invalid = def.tools.filter(n => !known.has(n));
+            if (invalid.length > 0) {
+              return `[Agent error: agentType "${agentType}" lists unknown tool(s): ${invalid.join(', ')}]`;
+            }
+            const allowed = new Set(def.tools);
+            agentDefTools = everything.filter(t => allowed.has(t.name));
+          }
+          // Deny wins even alongside an allowlist (defense-in-depth), matching task.ts.
+          if (def.disallowedTools && def.disallowedTools.length > 0) {
+            const denied = new Set(def.disallowedTools);
+            agentDefTools = agentDefTools.filter(t => !denied.has(t.name));
+          }
+        } else if (def.disallowedTools && def.disallowedTools.length > 0) {
+          const denied = new Set(def.disallowedTools);
+          agentDefTools = createDefaultTools(context.cwd).getAll().filter(t => !denied.has(t.name));
+        }
+      }
+
       // Per-agent cancellation (parity: AgentTool per-agent abort). Each agent
       // gets its OWN AbortController wired to the process-manager entry's abortFn,
       // so cancelling a single workflow agent (task_kill / UI) actually tears down
@@ -305,27 +361,61 @@ export const workflowTool: ToolDefinition = {
         });
         if (fm && workflowFlowId) fm.addAgent(workflowFlowId, taskId);
       }
-      // Per-agent model override (parity: AgentTool `model`). When the step
-      // requests a specific model, layer it onto a COPY of the parent provider
-      // config so the shared config object is never mutated.
-      const provider = opts?.model
-        ? { ...context._providerConfig!, model: opts.model as string }
+      // Per-agent worktree isolation (parity: AgentTool `isolation: 'worktree'`).
+      // When requested, run this agent inside a fresh git worktree so parallel
+      // workflow agents mutating the tree never race each other. Setup + teardown
+      // go through the shared task.ts helpers (one worktree lifecycle path, no
+      // duplicate). A clean (change-free) worktree is removed when the agent ends.
+      let agentCwd = context.cwd;
+      let isolatedWorktree: string | undefined;
+      if (opts?.isolation === 'worktree') {
+        try {
+          agentCwd = setupIsolatedWorktree(context.cwd, taskId ?? generateTaskId('agent'));
+          isolatedWorktree = agentCwd;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return `[Agent error: failed to create isolated worktree: ${msg}]`;
+        }
+      }
+      const cleanupWorktree = (): void => {
+        if (!isolatedWorktree || isolatedWorktree === context.cwd) return;
+        const running = context.processManager?.runningAgentCount() ?? 0;
+        removeWorktreeIfClean(context.cwd, isolatedWorktree, running);
+        isolatedWorktree = undefined;
+      };
+      // Per-agent model override (parity: AgentTool `model`). An explicit per-call
+      // `model` wins; otherwise the resolved agentType's own model applies. Either
+      // is layered onto a COPY of the parent provider config so the shared config
+      // object is never mutated.
+      const effectiveModel = (opts?.model as string | undefined) ?? agentDefModel;
+      const provider = effectiveModel
+        ? { ...context._providerConfig!, model: effectiveModel }
         : context._providerConfig!;
-      // Per-agent permission posture (parity: AgentTool `mode`). Default stays
-      // 'auto-allow'; an unrecognized value falls back to that default rather
-      // than silently loosening or erroring the whole workflow.
+      // Per-agent permission posture (parity: AgentTool `mode`). Precedence:
+      // explicit per-call opt → the agentType's declared mode → 'auto-allow'. An
+      // unrecognized value falls back rather than silently loosening or erroring
+      // the whole workflow.
       const permissionMode = (opts?.permissionMode && normalizePermissionMode(String(opts.permissionMode)))
+        || (agentDefPermissionMode && normalizePermissionMode(agentDefPermissionMode))
         || 'auto-allow';
       const subEngine = context._engineFactory({
         provider,
-        cwd: context.cwd,
+        cwd: agentCwd,
         permissionMode,
-        tools: opts?.tools,
+        // Explicit per-call tools win; otherwise the agentType's tool allowlist.
+        tools: opts?.tools ?? agentDefTools,
+        // The agentType's system prompt gives the sub-engine its specialist identity.
+        systemPrompt: agentSystemPrompt,
+        maxTurns: agentDefMaxTurns,
         abortController: ac,
       });
       // Same return-and-stop framing as task sub-agents: a workflow agent should
-      // complete its step and return, not run the full never-stop coding loop.
-      const framedPrompt = `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
+      // complete its step and return, not run the full never-stop coding loop. When
+      // running in an isolated worktree, prepend the shared worktree notice so the
+      // child translates inherited paths to its worktree root.
+      const framedPrompt = isolatedWorktree
+        ? `${buildWorktreeNotice(context.cwd, agentCwd)}\n\n---\n\n${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`
+        : `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
       // Live progress: flush accumulated text to the on-disk output file as it
       // streams (first chunk immediately, then throttled) so `task_output` can
       // tail a running workflow agent rather than seeing nothing until it ends.
@@ -359,12 +449,14 @@ export const workflowTool: ToolDefinition = {
         totalAgentTokens += agentTokens;
         finish('failed', result);
         (subEngine as any).shutdown?.();
+        cleanupWorktree();
         throw err;
       }
       context.abortSignal.removeEventListener('abort', forwardAbort);
       totalAgentTokens += agentTokens;
       (subEngine as any).shutdown?.();
       finish('completed', result);
+      cleanupWorktree();
       return result || '[Agent produced no output]';
     };
 
