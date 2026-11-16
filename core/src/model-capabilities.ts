@@ -633,8 +633,134 @@ export function discoverFromModelList(records: Record<string, unknown>[]): {
   return { registered, contextWindows, outputCaps };
 }
 
-export function getModelCapabilities(modelId: string): ModelCapabilities | null {
-  if (typeof modelId !== 'string') return null;
+// ---------------------------------------------------------------------------
+// User env-var capability override (escape hatch for pinned 3rd-party models)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capability dimensions a user can explicitly declare for a pinned third-party
+ * model via a `*_SUPPORTED_CAPABILITIES` env var. Mirrors Claude's
+ * `ModelCapabilityOverride` (utils/model/modelSupportOverrides.ts:L4-L9). AMI's
+ * {@link ModelCapabilities} currently maps `effort`/`thinking` → `reasoning` and
+ * `adaptive_thinking` → `supportsAdaptiveThinking`; `max_effort` /
+ * `interleaved_thinking` are accepted by the generic predicate for forward parity.
+ */
+export type ModelCapabilityOverride =
+  | 'effort'
+  | 'max_effort'
+  | 'thinking'
+  | 'adaptive_thinking'
+  | 'interleaved_thinking';
+
+/** Custom base-URL env vars that signal a gateway/proxy (non-first-party) endpoint. */
+const THIRD_PARTY_BASE_URL_ENV = [
+  'ANTHROPIC_BASE_URL',
+  'OPENAI_BASE_URL',
+  'AI_BASE_URL',
+  'PROVIDER_BASE_URL',
+  'OLLAMA_BASE_URL',
+] as const;
+
+/**
+ * True when no custom gateway/proxy endpoint is configured, i.e. requests go to a
+ * provider's canonical first-party API where built-in capability detection is
+ * reliable. The capability-override escape hatch below is INTENTIONALLY ignored on
+ * a first-party endpoint: a user-declared list can only correct a misdetected
+ * gateway model, never silently strip a known-correct first-party capability.
+ * Mirrors Claude's `getAPIProvider() === 'firstParty'` short-circuit
+ * (utils/model/modelSupportOverrides.ts:L32-L34); AMI detects it from the absence
+ * of any custom `*_BASE_URL` env at call time.
+ */
+export function isFirstPartyProvider(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !THIRD_PARTY_BASE_URL_ENV.some(key => {
+    const value = env[key];
+    return typeof value === 'string' && value.trim() !== '';
+  });
+}
+
+/** Per-tier env vars: a model pin plus its declared capability list. */
+const CAPABILITY_OVERRIDE_TIERS = [
+  { modelEnvVar: 'ANTHROPIC_DEFAULT_OPUS_MODEL', capabilitiesEnvVar: 'ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES' },
+  { modelEnvVar: 'ANTHROPIC_DEFAULT_SONNET_MODEL', capabilitiesEnvVar: 'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES' },
+  { modelEnvVar: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', capabilitiesEnvVar: 'ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES' },
+] as const;
+
+/**
+ * Whether a capability override is declared for `modelId` via the pinned-tier env
+ * vars, as an explicit boolean, or `undefined` when no override applies (so the
+ * caller falls through to auto-detection). This is the escape hatch for
+ * gateway/proxy setups where a custom model id matches no built-in pattern table
+ * and auto-detection guesses wrong: pin the id to a tier
+ * (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`) and declare its capabilities in
+ * the parallel `*_SUPPORTED_CAPABILITIES` list (comma-separated, case-insensitive).
+ *
+ * Precisely mirrors Claude's `get3PModelCapabilityOverride`
+ * (utils/model/modelSupportOverrides.ts:L30-L50):
+ *  - ignored entirely on a first-party endpoint ({@link isFirstPartyProvider});
+ *  - a tier with no pin OR an unset capability list is skipped (→ `undefined`);
+ *  - an EMPTY capability list (`''`) is "supports nothing" → `false` (distinct from unset);
+ *  - tiers are tried opus→sonnet→haiku; the model id is matched case-insensitively.
+ * Read at call time (no memoization) so tests/processes can toggle the env.
+ */
+export function get3PModelCapabilityOverride(
+  modelId: string,
+  capability: ModelCapabilityOverride,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean | undefined {
+  if (typeof modelId !== 'string' || !modelId) return undefined;
+  if (isFirstPartyProvider(env)) return undefined;
+  const lower = modelId.toLowerCase();
+  for (const tier of CAPABILITY_OVERRIDE_TIERS) {
+    const pinned = env[tier.modelEnvVar];
+    const capabilities = env[tier.capabilitiesEnvVar];
+    if (!pinned || capabilities === undefined) continue;
+    if (lower !== pinned.toLowerCase()) continue;
+    return capabilities
+      .toLowerCase()
+      .split(',')
+      .map(s => s.trim())
+      .includes(capability);
+  }
+  return undefined;
+}
+
+/**
+ * Apply any user-declared capability override (see {@link get3PModelCapabilityOverride})
+ * on top of auto-detected capabilities. When the active model is pinned to a tier,
+ * the declared list is authoritative: `effort`/`thinking`/`adaptive_thinking` tokens
+ * turn the matching capability on, their absence turns it off — correcting a
+ * misdetected gateway model in either direction. Returns `base` unchanged when no
+ * override applies to this model.
+ */
+function applyCapabilityOverrides(
+  modelId: string,
+  base: ModelCapabilities | null,
+): ModelCapabilities | null {
+  const effort = get3PModelCapabilityOverride(modelId, 'effort');
+  // No pinned-tier match for this model → fall through to auto-detection untouched.
+  // (A matched tier always resolves every token to a concrete boolean, so an
+  // `undefined` here means "no override applies", never "token absent from list".)
+  if (effort === undefined) return base;
+  const thinking = get3PModelCapabilityOverride(modelId, 'thinking') === true;
+  const adaptive = get3PModelCapabilityOverride(modelId, 'adaptive_thinking') === true;
+  if (!effort && !thinking && !adaptive) return null; // declared to support nothing
+  const result: ModelCapabilities = base
+    ? { ...base }
+    : {
+        reasoning: true,
+        defaultThinkingLevel: 'medium',
+        supportsAdaptiveThinking: false,
+        requiresTemperatureOne: false,
+        temperatureMustBeUnset: false,
+        maxThinkingBudget: 128000,
+      };
+  result.reasoning = true;
+  result.supportsAdaptiveThinking = adaptive;
+  return result;
+}
+
+/** Auto-detected capabilities (dynamic registry → version-aware Claude → pattern table). */
+function detectModelCapabilities(modelId: string): ModelCapabilities | null {
   const dynamic = dynamicCapabilities.get(modelId.toLowerCase());
   if (dynamic !== undefined) return dynamic;
   // Claude thinking classification is version-aware (adaptive is 4.6+/5.x; pre-4.6 uses
@@ -648,6 +774,13 @@ export function getModelCapabilities(modelId: string): ModelCapabilities | null 
     }
   }
   return null;
+}
+
+export function getModelCapabilities(modelId: string): ModelCapabilities | null {
+  if (typeof modelId !== 'string') return null;
+  // The user env-var escape hatch (pinned 3rd-party/gateway models) takes
+  // precedence over auto-detection so a misdetected custom id can be corrected.
+  return applyCapabilityOverrides(modelId, detectModelCapabilities(modelId));
 }
 
 export function isReasoningModel(modelId: string): boolean {
