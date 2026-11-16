@@ -1,5 +1,7 @@
 import { execSync, spawnSync } from 'child_process';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /** Hard ceiling so a wedged git invocation can never hang a caller. */
 const GIT_BRANCH_TIMEOUT_MS = 2_000;
@@ -133,6 +135,101 @@ export function getRepoRemoteHash(cwd: string): string | null {
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
 }
 
+/**
+ * Resolve the `.git` directory that holds the ref store for `cwd`, following a
+ * worktree/submodule `.git` FILE (`gitdir: <path>`) and its `commondir` pointer
+ * (linked worktrees keep `refs/remotes/*` in the common dir, not the per-worktree
+ * gitdir). Returns `null` when `cwd` is not a git working tree. Pure fs — no git
+ * subprocess.
+ */
+function resolveGitDir(cwd: string): string | null {
+  const dotGit = path.join(cwd, '.git');
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(dotGit);
+  } catch {
+    return null;
+  }
+  let gitDir: string;
+  if (stat.isDirectory()) {
+    gitDir = dotGit;
+  } else {
+    // A linked worktree / submodule `.git` is a file: `gitdir: <path>`.
+    let pointer: string;
+    try {
+      pointer = fs.readFileSync(dotGit, 'utf-8').trim();
+    } catch {
+      return null;
+    }
+    const m = pointer.match(/^gitdir:\s*(.+)$/);
+    if (!m) return null;
+    gitDir = path.resolve(cwd, m[1].trim());
+  }
+  // Honor `commondir` so ref reads land in the shared store for a linked worktree.
+  try {
+    const commonPtr = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf-8').trim();
+    if (commonPtr) return path.resolve(gitDir, commonPtr);
+  } catch {
+    /* no commondir → gitDir is already the common dir */
+  }
+  return gitDir;
+}
+
+/** Read one ref from `gitDir`, following a single `ref: <target>` level. */
+function readRefFrom(gitDir: string, ref: string, depth: number): string | null {
+  // Guard a symbolic-ref cycle so a malformed store can't spin forever.
+  if (depth > 5) return null;
+  // Loose ref file.
+  let loose: string | null = null;
+  try {
+    loose = fs.readFileSync(path.join(gitDir, ref), 'utf-8').trim();
+  } catch {
+    loose = null;
+  }
+  if (loose) {
+    const sym = loose.match(/^ref:\s*(.+)$/);
+    if (sym) return readRefFrom(gitDir, sym[1].trim(), depth + 1);
+    return /^[0-9a-f]{40}$/i.test(loose) ? loose : null;
+  }
+  // packed-refs fallback.
+  try {
+    const packed = fs.readFileSync(path.join(gitDir, 'packed-refs'), 'utf-8');
+    for (const line of packed.split('\n')) {
+      // Skip the header (`# ...`), peeled-tag lines (`^<sha>`), and blanks.
+      if (!line || line.startsWith('#') || line.startsWith('^')) continue;
+      const sp = line.indexOf(' ');
+      if (sp < 0) continue;
+      const sha = line.slice(0, sp);
+      if (line.slice(sp + 1).trim() === ref && /^[0-9a-f]{40}$/i.test(sha)) return sha;
+    }
+  } catch {
+    /* no packed-refs */
+  }
+  return null;
+}
+
+/**
+ * Resolve a fully-qualified git ref (e.g. `refs/remotes/origin/main`) to its
+ * commit SHA by reading the ref store DIRECTLY off the filesystem — no git
+ * subprocess. Reads the loose ref first, then `packed-refs`, following a single
+ * level of symbolic ref (`ref: <target>`). Returns the 40-char SHA, or `null`
+ * when the ref is absent/unreadable, the ref string is unsafe (contains a `..`
+ * or empty segment), or `cwd` is not a git working tree.
+ *
+ * Mirrors Claude Code's `resolveRef` fast-path (utils/worktree.ts): when
+ * `origin/<default>` already exists locally the base SHA is obtained without
+ * spawning `git fetch`/`git rev-parse`, skipping a multi-second commit-graph scan
+ * on very large clones while still giving the caller the base commit.
+ */
+export function resolveRef(cwd: string, ref: string): string | null {
+  // Path-traversal guard: a ref is joined onto the git dir, so reject `..`/empty
+  // segments that could escape the ref store.
+  if (ref.split('/').some(seg => seg === '' || seg === '..' || seg === '.')) return null;
+  const gitDir = resolveGitDir(cwd);
+  if (!gitDir) return null;
+  return readRefFrom(gitDir, ref, 0);
+}
+
 /** Common default-branch names, in the order git itself tends to prefer them. */
 const DEFAULT_REMOTE_BASE_CANDIDATES = ['origin/main', 'origin/staging', 'origin/master'] as const;
 
@@ -160,6 +257,13 @@ export function findRemoteBase(
   }
 
   for (const candidate of candidates) {
+    // fs-level ref read first (no subprocess) — parity with Claude's resolveRef
+    // fast-path: when the remote-tracking ref already exists locally we skip
+    // spawning `git rev-parse`. `runGit` stays the authority for anything the fs
+    // read can't settle (e.g. a non-`origin/` candidate).
+    if (candidate.startsWith('origin/') && resolveRef(cwd, `refs/remotes/${candidate}`)) {
+      return candidate;
+    }
     const verify = runGit(cwd, ['rev-parse', '--verify', '--quiet', candidate]);
     if (verify && verify.code === 0) {
       return candidate;

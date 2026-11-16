@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import { ToolContext, ToolDefinition, ToolResult } from '../types';
-import { findRemoteBase, isShallowClone } from '../utils/git';
+import { findRemoteBase, isShallowClone, resolveRef } from '../utils/git';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
@@ -511,11 +511,34 @@ export const enterWorktreeTool: ToolDefinition = {
 
     // Default base (no explicit base_ref / PR): prefer the current branch's upstream
     // tracking ref (`@{u}`), then origin/HEAD, then the conventional candidate
-    // list (findRemoteBase, all local refs — never contacts the network),
-    // falling back to origin/<default-branch> only when none of those resolve.
+    // list (findRemoteBase, all local refs — never contacts the network).
     // This matches git's own base-selection priority so a worktree branches from
     // the ref the user is actually tracking rather than a hardcoded origin/main.
-    const baseRef = prBaseRef || requestedBaseRef || findRemoteBase(context.cwd) || `origin/${defaultBranch}`;
+    let baseRef: string;
+    if (prBaseRef) {
+      baseRef = prBaseRef;
+    } else if (requestedBaseRef) {
+      baseRef = requestedBaseRef;
+    } else {
+      const localBase = findRemoteBase(context.cwd);
+      if (localBase) {
+        baseRef = localBase;
+      } else {
+        // No remote-tracking ref resolves locally — a freshly/stalely cloned repo
+        // whose `origin/<default>` isn't present. Read the ref off the filesystem
+        // first (no subprocess); only on a MISS fetch `origin/<default>` once so
+        // the worktree can still be based on the latest default branch instead of
+        // silently basing on HEAD (parity: worktree.ts L283-300 —
+        // resolveRef-then-`git fetch origin <default>`). An offline/remoteless
+        // fetch failure is swallowed; the rev-parse+HEAD fallback below still fires.
+        if (!resolveRef(context.cwd, `refs/remotes/origin/${defaultBranch}`)) {
+          try {
+            _enterWorktreeHooks.exec(['fetch', 'origin', defaultBranch], { cwd: context.cwd, stdio: 'ignore', env: gitEnv, timeout: 60000 });
+          } catch { /* offline / no origin — HEAD fallback below applies */ }
+        }
+        baseRef = `origin/${defaultBranch}`;
+      }
+    }
     // Opt-in sparse-checkout (parity: Claude's getOrCreateWorktree sparsePaths path,
     // worktree.ts L321-366). When configured, the worktree is added with
     // `--no-checkout` so NO files land yet; the cone is then narrowed and HEAD

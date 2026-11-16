@@ -10,6 +10,7 @@ import {
   normalizeGitRemoteUrl,
   getRepoRemoteHash,
   findRemoteBase,
+  resolveRef,
   isShallowClone,
   getIsClean,
 } from '../src/utils/git';
@@ -209,6 +210,58 @@ test('findRemoteBase: upstream tracking ref wins, then origin/HEAD, then candida
   } finally {
     fs.rmSync(upstream, { recursive: true, force: true });
     fs.rmSync(clone, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// resolveRef (fs-level ref read — no subprocess)
+// ---------------------------------------------------------------------------
+
+test('resolveRef: reads loose + packed refs, follows symbolic refs, honors worktree .git file, null when absent/unsafe/non-git', () => {
+  const upstream = mkRepo();
+  const clone = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ami-resref-')));
+  try {
+    commit(upstream, 'a');
+    execFileSync('git', ['clone', '-q', upstream, clone], { encoding: 'utf-8' });
+    git(clone, 'config', 'user.email', 't@t.t');
+    git(clone, 'config', 'user.name', 'T');
+
+    const originSha = git(clone, 'rev-parse', 'refs/remotes/origin/main');
+    // Matches what git resolves, whichever store (loose or packed) the clone used.
+    assert.equal(resolveRef(clone, 'refs/remotes/origin/main'), originSha);
+    // origin/HEAD is a symbolic ref -> followed to the same SHA.
+    assert.equal(resolveRef(clone, 'refs/remotes/origin/HEAD'), originSha);
+
+    // Loose-ref path: update-ref writes a loose ref file.
+    git(clone, 'update-ref', 'refs/heads/loosebr', originSha);
+    assert.equal(resolveRef(clone, 'refs/heads/loosebr'), originSha);
+
+    // packed-refs path: pack everything, loose files are removed.
+    git(clone, 'pack-refs', '--all');
+    assert.equal(resolveRef(clone, 'refs/remotes/origin/main'), originSha);
+    assert.equal(resolveRef(clone, 'refs/heads/loosebr'), originSha);
+
+    // A linked worktree's `.git` is a FILE; refs resolve via commondir.
+    const wt = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ami-resref-wt-')));
+    fs.rmSync(wt, { recursive: true, force: true });
+    git(clone, 'worktree', 'add', '-q', '--detach', wt);
+    assert.ok(fs.statSync(path.join(wt, '.git')).isFile(), '.git should be a file in a linked worktree');
+    assert.equal(resolveRef(wt, 'refs/remotes/origin/main'), originSha);
+
+    // Absent ref -> null; unsafe ref (traversal) -> null.
+    assert.equal(resolveRef(clone, 'refs/remotes/origin/nope'), null);
+    assert.equal(resolveRef(clone, 'refs/../../etc/passwd'), null);
+  } finally {
+    fs.rmSync(upstream, { recursive: true, force: true });
+    fs.rmSync(clone, { recursive: true, force: true });
+  }
+
+  // Non-git directory -> null.
+  const plain = nonGit();
+  try {
+    assert.equal(resolveRef(plain, 'refs/heads/main'), null);
+  } finally {
+    fs.rmSync(plain, { recursive: true, force: true });
   }
 });
 
