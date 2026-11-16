@@ -18,7 +18,7 @@ import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta } from './model-capabilities';
-import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks } from './provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode } from './error-classifier';
@@ -1405,7 +1405,12 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
             type: 'tool-result',
             toolCallId: msg.tool_call_id,
             toolName: toolName || 'unknown',
-            output: { type: 'text', value: msg.content },
+            // Surface a failed tool result (e.g. the synthetic placeholder healed in
+            // for an unanswered/interrupted tool_call) as an error output so the model
+            // sees the tool FAILED, mirroring Anthropic's tool_result is_error flag.
+            output: msg.isError
+              ? { type: 'error-text', value: msg.content }
+              : { type: 'text', value: msg.content },
           },
         ],
       };
@@ -1780,14 +1785,21 @@ export async function* streamChatCompletion(
   // caps cache_control at 4 blocks). So SDK-level markers apply to NATIVE
   // anthropic only; vertex relies solely on the HTTP injection.
   const isVertexAnthropic = config.provider === 'anthropic-vertex';
-  const useSdkCacheMarkers = isAnthropic && !isVertexAnthropic;
+  // Honor the DISABLE_PROMPT_CACHING global/per-model kill-switches (getPromptCachingEnabled).
+  const promptCachingEnabled = getPromptCachingEnabled(modelId);
+  const useSdkCacheMarkers = isAnthropic && !isVertexAnthropic && promptCachingEnabled;
 
   const healed = healOrphanedToolCalls(nonSystemMessages);
   const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
-  const coreMessages = convertMessages(sanitized);
+  // Proactively cap outbound media so the request can never exceed the API's hard
+  // per-request media limit (drops oldest images first).
+  const capped = stripExcessMediaItems(sanitized);
+  let coreMessages = convertMessages(capped);
 
   if (isAnthropic) {
-    stripEmptyTextBlocks(coreMessages as Array<Record<string, unknown>>);
+    coreMessages = stripEmptyTextBlocks(
+      coreMessages as unknown as Array<Record<string, unknown>>,
+    ) as unknown as typeof coreMessages;
   }
 
   // Anthropic prompt caching. Mark the stable prefix so the provider does not
@@ -1803,7 +1815,7 @@ export async function* streamChatCompletion(
   if (useSdkCacheMarkers) {
     const breakpointIndices = new Set<number>();
     if (systemPrompt && coreMessages.length > 0) breakpointIndices.add(0);
-    const convPoints = buildConversationCachePoints(coreMessages);
+    const convPoints = buildConversationCachePoints(coreMessages, promptCachingEnabled);
     for (const idx of Object.keys(convPoints)) breakpointIndices.add(Number(idx));
     for (const idx of breakpointIndices) {
       const msg = coreMessages[idx] as Record<string, unknown> | undefined;

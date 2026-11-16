@@ -178,6 +178,13 @@ export interface ToolMessage extends TranscriptMeta {
   role: 'tool';
   tool_call_id: string;
   content: string;
+  /** Marks this tool result as a failure so the model clearly sees the tool errored
+   *  (translated by `convertMessages` to the provider's `tool_result` `is_error`
+   *  flag, e.g. the AI-SDK `error-text` output variant). Set on the synthetic
+   *  placeholders `healOrphanedToolCalls` emits for unanswered/interrupted tool
+   *  calls so they surface as errors, not ordinary tool output. Parity: Claude's
+   *  synthetic tool_result `is_error: true`. */
+  isError?: boolean;
 }
 
 export interface SystemMessage extends TranscriptMeta {
