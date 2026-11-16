@@ -3,6 +3,7 @@ import * as path from 'path';
 import { log as coreLog } from './logger';
 import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
 import { validateEngineConfig, type EngineConfig } from './types';
+import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
 
 /**
  * Project-level configuration that can be stored in
@@ -1199,27 +1200,64 @@ export interface UpdateConfigResult {
  *
  * The actual write reuses {@link safeWriteConfig} (atomic temp+rename, internal-
  * write suppression), so there is one canonical write path.
+ *
+ * CROSS-PROCESS SERIALIZATION. The entire re-read → merge → write runs inside a
+ * cross-process advisory lock ({@link withFileLockSync} on the resolved target), so
+ * two AMI processes (a detached run plus an interactive one, several swarm teammates)
+ * can never interleave a read and a write and lose each other's keys — the classic
+ * lost-update race the step-1 re-read only narrows is closed outright. Parity: Claude
+ * Code's `saveConfigWithLock` takes a `lockfile.lockSync` before the read-modify-write,
+ * logs lock contention, and installs an `onCompromised` handler that downgrades a stolen
+ * lock to a log (never an unhandled throw). The lock reuses the ONE canonical lock
+ * primitive (no parallel lock implementation). `lockOptions` lets a caller tune the
+ * retry budget / observe `onCompromised`; a stolen lock still defaults to a log.
  */
 export function updateConfigFile(
   filePath: string,
   updater: (current: ProjectConfig) => ProjectConfig,
+  lockOptions: FileLockSyncOptions = {},
 ): UpdateConfigResult {
-  const checked = loadConfigFileChecked(filePath);
-  // Never clobber a present-but-unparseable file: a merge built on an empty base
-  // would destroy the user's (recoverable) content. Only the fatal diagnostics
-  // (bad JSON / not an object) block; advisory value/key diagnostics still load.
-  if (checked.diagnostic && (checked.diagnostic.kind === 'parse-error' || checked.diagnostic.kind === 'not-object')) {
-    return { written: false, reason: 'corrupt', config: checked.config ?? {}, diagnostic: checked.diagnostic };
-  }
-  const current = checked.config ?? {};
-  const next = updater(current);
-  // Same-reference return means "nothing to do" — skip the write (parity:
-  // saveGlobalConfig's no-op short-circuit).
-  if (next === current) {
-    return { written: false, reason: 'no-change', config: current };
-  }
-  safeWriteConfig(filePath, next as Record<string, unknown>);
-  return { written: true, reason: 'written', config: next };
+  // Lock the RESOLVED target (symlink followed) so a symlinked path and its target
+  // contend on the same lock, and so the read below sees a state no concurrent
+  // AMI writer can mutate until we release.
+  const lockTarget = resolveConfigWriteTarget(filePath);
+  // The lock file lives beside the target, so its parent directory must exist
+  // before acquisition even when the config itself is being created for the first
+  // time (parity: Claude's saveConfigWithLock mkdirSync's the dir before lockSync).
+  try {
+    const dir = path.dirname(lockTarget);
+    if (!fsHooks.existsSync(dir)) fsHooks.mkdirSync(dir, { recursive: true });
+  } catch { /* safeWriteConfig re-attempts dir creation and surfaces a real error */ }
+  const started = Date.now();
+  return withFileLockSync(lockTarget, () => {
+    // Log contention (parity: Claude's "lock took longer than expected — another
+    // instance may be running"), measured as time spent waiting to enter the section.
+    const waited = Date.now() - started;
+    if (waited > 100) {
+      coreLog('config', `config lock contention on ${lockTarget}: waited ${waited}ms (another AMI instance may be writing)`);
+    }
+    const checked = loadConfigFileChecked(filePath);
+    // Never clobber a present-but-unparseable file: a merge built on an empty base
+    // would destroy the user's (recoverable) content. Only the fatal diagnostics
+    // (bad JSON / not an object) block; advisory value/key diagnostics still load.
+    if (checked.diagnostic && (checked.diagnostic.kind === 'parse-error' || checked.diagnostic.kind === 'not-object')) {
+      return { written: false, reason: 'corrupt', config: checked.config ?? {}, diagnostic: checked.diagnostic };
+    }
+    const current = checked.config ?? {};
+    const next = updater(current);
+    // Same-reference return means "nothing to do" — skip the write (parity:
+    // saveGlobalConfig's no-op short-circuit).
+    if (next === current) {
+      return { written: false, reason: 'no-change', config: current };
+    }
+    safeWriteConfig(filePath, next as Record<string, unknown>);
+    return { written: true, reason: 'written', config: next };
+  }, {
+    // A stolen lock is recoverable — downgrade to a log instead of letting the
+    // default throw become an unhandled exception (parity: Claude's onCompromised).
+    onCompromised: (err) => coreLog('config', `config write lock compromised for ${lockTarget}: ${err.message}`),
+    ...lockOptions,
+  });
 }
 
 export function cleanupStaleConfigTmp(filePath: string): boolean {

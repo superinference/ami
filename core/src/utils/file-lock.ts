@@ -63,6 +63,19 @@ export const DEFAULT_LOCK_OPTIONS: Required<
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
+ * Block the current thread for `ms` without spinning the CPU. Used by the
+ * SYNCHRONOUS lock path ({@link withFileLockSync}) where the critical section is
+ * itself synchronous (e.g. a config read-modify-write) and cannot `await`. Uses a
+ * throwaway `SharedArrayBuffer` + `Atomics.wait`, which parks the thread for the
+ * timeout and returns `'timed-out'` — a real sleep, not a busy loop. A non-positive
+ * duration is a no-op.
+ */
+function syncSleep(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
  * Whether `pid` refers to a live process. `process.kill(pid, 0)` sends no signal
  * but validates the target: it succeeds for a live process, raises ESRCH when no
  * such process exists (dead), and EPERM when the process exists but is owned by
@@ -189,5 +202,80 @@ export async function withFileLock<T>(
   } finally {
     if (timer) clearInterval(timer);
     try { await fsp.unlink(lockFile); } catch { /* already gone */ }
+  }
+}
+
+/** Options for {@link withFileLockSync} (the synchronous sibling of {@link withFileLock}). */
+export interface FileLockSyncOptions {
+  /** Max acquisition attempts before giving up (default 30). */
+  retries?: number;
+  /** Initial backoff in ms, doubled each retry up to maxTimeout (default 5). */
+  minTimeout?: number;
+  /** Backoff ceiling in ms (default 100). */
+  maxTimeout?: number;
+  /** A lock older than this (ms) is considered abandoned and stolen (default 30000). */
+  staleMs?: number;
+  /**
+   * Fired (at most once) when, on release, the lock is found to have been lost or
+   * taken over by another process (deleted, or now records a different PID) while
+   * the synchronous critical section ran — i.e. the section exceeded `staleMs` and a
+   * waiter judged this holder stale and stole the lock, so mutual exclusion was no
+   * longer guaranteed. Parity: Claude Code's `saveConfigWithLock` installs an
+   * `onCompromised` handler that DOWNGRADES a stolen lock to a log instead of letting
+   * the default handler throw an unhandled exception. Callback errors are swallowed.
+   */
+  onCompromised?: (err: Error) => void;
+}
+
+/**
+ * Synchronous cross-process advisory lock — the sibling of {@link withFileLock} for
+ * critical sections that are themselves synchronous and cannot `await` (e.g. a config
+ * read-modify-write built on the sync `fs` helpers). Shares the SAME lockfile format,
+ * PID-based stale-stealing, and `${target}.lock` naming as the async path, so a sync
+ * and an async holder of the same target serialize against each other — this is the
+ * ONE lock primitive, not a parallel implementation (dedup rule).
+ *
+ * Because the section is synchronous the thread is blocked throughout, so there is no
+ * mid-section heartbeat (nothing else runs on this thread to refresh the mtime); a
+ * section longer than `staleMs` can therefore be judged stale by a waiter and have its
+ * lock stolen. That exact case is detected on release and reported via `onCompromised`
+ * (parity: Claude's stolen-lock → log, not throw). Returns whatever `fn` returns.
+ */
+export function withFileLockSync<T>(
+  target: string,
+  fn: () => T,
+  options: FileLockSyncOptions = {},
+): T {
+  const opts = { ...DEFAULT_LOCK_OPTIONS, ...options };
+  const lockFile = `${target}.lock`;
+  let backoff = opts.minTimeout;
+  let acquired = false;
+  for (let attempt = 0; attempt <= opts.retries; attempt++) {
+    if (tryAcquire(lockFile, opts.staleMs)) { acquired = true; break; }
+    syncSleep(backoff);
+    backoff = Math.min(backoff * 2, opts.maxTimeout);
+  }
+  if (!acquired) {
+    throw new Error(`Could not acquire lock ${lockFile} after ${opts.retries} retries`);
+  }
+
+  try {
+    return fn();
+  } finally {
+    // Stale-write detection: if the lock no longer records our PID (stolen by a
+    // waiter after we overran staleMs, or vanished), the section was not mutually
+    // exclusive. Report it and do NOT delete the file — it now belongs to the thief.
+    let compromised = false;
+    try {
+      const pid = readLockPid(lockFile);
+      if (pid === null || pid !== process.pid) compromised = true;
+    } catch {
+      compromised = true;
+    }
+    if (compromised) {
+      try { options.onCompromised?.(new Error(`Lock ${lockFile} was lost or taken over during the critical section`)); } catch { /* ignore handler errors */ }
+    } else {
+      try { fs.unlinkSync(lockFile); } catch { /* already gone */ }
+    }
   }
 }
