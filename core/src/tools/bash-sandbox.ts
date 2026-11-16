@@ -371,6 +371,15 @@ const SANDBOX_EXEMPT_PATTERNS = [
 export interface SandboxExemptionOptions {
   excludedCommands?: string[];
   overrideDefaults?: boolean;
+  // PARITY (default-deny coverage): when true, {@link shouldUseSandbox} sandboxes
+  // EVERY command that is not explicitly exempt instead of only the hardcoded
+  // `SANDBOX_TRIGGER_PATTERNS`. Mirrors Claude Code's `shouldUseSandbox()`, which
+  // returns true for all commands once sandboxing is enabled and false only for
+  // excluded commands — closing the hole where a non-trigger command (`./evil`,
+  // `nc`, `ssh`, `scp`, `dd`, a path-invoked script, `> /etc/…`) ran unsandboxed.
+  // Driven by the `AMI_SANDBOX_DEFAULT_DENY` gate ({@link isSandboxDefaultDeny}).
+  // Additive: undefined/false preserves the trigger-allowlist behavior exactly.
+  defaultSandbox?: boolean;
 }
 
 /**
@@ -625,6 +634,14 @@ export function shouldUseSandbox(command: string, options?: SandboxExemptionOpti
     // subcommand — NOT a loose substring — so an exempt keyword appearing as an
     // argument or inside another command can never flip the exemption.
     if (commandIsExcluded(sub, userRules)) continue;
+    // PARITY (default-deny coverage): once a subcommand survived both exemption
+    // checks above, Claude Code sandboxes it unconditionally — there is no trigger
+    // gate. When `defaultSandbox` is on we do the same, so any non-exempt command
+    // (`./evil`, `nc`, `ssh`, a path-invoked script, `> /etc/…`) is sandboxed
+    // instead of slipping through the narrow trigger allowlist. Per-subcommand, so
+    // one exempt subcommand still cannot suppress the sandbox for a sibling
+    // (AMI's stricter superset over Claude's whole-command check is preserved).
+    if (options?.defaultSandbox) return true;
     // Triggers match on the quote-stripped subcommand so trigger text inside
     // quotes (`echo "curl is a tool"`) does not force the sandbox.
     const stripped = sub.replace(/"[^"]*"|'[^']*'/g, '');

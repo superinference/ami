@@ -150,6 +150,31 @@ export function isSandboxEscapeDisabled(env: NodeJS.ProcessEnv = process.env): b
   return isEnvTruthy(env[DISABLE_SANDBOX_ESCAPE_ENV]);
 }
 
+/**
+ * Env var that switches the host auto-sandbox from AMI's narrow trigger-pattern
+ * allowlist to Claude Code's DEFAULT-DENY coverage model (default: OFF — the
+ * trigger allowlist is used). When truthy, {@link shouldUseSandbox} sandboxes
+ * EVERY command that is not explicitly exempt, instead of only the ~11 hardcoded
+ * trigger patterns (curl/wget/interpreters/eval/…). This closes the structural
+ * coverage hole where a compiled/local binary (`./evil`), `nc`, `ssh`, `scp`,
+ * `rsync`, `dd`, `socat`, a path-invoked shell script, or a bare `> /etc/…`
+ * redirection runs with NO sandbox because it matches no trigger. Parity: Claude
+ * Code's `shouldUseSandbox()` (tools/BashTool/shouldUseSandbox.ts), which returns
+ * `true` for all commands once sandboxing is enabled and `false` only for
+ * excluded commands. Disable switch semantics (default OFF → trigger allowlist),
+ * so it uses truthy detection rather than {@link capabilityEnabled}.
+ */
+export const SANDBOX_DEFAULT_DENY_ENV = 'AMI_SANDBOX_DEFAULT_DENY';
+
+/**
+ * True when the host auto-sandbox should cover every non-exempt command
+ * (default-deny) rather than only the hardcoded trigger patterns, per
+ * {@link SANDBOX_DEFAULT_DENY_ENV}. Default OFF → AMI's trigger allowlist is used.
+ */
+export function isSandboxDefaultDeny(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[SANDBOX_DEFAULT_DENY_ENV]);
+}
+
 /** Env var that toggles the workflow-scripts tool (default ON). */
 export const WORKFLOW_SCRIPTS_ENV = 'AMI_WORKFLOW_SCRIPTS';
 

@@ -8,7 +8,7 @@ import { execCommand, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
-import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled } from './bash-sandbox';
+import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, type SandboxExemptionOptions } from './bash-sandbox';
 import { validateBoundedIntEnvVar } from '../config';
 import {
   getDockerAvailability,
@@ -21,7 +21,7 @@ import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
-import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isHostSandboxDisabled, isSandboxEscapeDisabled } from './tool-gates';
+import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isHostSandboxDisabled, isSandboxDefaultDeny, isSandboxEscapeDisabled } from './tool-gates';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -1318,7 +1318,15 @@ export const bashTool: ToolDefinition = {
       // or `sandbox.enabled === false` disables the lightweight auto-wrap entirely,
       // so a trigger-pattern match no longer forces the unshare backend on.
       const hostSandboxDisabled = isHostSandboxDisabled() || context.sandbox?.enabled === false;
-      const useSandbox = platformSandboxEnabled && !disableSandbox && !hostSandboxDisabled && _bashHooks.shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
+      // PARITY (default-deny coverage): the AMI_SANDBOX_DEFAULT_DENY gate flips the
+      // host auto-sandbox from AMI's narrow trigger allowlist to Claude Code's
+      // default-deny model (sandbox every non-exempt command). Threaded alongside
+      // the operator exemption list so excludedCommands still carve out exemptions.
+      const sandboxExemptionOptions: SandboxExemptionOptions = {
+        ...(context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : {}),
+        ...(isSandboxDefaultDeny() ? { defaultSandbox: true } : {}),
+      };
+      const useSandbox = platformSandboxEnabled && !disableSandbox && !hostSandboxDisabled && _bashHooks.shouldUseSandbox(command, sandboxExemptionOptions);
       // PARITY (failIfUnavailable / allowUnsandboxedFallback): if the command must
       // be sandboxed but the host backend cannot actually start, a hard gate
       // (`failIfUnavailable`, or `allowUnsandboxedFallback === false`) REFUSES the
