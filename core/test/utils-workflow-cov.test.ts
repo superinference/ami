@@ -153,7 +153,10 @@ describe('shell.ts — timeout + killTree (unix / windows / fallbacks)', () => {
     const kills = spyKill();
     const r = await execCommand('x', { cwd: '/tmp', timeout: 10, stallTimeoutMs: 0 });
     assert.equal(r.exitCode, null);
-    assert.deepEqual(kills[0], [-4242, 'SIGKILL']);
+    // Full POSIX process-tree kill (U049): each tree pid is SIGKILLed, then the
+    // process group (-pid) is swept — both calls happen (order: tree pids first).
+    assert.ok(kills.some((k) => k[0] === 4242 && k[1] === 'SIGKILL'), 'tree pid killed');
+    assert.ok(kills.some((k) => k[0] === -4242 && k[1] === 'SIGKILL'), 'process group swept');
     assert.ok(fake.stdout.destroyed);
   });
 

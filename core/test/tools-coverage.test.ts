@@ -2595,9 +2595,11 @@ describe('createMcpTool — coverage', () => {
       }),
     );
     assert.ok(!r.isError);
+    // Token-budget cap (U041): the oversized MCP result is persisted to disk and the
+    // model sees a bounded head slice + a "persisted to" note (Claude parity: truncated
+    // head + saved-to-disk pointer, not a head+tail window).
     assert.ok(r.output.includes('persisted to'), r.output.slice(0, 200));
     assert.ok(r.output.startsWith('x'.repeat(1000)));
-    assert.ok(r.output.endsWith('x'.repeat(1000)));
     assert.ok(r.output.length < 200_000);
   });
 });
