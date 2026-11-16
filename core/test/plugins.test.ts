@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { discoverPlugins, loadCommands, DEFAULT_COMMAND_DESCRIPTION } from '../src/plugins';
+import { discoverPlugins, loadCommands } from '../src/plugins';
 import type { PluginBundle, CommandDefinition } from '../src/plugins';
 
 let tmpDir: string;
@@ -51,11 +51,14 @@ describe('discoverPlugins', () => {
     assert.deepEqual(bundles, []);
   });
 
-  it('discovers a plugin with full manifest', () => {
-    makePlugin('my-plugin', { name: 'My Plugin', version: '1.2.3' });
+  it('discovers a plugin with full manifest (namespace-safe name wins over dir)', () => {
+    // A valid, namespacing-safe manifest name is used verbatim (overriding the dir
+    // name). A name with spaces/non-ASCII would instead fall back to the dir name —
+    // see the dedicated name-sanitization test below.
+    makePlugin('my-plugin-dir', { name: 'custom-name', version: '1.2.3' });
     const bundles = discoverPlugins(tmpDir);
     assert.equal(bundles.length, 1);
-    assert.equal(bundles[0]!.name, 'My Plugin');
+    assert.equal(bundles[0]!.name, 'custom-name');
     assert.equal(bundles[0]!.version, '1.2.3');
   });
 
@@ -205,11 +208,11 @@ describe('discoverPlugins', () => {
     fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
     fs.writeFileSync(
       path.join(root, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ name: 'Claude Plugin', version: '2.0.0' }),
+      JSON.stringify({ name: 'cc-manifest', version: '2.0.0' }),
     );
     const bundles = discoverPlugins(tmpDir);
     assert.equal(bundles.length, 1);
-    assert.equal(bundles[0]!.name, 'Claude Plugin');
+    assert.equal(bundles[0]!.name, 'cc-manifest');
     assert.equal(bundles[0]!.version, '2.0.0');
   });
 
@@ -218,16 +221,16 @@ describe('discoverPlugins', () => {
     fs.mkdirSync(path.join(root, '.ami-plugin'), { recursive: true });
     fs.writeFileSync(
       path.join(root, '.ami-plugin', 'plugin.json'),
-      JSON.stringify({ name: 'SI Plugin' }),
+      JSON.stringify({ name: 'si-manifest' }),
     );
     fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
     fs.writeFileSync(
       path.join(root, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ name: 'CC Plugin' }),
+      JSON.stringify({ name: 'cc-manifest' }),
     );
     const bundles = discoverPlugins(tmpDir);
     assert.equal(bundles.length, 1);
-    assert.equal(bundles[0]!.name, 'SI Plugin');
+    assert.equal(bundles[0]!.name, 'si-manifest');
   });
 
   it('populates commandsDir when commands/ exists', () => {
@@ -330,12 +333,13 @@ describe('loadCommands', () => {
     assert.equal(cmds[0]!.prompt, 'Line one\nLine two\ttabbed');
   });
 
-  it('drops a .toml with no prompt but loads a prompt-only one with a fallback description', () => {
+  it('drops a .toml with no prompt but loads a prompt-only one with a prompt-derived description', () => {
     const dir = path.join(tmpDir, 'partial-cmds');
     fs.mkdirSync(dir, { recursive: true });
     // Missing prompt → dropped (a command needs a prompt to do anything).
     fs.writeFileSync(path.join(dir, 'no-prompt.toml'), 'description = "desc only"');
-    // Missing description → loaded with the labelled fallback (Claude parity).
+    // Missing description → loaded with a description DERIVED from the prompt
+    // (Claude parity: extractDescriptionFromMarkdown), not a generic label.
     fs.writeFileSync(path.join(dir, 'no-desc.toml'), 'prompt = "prompt only"');
     // Valid (both fields).
     fs.writeFileSync(path.join(dir, 'valid.toml'), [
@@ -346,7 +350,7 @@ describe('loadCommands', () => {
     assert.equal(cmds.length, 2);
     const byName = new Map(cmds.map(c => [c.name, c]));
     assert.equal(byName.has('no-prompt'), false, 'prompt-less command must be dropped');
-    assert.equal(byName.get('no-desc')!.description, DEFAULT_COMMAND_DESCRIPTION);
+    assert.equal(byName.get('no-desc')!.description, 'prompt only');
     assert.equal(byName.get('no-desc')!.prompt, 'prompt only');
     assert.equal(byName.get('valid')!.description, 'Valid');
   });

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { loadCommands, validatePluginContents, DEFAULT_COMMAND_DESCRIPTION } from '../src/plugins';
+import { loadCommands, validatePluginContents } from '../src/plugins';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-cmd-md-')); });
@@ -42,11 +42,17 @@ describe('loadCommands — markdown command files (Claude native format)', () =>
     assert.equal(cmd.userInvocable, false);
   });
 
-  it('a .md with no description falls back to the default label', () => {
+  it('a .md with no description derives one from the body first line', () => {
     fs.writeFileSync(path.join(dir, 'min.md'), '---\n---\nJust do the thing.\n');
     const [cmd] = loadCommands(dir);
-    assert.equal(cmd.description, DEFAULT_COMMAND_DESCRIPTION);
+    assert.equal(cmd.description, 'Just do the thing.');
     assert.equal(cmd.prompt, 'Just do the thing.');
+  });
+
+  it('a .md with no description strips a leading markdown header from the derived label', () => {
+    fs.writeFileSync(path.join(dir, 'headed.md'), '---\n---\n## Deploy the service\n\nRun all the steps.\n');
+    const [cmd] = loadCommands(dir);
+    assert.equal(cmd.description, 'Deploy the service');
   });
 
   it('a .md command with a frontmatter-only, empty body is skipped', () => {
@@ -54,11 +60,11 @@ describe('loadCommands — markdown command files (Claude native format)', () =>
     assert.deepEqual(loadCommands(dir), []);
   });
 
-  it('a .md with no frontmatter uses the whole file as the prompt', () => {
+  it('a .md with no frontmatter uses the whole file as the prompt and derives the description', () => {
     fs.writeFileSync(path.join(dir, 'plain.md'), 'Say hi to $ARGUMENTS.');
     const [cmd] = loadCommands(dir);
     assert.equal(cmd.prompt, 'Say hi to $ARGUMENTS.');
-    assert.equal(cmd.description, DEFAULT_COMMAND_DESCRIPTION);
+    assert.equal(cmd.description, 'Say hi to $ARGUMENTS.');
   });
 });
 

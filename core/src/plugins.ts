@@ -384,6 +384,26 @@ function parseTomlString(content: string, key: string): string | undefined {
 export const DEFAULT_COMMAND_DESCRIPTION = 'Plugin command';
 
 /**
+ * Derive a user-facing command description from its markdown body / TOML prompt
+ * when no explicit `description` is declared (Claude parity:
+ * `extractDescriptionFromMarkdown`, utils/markdownConfigLoader.ts). Returns the
+ * first non-empty line with any leading markdown header prefix (`#`, `##`, …)
+ * stripped, truncated to 100 characters (`...` suffix past 97). Falls back to
+ * `fallback` only when `content` has no non-empty line — so a description-less
+ * command reflects what it actually does instead of a generic label.
+ */
+export function deriveCommandDescription(content: string, fallback: string = DEFAULT_COMMAND_DESCRIPTION): string {
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    const headerMatch = trimmed.match(/^#+\s+(.+)$/);
+    const text = headerMatch ? headerMatch[1]! : trimmed;
+    return text.length > 100 ? text.slice(0, 97) + '...' : text;
+  }
+  return fallback;
+}
+
+/**
  * Apply the optional behavioral knobs (Claude-parity) onto `cmd`, reading each
  * from whichever format the command file is in. `getStr` returns a string knob by
  * key (TOML quoted value or markdown-frontmatter value); `getBool` a boolean;
@@ -426,10 +446,11 @@ function parseTomlCommandFile(content: string, filePath: string, name: string): 
   const desc = parseTomlString(content, 'description');
   const prompt = parseTomlString(content, 'prompt');
   // A command needs a prompt to do anything; the description is user-facing
-  // only, so a prompt-only command loads with a labelled fallback description
-  // instead of being silently discarded (Claude parity).
+  // only, so a prompt-only command loads with a description DERIVED from its
+  // prompt (Claude parity) instead of being silently discarded or labelled
+  // generically.
   if (!prompt) return undefined;
-  const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
+  const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath };
   applyCommandKnobs(
     cmd,
     key => parseTomlString(content, key),
@@ -444,15 +465,15 @@ function parseTomlCommandFile(content: string, filePath: string, name: string): 
  * YAML frontmatter + a markdown body that IS the prompt) into a
  * {@link CommandDefinition}, or undefined when the body is empty / unreadable.
  * `allowed-tools` accepts the comma-separated or single-value frontmatter form;
- * booleans accept `true`/`false`. The description falls back to
- * {@link DEFAULT_COMMAND_DESCRIPTION}.
+ * booleans accept `true`/`false`. A missing description is DERIVED from the body's
+ * first line via {@link deriveCommandDescription} (Claude parity).
  */
 function parseMarkdownCommandFile(content: string, filePath: string, name: string): CommandDefinition | undefined {
   const { frontmatter, body } = parseFrontmatter(content);
   const prompt = body.trim();
   if (!prompt) return undefined; // a command with no body does nothing — skip
   const desc = frontmatter.description?.trim();
-  const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
+  const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath };
   applyCommandKnobs(
     cmd,
     key => { const v = frontmatter[key]; return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined; },
@@ -931,6 +952,23 @@ export interface PluginLoadFailure {
   reason: string;
 }
 
+/** Matches any non-ASCII (potential homograph) character — a plugin name used for
+ *  `plugin:command` namespacing must stay ASCII to avoid lookalike impersonation
+ *  (Claude parity: NON_ASCII_PATTERN, utils/plugins/schemas.ts). */
+const NON_ASCII_NAME_RE = /[^ -~]/;
+
+/**
+ * True when `name` is safe to use verbatim as a plugin's namespace segment: it
+ * passes the path-safety segment check (no slashes, `..`, or NUL), contains no
+ * whitespace, and is ASCII-only (Claude parity: the plugin-name schema refinement
+ * rejects spaces/path separators, and the homograph guard rejects non-ASCII).
+ * A manifest name that fails this is not fatal — discovery falls back to the
+ * directory name so the bundle still loads under a usable, namespacing-safe id.
+ */
+export function isNamespaceSafeName(name: string): boolean {
+  return isSafeSegment(name) && !/\s/.test(name) && !NON_ASCII_NAME_RE.test(name);
+}
+
 /**
  * Discover local plugin bundles under `dir`, ALSO returning structured load
  * failures (invalid JSON / failed manifest validation) so callers can surface
@@ -987,9 +1025,14 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
     }
     // Discovery is lenient on optional fields (name/version fall back below); the
     // strict schema check is exposed separately via validatePluginManifest for
-    // the `/plugin validate` command.
+    // the `/plugin validate` command. A manifest name that is present but unusable
+    // for namespacing (spaces / non-ASCII homographs — soft issues that are NOT
+    // hard failures above) falls back to the directory name so `plugin:command`
+    // lookups never break on an invalid id.
+    const manifestName = manifest.name;
+    const name = typeof manifestName === 'string' && isNamespaceSafeName(manifestName) ? manifestName : entry;
     bundles.push({
-      name: (manifest.name as string | undefined) ?? entry,
+      name,
       version: (manifest.version as string | undefined) ?? '0.0.0',
       root,
       defaultEnabled: typeof manifest.defaultEnabled === 'boolean' ? manifest.defaultEnabled : undefined,

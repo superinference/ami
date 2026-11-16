@@ -28,7 +28,7 @@ import {
   MAX_SKILL_ARG_TOTAL_CHARS,
   type SkillDefinition,
 } from '../src/skills';
-import { discoverPlugins, loadCommands, DEFAULT_COMMAND_DESCRIPTION } from '../src/plugins';
+import { discoverPlugins, loadCommands } from '../src/plugins';
 
 // ===========================================================================
 // skill-catalog.ts :: isSafeSegment
@@ -588,13 +588,13 @@ describe('discoverPlugins + loadCommands', () => {
     assert.deepEqual(loadCommands(dir), []);
   });
 
-  it('loadCommands loads a prompt-only TOML with a labelled fallback description', () => {
+  it('loadCommands loads a prompt-only TOML with a prompt-derived description', () => {
     const dir = path.join(tmpDir, 'cmds-nod');
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'half.toml'), 'prompt = "only prompt"\n');
     const cmds = loadCommands(dir);
     assert.equal(cmds.length, 1);
-    assert.equal(cmds[0]!.description, DEFAULT_COMMAND_DESCRIPTION);
+    assert.equal(cmds[0]!.description, 'only prompt');
     assert.equal(cmds[0]!.prompt, 'only prompt');
   });
 
