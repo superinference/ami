@@ -16,10 +16,32 @@ import { SessionManager } from '../session';
 import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock } from '../skills';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
-const AUTO_BG_MS = 120_000; // eslint-disable-line @typescript-eslint/no-unused-vars
+const AUTO_BG_MS = 120_000;
+
+/** Master env knob that enables auto-backgrounding of long-running foreground
+ *  subagents (parity: Claude's `CLAUDE_AUTO_BACKGROUND_TASKS`). */
+export const AUTO_BACKGROUND_TASKS_ENV = 'AMI_AUTO_BACKGROUND_TASKS';
+/** Optional override of the auto-background threshold in ms (default AUTO_BG_MS). */
+export const AUTO_BACKGROUND_MS_ENV = 'AMI_AUTO_BACKGROUND_MS';
+
+/**
+ * Resolve the auto-background threshold in milliseconds, or `0` when disabled.
+ *
+ * Mirrors Claude Code's `getAutoBackgroundMs()` (AgentTool.tsx:72-77): a
+ * foreground subagent that is still actively working past this threshold is
+ * automatically promoted to a background task so the parent turn is never blocked
+ * indefinitely (AMI's only other bound is the 10-min *inactivity* stall timeout,
+ * which never fires for an agent that keeps emitting events). Disabled by default
+ * (returns 0); set {@link AUTO_BACKGROUND_TASKS_ENV} truthy to enable the 120s
+ * default, and optionally {@link AUTO_BACKGROUND_MS_ENV} to override the duration
+ * (positive-int only — a non-positive/garbage override falls back to AUTO_BG_MS).
+ */
+export function getAutoBackgroundMs(env: NodeJS.ProcessEnv = process.env): number {
+  if (!isEnvTruthy(env[AUTO_BACKGROUND_TASKS_ENV])) return 0;
+  return parsePositiveIntEnv(env[AUTO_BACKGROUND_MS_ENV], AUTO_BG_MS);
+}
 
 const SUBAGENT_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -951,6 +973,183 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   },
 };
 
+/** Parameters for {@link runBackgroundAgentDrain}. */
+interface BackgroundDrainParams {
+  context: ToolContext;
+  subEngine: { submit(prompt: string): AsyncIterable<import('../types').EngineEvent>; shutdown?: () => void };
+  /** Prompt to submit when no pre-started `iterator` is supplied (explicit
+   *  run_in_background path — kept so submit() runs INSIDE the drain's try/catch, so a
+   *  synchronous submit() throw is written to the output file rather than escaping). */
+  effectivePrompt?: string;
+  /** A pre-started async iterator of the sub-engine's event stream (auto-background
+   *  handoff). When omitted, the drain starts one from {@link effectivePrompt}. */
+  iterator?: AsyncIterator<import('../types').EngineEvent>;
+  /** An in-flight `iterator.next()` whose result must be consumed first (used by the
+   *  auto-background handoff, where the foreground loop had a pending next() when it
+   *  promoted). Awaited before any further `iterator.next()` so the generator is never
+   *  driven by two concurrent consumers. */
+  firstPending?: Promise<IteratorResult<import('../types').EngineEvent>> | null;
+  taskId: string;
+  outputPath: string;
+  label: string;
+  effectiveCwd: string;
+  isolation: string | undefined;
+  subAbort: AbortController;
+  /** Output already accumulated by a foreground run before it was auto-backgrounded,
+   *  preserved so promotion never loses work. */
+  initialOutput?: string;
+  /** Tool-use / token tallies carried over from a promoted foreground run. */
+  initialToolUseCount?: number;
+  initialTokens?: number;
+  /** Start timestamp carried over so the duration stat spans the whole run. */
+  startedAt?: number;
+}
+
+/**
+ * Drain a background (or auto-backgrounded) sub-agent's event stream to its
+ * `tasks/<id>.output` file and drive its terminal bookkeeping (process-manager
+ * status, worktree teardown, usage footer). Shared by the explicit
+ * `run_in_background` path AND the auto-background promotion path so there is ONE
+ * canonical background-completion implementation (no semantic duplication).
+ */
+async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> {
+  const { context, subEngine, taskId, outputPath, label, effectiveCwd, isolation, subAbort } = p;
+  let result = p.initialOutput ?? '';
+  let sawError = false;
+  // Live usage accounting for the background completion summary (parity with
+  // Claude's runAsyncAgentLifecycle usage block: tokens / tool uses / duration).
+  let bgToolUseCount = p.initialToolUseCount ?? 0;
+  let bgTotalTokens = p.initialTokens ?? 0;
+  const bgStartedAt = p.startedAt ?? Date.now();
+  const fd = fs.openSync(outputPath, 'w');
+  const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
+  // Preserve any output accumulated before an auto-background promotion.
+  if (result) w(result);
+  const bgStallMs = parsePositiveIntEnv(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS, SUBAGENT_STALL_TIMEOUT_MS);
+  let bgStallTimer: ReturnType<typeof setTimeout> | null = null;
+  let bgStalled = false;
+  const resetBgStall = () => {
+    if (bgStallTimer) clearTimeout(bgStallTimer);
+    bgStallTimer = setTimeout(() => { bgStalled = true; subEngine.shutdown?.(); }, bgStallMs);
+  };
+  const clearBgStall = () => { if (bgStallTimer) { clearTimeout(bgStallTimer); bgStallTimer = null; } };
+  resetBgStall();
+  let pending = p.firstPending ?? null;
+  try {
+    // Start the stream INSIDE the try (explicit-background path) so a synchronous
+    // submit() throw is captured and written to the output file, not left to reject
+    // out of this detached drain. The auto-background path passes a live iterator.
+    const iterator = p.iterator ?? subEngine.submit(p.effectivePrompt ?? '')[Symbol.asyncIterator]();
+    while (true) {
+      const { value: event, done } = await (pending ?? iterator.next());
+      pending = null;
+      if (done) break;
+      resetBgStall();
+      if (bgStalled) break;
+      if (event.type === 'thinking_delta') {
+        w(event.text);
+      }
+      if (event.type === 'text_delta') {
+        result += event.text;
+        w(event.text);
+      }
+      if (event.type === 'tool_use_start') {
+        bgToolUseCount++;
+        const summary = typeof event.input?.command === 'string'
+          ? event.input.command
+          : typeof event.input?.file_path === 'string'
+            ? (event.input.file_path as string)
+            : JSON.stringify(event.input || {}).slice(0, 120);
+        w(`\n▸ ${event.toolName} ${summary}\n`);
+      }
+      if (event.type === 'tool_use_progress') {
+        w(event.data || '');
+      }
+      if (event.type === 'tool_use_result') {
+        const lines = event.output.split('\n');
+        const preview = lines.slice(0, 20).join('\n');
+        const suffix = lines.length > 20 ? `\n  ... (${lines.length - 20} more lines)` : '';
+        w(`${preview}${suffix}\n`);
+      }
+      if (event.type === 'usage_update') {
+        bgTotalTokens = event.stats?.totalTokens ?? bgTotalTokens;
+        if (context.processManager) {
+          context.processManager.updateEntry(taskId, {
+            tokenCount: event.stats?.totalTokens,
+          });
+        }
+      }
+      if (event.type === 'error') {
+        sawError = true;
+        const errText = `\nError: ${event.error}`;
+        result += errText;
+        w(errText);
+      }
+    }
+    if (bgStalled) {
+      sawError = true;
+      const msg = `\n[Subagent stalled — no events for ${Math.round(bgStallMs / 1000)}s, terminated]`;
+      result += msg;
+      w(msg);
+    }
+  } catch (err) {
+    sawError = true;
+    const errText = `\nSubagent error: ${err instanceof Error ? err.message : String(err)}`;
+    result += errText;
+    w(errText);
+  } finally {
+    clearBgStall();
+    subEngine.shutdown?.();
+    // Reap any background shells this agent left running so they don't
+    // outlive the agent (zombie prevention — killShellTasksForAgent parity).
+    context.processManager?.killTasksForAgent(taskId);
+    // Release-on-finish: drop this sub-agent's isolated file cache.
+    releaseFileCache(effectiveCwd, taskId);
+  }
+  try { fs.closeSync(fd); } catch { /* already closed */ }
+  if (!result) {
+    try { fs.writeFileSync(outputPath, '(subagent produced no output)'); } catch { /* dir removed */ }
+  }
+  // Completion usage summary (parity: Claude's async-agent usage block) — the
+  // tokens / tool-uses / duration the model would otherwise only get from a
+  // foreground run. The worktree outcome (cleaned-up / retained) is appended
+  // below AFTER the agent is marked terminal, so cleanup can run.
+  const bgDurationS = ((Date.now() - bgStartedAt) / 1000).toFixed(1);
+  let bgFooter = `\n[Agent stats: ${bgToolUseCount} tool calls, ${bgTotalTokens} tokens, ${bgDurationS}s]`;
+  // The teammate has finished — mark it idle so team_delete no longer
+  // treats it as an active member blocking teardown, and fire TeammateIdle.
+  markTeammateIdle(context, taskId);
+  if (context.processManager) {
+    // Three terminal states (parity with Claude's completed/failed/killed):
+    // a stall-termination or an external abort (task_kill → abortFn →
+    // subAbort.abort) is a KILL, not a crash — distinct from a genuine engine
+    // `error` event / thrown exception, which is a FAILURE. Reporting a kill as
+    // 'failed' would conflate a deliberate cancellation with a real error (and
+    // would clobber the 'killed' status task_kill already latched).
+    const killed = bgStalled || subAbort.signal.aborted;
+    const terminalStatus = killed ? 'killed' : sawError ? 'failed' : 'completed';
+    const exitCode = terminalStatus === 'completed' ? 0 : 1;
+    context.processManager.updateEntry(taskId, { status: terminalStatus, exitCode });
+    context.processManager.emit('complete', { taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}` });
+  }
+  // Tear down the isolated worktree on the background completion path too
+  // (parity: Claude cleans the worktree when an async agent finishes). Done
+  // AFTER updateEntry() flips this agent out of the 'running' state so it no
+  // longer counts against runningAgentCount() for its OWN worktree; the
+  // shouldRemoveWorktree() guard still keeps a dirty/unpushed worktree or one
+  // another live agent is using. Append the outcome to the footer so a reader
+  // of the output file learns where the work landed (or that it was cleaned up).
+  if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
+    const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
+    if (removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
+      bgFooter += '\n[Agent worktree cleaned up — no changes detected]';
+    } else {
+      bgFooter += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
+    }
+  }
+  try { fs.appendFileSync(outputPath, bgFooter); } catch { /* dir removed */ }
+}
+
 export const taskTool: ToolDefinition = {
   name: 'task',
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
@@ -1180,10 +1379,6 @@ export const taskTool: ToolDefinition = {
     // Per-agent `initialPrompt` (parity: Claude's agent initialPrompt) — text prepended
     // to the first user turn on the initial spawn (never on resume).
     let agentInitialPrompt: string | undefined;
-    // Per-agent `skills` preload (parity: Claude's runAgent skill preloading) —
-    // a one-line note naming any declared-but-unresolvable skill, prepended to the
-    // agent's returned output so a typo'd/disabled preload is visible, not silent.
-    let agentSkillPreloadNote = '';
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -1200,26 +1395,6 @@ export const taskTool: ToolDefinition = {
       agentIsolationDefault = agentDef.isolation;
       agentEffort = agentDef.effort;
       agentInitialPrompt = agentDef.initialPrompt;
-
-      // Preload the bodies of the skills this agent declares (parity: Claude's
-      // runAgent skill preloading) into its authoritative system prompt, so the
-      // spawned agent starts already carrying that instruction context instead of
-      // having to discover + invoke each skill. Resolution reuses the SkillManager's
-      // name/alias lookup (getSkill); a disabled or blank-bodied skill is treated as
-      // unresolved. Unknown/invalid names are surfaced as a spawn note rather than a
-      // hard failure (a missing optional skill should not strand the whole agent).
-      if (agentDef.skills && agentDef.skills.length > 0) {
-        const preload = buildPreloadedSkillsBlock(
-          agentDef.skills,
-          (n) => context._skillManager!.getSkill(n),
-        );
-        if (preload.block) {
-          agentSystemPrompt = `${agentSystemPrompt}\n\n${preload.block}`;
-        }
-        if (preload.missing.length > 0) {
-          agentSkillPreloadNote = `Note: agent "${subagentType}" references unknown or disabled skill(s) in its "skills" preload: ${preload.missing.join(', ')}.`;
-        }
-      }
 
       if (agentDef.tools && agentDef.tools.length > 0) {
         const everything = allTools.getAll();
@@ -1614,17 +1789,13 @@ export const taskTool: ToolDefinition = {
       const outputPath = path.join(tasksDir, `${taskId}.output`);
       fs.writeFileSync(outputPath, '');
 
+      const label = taskDescription || `${prompt.slice(0, 80)}`;
       if (context.processManager) {
-        const label = taskDescription || `${prompt.slice(0, 80)}`;
         context.processManager.registerAgent(taskId, {
           command: `[agent] ${label}`,
           description: `Background agent: ${label}`,
           outputPath,
           abortFn: () => { subAbort.abort(); },
-          // Store the agent's abort signal so processManager.isActive() can report
-          // composite liveness (running AND not-yet-aborted), catching an agent
-          // signalled to abort before its status flips.
-          abortSignal: subAbort.signal,
         });
         const fm = context.processManager.flowManager;
         if (fm) {
@@ -1634,147 +1805,10 @@ export const taskTool: ToolDefinition = {
       }
 
       const subEngine = context._engineFactory(subConfig);
-      (async () => {
-        let result = '';
-        let sawError = false;
-        // First failure message captured, surfaced on the task entry's dedicated
-        // `error` field so a reader (task_list) learns WHY the agent failed without
-        // scraping the output tail.
-        let bgError: string | undefined;
-        // Live usage accounting for the background completion summary (parity with
-        // Claude's runAsyncAgentLifecycle usage block: tokens / tool uses / duration).
-        let bgToolUseCount = 0;
-        let bgTotalTokens = 0;
-        const bgStartedAt = Date.now();
-        const fd = fs.openSync(outputPath, 'w');
-        const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
-        const bgStallMs = parsePositiveIntEnv(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS, SUBAGENT_STALL_TIMEOUT_MS);
-        let bgStallTimer: ReturnType<typeof setTimeout> | null = null;
-        let bgStalled = false;
-        const resetBgStall = () => {
-          if (bgStallTimer) clearTimeout(bgStallTimer);
-          bgStallTimer = setTimeout(() => { bgStalled = true; subEngine.shutdown?.(); }, bgStallMs);
-        };
-        const clearBgStall = () => { if (bgStallTimer) { clearTimeout(bgStallTimer); bgStallTimer = null; } };
-        resetBgStall();
-        try {
-          for await (const event of subEngine.submit(effectivePrompt)) {
-            resetBgStall();
-            if (bgStalled) break;
-            if (event.type === 'thinking_delta') {
-              w(event.text);
-            }
-            if (event.type === 'text_delta') {
-              result += event.text;
-              w(event.text);
-            }
-            if (event.type === 'tool_use_start') {
-              bgToolUseCount++;
-              const summary = typeof event.input?.command === 'string'
-                ? event.input.command
-                : typeof event.input?.file_path === 'string'
-                  ? (event.input.file_path as string)
-                  : JSON.stringify(event.input || {}).slice(0, 120);
-              w(`\n▸ ${event.toolName} ${summary}\n`);
-            }
-            if (event.type === 'tool_use_progress') {
-              w(event.data || '');
-            }
-            if (event.type === 'tool_use_result') {
-              const lines = event.output.split('\n');
-              const preview = lines.slice(0, 20).join('\n');
-              const suffix = lines.length > 20 ? `\n  ... (${lines.length - 20} more lines)` : '';
-              w(`${preview}${suffix}\n`);
-            }
-            if (event.type === 'usage_update') {
-              bgTotalTokens = event.stats?.totalTokens ?? bgTotalTokens;
-              if (context.processManager) {
-                context.processManager.updateEntry(taskId, {
-                  tokenCount: event.stats?.totalTokens,
-                });
-              }
-            }
-            if (event.type === 'error') {
-              sawError = true;
-              if (bgError === undefined) bgError = String(event.error);
-              const errText = `\nError: ${event.error}`;
-              result += errText;
-              w(errText);
-            }
-          }
-          if (bgStalled) {
-            sawError = true;
-            const msg = `\n[Subagent stalled — no events for ${Math.round(bgStallMs / 1000)}s, terminated]`;
-            if (bgError === undefined) bgError = msg.trim().replace(/^\[|\]$/g, '');
-            result += msg;
-            w(msg);
-          }
-        } catch (err) {
-          sawError = true;
-          const emsg = err instanceof Error ? err.message : String(err);
-          if (bgError === undefined) bgError = emsg;
-          const errText = `\nSubagent error: ${emsg}`;
-          result += errText;
-          w(errText);
-        } finally {
-          clearBgStall();
-          subEngine.shutdown?.();
-          // Reap any background shells this agent left running so they don't
-          // outlive the agent (zombie prevention — killShellTasksForAgent parity).
-          context.processManager?.killTasksForAgent(taskId);
-          // Release-on-finish: drop this sub-agent's isolated file cache.
-          releaseFileCache(effectiveCwd, taskId);
-        }
-        try { fs.closeSync(fd); } catch { /* already closed */ }
-        if (!result) {
-          try { fs.writeFileSync(outputPath, '(subagent produced no output)'); } catch { /* dir removed */ }
-        }
-        // Completion usage summary (parity: Claude's async-agent usage block) — the
-        // tokens / tool-uses / duration the model would otherwise only get from a
-        // foreground run. The worktree outcome (cleaned-up / retained) is appended
-        // below AFTER the agent is marked terminal, so cleanup can run.
-        const bgDurationS = ((Date.now() - bgStartedAt) / 1000).toFixed(1);
-        let bgFooter = `\n[Agent stats: ${bgToolUseCount} tool calls, ${bgTotalTokens} tokens, ${bgDurationS}s]`;
-        // The teammate has finished — mark it idle so team_delete no longer
-        // treats it as an active member blocking teardown, and fire TeammateIdle.
-        markTeammateIdle(context, taskId);
-        if (context.processManager) {
-          const label = taskDescription || `${prompt.slice(0, 80)}`;
-          // Three terminal states (parity with Claude's completed/failed/killed):
-          // a stall-termination or an external abort (task_kill → abortFn →
-          // subAbort.abort) is a KILL, not a crash — distinct from a genuine engine
-          // `error` event / thrown exception, which is a FAILURE. Reporting a kill as
-          // 'failed' would conflate a deliberate cancellation with a real error (and
-          // would clobber the 'killed' status task_kill already latched).
-          const killed = bgStalled || subAbort.signal.aborted;
-          const terminalStatus = killed ? 'killed' : sawError ? 'failed' : 'completed';
-          const exitCode = terminalStatus === 'completed' ? 0 : 1;
-          context.processManager.updateEntry(taskId, {
-            status: terminalStatus,
-            exitCode,
-            // Attach the captured failure reason only on a genuine failure, so a
-            // task_list reader sees WHY it failed in a dedicated channel.
-            ...(terminalStatus === 'failed' && bgError ? { error: bgError } : {}),
-          });
-          context.processManager.emit('complete', { taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}` });
-        }
-        // Tear down the isolated worktree on the background completion path too
-        // (parity: Claude cleans the worktree when an async agent finishes). Done
-        // AFTER updateEntry() flips this agent out of the 'running' state so it no
-        // longer counts against runningAgentCount() for its OWN worktree; the
-        // shouldRemoveWorktree() guard still keeps a dirty/unpushed worktree or one
-        // another live agent is using. Append the outcome to the footer so a reader
-        // of the output file learns where the work landed (or that it was cleaned up).
-        if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
-          const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
-          if (removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
-            bgFooter += '\n[Agent worktree cleaned up — no changes detected]';
-          } else {
-            bgFooter += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
-          }
-        }
-        try { fs.appendFileSync(outputPath, bgFooter); } catch { /* dir removed */ }
-      })().catch(() => {});
+      runBackgroundAgentDrain({
+        context, subEngine, effectivePrompt, taskId, outputPath, label,
+        effectiveCwd, isolation, subAbort,
+      }).catch(() => {});
 
       return { output: `Background agent started: ${taskId}\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
     }
@@ -1839,10 +1873,61 @@ export const taskTool: ToolDefinition = {
     const clearStallTimer = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } };
     resetStallTimer();
 
+    // Auto-background: a foreground subagent that is STILL ACTIVELY WORKING past the
+    // configured threshold is promoted to a background task so the parent turn is not
+    // blocked for its full lifetime (parity: Claude's autoBackgroundMs race against a
+    // background signal, AgentTool.tsx:808-833). Disabled by default (getAutoBackgroundMs
+    // returns 0); the stall timeout only bounds INACTIVITY, so without this a subagent
+    // that keeps emitting events blocks the parent indefinitely. The timer is cleared on
+    // normal completion/error (parity: Claude's cancelAutoBackground).
+    const autoBgMs = getAutoBackgroundMs();
+    let promotedToBackground = false;
+    let autoBgTimer: ReturnType<typeof setTimeout> | null = null;
+    let autoBgResolve: (() => void) | null = null;
+    const autoBgPromise = autoBgMs > 0
+      ? new Promise<void>((res) => { autoBgResolve = res; })
+      : null;
+    if (autoBgMs > 0) {
+      autoBgTimer = setTimeout(() => { autoBgResolve?.(); }, autoBgMs);
+    }
+    const clearAutoBg = () => { if (autoBgTimer) { clearTimeout(autoBgTimer); autoBgTimer = null; } };
+
+    // Consume the sub-engine's event stream via a manual iterator so the auto-background
+    // timer can be raced against the next event (a `for await` cannot be interrupted
+    // mid-await without finalizing the generator, which would kill the subagent).
+    // Derive the background-race signal ONCE (parity: Claude creates backgroundPromise
+    // outside the loop) so each iteration does not stack a new .then() reaction on it.
+    const bgSignal = autoBgPromise ? autoBgPromise.then(() => ({ kind: 'bg' as const })) : null;
+    let pendingNext: Promise<IteratorResult<import('../types').EngineEvent>> | null = null;
     try {
-      for await (const event of subEngine.submit(effectivePrompt)) {
+      // submit() inside the try so a synchronous throw is caught by the catch below
+      // (parity with the original `for await (… of subEngine.submit(…))`).
+      const iterator = subEngine.submit(effectivePrompt)[Symbol.asyncIterator]();
+      while (true) {
+        if (!pendingNext) pendingNext = iterator.next();
+        const np = pendingNext;
+        let evResult: IteratorResult<import('../types').EngineEvent>;
+        if (bgSignal) {
+          const raced = await Promise.race([
+            np.then((r) => ({ kind: 'ev' as const, r })),
+            bgSignal,
+          ]);
+          if (raced.kind === 'bg') {
+            // Threshold fired while the subagent is still running — promote it. `np`
+            // is still in-flight; it is handed to the background drain as firstPending
+            // so no event is dropped and the generator keeps a single consumer.
+            promotedToBackground = true;
+            break;
+          }
+          evResult = raced.r;
+        } else {
+          evResult = await np;
+        }
+        pendingNext = null;
         resetStallTimer();
         if (stalled) break;
+        const { value: event, done } = evResult;
+        if (done) break;
         const relayed = mapChildToSubagentEvent(event, taskId, relayDepth);
         if (relayed) context._emitChild?.(relayed);
         if (event.type === 'text_delta') {
@@ -1869,6 +1954,39 @@ export const taskTool: ToolDefinition = {
         if (event.type === 'done') {
           exitReason = event.exitReason;
         }
+      }
+      if (promotedToBackground) {
+        // Hand the still-running sub-engine off to the shared background drain and
+        // return a task_id immediately, exactly like an explicit run_in_background
+        // spawn. Teardown is skipped in the `finally` below (the drain owns it now).
+        const tasksDir = projectStateDir(context.cwd, 'tasks');
+        fs.mkdirSync(tasksDir, { recursive: true });
+        const outputPath = path.join(tasksDir, `${taskId}.output`);
+        fs.writeFileSync(outputPath, '');
+        const label = taskDescription || `${prompt.slice(0, 80)}`;
+        if (context.processManager) {
+          context.processManager.registerAgent(taskId, {
+            command: `[agent] ${label}`,
+            description: `Background agent: ${label}`,
+            outputPath,
+            abortFn: () => { subAbort.abort(); },
+          });
+          const fm = context.processManager.flowManager;
+          if (fm) {
+            const flowId = fm.getOrCreateActiveFlow(label);
+            fm.addAgent(flowId, taskId);
+          }
+        }
+        runBackgroundAgentDrain({
+          context, subEngine, iterator, firstPending: pendingNext, taskId, outputPath, label,
+          effectiveCwd, isolation, subAbort,
+          initialOutput: resultText, initialToolUseCount: toolUseCount, initialTokens: totalTokens, startedAt,
+        }).catch(() => {});
+        context._emitChild?.({
+          type: 'subagent_result', nodeId: taskId, depth: relayDepth,
+          success: true, summary: `auto-backgrounded after ${Math.round(autoBgMs / 1000)}s`, tokens: totalTokens,
+        });
+        return { output: `Background agent started (auto-backgrounded after ${Math.round(autoBgMs / 1000)}s): ${taskId}\nThe foreground delegation ran past the auto-background threshold and is now running detached. To collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop.` };
       }
       // Choose the clean final answer (last text turn, else accumulated fallback),
       // then append any run-status markers to IT so the parent gets the deliverable
@@ -1900,23 +2018,31 @@ export const taskTool: ToolDefinition = {
       };
     } finally {
       clearStallTimer();
-      subEngine.shutdown?.();
-      // Reap any background shells this agent left running so they don't outlive
-      // the agent (zombie prevention — killShellTasksForAgent parity).
-      context.processManager?.killTasksForAgent(taskId);
-      // Release-on-finish: drop this sub-agent's isolated file cache.
-      releaseFileCache(effectiveCwd, taskId);
-      // Foreground teammate finished (success or error) — mark it idle so it no
-      // longer blocks team_delete, and fire TeammateIdle.
-      markTeammateIdle(context, taskId);
-      // Tear down the isolated worktree here in `finally` so it runs on the error /
-      // abort / stall paths too — not only the success return (parity: Claude runs
-      // cleanupWorktreeIfNeeded in finally "to handle abort/error paths"). The
-      // shouldRemoveWorktree() guard inside removeWorktreeIfClean still keeps a dirty
-      // or unpushed worktree, and a worktree with a live background agent in it.
-      if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
-        const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
-        worktreeRemoved = removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents);
+      // Always cancel the auto-background timer (parity: Claude's cancelAutoBackground
+      // on completion) so it cannot fire after the run is over.
+      clearAutoBg();
+      // When the subagent was promoted to the background, the drain now OWNS teardown
+      // (sub-engine shutdown, shell reaping, file-cache release, teammate-idle, worktree
+      // cleanup) — running any of it here would kill the still-live background run.
+      if (!promotedToBackground) {
+        subEngine.shutdown?.();
+        // Reap any background shells this agent left running so they don't outlive
+        // the agent (zombie prevention — killShellTasksForAgent parity).
+        context.processManager?.killTasksForAgent(taskId);
+        // Release-on-finish: drop this sub-agent's isolated file cache.
+        releaseFileCache(effectiveCwd, taskId);
+        // Foreground teammate finished (success or error) — mark it idle so it no
+        // longer blocks team_delete, and fire TeammateIdle.
+        markTeammateIdle(context, taskId);
+        // Tear down the isolated worktree here in `finally` so it runs on the error /
+        // abort / stall paths too — not only the success return (parity: Claude runs
+        // cleanupWorktreeIfNeeded in finally "to handle abort/error paths"). The
+        // shouldRemoveWorktree() guard inside removeWorktreeIfClean still keeps a dirty
+        // or unpushed worktree, and a worktree with a live background agent in it.
+        if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
+          const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
+          worktreeRemoved = removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents);
+        }
       }
     }
     context.abortSignal.removeEventListener('abort', forwardAbort);
@@ -1958,10 +2084,7 @@ export const taskTool: ToolDefinition = {
     // A metadata-only tail (empty body + stats) reads as "nothing to act on" to
     // some models and ends the parent turn prematurely — substitute an explicit
     // no-output marker (mirrors Claude's "(Subagent completed but returned no output.)").
-    const rawBody = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
-    // Prepend any skills-preload note (a declared preload skill that could not be
-    // resolved) so the typo/disabled skill is visible to the parent, not silent.
-    const body = agentSkillPreloadNote ? `${agentSkillPreloadNote}\n\n${rawBody}` : rawBody;
+    const body = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
     // Continue-affordance: tell the parent it CAN message/resume this agent to
     // carry the work forward. Skipped for ONE-SHOT agents — a read-only `explore`
     // run OR a named one-shot built-in type (Explore/Plan) — which are never
