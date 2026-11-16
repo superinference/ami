@@ -620,11 +620,81 @@ const MARKETPLACE_ONLY_MANIFEST_FIELDS = ['category', 'source', 'tags', 'strict'
 /** Optional component-path fields a manifest may declare. */
 const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'mcpServers'];
 
+/** True when `value` parses as an absolute URL (parity with Claude's zod `.url()`
+ *  refinement for homepage: a scheme-less `example.com` is rejected). */
+function isValidUrl(value: string): boolean {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate a manifest's structured `author` (Claude parity: PluginAuthorSchema).
+ * Accepts either a non-empty display-name string or an object `{ name, email?,
+ * url? }` whose `name` is a non-empty string and whose optional `email`/`url` are
+ * strings. Pushes labelled, actionable errors for every other shape.
+ */
+function validatePluginAuthor(author: unknown, errors: PluginValidationIssue[]): void {
+  if (author === undefined) return;
+  if (typeof author === 'string') {
+    if (author.trim() === '') {
+      errors.push({ path: 'author', message: 'Plugin "author" cannot be an empty string.' });
+    }
+    return;
+  }
+  if (typeof author !== 'object' || author === null || Array.isArray(author)) {
+    errors.push({ path: 'author', message: 'Plugin "author" must be a string or an object with a "name" (and optional "email"/"url").' });
+    return;
+  }
+  const a = author as Record<string, unknown>;
+  if (typeof a.name !== 'string' || a.name.trim() === '') {
+    errors.push({ path: 'author.name', message: 'Author "name" cannot be empty.' });
+  }
+  if (a.email !== undefined && typeof a.email !== 'string') {
+    errors.push({ path: 'author.email', message: 'Author "email" must be a string.' });
+  }
+  if (a.url !== undefined && typeof a.url !== 'string') {
+    errors.push({ path: 'author.url', message: 'Author "url" must be a string.' });
+  }
+}
+
+/**
+ * Validate the OPTIONAL metadata fields of a plugin manifest (Claude parity:
+ * PluginManifestMetadataSchema, utils/plugins/schemas.ts L251-L320). Every field
+ * is optional, but when present must have the right shape; each message carries a
+ * concrete example so an author can self-correct. Component-path and name/version
+ * checks live in {@link validatePluginManifest}; this covers description, author,
+ * homepage, repository, license, and keywords.
+ */
+function validateManifestMetadata(obj: Record<string, unknown>, errors: PluginValidationIssue[]): void {
+  if (obj.description !== undefined && typeof obj.description !== 'string') {
+    errors.push({ path: 'description', message: 'Plugin "description" must be a string (a brief, user-facing explanation of what the plugin provides).' });
+  }
+  validatePluginAuthor(obj.author, errors);
+  if (obj.homepage !== undefined && (typeof obj.homepage !== 'string' || !isValidUrl(obj.homepage))) {
+    errors.push({ path: 'homepage', message: 'Plugin "homepage" must be a valid URL (e.g., "https://example.com").' });
+  }
+  if (obj.repository !== undefined && typeof obj.repository !== 'string') {
+    errors.push({ path: 'repository', message: 'Plugin "repository" must be a string (the source code repository URL).' });
+  }
+  if (obj.license !== undefined && typeof obj.license !== 'string') {
+    errors.push({ path: 'license', message: 'Plugin "license" must be a string SPDX license identifier (e.g., "MIT", "Apache-2.0").' });
+  }
+  if (obj.keywords !== undefined && (!Array.isArray(obj.keywords) || !obj.keywords.every(k => typeof k === 'string'))) {
+    errors.push({ path: 'keywords', message: 'Plugin "keywords" must be an array of strings (e.g., ["cli", "git"]).' });
+  }
+}
+
 /**
  * Validate a parsed plugin manifest object. Checks required `name`/`version`
- * strings, flags any declared component path that contains `..` (would escape
- * the plugin dir) or is absolute, and warns about marketplace-only fields that
- * are silently ignored at runtime.
+ * strings (with a kebab-case name refinement), validates the optional metadata
+ * fields (description/author/homepage/repository/license/keywords) via
+ * {@link validateManifestMetadata}, flags any declared component path that
+ * contains `..` (would escape the plugin dir) or is absolute, and warns about
+ * marketplace-only fields that are silently ignored at runtime.
  */
 export function validatePluginManifest(raw: unknown): PluginValidationResult {
   const errors: PluginValidationIssue[] = [];
@@ -639,11 +709,18 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
     errors.push({ path: 'name', message: 'Missing or empty required "name".' });
   } else if (!isSafeSegment(obj.name)) {
     errors.push({ path: 'name', message: `Unsafe plugin name "${obj.name}" (no slashes, "..", or NUL).` });
+  } else if (obj.name.includes(' ')) {
+    // Claude parity (PluginManifestMetadataSchema name refine): a name is used for
+    // namespacing, so a space would break the `plugin:command` lookup — reject it
+    // with a corrective kebab-case example rather than silently namespacing on it.
+    errors.push({ path: 'name', message: 'Plugin name cannot contain spaces. Use kebab-case (e.g., "my-plugin").' });
   }
 
   if (obj.version !== undefined && typeof obj.version !== 'string') {
     errors.push({ path: 'version', message: '"version" must be a string.' });
   }
+
+  validateManifestMetadata(obj, errors);
 
   for (const field of COMPONENT_PATH_FIELDS) {
     const val = obj[field];
