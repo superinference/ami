@@ -150,6 +150,41 @@ export type McpPolicyEntry =
   | { serverUrl: string };
 
 /**
+ * Resolve the set of server names a user has toggled OFF via the persisted
+ * `disabledMcpServers` / `enabledMcpServers` config knobs (parity with Claude
+ * Code's per-server enable/disable toggles, which disable a configured server
+ * WITHOUT removing its config). A server is effectively disabled when it appears
+ * in `disabled` and is NOT re-enabled in `enabled` — so `enabledMcpServers` acts
+ * as a precise override that wins over `disabledMcpServers` for the same name
+ * (e.g. a server disabled at the user tier but re-enabled at the project tier).
+ *
+ * The result is a de-duplicated list of trimmed, non-empty server names, ready to
+ * be folded into {@link McpManager.setDeniedServerList} so a toggled-off server is
+ * skipped at LOAD time through the exact same deny-enforcement path as an
+ * admin denylist entry. Matching is case-insensitive (server names), mirroring the
+ * denylist's `caseInsensitiveNames` compilation, so a name re-enabled in a
+ * different case still cancels its disabled entry.
+ */
+export function resolveDisabledMcpServers(
+  disabled?: readonly string[],
+  enabled?: readonly string[],
+): string[] {
+  const enabledSet = new Set(
+    (enabled ?? []).map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0),
+  );
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of disabled ?? []) {
+    const name = raw.trim();
+    const fold = name.toLowerCase();
+    if (!name || enabledSet.has(fold) || seen.has(fold)) continue;
+    seen.add(fold);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
  * Compile a `*`-wildcard pattern into an anchored RegExp where `*` matches any
  * run of characters and every other character is matched literally. Anchored at
  * both ends so a pattern can never match unintended substrings (no unanchored

@@ -102,6 +102,21 @@ export interface ProjectConfig {
    * managed deny). Parity: Claude Code's enterprise `deniedMcpServers` setting.
    */
   deniedMcpServers?: string[];
+  /**
+   * User-level per-server DISABLE toggle: servers named here are skipped at load
+   * WITHOUT removing their config, so a server can be turned off and back on again.
+   * Distinct from {@link deniedMcpServers} (an admin/enterprise policy): this is a
+   * user convenience toggle. A name also present in {@link enabledMcpServers} is
+   * re-enabled (the enable list wins per-name). Parity: Claude Code's
+   * `disabledMcpServers`.
+   */
+  disabledMcpServers?: string[];
+  /**
+   * User-level per-server ENABLE override: re-enables a server that
+   * {@link disabledMcpServers} turned off (matched by name, case-insensitive).
+   * Parity: Claude Code's `enabledMcpServers`.
+   */
+  enabledMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
   managedMcpServers?: Record<string, unknown>;
   /** SL1: shell command whose stdout is rendered as a custom status line. */
@@ -575,6 +590,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['allowManagedModsOnly', 'boolean'],
   ['enforceAvailableModels', 'string[]'], ['allowedMcpServers', 'string[]'],
   ['deniedMcpServers', 'string[]'],
+  ['disabledMcpServers', 'string[]'], ['enabledMcpServers', 'string[]'],
   ['fallbackModels', 'string[]'], ['alwaysLoadTools', 'string[]'],
   ['sandboxExcludedCommands', 'string[]'],
   ['superinference', 'object'], ['managedMcpServers', 'object'],
@@ -1457,6 +1473,11 @@ export function mergeConfigs(
     // Denylist ACCUMULATES across layers like the allowlist — a lower layer's
     // deny can never be removed by a higher one, only added to (deny-wins).
     if (layer.deniedMcpServers !== undefined) merged.deniedMcpServers = mergeConfigArray(merged.deniedMcpServers, layer.deniedMcpServers);
+    // Per-server user toggles accumulate across layers like the allow/deny lists so
+    // a higher layer augments rather than clobbers (a project disable adds to a user
+    // disable; a project enable adds to a user enable).
+    if (layer.disabledMcpServers !== undefined) merged.disabledMcpServers = mergeConfigArray(merged.disabledMcpServers, layer.disabledMcpServers);
+    if (layer.enabledMcpServers !== undefined) merged.enabledMcpServers = mergeConfigArray(merged.enabledMcpServers, layer.enabledMcpServers);
     if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
     if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
     if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = mergeConfigArray(merged.sandboxExcludedCommands, layer.sandboxExcludedCommands);
