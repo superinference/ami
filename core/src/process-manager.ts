@@ -514,6 +514,21 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
+   * PARITY (additive): the task-type discriminator for a tracked task.
+   *
+   * Returns `'agent'` for an in-process agent added via {@link registerAgent}
+   * (no real child; `kill` is an abort callback) and `'bash'` for a spawned
+   * background shell. Returns `undefined` when the id isn't tracked. Mirrors
+   * Claude Code surfacing `task_type` so stop/list callers can branch on the
+   * kind of task without inspecting internals.
+   */
+  taskType(taskId: string): 'agent' | 'bash' | undefined {
+    const entry = this.processes.get(taskId);
+    if (!entry) return undefined;
+    return entry._registered ? 'agent' : 'bash';
+  }
+
+  /**
    * FUNCTIONAL (parity): reap a single FINISHED task — drop it from the tracked
    * map and delete its on-disk output file. Refuses (returns false) for an
    * unknown task or one that is still running, so a live process is never
