@@ -252,6 +252,38 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   'enter_worktree', 'exit_worktree',
 ]);
 
+/**
+ * Positive allowlist for a `coordinator`-mode sub-agent — an orchestration-only
+ * lead that may delegate and report but may NOT touch the filesystem or shell.
+ * Mirrors Claude Code's `COORDINATOR_MODE_ALLOWED_TOOLS`
+ * (`constants/tools.ts`: {AgentTool, TaskStop, SendMessage, SyntheticOutput}),
+ * mapped to AMI's tool names:
+ *  - `task`              ← AGENT_TOOL_NAME        (spawn/delegate to workers)
+ *  - `send_message`      ← SEND_MESSAGE_TOOL_NAME (coordinate with teammates)
+ *  - `structured_output` ← SYNTHETIC_OUTPUT_TOOL_NAME (produce the final result)
+ * Claude's TaskStop / TaskOutput are deliberately NOT included: AMI's universal
+ * floor ({@link ALL_AGENT_DISALLOWED_TOOLS}) makes `task_kill` / `task_output`
+ * lead-only (a sub-agent calling them would terminate/collect the PARENT's tasks,
+ * not its own), so they are never grantable to a spawned coordinator. The result
+ * is a pure-delegation agent: it can orchestrate and emit output, nothing else.
+ */
+export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
+  'task', 'send_message', 'structured_output',
+]);
+
+/**
+ * Lean system prompt for a `coordinator`-mode sub-agent. It has an
+ * orchestration-only tool set ({@link COORDINATOR_MODE_ALLOWED_TOOLS}) with no
+ * file/shell access, so it is told to delegate concrete work to workers via
+ * `task`, coordinate via `send_message`, and return its synthesis — never to
+ * attempt edits/commands itself (it has no tools for them).
+ */
+export const COORDINATOR_SUBAGENT_SYSTEM_PROMPT =
+  `You are an orchestration coordinator. You have NO file, edit, or shell tools — you cannot read or change code yourself.
+- Delegate every concrete piece of work to a worker sub-agent with the task tool; run independent pieces as parallel task calls in one turn.
+- Coordinate with teammates using send_message.
+- Your job is to plan, delegate, and synthesize the workers' results into one answer. Do not attempt to do the implementation yourself; you have no tools for it.`;
+
 /** The sentinel a sub-agent model request uses to mean "inherit the parent's model". */
 export const INHERIT_MODEL_SENTINEL = 'inherit';
 
@@ -421,6 +453,15 @@ export function filterToolsForAgent(
   const maxDepth = maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
   const allowNested = shouldAllowNestedTask(depth, maxDepth);
 
+  // Coordinator mode: a pure-delegation lead restricted to the orchestration-only
+  // allowlist (spawn/message/output). Honours the same nested-task depth cap as
+  // `general` — a coordinator's primary tool IS `task`, but it still cannot spawn
+  // past the max nesting depth.
+  if (mode === 'coordinator') {
+    return allTools.filter(t =>
+      COORDINATOR_MODE_ALLOWED_TOOLS.has(t.name) && (allowNested || t.name !== 'task'));
+  }
+
   // plan_mode is an INTERACTIVE-session-only feature: "exit" submits the plan for
   // user approval, and a subagent has no user to approve it — so a subagent that
   // enters plan mode hangs forever "awaiting approval". Its state is also module-
@@ -441,6 +482,37 @@ export function filterToolsForAgent(
  */
 export function filterToolsForAsyncAgent(tools: ToolDefinition[]): ToolDefinition[] {
   return tools.filter(t => ASYNC_AGENT_ALLOWED_TOOLS.has(t.name));
+}
+
+/**
+ * Normalize a caller-supplied `allowed_agent_types` value into a string[] (or
+ * undefined when the field is absent). Mirrors Claude Code's `allowedAgentTypes`
+ * boundary (`AgentTool/prompt.ts`): when a parent scopes which subagent types a
+ * given invocation may spawn (`Agent(x,y)`), only the listed types are
+ * spawnable. Returns `{ error }` for a non-array / non-string-element shape so
+ * the caller can reject it; `{ value: undefined }` means "no restriction".
+ */
+export function parseAllowedAgentTypes(
+  raw: unknown,
+): { value: string[] | undefined } | { error: string } {
+  if (raw === undefined || raw === null) return { value: undefined };
+  if (!Array.isArray(raw) || raw.some(t => typeof t !== 'string')) {
+    return { error: 'allowed_agent_types must be an array of strings (the subagent types this call may spawn).' };
+  }
+  return { value: raw as string[] };
+}
+
+/**
+ * Whether a requested `subagent_type` is permitted under an `allowedAgentTypes`
+ * restriction. Mirrors Claude's `allowedAgentTypes.includes(a.agentType)` filter:
+ * `undefined` means no restriction (every type allowed); a provided list (even
+ * empty) restricts spawning to exactly its members.
+ */
+export function isAgentTypeAllowed(
+  subagentType: string,
+  allowedAgentTypes: string[] | undefined,
+): boolean {
+  return allowedAgentTypes === undefined || allowedAgentTypes.includes(subagentType);
 }
 
 /**
@@ -515,8 +587,8 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   },
   mode: {
     type: 'string',
-    description: 'Agent mode. "explore" gives read-only tools only (state the desired thoroughness in the prompt or via the thoroughness field: "quick", "medium", or "very thorough"). "general" gives all tools including nested task (up to max depth). "fork" clones parent conversation context.',
-    enum: ['explore', 'general', 'fork'],
+    description: 'Agent mode. "explore" gives read-only tools only (state the desired thoroughness in the prompt or via the thoroughness field: "quick", "medium", or "very thorough"). "general" gives all tools including nested task (up to max depth). "fork" clones parent conversation context. "coordinator" gives orchestration-only tools (spawn subagents, send_message, structured_output) with NO file/shell access — a pure delegation lead.',
+    enum: ['explore', 'general', 'fork', 'coordinator'],
   },
   permission_mode: {
     type: 'string',
@@ -531,6 +603,11 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   subagent_type: {
     type: 'string',
     description: 'Name of an agent definition to use (from .ami/agents/). Overrides mode, tools, and system prompt.',
+  },
+  allowed_agent_types: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Restrict which subagent_type values this call may spawn. When set, a subagent_type outside this list is rejected (an empty list forbids every named agent type). Omit for no restriction.',
   },
   model: {
     type: 'string',
@@ -655,6 +732,25 @@ export const taskTool: ToolDefinition = {
     if (thoroughness !== undefined && !(EXPLORE_THOROUGHNESS_LEVELS as readonly string[]).includes(thoroughness)) {
       return {
         output: `Error: invalid thoroughness "${thoroughness}". Valid values: ${EXPLORE_THOROUGHNESS_LEVELS.join(', ')}.`,
+        isError: true,
+      };
+    }
+
+    // allowed_agent_types: a per-invocation boundary scoping which named
+    // subagent_type values this call may spawn (mirrors Claude's allowedAgentTypes
+    // / Agent(x,y) restriction). Validate the shape, then reject a requested
+    // subagent_type that falls outside the permitted subset.
+    const allowedAgentTypesResult = parseAllowedAgentTypes(input.allowed_agent_types);
+    if ('error' in allowedAgentTypesResult) {
+      return { output: `Error: ${allowedAgentTypesResult.error}`, isError: true };
+    }
+    const allowedAgentTypes = allowedAgentTypesResult.value;
+    if (subagentType !== undefined && !isAgentTypeAllowed(subagentType, allowedAgentTypes)) {
+      const permitted = (allowedAgentTypes as string[]).length
+        ? (allowedAgentTypes as string[]).join(', ')
+        : '(none)';
+      return {
+        output: `Error: subagent_type "${subagentType}" is not permitted here. Allowed agent types: ${permitted}.`,
         isError: true,
       };
     }
@@ -803,6 +899,8 @@ export const taskTool: ToolDefinition = {
       effectiveMode = 'general';
     } else if (mode === 'explore') {
       tools = filterToolsForAgent(allTools.getAll(), 'explore', currentDepth, maxDepth);
+    } else if (mode === 'coordinator') {
+      tools = filterToolsForAgent(allTools.getAll(), 'coordinator', currentDepth, maxDepth);
     } else if (mode === 'fork') {
       tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
       effectiveMode = 'general';
@@ -928,7 +1026,11 @@ export const taskTool: ToolDefinition = {
     // Use the RAW `mode` (not effectiveMode, which fork reassigns to 'general'): fork is
     // the documented context-inheriting clone and keeps the full stance + directive staple.
     const modeOnlySystemPrompt = (!agentSystemPrompt && mode !== 'fork')
-      ? (mode === 'explore' ? EXPLORE_SUBAGENT_SYSTEM_PROMPT : SUBAGENT_SYSTEM_PROMPT)
+      ? (mode === 'explore'
+        ? EXPLORE_SUBAGENT_SYSTEM_PROMPT
+        : mode === 'coordinator'
+          ? COORDINATOR_SUBAGENT_SYSTEM_PROMPT
+          : SUBAGENT_SYSTEM_PROMPT)
       : undefined;
 
     // The subagent's base system prompt (named-agent identity or the lean
