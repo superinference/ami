@@ -1,7 +1,7 @@
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, type SkillManagerLike, isStanceSkill, sanitizeSkillArgs } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 
@@ -338,6 +338,14 @@ export const skillTool: ToolDefinition = {
     }
     if (skillDef?.disableModelInvocation) {
       return { output: `Error: Skill "${skillName}" has disableModelInvocation set and cannot be invoked by the model.`, isError: true };
+    }
+
+    // FUNCTIONAL (parity): a skill that declares `requires-argument` must not run
+    // with an empty argument — return its custom help/examples message (or a
+    // generated usage line) instead of invoking an argument-less body. Mirrors
+    // Claude's required-argument skills (e.g. /batch's MISSING_INSTRUCTION_MESSAGE).
+    if (skillDef?.requiresArgument && !(safeArgs?.ARGUMENTS && safeArgs.ARGUMENTS.trim().length > 0)) {
+      return { output: missingSkillArgumentMessage(skillDef), isError: true };
     }
 
     const skillContent = context._skillManager.getSkillContent(resolvedName, safeArgs);

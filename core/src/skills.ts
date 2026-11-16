@@ -28,6 +28,25 @@ export interface SkillDefinition {
   disallowedTools?: string[]; // Tools to exclude (blacklist, applied after allowedTools)
   argumentHint?: string;  // Hint text for the argument (e.g., "<file-path>")
   argumentNames?: string[]; // Declared positional argument names (frontmatter `arguments`), bound to $name placeholders
+  /** Alternate names that ALSO resolve to this skill (parity with Claude's bundled
+   *  skill `aliases`). Registered as secondary lookup keys so `getSkill`/`getSkillContent`
+   *  and the skill tool accept any alias without a second definition. Never shadows a
+   *  real skill name. Parsed via {@link parseSkillAliases}. */
+  aliases?: string[];
+  /** Runtime availability predicate (parity with Claude's bundled skill `isEnabled`).
+   *  When present and it returns `false`, the skill is hidden from listings/context and
+   *  cannot be invoked — letting a dependency/feature-gated skill ship but stay dormant
+   *  until its precondition holds. Absent ⇒ always enabled. Evaluated via
+   *  {@link isSkillEnabled} (a throwing predicate is treated as disabled). */
+  isEnabled?: () => boolean;
+  /** When true, invoking this skill with no argument is an error that returns
+   *  {@link missingArgumentMessage} (or a generated help line) instead of running an
+   *  argument-less skill body (parity with Claude's required-argument skills, e.g.
+   *  `/batch`'s MISSING_INSTRUCTION_MESSAGE). */
+  requiresArgument?: boolean;
+  /** Custom help/examples message returned when a {@link requiresArgument} skill is
+   *  invoked without an argument. Blank/absent ⇒ a generated usage line. */
+  missingArgumentMessage?: string;
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
   effort?: string;         // Thinking effort level for sub-engine (e.g., "low", "medium", "high")
@@ -334,7 +353,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'name', 'description', 'hasUserSpecifiedDescription', 'isEnabled', 'isHidden',
   'aliases', 'isMcp', 'argumentHint', 'whenToUse', 'paths', 'version',
   'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
-  'immediate', 'userFacingName',
+  'immediate', 'userFacingName', 'requiresArgument', 'missingArgumentMessage',
 ]);
 
 /**
@@ -535,6 +554,51 @@ export function parseArgumentNames(value: unknown): string[] {
     if (names.length >= MAX_SKILL_ARG_NAMES) break;
   }
   return names;
+}
+
+/**
+ * Parse a frontmatter `aliases` field into the alternate lookup names a skill may
+ * be invoked by (parity with Claude's bundled skill `aliases`). Accepts a
+ * comma/whitespace string or a string array; de-duplicated, length- and
+ * count-capped via {@link normalizeNameList}. Any other value yields `[]`.
+ */
+export function parseSkillAliases(value: unknown): string[] {
+  return normalizeNameList(value);
+}
+
+/**
+ * True when a skill is currently available (parity with Claude's bundled skill
+ * `isEnabled`). A skill with no predicate is always enabled; otherwise the
+ * predicate decides. A predicate that THROWS is treated as DISABLED — a broken
+ * availability gate hides the skill rather than crashing the loader/listing.
+ */
+export function isSkillEnabled(skill: Pick<SkillDefinition, 'isEnabled'>): boolean {
+  if (!skill.isEnabled) return true;
+  try {
+    return skill.isEnabled() === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the error message returned when a skill that declares
+ * {@link SkillDefinition.requiresArgument} is invoked with no argument. Returns the
+ * author's {@link SkillDefinition.missingArgumentMessage} verbatim when it is a
+ * non-empty string; otherwise a generated usage line that includes the skill's
+ * `argumentHint` when present (parity with Claude's required-argument skills, which
+ * return a custom help/examples message, e.g. `/batch`).
+ */
+export function missingSkillArgumentMessage(
+  skill: Pick<SkillDefinition, 'name' | 'argumentHint' | 'missingArgumentMessage'>,
+): string {
+  if (typeof skill.missingArgumentMessage === 'string' && skill.missingArgumentMessage.trim().length > 0) {
+    return skill.missingArgumentMessage;
+  }
+  const hint = skill.argumentHint && skill.argumentHint.trim().length > 0
+    ? ` (expected: ${skill.argumentHint.trim()})`
+    : '';
+  return `Skill "${skill.name}" requires an argument${hint}. Provide one and try again.`;
 }
 
 /** The permission-mode values an agent definition may declare. */
