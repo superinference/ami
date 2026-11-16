@@ -331,6 +331,48 @@ interface JsonRpcNotification {
   params?: Record<string, unknown>;
 }
 
+/**
+ * Validate that a parsed value is a well-formed JSON-RPC 2.0 message envelope
+ * before it is dispatched. A compliant message is a non-null, non-array object
+ * carrying `jsonrpc: '2.0'` and EITHER a usable `id` (number|string — a response,
+ * or a server→client request/notification that must be answered) OR a string
+ * `method` (a notification / request). Untrusted MCP servers (and the raw WebSocket
+ * /SSE/stdio framing they travel over) can emit arbitrary JSON: routing a
+ * non-conforming shape would either silently no-op (a plain object with neither id
+ * nor method falls through every branch) or throw inside the dispatcher (the `in`
+ * operator on a primitive). Running this envelope check first lets the transport
+ * reject + surface a malformed frame as a `protocol-error` instead of swallowing or
+ * crashing on it — parity with Claude Code's schema-validated inbound transport
+ * messages (mcpWebSocketTransport validateJsonRpcMessage / zod-parsed frames). Note
+ * this validates only the ENVELOPE; per-method `params` remain intentionally lenient
+ * (optional fields are guarded at each handler) so a server omitting an optional
+ * field is tolerated rather than dropped.
+ */
+export function isValidJsonRpcMessage(msg: unknown): msg is Record<string, unknown> {
+  if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) return false;
+  const m = msg as Record<string, unknown>;
+  if (m.jsonrpc !== '2.0') return false;
+  const hasId = typeof m.id === 'number' || typeof m.id === 'string';
+  const hasMethod = typeof m.method === 'string';
+  return hasId || hasMethod;
+}
+
+/**
+ * Detect a 403 that signals the bearer token was REVOKED/invalidated server-side,
+ * as opposed to an `insufficient_scope` step-up. A revoked or otherwise invalid
+ * token must drive a FULL re-authorization (`onUnauthorized`) — a scope step-up
+ * (`onForbidden`) or a silent refresh cannot resurrect a revoked grant and would
+ * loop. Matches Claude Code's `also403Revoked` (utils/http.ts): a 403 whose
+ * `WWW-Authenticate` challenge or response body marks the token invalid/revoked is
+ * treated as a re-auth trigger. Both sources are checked case-insensitively; an
+ * ordinary `access_denied`/`insufficient_scope` 403 returns false so the existing
+ * step-up path still runs.
+ */
+export function is403RevokedToken(wwwAuthenticate: string | null, body: string): boolean {
+  const hay = `${wwwAuthenticate ?? ''}\n${body ?? ''}`.toLowerCase();
+  return hay.includes('invalid_token') || hay.includes('revoked');
+}
+
 export const MCP_CLIENT_STATES = ['disconnected', 'connecting', 'ready', 'error'] as const;
 export type McpClientState = (typeof MCP_CLIENT_STATES)[number];
 
@@ -1208,6 +1250,19 @@ export class McpClient extends EventEmitter {
           // scope and retry once on success (a non-step-up 403 is a real denial).
           if (statusCode === 403 && this.oauth && !retried) {
             const www = (res.headers?.['www-authenticate'] as string | undefined) ?? null;
+            // A 403 whose challenge/body marks the token revoked/invalid is NOT a
+            // scope step-up — the grant is gone, so drive a FULL re-authorization
+            // (onUnauthorized) and retry once, mirroring Claude's also403Revoked.
+            if (is403RevokedToken(www, data)) {
+              this.oauth.onUnauthorized(www).then((ok: boolean) => {
+                if (ok) {
+                  this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
+                } else {
+                  reject(new Error('MCP HTTP 403 Forbidden (token revoked — re-authorization failed)'));
+                }
+              }).catch(reject);
+              return;
+            }
             this.oauth.onForbidden(www).then((ok: boolean) => {
               if (ok) {
                 this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
@@ -1658,6 +1713,14 @@ export class McpClient extends EventEmitter {
    * requests and notifications are handled identically across transports.
    */
   private routeMessage(msg: JsonRpcResponse | JsonRpcNotification): void {
+    // Reject a malformed JSON-RPC envelope before dispatch: an untrusted server can
+    // push arbitrary JSON (a bare primitive, an array where an object is expected, an
+    // object with neither id nor method). Such a frame would otherwise silently
+    // vanish (no branch matches) or throw inside a branch — surface it instead.
+    if (!isValidJsonRpcMessage(msg)) {
+      this.emit('protocol-error', "MCP server sent a malformed JSON-RPC message (expected jsonrpc:'2.0' with an id or method)");
+      return;
+    }
     if ('id' in msg && msg.id !== undefined && 'method' in msg) {
       this.handleNotification(msg as JsonRpcNotification);
     } else if ('id' in msg && msg.id !== undefined) {
