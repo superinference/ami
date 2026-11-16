@@ -459,7 +459,7 @@ describe('taskTool — background lifecycle', () => {
     else process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS = ORIG;
   });
 
-  it('terminates and marks failed when a background agent stalls', async () => {
+  it('terminates and marks killed when a background agent stalls', async () => {
     process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS = '40';
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'si-bg-stall-'));
     const pm = new ProcessManager(tmp);
@@ -486,7 +486,8 @@ describe('taskTool — background lifecycle', () => {
       assert.ok(content.includes('stalled'), `stall notice must be written, got: "${content}"`);
       assert.ok(shutdownCalled, 'stalled subagent engine must be shut down');
       const entry = (pm as any).processes.get(taskId);
-      assert.equal(entry.status, 'failed');
+      // A stall-termination is a KILL, not a crash — distinct from a genuine error.
+      assert.equal(entry.status, 'killed');
     } finally {
       pm.cleanup();
       fs.rmSync(tmp, { recursive: true, force: true });

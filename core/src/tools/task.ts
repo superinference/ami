@@ -289,6 +289,65 @@ export const COORDINATOR_SUBAGENT_SYSTEM_PROMPT =
 - Coordinate with teammates using send_message.
 - Your job is to plan, delegate, and synthesize the workers' results into one answer. Do not attempt to do the implementation yourself; you have no tools for it.`;
 
+/**
+ * Internal worker-coordination tools filtered OUT of the worker-capability
+ * affordance shown to a coordinator (mirrors Claude Code's `INTERNAL_WORKER_TOOLS`
+ * in `coordinator/coordinatorMode.ts`). These are plumbing the workers use to talk
+ * to the team / emit their final result — not capabilities the coordinator should
+ * reason about when deciding WHAT concrete work a worker can do. Removing them from
+ * the advertised set keeps the affordance focused on actionable read/edit/shell/
+ * search tools.
+ */
+export const INTERNAL_WORKER_TOOLS = new Set([
+  'team_create', 'team_delete', 'send_message', 'structured_output',
+]);
+
+/**
+ * Build the runtime worker-capability affordance injected into a `coordinator`-mode
+ * sub-agent's context (mirrors Claude Code's `getCoordinatorUserContext`). A
+ * coordinator cannot touch the filesystem/shell itself — it only delegates — so it
+ * must know EXACTLY which tools its spawned workers have and which MCP servers they
+ * can reach, or it will mis-delegate (e.g. ask a worker to do something no worker
+ * tool supports). The worker tool list is the async-agent source-of-truth set
+ * ({@link ASYNC_AGENT_ALLOWED_TOOLS}) minus the internal coordination plumbing
+ * ({@link INTERNAL_WORKER_TOOLS}), sorted deterministically so the block is stable
+ * across spawns (cache-friendly). Connected MCP servers are appended by name when
+ * present.
+ */
+export function buildCoordinatorWorkerContext(mcpServerNames: string[] = []): string {
+  const workerTools = [...ASYNC_AGENT_ALLOWED_TOOLS]
+    .filter(name => !INTERNAL_WORKER_TOOLS.has(name))
+    .sort()
+    .join(', ');
+  let content = `Workers you spawn with the task tool have access to these tools: ${workerTools}.`;
+  if (mcpServerNames.length > 0) {
+    content += `\n\nWorkers also have access to MCP tools from these connected MCP servers: ${mcpServerNames.join(', ')}.`;
+  }
+  return content;
+}
+
+/**
+ * Names of the currently CONNECTED MCP servers reachable from this tool context,
+ * de-duplicated and sorted (locale-aware). Reads the optional MCP manager's
+ * `listAllServers()` roster — the same accessor `tool_search` uses — and keeps only
+ * entries in the `connected` state (a pending/failed server offers no tools to a
+ * worker yet). Returns `[]` when there is no manager, it lacks the accessor, or the
+ * call throws, so callers never have to guard. Used to populate the coordinator's
+ * worker-capability affordance ({@link buildCoordinatorWorkerContext}).
+ */
+export function connectedMcpServerNames(context: ToolContext): string[] {
+  const mgr = context._mcpManager as { listAllServers?: () => Array<{ name: string; state: string }> } | undefined;
+  if (!mgr || typeof mgr.listAllServers !== 'function') return [];
+  try {
+    const names = mgr.listAllServers()
+      .filter(s => s && s.state === 'connected')
+      .map(s => s.name);
+    return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
 /** The sentinel a sub-agent model request uses to mean "inherit the parent's model". */
 export const INHERIT_MODEL_SENTINEL = 'inherit';
 
@@ -460,6 +519,40 @@ export function removeWorktreeIfClean(baseCwd: string, worktreePath: string, run
     }
   } catch { /* best-effort cleanup */ }
   return false;
+}
+
+/**
+ * Read the git branch currently checked out in an isolated subagent worktree.
+ * Shell-free (argv-only) and hardened with {@link GIT_HARDENING_ARGS} — the
+ * worktree's `.git/config` is untrusted. Returns the branch name, or `undefined`
+ * on any failure OR a detached HEAD (`rev-parse --abbrev-ref` prints the literal
+ * "HEAD" when detached, which is not a branch to report). Used to surface the
+ * agent's worktree branch to the model on completion.
+ */
+export function readWorktreeBranch(worktreePath: string): string | undefined {
+  try {
+    const branch = child_process.execFileSync(
+      'git', [...GIT_HARDENING_ARGS, 'rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 },
+    ).trim();
+    return branch && branch !== 'HEAD' ? branch : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Completion notice telling the model WHERE an isolated-worktree subagent's changes
+ * live (path + branch), appended when the worktree is RETAINED because it has
+ * uncommitted changes or unpushed commits (mirrors Claude Code's
+ * `<worktree><worktree_path>…</worktree_path><worktree_branch>…</worktree_branch></worktree>`
+ * completion section). Without it the model only hears "cleaned up" for empty
+ * worktrees and has to rediscover where a change-bearing worktree landed. The
+ * branch clause is omitted on a detached HEAD / branch-read failure.
+ */
+export function buildWorktreeCompletionNotice(worktreePath: string, branch?: string): string {
+  const branchClause = branch ? ` on branch ${branch}` : '';
+  return `\n[Agent changes are in the isolated git worktree at ${worktreePath}${branchClause} — review, commit, or merge them from there.]`;
 }
 
 /**
@@ -1395,6 +1488,15 @@ export const taskTool: ToolDefinition = {
       effectivePrompt = `${buildThoroughnessDirective(thoroughness)}\n\n---\n\n${effectivePrompt}`;
     }
 
+    // Coordinator-mode worker-capability affordance (mirrors Claude Code's
+    // getCoordinatorUserContext): a coordinator has NO file/shell tools and only
+    // delegates, so it is told at runtime exactly which tools its spawned workers
+    // have and which MCP servers they can reach — otherwise it mis-delegates work
+    // no worker tool can do. Prepended to the coordinator's first user turn.
+    if (mode === 'coordinator') {
+      effectivePrompt = `${buildCoordinatorWorkerContext(connectedMcpServerNames(context))}\n\n---\n\n${effectivePrompt}`;
+    }
+
     // When the subagent runs in an isolated worktree, prepend a notice so it
     // translates inherited paths to the worktree root, re-reads stale files, and
     // knows its changes are isolated (mirrors Claude's buildWorktreeNotice).
@@ -1474,6 +1576,11 @@ export const taskTool: ToolDefinition = {
       (async () => {
         let result = '';
         let sawError = false;
+        // Live usage accounting for the background completion summary (parity with
+        // Claude's runAsyncAgentLifecycle usage block: tokens / tool uses / duration).
+        let bgToolUseCount = 0;
+        let bgTotalTokens = 0;
+        const bgStartedAt = Date.now();
         const fd = fs.openSync(outputPath, 'w');
         const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
         const bgStallMs = parsePositiveIntEnv(process.env.AMI_SUBAGENT_STALL_TIMEOUT_MS, SUBAGENT_STALL_TIMEOUT_MS);
@@ -1497,6 +1604,7 @@ export const taskTool: ToolDefinition = {
               w(event.text);
             }
             if (event.type === 'tool_use_start') {
+              bgToolUseCount++;
               const summary = typeof event.input?.command === 'string'
                 ? event.input.command
                 : typeof event.input?.file_path === 'string'
@@ -1514,6 +1622,7 @@ export const taskTool: ToolDefinition = {
               w(`${preview}${suffix}\n`);
             }
             if (event.type === 'usage_update') {
+              bgTotalTokens = event.stats?.totalTokens ?? bgTotalTokens;
               if (context.processManager) {
                 context.processManager.updateEntry(taskId, {
                   tokenCount: event.stats?.totalTokens,
@@ -1548,16 +1657,32 @@ export const taskTool: ToolDefinition = {
         if (!result) {
           try { fs.writeFileSync(outputPath, '(subagent produced no output)'); } catch { /* dir removed */ }
         }
+        // Completion usage summary (parity: Claude's async-agent usage block) — the
+        // tokens / tool-uses / duration the model would otherwise only get from a
+        // foreground run, plus the worktree path+branch when the agent ran isolated
+        // and left changes behind, so the model knows where its work landed.
+        const bgDurationS = ((Date.now() - bgStartedAt) / 1000).toFixed(1);
+        let bgFooter = `\n[Agent stats: ${bgToolUseCount} tool calls, ${bgTotalTokens} tokens, ${bgDurationS}s]`;
+        if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
+          bgFooter += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
+        }
+        try { fs.appendFileSync(outputPath, bgFooter); } catch { /* dir removed */ }
         // The teammate has finished — mark it idle so team_delete no longer
         // treats it as an active member blocking teardown, and fire TeammateIdle.
         markTeammateIdle(context, taskId);
         if (context.processManager) {
           const label = taskDescription || `${prompt.slice(0, 80)}`;
-          context.processManager.updateEntry(taskId, {
-            status: sawError ? 'failed' : 'completed',
-            exitCode: sawError ? 1 : 0,
-          });
-          context.processManager.emit('complete', { taskId, exitCode: sawError ? 1 : 0, command: `[agent] ${label}`, description: `Background agent: ${label}` });
+          // Three terminal states (parity with Claude's completed/failed/killed):
+          // a stall-termination or an external abort (task_kill → abortFn →
+          // subAbort.abort) is a KILL, not a crash — distinct from a genuine engine
+          // `error` event / thrown exception, which is a FAILURE. Reporting a kill as
+          // 'failed' would conflate a deliberate cancellation with a real error (and
+          // would clobber the 'killed' status task_kill already latched).
+          const killed = bgStalled || subAbort.signal.aborted;
+          const terminalStatus = killed ? 'killed' : sawError ? 'failed' : 'completed';
+          const exitCode = terminalStatus === 'completed' ? 0 : 1;
+          context.processManager.updateEntry(taskId, { status: terminalStatus, exitCode });
+          context.processManager.emit('complete', { taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}` });
         }
       })().catch(() => {});
 
@@ -1697,6 +1822,11 @@ export const taskTool: ToolDefinition = {
       const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
       if (removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
         deliverable += '\n[Agent worktree cleaned up — no changes detected]';
+      } else {
+        // Worktree RETAINED (it has changes / unpushed commits / a live agent):
+        // surface where the agent's work landed so the model can find it instead of
+        // rediscovering it (parity: Claude's <worktree_path>/<worktree_branch>).
+        deliverable += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
       }
     }
 
