@@ -1,5 +1,7 @@
 import * as path from 'path';
 import * as os from 'os';
+import { canonicalizeExisting } from '../path-safety';
+import { maybePosixToWindows } from './windows-paths';
 
 /**
  * Resolves `~` to the user's home directory, resolves relative paths against
@@ -46,6 +48,12 @@ export function expandPath(filePath: string, cwd: string = process.cwd()): strin
     resolved = path.join(os.homedir(), resolved.slice(1));
   }
 
+  // On Windows, convert POSIX-style drive paths (e.g. `/c/Users/...` from Git
+  // Bash / MSYS2 / Cygwin) to native form (`C:\Users\...`) so the absolute
+  // check below and all downstream fs calls see a real native path. No-op on
+  // other platforms and on non-drive paths.
+  resolved = maybePosixToWindows(resolved);
+
   // Resolve relative paths against cwd
   if (!path.isAbsolute(resolved)) {
     resolved = path.resolve(cwd, resolved);
@@ -67,8 +75,28 @@ export function isPathSafe(filePath: string, cwd: string): boolean {
   const normalizedCwd = path.normalize(cwd).normalize('NFC');
   const homeDir = path.normalize(os.homedir()).normalize('NFC');
 
-  // The resolved path must be inside cwd or inside the home directory
-  return isDescendant(resolved, normalizedCwd) || isDescendant(resolved, homeDir);
+  // Lexical boundary first — a cheap reject for the common "obviously outside
+  // the tree" case before any filesystem access.
+  if (!isDescendant(resolved, normalizedCwd) && !isDescendant(resolved, homeDir)) {
+    return false;
+  }
+
+  // Symlink-aware boundary: a symlink that LIVES inside cwd/home but POINTS
+  // outside it (e.g. `<cwd>/link -> /etc`) passes the lexical check above yet
+  // defeats the traversal guard this function exists to provide. Canonicalize
+  // the existing prefix of the path and both boundaries so the decision is made
+  // against the REAL resolved location, not the lexical one. Reuses the
+  // fail-closed resolver in path-safety.ts (visited-set + depth cap + dangling/
+  // looping handling) — no second symlink-resolution implementation.
+  try {
+    const canonical = canonicalizeExisting(resolved);
+    const canonicalCwd = canonicalizeExisting(normalizedCwd);
+    const canonicalHome = canonicalizeExisting(homeDir);
+    return isDescendant(canonical, canonicalCwd) || isDescendant(canonical, canonicalHome);
+  } catch {
+    // Unverifiable / dangling / looping symlink => treat as unsafe (fail closed).
+    return false;
+  }
 }
 
 /**
