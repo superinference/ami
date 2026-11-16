@@ -12,6 +12,19 @@ import type { SessionFact } from './session-memory';
 import { log as coreLog } from './logger';
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
+import { abbreviateHome } from './utils/path';
+
+/**
+ * Home-abbreviated path for log/diagnostic lines. Memory diagnostics name the
+ * offending file so a user can fix it, but the absolute path leaks the user's
+ * home directory (a username) into logs/telemetry. Route every logged memory
+ * path through the canonical {@link abbreviateHome} (`/home/alice/x` → `~/x`) —
+ * a path OUTSIDE home is returned unchanged, so project-absolute diagnostics are
+ * untouched. (PII-redacted logging of memory-file paths.)
+ */
+function redactLogPath(p: string): string {
+  return abbreviateHome(p);
+}
 
 /**
  * Deny-by-default allowlist of file extensions that `@include` / `@path` imports
@@ -477,7 +490,7 @@ function errnoCode(err: unknown): string {
  */
 function logUnexpectedReadError(err: unknown, filePath: string): void {
   if (isExpectedMissing(err)) return;
-  coreLog('memory', `memory read failed for ${filePath}`, { code: errnoCode(err) || 'unknown' }, 'warn');
+  coreLog('memory', `memory read failed for ${redactLogPath(filePath)}`, { code: errnoCode(err) || 'unknown' }, 'warn');
 }
 
 /**
@@ -496,7 +509,18 @@ const MEMORY_FILE_MODE = 0o600;
  *  / tighten an existing dir. Best-effort chmod: a filesystem that rejects the
  *  mode (e.g. a mounted volume) must not abort the memory write. */
 function ensureMemoryDirMode(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true, mode: MEMORY_DIR_MODE });
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: MEMORY_DIR_MODE });
+  } catch (err) {
+    // Defensive mkdir with errno classification (parity with Claude Code's
+    // error-code-discriminated memory write path): a read-only mount (EROFS),
+    // permission-denied (EACCES/EPERM), or a path colliding with an existing
+    // FILE (EEXIST/ENOTDIR) is diagnosed — naming the (home-redacted) dir and
+    // the errno — rather than surfacing as an opaque throw to the caller. The
+    // error is re-thrown so a failed memory write is never silently swallowed.
+    coreLog('memory', `failed to create memory directory ${redactLogPath(dir)}`, { code: errnoCode(err) || 'unknown' }, 'warn');
+    throw err;
+  }
   try { fs.chmodSync(dir, MEMORY_DIR_MODE); } catch { /* best effort — mode not enforceable here */ }
 }
 
@@ -675,7 +699,7 @@ function sanitizeContent(content: string, filePath: string): string {
   // the injection scanner / the model.
   content = stripHtmlComments(content);
   if (content.length > MAX_INSTRUCTION_FILE_SIZE) {
-    coreLog('memory', `Instruction file ${filePath} exceeds ${MAX_INSTRUCTION_FILE_SIZE} bytes — truncating`);
+    coreLog('memory', `Instruction file ${redactLogPath(filePath)} exceeds ${MAX_INSTRUCTION_FILE_SIZE} bytes — truncating`);
     let cut = content.slice(0, MAX_INSTRUCTION_FILE_SIZE);
     // Cut back to the last newline inside the cap so an instruction/memory file is
     // never sliced mid-line (which can split a markdown construct or a sentence and
@@ -700,7 +724,7 @@ function sanitizeContent(content: string, filePath: string): string {
     }
   }
   if (injectionFound) {
-    coreLog('memory', `Prompt injection patterns detected in ${filePath}`);
+    coreLog('memory', `Prompt injection patterns detected in ${redactLogPath(filePath)}`);
   }
   return clean.join('\n');
 }
@@ -832,6 +856,62 @@ function memoryFreshness(ageDays: number): string {
  *   logged naming the file, mirroring Claude Code's `logForDebugging(...Failed to
  *   parse YAML frontmatter in ${sourcePath})`, instead of silently swallowing it.
  */
+/**
+ * Strip a single layer of matching surrounding quotes from a scalar YAML value,
+ * unescaping that quote style's escapes. Parity with a real YAML parser's scalar
+ * handling (Claude Code `frontmatterParser`): a value serialized quoted to defeat
+ * YAML injection (see {@link sanitizeFrontmatterValue}, e.g. `"a: b"`) must read
+ * back as `a: b`, not `"a: b"`. Double-quoted values unescape `\"` and `\\`;
+ * single-quoted values unescape the YAML `''` → `'`. A value without matching
+ * surrounding quotes (or shorter than two chars) is returned unchanged.
+ */
+export function stripSurroundingQuotes(value: string): string {
+  if (value.length >= 2) {
+    const q = value[0];
+    if ((q === '"' || q === "'") && value[value.length - 1] === q) {
+      const inner = value.slice(1, -1);
+      return q === '"'
+        ? inner.replace(/\\(["\\])/g, '$1')
+        : inner.replace(/''/g, "'");
+    }
+  }
+  return value;
+}
+
+/**
+ * Parse an inline YAML flow sequence (`[a, b, "c, d"]`) into its items, honoring
+ * quoted items so a comma INSIDE quotes does not split the list. Each item is
+ * unquoted via {@link stripSurroundingQuotes} and empty items are dropped.
+ * Returns `null` when `value` is not a well-formed (closed) `[...]` flow sequence
+ * — the caller surfaces that as a malformed-frontmatter diagnostic. Parity with a
+ * real YAML parser's flow-sequence handling.
+ */
+export function parseInlineFlowSequence(value: string): string[] | null {
+  if (!(value.startsWith('[') && value.endsWith(']'))) return null;
+  const inner = value.slice(1, -1).trim();
+  if (inner === '') return [];
+  const items: string[] = [];
+  let buf = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      buf += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      buf += ch;
+    } else if (ch === ',') {
+      items.push(stripSurroundingQuotes(buf.trim()));
+      buf = '';
+    } else {
+      buf += ch;
+    }
+  }
+  items.push(stripSurroundingQuotes(buf.trim()));
+  return items.filter(s => s.length > 0);
+}
+
 export function parseFrontmatter(raw: string, sourcePath?: string): {
   frontmatter: Record<string, string>;
   body: string;
@@ -855,7 +935,7 @@ export function parseFrontmatter(raw: string, sourcePath?: string): {
     // treating the whole file as a frontmatter-less body.
     coreLog(
       'memory',
-      `Failed to parse frontmatter${sourcePath ? ` in ${sourcePath}` : ''}: unterminated '---' block`,
+      `Failed to parse frontmatter${sourcePath ? ` in ${redactLogPath(sourcePath)}` : ''}: unterminated '---' block`,
       undefined,
       'warn',
     );
@@ -906,6 +986,31 @@ export function parseFrontmatter(raw: string, sourcePath?: string): {
       if (items.length > 0) value = items.join(', ');
     }
 
+    // Inline YAML FLOW SEQUENCE: `key: [a, b, "c, d"]` (parity with a real YAML
+    // parser's flow syntax — AMI's hand-rolled parser previously understood only
+    // block `- item` sequences, so `paths: [src/*.ts, lib/*.ts]` was read as the
+    // literal string `[src/*.ts, lib/*.ts]`). A well-formed `[...]` is normalized
+    // into a comma-joined scalar the existing parseFrontmatterList consumer reads;
+    // an UNTERMINATED `[` is malformed and surfaced (named) via the diagnostic.
+    if (value.startsWith('[')) {
+      const seq = parseInlineFlowSequence(value);
+      if (seq !== null) {
+        value = seq.join(', ');
+      } else {
+        coreLog(
+          'memory',
+          `Failed to parse frontmatter${sourcePath ? ` in ${redactLogPath(sourcePath)}` : ''}: unterminated flow sequence for key '${key}'`,
+          undefined,
+          'warn',
+        );
+      }
+    } else {
+      // Scalar: strip a single layer of matching surrounding quotes (a real YAML
+      // parser unquotes scalars; AMI previously kept them), so a value serialized
+      // quoted to defeat YAML injection (sanitizeFrontmatterValue) round-trips.
+      value = stripSurroundingQuotes(value);
+    }
+
     frontmatter[key] = value;
   }
 
@@ -948,6 +1053,44 @@ function buildFrontmatter(
 ): string {
   const modified = new Date().toISOString();
   return `---\nname: ${sanitizeFrontmatterValue(name)}\ndescription: ${sanitizeFrontmatterValue(description)}\ntype: ${memoryType}\nmodified: ${modified}\n---\n`;
+}
+
+/**
+ * Resolve a non-clobbering memory file path. Two DISTINCT memory names can
+ * normalize to the same `safeName` (e.g. `Foo Bar` and `Foo:Bar` both →
+ * `foo_bar`), and {@link MemoryManager.saveMemory} overwrites by filename — so
+ * without a guard, saving the second silently destroys the first. Overwriting is
+ * correct ONLY when this is an UPDATE of the same memory (the existing file's
+ * frontmatter `name` matches `incomingName`, case-insensitively); otherwise a
+ * numeric suffix (`foo_bar-2.md`, `-3`, …) is chosen so the unrelated memory is
+ * preserved. Mirrors Claude Code's non-destructive (wx + EEXIST) memory write.
+ */
+function resolveNonClobberingPath(dir: string, filename: string, incomingName: string): string {
+  // Normalize the same way the on-disk name is serialized (whitespace-collapse,
+  // see sanitizeFrontmatterValue) + case-fold, so an UPDATE with the same memory
+  // name reliably overwrites in place even when the name carries collapsible
+  // whitespace or was quoted on write and unquoted on read.
+  const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
+  const base = filename.replace(/\.md$/, '');
+  const target = norm(incomingName);
+  let candidate = path.join(dir, filename);
+  let n = 1;
+  for (;;) {
+    let existing: string;
+    try {
+      existing = fs.readFileSync(candidate, 'utf-8');
+    } catch (err) {
+      // Not present (ENOENT) → free to use. Any other read error is logged (so an
+      // inaccessible-but-present file is not silently clobbered) and still used,
+      // preserving the pre-guard write behavior rather than failing the save.
+      logUnexpectedReadError(err, candidate);
+      return candidate;
+    }
+    const { frontmatter } = parseFrontmatter(existing, candidate);
+    if (norm(frontmatter.name || '') === target) return candidate;
+    n++;
+    candidate = path.join(dir, `${base}-${n}.md`);
+  }
 }
 
 /**
@@ -1091,12 +1234,31 @@ export class MemoryManager {
     for (let i = 0; i < lines.length; i++) {
       if (/^\s*```/.test(lines[i])) { inFence = !inFence; continue; }
       if (inFence) continue;
-      lines[i] = lines[i].replace(/(^|\s)@(~?[\w./~-]+)/g, (full, pre, p) => {
+      // Mask INLINE CODE SPANS (`` `…` ``) so an `@path` inside backticks is not
+      // inlined (parity with Claude Code's markdown-lexer import extraction, which
+      // skips code spans as well as fenced blocks). NUL sentinels can't occur in a
+      // code span and are fully restored after the @-replace.
+      const spans: string[] = [];
+      let line = lines[i].replace(/`[^`\n]*`/g, (m) => {
+        spans.push(m);
+        return `\u0000C${spans.length - 1}\u0000`;
+      });
+      // The @-path char class allows an ESCAPED SPACE (`\ `) and a `#fragment`
+      // suffix so `@my\ file.md` and `@notes.md#section` are captured whole; the
+      // escape is unescaped and the fragment stripped before resolution (parity
+      // with Claude Code's safeResolvePath).
+      line = line.replace(/(^|\s)@(~?(?:\\ |[\w./~#-])+)/g, (full, pre, p) => {
+        // Unescape `\ ` → ` ` and drop a trailing `#fragment` (anchors are not
+        // part of the filesystem path).
+        let atPath = p.replace(/\\ /g, ' ');
+        const hashIdx = atPath.indexOf('#');
+        if (hashIdx >= 0) atPath = atPath.slice(0, hashIdx);
+        if (atPath === '') return full;
         let resolved: string;
         try {
-          resolved = p.startsWith('~')
-            ? path.join(os.homedir(), p.slice(1))
-            : path.resolve(path.dirname(basePath), p);
+          resolved = atPath.startsWith('~')
+            ? path.join(os.homedir(), atPath.slice(1))
+            : path.resolve(path.dirname(basePath), atPath);
         } catch { return full; }
         // WORKSPACE CONFINEMENT: never inline a file outside the launch cwd. A crafted
         // CLAUDE.md/AGENTS.md could otherwise exfiltrate arbitrary files into the system
@@ -1129,6 +1291,8 @@ export class MemoryManager {
           return full;
         }
       });
+      // Restore the masked inline-code spans untouched.
+      lines[i] = line.replace(/\u0000C(\d+)\u0000/g, (_m, n) => spans[Number(n)]);
     }
     return lines.join('\n');
   }
@@ -1393,7 +1557,11 @@ export class MemoryManager {
       .toLowerCase();
 
     const filename = `${safeName}.md`;
-    const filePath = path.join(memoryDir, filename);
+    // Non-destructive write: never clobber an UNRELATED memory whose distinct name
+    // normalized to the same safeName; disambiguate the filename instead. An update
+    // of the SAME memory (matching frontmatter name) still overwrites in place.
+    const filePath = resolveNonClobberingPath(memoryDir, filename, name);
+    const actualFilename = path.basename(filePath);
 
     const type = memoryType ?? 'project';
     const desc = description ?? name;
@@ -1413,7 +1581,7 @@ export class MemoryManager {
     // a memory body — see TWO_STEP_SAVE_GUIDANCE. Dedup + append are the shared
     // computeIndexAppend rule so this never drifts from addToMemoryIndex.
     if (addToIndex) {
-      const relFile = scope === 'team' ? `team/${filename}` : filename;
+      const relFile = scope === 'team' ? `team/${actualFilename}` : actualFilename;
       const entry = `- [${name}](${relFile}) — ${desc}`;
       const indexPath = path.join(baseDir, MEMORY_INDEX_FILENAME);
       let existing = '';
@@ -1989,20 +2157,25 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       // WORKSPACE CONFINEMENT: `@include ../../etc/passwd` (or a symlink inside the
       // workspace pointing out) must not inline an arbitrary file into instructions.
       // Resolve symlinks and verify containment before touching the file.
-      if (realpathWithin(includePath, this.cwd) === null) {
+      const real = realpathWithin(includePath, this.cwd);
+      if (real === null) {
         const replacement = `[include blocked — outside workspace: ${path.basename(includePath)}]`;
         result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
         searchFrom = pos + replacement.length;
         continue;
       }
 
-      if (seen.has(includePath)) {
+      // SYMLINK-AWARE CYCLE DETECTION: key `seen` on the REAL (symlink-resolved)
+      // path, not the lexical includePath, so two aliases of one file (one via a
+      // symlink) cannot slip past the cycle guard and recurse until the depth cap.
+      // The marker still shows the authored basename.
+      if (seen.has(real)) {
         const replacement = `[circular reference: ${path.basename(includePath)}]`;
         result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
         searchFrom = pos + replacement.length;
         continue;
       }
-      seen.add(includePath);
+      seen.add(real);
       try {
         // Deny-by-default: only inline recognized text extensions (extensionless
         // files allowed). An allowlist can't be defeated by a novel/multi-dotted
@@ -2011,7 +2184,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
           const replacement = `[non-text file skipped: ${path.basename(includePath)}]`;
           result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
           searchFrom = pos + replacement.length;
-          seen.delete(includePath);
+          seen.delete(real);
           continue;
         }
         let included = await fsp.readFile(includePath, 'utf-8');
@@ -2027,7 +2200,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
         // Treat `seen` as an ancestor stack: remove this path once its subtree
         // is resolved so a diamond (same file reached via two sibling branches)
         // is not mistaken for a cycle. True cycles stay on the active path.
-        seen.delete(includePath);
+        seen.delete(real);
       }
     }
 
