@@ -152,6 +152,16 @@ export class CronScheduler {
   private timers: Map<string, NodeJS.Timeout> = new Map();
   private tickInterval: NodeJS.Timeout | null = null;
   private jitterConfig: CronJitterConfig;
+  /** Immutable baseline jitter (constructor value). `jitterConfig` is re-derived
+   *  from this every tick so an operator env override can be widened/narrowed AND
+   *  reverted live without a restart. */
+  private baseJitter: CronJitterConfig;
+  /** True while THIS scheduler currently owns the durable cron lock. Drives the
+   *  per-tick heartbeat (lease refresh) and compromise detection. */
+  private holdsLock = false;
+  /** Directory watcher on the persisted-state file; picks up durable jobs added or
+   *  removed by another process (or a hand edit) without a restart. */
+  private watcher: fs.FSWatcher | null = null;
   /** When set and returning true, the tick defers firing (session is mid-turn). */
   private busyCheck: (() => boolean) | null = null;
   /** Last session id we logged a "lock held by" contention line for. Suppresses
@@ -167,6 +177,7 @@ export class CronScheduler {
     this.lockPath = path.join(projectStateDir(cwd), 'cron.lock');
     this.sessionId = sessionId || `session_${process.pid}_${Date.now().toString(36)}`;
     this.jitterConfig = jitterConfig;
+    this.baseJitter = jitterConfig;
     this.loadDurable();
   }
 
@@ -199,6 +210,31 @@ export class CronScheduler {
    *  (e.g. the session is loading / mid-turn) so a fire never interrupts work. */
   setBusyCheck(fn: (() => boolean) | null): void {
     this.busyCheck = fn;
+  }
+
+  /** The jitter config in effect for the most recent tick (baseline merged with any
+   *  live operator env override). Introspection surface for diagnostics. */
+  getJitterConfig(): CronJitterConfig {
+    return this.jitterConfig;
+  }
+
+  /** Resolve the effective jitter config for a tick. An operator may retune jitter
+   *  LIVE (no restart) via env vars; each is applied over the construction baseline
+   *  and reverts the moment the var is cleared. Mirrors Claude's getJitterConfig()
+   *  being polled once per tick. Invalid/negative values fall back to the baseline. */
+  private resolveRuntimeJitter(): CronJitterConfig {
+    const base = this.baseJitter;
+    const num = (raw: string | undefined, fallback: number): number => {
+      if (raw === undefined) return fallback;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : fallback;
+    };
+    return {
+      recurringFrac: num(process.env.AMI_CRON_JITTER_FRAC, base.recurringFrac),
+      recurringCapMs: num(process.env.AMI_CRON_JITTER_CAP_MS, base.recurringCapMs),
+      oneShotMaxMs: num(process.env.AMI_CRON_ONESHOT_JITTER_MS, base.oneShotMaxMs),
+      oneShotMinuteMod: num(process.env.AMI_CRON_ONESHOT_MINUTE_MOD, base.oneShotMinuteMod) || base.oneShotMinuteMod,
+    };
   }
 
   create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number }): CronJob {
@@ -418,6 +454,59 @@ export class CronScheduler {
     if (this.tickInterval) return;
     this.tickInterval = setInterval(() => this.tick(onDue), 5_000);
     this.tickInterval.unref();
+    this.startWatching();
+  }
+
+  /** Watch the persisted-state file so durable jobs added/removed by another
+   *  process (or a hand edit) are reflected live, without restarting. The directory
+   *  is watched (not the file) because the atomic temp+rename save replaces the
+   *  inode, which breaks a watch bound directly to the file on most platforms. */
+  private startWatching(): void {
+    if (this.watcher) return;
+    try {
+      const dir = path.dirname(this.persistPath);
+      fs.mkdirSync(dir, { recursive: true });
+      const target = path.basename(this.persistPath);
+      this.watcher = fs.watch(dir, (_event, filename) => {
+        if (filename && filename.toString() === target) this.reloadDurable();
+      });
+      // Never keep the event loop alive just for the watcher.
+      this.watcher.unref?.();
+    } catch { /* fs.watch unsupported here → degrade to load-once semantics */ }
+  }
+
+  private stopWatching(): void {
+    if (this.watcher) {
+      try { this.watcher.close(); } catch { /* already closed */ }
+      this.watcher = null;
+    }
+  }
+
+  /** Re-read the durable state file and reconcile it against the in-memory jobs:
+   *  upsert every valid durable entry, and drop durable jobs that disappeared from
+   *  disk. Session-only (non-durable) jobs are left untouched. Deliberately lenient
+   *  (never deletes the file) since a watch event can arrive mid-write. */
+  private reloadDurable(): void {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.persistPath, 'utf-8');
+    } catch {
+      // File removed externally → forget every durable job.
+      for (const [id, job] of this.jobs) if (job.durable) this.jobs.delete(id);
+      return;
+    }
+    let data: unknown;
+    try { data = JSON.parse(raw); } catch { return; } // mid-write / corrupt → ignore
+    if (!Array.isArray(data)) return;
+    const seen = new Set<string>();
+    for (const entry of data) {
+      if (!this.isValidPersistedJob(entry) || !entry.durable) continue;
+      seen.add(entry.id);
+      this.jobs.set(entry.id, entry);
+    }
+    for (const [id, job] of this.jobs) {
+      if (job.durable && !seen.has(id)) this.jobs.delete(id);
+    }
   }
 
   /** One scheduler tick: expire stale jobs, then run every due job once. Firing
@@ -430,6 +519,10 @@ export class CronScheduler {
     // down — the timer keeps running and firing resumes if the gate clears.
     // Mirrors Claude's isKilled() option (polled once per check() tick).
     if (CronScheduler.isDisabled()) return;
+    // Operator may retune jitter live (no restart); re-resolve once per tick.
+    this.jitterConfig = this.resolveRuntimeJitter();
+    // Keep our durable lease fresh (heartbeat) and detect if it was stolen/removed.
+    this.heartbeatLock();
     this.expireOld(onDue);
     if (this.busyCheck?.()) return;
     const due = this.getDueJobs();
@@ -452,7 +545,47 @@ export class CronScheduler {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
+    this.stopWatching();
     this.releaseLock();
+  }
+
+  /** Per-tick lease heartbeat. While we hold the durable lock, refresh its
+   *  timestamp so a long-lived-but-alive holder is never judged stale by the
+   *  timestamp fallback (used when the owning pid is unknown, e.g. a different
+   *  host). If the lock file vanished or a different session overwrote it, our
+   *  lease is compromised — we yield it so the new owner fires unopposed. */
+  private heartbeatLock(): void {
+    if (!this.holdsLock) return;
+    let lock: { sessionId?: string } | null = null;
+    try {
+      lock = JSON.parse(fs.readFileSync(this.lockPath, 'utf-8'));
+    } catch {
+      lock = null; // missing or unparseable
+    }
+    if (!lock || lock.sessionId !== this.sessionId) {
+      this.onLockCompromised(lock ? `taken over by ${lock.sessionId}` : 'removed');
+      return;
+    }
+    try {
+      fs.writeFileSync(this.lockPath, JSON.stringify({
+        sessionId: this.sessionId,
+        pid: process.pid,
+        timestamp: Date.now(),
+      }));
+    } catch { /* best effort — we still believe we hold the lease */ }
+  }
+
+  /** Handle loss of our durable lease: stop considering ourselves the owner and
+   *  drop the exit-release registration so we never delete the new owner's lock.
+   *  The next tick's acquireLock() will re-contend cleanly. */
+  private onLockCompromised(reason: string): void {
+    if (this.exitRelease) {
+      activeCronLockReleases.delete(this.exitRelease);
+      this.exitRelease = null;
+    }
+    this.holdsLock = false;
+    this.lastBlockedBy = null;
+    coreLog('cron', `cron lock compromised (${reason}); yielding the lease`);
   }
 
   private acquireLock(): boolean {
@@ -483,11 +616,13 @@ export class CronScheduler {
             this.registerExitRelease();
             return true;
           }
-          // Primary staleness signal: is the owning PID still alive? Fall back to
-          // the age window when the pid is unknown.
-          const ownerAlive = typeof lock.pid === 'number'
-            ? isProcessRunning(lock.pid)
-            : Date.now() - lock.timestamp < LOCK_STALE_MS;
+          // Liveness = a live owning PID OR a recently-refreshed heartbeat. The
+          // holder refreshes lock.timestamp every tick (heartbeatLock), so a
+          // long-running-but-alive owner whose pid we can't probe (e.g. a different
+          // host) is kept alive by its advancing timestamp instead of being falsely
+          // reclaimed after the fixed stale window.
+          const heartbeatFresh = Date.now() - lock.timestamp < LOCK_STALE_MS;
+          const ownerAlive = (typeof lock.pid === 'number' && isProcessRunning(lock.pid)) || heartbeatFresh;
           if (ownerAlive) {
             // Contention diagnostic, de-duplicated: log once per distinct owner so a
             // passive session polling a live owner every tick does not spam the log.
@@ -523,6 +658,7 @@ export class CronScheduler {
    *  abrupt termination (signal/crash) still frees the lock even if stopTicker()
    *  is never reached. Idempotent while already registered. */
   private registerExitRelease(): void {
+    this.holdsLock = true;
     if (this.exitRelease) return;
     this.exitRelease = () => this.releaseLock();
     activeCronLockReleases.add(this.exitRelease);
@@ -534,6 +670,7 @@ export class CronScheduler {
       activeCronLockReleases.delete(this.exitRelease);
       this.exitRelease = null;
     }
+    this.holdsLock = false;
     this.lastBlockedBy = null;
     try {
       if (fs.existsSync(this.lockPath)) {
