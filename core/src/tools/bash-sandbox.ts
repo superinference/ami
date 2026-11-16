@@ -980,7 +980,19 @@ export function buildProxyEnv(cfg: SandboxConfig): string {
 export function buildSandboxTmpDir(cfg: SandboxConfig): string {
   if (!cfg.sandboxTmpDir) return '';
   const esc = cfg.sandboxTmpDir.replace(/'/g, "'\\''");
-  return `mkdir -p '${esc}' 2>/dev/null; export TMPDIR='${esc}' TMP='${esc}' TEMP='${esc}'; `;
+  // Besides TMPDIR/TMP/TEMP, pin two more env knobs so NO scratch file leaks to
+  // the host (PARITY — Claude's shell providers set these when sandboxed,
+  // bashProvider.ts:L235-L247):
+  //   - TMPPREFIX: zsh writes heredoc temp files under $TMPPREFIX (default
+  //     /tmp/zsh*), NOT TMPDIR, so a sandboxed zsh heredoc would otherwise land on
+  //     the host /tmp. Pin it to `<scratch>/zsh` (Claude's posixJoin(tmpDir,'zsh')).
+  //     Safe unconditionally — non-zsh shells ignore TMPPREFIX.
+  //   - AMI_SANDBOX_TMPDIR: exposes the scratch dir to child processes that look it
+  //     up explicitly (Claude's CLAUDE_CODE_TMPDIR).
+  return (
+    `mkdir -p '${esc}' 2>/dev/null; export TMPDIR='${esc}' TMP='${esc}' TEMP='${esc}' ` +
+    `TMPPREFIX='${esc}/zsh' AMI_SANDBOX_TMPDIR='${esc}'; `
+  );
 }
 
 /**
