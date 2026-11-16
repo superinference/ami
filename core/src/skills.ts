@@ -66,6 +66,31 @@ export interface SkillDefinition {
    *  command/skill `progressMessage`, which defaults to `'running'`). Resolved —
    *  with the default fallback — via {@link skillProgressMessage}. */
   progressMessage?: string;
+  /** When true, the skill's invocation ARGUMENTS are sensitive and must be masked
+   *  (as `***`) wherever the invocation is echoed — the permission-prompt summary,
+   *  transcript, and conversation history (parity with Claude's command
+   *  `isSensitive`). Resolve a display-safe argument string via
+   *  {@link redactSkillArgs}. */
+  isSensitive?: boolean;
+  /** Hide the skill from user-facing help/typeahead listings (parity with Claude's
+   *  command `isHidden`). A hidden skill is STILL invocable by its exact name; it is
+   *  only omitted from the `/skills` catalog. Checked via {@link isSkillHidden}. */
+  isHidden?: boolean;
+  /** Overrides the name shown for the skill in listings (parity with Claude's
+   *  command `userFacingName()`) WITHOUT changing the canonical lookup `name`.
+   *  Resolved — with the `name` fallback — via {@link skillUserFacingName}. */
+  userFacingName?: string;
+  /** When true, the skill is UNAVAILABLE in a non-interactive (detached / `--prompt`)
+   *  run (parity with Claude's command `disableNonInteractive`). An explicit
+   *  {@link supportsNonInteractive} overrides it. Gated via
+   *  {@link isSkillAvailableNonInteractive}. */
+  disableNonInteractive?: boolean;
+  /** Tri-state non-interactive opt-in (parity with Claude's command
+   *  `supportsNonInteractive`). `false` ⇒ unavailable in a non-interactive run;
+   *  `true` ⇒ always available regardless of {@link disableNonInteractive}; absent ⇒
+   *  defer to {@link disableNonInteractive}. Gated via
+   *  {@link isSkillAvailableNonInteractive}. */
+  supportsNonInteractive?: boolean;
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   /** Named agent type a FORKED skill runs as (parity with Claude's PromptCommand
    *  `agent?: string`). When set, the forked sub-engine is bound to this agent's
@@ -196,6 +221,11 @@ export interface AgentDefinition {
    *  string. May be sync or async; resolve via {@link resolveAgentSystemPrompt},
    *  which falls back to `systemPrompt` when the builder is absent. */
   getSystemPrompt?: (ctx?: Record<string, unknown>) => string | Promise<string>;
+  /** Provenance flag recording that this agent definition was AUTO-GENERATED (e.g.
+   *  by a creation wizard / model) rather than hand-authored (parity with Claude's
+   *  agent `wasGenerated`). Surfaced in `/agents` so a user can tell generated
+   *  definitions apart; parsed via {@link parseBooleanFlag}. */
+  wasGenerated?: boolean;
 }
 
 /**
@@ -270,6 +300,23 @@ export function parseBackgroundFlag(value: unknown): { value: boolean | undefine
   if (value === undefined) return { value: undefined, invalid: false };
   if (value === true || value === 'true') return { value: true, invalid: false };
   if (value === false || value === 'false') return { value: undefined, invalid: false };
+  return { value: undefined, invalid: true };
+}
+
+/**
+ * Parse a generic TRI-STATE boolean frontmatter flag (parity with Claude Code's
+ * boolean agent/command knobs such as `wasGenerated`). Unlike
+ * {@link parseBackgroundFlag} — whose `false` collapses to `undefined` because a
+ * default-off background flag has no "explicitly off" state — this PRESERVES an
+ * explicit `false` so a caller can distinguish "absent" (`undefined`) from
+ * "declared false". Accepts the boolean/string forms `true`/`'true'` → `true` and
+ * `false`/`'false'` → `false`; omitted → `undefined`; ANY other value is `invalid`
+ * (the caller surfaces a load warning) and yields `undefined`.
+ */
+export function parseBooleanFlag(value: unknown): { value: boolean | undefined; invalid: boolean } {
+  if (value === undefined) return { value: undefined, invalid: false };
+  if (value === true || value === 'true') return { value: true, invalid: false };
+  if (value === false || value === 'false') return { value: false, invalid: false };
   return { value: undefined, invalid: true };
 }
 
@@ -387,6 +434,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'aliases', 'isMcp', 'argumentHint', 'whenToUse', 'paths', 'version',
   'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
   'immediate', 'userFacingName', 'requiresArgument', 'missingArgumentMessage',
+  'isSensitive', 'disableNonInteractive', 'supportsNonInteractive',
 ]);
 
 /**
@@ -797,6 +845,76 @@ export function skillProgressMessage(
     return skill.progressMessage.trim();
   }
   return DEFAULT_SKILL_PROGRESS_MESSAGE;
+}
+
+// ---------------------------------------------------------------------------
+// Skill-metadata flags — declarative command/skill knobs (parity with Claude's
+// command `isSensitive` / `isHidden` / `userFacingName()` /
+// `disableNonInteractive` / `supportsNonInteractive`). Pure predicates; the skill
+// tool (core) and the `/skills` listing (common) wire them into the real echo /
+// catalog / non-interactive-gate paths.
+// ---------------------------------------------------------------------------
+
+/** Masked placeholder shown in place of a sensitive skill's arguments. */
+export const REDACTED_SKILL_ARGS = '***';
+
+/**
+ * Display-safe form of a skill's raw argument string. When the skill declares
+ * {@link SkillDefinition.isSensitive} and `rawArgs` is a non-empty string, returns
+ * {@link REDACTED_SKILL_ARGS} so the arguments are never echoed into a permission
+ * prompt, transcript, or history (parity with Claude's `isSensitive` arg masking).
+ * A non-sensitive skill — or an empty/whitespace argument — returns `rawArgs`
+ * unchanged.
+ */
+export function redactSkillArgs(
+  skill: Pick<SkillDefinition, 'isSensitive'>,
+  rawArgs: string,
+): string {
+  if (skill.isSensitive && typeof rawArgs === 'string' && rawArgs.trim().length > 0) {
+    return REDACTED_SKILL_ARGS;
+  }
+  return rawArgs;
+}
+
+/**
+ * True when a skill is HIDDEN from user-facing help/typeahead listings (parity
+ * with Claude's command `isHidden`). A hidden skill stays invocable by its exact
+ * name; it is only omitted from catalog listings such as `/skills`.
+ */
+export function isSkillHidden(skill: Pick<SkillDefinition, 'isHidden'>): boolean {
+  return skill.isHidden === true;
+}
+
+/**
+ * The name to DISPLAY for a skill in listings (parity with Claude's command
+ * `userFacingName()`): the trimmed {@link SkillDefinition.userFacingName} when it
+ * is a non-empty string, otherwise the canonical {@link SkillDefinition.name}.
+ */
+export function skillUserFacingName(
+  skill: Pick<SkillDefinition, 'name' | 'userFacingName'>,
+): string {
+  if (typeof skill.userFacingName === 'string' && skill.userFacingName.trim().length > 0) {
+    return skill.userFacingName.trim();
+  }
+  return skill.name;
+}
+
+/**
+ * Whether a skill may be invoked in the CURRENT interactivity mode (parity with
+ * Claude's command `disableNonInteractive` / `supportsNonInteractive` gating). In
+ * an interactive run every skill is available. In a non-interactive (detached /
+ * `--prompt`) run a skill is unavailable when it declares
+ * `supportsNonInteractive === false`, OR it declares `disableNonInteractive` and
+ * does not explicitly opt back in via `supportsNonInteractive === true`.
+ */
+export function isSkillAvailableNonInteractive(
+  skill: Pick<SkillDefinition, 'disableNonInteractive' | 'supportsNonInteractive'>,
+  nonInteractive: boolean,
+): boolean {
+  if (!nonInteractive) return true;
+  if (skill.supportsNonInteractive === true) return true;
+  if (skill.supportsNonInteractive === false) return false;
+  return skill.disableNonInteractive !== true;
 }
 
 /**

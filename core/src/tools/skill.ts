@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 import { parseMcpToolName } from './mcp-tool';
@@ -151,6 +151,14 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set<string>([
   'isEnabled',
   'requiresArgument',
   'missingArgumentMessage',
+  // U023-w67 skill-metadata flags (parity): sensitive-arg masking, help-listing
+  // hiding, a display-name override, and non-interactive gating — declarative
+  // metadata the loader/skill tool consumes, not injectable auto-run code.
+  'isSensitive',
+  'isHidden',
+  'userFacingName',
+  'disableNonInteractive',
+  'supportsNonInteractive',
 ]);
 
 /**
@@ -491,9 +499,16 @@ export const skillTool: ToolDefinition = {
     if (permDecision === 'ask' || hasUnreviewedProps) {
       const handler = context._permissionPromptHandler;
       if (handler) {
+        // FUNCTIONAL (parity/security): a skill flagged `isSensitive` must NOT leak
+        // its arguments into the echoed permission summary — mask them as `***`
+        // (Claude's isSensitive arg masking). redactSkillArgs is a no-op for a
+        // non-sensitive skill or an empty argument.
+        const echoedArgs = skillDef && safeArgs?.ARGUMENTS
+          ? redactSkillArgs(skillDef, safeArgs.ARGUMENTS)
+          : safeArgs?.ARGUMENTS;
         const summary = hasUnreviewedProps
           ? `skill: ${resolvedName} (unreviewed properties: ${unreviewedProps.join(', ')})`
-          : `skill: ${resolvedName}${safeArgs?.ARGUMENTS ? ` ${safeArgs.ARGUMENTS}` : ''}`;
+          : `skill: ${resolvedName}${echoedArgs ? ` ${echoedArgs}` : ''}`;
         const verdict = await handler.showPrompt('skill', summary, undefined, context.abortSignal);
         if (!verdict.action.startsWith('allow')) {
           return {
@@ -525,6 +540,17 @@ export const skillTool: ToolDefinition = {
     }
     if (skillDef?.disableModelInvocation) {
       return { output: `Error: Skill "${skillName}" has disableModelInvocation set and cannot be invoked by the model.`, isError: true };
+    }
+
+    // FUNCTIONAL (parity): a skill may be gated OUT of non-interactive (detached /
+    // --prompt) runs via `disableNonInteractive` / `supportsNonInteractive`
+    // (Claude's per-command non-interactive gate). Refuse it in detached mode
+    // rather than running a skill that assumes an interactive session.
+    if (skillDef && !isSkillAvailableNonInteractive(skillDef, context.detachedMode === true)) {
+      return {
+        output: `Error: skill "${resolvedName}" is not available in non-interactive (detached) mode.`,
+        isError: true,
+      };
     }
 
     // FUNCTIONAL (parity): a skill that declares `requires-argument` must not run
