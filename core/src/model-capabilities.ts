@@ -129,6 +129,33 @@ function hasOneMillionMarker(modelId: string): boolean {
 }
 
 /**
+ * Resolve a skill's `model:` override against the session's current model,
+ * carrying the `[1m]` 1M-context marker over when the target family supports it.
+ *
+ * A skill author writing `model: <id>` means "use that model class" — not
+ * "downgrade the context window". If the user is on an explicit `<id>[1m]`
+ * session and invokes a skill whose `model:` names the same (1M-capable) family
+ * WITHOUT the marker, a raw overwrite silently drops the effective window from
+ * 1M to the base (200k) key, which trips compaction/autocompact far too early.
+ *
+ * Rules (mirrors Claude Code's `resolveSkillModelOverride`):
+ * - The skill model already carries a 1M marker → leave it untouched.
+ * - The current session model has no 1M marker → nothing to carry, return as-is.
+ * - Otherwise carry `[1m]` ONLY when the skill's target family actually supports
+ *   the 1M beta (Sonnet 4+/Opus 5+); a `model: haiku` on a 1M session still
+ *   downgrades, because haiku has no 1M variant and the smaller window is correct.
+ */
+export function resolveSkillModelOverride(skillModel: string, currentModel: string): string {
+  if (hasOneMillionMarker(skillModel) || !hasOneMillionMarker(currentModel)) {
+    return skillModel;
+  }
+  if (supportsOneMillionContextBeta(skillModel)) {
+    return `${skillModel}[1m]`;
+  }
+  return skillModel;
+}
+
+/**
  * Anthropic's 1M-context window is gated behind the `context-1m-2025-08-07`
  * beta header. Per Anthropic's docs it is available on the Sonnet 4+ family AND
  * the Opus 5+ family — Claude Code ships a dedicated `checkOpus1mAccess()`

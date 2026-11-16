@@ -2,6 +2,8 @@ import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types'
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
 import { type SkillDefinition, type SkillManagerLike, isStanceSkill, sanitizeSkillArgs } from '../skills';
+import { normalizeToolName } from '../permissions';
+import { resolveSkillModelOverride } from '../model-capabilities';
 
 /**
  * The outcome of resolving a requested skill name against the manager.
@@ -60,30 +62,111 @@ export function resolveSkillTarget(
 }
 
 /**
+ * A diagnostic produced while resolving a skill's tool restriction list — surfaced
+ * so a misconfigured `allowed-tools`/`disallowed-tools` (a typo, a disconnected MCP
+ * tool, or a whitelist that resolves to nothing) is VISIBLE instead of silently
+ * degrading the subagent's toolset. Mirrors Claude Code's validation/selected-count
+ * affordance (ToolSelector drops unresolved names but still surfaces the count).
+ */
+export interface SkillToolFilterWarning {
+  kind: 'unknown-tool' | 'empty-toolset';
+  /** The offending allow/deny entry (verbatim), when `kind === 'unknown-tool'`. */
+  entry?: string;
+  /** Which restriction list the entry came from. */
+  list?: 'allowed' | 'disallowed';
+  message: string;
+}
+
+/**
+ * Normalize a single `allowed-tools`/`disallowed-tools` entry to an AMI tool name.
+ *
+ * Accepts Claude Code's authoring forms and maps them onto AMI's canonical tool
+ * names so a skill/command imported verbatim resolves to the right tools instead
+ * of silently matching nothing:
+ * - **Scoped command patterns** `Tool(scope:*)` → the tool-name portion (`Tool`).
+ *   The scope is a permission concern handled by the permission engine, not the
+ *   tool-list filter, so only the name is used for inclusion here.
+ * - **Claude-cased / aliased names** (`Bash`, `Read`, `Edit`, `Grep`, `LS`, …) →
+ *   AMI names (`bash`, `file_read`, `file_edit`, `grep`, `list_dir`, …) via the
+ *   shared `normalizeToolName` alias map (single source of truth — no local copy).
+ */
+function normalizeSkillToolEntry(entry: string): string {
+  const paren = entry.indexOf('(');
+  const base = (paren >= 0 ? entry.slice(0, paren) : entry).trim();
+  return normalizeToolName(base);
+}
+
+/**
  * Filter tools for a skill based on its allowedTools and disallowedTools settings.
  * Exported for testability.
  *
  * Logic:
- * 1. If allowedTools is set, whitelist to only those tools.
- * 2. Otherwise, include all tools minus 'skill'.
- * 3. If disallowedTools is set, remove those tools from the result.
+ * 1. A list containing the `*` wildcard means "all tools" — skip the allowlist
+ *    filter (Claude Code's `tools: ['*']` sentinel; AMI's convention of an empty
+ *    list already means "all", so `*` is treated identically).
+ * 2. If allowedTools is set, whitelist to only those tools (entries normalized via
+ *    {@link normalizeSkillToolEntry}, so scoped `Tool(scope:*)` and Claude-cased
+ *    names resolve to the correct AMI tool).
+ * 3. Otherwise, include all tools minus 'skill'.
+ * 4. If disallowedTools is set, remove those tools from the result.
+ *
+ * `onWarning` (optional) receives a diagnostic for every allow/deny entry that
+ * resolves to no real tool, and one when the effective toolset ends up empty, so
+ * a misconfigured restriction is surfaced rather than silently applied.
  */
 export function filterToolsForSkill(
   allTools: ToolDefinition[],
   skill: SkillDefinition | null | undefined,
+  onWarning?: (warning: SkillToolFilterWarning) => void,
 ): ToolDefinition[] {
   let tools: ToolDefinition[];
 
-  if (skill?.allowedTools && skill.allowedTools.length > 0) {
-    const allowed = new Set(skill.allowedTools);
+  const realNames = new Set(allTools.map(t => t.name));
+  const allowedEntries = (skill?.allowedTools ?? []).filter(e => e && e.trim().length > 0);
+  const hasWildcard = allowedEntries.some(e => normalizeSkillToolEntry(e) === '*');
+
+  if (allowedEntries.length > 0 && !hasWildcard) {
+    const allowed = new Set<string>();
+    for (const entry of allowedEntries) {
+      const name = normalizeSkillToolEntry(entry);
+      allowed.add(name);
+      if (!realNames.has(name)) {
+        onWarning?.({
+          kind: 'unknown-tool',
+          entry,
+          list: 'allowed',
+          message: `allowed-tools entry "${entry}" matches no available tool`,
+        });
+      }
+    }
     tools = allTools.filter(t => allowed.has(t.name));
   } else {
     tools = allTools.filter(t => t.name !== 'skill');
   }
 
-  if (skill?.disallowedTools && skill.disallowedTools.length > 0) {
-    const disallowed = new Set(skill.disallowedTools);
+  const disallowedEntries = (skill?.disallowedTools ?? []).filter(e => e && e.trim().length > 0);
+  if (disallowedEntries.length > 0) {
+    const disallowed = new Set<string>();
+    for (const entry of disallowedEntries) {
+      const name = normalizeSkillToolEntry(entry);
+      disallowed.add(name);
+      if (!realNames.has(name)) {
+        onWarning?.({
+          kind: 'unknown-tool',
+          entry,
+          list: 'disallowed',
+          message: `disallowed-tools entry "${entry}" matches no available tool`,
+        });
+      }
+    }
     tools = tools.filter(t => !disallowed.has(t.name));
+  }
+
+  if (tools.length === 0) {
+    onWarning?.({
+      kind: 'empty-toolset',
+      message: 'skill tool restrictions resolved to zero tools — the subagent will have no tools to act with',
+    });
   }
 
   return tools;
@@ -213,7 +296,12 @@ export const skillTool: ToolDefinition = {
       };
     }
     const allTools = createDefaultTools(context.cwd);
-    const tools = filterToolsForSkill(allTools.getAll(), skill);
+    const toolWarnings: SkillToolFilterWarning[] = [];
+    const tools = filterToolsForSkill(allTools.getAll(), skill, w => toolWarnings.push(w));
+    const warningText =
+      toolWarnings.length > 0
+        ? `\n[Skill tool-restriction warnings: ${toolWarnings.map(w => w.message).join('; ')}]`
+        : '';
 
     const subAbort = new AbortController();
     const forwardAbort = () => subAbort.abort();
@@ -221,7 +309,11 @@ export const skillTool: ToolDefinition = {
 
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };
     if (skill?.model) {
-      providerConfig.model = skill.model;
+      // Carry the session's [1m] 1M-context marker across the skill model override
+      // when the target family supports it — a raw overwrite would silently drop an
+      // `opus[1m]` session to the 200k window and trip autocompact. See
+      // resolveSkillModelOverride.
+      providerConfig.model = resolveSkillModelOverride(skill.model, providerConfig.model || '');
     }
 
     const subConfig: EngineConfig = {
@@ -272,11 +364,17 @@ export const skillTool: ToolDefinition = {
       (subEngine as any).shutdown?.();
     }
 
-    const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}]`;
+    const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}]${warningText}`;
     return {
       output: `${header}\n${capSkillOutput(result) || '(skill produced no output)'}`,
       isError: false,
-      metadata: { mode: 'forked', skill: resolvedName, model: providerConfig.model, toolCount: tools.length },
+      metadata: {
+        mode: 'forked',
+        skill: resolvedName,
+        model: providerConfig.model,
+        toolCount: tools.length,
+        ...(toolWarnings.length > 0 ? { toolWarnings } : {}),
+      },
     };
   },
 };
