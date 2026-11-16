@@ -1447,6 +1447,23 @@ function extractBaseCommands(command: string): string[] {
           commands.push(cmd + ' ' + tokens[i + 1]! + ' ' + tokens[i + 2]!);
         }
       }
+      // Spec-driven subcommand prefix: for a CLI with a known option schema, ALSO
+      // emit the `command subcommand` form reached after skipping leading global
+      // flags and the values they consume, so `git -C /repo status` yields the
+      // `git status` base (not just `git -C /repo`) and matches SAFE_PREFIXES.
+      // Added alongside the raw adjacent-token bases above — never replaces them —
+      // so existing matches are preserved. Mirrors Claude's findFirstSubcommand
+      // spec-driven flag-value skipping (utils/shell/specPrefix.ts).
+      const spec = BASH_COMMAND_SPECS[cmd];
+      if (spec) {
+        const sub = skipGlobalFlags(tokens, i + 1, spec);
+        if (sub !== i + 1 && sub < tokens.length && !tokens[sub]!.startsWith('-')) {
+          commands.push(cmd + ' ' + tokens[sub]!);
+          if (sub + 1 < tokens.length && !tokens[sub + 1]!.startsWith('-')) {
+            commands.push(cmd + ' ' + tokens[sub]! + ' ' + tokens[sub + 1]!);
+          }
+        }
+      }
     }
   }
 
@@ -1472,6 +1489,20 @@ function allSegmentsKnown(command: string): boolean {
     for (let j = 1; j <= Math.min(cmdTokens.length, 3); j++) {
       const prefix = cmdTokens.slice(0, j).join(' ');
       if (SAFE_COMMANDS.has(prefix) || SAFE_PREFIXES.has(prefix)) { found = true; break; }
+    }
+    // Spec-driven retry: if the raw first-N tokens didn't match, skip leading
+    // global flags (and their values) for a known-schema CLI and test the
+    // flag-skipped `command subcommand` prefix, so `git -C /repo status` matches
+    // `git status`. Mirrors Claude's spec-driven prefix extraction.
+    if (!found && cmdTokens.length > 0) {
+      const spec = BASH_COMMAND_SPECS[cmdTokens[0]!];
+      if (spec) {
+        const sub = skipGlobalFlags(cmdTokens, 1, spec);
+        for (let j = 2; j <= 3 && sub + (j - 2) < cmdTokens.length; j++) {
+          const prefix = cmdTokens[0]! + ' ' + cmdTokens.slice(sub, sub + (j - 1)).join(' ');
+          if (SAFE_PREFIXES.has(prefix)) { found = true; break; }
+        }
+      }
     }
     if (!found) return false;
   }
@@ -1527,10 +1558,22 @@ export function isGitInvocationReadOnly(tokens: string[]): boolean {
 
   // Skip git global options (and the value they consume) to reach the subcommand.
   const valueGlobals = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+  // Globals that change git's EXECUTION CONTEXT — a different repo/worktree
+  // (`-C`, `--git-dir`, `--work-tree`, `--namespace`) whose on-disk config can run
+  // arbitrary code during a "read" (e.g. a malicious `core.fsmonitor`), or an
+  // inline config injection (`-c core.pager=<cmd>` / `--config-env`) — are NEVER
+  // auto-allowed as read-only, mirroring AMI's existing cd+git RCE guard
+  // (isGitReadOnlyCommandSafe) so a global flag before the subcommand cannot
+  // smuggle an exec vector past the classifier. A prompt is still shown.
+  const execContextGlobals = new Set([
+    '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env',
+  ]);
   let i = 1;
   while (i < tokens.length) {
     const t = tokens[i]!;
     if (!t.startsWith('-')) break;
+    const bare = t.includes('=') ? t.slice(0, t.indexOf('=')) : t;
+    if (execContextGlobals.has(bare)) return false; // exec-context change / config injection
     if (valueGlobals.has(t)) { i += 2; continue; } // `--opt value`
     i += 1;                                         // flag or `--opt=value`
   }
@@ -1973,6 +2016,26 @@ function flagTakesValue(flag: string, spec: BashCommandSpec | undefined): boolea
 }
 
 /**
+ * Advance past leading global flags (and the values `spec` says they consume)
+ * starting at `tokens[start]`, returning the index of the first non-flag token —
+ * the real subcommand. `git -C /repo status` → the index of `status`;
+ * `docker -D ps` → the index of `ps`. This is the canonical spec-driven
+ * flag-value skip shared by prefix suggestion (getSimpleCommandPrefix), base
+ * extraction (extractBaseCommands) and classification (allSegmentsKnown + the
+ * docker read-only check), so a global flag before the subcommand can no longer
+ * defeat SAFE_PREFIXES / DOCKER_SAFE_SUBCOMMANDS matching. Mirrors Claude's
+ * findFirstSubcommand + flagTakesArg (utils/shell/specPrefix.ts L40-137).
+ */
+function skipGlobalFlags(tokens: string[], start: number, spec: BashCommandSpec | undefined): number {
+  let i = start;
+  while (i < tokens.length && tokens[i]!.startsWith('-')) {
+    if (flagTakesValue(tokens[i]!, spec)) i++;
+    i++;
+  }
+  return i;
+}
+
+/**
  * Scoped subcommand prefix ("command subcommand", e.g. `git commit`, `npm run`,
  * `kubectl get pods`). Skips leading SAFE_ENV_VARS assignments (returns null on
  * an unsafe env var so matching falls back to the exact command), then — spec
@@ -1998,12 +2061,8 @@ export function getSimpleCommandPrefix(command: string): string | null {
   const spec = BASH_COMMAND_SPECS[cmd];
   const depth = spec?.depth ?? 2;
   const parts = [cmd];
-  i++;
   // Skip leading global flags (and any value they consume) to reach the subcommand.
-  while (i < tokens.length && tokens[i]!.startsWith('-')) {
-    if (flagTakesValue(tokens[i]!, spec)) i++;
-    i++;
-  }
+  i = skipGlobalFlags(tokens, i + 1, spec);
   // Collect subcommand-shaped words up to the spec depth; stop at the first flag
   // or non-subcommand-shaped token once collection has begun.
   while (parts.length < depth && i < tokens.length) {
@@ -3057,8 +3116,14 @@ export class PermissionManager {
     // subcommand or secret past this check (Claude's isDockerSafe `$` rejection).
     if (/\bdocker\s+/.test(trimmed)) {
       if (containsShellSubstitution(unwrapped)) return 'unsafe';
-      const dockerMatch = trimmed.match(/\bdocker\s+(\S+)/);
-      if (dockerMatch && DOCKER_SAFE_SUBCOMMANDS.has(dockerMatch[1])) {
+      // Skip leading global flags (and the values they consume, e.g. `-H <host>`,
+      // `--context <ctx>`) to reach the REAL subcommand, so `docker -D ps` reads
+      // `ps` instead of `-D`. Mirrors Claude's spec-driven flag-value skipping.
+      const dockerTokens = trimmed.split(/\s+/).filter(Boolean);
+      const dIdx = dockerTokens.indexOf('docker');
+      const subIdx = dIdx >= 0 ? skipGlobalFlags(dockerTokens, dIdx + 1, BASH_COMMAND_SPECS['docker']) : -1;
+      const dockerSub = subIdx >= 0 && subIdx < dockerTokens.length ? dockerTokens[subIdx] : undefined;
+      if (dockerSub && DOCKER_SAFE_SUBCOMMANDS.has(dockerSub)) {
         return 'safe';
       }
       return 'unsafe';
