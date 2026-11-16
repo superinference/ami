@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
+import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
 import { coerceBool, coerceNumber } from '../utils/coerce';
@@ -18,6 +18,7 @@ import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
+import { isBackgroundTasksDisabled } from './tool-gates';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -743,24 +744,45 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   return env;
 }
 
-export const bashTool: ToolDefinition = {
-  name: 'bash',
-  description:
-    'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. '
-    + 'IMPORTANT — prefer the dedicated tools over shell equivalents: read files with file_read (NOT cat/head/tail), '
-    + 'edit files with file_edit (NOT sed/awk), search with grep/glob (NOT grep/rg/find), and write files with file_write '
-    + '(NOT echo >/cat <<EOF). Communicate by writing text directly (NOT echo/printf to the shell). '
-    + 'Use absolute paths. Quote paths with spaces. '
-    + 'The working directory persists between commands, but shell state does NOT: each call runs in a fresh non-interactive '
-    + 'shell that is not initialized from your profile (~/.bashrc/.zshrc), so a prior `cd`, exported variables, and your '
-    + 'user-defined aliases/functions are unavailable in the next call — use absolute paths and chain dependent commands with &&. '
-    + 'Do not run interactive/blocking commands that wait for input (e.g. `git rebase -i`, `git add -i`, or anything that opens '
-    + 'an editor or prompts for a password); they will hang. '
-    + 'Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never '
-    + 'commit unless explicitly asked. Do not sleep between commands. '
-    + 'For intentionally long tasks pass run_in_background: true; a command that overruns its timeout is automatically moved to '
-    + 'the background so the session stays responsive.',
-  inputSchema: {
+// Base description shared by every mode, ending at the sleep guidance. The
+// background guidance sentence is appended only when background tasks are enabled.
+const BASH_DESCRIPTION_HEAD =
+  'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. '
+  + 'IMPORTANT — prefer the dedicated tools over shell equivalents: read files with file_read (NOT cat/head/tail), '
+  + 'edit files with file_edit (NOT sed/awk), search with grep/glob (NOT grep/rg/find), and write files with file_write '
+  + '(NOT echo >/cat <<EOF). Communicate by writing text directly (NOT echo/printf to the shell). '
+  + 'Use absolute paths. Quote paths with spaces. '
+  + 'The working directory persists between commands, but shell state does NOT: each call runs in a fresh non-interactive '
+  + 'shell that is not initialized from your profile (~/.bashrc/.zshrc), so a prior `cd`, exported variables, and your '
+  + 'user-defined aliases/functions are unavailable in the next call — use absolute paths and chain dependent commands with &&. '
+  + 'Do not run interactive/blocking commands that wait for input (e.g. `git rebase -i`, `git add -i`, or anything that opens '
+  + 'an editor or prompts for a password); they will hang. '
+  + 'Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never '
+  + 'commit unless explicitly asked. Do not sleep between commands.';
+
+// Background-task guidance, suppressed when background tasks are disabled so the
+// model is never told about a capability that is turned off for this deployment.
+const BASH_DESCRIPTION_BACKGROUND =
+  ' For intentionally long tasks pass run_in_background: true; a command that overruns its timeout is automatically moved to '
+  + 'the background so the session stays responsive.';
+
+/**
+ * Model-facing bash description. When background tasks are disabled the
+ * run_in_background guidance is dropped (parity: Claude's prompt.ts suppresses the
+ * background usage note behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).
+ */
+export function buildBashDescription(backgroundDisabled: boolean): string {
+  return backgroundDisabled ? BASH_DESCRIPTION_HEAD : BASH_DESCRIPTION_HEAD + BASH_DESCRIPTION_BACKGROUND;
+}
+
+/**
+ * Model-facing bash input schema. When background tasks are disabled the
+ * `run_in_background` property is omitted entirely from the advertised schema
+ * (parity: Claude's BashTool lazySchema omit behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+ * so the model cannot request a background run in a locked-down deployment.
+ */
+export function buildBashInputSchema(backgroundDisabled: boolean): ToolInputSchema {
+  const schema: ToolInputSchema = {
     type: 'object',
     properties: {
       command: {
@@ -797,6 +819,22 @@ export const bashTool: ToolDefinition = {
       },
     },
     required: ['command'],
+  };
+  if (backgroundDisabled) {
+    delete schema.properties.run_in_background;
+  }
+  return schema;
+}
+
+export const bashTool: ToolDefinition = {
+  name: 'bash',
+  // Getters so the env knob is read at advertise-time (every access), keeping the
+  // schema/description in sync with AMI_DISABLE_BACKGROUND_TASKS without a restart.
+  get description(): string {
+    return buildBashDescription(isBackgroundTasksDisabled());
+  },
+  get inputSchema(): ToolInputSchema {
+    return buildBashInputSchema(isBackgroundTasksDisabled());
   },
   isReadOnly: false,
   isConcurrencySafe: false,
@@ -924,7 +962,11 @@ export const bashTool: ToolDefinition = {
 
     // coerceBool: providers serialize booleans as strings; a naive truthy check
     // would background on the STRING "false". Shared with task.ts.
-    const runInBackground = coerceBool(input.run_in_background);
+    // When background tasks are disabled (AMI_DISABLE_BACKGROUND_TASKS), force the
+    // command to run in the foreground even if the model still requested a
+    // background run — the capability is fully off (parity: Claude runs such
+    // commands in the foreground when CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is set).
+    const runInBackground = coerceBool(input.run_in_background) && !isBackgroundTasksDisabled();
     const sleepBlock = detectBlockedSleep(command, runInBackground, !!input.timeout);
     if (sleepBlock) return { output: `Error: ${sleepBlock}`, isError: true };
 

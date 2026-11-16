@@ -63,6 +63,30 @@ export function isLspEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return capabilityEnabled(env[LSP_ENV]);
 }
 
+/**
+ * Env vars that disable background-task execution (default: ENABLED). When either
+ * is truthy the bash tool (a) omits `run_in_background` from the model-facing input
+ * schema, (b) drops the background guidance sentence from its description, and
+ * (c) forces a `run_in_background: true` request to run in the foreground. Lets an
+ * operator in a locked-down environment turn the capability fully off from one
+ * place. Parity: Claude Code's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` (read via
+ * `isEnvTruthy`), whose spelling is accepted alongside the AMI-native name — same
+ * dual-name convention analytics.ts uses for the DISABLE_NONESSENTIAL_TRAFFIC pair.
+ */
+export const DISABLE_BACKGROUND_TASKS_ENV = 'AMI_DISABLE_BACKGROUND_TASKS';
+/** Claude Code-compatible spelling accepted alongside {@link DISABLE_BACKGROUND_TASKS_ENV}. */
+export const DISABLE_BACKGROUND_TASKS_ENV_COMPAT = 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS';
+
+/**
+ * True when background tasks are disabled by {@link DISABLE_BACKGROUND_TASKS_ENV}
+ * (or its Claude-compatible alias). This is a disable switch — default OFF means
+ * background tasks stay ENABLED (AMI's always-on default), so it uses truthy
+ * detection rather than {@link capabilityEnabled}'s default-ON semantics.
+ */
+export function isBackgroundTasksDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[DISABLE_BACKGROUND_TASKS_ENV]) || isEnvTruthy(env[DISABLE_BACKGROUND_TASKS_ENV_COMPAT]);
+}
+
 /** Env var that toggles the workflow-scripts tool (default ON). */
 export const WORKFLOW_SCRIPTS_ENV = 'AMI_WORKFLOW_SCRIPTS';
 
