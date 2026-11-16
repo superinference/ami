@@ -62,8 +62,9 @@ export {
   OTEL_CARDINALITY_DEFAULTS, parseOtelHeaders,
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName, MAX_FILE_EXTENSION_LENGTH,
 } from './analytics';
-export { PRIVACY_LEVELS } from './analytics';
+export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS } from './analytics';
 export type { PrivacyLevel, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
+export { getEssentialTrafficOnlyReason } from './privacy-level';
 export type { FileState } from './file-cache';
 export { Profiler, FpsTracker, slowWarning } from './profiler';
 export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts } from './profiler';

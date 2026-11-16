@@ -36,6 +36,17 @@ const PRIVACY_RANK: Record<PrivacyLevel, number> = {
 };
 
 /**
+ * Env vars that raise the privacy level to `essential-traffic`, in resolution
+ * order (AMI-native knob first, then the Claude Code-compatible alias). Single
+ * source of truth consumed by {@link getPrivacyLevel} and the reason accessor in
+ * `./privacy-level`.
+ */
+export const ESSENTIAL_TRAFFIC_VARS = [
+  'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC',
+  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+] as const;
+
+/**
  * Resolve the effective privacy level from the standard opt-out env vars,
  * taking the MOST restrictive signal (mirrors Claude's getPrivacyLevel):
  *  - DISABLE_TELEMETRY / DO_NOT_TRACK → no-telemetry
@@ -45,7 +56,7 @@ export function getPrivacyLevel(env: NodeJS.ProcessEnv = process.env): PrivacyLe
   let level: PrivacyLevel = 'default';
   const bump = (l: PrivacyLevel): void => { if (PRIVACY_RANK[l] > PRIVACY_RANK[level]) level = l; };
   if (isEnvTruthy(env.DISABLE_TELEMETRY) || isEnvTruthy(env.DO_NOT_TRACK)) bump('no-telemetry');
-  if (isEnvTruthy(env.SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC) || isEnvTruthy(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)) {
+  if (ESSENTIAL_TRAFFIC_VARS.some(name => isEnvTruthy(env[name]))) {
     bump('essential-traffic');
   }
   return level;
