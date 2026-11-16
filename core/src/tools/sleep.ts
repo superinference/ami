@@ -40,8 +40,11 @@ export const sleepTool: ToolDefinition = {
     'Do not sleep between commands that can run immediately — just run them. For a long-running task, ' +
     'start it with the bash run_in_background option instead of sleeping; you will be notified when it ' +
     'completes, so do not poll it. Do not retry a failing command in a sleep loop — diagnose the root ' +
-    'cause instead. If you must poll external state, run a check command rather than sleeping first.\n' +
-    'While idle you may receive periodic scheduled check-in prompts — look for useful work to do before sleeping.\n' +
+    'cause instead. If you must poll external state, run a check command rather than sleeping first; ' +
+    'when you do sleep, keep it short (1–5s) unless you are deliberately waiting out a longer external process.\n' +
+    'While idle you may receive periodic scheduled check-in prompts — look for useful work to do before sleeping. ' +
+    'If a new user message is queued while you are sleeping, the sleep wakes early (within ~1s) so you can ' +
+    'respond promptly instead of waiting out the full duration.\n' +
     'Cost note: each wake-up costs an API call, but the prompt cache expires after ~5 minutes of ' +
     'inactivity — balance the sleep duration against cache re-warming accordingly. ' +
     'Maximum 600000ms (10 minutes).',
@@ -112,39 +115,78 @@ export const sleepTool: ToolDefinition = {
     const capped = requested > MAX_SLEEP_MS;
     const start = Date.now();
 
-    const interrupted = await new Promise<boolean>((resolve) => {
+    // Parity (functional): early-wake polling. When the engine supplies
+    // `hasQueuedInput`, poll it so a message queued mid-sleep wakes the agent
+    // promptly (≤ one poll interval) instead of blocking the full duration —
+    // mirroring Claude's SleepTool polling hasCommandsInQueue() and waking <1s.
+    const POLL_INTERVAL_MS = 250;
+    const hasQueuedInput =
+      typeof context.hasQueuedInput === 'function' ? context.hasQueuedInput : undefined;
+
+    const outcome = await new Promise<'done' | 'interrupted' | 'input'>((resolve) => {
       const signal = context.abortSignal;
       let onAbort: (() => void) | undefined;
+      let poll: ReturnType<typeof setInterval> | undefined;
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        if (poll) clearInterval(poll);
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      };
 
       const timer = setTimeout(() => {
-        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-        resolve(false);
+        cleanup();
+        resolve('done');
       }, duration);
       // Do not keep the event loop alive solely for a pending sleep.
       if (typeof timer.unref === 'function') timer.unref();
 
+      if (hasQueuedInput) {
+        if (hasQueuedInput()) {
+          cleanup();
+          resolve('input');
+          return;
+        }
+        poll = setInterval(() => {
+          if (hasQueuedInput()) {
+            cleanup();
+            resolve('input');
+          }
+        }, Math.min(POLL_INTERVAL_MS, duration));
+        if (typeof poll.unref === 'function') poll.unref();
+      }
+
       if (signal) {
         if (signal.aborted) {
-          clearTimeout(timer);
-          resolve(true);
+          cleanup();
+          resolve('interrupted');
           return;
         }
         onAbort = () => {
-          clearTimeout(timer);
-          resolve(true);
+          cleanup();
+          resolve('interrupted');
         };
         signal.addEventListener('abort', onAbort, { once: true });
       }
     });
 
+    const interrupted = outcome === 'interrupted';
+    const wokeForInput = outcome === 'input';
+
     const sleptSec = ((Date.now() - start) / 1000).toFixed(1);
+    const reqSec = (duration / 1000).toFixed(1);
     const reasonSuffix = reason ? ` Reason: ${reason}` : '';
     const cappedSuffix = capped
       ? ` (requested ${(requested / 1000).toFixed(1)}s was capped to ${(MAX_SLEEP_MS / 1000).toFixed(1)}s)`
       : '';
-    const msg = interrupted
-      ? `Sleep interrupted after ${sleptSec}s (requested ${(duration / 1000).toFixed(1)}s).${cappedSuffix}${reasonSuffix}`
-      : `Slept for ${sleptSec}s.${cappedSuffix}${reasonSuffix}`;
+    let msg: string;
+    if (interrupted) {
+      msg = `Sleep interrupted after ${sleptSec}s (requested ${reqSec}s).${cappedSuffix}${reasonSuffix}`;
+    } else if (wokeForInput) {
+      msg = `Sleep woke early after ${sleptSec}s because new input was queued (requested ${reqSec}s).${cappedSuffix}${reasonSuffix}`;
+    } else {
+      msg = `Slept for ${sleptSec}s.${cappedSuffix}${reasonSuffix}`;
+    }
 
     return {
       output: msg,
@@ -154,6 +196,7 @@ export const sleepTool: ToolDefinition = {
         capped,
         sleptMs: Date.now() - start,
         interrupted,
+        wokeForInput,
       },
     };
   },

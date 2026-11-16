@@ -327,6 +327,12 @@ export interface ToolContext {
    *  Claude-Code skills that shell out via `$CLAUDE_SKILL_DIR/scripts/...` work (issue #22). */
   skillEnv?: Record<string, string>;
   abortSignal: AbortSignal;
+  /** Early-wake hook for the `sleep` tool: returns true when inbound user input is
+   *  queued (e.g. a mid-turn message pushed via injectMidTurnUserMessage). When
+   *  present, `sleep` polls it and resolves early so the agent reacts promptly
+   *  instead of blocking the full duration. Parity: Claude's SleepTool polls
+   *  `hasCommandsInQueue()` and wakes within ~1s of an inbound channel message. */
+  hasQueuedInput?: () => boolean;
   onProgress?: (data: string) => void;
   /** Tracks file paths that have been read during this session.
    *  Used by file_edit to enforce read-before-write. */
