@@ -6,6 +6,7 @@ import {
   parseClaudeVersion,
   claudeReasoningCapabilities,
   clearDynamicCapabilities,
+  getModelMaxOutputTokens,
   type ThinkingLevel,
 } from '../src/model-capabilities';
 import { buildThinkingOptions } from '../src/provider';
@@ -136,7 +137,9 @@ describe('pov-model-caps-matrix: adaptive classification (major>=5 OR (major==4 
       assert.equal(caps!.supportsAdaptiveThinking, want);
       assert.equal(caps!.requiresTemperatureOne, true);
       assert.equal(caps!.defaultThinkingLevel, 'medium');
-      assert.equal(caps!.maxThinkingBudget, 128000);
+      // Thinking budget is tied to the model's real output ceiling (upperLimit - 1,
+      // parity with Claude's getMaxThinkingTokensForModel) rather than a flat 128k.
+      assert.equal(caps!.maxThinkingBudget, getModelMaxOutputTokens(id).upperLimit - 1);
       // getModelCapabilities must agree with claudeReasoningCapabilities.
       const viaGet = getModelCapabilities(id);
       assert.deepEqual(viaGet, caps);

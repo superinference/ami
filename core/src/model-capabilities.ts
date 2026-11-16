@@ -1,3 +1,5 @@
+import { formatTokenCount } from './token-format';
+
 export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
@@ -489,8 +491,29 @@ export function claudeReasoningCapabilities(modelId: string): ModelCapabilities 
     supportsAdaptiveThinking,
     requiresTemperatureOne: true,
     temperatureMustBeUnset: false,
-    maxThinkingBudget: 128000,
+    // The thinking budget must stay strictly below the model's real output cap —
+    // a model whose completion ceiling is 32k (e.g. Opus 4.0) cannot spend 128k
+    // on thinking. Derive it from the per-family output upperLimit (upperLimit-1,
+    // mirroring Claude's getMaxThinkingTokensForModel) when the model is in the
+    // output-cap table; otherwise keep the 128k default for untabled flagship ids
+    // so a newer model is never under-budgeted. Uses the static lookup directly to
+    // avoid recursing through getModelCapabilities (which calls this function).
+    maxThinkingBudget: deriveMaxThinkingBudget(modelId),
   };
+}
+
+/**
+ * The thinking-token ceiling for a Claude model, tied to its real output cap.
+ * Returns the tabled output upperLimit minus one (parity with Claude's
+ * getMaxThinkingTokensForModel, utils/context.ts) so thinking can never request
+ * more than the model will emit; falls back to 128_000 when the id is not in the
+ * static output-cap table (an untabled flagship). Reads the static table directly
+ * — NOT getMaxOutputTokens — because getMaxOutputTokens → getModelCapabilities →
+ * claudeReasoningCapabilities would recurse.
+ */
+function deriveMaxThinkingBudget(modelId: string): number {
+  const upperLimit = lookupOutputTokenRange(modelId.toLowerCase())?.upperLimit;
+  return upperLimit !== undefined ? upperLimit - 1 : 128000;
 }
 
 const REASONING_MODELS: Array<{
@@ -868,6 +891,15 @@ export interface MaxOutputTokenRange {
  * maxOutputTokens overrides the ceiling (see getModelMaxOutputTokens).
  */
 const OUTPUT_TOKEN_CAPS: Record<string, MaxOutputTokenRange> = {
+  // Anthropic — flagship families (5.x and Opus 4.7/4.8): same 128k ceiling as
+  // Opus/Sonnet 4.6. These precede the bare `claude-opus-4` (4.0) entry so a
+  // newer minor version is NOT captured by the 4.0 substring and under-reported
+  // at a 32k cap — which would also under-budget its derived thinking ceiling.
+  // `claude-opus-5` / `claude-sonnet-5` cover the whole 5.x line by substring.
+  'claude-opus-5':    { default: 64_000, upperLimit: 128_000 },
+  'claude-sonnet-5':  { default: 32_000, upperLimit: 128_000 },
+  'claude-opus-4-8':  { default: 64_000, upperLimit: 128_000 },
+  'claude-opus-4-7':  { default: 64_000, upperLimit: 128_000 },
   // Anthropic — modern families: default below the ceiling (distinct knobs)
   'claude-opus-4-6':  { default: 64_000, upperLimit: 128_000 },
   'claude-sonnet-4-6': { default: 32_000, upperLimit: 128_000 },
@@ -1199,14 +1231,14 @@ export function getModelSwitchWarning(
   if (targetWindow >= currentWindow) return null;
 
   if (currentTokens > targetWindow) {
-    return `Critical: conversation uses ${currentTokens} tokens but ${targetModel} only supports ${targetWindow}. Compaction required before switching.`;
+    return `Critical: conversation uses ${formatTokenCount(currentTokens)} tokens but ${targetModel} only supports ${formatTokenCount(targetWindow)}. Compaction required before switching.`;
   }
 
   if (currentTokens > targetWindow * 0.8) {
-    return `Warning: conversation uses ${currentTokens} tokens and ${targetModel} supports ${targetWindow}. Consider compacting before switching.`;
+    return `Warning: conversation uses ${formatTokenCount(currentTokens)} tokens and ${targetModel} supports ${formatTokenCount(targetWindow)}. Consider compacting before switching.`;
   }
 
-  return `Note: ${targetModel} has a smaller context window (${targetWindow}) than ${currentModel} (${currentWindow}).`;
+  return `Note: ${targetModel} has a smaller context window (${formatTokenCount(targetWindow)}) than ${currentModel} (${formatTokenCount(currentWindow)}).`;
 }
 
 /**

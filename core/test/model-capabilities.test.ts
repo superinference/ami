@@ -194,7 +194,9 @@ describe('getModelCapabilities', () => {
     assert.equal(caps!.supportsAdaptiveThinking, false);
     assert.equal(caps!.requiresTemperatureOne, true);
     assert.equal(caps!.temperatureMustBeUnset, false);
-    assert.equal(caps!.maxThinkingBudget, 128000);
+    // Thinking budget is tied to the model's real output ceiling (upperLimit - 1):
+    // Opus 4.0 caps output at 32k, so its thinking budget is 31_999 — not 128k.
+    assert.equal(caps!.maxThinkingBudget, 31_999);
     assert.equal(caps!.defaultThinkingLevel, 'medium');
   });
 
@@ -373,9 +375,11 @@ describe('resolveThinkingBudget', () => {
     assert.equal(budget, 128000 - 8192);
   });
 
-  it('returns model-aware budget for max with Claude Opus 4', () => {
+  it('returns model-aware budget for max with Claude Opus 4.6', () => {
+    // Opus 4.6 output ceiling is 128k → thinking budget 127_999, minus the 8k
+    // response headroom resolveThinkingBudget reserves.
     const budget = resolveThinkingBudget('max', 'claude-opus-4-6');
-    assert.equal(budget, 128000 - 8192);
+    assert.equal(budget, 127999 - 8192);
   });
 
   it('leaves room for response tokens when max', () => {

@@ -65,11 +65,13 @@ describe('getModelSwitchWarning', () => {
     assert.ok(warning.includes('smaller context window'));
   });
 
-  it('includes model names and token counts in the message', () => {
+  it('includes model names and human-readable (compact) token counts in the message', () => {
     const warning = getModelSwitchWarning('claude-opus-4', 'deepseek-chat', 70_000);
     assert.ok(warning !== null);
     assert.ok(warning.includes('deepseek-chat'));
-    assert.ok(warning.includes('70000'));
+    // Counts are rendered compactly (70000 → "70.0k"), not as raw integers.
+    assert.ok(warning.includes('70.0k'));
+    assert.ok(!warning.includes('70000'));
   });
 });
 
