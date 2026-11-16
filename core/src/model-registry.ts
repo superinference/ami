@@ -5,6 +5,7 @@ import type { ProviderConfig } from './types';
 import { MODEL_PREFERENCE } from './provider';
 import { discoverFromModelList } from './model-capabilities';
 import { redactSecrets } from './tools/tool-utils';
+import { isEssentialTrafficOnly } from './analytics';
 import { log } from './logger';
 
 /**
@@ -129,13 +130,30 @@ export function listProviders(): Array<{ id: string; models: string[] }> {
   return Object.entries(MODEL_PREFERENCE).map(([id, models]) => ({ id, models }));
 }
 
+/**
+ * Built-in static fallback model list for a provider (from MODEL_PREFERENCE), as
+ * ModelInfo rows. Used when a live listing is unavailable OR suppressed by the
+ * essential-traffic-only privacy opt-out. The single source of the offline list.
+ */
+function staticModelList(provider: string): ModelInfo[] {
+  return (MODEL_PREFERENCE[provider] || []).map(id => ({ id, name: id }));
+}
+
 export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
   const provider = detectProvider(config);
 
   // Providers with known static model lists (no API listing endpoint)
   if (STATIC_MODEL_PROVIDERS.has(provider)) {
-    const models = MODEL_PREFERENCE[provider] || [];
-    return models.map(id => ({ id, name: id }));
+    return staticModelList(provider);
+  }
+
+  // Respect the essential-traffic-only privacy opt-out: a live model-list
+  // discovery request is nonessential background traffic, so fall back to the
+  // built-in static list instead of reaching the network. Mirrors Claude Code's
+  // modelCapabilities honoring *_DISABLE_NONESSENTIAL_TRAFFIC before discovery.
+  if (isEssentialTrafficOnly()) {
+    log('modelCapabilities', '[modelCapabilities] model-list discovery skipped (essential-traffic-only)');
+    return staticModelList(provider);
   }
 
   try {
@@ -230,10 +248,23 @@ export async function listModelsDiagnostic(
   const provider = detectProvider(config);
 
   if (STATIC_MODEL_PROVIDERS.has(provider)) {
-    const models = (MODEL_PREFERENCE[provider] || []).map(id => ({ id, name: id }));
+    const models = staticModelList(provider);
     return {
       models,
       diagnostic: models.length > 0 ? null : `No built-in model list for ${provider}.`,
+    };
+  }
+
+  // Essential-traffic-only opt-out: skip the live discovery request (nonessential
+  // background traffic) and surface the built-in static list, with a diagnostic
+  // naming the knob to unset when no offline list exists for the provider.
+  if (isEssentialTrafficOnly()) {
+    const models = staticModelList(provider);
+    return {
+      models,
+      diagnostic: models.length > 0
+        ? null
+        : `Model-list discovery skipped for ${provider}: nonessential network traffic is disabled. Unset SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC to enable live discovery.`,
     };
   }
 
