@@ -157,7 +157,13 @@ export interface AgentDefinition {
   filePath: string;
   model?: string;         // Model override; the literal 'inherit' means "use the parent's model"
   maxTurns?: number;
-  tools?: string[];       // Allowed tool names (empty = all)
+  /** Allowed tool names. `undefined` ⇒ ALL tools (no restriction); a present but
+   *  EMPTY array ⇒ NO tools (an explicit deny-everything allowlist) — the two are
+   *  distinct, matching Claude Code's agent `tools` semantics (ConfirmStep). An
+   *  empty allowlist resolves to a zero-tool set, which the task tool's zero-tool
+   *  boundary guard then rejects with an actionable error rather than silently
+   *  granting every tool. */
+  tools?: string[];
   disallowedTools?: string[];
   /** Permission mode override for sub-agent invocation. */
   permissionMode?: 'auto-allow' | 'ask' | 'deny-all';
@@ -226,6 +232,14 @@ export interface AgentDefinition {
    *  agent `wasGenerated`). Surfaced in `/agents` so a user can tell generated
    *  definitions apart; parsed via {@link parseBooleanFlag}. */
   wasGenerated?: boolean;
+  /** How this agent's {@link systemPrompt} combines with the base subagent stance
+   *  when the agent is spawned (parity with Claude's swarm teammate
+   *  `systemPromptMode`). `'append'` layers the agent's prompt AFTER the default
+   *  subagent stance (the agent EXTENDS the base guidance); `'replace'`/`'default'`
+   *  (and absent) make the agent's prompt the authoritative identity that fully
+   *  REPLACES the base stance (AMI's existing behavior). Validated/normalized via
+   *  {@link parseSystemPromptMode}; honored in the task tool's spawn path. */
+  systemPromptMode?: SystemPromptMode;
 }
 
 /**
@@ -603,6 +617,65 @@ export function isValidEffort(value: unknown): boolean {
 }
 
 /**
+ * The ways a spawned agent's system prompt combines with the base subagent stance
+ * (parity with Claude's swarm teammate `systemPromptMode`). `'append'` extends the
+ * base stance; `'replace'`/`'default'` substitute it. Shared by the per-spawn
+ * `system_prompt_mode` task-tool input AND {@link AgentDefinition.systemPromptMode}
+ * so the two never drift apart.
+ */
+export const SYSTEM_PROMPT_MODES = ['default', 'replace', 'append'] as const;
+export type SystemPromptMode = (typeof SYSTEM_PROMPT_MODES)[number];
+
+/**
+ * Validate + normalize a raw frontmatter `systemPromptMode`/`system-prompt-mode`
+ * value against {@link SYSTEM_PROMPT_MODES}. Case-insensitive; returns `undefined`
+ * for an unknown/non-string value so an arbitrary mode can never silently reshape
+ * how a subagent's prompt is assembled.
+ */
+export function parseSystemPromptMode(value: unknown): SystemPromptMode | undefined {
+  if (typeof value !== 'string') return undefined;
+  const t = value.trim().toLowerCase();
+  return (SYSTEM_PROMPT_MODES as readonly string[]).includes(t) ? (t as SystemPromptMode) : undefined;
+}
+
+/**
+ * Validate a skill/agent *identifier* against the shared name rule (parity with
+ * Claude Code's `validateAgentType`): a non-empty token that starts and ends with
+ * an alphanumeric, contains only letters/numbers/hyphens, and is 3–50 characters.
+ * Returns a human-readable error message for the first rule violated, or `null`
+ * when the name is valid — so a creation flow can surface the problem inline. The
+ * checks are ordered exactly like Claude's (required → charset → min → max).
+ */
+function validateIdentifierName(kind: string, value: string): string | null {
+  if (!value) return `${kind} is required`;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$/.test(value)) {
+    return `${kind} must start and end with alphanumeric characters and contain only letters, numbers, and hyphens`;
+  }
+  if (value.length < 3) return `${kind} must be at least 3 characters long`;
+  if (value.length > 50) return `${kind} must be less than 50 characters`;
+  return null;
+}
+
+/**
+ * Validate an agent *type* identifier (parity with Claude's `validateAgentType`).
+ * Returns the human-readable error message for the first failed rule, or `null`
+ * when valid. Consumed by {@link validateAgentDefinition} (as a load-time warning)
+ * and by any agent-creation flow that wants to reject a bad name inline.
+ */
+export function validateAgentType(agentType: string): string | null {
+  return validateIdentifierName('Agent type', agentType);
+}
+
+/**
+ * Validate a skill *name* identifier (same rule as {@link validateAgentType}).
+ * Returns the human-readable error message for the first failed rule, or `null`
+ * when valid, for a `/skill create`-style flow to surface inline.
+ */
+export function validateSkillName(name: string): string | null {
+  return validateIdentifierName('Skill name', name);
+}
+
+/**
  * Parse a frontmatter `arguments` field into an ordered list of positional
  * argument names (bound to bare `$name` placeholders by the content resolver).
  *
@@ -720,6 +793,12 @@ export function validateAgentDefinition(
 
   if (typeof raw.name !== 'string' || raw.name.trim().length === 0) {
     errors.push('Agent definition is missing a name');
+  } else {
+    // Present but malformed name (bad charset / too short / too long): a non-fatal
+    // warning so an on-disk agent still loads, while the author sees the problem.
+    // A `/agents create` flow uses validateAgentType directly to reject it inline.
+    const nameError = validateAgentType(raw.name.trim());
+    if (nameError) warnings.push(nameError);
   }
   if (typeof raw.systemPrompt !== 'string' || raw.systemPrompt.trim().length === 0) {
     errors.push('Agent definition has an empty body (system prompt)');
@@ -764,6 +843,9 @@ export function validateAgentDefinition(
   }
   if (raw.effort !== undefined && !isValidEffort(raw.effort)) {
     warnings.push(`Invalid effort "${raw.effort}" (valid: ${EFFORT_LEVELS.join(', ')}, or a non-negative integer)`);
+  }
+  if (raw.systemPromptMode !== undefined && parseSystemPromptMode(raw.systemPromptMode) === undefined) {
+    warnings.push(`Unknown systemPromptMode "${raw.systemPromptMode}" (valid: ${SYSTEM_PROMPT_MODES.join(', ')})`);
   }
 
   if (opts?.knownSkills && raw.skills) {

@@ -16,7 +16,7 @@ import { SessionManager } from '../session';
 import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock } from '../skills';
+import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode } from '../skills';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
 const AUTO_BG_MS = 120_000;
@@ -842,9 +842,11 @@ export function isBackgroundTasksDisabled(): boolean {
   return isEnvTruthy(process.env[DISABLE_BACKGROUND_TASKS_ENV]);
 }
 
-/** Valid values for the per-spawn `system_prompt_mode` knob. */
-export const SYSTEM_PROMPT_MODES = ['default', 'replace', 'append'] as const;
-export type SystemPromptMode = (typeof SYSTEM_PROMPT_MODES)[number];
+/** Valid values for the per-spawn `system_prompt_mode` knob — the single canonical
+ *  list lives in core/skills.ts (shared with {@link AgentDefinition.systemPromptMode}),
+ *  re-exported here so existing importers keep resolving it from the task tool. */
+export { SYSTEM_PROMPT_MODES };
+export type { SystemPromptMode };
 
 /**
  * System-prompt addendum appended to a subagent that is spawned as a named member
@@ -1392,6 +1394,15 @@ export const taskTool: ToolDefinition = {
         return { output: `Error: agent "${subagentType}" not found. Available agents: ${context._skillManager.listAgents().map(a => a.name).join(', ') || '(none)'}`, isError: true };
       }
       agentSystemPrompt = agentDef.systemPrompt;
+      // Per-agent `systemPromptMode` (parity: Claude swarm teammate systemPromptMode).
+      // 'append' layers the agent's own prompt AFTER the base subagent stance so the
+      // agent EXTENDS the default guidance; 'replace'/'default'/absent keep the agent
+      // prompt as the authoritative identity (AMI's existing replace behavior). A
+      // blank agent prompt has nothing to append, so the base stance resolves via the
+      // usual modeOnly fallback below.
+      if ((agentDef.systemPromptMode as SystemPromptMode | undefined) === 'append' && agentDef.systemPrompt) {
+        agentSystemPrompt = `${SUBAGENT_SYSTEM_PROMPT}\n\n${agentDef.systemPrompt}`;
+      }
       agentModel = agentDef.model;
       agentMaxTurns = agentDef.maxTurns;
       agentPermissionMode = agentDef.permissionMode;
@@ -1421,9 +1432,17 @@ export const taskTool: ToolDefinition = {
         }
       }
 
-      if (agentDef.tools && agentDef.tools.length > 0) {
+      if (agentDef.tools !== undefined) {
         const everything = allTools.getAll();
-        if (agentDef.tools.includes('*')) {
+        if (agentDef.tools.length === 0) {
+          // Explicit EMPTY allowlist = NO tools (parity: Claude distinguishes
+          // `tools === undefined` → all tools from `tools === []` → no tools). This
+          // resolves to a zero-tool set, which the zero-tool boundary guard below
+          // then rejects with an actionable error — instead of the previous
+          // behavior where an empty array silently fell through to granting
+          // EVERY tool minus the denylist.
+          tools = [];
+        } else if (agentDef.tools.includes('*')) {
           // Wildcard allowlist: the agent gets every tool (the baseline denylist
           // below still strips plan_mode/workflow).
           tools = everything;

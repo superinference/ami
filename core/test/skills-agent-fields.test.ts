@@ -96,7 +96,9 @@ describe('parseBackgroundFlag', () => {
 });
 
 describe('validateAgentDefinition — new field warnings', () => {
-  const base: Partial<AgentDefinition> = { name: 'a', systemPrompt: 'do things' };
+  // name must satisfy validateAgentType (3–50 chars, alnum/hyphen) so these cases
+  // isolate the color/memory/isolation warnings from the name-format warning.
+  const base: Partial<AgentDefinition> = { name: 'agent-a', systemPrompt: 'do things' };
 
   it('does not warn on valid color / memory / isolation', () => {
     const r = validateAgentDefinition({ ...base, color: 'blue', memory: 'project', isolation: 'worktree' });
