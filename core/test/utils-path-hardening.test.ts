@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as os from 'os';
+import * as fs from 'fs';
 import * as path from 'path';
-import { expandPath, isPathSafe, toRelativePath } from '../src/utils/path';
+import { expandPath, isPathSafe, toRelativePath, realpathNFC } from '../src/utils/path';
 
 // ===========================================================================
 // expandPath hardening — Claude Code path-utility parity (all additive).
@@ -121,5 +122,42 @@ describe('expandPath — empty / whitespace-only input', () => {
 
   it('trims surrounding whitespace before expanding a real path', () => {
     assert.equal(expandPath('  ~/x  ', '/tmp'), path.normalize(path.join(os.homedir(), 'x')));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GAP: NFC Unicode normalization of fs.realpathSync output (permission-check
+// canonicalization). On an NFD-storing filesystem realpath returns a decomposed
+// spelling; realpathNFC re-normalizes to NFC so it byte-matches an NFC boundary.
+// The realpath dependency is injected so the macOS-only NFD behavior is testable
+// cross-platform without touching the real filesystem.
+// RED: drop `.normalize('NFC')` from realpathNFC -> the decomposed realpath is
+//      returned decomposed and the NFC assertion fails.
+describe('realpathNFC - NFC normalization of realpath output', () => {
+  const nfc = '/ws/caf\u00e9/file.txt';       // composed "cafe-acute"
+  const nfd = '/ws/cafe\u0301/file.txt';      // decomposed "cafe-acute"
+
+  it('returns the NFC-composed form of a decomposed realpath', () => {
+    assert.notEqual(nfd, nfc);                    // guard: the forms truly differ
+    const result = realpathNFC(nfc, () => nfd);   // realpath reports the NFD spelling
+    assert.equal(result, nfc);
+    assert.equal(result, result.normalize('NFC'));
+  });
+
+  it('keeps an already-composed realpath unchanged', () => {
+    assert.equal(realpathNFC('/ws/plain/file.txt', (p) => p), '/ws/plain/file.txt');
+  });
+
+  it('falls back to the expanded input when realpath throws (not-yet-existing target)', () => {
+    const missing = '/ws/does/not/exist.txt';
+    assert.equal(realpathNFC(missing, () => { throw new Error('ENOENT'); }), missing);
+  });
+
+  it('defaults the realpath resolver to fs.realpathSync for a real file', () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ami-rpnfc-')));
+    const file = path.join(dir, 'app.ts');
+    fs.writeFileSync(file, 'x');
+    assert.equal(realpathNFC(file), file.normalize('NFC'));
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

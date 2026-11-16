@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { expandPath } from './utils/path';
+import { expandPath, realpathNFC } from './utils/path';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand } from './tools/bash-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { getManagedConfigPath } from './config';
@@ -2829,13 +2829,12 @@ export class PermissionManager {
    * keeps its normalized form.
    */
   private resolveForCheck(filePath: string, cwd: string): string {
-    let resolved = expandPath(filePath, cwd);
-    try {
-      resolved = fs.realpathSync(resolved);
-    } catch {
-      // File may not exist yet (write operation) — keep the normalized path
-    }
-    return resolved;
+    // Canonicalize to the real location and re-apply NFC normalization: on an
+    // NFD-storing filesystem fs.realpathSync returns the decomposed on-disk
+    // spelling, which would not byte-match an NFC cwd/rule. A not-yet-existing
+    // write target keeps its already-NFC expanded form. Shared helper so the
+    // single realpath+NFC rule is not re-implemented per call site.
+    return realpathNFC(expandPath(filePath, cwd));
   }
 
   /**

@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
 import { canonicalizeExisting } from '../path-safety';
 import { maybePosixToWindows } from './windows-paths';
 
@@ -96,6 +97,38 @@ export function isPathSafe(filePath: string, cwd: string): boolean {
   } catch {
     // Unverifiable / dangling / looping symlink => treat as unsafe (fail closed).
     return false;
+  }
+}
+
+/**
+ * Resolve an already-expanded path to its real (symlink-canonical) location and
+ * return it Unicode NFC-normalized, so a permission/boundary comparison is made
+ * against a canonical form.
+ *
+ * On an NFD-storing filesystem (e.g. macOS) `fs.realpathSync` reports the
+ * decomposed on-disk spelling of a name; without re-normalizing to NFC the same
+ * file has a different byte string than an NFC-stored cwd/rule, so an
+ * in-workspace file is judged outside the workspace and an NFD-spelled path can
+ * evade an NFC deny/allow rule. Mirrors Claude Code's
+ * `fs.realpathSync(path).normalize('NFC')` in getPathsForPermissionCheck.
+ *
+ * A path that does not yet exist (a write target) cannot be realpath-resolved, so
+ * the already-expanded input (which `expandPath` returns NFC-normalized) is
+ * returned unchanged.
+ *
+ * [FUNCTIONAL CHANGE] New exported helper — NFC canonicalization of realpath
+ * output for permission checks. The `realpath` parameter is a dependency-
+ * injection seam for tests; it defaults to `fs.realpathSync`.
+ */
+export function realpathNFC(
+  expandedPath: string,
+  realpath: (p: string) => string = fs.realpathSync,
+): string {
+  try {
+    return realpath(expandedPath).normalize('NFC');
+  } catch {
+    // Not-yet-existing path (write target) — keep the already-NFC input.
+    return expandedPath;
   }
 }
 

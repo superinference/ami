@@ -95,6 +95,27 @@ test('forbidden credential path at an intermediate symlink hop is denied (chain 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// GAP (medium): NFC Unicode normalization of the realpathSync output in
+// resolveForCheck (wired through the shared realpathNFC helper). An existing file
+// inside the workspace must resolve and classify as 'allow' - proving the realpath
+// canonicalization is driven end-to-end by the permission check. The NFD->NFC
+// discrimination itself is unit-tested cross-platform against realpathNFC in
+// utils-path-hardening.test.ts (reproducing an NFD-storing realpath requires
+// macOS); here we lock in that the wiring still resolves + allows a real
+// in-workspace file through the NFC-canonicalizing path.
+test('classifyReadAccess resolves a real in-workspace file through NFC realpath canonicalization', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ami-nfc-')));
+  const sub = path.join(dir, 'src');
+  fs.mkdirSync(sub);
+  fs.writeFileSync(path.join(sub, 'app.ts'), 'x');
+  const pm = new PermissionManager();
+  // Resolves the real path (realpathNFC -> fs.realpathSync + NFC) and finds it
+  // inside the workspace boundary.
+  assert.equal(pm.classifyReadAccess('src/app.ts', dir), 'allow');
+  assert.equal(pm.isPathAllowed('src/app.ts', dir), true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('acceptEdits prompts for agent-config and suspicious paths, allows normal source edits', async () => {
   const pm = new PermissionManager('acceptEdits');
   assert.equal(await pm.check('file_edit', { file_path: '/repo/.ami/settings.json' }), 'ask');
