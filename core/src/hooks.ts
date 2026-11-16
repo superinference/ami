@@ -1066,6 +1066,100 @@ export interface HookEventMetadata {
   /** The context field a `matcher` is applied against, or undefined when the
    *  event has no matchable field (a matcher is a no-op). */
   matcherField?: string;
+  /** Enumerated allowed matcher values for this event's matcher field (Claude
+   *  Code's MatcherMetadata.values). Present whenever `matcherField` is — a static
+   *  enumeration (session sources, compact triggers, config sources, …) or, for
+   *  dynamically-scoped events (tool names, agent types, MCP server names), the
+   *  caller-supplied set via {@link HookEventMetadataOpts} (defaulting to `[]`).
+   *  Drives matcher-value discovery in `/hooks` + `--introspect`. */
+  matcherValues?: string[];
+}
+
+/** Dynamic matcher-value sources for {@link getHookEventMetadata}: the valid set
+ *  for some events (tool/agent/MCP-scoped) is runtime state, not a fixed enum. */
+export interface HookEventMetadataOpts {
+  /** Tool names enumerated for tool-matched events (preToolUse, postToolUse, …). */
+  toolNames?: string[];
+  /** Agent types enumerated for subagentStart / subagentStop. */
+  agentTypes?: string[];
+  /** MCP server names enumerated for elicitation / elicitationResult. */
+  mcpServerNames?: string[];
+}
+
+/** Static enumerations of allowed matcher values, keyed by event (Claude Code's
+ *  per-event MatcherMetadata.values). Events whose valid set is dynamic (tool/
+ *  agent/MCP scoped) are resolved from {@link HookEventMetadataOpts} instead. */
+const HOOK_MATCHER_VALUES: Record<string, readonly string[]> = {
+  sessionStart: SESSION_START_SOURCES,
+  sessionEnd: SESSION_END_REASONS,
+  setup: SETUP_TRIGGERS,
+  preCompact: ['manual', 'auto'],
+  postCompact: ['manual', 'auto'],
+  stopFailure: [
+    'rate_limit', 'authentication_failed', 'billing_error', 'invalid_request',
+    'server_error', 'max_output_tokens', 'unknown',
+  ],
+  configChange: ['user_settings', 'project_settings', 'local_settings', 'policy_settings', 'skills'],
+  instructionsLoaded: ['session_start', 'nested_traversal', 'path_glob_match', 'include', 'compact'],
+  notification: [
+    'permission_prompt', 'idle_prompt', 'auth_success',
+    'elicitation_dialog', 'elicitation_complete', 'elicitation_response',
+  ],
+};
+
+/** Resolve the enumerated matcher values for an event given its matcher field:
+ *  dynamic sets come from `opts`, otherwise the static {@link HOOK_MATCHER_VALUES}
+ *  enumeration (or `[]` when the valid set is open-ended / unknown). */
+function resolveMatcherValues(event: string, matcherField: string, opts: HookEventMetadataOpts): string[] {
+  if (matcherField === 'toolName') return opts.toolNames ? [...opts.toolNames] : [];
+  if (matcherField === 'mode') return opts.agentTypes ? [...opts.agentTypes] : [];
+  if (matcherField === 'mcpServerName') return opts.mcpServerNames ? [...opts.mcpServerNames] : [];
+  const stat = HOOK_MATCHER_VALUES[event];
+  return stat ? [...stat] : [];
+}
+
+/** Whether a `matcher` is meaningful for this event (Claude Code's
+ *  eventSupportsMatcher): true when the event has a matchable field (tool name
+ *  or a non-tool fieldToMatch). Events without one treat a matcher as a no-op, so
+ *  the introspection UI hides/ignores it. */
+export function eventSupportsMatcher(event: string): boolean {
+  return TOOL_MATCHER_EVENTS.has(event) || HOOK_MATCHER_FIELD[event] !== undefined;
+}
+
+/** Display label for a hook matcher: an empty / absent matcher targets everything,
+ *  rendered as '(all)' (Claude Code's matcher list fallback). */
+export function formatHookMatcherLabel(matcher: string | undefined): string {
+  return matcher && matcher.length > 0 ? matcher : '(all)';
+}
+
+/** Source-tier priority for ordering matchers/hooks in introspection (lower =
+ *  higher authority). Mirrors Claude Code's SOURCES order with plugin/builtin
+ *  pinned lowest. */
+export const HOOK_SOURCE_PRIORITY: Record<string, number> = {
+  managed: 0,
+  project: 1,
+  user: 2,
+  config: 3,
+  plugin: 999,
+  builtin: 999,
+};
+
+/** Deterministically order matchers within an event (Claude Code's
+ *  sortMatchersByPriority): by their highest-priority (lowest-number) contributing
+ *  source first, tie-broken by matcher name. Pure — never mutates its input. */
+export function sortMatchersByPriority(
+  matchers: string[],
+  sourcesByMatcher: Record<string, readonly string[]>,
+): string[] {
+  const pri = (s: string): number => HOOK_SOURCE_PRIORITY[s] ?? 500;
+  const highest = (m: string): number => {
+    const srcs = sourcesByMatcher[m] ?? [];
+    return srcs.length ? Math.min(...srcs.map(pri)) : 1000;
+  };
+  return [...matchers].sort((a, b) => {
+    const d = highest(a) - highest(b);
+    return d !== 0 ? d : a.localeCompare(b);
+  });
 }
 
 /** Events whose matcher applies to the tool name (checked inline at dispatch,
@@ -1114,13 +1208,21 @@ const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: st
   elicitationResult: { summary: 'After an MCP elicitation reply', description: 'Input: JSON with mcp_server_name. May override action/content or block.' + EXIT_CODE_BLOCKING },
 };
 
-/** Return the declarative metadata (summary, description, matcher field) for a
- *  hook event, or undefined for an unknown event. */
-export function getHookEventMetadata(event: string): HookEventMetadata | undefined {
+/** Return the declarative metadata (summary, description, matcher field +
+ *  enumerated matcher values) for a hook event, or undefined for an unknown event.
+ *  `opts` supplies the dynamic matcher-value sets (tool names, agent types, MCP
+ *  server names) for events whose valid matcher set is runtime state. */
+export function getHookEventMetadata(event: string, opts: HookEventMetadataOpts = {}): HookEventMetadata | undefined {
   const base = HOOK_EVENT_SUMMARY_DESC[event];
   if (!base) return undefined;
   const matcherField = TOOL_MATCHER_EVENTS.has(event) ? 'toolName' : HOOK_MATCHER_FIELD[event];
-  return { summary: base.summary, description: base.description, ...(matcherField ? { matcherField } : {}) };
+  const matcherValues = matcherField !== undefined ? resolveMatcherValues(event, matcherField, opts) : undefined;
+  return {
+    summary: base.summary,
+    description: base.description,
+    ...(matcherField ? { matcherField } : {}),
+    ...(matcherValues ? { matcherValues } : {}),
+  };
 }
 
 /**
@@ -1242,6 +1344,62 @@ export interface HookConfigEntry {
 
 export interface HookConfigFile {
   hooks: HookConfigEntry[];
+}
+
+/**
+ * A single file-loaded hook, retained for introspection (Claude Code's per-hook
+ * ViewHookMode details): reveals the ACTUAL configured command / prompt / url —
+ * not just an aggregate count — so `/hooks` and `--introspect` can show what each
+ * hook runs, its matcher, and which settings tier contributed it.
+ */
+export interface HookDescriptor {
+  event: string;
+  type: HookConfigType;
+  /** The matcher scoping this hook ('' / absent = all targets). */
+  matcher?: string;
+  /** Settings tier that contributed the hook (project | user | config | …). */
+  source: string;
+  /** The hook's command, prompt, or URL (sanitized of secret-looking tokens). */
+  content: string;
+}
+
+/** One matcher group under an event in the introspection view. */
+export interface HookEventMatcherGroup {
+  /** Raw matcher ('' = all). */
+  matcher: string;
+  /** Display label ('(all)' for the empty matcher). */
+  label: string;
+  /** Hooks registered under this matcher. */
+  count: number;
+  /** Distinct settings tiers contributing hooks under this matcher. */
+  sources: string[];
+}
+
+/** Per-active-event introspection record (Claude Code's SelectEventMode row):
+ *  count + human-readable summary/description + matcher metadata + the matcher
+ *  groups (sorted by source priority). */
+export interface HookEventDescription {
+  event: string;
+  count: number;
+  summary?: string;
+  description?: string;
+  matcherField?: string;
+  matcherValues?: string[];
+  supportsMatcher: boolean;
+  matchers: HookEventMatcherGroup[];
+}
+
+/** Human-readable content for a hook config (its command / prompt / url),
+ *  sanitized of secret-looking tokens before it is surfaced for introspection. */
+function describeHookContent(
+  hook: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
+): string {
+  switch (hook.type) {
+    case 'command': return sanitizeHookOutput(hook.args ? hook.args.join(' ') : hook.command);
+    case 'prompt':
+    case 'agent': return sanitizeHookOutput(hook.prompt);
+    case 'http': return hook.url;
+  }
 }
 
 /**
@@ -1385,6 +1543,11 @@ export class HookManager extends EventEmitter {
    *  in sessionStart/cwdChanged/fileChanged output). Exposed for a file-watcher
    *  consumer and surfaced via the 'watchPaths' event. */
   private _watchedPaths = new Set<string>();
+
+  /** File-loaded hook descriptors retained for introspection (describeHooks /
+   *  describeEvents). Populated by processHookEntry and reset at the start of each
+   *  loadFromFile so a reload reflects the current on-disk config. */
+  private _descriptors: HookDescriptor[] = [];
 
   /**
    * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
@@ -1675,6 +1838,9 @@ export class HookManager extends EventEmitter {
    * Command hooks execute a shell command; exit code 0 = allow, non-zero = deny.
    */
   loadFromFile(cwd: string): void {
+    // Reset the introspection descriptor set so a reload reflects the current
+    // on-disk config (no stale accumulation across loads).
+    this._descriptors = [];
     // Defense-in-depth: in an interactive session an untrusted workspace fires
     // NO hooks of any tier (Claude Code's shouldSkipHookDueToTrust). Project
     // entries are also gated below, but this blocks user/config-tier hooks too.
@@ -1813,6 +1979,17 @@ export class HookManager extends EventEmitter {
           coreLog('hooks', `Blocked ${tier}-tier hook on protected event "${entry.event}"`);
           return;
         }
+
+        // Retain an introspection descriptor for every accepted (unblocked)
+        // file-loaded hook so /hooks + --introspect can reveal its actual
+        // command/prompt/url, matcher, and source tier.
+        this._descriptors.push({
+          event: entry.event,
+          type: hookConfig.type,
+          ...(matcher ? { matcher } : {}),
+          source: tier,
+          content: describeHookContent(hookConfig),
+        });
 
         switch (entry.event) {
         case 'preToolUse': {
@@ -2722,6 +2899,71 @@ export class HookManager extends EventEmitter {
       stopFailure: this.stopFailureHooks.length,
       callbackHooks: Array.from(this._callbackHooks.values()).reduce((a, b) => a + b.length, 0),
     };
+  }
+
+  /**
+   * Introspection: the ACTUAL file-loaded hooks (command/prompt/url, matcher,
+   * source), not just counts (Claude Code's per-hook ViewHookMode details). Returns
+   * a copy so callers cannot mutate the retained set.
+   */
+  describeHooks(): HookDescriptor[] {
+    return this._descriptors.map(d => ({ ...d }));
+  }
+
+  /**
+   * Introspection view of active (count>0) hook events (Claude Code's
+   * SelectEventMode): each event with its human-readable summary/description, the
+   * matcher field + enumerated matcher values, whether it supports a matcher, and
+   * its matcher groups (sorted by source priority). `opts` supplies the dynamic
+   * matcher-value sets (tool names, agent types, MCP server names).
+   */
+  describeEvents(opts: HookEventMetadataOpts = {}): HookEventDescription[] {
+    const summary = this.getSummary();
+    // Group retained descriptors by event, then by matcher.
+    const byEvent = new Map<string, HookDescriptor[]>();
+    for (const d of this._descriptors) {
+      const arr = byEvent.get(d.event) ?? [];
+      arr.push(d);
+      byEvent.set(d.event, arr);
+    }
+    const out: HookEventDescription[] = [];
+    for (const [event, count] of Object.entries(summary)) {
+      if (!count || event === 'callbackHooks') continue;
+      const meta = getHookEventMetadata(event, opts);
+      const descs = byEvent.get(event) ?? [];
+      const matcherMap = new Map<string, HookDescriptor[]>();
+      for (const d of descs) {
+        const key = d.matcher ?? '';
+        const arr = matcherMap.get(key) ?? [];
+        arr.push(d);
+        matcherMap.set(key, arr);
+      }
+      const sourcesByMatcher: Record<string, string[]> = {};
+      for (const [m, arr] of matcherMap) {
+        sourcesByMatcher[m] = Array.from(new Set(arr.map(a => a.source)));
+      }
+      const matchers: HookEventMatcherGroup[] = sortMatchersByPriority(
+        Array.from(matcherMap.keys()),
+        sourcesByMatcher,
+      ).map(m => ({
+        matcher: m,
+        label: formatHookMatcherLabel(m),
+        count: matcherMap.get(m)!.length,
+        sources: sourcesByMatcher[m],
+      }));
+      out.push({
+        event,
+        count,
+        summary: meta?.summary,
+        description: meta?.description,
+        matcherField: meta?.matcherField,
+        matcherValues: meta?.matcherValues,
+        supportsMatcher: eventSupportsMatcher(event),
+        matchers,
+      });
+    }
+    out.sort((a, b) => a.event.localeCompare(b.event));
+    return out;
   }
 
   /**
