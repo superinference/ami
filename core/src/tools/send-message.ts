@@ -300,6 +300,27 @@ export function sendToUdsSocket(socketPath: string, payload: string): Promise<vo
 
 const mailboxes = new Map<string, AgentMessage[]>();
 
+// --- Predicate-filtered + blocking consumption (Mailbox parity) -------------
+// Mirrors Claude Code's utils/mailbox.ts Mailbox: in addition to the drain-all
+// pollMailbox and the non-destructive peek/ack, a caller can SELECT a single
+// message by an arbitrary predicate (pollMessage) and AWAIT a matching one that
+// has not arrived yet (receiveMessage). A pending receiveMessage registers a
+// Waiter; the canonical delivery site (enqueue) scans waiters first and, on a
+// match, resolves that promise DIRECTLY — the message is handed off and never
+// enqueued (bypassing the queue, so it is not also drained later). This lets a
+// requester correlate a specific response (by requestId) without draining
+// unrelated traffic.
+type MailboxWaiter = { fn: (msg: AgentMessage) => boolean; resolve: (msg: AgentMessage) => void };
+const mailboxWaiters = new Map<string, MailboxWaiter[]>();
+
+/**
+ * Monotonic per-agent delivery counter. Incremented on EVERY delivery to an
+ * agent — whether the message is enqueued or handed straight to a waiter — so a
+ * reactive consumer can cheaply detect "something changed" / staleness without
+ * diffing the queue. Mirrors Claude Code's Mailbox.revision.
+ */
+const mailboxRevisions = new Map<string, number>();
+
 /**
  * Monotonic sequence behind every message id. Combined with a base-36 timestamp
  * it yields a short, collision-free handle that is stable for the lifetime of the
@@ -383,7 +404,64 @@ export function clearMailbox(agentName: string): void {
 export function resetAllMailboxes(): void {
   mailboxes.clear();
   mailboxNotifiers.clear();
+  mailboxWaiters.clear();
+  mailboxRevisions.clear();
   messageSeq = 0;
+}
+
+/**
+ * Number of messages currently queued for an agent (not counting any handed
+ * straight to a waiter). Mirrors Claude Code's Mailbox.length getter.
+ */
+export function mailboxLength(agentName: string): number {
+  return (mailboxes.get(agentName) || []).length;
+}
+
+/**
+ * Monotonic count of deliveries made to an agent for its entire lifetime,
+ * including waiter hand-offs. Starts at 0 for an unknown agent. Mirrors Claude
+ * Code's Mailbox.revision getter — a cheap change/staleness signal.
+ */
+export function mailboxRevision(agentName: string): number {
+  return mailboxRevisions.get(agentName) || 0;
+}
+
+/**
+ * Selectively extract ONE queued message by predicate (default: the first one),
+ * removing it and leaving every other message queued. Returns undefined when no
+ * queued message matches. Non-blocking. Mirrors Claude Code's Mailbox.poll(fn).
+ */
+export function pollMessage(
+  agentName: string,
+  fn: (msg: AgentMessage) => boolean = () => true,
+): AgentMessage | undefined {
+  const box = mailboxes.get(agentName);
+  if (!box || box.length === 0) return undefined;
+  const idx = box.findIndex(fn);
+  if (idx === -1) return undefined;
+  return box.splice(idx, 1)[0];
+}
+
+/**
+ * Await a message matching the predicate (default: any). If one is already
+ * queued it resolves immediately and is removed; otherwise a Waiter is
+ * registered and the promise resolves when the next matching message is
+ * delivered — handed off directly by enqueue(), bypassing the queue. Mirrors
+ * Claude Code's Mailbox.receive(fn), enabling request/response correlation
+ * (e.g. await the shutdown_response whose requestId I sent) without draining
+ * unrelated mailbox traffic.
+ */
+export function receiveMessage(
+  agentName: string,
+  fn: (msg: AgentMessage) => boolean = () => true,
+): Promise<AgentMessage> {
+  const existing = pollMessage(agentName, fn);
+  if (existing) return Promise.resolve(existing);
+  return new Promise<AgentMessage>(resolve => {
+    const waiters = mailboxWaiters.get(agentName) ?? [];
+    waiters.push({ fn, resolve });
+    mailboxWaiters.set(agentName, waiters);
+  });
 }
 
 export function pollMailbox(agentName: string): AgentMessage[] {
@@ -428,6 +506,24 @@ export function markMailboxDelivered(agentName: string, ids: string[]): number {
 }
 
 function enqueue(to: string, msg: AgentMessage): void {
+  // Every delivery bumps the recipient's monotonic revision — whether it is
+  // handed to a waiter or queued — so a reactive consumer sees the change.
+  mailboxRevisions.set(to, (mailboxRevisions.get(to) || 0) + 1);
+  // Direct waiter hand-off: if a receiveMessage() predicate matches, resolve it
+  // and DO NOT enqueue (bypass the queue so the message is not later re-drained).
+  // Ensure the handed-off message still carries a stable id, matching the one
+  // appendCapped would have assigned on the queued path.
+  const waiters = mailboxWaiters.get(to);
+  if (waiters && waiters.length > 0) {
+    const idx = waiters.findIndex(w => w.fn(msg));
+    if (idx !== -1) {
+      const [waiter] = waiters.splice(idx, 1);
+      if (!msg.id) { msg.id = nextMessageId(); }
+      waiter.resolve(msg);
+      notifyMailbox(to);
+      return;
+    }
+  }
   const box = mailboxes.get(to) ?? [];
   appendCapped(box, msg);
   mailboxes.set(to, box);
@@ -730,10 +826,10 @@ export const sendMessageTool: ToolDefinition = {
       const recipients: string[] = [];
       for (const name of roster) {
         if (name.toLowerCase() === fromLc) continue;
-        const box = mailboxes.get(name) ?? [];
-        appendCapped(box, msg);
-        mailboxes.set(name, box);
-        notifyMailbox(name);
+        // Route each fan-out delivery through the canonical enqueue primitive so
+        // a broadcast also bumps the per-recipient revision and resolves any
+        // pending receiveMessage() waiter — identical delivery semantics to a DM.
+        enqueue(name, msg);
         recipients.push(name);
       }
       if (recipients.length === 0) {
