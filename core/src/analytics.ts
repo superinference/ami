@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
@@ -261,6 +262,183 @@ export function trySerialize(value: unknown): string | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Telemetry environment fingerprint, stable install id, and low-cardinality
+// derivations attached to OTLP resource / log attributes. All are
+// provider-neutral and let a self-hosted collector segment and estimate usage
+// without exporting raw high-cardinality identifiers.
+// ---------------------------------------------------------------------------
+
+const JETBRAINS_IDES = [
+  'intellij', 'pycharm', 'webstorm', 'phpstorm', 'rubymine', 'clion',
+  'goland', 'datagrip', 'rider', 'appcode', 'jetbrains', 'androidstudio',
+];
+
+/**
+ * Resolve a provider-neutral terminal identifier from the environment (never the
+ * raw terminal path — just a stable low-cardinality name), so a self-hosted
+ * dashboard can segment usage by terminal. Returns null when nothing identifiable
+ * is present (so the `terminal.type` attribute is attached only when resolved).
+ * Mirrors Claude Code's detectTerminal fallbacks, env-driven for testability.
+ */
+export function detectTerminalType(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (env.CURSOR_TRACE_ID) return 'cursor';
+  const askpass = env.VSCODE_GIT_ASKPASS_MAIN;
+  if (askpass?.includes('cursor')) return 'cursor';
+  if (askpass?.includes('windsurf')) return 'windsurf';
+  const bundleId = env.__CFBundleIdentifier?.toLowerCase();
+  if (bundleId?.includes('vscodium')) return 'codium';
+  if (bundleId?.includes('windsurf')) return 'windsurf';
+  if (bundleId) {
+    for (const ide of JETBRAINS_IDES) {
+      if (bundleId.includes(ide)) return ide;
+    }
+  }
+  if (env.VisualStudioVersion) return 'visualstudio';
+  if (env.TERMINAL_EMULATOR === 'JetBrains-JediTerm') return platform === 'darwin' ? 'pycharm' : 'pycharm';
+  if (env.TERM === 'xterm-ghostty') return 'ghostty';
+  if (env.TERM?.includes('kitty')) return 'kitty';
+  if (env.TERM_PROGRAM) return env.TERM_PROGRAM;
+  if (env.TMUX) return 'tmux';
+  if (env.STY) return 'screen';
+  if (env.KONSOLE_VERSION) return 'konsole';
+  if (env.GNOME_TERMINAL_SERVICE) return 'gnome-terminal';
+  if (env.XTERM_VERSION) return 'xterm';
+  if (env.VTE_VERSION) return 'vte-based';
+  if (env.ALACRITTY_LOG) return 'alacritty';
+  if (env.WT_SESSION) return 'windows-terminal';
+  if (env.WSL_DISTRO_NAME) return `wsl-${env.WSL_DISTRO_NAME}`;
+  if (env.TERM) return env.TERM;
+  return null;
+}
+
+/** Accepted values for the {@link getHostPlatformForAnalytics} override knob. */
+export const HOST_PLATFORM_OVERRIDES = ['win32', 'darwin', 'linux'] as const;
+
+/**
+ * Host platform reported in telemetry. `AMI_HOST_PLATFORM` (win32|darwin|linux)
+ * overrides the detected `process.platform` — essential for AMI's Docker-sandboxed
+ * mode, where process.platform reports the container OS but the real host differs
+ * (mirrors Claude's getHostPlatformForAnalytics / CLAUDE_CODE_HOST_PLATFORM knob).
+ */
+export function getHostPlatformForAnalytics(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const override = env.AMI_HOST_PLATFORM;
+  if (override === 'win32' || override === 'darwin' || override === 'linux') return override;
+  return platform;
+}
+
+/**
+ * Vendor-neutral environment fingerprint for telemetry: host platform (honoring
+ * the {@link getHostPlatformForAnalytics} override), CPU arch, and Node version.
+ * Attached to every OTLP resource so a collector can segment by environment.
+ */
+export function getEnvironmentFingerprint(
+  env: NodeJS.ProcessEnv = process.env,
+  info: { platform?: NodeJS.Platform; arch?: string; nodeVersion?: string } = {},
+): Record<string, string> {
+  return {
+    'host.platform': getHostPlatformForAnalytics(env, info.platform ?? process.platform),
+    'host.arch': info.arch ?? process.arch,
+    'node.version': info.nodeVersion ?? process.version,
+  };
+}
+
+const CI_CONTEXT_VARS: Record<string, string> = {
+  'ci.actor': 'GITHUB_ACTOR',
+  'ci.actor_id': 'GITHUB_ACTOR_ID',
+  'ci.repository': 'GITHUB_REPOSITORY',
+  'ci.repository_id': 'GITHUB_REPOSITORY_ID',
+  'ci.repository_owner': 'GITHUB_REPOSITORY_OWNER',
+  'ci.repository_owner_id': 'GITHUB_REPOSITORY_OWNER_ID',
+};
+
+/**
+ * Capture CI context when running under GitHub Actions (gated on GITHUB_ACTIONS):
+ * actor / repository / owner (+ their ids). Returns null outside CI so the
+ * dimensions are attached only when meaningful. Mirrors Claude's
+ * githubActionsMetadata capture; provider-neutral (no Anthropic coupling).
+ */
+export function getCiContext(env: NodeJS.ProcessEnv = process.env): Record<string, string> | null {
+  if (!isEnvTruthy(env.GITHUB_ACTIONS)) return null;
+  const out: Record<string, string> = { ci: 'true' };
+  for (const [attr, envVar] of Object.entries(CI_CONTEXT_VARS)) {
+    const v = env[envVar];
+    if (v) out[attr] = v;
+  }
+  return out;
+}
+
+/** Filename holding the stable per-install telemetry id, co-located with the log dir. */
+export const USER_ID_FILE = 'telemetry-user-id';
+
+/**
+ * Read (or lazily create + persist) a stable, locally-generated install id so a
+ * self-hosted collector can correlate activity across sessions without AMI ever
+ * sending any real identity. When `dir` is given the id is persisted to
+ * `<dir>/telemetry-user-id` (0o600); when it is absent, or persistence fails, an
+ * ephemeral per-process id is returned. Mirrors Claude's getOrCreateUserID.
+ */
+export function getOrCreateUserId(dir?: string): string {
+  const genId = () => crypto.randomBytes(32).toString('hex');
+  if (!dir) return genId();
+  const file = path.join(dir, USER_ID_FILE);
+  try {
+    const existing = fs.readFileSync(file, 'utf8').trim();
+    if (/^[0-9a-f]{64}$/.test(existing)) return existing;
+  } catch { /* not created yet */ }
+  const id = genId();
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, id + '\n', { mode: 0o600 });
+  } catch { /* best effort — return the generated id even if it could not be saved */ }
+  return id;
+}
+
+/** Fixed number of privacy-preserving user buckets (cardinality ceiling). */
+export const NUM_USER_BUCKETS = 30;
+
+/**
+ * Map a user id into one of `numBuckets` buckets via SHA-256 so unique users can
+ * be estimated by counting distinct buckets WITHOUT exporting the raw id — privacy
+ * plus bounded cardinality (mirrors Claude's getUserBucket, NUM_USER_BUCKETS=30).
+ */
+export function getUserBucket(userId: string, numBuckets: number = NUM_USER_BUCKETS): number {
+  const n = Number.isFinite(numBuckets) && numBuckets >= 1 ? Math.floor(numBuckets) : NUM_USER_BUCKETS;
+  const hash = crypto.createHash('sha256').update(userId).digest('hex');
+  return parseInt(hash.slice(0, 8), 16) % n;
+}
+
+/**
+ * Derive a low-cardinality `Nxx` range from an HTTP status (100..599), else
+ * undefined — so a numeric status is exported as a bounded dimension instead of
+ * one series per code (mirrors Claude's http_status_range).
+ */
+export function bucketHttpStatus(status: number | string | undefined | null): string | undefined {
+  if (status === undefined || status === null || status === '') return undefined;
+  const n = typeof status === 'number' ? status : Number(status);
+  if (!Number.isFinite(n) || n < 100 || n > 599) return undefined;
+  return `${Math.floor(n / 100)}xx`;
+}
+
+/**
+ * When event data carries a numeric HTTP `status`, rename it to `http_status` and
+ * add a low-cardinality `http_status_range` (`Nxx`) before export — avoiding a
+ * high-cardinality raw-status dimension. A non-HTTP `status` (e.g. 'ok') is left
+ * untouched. Returns the original object when no transform applies.
+ */
+export function deriveHttpStatusFields(data: Record<string, unknown>): Record<string, unknown> {
+  const range = bucketHttpStatus(data.status as number | string | undefined);
+  if (range === undefined) return data;
+  const { status, ...rest } = data;
+  return { ...rest, http_status: String(status), http_status_range: range };
+}
+
 export interface AnalyticsTrackerOpts {
   otlpEndpoint?: string;
   otlpFetch?: typeof fetch;
@@ -281,6 +459,27 @@ export interface AnalyticsTrackerOpts {
   otlpMaxAttempts?: number;
   otlpBaseBackoffMs?: number;
   otlpMaxBackoffMs?: number;
+  /** Per-POST request timeout (ms) for every OTLP export. Default 5000. */
+  otlpTimeoutMs?: number;
+  /**
+   * Inter-batch pause (ms) inserted between consecutive batch POSTs during the
+   * shutdown drain so a large chunked export does not hammer the collector.
+   * Default 0 (back-to-back). Mirrors Claude's batchDelayMs.
+   */
+  otlpBatchDelayMs?: number;
+  /**
+   * Runtime killswitch probe consulted before every export. While it returns true
+   * the sender produces zero network traffic (events stay queued) and resumes once
+   * it clears — a sink can be disabled at runtime without tearing it down. Mirrors
+   * Claude's injectable isKilled() probe.
+   */
+  isKilled?: () => boolean;
+  /**
+   * Directory for the stable per-install telemetry id (user.id / user.bucket
+   * resource attributes). Defaults to the analytics log dir; when neither is set an
+   * ephemeral per-process id is used.
+   */
+  userIdDir?: string;
   /** Telemetry batching knobs threaded into the lazily-created TelemetryBatchSender. */
   telemetryMaxBatchSize?: number;
   telemetryMaxBatchBytes?: number;
@@ -335,6 +534,9 @@ export class AnalyticsTracker {
   private _maxAttempts: number;
   private _baseBackoffMs: number;
   private _maxBackoffMs: number;
+  private _otlpTimeoutMs: number | undefined;
+  private _otlpBatchDelayMs: number;
+  private _isKilled: (() => boolean) | undefined;
   private _telemetryMaxBatchSize: number | undefined;
   private _telemetryMaxBatchBytes: number | undefined;
   private _maxConsecutiveFailures: number | undefined;
@@ -357,6 +559,9 @@ export class AnalyticsTracker {
     this._maxAttempts = Math.max(1, opts?.otlpMaxAttempts ?? 3);
     this._baseBackoffMs = Math.max(0, opts?.otlpBaseBackoffMs ?? 500);
     this._maxBackoffMs = Math.max(0, opts?.otlpMaxBackoffMs ?? 30_000);
+    this._otlpTimeoutMs = opts?.otlpTimeoutMs;
+    this._otlpBatchDelayMs = Math.max(0, opts?.otlpBatchDelayMs ?? 0);
+    this._isKilled = opts?.isKilled;
     this._telemetryMaxBatchSize = opts?.telemetryMaxBatchSize;
     this._telemetryMaxBatchBytes = opts?.telemetryMaxBatchBytes;
     this._maxConsecutiveFailures = opts?.maxConsecutiveFailures !== undefined
@@ -367,6 +572,22 @@ export class AnalyticsTracker {
     this._otlpHeaders = { ...parseOtelHeaders(this._env.OTEL_EXPORTER_OTLP_HEADERS), ...(opts?.otlpHeaders ?? {}) };
     // Resource attrs from OTEL_RESOURCE_ATTRIBUTES, overridden by any explicit opt.
     this._otlpResourceAttrs = { ...parseOtelResourceAttrs(this._env.OTEL_RESOURCE_ATTRIBUTES), ...(opts?.otlpResourceAttrs ?? {}) };
+    // Stamp a stable per-install id + its privacy-preserving bucket onto every
+    // export, so a self-hosted collector can correlate/estimate users across
+    // sessions without AMI emitting any raw identity. Only when telemetry is
+    // active and a persistence dir is resolvable (explicit opt or the log dir);
+    // an explicit resource-attr of the same key still wins.
+    if (this._otlpEndpoint) {
+      const userIdDir = opts?.userIdDir ?? (logDir ?? undefined);
+      if (userIdDir) {
+        const userId = getOrCreateUserId(userIdDir);
+        this._otlpResourceAttrs = {
+          'user.id': userId,
+          'user.bucket': String(getUserBucket(userId)),
+          ...this._otlpResourceAttrs,
+        };
+      }
+    }
     this._sleep = opts?.sleepImpl ?? ((ms) => new Promise(r => setTimeout(r, ms)));
     this._rand = opts?.rand ?? Math.random;
   }
@@ -520,6 +741,9 @@ export class AnalyticsTracker {
     // Let any in-flight mid-session (onBatch) sends settle first so a boundary
     // batch is never POSTed concurrently with the shutdown drain.
     await this._sendChain;
+    // Runtime killswitch: produce zero traffic while killed; leave everything
+    // queued so a later flush (after the flag clears) still delivers it.
+    if (this._isKilled?.()) return;
     const batches = this._telemetry.drain();
     if (isTelemetryDisabled(this._env)) return; // opted out: drop without sending
     const maxCons = this._maxConsecutiveFailures;
@@ -527,6 +751,9 @@ export class AnalyticsTracker {
       const ok = await this._sendWithRetry(batches[i]);
       if (ok) {
         this._consecutiveFailures = 0; // success breaks the failure streak
+        // Pace consecutive POSTs so a large chunked drain does not hammer the
+        // collector (no delay after the final batch).
+        if (this._otlpBatchDelayMs > 0 && i < batches.length - 1) await this._sleep(this._otlpBatchDelayMs);
         continue;
       }
       // Batch was retried to exhaustion and permanently dropped (counted in
@@ -553,6 +780,8 @@ export class AnalyticsTracker {
   private _scheduleSend(batch: TelemetryBatch): void {
     if (!this._otlpEndpoint || isTelemetryDisabled(this._env)) return;
     this._sendChain = this._sendChain.then(async () => {
+      // Killswitch: requeue the boundary batch for a later flush instead of sending.
+      if (this._isKilled?.()) { this._telemetry?.requeueFront([batch]); return; }
       const ok = await this._sendWithRetry(batch);
       if (!ok && this._telemetry) this._telemetry.requeueFront([batch]);
     });
@@ -568,7 +797,7 @@ export class AnalyticsTracker {
     const headers = Object.keys(this._otlpHeaders).length > 0 ? this._otlpHeaders : undefined;
     const resourceAttrs = this._otlpResourceAttrs;
     for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
-      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs });
+      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs, timeoutMs: this._otlpTimeoutMs });
       if (res.ok) return true;
       if (!res.retryable) return this._dropBatch(batch); // 4xx: permanent, drop
       if (attempt === this._maxAttempts) return this._dropBatch(batch);
@@ -815,6 +1044,14 @@ export function buildTelemetryResourceAttrs(
   const attrs: Record<string, string> = { 'service.name': AMI_CLIENT_NAME };
   if (shouldIncludeTelemetryAttr('service.version', env)) attrs['service.version'] = AMI_VERSION;
   if (shouldIncludeTelemetryAttr('session.id', env)) attrs['session.id'] = sessionId;
+  // Provider-neutral environment dimensions so a self-hosted collector can
+  // segment usage: host platform/arch/node version, terminal type (only when
+  // resolved), and CI context (only under GitHub Actions).
+  Object.assign(attrs, getEnvironmentFingerprint(env));
+  const terminal = detectTerminalType(env);
+  if (terminal) attrs['terminal.type'] = terminal;
+  const ci = getCiContext(env);
+  if (ci) Object.assign(attrs, ci);
   return { ...attrs, ...extra };
 }
 
@@ -875,13 +1112,18 @@ export function toOtlpLogsPayload(
       },
       scopeLogs: [{
         scope: { name: AMI_CLIENT_NAME, version: AMI_VERSION },
-        logRecords: batch.events.map(e => ({
-          timeUnixNano: String(e.timestamp * 1_000_000),
-          severityText: 'INFO',
-          body: { stringValue: e.type },
-          // A session-monotonic sequence disambiguates same-millisecond events.
-          attributes: otlpAttrs(e.sequence !== undefined ? { ...e.data, 'event.sequence': e.sequence } : e.data),
-        })),
+        logRecords: batch.events.map(e => {
+          // Low-cardinality HTTP-status shaping (status -> http_status + *_range)
+          // before the attributes are serialized for export.
+          const data = deriveHttpStatusFields(e.data);
+          return {
+            timeUnixNano: String(e.timestamp * 1_000_000),
+            severityText: 'INFO',
+            body: { stringValue: e.type },
+            // A session-monotonic sequence disambiguates same-millisecond events.
+            attributes: otlpAttrs(e.sequence !== undefined ? { ...data, 'event.sequence': e.sequence } : data),
+          };
+        }),
       }],
     }],
   };

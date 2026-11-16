@@ -69,6 +69,9 @@ export {
   truncateContent, MAX_OTLP_ATTR_BYTES, shouldIncludeTelemetryAttr, buildTelemetryResourceAttrs,
   OTEL_CARDINALITY_DEFAULTS, parseOtelHeaders,
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName, MAX_FILE_EXTENSION_LENGTH,
+  detectTerminalType, getHostPlatformForAnalytics, HOST_PLATFORM_OVERRIDES, getEnvironmentFingerprint,
+  getCiContext, getOrCreateUserId, USER_ID_FILE, getUserBucket, NUM_USER_BUCKETS,
+  bucketHttpStatus, deriveHttpStatusFields,
 } from './analytics';
 export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
 export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
