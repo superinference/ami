@@ -152,7 +152,9 @@ export function resolveSearchPath(
   const realCwd = realpathOrResolve(cwd);
   const realRoots = allowedRoots.map(realpathOrResolve);
   if (!isWithinWorkspaceRoots(abs, realCwd, realRoots)) {
-    return { resolved, error: `Error: path "${inputPath}" is outside the workspace directory.` };
+    const roots = formatDirectoryList([cwd, ...allowedRoots]);
+    const hint = roots ? ` Accessible roots for this session: ${roots}.` : '';
+    return { resolved, error: `Error: path "${inputPath}" is outside the workspace directory.${hint}` };
   }
   return { resolved };
 }
@@ -226,6 +228,31 @@ export function isSensitivePath(filePath: string): boolean {
   return false;
 }
 
+/** Cap on how many allowed roots an access-denied message enumerates before
+ *  summarizing the remainder as "and N more" (keeps the hint readable). */
+export const MAX_DIRS_TO_LIST = 5;
+
+/**
+ * Render a quoted, truncated list of directories for an access-denied hint, e.g.
+ * `'a', 'b', 'c', 'd', 'e', and 3 more`. De-duplicates and drops empties.
+ * Returns '' when there is nothing to list so callers can omit the hint.
+ */
+export function formatDirectoryList(dirs: readonly string[], max: number = MAX_DIRS_TO_LIST): string {
+  const unique = [...new Set(dirs.filter(d => typeof d === 'string' && d.length > 0))];
+  if (unique.length === 0) return '';
+  const shown = unique.slice(0, max).map(d => `'${d}'`);
+  const extra = unique.length - shown.length;
+  return extra > 0 ? `${shown.join(', ')}, and ${extra} more` : shown.join(', ');
+}
+
+/** Append the session's accessible roots to an out-of-workspace denial so the
+ *  model/user learns WHERE access is permitted and can retry correctly. */
+function outsideWorkspaceError(filePath: string, cwd: string, allowedRoots: readonly string[]): ToolResult {
+  const roots = formatDirectoryList([cwd, ...allowedRoots]);
+  const hint = roots ? ` Accessible roots for this session: ${roots}.` : '';
+  return { output: `Error: path "${filePath}" is outside the workspace directory.${hint}`, isError: true };
+}
+
 export function resolveFilePath(
   filePath: string,
   cwd: string,
@@ -239,7 +266,7 @@ export function resolveFilePath(
   }
   // Logical (pre-symlink) containment: cwd OR a permission-granted root.
   if (!isWithinWorkspaceRoots(resolved, cwd, allowedRoots)) {
-    return { resolved, error: { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true } };
+    return { resolved, error: outsideWorkspaceError(filePath, cwd, allowedRoots) };
   }
   try {
     const real = fs.realpathSync(resolved);

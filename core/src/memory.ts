@@ -530,7 +530,7 @@ export function parseFrontmatterList(value: string): string[] {
 
 const STALE_MEMORY_DAYS = 30;
 
-function memoryAgeDays(mtimeMs: number): number {
+export function memoryAgeDays(mtimeMs: number): number {
   // Clamp to 0: a memory is never "from the future". A file mtime slightly ahead
   // of Date.now() (clock skew, NTP correction, or coarse filesystem mtime
   // granularity) would otherwise yield a negative age and render as the

@@ -10,6 +10,8 @@ import { isCredentialPath } from './bash-security';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 import { suggestSimilarPaths, suggestPathUnderCwd } from './path-suggest';
+import { formatFileSize } from '../utils/format';
+import { memoryAgeDays } from '../memory';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
@@ -895,17 +897,16 @@ export const fileReadTool: ToolDefinition = {
         const partial = buf.slice(0, bytesRead).toString('utf-8');
         const lines = partial.split('\n').slice(0, PARTIAL_VIEW_LINES);
         const numbered = lines.map((l, i) => `${i + 1}\t${l}`).join('\n');
-        const sizeKB = (stat.size / 1024).toFixed(0);
         const totalLines = partial.split('\n').length;
         context.filesRead?.add(resolved);
         // Flag the cache so a later full-file overwrite is blocked until the model
         // reads the whole file — this view is truncated to the first slice.
         getFileCache(context.cwd).markPartialView(resolved, stat.mtimeMs);
         return {
-          output: `[PARTIAL VIEW — file is ${sizeKB}KB, showing first ${lines.length} of ~${totalLines}+ lines. Use offset/limit for other sections, or allow_large:true for the full file.]\n${numbered}`,
+          output: `[PARTIAL VIEW — file is ${formatFileSize(stat.size)}, showing first ${lines.length} of ~${totalLines}+ lines. Use offset/limit for other sections, or allow_large:true for the full file.]\n${numbered}`,
         };
       } catch {
-        return { output: `Error: File size (${(stat.size / 1024).toFixed(0)}KB) exceeds 256KB limit. Use offset/limit to read specific sections, or pass allow_large:true to read past the size cap (still subject to the token budget).`, isError: true };
+        return { output: `Error: File size (${formatFileSize(stat.size)}) exceeds 256KB limit. Use offset/limit to read specific sections, or pass allow_large:true to read past the size cap (still subject to the token budget).`, isError: true };
       }
     }
 
@@ -918,7 +919,7 @@ export const fileReadTool: ToolDefinition = {
       }
       const MAX_IMAGE_BYTES = 128 * 1024 * 1024; // 128 MiB
       if (stat.size > MAX_IMAGE_BYTES) {
-        return { output: `Error: image exceeds the 128 MiB limit (${(stat.size / 1024 / 1024).toFixed(0)} MiB).`, isError: true };
+        return { output: `Error: image exceeds the 128 MiB limit (${formatFileSize(stat.size)}).`, isError: true };
       }
       let media_type: string, data: string, dimensions: ImageDimensions | undefined;
       try {
@@ -934,7 +935,7 @@ export const fileReadTool: ToolDefinition = {
       // with an actionable error instead of emitting an unusable block.
       if (data.length > API_IMAGE_MAX_BASE64_SIZE) {
         return {
-          output: `Error: image is too large to send even after compression (${(data.length / 1024 / 1024).toFixed(1)} MB base64, limit ${(API_IMAGE_MAX_BASE64_SIZE / 1024 / 1024).toFixed(0)} MB). Resize or crop it, or inspect it with bash.`,
+          output: `Error: image is too large to send even after compression (${formatFileSize(data.length)} base64, limit ${(API_IMAGE_MAX_BASE64_SIZE / 1024 / 1024).toFixed(0)} MB). Resize or crop it, or inspect it with bash.`,
           isError: true,
         };
       }
@@ -964,7 +965,7 @@ export const fileReadTool: ToolDefinition = {
       // Claude's PDF_TARGET_RAW_SIZE (20MB) with a structured too_large rejection.
       if (stat.size > PDF_TARGET_RAW_SIZE) {
         return {
-          output: `Error: PDF too large (${(stat.size / 1024 / 1024).toFixed(1)} MB) — exceeds the ${(PDF_TARGET_RAW_SIZE / 1024 / 1024).toFixed(0)} MB limit. Use the pages parameter to extract a specific page range.`,
+          output: `Error: PDF too large (${formatFileSize(stat.size)}) — exceeds the ${(PDF_TARGET_RAW_SIZE / 1024 / 1024).toFixed(0)} MB limit. Use the pages parameter to extract a specific page range.`,
           isError: true,
         };
       }
@@ -1313,7 +1314,9 @@ export const fileReadTool: ToolDefinition = {
     }
 
     if (resolved.includes('.ami/') && (resolved.includes('/memory/') || resolved.includes('/sessions/'))) {
-      const ageDays = Math.floor((Date.now() - stat.mtimeMs) / 86400000);
+      // Clamp future mtimes (clock skew / coarse fs granularity) via the single
+      // canonical helper in memory.ts — never render a negative "-N days" age.
+      const ageDays = memoryAgeDays(stat.mtimeMs);
       if (ageDays > 1) {
         output = `[Memory file — last modified ${ageDays} days ago. Verify before relying on this data.]\n${output}`;
       }
