@@ -456,6 +456,13 @@ export class EventConcurrencyLimiter {
 
 export const MAX_HOOK_TIMEOUT_MS = 600_000; // 10 min — matches Claude Code's hook ceiling
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // CC default when a hook sets no timeout
+/** Default lifetime budget for an async ('background') hook when it sets no
+ *  `asyncTimeout` — 15s, matching Claude Code's dedicated background-hook deadline.
+ *  A background hook must NOT inherit the long synchronous command/HTTP default
+ *  (60s / 10min): it runs detached from the turn, so it is bounded on a short,
+ *  distinct clock and aborted when exceeded (child killed / request aborted). In
+ *  milliseconds (clamped via validateHookTimeout). */
+export const DEFAULT_ASYNC_HOOK_TIMEOUT_MS = 15_000;
 /** Default HTTP-hook deadline when the hook sets no `timeout` — 10 minutes,
  *  matching Claude Code's DEFAULT_HTTP_HOOK_TIMEOUT_MS (= TOOL_HOOK_EXECUTION_
  *  TIMEOUT_MS). A webhook round-trip may legitimately be slow; a too-short
@@ -1323,6 +1330,11 @@ export interface CommandHookConfig {
   once?: boolean;
   if?: string;
   async?: boolean;
+  /** When `async` is true, the background hook's lifetime budget in MILLISECONDS
+   *  (default DEFAULT_ASYNC_HOOK_TIMEOUT_MS = 15_000). Distinct from the synchronous
+   *  `timeout` (seconds): a background hook is bounded on this short clock and
+   *  aborted when it elapses. Clamped to [100ms, MAX_HOOK_TIMEOUT_MS]. */
+  asyncTimeout?: number;
   asyncRewake?: boolean;
   /** 'block' = a hook that times out or errors denies the action (fail-closed);
    *  default 'allow' preserves today's fail-open behavior. */
@@ -1341,6 +1353,11 @@ export interface PromptHookConfig {
   once?: boolean;
   if?: string;
   async?: boolean;
+  /** When `async` is true, the background hook's lifetime budget in MILLISECONDS
+   *  (default DEFAULT_ASYNC_HOOK_TIMEOUT_MS = 15_000). Distinct from the synchronous
+   *  `timeout` (seconds): a background hook is bounded on this short clock and
+   *  aborted when it elapses. Clamped to [100ms, MAX_HOOK_TIMEOUT_MS]. */
+  asyncTimeout?: number;
   asyncRewake?: boolean;
   /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
   statusMessage?: string;
@@ -1359,6 +1376,11 @@ export interface HttpHookConfig {
   once?: boolean;
   if?: string;
   async?: boolean;
+  /** When `async` is true, the background hook's lifetime budget in MILLISECONDS
+   *  (default DEFAULT_ASYNC_HOOK_TIMEOUT_MS = 15_000). Distinct from the synchronous
+   *  `timeout` (seconds): a background hook is bounded on this short clock and
+   *  aborted when it elapses. Clamped to [100ms, MAX_HOOK_TIMEOUT_MS]. */
+  asyncTimeout?: number;
   asyncRewake?: boolean;
   /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
   statusMessage?: string;
@@ -1382,6 +1404,11 @@ export interface AgentHookConfig {
   once?: boolean;
   if?: string;
   async?: boolean;
+  /** When `async` is true, the background hook's lifetime budget in MILLISECONDS
+   *  (default DEFAULT_ASYNC_HOOK_TIMEOUT_MS = 15_000). Distinct from the synchronous
+   *  `timeout` (seconds): a background hook is bounded on this short clock and
+   *  aborted when it elapses. Clamped to [100ms, MAX_HOOK_TIMEOUT_MS]. */
+  asyncTimeout?: number;
   asyncRewake?: boolean;
   /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
   statusMessage?: string;
@@ -1817,14 +1844,25 @@ export class HookManager extends EventEmitter {
   }
 
   // ---- Async ('background') hook registry ----
-  /** In-flight async hook promises, tracked so they can be awaited (finalize)
-   *  or cancelled (kill) at shutdown instead of leaking as fire-and-forget. */
-  private _pendingAsync = new Set<Promise<unknown>>();
+  /** In-flight async hook promises keyed to their metadata (firing event +
+   *  start timestamp), so they can be awaited (finalize) or cancelled (kill) at
+   *  shutdown AND introspected while running (which events, how long) instead of
+   *  leaking as untracked fire-and-forget promises. */
+  private _pendingAsync = new Map<Promise<unknown>, { event: string; startedAt: number }>();
   /** Shutdown signal shared by all async hooks; aborting it tears down every
    *  in-flight async hook (command child killed / HTTP request aborted / engine
    *  hook query aborted). Reset after cancelAll so later hooks are not born
    *  pre-aborted. */
   private _asyncAbort = new AbortController();
+
+  /** Live view of every in-flight async hook (introspection surface): the event
+   *  it fired for and how long it has been running. Claude Code tracks pending
+   *  background hooks with elapsed time so a stall is visible; this exposes the
+   *  same (the richer companion to {@link getPendingAsyncCount}). */
+  getPendingAsyncHooks(): Array<{ event: string; elapsedMs: number }> {
+    const now = Date.now();
+    return Array.from(this._pendingAsync.values()).map(r => ({ event: r.event, elapsedMs: now - r.startedAt }));
+  }
 
   /** Number of async hooks still running (introspection surface). */
   getPendingAsyncCount(): number { return this._pendingAsync.size; }
@@ -1839,6 +1877,7 @@ export class HookManager extends EventEmitter {
     config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
     cwd: string,
     eventData: string,
+    event: string,
     parentSignal?: AbortSignal,
     // Fired ONLY after the background hook completes successfully, so a
     // `once:true` async hook self-removes just like its synchronous sibling
@@ -1853,16 +1892,25 @@ export class HookManager extends EventEmitter {
       this._asyncAbort.signal.addEventListener('abort', onAbort, { once: true });
       parentSignal?.addEventListener('abort', onAbort, { once: true });
     }
+    // A background hook is bounded on its OWN short clock (asyncTimeout, default
+    // 15s), independent of the long synchronous command/HTTP default: once the
+    // budget elapses the hook is aborted (child killed / request aborted) so a
+    // runaway background hook cannot linger for minutes. A hook that settles
+    // first clears the timer in the finally below.
+    const asyncTimeoutMs = validateHookTimeout(config.asyncTimeout ?? DEFAULT_ASYNC_HOOK_TIMEOUT_MS);
+    const timer = setTimeout(onAbort, asyncTimeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
     const outcome = { success: true };
     const p: Promise<unknown> = this.runHookByType(config, cwd, eventData, ac.signal, outcome)
       .then(() => { if (outcome.success && onSuccess) onSuccess(); })
       .catch(() => { /* async hooks never surface errors to the turn */ })
       .finally(() => {
+        clearTimeout(timer);
         this._asyncAbort.signal.removeEventListener('abort', onAbort);
         parentSignal?.removeEventListener('abort', onAbort);
         this._pendingAsync.delete(p);
       });
-    this._pendingAsync.add(p);
+    this._pendingAsync.set(p, { event, startedAt: Date.now() });
   }
 
   /**
@@ -1885,7 +1933,7 @@ export class HookManager extends EventEmitter {
   ): Promise<string> {
     if (config.async) {
       this.fireAsyncHook(
-        config, cwd, eventData, signal,
+        config, cwd, eventData, event, signal,
         config.once ? () => this.removeHookOnce(arr, fn, event) : undefined,
       );
       return '';
@@ -1898,7 +1946,7 @@ export class HookManager extends EventEmitter {
 
   /** Await every in-flight async hook to settle (graceful shutdown). */
   async finalizePendingAsyncHooks(): Promise<void> {
-    await Promise.all(Array.from(this._pendingAsync));
+    await Promise.all(Array.from(this._pendingAsync.keys()));
   }
 
   /** Cancel every in-flight async hook (hard shutdown) and reset the signal so
