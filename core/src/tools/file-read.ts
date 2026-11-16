@@ -5,11 +5,11 @@ import { execFile } from 'child_process';
 import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
-import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath, validateFilePath } from './tool-utils';
+import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath, validateFilePath, normalizePathForComparison } from './tool-utils';
 import { isCredentialPath } from './bash-security';
 import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
-import { suggestSimilarPaths, suggestPathUnderCwd } from './path-suggest';
+import { suggestSimilarPaths, suggestPathUnderCwd, suggestPathCorrection } from './path-suggest';
 import { formatFileSize } from '../utils/format';
 import { estimateTokensForFileType, charsPerTokenForFileType } from '../utils/tokens';
 import { memoryFreshnessReminder } from '../memory';
@@ -183,13 +183,13 @@ export function validateImageFile(filePath: string): { valid: boolean; error?: s
 
 export const KNOWN_BINARY_EXTENSIONS = new Set([
   // Executables & shared libraries
-  '.exe', '.dll', '.so', '.dylib', '.o', '.a', '.lib', '.bin',
-  '.wasm', '.class', '.pyc', '.pyo', '.dex',
+  '.exe', '.dll', '.so', '.dylib', '.o', '.obj', '.a', '.lib', '.bin', '.app',
+  '.wasm', '.class', '.pyc', '.pyo', '.dex', '.rlib',
   // Archives & compressed
-  '.zip', '.gz', '.tar', '.bz2', '.xz', '.7z', '.rar', '.lz4', '.zst',
-  '.jar', '.war', '.iso', '.img', '.dmg',
+  '.zip', '.gz', '.tar', '.tgz', '.bz2', '.xz', '.z', '.7z', '.rar', '.lz4', '.zst',
+  '.jar', '.war', '.ear', '.iso', '.img', '.dmg',
   // Databases
-  '.dat', '.db', '.sqlite', '.sqlite3', '.mdb',
+  '.dat', '.data', '.db', '.sqlite', '.sqlite3', '.mdb', '.idx',
   // Office / documents (binary formats)
   '.xlsm', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt',
   '.odt', '.ods', '.odp',
@@ -197,21 +197,23 @@ export const KNOWN_BINARY_EXTENSIONS = new Set([
   '.parquet', '.avro', '.orc', '.feather', '.arrow',
   '.protobuf', '.pb', '.msgpack',
   // Media — audio
-  '.mp3', '.wav', '.flac', '.ogg', '.aac', '.m4a', '.opus', '.wma',
+  '.mp3', '.wav', '.flac', '.ogg', '.aac', '.m4a', '.opus', '.wma', '.aiff',
   // Media — video
-  '.mp4', '.avi', '.mov', '.mkv', '.webm',
+  '.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v', '.mpeg', '.mpg',
   // Media — image (non-viewable; viewable images handled separately)
-  '.heic', '.heif',
+  '.heic', '.heif', '.tiff', '.tif',
   // E-books
   '.epub', '.mobi',
   // Fonts
   '.ttf', '.otf', '.woff', '.woff2', '.eot',
   // Design & 3D assets
-  '.psd', '.ai', '.sketch', '.fig', '.xd', '.blend', '.fbx', '.3ds', '.stl', '.glb',
+  '.psd', '.ai', '.eps', '.sketch', '.fig', '.xd', '.blend', '.fbx', '.3ds', '.max', '.stl', '.glb',
   // Flash
   '.swf', '.fla',
   // OS installers & packages
   '.msi', '.deb', '.rpm', '.apk', '.pkg', '.cab', '.appimage',
+  // Lock / profiling data
+  '.lockb',
   // Native addons
   '.node',
 ]);
@@ -532,6 +534,10 @@ export async function compressImageBuffer(
       height = IMAGE_MAX_HEIGHT;
     }
     const resizeOpts = { fit: 'inside' as const, withoutEnlargement: true };
+    // Progress breadcrumb so an operator tracing a degraded/slow image read can
+    // see which dimension the compressor is targeting. Mirrors Claude Code's
+    // logForDebugging(`Resizing to ${w}x${h}`) (utils/imageResizer.ts).
+    log('file-read', `Resizing image to ${width}x${height}`);
     const resized = await sharp(imageBuffer).resize(width, height, resizeOpts).toBuffer();
     if (resized.length <= maxBytes) return done(resized, format, width, height);
 
@@ -549,11 +555,19 @@ export async function compressImageBuffer(
     // Last resort: shrink harder and compress aggressively.
     const smallerWidth = Math.min(width, 1000);
     const smallerHeight = Math.round((height * smallerWidth) / Math.max(width, 1));
+    log('file-read', 'Image still too large after resize; compressing aggressively with JPEG');
     const ultra = await sharp(imageBuffer)
       .resize(smallerWidth, smallerHeight, resizeOpts).jpeg({ quality: 20 }).toBuffer();
+    log('file-read', `JPEG-compressed image buffer size: ${ultra.length} bytes`);
     return done(ultra, 'jpeg', smallerWidth, smallerHeight);
   } catch (err) {
     if (err instanceof ImageResizeError) throw err;
+    // Visible degradation signal: the native/sharp image processor could not load
+    // or process the buffer, so image handling fell back to passing the raw bytes
+    // through (or rejecting them). Surfaced at WARN so an operator gets a signal
+    // that image compression degraded. Mirrors Claude Code's console.warn fallback
+    // notice in getImageProcessor (imageProcessor.ts).
+    log('file-read', `Image processor unavailable or failed: ${err instanceof Error ? err.message : String(err)}`, undefined, 'warn');
     // Compression failed. Only allow the raw image through when it is within BOTH
     // the base64 API ceiling AND the pixel-dimension cap — a sub-5MB file can still
     // have out-of-range pixel dimensions the provider rejects.
@@ -646,8 +660,10 @@ export async function encodeImageFile(
       const sharp = imageHooks.loadSharp();
       buffer = await sharp(imageBuffer).png().toBuffer();
       mediaType = 'image/png';
-    } catch {
+    } catch (err) {
       // sharp unavailable — leave the BMP bytes; the size guard below surfaces them.
+      // Warn so an operator sees that BMP→PNG transcode degraded (providers reject BMP).
+      log('file-read', `BMP transcode unavailable (sharp failed: ${err instanceof Error ? err.message : String(err)}); leaving raw BMP bytes`, undefined, 'warn');
     }
   }
   try {
@@ -922,7 +938,20 @@ export const fileReadTool: ToolDefinition = {
       } else {
         let suggestions = '';
         const similar = suggestSimilarPaths(resolved, path.dirname(resolved));
-        if (similar.length > 0) suggestions = `\nDid you mean: ${similar.join(', ')}?`;
+        if (similar.length > 0) {
+          suggestions = `\nDid you mean: ${similar.join(', ')}?`;
+        } else {
+          // PARITY (wrong-ancestor recovery): when the IMMEDIATE parent directory
+          // does not exist (the model rooted the path at a misspelled directory
+          // component), suggestSimilarPaths can only scan that missing parent and
+          // returns nothing. Walk up to the nearest existing ancestor and correct
+          // the misspelled directory segment there. Mirrors Claude Code's
+          // findSimilarFile dropped/mistyped-folder recovery (utils/file.ts).
+          const corrected = suggestPathCorrection(resolved, context.cwd);
+          if (corrected.kind === 'missing-dir' && corrected.suggestions.length > 0) {
+            suggestions = `\nDid you mean: ${corrected.suggestions.join(', ')}?`;
+          }
+        }
         // Always surface the cwd so the model (and UI renderers keying off the
         // marker) can self-correct a wrong relative/absolute path assumption —
         // the note is UNCONDITIONAL (Claude Code parity: FILE_NOT_FOUND_CWD_NOTE
@@ -952,8 +981,13 @@ export const fileReadTool: ToolDefinition = {
         if (isCredentialPath(realTarget)) {
           return { output: `Error: Symlink targets a sensitive file: ${realTarget}`, isError: true };
         }
-        const cwdAbs = path.resolve(context.cwd);
-        if (!realTarget.startsWith(cwdAbs + path.sep) && realTarget !== cwdAbs) {
+        // Compare in canonical NFC form so an NFD symlink target (macOS/HFS+) is
+        // not spuriously judged outside an NFC-composed workspace root, and two
+        // Unicode-equivalent paths cannot be treated as distinct. See
+        // normalizePathForComparison.
+        const realTargetCmp = normalizePathForComparison(realTarget);
+        const cwdAbs = normalizePathForComparison(path.resolve(context.cwd));
+        if (!realTargetCmp.startsWith(cwdAbs + path.sep) && realTargetCmp !== cwdAbs) {
           return { output: `Error: Symlink resolves outside the workspace: ${realTarget}`, isError: true };
         }
         // PARITY (symlink read transparency): a read that silently follows a
