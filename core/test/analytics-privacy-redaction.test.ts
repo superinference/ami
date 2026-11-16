@@ -11,6 +11,7 @@ import {
   getPrivacyLevel,
   isTelemetryDisabled,
   isEssentialTrafficOnly,
+  getEssentialTrafficOnlyReason,
   isEnvTruthy,
   sanitizeToolNameForAnalytics,
   sanitizeAnalyticsData,
@@ -48,6 +49,45 @@ describe('privacy level resolution', () => {
     assert.equal(isEssentialTrafficOnly(env), true);
     assert.equal(isTelemetryDisabled(env), true);
     assert.equal(getPrivacyLevel({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }), 'essential-traffic');
+  });
+});
+
+describe('getEssentialTrafficOnlyReason', () => {
+  it('returns null when nonessential traffic is allowed', () => {
+    assert.equal(getEssentialTrafficOnlyReason({}), null);
+    // telemetry-only opt-outs do NOT restrict nonessential traffic
+    assert.equal(getEssentialTrafficOnlyReason({ DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1' }), null);
+    // falsey values are not a restriction
+    assert.equal(getEssentialTrafficOnlyReason({ SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC: '0' }), null);
+  });
+  it('names the responsible env var so the user can unset it', () => {
+    assert.equal(
+      getEssentialTrafficOnlyReason({ SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }),
+      'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC',
+    );
+    assert.equal(
+      getEssentialTrafficOnlyReason({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 'true' }),
+      'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+    );
+  });
+  it('prefers the SUPERINFERENCE var when both are set', () => {
+    assert.equal(
+      getEssentialTrafficOnlyReason({
+        SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      }),
+      'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC',
+    );
+  });
+  it('is consistent with isEssentialTrafficOnly (reason iff restricted)', () => {
+    for (const env of [
+      {},
+      { DISABLE_TELEMETRY: '1' },
+      { SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+      { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 'yes' },
+    ]) {
+      assert.equal(getEssentialTrafficOnlyReason(env) !== null, isEssentialTrafficOnly(env));
+    }
   });
 });
 

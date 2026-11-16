@@ -55,7 +55,7 @@ export type { SessionFact, IncrementalWindow } from './session-memory';
 export { AnalyticsTracker, generateToolSummary } from './analytics';
 export type { AnalyticsEvent, AnalyticsTrackerOpts } from './analytics';
 export {
-  getPrivacyLevel, isTelemetryDisabled, isEssentialTrafficOnly, isEnvTruthy,
+  getPrivacyLevel, isTelemetryDisabled, isEssentialTrafficOnly, getEssentialTrafficOnlyReason, isEnvTruthy,
   sanitizeToolNameForAnalytics, sanitizeAnalyticsData, sanitizeAnalyticsValue,
   shouldSampleEvent, resolveSampleRate, trySerialize, markAnalyticsSafe, MAX_ANALYTICS_STRING_LEN,
   truncateContent, MAX_OTLP_ATTR_BYTES, shouldIncludeTelemetryAttr, buildTelemetryResourceAttrs,

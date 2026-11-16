@@ -61,6 +61,20 @@ export function isEssentialTrafficOnly(env: NodeJS.ProcessEnv = process.env): bo
   return getPrivacyLevel(env) === 'essential-traffic';
 }
 
+/**
+ * The env var responsible for the current essential-traffic-only restriction, or
+ * null when nonessential traffic is allowed. Mirrors {@link getPrivacyLevel}'s
+ * essential-traffic signals (SUPERINFERENCE first, then the Claude-compatible
+ * alias), so a user-facing message can name EXACTLY which var to unset to
+ * re-enable nonessential traffic (parity: privacyLevel.getEssentialTrafficOnlyReason).
+ * Invariant: returns non-null iff {@link isEssentialTrafficOnly} is true.
+ */
+export function getEssentialTrafficOnlyReason(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (isEnvTruthy(env.SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC)) return 'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC';
+  if (isEnvTruthy(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)) return 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC';
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Redaction / data-minimization for analytics event payloads
 // ---------------------------------------------------------------------------
