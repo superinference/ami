@@ -2,7 +2,7 @@ import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types'
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
 import { type SkillDefinition, type SkillManagerLike, isStanceSkill, sanitizeSkillArgs } from '../skills';
-import { normalizeToolName } from '../permissions';
+import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 
 /**
@@ -59,6 +59,51 @@ export function resolveSkillTarget(
     return { skill: null, canonicalName: name, ambiguous: scoped.map(s => s.name) };
   }
   return { skill: null, canonicalName: name };
+}
+
+/** A permission rule keyed by tool name (the subset the skill gate consults). */
+type SkillPermissionRule = { tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' };
+
+/** The per-skill permission decision: an EXPLICIT operator rule matched the skill
+ *  name, or `undefined` when no `Skill(...)` rule applies (fall through to the
+ *  generic skill-tool permission gate, which still enforces the default-ask). */
+export type SkillPermissionDecision = 'allow' | 'deny' | 'ask';
+
+/** Does a `Skill(...)` rule's pattern match this skill name? A rule with no
+ *  pattern (`{tool:'skill', action:'deny'}`) matches EVERY skill; otherwise the
+ *  pattern is a glob so exact names and `name:*` prefix scopes both work. Reuses
+ *  the canonical {@link wildcardMatch} — no local matcher. */
+function skillRuleMatches(pattern: string | undefined, skillName: string): boolean {
+  if (pattern === undefined || pattern === '') return true;
+  return wildcardMatch(pattern, skillName);
+}
+
+/**
+ * Evaluate per-skill permission rules keyed by skill NAME, mirroring Claude Code's
+ * SkillTool.checkPermissions (deny rules first, then allow rules, with exact and
+ * `name:*` prefix matching). This is the per-skill deny/allow/ask surface AMI
+ * previously lacked — an operator can now `deny: ["Skill(dangerous)"]` or scope
+ * `allow: ["Skill(project:*)"]` which model-invokable skills may auto-run.
+ *
+ * Returns `undefined` when NO `Skill(...)` rule matches, so the default behavior is
+ * unchanged: the generic skill-tool permission gate (the `skill` tool is
+ * non-read-only) still provides Claude's default-ask. Only an explicit matching
+ * rule overrides that. Pure + exported for testability.
+ */
+export function evaluateSkillPermission(
+  skillName: string,
+  rules: ReadonlyArray<SkillPermissionRule> | undefined,
+): SkillPermissionDecision | undefined {
+  if (!rules || rules.length === 0) return undefined;
+  const skillRules = rules.filter(r => normalizeToolName(r.tool) === 'skill');
+  if (skillRules.length === 0) return undefined;
+  // Deny wins over allow wins over ask (defense-in-depth, Claude's order).
+  for (const order of ['deny', 'allow', 'ask'] as const) {
+    for (const r of skillRules) {
+      if (r.action === order && skillRuleMatches(r.pattern, skillName)) return order;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -249,6 +294,37 @@ export const skillTool: ToolDefinition = {
     }
     const skillDef = resolution.skill;
     const resolvedName = resolution.canonicalName;
+
+    // FUNCTIONAL (parity/security): per-skill permission gating keyed by skill NAME.
+    // An operator `deny: ["Skill(name)"]` / `allow: ["Skill(scope:*)"]` rule decides
+    // which model-invokable skills may auto-run BEFORE the skill executes (inline or
+    // forked). No matching rule → undefined → the generic skill-tool gate still
+    // applies the default-ask. Mirrors Claude's SkillTool.checkPermissions.
+    const permDecision = evaluateSkillPermission(resolvedName, context._parentPermissionRules);
+    if (permDecision === 'deny') {
+      return {
+        output: `Error: skill "${resolvedName}" is blocked by a permission rule (deny). An operator has denied this skill's invocation.`,
+        isError: true,
+      };
+    }
+    if (permDecision === 'ask') {
+      const handler = context._permissionPromptHandler;
+      if (handler) {
+        const verdict = await handler.showPrompt(
+          'skill',
+          `skill: ${resolvedName}${safeArgs?.ARGUMENTS ? ` ${safeArgs.ARGUMENTS}` : ''}`,
+          undefined,
+          context.abortSignal,
+        );
+        if (!verdict.action.startsWith('allow')) {
+          return {
+            output: `Skill "${resolvedName}" was not approved${verdict.feedback ? `: ${verdict.feedback}` : '.'}`,
+            isError: true,
+          };
+        }
+      }
+    }
+
     if (skillDef && isStanceSkill(skillDef)) {
       // Stance skills are activated by switching the session stance, which the
       // engine special-cases BEFORE this tool runs (it registers the stance's
@@ -321,7 +397,14 @@ export const skillTool: ToolDefinition = {
       cwd: context.cwd,
       tools,
       sessionId: SessionManager.newId(),
-      permissionMode: 'auto-allow',
+      // FUNCTIONAL (parity/security): do NOT hard-code 'auto-allow' for the forked
+      // sub-engine — that suppressed every permission prompt and let a lower-trust
+      // forked skill run arbitrary tools (privilege escalation). Default to 'ask'
+      // (parity with task.ts's sub-agent fallback) so forked-skill tool calls stay
+      // gated by the parent's deny/ask rules + forwarded prompt handler (YOLO/TUI
+      // propagation flows through the handler). A trusted skill may still opt into
+      // 'auto-allow' explicitly via its `permissionMode`.
+      permissionMode: skill?.permissionMode ?? 'ask',
       // Forward the parent session's permission rules so inherited deny rules
       // still apply inside the forked skill (least-privilege / policy honored).
       permissionRules: context._parentPermissionRules,

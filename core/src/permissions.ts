@@ -1862,7 +1862,7 @@ export const PERMISSION_TOOL_ALIASES: Record<string, string> = {
   Bash: 'bash', Read: 'file_read', Edit: 'file_edit', Write: 'file_edit',
   MultiEdit: 'file_edit', Glob: 'glob', Grep: 'grep', LS: 'list_dir',
   WebFetch: 'web_fetch', WebSearch: 'web_search', NotebookEdit: 'notebook_edit',
-  Task: 'task', TodoWrite: 'todo_write',
+  Task: 'task', TodoWrite: 'todo_write', Skill: 'skill',
   // AMI legacy aliases
   KillShell: 'task_stop', BashOutputTool: 'task_output', AgentOutputTool: 'task_output',
 };

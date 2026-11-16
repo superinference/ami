@@ -30,6 +30,12 @@ export interface SkillDefinition {
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   disableModelInvocation?: boolean; // If true, LLM cannot invoke this skill via the skill tool
   effort?: string;         // Thinking effort level for sub-engine (e.g., "low", "medium", "high")
+  /** Permission mode for this skill's FORKED sub-engine. Absent → the forked run
+   *  defaults to 'ask' (parity with task.ts's sub-agent fallback) so forked-skill
+   *  tool calls stay gated by the parent's deny/ask rules + prompt handler instead
+   *  of the previous hard-coded 'auto-allow' bypass. A trusted skill may opt into
+   *  'auto-allow' explicitly (mirrors AgentDefinition.permissionMode). */
+  permissionMode?: 'auto-allow' | 'ask' | 'deny-all';
 
   // --- Stance capabilities (used when the skill is pinned as the session/run
   // stance via --skill) — a skill then governs the run the way a persona used to:
