@@ -17,18 +17,35 @@
 const LRU_MAX = 500;
 
 /**
+ * A single-string-argument memoized function with an attached cache-management
+ * surface. The extra `.cache` methods let callers that cache *promises* evict a
+ * transient failure after it resolves (see `powershell-parser.ts`) so the next
+ * call retries instead of replaying the cached rejection. Pure synchronous
+ * callers (e.g. the POSIX path converter) simply ignore the surface.
+ */
+export type LRUMemoized<T> = ((arg: string) => T) & {
+  cache: {
+    clear: () => void;
+    delete: (arg: string) => boolean;
+    has: (arg: string) => boolean;
+    size: () => number;
+  };
+};
+
+/**
  * Bounded LRU memoizer for single-string-argument pure functions. A `Map`
  * preserves insertion order, so a cache hit is moved to the most-recently-used
  * end (delete + re-set) and, once the map exceeds `max`, the least-recently-used
  * key (first in iteration order) is evicted. Shared helper so each converter
- * does not re-implement its own cache.
+ * does not re-implement its own cache. The returned function carries a `.cache`
+ * surface for explicit eviction (used by promise-caching callers).
  */
 export function memoizeWithLRU<T>(
   fn: (arg: string) => T,
   max: number = LRU_MAX,
-): (arg: string) => T {
+): LRUMemoized<T> {
   const cache = new Map<string, T>();
-  return (arg: string): T => {
+  const memoized = (arg: string): T => {
     if (cache.has(arg)) {
       const hit = cache.get(arg) as T;
       // Refresh recency: re-insert so it becomes most-recently-used.
@@ -45,6 +62,13 @@ export function memoizeWithLRU<T>(
     }
     return value;
   };
+  memoized.cache = {
+    clear: () => cache.clear(),
+    delete: (arg: string) => cache.delete(arg),
+    has: (arg: string) => cache.has(arg),
+    size: () => cache.size,
+  };
+  return memoized as LRUMemoized<T>;
 }
 
 /**
