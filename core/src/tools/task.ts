@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig, ToolInputSchema, JsonSchemaProperty, Message } from '../types';
 import { createDefaultTools } from './index';
+import { releaseFileCache } from '../file-cache';
 import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText } from './spill-output';
@@ -1422,6 +1423,9 @@ export const taskTool: ToolDefinition = {
       incrementSpawnCount(context);
       context.subagentLimiter?.recordSpawn();
       const taskId = generateTaskId();
+      // Isolate this sub-agent's read-file-state: the sub-engine gets its own
+      // clone-on-fork file cache keyed by taskId (released when it finishes).
+      subConfig.agentId = taskId;
       if (agentName) {
         agentNameRegistry.set(agentName, taskId);
       }
@@ -1522,6 +1526,8 @@ export const taskTool: ToolDefinition = {
         } finally {
           clearBgStall();
           subEngine.shutdown?.();
+          // Release-on-finish: drop this sub-agent's isolated file cache.
+          releaseFileCache(effectiveCwd, taskId);
         }
         try { fs.closeSync(fd); } catch { /* already closed */ }
         if (!result) {
@@ -1545,8 +1551,11 @@ export const taskTool: ToolDefinition = {
 
     incrementSpawnCount(context);
     context.subagentLimiter?.recordSpawn();
-    const subEngine = context._engineFactory(subConfig);
     const taskId = generateTaskId();
+    // Isolate this sub-agent's read-file-state: the sub-engine gets its own
+    // clone-on-fork file cache keyed by taskId (released in the finally below).
+    subConfig.agentId = taskId;
+    const subEngine = context._engineFactory(subConfig);
     if (agentName) {
       agentNameRegistry.set(agentName, taskId);
     }
@@ -1657,6 +1666,8 @@ export const taskTool: ToolDefinition = {
     } finally {
       clearStallTimer();
       subEngine.shutdown?.();
+      // Release-on-finish: drop this sub-agent's isolated file cache.
+      releaseFileCache(effectiveCwd, taskId);
       // Foreground teammate finished (success or error) — mark it idle so it no
       // longer blocks team_delete.
       setTeamMemberActive(taskId, false);

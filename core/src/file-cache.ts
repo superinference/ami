@@ -307,6 +307,27 @@ export class FileCache {
     return Array.from(this.cache.keys());
   }
 
+  /**
+   * Deep-copy this cache into a new, fully independent instance, preserving the
+   * size configuration (byte + entry ceilings), the accumulated byte total, and
+   * the complete least-recently-used→most-recently-used order.
+   *
+   * Used for per-subagent read-file-state ISOLATION (clone-on-fork): a forked
+   * sub-engine starts from a SNAPSHOT of its parent's cache — so it already knows
+   * what the parent read and need not re-read — while its subsequent reads/edits
+   * mutate only its own copy and never leak back into (or get clobbered by) the
+   * parent's cache. Mirrors Claude Code's `cloneFileStateCache`, which clones the
+   * parent's `readFileState` into every forked agent context.
+   */
+  clone(): FileCache {
+    const copy = new FileCache(this.maxSizeBytes, this.maxEntries);
+    for (const [key, state] of this.cache) {
+      copy.cache.set(key, { ...state });
+    }
+    copy.totalBytes = this.totalBytes;
+    return copy;
+  }
+
   /** Remove a single file from the cache (e.g. after a failed edit so the next read returns full content). */
   delete(path: string): void {
     const key = this.norm(path);
@@ -355,11 +376,49 @@ export class FileCache {
 // ---------------------------------------------------------------------------
 const cachesByDir: Map<string, FileCache> = new Map();
 
-export function getFileCache(cwd: string): FileCache {
+/**
+ * Per-forked-subagent ISOLATED caches, keyed by `${cwd}\0${agentId}`. A sub-engine
+ * running under an `agentId` gets its own cache — cloned from the directory's shared
+ * cache on first access (clone-on-fork) and dropped via {@link releaseFileCache} when
+ * the sub-agent finishes (release-on-finish) — so a sub-agent's reads/edits never
+ * pollute the parent's read-before-edit state and the parent can never edit a file a
+ * sub-agent changed on disk without being forced to re-read it first.
+ */
+const agentCaches: Map<string, FileCache> = new Map();
+
+function agentCacheKey(cwd: string, agentId: string): string {
+  return `${cwd}\0${agentId}`;
+}
+
+/**
+ * Get the file cache for a working directory. When `agentId` is supplied (a forked
+ * sub-engine), return that sub-agent's ISOLATED cache instead of the shared one,
+ * cloning it from the directory's shared cache on first access so the child inherits
+ * the parent's already-read state while keeping its own mutations private.
+ */
+export function getFileCache(cwd: string, agentId?: string): FileCache {
+  if (agentId) {
+    const key = agentCacheKey(cwd, agentId);
+    let agentCache = agentCaches.get(key);
+    if (!agentCache) {
+      agentCache = getFileCache(cwd).clone();
+      agentCaches.set(key, agentCache);
+    }
+    return agentCache;
+  }
   let cache = cachesByDir.get(cwd);
   if (!cache) {
     cache = new FileCache();
     cachesByDir.set(cwd, cache);
   }
   return cache;
+}
+
+/**
+ * Release a forked sub-agent's isolated file cache once the sub-engine finishes
+ * (release-on-finish), so per-agent read-file-state does not leak or accumulate
+ * across runs. A no-op when no isolated cache was created for the pair.
+ */
+export function releaseFileCache(cwd: string, agentId: string): void {
+  agentCaches.delete(agentCacheKey(cwd, agentId));
 }

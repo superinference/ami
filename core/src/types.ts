@@ -853,6 +853,11 @@ export interface EngineConfig {
   tokenBudget?: number;
   /** Resume a specific session. When set, the engine loads its messages on init. */
   sessionId?: string;
+  /** Forked sub-agent id. When set (by the `task` tool for a sub-engine), the engine
+   *  threads it into every tool's {@link ToolContext.agentId} so file-reading tools use
+   *  an ISOLATED per-agent file cache (clone-on-fork / release-on-finish) rather than the
+   *  directory-shared one. Absent for the top-level engine. */
+  agentId?: string;
   /**
    * Seed the engine's conversation with these messages at construction (only when
    * no `sessionId` restore supplied any). Used by a `fork` sub-agent to inherit the

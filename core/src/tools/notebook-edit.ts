@@ -171,8 +171,8 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
-    if (getFileCache(context.cwd).hasChanged(resolved)) {
-      getFileCache(context.cwd).delete(resolved);
+    if (getFileCache(context.cwd, context.agentId).hasChanged(resolved)) {
+      getFileCache(context.cwd, context.agentId).delete(resolved);
       return { output: 'Error: Notebook modified since last read. Read it again.', isError: true };
     }
 
@@ -428,7 +428,7 @@ export const notebookEditTool: ToolDefinition = {
         isError: true,
       };
     }
-    getFileCache(context.cwd).setWritten(resolved, updatedJson);
+    getFileCache(context.cwd, context.agentId).setWritten(resolved, updatedJson);
 
     if (!context.detachedMode) {
       try {

@@ -941,7 +941,7 @@ export const fileReadTool: ToolDefinition = {
         context.filesRead?.add(resolved);
         // Flag the cache so a later full-file overwrite is blocked until the model
         // reads the whole file — this view is truncated to the first slice.
-        getFileCache(context.cwd).markPartialView(resolved, stat.mtimeMs);
+        getFileCache(context.cwd, context.agentId).markPartialView(resolved, stat.mtimeMs);
         return {
           output: `[PARTIAL VIEW — file is ${formatFileSize(stat.size)}, showing first ${lines.length} of ~${totalLines}+ lines. Use offset/limit for other sections, or allow_large:true for the full file.]\n${numbered}`,
         };
@@ -1238,7 +1238,7 @@ export const fileReadTool: ToolDefinition = {
     // when the full file was cached, otherwise a new range gets a stale
     // "File unchanged" stub for content it never actually saw (CC parity:
     // FileReadTool gates the unchanged short-circuit on a matching range).
-    const fileCache = getFileCache(context.cwd);
+    const fileCache = getFileCache(context.cwd, context.agentId);
     const cached = fileCache.get(resolved);
     if (cached && input.offset === undefined && input.limit === undefined) {
       const lineCount = cached.content.split('\n').length;

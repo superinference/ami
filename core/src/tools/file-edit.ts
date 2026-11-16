@@ -219,7 +219,7 @@ export function commitWrite(
     const message = err instanceof Error ? err.message : String(err);
     return `Error writing file: ${message}`;
   }
-  getFileCache(context.cwd).setWritten(resolved, cacheContent);
+  getFileCache(context.cwd, context.agentId).setWritten(resolved, cacheContent);
   context.filesRead?.add(resolved);
   notifyLsp(resolved, rawToWrite, context);
   return undefined;
@@ -296,7 +296,7 @@ export async function writeEntireFile(
   }
 
   if (fileExists && oldContent.length > 0 && context.filesRead?.has(resolved)) {
-    const fileCache = getFileCache(context.cwd);
+    const fileCache = getFileCache(context.cwd, context.agentId);
     // A partial/size-capped read is not a safe basis for a full overwrite: the
     // model never saw the tail of the file. Require an explicit full read first.
     if (fileCache.isPartialView(resolved)) {
@@ -380,10 +380,10 @@ async function applySequentialEdits(
 
   if (context.filesRead && !context.filesRead.has(resolved)) {
     context.filesRead.add(resolved);
-    getFileCache(context.cwd).setWritten(resolved, rawContent);
+    getFileCache(context.cwd, context.agentId).setWritten(resolved, rawContent);
   }
 
-  const fileCache = getFileCache(context.cwd);
+  const fileCache = getFileCache(context.cwd, context.agentId);
   if (fileCache.hasChanged(resolved)) {
     fileCache.delete(resolved);
     return { output: 'Error: File has been modified since you last read it. Read the file again before editing.', isError: true };
@@ -661,10 +661,10 @@ export const fileEditTool: ToolDefinition = {
 
     if (context.filesRead && !context.filesRead.has(resolved)) {
       context.filesRead.add(resolved);
-      getFileCache(context.cwd).setWritten(resolved, rawContent);
+      getFileCache(context.cwd, context.agentId).setWritten(resolved, rawContent);
     }
 
-    const fileCache = getFileCache(context.cwd);
+    const fileCache = getFileCache(context.cwd, context.agentId);
     if (fileCache.hasChanged(resolved)) {
       fileCache.delete(resolved);
       return { output: 'Error: File has been modified since you last read it. Please read the file again before editing.', isError: true };

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { FileCache, getFileCache, MAX_CACHE_BYTES, DEFAULT_MAX_ENTRIES, MAX_CONTENT_HASH_SIZE } from '../src/file-cache';
+import { FileCache, getFileCache, releaseFileCache, MAX_CACHE_BYTES, DEFAULT_MAX_ENTRIES, MAX_CONTENT_HASH_SIZE } from '../src/file-cache';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -885,5 +885,130 @@ describe('FileCache — bounded content hashing (MAX_CONTENT_HASH_SIZE)', () => 
     } finally {
       cleanupDir(tmpDir);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clone() — deep-copy for per-subagent isolation
+// ---------------------------------------------------------------------------
+describe('FileCache — clone', () => {
+  it('copies all entries into an independent instance', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const a = path.join(tmpDir, 'a.txt');
+      const b = path.join(tmpDir, 'b.txt');
+      fs.writeFileSync(a, 'alpha');
+      fs.writeFileSync(b, 'bravo');
+      const src = new FileCache();
+      src.set(a, 'alpha', fs.statSync(a).mtimeMs);
+      src.set(b, 'bravo', fs.statSync(b).mtimeMs);
+
+      const copy = src.clone();
+      assert.deepEqual(copy.listPaths().sort(), [a, b].sort());
+      assert.equal(copy.get(a)?.content, 'alpha');
+      assert.equal(copy.getTotalBytes(), src.getTotalBytes());
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('is independent — mutating the clone does not affect the source (and vice-versa)', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const shared = path.join(tmpDir, 'shared.txt');
+      fs.writeFileSync(shared, 'original');
+      const src = new FileCache();
+      src.set(shared, 'original', fs.statSync(shared).mtimeMs);
+
+      const copy = src.clone();
+      copy.set('/virtual/child-only.txt', 'child', 3);
+
+      // A later write to the SOURCE does not leak into the clone, and a write to
+      // the CLONE never appears in the source — the two are fully independent.
+      assert.equal(copy.listPaths().includes('/virtual/child-only.txt'), true);
+      assert.equal(src.listPaths().includes('/virtual/child-only.txt'), false);
+      src.set('/virtual/parent-only.txt', 'parent', 4);
+      assert.equal(copy.listPaths().includes('/virtual/parent-only.txt'), false);
+      // The shared entry the clone inherited still reads back from the clone.
+      assert.equal(copy.get(shared)?.content, 'original');
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('preserves the size configuration (byte + entry ceilings)', () => {
+    const src = new FileCache(1234, 7);
+    const copy = src.clone();
+    // Fill past the entry ceiling and confirm the clone enforces the same cap.
+    for (let i = 0; i < 20; i++) copy.set(`/f${i}.txt`, 'x', i);
+    assert.equal(copy.getStats().files, 7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFileCache(cwd, agentId) — per-subagent isolation (clone-on-fork)
+// ---------------------------------------------------------------------------
+describe('getFileCache — per-subagent isolation', () => {
+  it('a sub-agent cache is cloned from the shared dir cache on first access', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const f = path.join(tmpDir, 'parent-read.txt');
+      fs.writeFileSync(f, 'seen by parent');
+      const shared = getFileCache(tmpDir);
+      shared.set(f, 'seen by parent', fs.statSync(f).mtimeMs);
+
+      const child = getFileCache(tmpDir, 'agent-1');
+      assert.notEqual(child, shared);
+      // Clone-on-fork: the child inherits the parent's already-read state.
+      assert.equal(child.get(f)?.content, 'seen by parent');
+      releaseFileCache(tmpDir, 'agent-1');
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('a sub-agent write does not pollute the parent (shared) cache', () => {
+    const cwd = '/test/iso/no-pollute';
+    const shared = getFileCache(cwd);
+    shared.set(`${cwd}/f.txt`, 'parent-version', 1);
+
+    const child = getFileCache(cwd, 'agent-2');
+    child.set(`${cwd}/f.txt`, 'child-version', 2);
+    child.set(`${cwd}/child-only.txt`, 'child', 3);
+
+    // The parent's shared cache never sees the child's new entry, and its entry
+    // for the shared file keeps the parent's cached bytes (listPaths avoids the
+    // disk-touching get()/hasChanged path for these virtual paths).
+    assert.equal(shared.listPaths().includes(`${cwd}/child-only.txt`), false);
+    assert.equal(child.listPaths().includes(`${cwd}/child-only.txt`), true);
+    releaseFileCache(cwd, 'agent-2');
+  });
+
+  it('the same agentId returns the same isolated instance until released', () => {
+    const cwd = '/test/iso/stable';
+    const a = getFileCache(cwd, 'agent-3');
+    const b = getFileCache(cwd, 'agent-3');
+    assert.equal(a, b);
+
+    // After release, a fresh clone is made on the next access.
+    releaseFileCache(cwd, 'agent-3');
+    const c = getFileCache(cwd, 'agent-3');
+    assert.notEqual(a, c);
+    releaseFileCache(cwd, 'agent-3');
+  });
+
+  it('distinct agentIds in the same cwd get distinct caches', () => {
+    const cwd = '/test/iso/distinct';
+    const one = getFileCache(cwd, 'agent-A');
+    const two = getFileCache(cwd, 'agent-B');
+    assert.notEqual(one, two);
+    one.set(`${cwd}/only-a.txt`, 'a', 1);
+    assert.equal(two.listPaths().includes(`${cwd}/only-a.txt`), false);
+    releaseFileCache(cwd, 'agent-A');
+    releaseFileCache(cwd, 'agent-B');
+  });
+
+  it('releaseFileCache is a no-op when no isolated cache exists', () => {
+    assert.doesNotThrow(() => releaseFileCache('/test/iso/never-created', 'ghost'));
   });
 });
