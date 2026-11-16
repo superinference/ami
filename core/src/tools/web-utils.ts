@@ -581,7 +581,7 @@ export function httpGet(
      *  decoding — required for PDFs/images/other binary content. */
     raw?: boolean;
   },
-): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean; headers: http.IncomingHttpHeaders }> {
+): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean; headers: http.IncomingHttpHeaders; redirectStatusCode?: number }> {
   const maxRedirects = options?.maxRedirects ?? 5;
   const timeoutMs = options?.timeoutMs ?? 30000;
 
@@ -595,7 +595,13 @@ function httpGetInternal(
   timeoutMs: number,
   resolvedIP?: string,
   raw?: boolean,
-): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean; headers: http.IncomingHttpHeaders }> {
+  // Status code of the FIRST redirect hop followed on the way to the final
+  // response (e.g. 301/302/307/308). Carried through the recursion so a caller
+  // that detects a cross-origin redirect can report the actual redirect status +
+  // reason phrase (parity with Claude's redirect-status message) instead of the
+  // final 200. Undefined when no redirect was followed.
+  firstRedirectStatus?: number,
+): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean; headers: http.IncomingHttpHeaders; redirectStatusCode?: number }> {
   const MAX_RESPONSE_LENGTH = 50000;
 
   return new Promise((resolve, reject) => {
@@ -670,7 +676,7 @@ function httpGetInternal(
               reject(new Error(ssrfResult.error));
               return;
             }
-            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, ssrfResult.resolvedIP, raw).then(resolve, reject);
+            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, ssrfResult.resolvedIP, raw, firstRedirectStatus ?? statusCode).then(resolve, reject);
           }, reject);
           return;
         }
@@ -716,6 +722,7 @@ function httpGetInternal(
             finalUrl: url,
             headers: res.headers,
             ...(truncated ? { truncated: true } : {}),
+            ...(firstRedirectStatus !== undefined ? { redirectStatusCode: firstRedirectStatus } : {}),
           });
         };
         res.on('data', (chunk: Buffer) => {

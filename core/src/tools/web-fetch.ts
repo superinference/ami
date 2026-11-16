@@ -4,13 +4,88 @@ import * as path from 'path';
 import { URL } from 'url';
 import { createRequire } from 'module';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validateUrlSafety, stripHtml, httpGet, httpGetWithRetry, MAX_HTTP_BODY_BYTES, EgressBlockedError } from './web-utils';
+import { validateUrlSafety, httpGet, httpGetWithRetry, MAX_HTTP_BODY_BYTES, EgressBlockedError } from './web-utils';
 import type { IncomingHttpHeaders } from 'http';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
-import { isPreapprovedHost } from './web-preapproved';
+import { isPreapprovedHost, matchDomainRule } from './web-preapproved';
 
 const MAX_RESPONSE_LENGTH = 50000;
 export const MAX_FETCH_DEADLINE_MS = 300_000;
+
+/**
+ * Hard upper bound on the in-process PDF text-extraction step. A malformed or
+ * adversarial PDF (deeply nested objects, a decompression bomb, pathological
+ * streams) can make the parser spin CPU or hang unboundedly, blocking the agent.
+ * Claude Code time-bounds every external PDF operation (pdfinfo 10s, pdftoppm
+ * 5s/120s); AMI parses in-process, so we race getText() against this deadline and
+ * always release the native parser afterward (parity: bounded PDF parsing).
+ */
+export const PDF_PARSE_TIMEOUT_MS = 30_000;
+
+/**
+ * Minimal surface of the pdf-parse `PDFParse` instance this module uses. Declared
+ * so {@link parsePdfWithTimeout} is unit-testable with a fake parser without
+ * pulling in the native dependency.
+ */
+export interface PdfParserLike<T> {
+  getText(): Promise<T>;
+  destroy(): Promise<void> | void;
+}
+
+/**
+ * Run `parser.getText()` with a hard timeout, ALWAYS releasing the parser's native
+ * resources (`destroy()`) afterward — on success, on parse error, and on timeout.
+ * Without the timeout a hostile PDF could hang the extraction forever; without the
+ * guaranteed destroy, a timed-out parse would leak the native handle. On timeout it
+ * rejects with a clear deadline error that the caller's PDF `catch` turns into the
+ * HTML-fallback / "could not extract" path. ADDITIVE.
+ */
+export async function parsePdfWithTimeout<T>(
+  parser: PdfParserLike<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`PDF parsing exceeded ${timeoutMs}ms deadline`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([parser.getText(), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    try {
+      await parser.destroy();
+    } catch {
+      /* best-effort release; a destroy failure must not mask the parse result */
+    }
+  }
+}
+
+/**
+ * Compile a caller-supplied regex `filter` and keep only the page-text lines that
+ * match it, so a verbose fetched page can be reduced to the relevant lines before
+ * it is summarized/returned (parity with Claude's regex content-filter knob on
+ * verbose-output tools; same contract as the bash/task-output `filter`). Returns
+ * `{ error }` for an invalid pattern so the tool can surface it instead of silently
+ * matching nothing. An empty/whitespace pattern is treated as "no filter".
+ */
+export function filterTextByPattern(
+  text: string,
+  pattern: string,
+): { text: string } | { error: string } {
+  let re: RegExp;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-regexp -- caller-supplied content filter, same contract as task-output's `filter`; no network/eval side effect
+    re = new RegExp(pattern);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { error: `invalid filter regex ${JSON.stringify(pattern)}: ${msg}` };
+  }
+  const kept = text.split('\n').filter((line) => re.test(line));
+  return { text: kept.join('\n') };
+}
 
 /**
  * Upper bound on content handed to the secondary summarizer / returned verbatim
@@ -298,6 +373,10 @@ export const webFetchTool: ToolDefinition = {
         type: 'number',
         description: 'Character offset into the page text to start reading from. Use when a previous fetch reported truncated content.',
       },
+      filter: {
+        type: 'string',
+        description: 'Optional regular expression. When set, only page-text lines matching it are kept before summarizing/returning — use it to cut a verbose page down to the relevant lines.',
+      },
     },
     required: ['url', 'prompt'],
   },
@@ -370,14 +449,17 @@ export const webFetchTool: ToolDefinition = {
       return { output: 'Error: Cannot specify both allowed_domains and blocked_domains in the same request.', isError: true };
     }
 
+    // Domain rules accept both a bare host (`example.com`, subdomain-inclusive) and
+    // a path-scoped entry (`github.com/anthropics`) with segment-boundary matching,
+    // so approval/denial can be scoped to a sub-path of a shared host.
     if (allowedDomains && allowedDomains.length > 0) {
-      if (!allowedDomains.some(d => host === d || host.endsWith('.' + d))) {
+      if (!allowedDomains.some(d => matchDomainRule(host, parsedUrl.pathname, d))) {
         return { output: `Error: Domain "${host}" is not in the allowed domains list.`, isError: true };
       }
     }
 
     if (blockedDomains && blockedDomains.length > 0) {
-      if (blockedDomains.some(d => host === d || host.endsWith('.' + d))) {
+      if (blockedDomains.some(d => matchDomainRule(host, parsedUrl.pathname, d))) {
         return { output: `Error: Domain "${host}" is blocked.`, isError: true };
       }
     }
@@ -430,7 +512,7 @@ export const webFetchTool: ToolDefinition = {
       : deadlineSignal;
 
     try {
-      const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated, headers } = await doHttpGet(
+      const { body, bodyBuffer, statusCode, contentType, finalUrl, truncated, headers, redirectStatusCode } = await doHttpGet(
         url,
         fetchSignal,
         { resolvedIP: pinnedIP, raw: true },
@@ -473,8 +555,17 @@ export const webFetchTool: ToolDefinition = {
         const refetch = prompt
           ? `Re-fetch with url="${finalUrl}" and the same prompt="${prompt}" if you still want this content.`
           : `Re-fetch with url="${finalUrl}" if you still want this content.`;
+        // Report the actual redirect (3xx) status + reason phrase so the result is
+        // self-describing (e.g. "HTTP 301 Moved Permanently"), parity with Claude's
+        // status-code-to-text redirect message. Falls back to the final status when
+        // no redirect code was captured (e.g. a test seam supplying only finalUrl).
+        const redirectCode = redirectStatusCode ?? statusCode;
+        const redirectReason = httpStatusText(redirectCode);
+        const statusPart = redirectCode
+          ? ` (HTTP ${redirectCode}${redirectReason ? ' ' + redirectReason : ''})`
+          : '';
         return {
-          output: `Redirect detected: ${sanitizedUrl} → ${finalUrl}\nThe URL redirected to ${reason}; the fetched content was not returned. ${refetch}`,
+          output: `Redirect detected: ${sanitizedUrl} → ${finalUrl}${statusPart}\nThe URL redirected to ${reason}; the fetched content was not returned. ${refetch}`,
         };
       }
 
@@ -489,8 +580,9 @@ export const webFetchTool: ToolDefinition = {
           const { PDFParse } = ownRequire('pdf-parse');
           const pdfBuffer = bodyBuffer ?? Buffer.from(body, 'binary');
           const parser = new PDFParse({ data: pdfBuffer });
-          const pdf = await parser.getText();
-          await parser.destroy();
+          // Time-bound the in-process extraction so a hostile/malformed PDF cannot
+          // hang the agent; the parser is always destroyed (even on timeout).
+          const pdf = await parsePdfWithTimeout<{ text?: string; total?: number }>(parser, PDF_PARSE_TIMEOUT_MS);
           const pdfText = (pdf.text || '').trim();
           if (pdfText.length > 100) {
             const truncated = spillToolText(context.cwd, 'pdf', pdfText, MAX_RESPONSE_LENGTH);
@@ -512,7 +604,10 @@ export const webFetchTool: ToolDefinition = {
             }
             const htmlResult = await doHttpGet(htmlUrl, fetchSignal, { resolvedIP: fallbackIP });
             if (htmlResult.statusCode < 400 && htmlResult.contentType.includes('text/html')) {
-              const htmlContent = stripHtml(htmlResult.body);
+              // Use the Markdown converter (not the plain-text stripHtml) so the
+              // HTML-version-of-PDF fallback keeps link targets as [text](url) and
+              // heading/list structure, instead of discarding every source URL.
+              const htmlContent = htmlToMarkdown(htmlResult.body);
               if (htmlContent.length > 200) {
                 const page = spillToolText(context.cwd, 'web-fetch', htmlContent, MAX_RESPONSE_LENGTH);
                 return {
@@ -562,6 +657,21 @@ export const webFetchTool: ToolDefinition = {
         content = htmlToMarkdown(body);
       } else {
         content = body;
+      }
+
+      // Optional caller-supplied regex content filter: drop every page-text line
+      // that does not match, cutting a verbose page down to the relevant lines
+      // BEFORE offset/spill/summarization. An invalid pattern is a tool error.
+      const rawFilter = input.filter;
+      if (rawFilter !== undefined && rawFilter !== null && rawFilter !== '') {
+        if (typeof rawFilter !== 'string') {
+          return { output: 'Error: filter must be a regular-expression string.', isError: true };
+        }
+        const filtered = filterTextByPattern(content, rawFilter);
+        if ('error' in filtered) {
+          return { output: `Error: ${filtered.error}`, isError: true };
+        }
+        content = filtered.text;
       }
 
       const totalLength = content.length;
@@ -616,7 +726,7 @@ export const webFetchTool: ToolDefinition = {
         const isPreapprovedDomain = preapprovedHost || !!(
           allowedDomains &&
           allowedDomains.length > 0 &&
-          allowedDomains.some(d => host === d || host.endsWith('.' + d))
+          allowedDomains.some(d => matchDomainRule(host, parsedUrl.pathname, d))
         );
         let summary = '';
         let summarizeFailed = false;

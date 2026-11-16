@@ -170,3 +170,34 @@ export function isPreapprovedHost(hostname: string, pathname: string): boolean {
   }
   return false;
 }
+
+/**
+ * Match a per-call `allowed_domains` / `blocked_domains` entry against a request's
+ * host (+ pathname). Two entry forms are supported (parity with Claude's
+ * preapproved path-scoped allowlist, generalized to the caller-supplied rule list):
+ *
+ *  - **host-only** (`example.com`) — matches the host exactly OR any subdomain of
+ *    it (`host === d || host.endsWith('.' + d)`), the original AMI behavior.
+ *  - **path-scoped** (`github.com/anthropics`) — matches the host (exact or
+ *    subdomain) AND a path PREFIX, with SEGMENT-BOUNDARY enforcement: the pathname
+ *    must equal the prefix or be followed by '/', so `github.com/anthropics` matches
+ *    `/anthropics` and `/anthropics/repo` but NOT `/anthropics-evil/malware`
+ *    (prefix-spoofing guard, mirroring isPreapprovedHost L154-166). This lets a
+ *    caller scope approval to a sub-path of a shared/multi-tenant host instead of
+ *    the whole host.
+ *
+ * ADDITIVE: entries with no '/' behave exactly as the previous host-only check, so
+ * existing callers are unaffected.
+ */
+export function matchDomainRule(host: string, pathname: string, entry: string): boolean {
+  const h = host.toLowerCase();
+  const slash = entry.indexOf('/');
+  if (slash === -1) {
+    const d = entry.toLowerCase();
+    return h === d || h.endsWith('.' + d);
+  }
+  const ruleHost = entry.slice(0, slash).toLowerCase();
+  const prefix = entry.slice(slash); // keeps the leading '/'
+  if (!(h === ruleHost || h.endsWith('.' + ruleHost))) return false;
+  return pathname === prefix || pathname.startsWith(prefix + '/');
+}
