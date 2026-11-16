@@ -1,6 +1,6 @@
 import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
-import { detectUnsafeTypeCast } from './powershell-security';
+import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powershell-security';
 import { redactCredentials } from '../credential-guard';
 
 export interface SecurityCheckResult {
@@ -4100,6 +4100,18 @@ export function detectPowerShellExecution(command: string): { blocked: boolean; 
     const typeCast = detectUnsafeTypeCast(stripped);
     if (typeCast.blocked) {
       return { blocked: true, reason: typeCast.reason };
+    }
+  }
+
+  // 6. Other PowerShell dangerous-pattern detectors (ordered validator chain):
+  //    New-Object -ComObject / non-allowlisted -TypeName string cast,
+  //    Start-Process -Verb RunAs or nested-shell launch, alias/variable
+  //    runtime-state hijack, env: scope manipulation, and code-exec /
+  //    module-load / WMI-CIM process-spawn cmdlets.
+  {
+    const dangerous = detectDangerousPowerShellCommand(stripped);
+    if (dangerous.blocked) {
+      return { blocked: true, reason: dangerous.reason };
     }
   }
 

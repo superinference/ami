@@ -5,6 +5,17 @@ import {
   normalizeTypeName,
   isClmAllowedType,
   detectUnsafeTypeCast,
+  CODE_EXEC_CMDLETS,
+  MODULE_LOADING_CMDLETS,
+  WMI_CIM_CMDLETS,
+  ALIAS_HIJACK_CMDLETS,
+  ENV_WRITE_CMDLETS,
+  detectUnsafeNewObject,
+  detectStartProcessElevation,
+  detectRuntimeStateHijack,
+  detectEnvVarManipulation,
+  detectDangerousPsCmdlets,
+  detectDangerousPowerShellCommand,
 } from '../src/tools/powershell-security';
 import { validateBashSecurity, detectPowerShellExecution } from '../src/tools/bash-security';
 
@@ -182,5 +193,192 @@ describe('CLM type-cast boundary wired into the permission path', () => {
     assert.equal(validateBashSecurity("powershell -c \"[string]'hi'\"").safe, true);
     assert.equal(validateBashSecurity('echo hello').safe, true);
     assert.equal(validateBashSecurity('ls [a-z]*.txt').safe, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dangerous-cmdlet config lists (mirrors Claude's dangerousCmdlets.ts). The
+// detectors below consume these, so they are the single source of truth.
+// ---------------------------------------------------------------------------
+describe('PowerShell dangerous-cmdlet config lists', () => {
+  it('expose the canonical hazard-class sets, lowercase', () => {
+    assert.equal(CODE_EXEC_CMDLETS.has('add-type'), true);
+    assert.equal(MODULE_LOADING_CMDLETS.has('import-module'), true);
+    assert.equal(MODULE_LOADING_CMDLETS.has('ipmo'), true);
+    assert.equal(WMI_CIM_CMDLETS.has('invoke-wmimethod'), true);
+    assert.equal(WMI_CIM_CMDLETS.has('invoke-cimmethod'), true);
+    assert.equal(ALIAS_HIJACK_CMDLETS.has('set-alias'), true);
+    assert.equal(ALIAS_HIJACK_CMDLETS.has('set-variable'), true);
+    assert.equal(ENV_WRITE_CMDLETS.has('set-item'), true);
+    for (const set of [
+      CODE_EXEC_CMDLETS,
+      MODULE_LOADING_CMDLETS,
+      WMI_CIM_CMDLETS,
+      ALIAS_HIJACK_CMDLETS,
+      ENV_WRITE_CMDLETS,
+    ]) {
+      for (const n of set) assert.equal(n, n.toLowerCase());
+    }
+  });
+
+  it('omit bash-colliding aliases to avoid POSIX-shell false positives', () => {
+    for (const n of ['rm', 'del', 'rmdir', 'erase']) {
+      assert.equal(ENV_WRITE_CMDLETS.has(n), false, `${n} must not be in ENV_WRITE_CMDLETS`);
+    }
+    // sv (runit) / nv collide with real POSIX commands and are dropped from the
+    // unconditionally-blocking alias set.
+    assert.equal(ALIAS_HIJACK_CMDLETS.has('sv'), false);
+    assert.equal(ALIAS_HIJACK_CMDLETS.has('nv'), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// New-Object: -ComObject + string -TypeName CLM allowlist check.
+// ---------------------------------------------------------------------------
+describe('detectUnsafeNewObject', () => {
+  it('flags -ComObject (and abbreviations)', () => {
+    assert.equal(detectUnsafeNewObject("New-Object -ComObject WScript.Shell").blocked, true);
+    assert.equal(detectUnsafeNewObject("new-object -com Shell.Application").blocked, true);
+  });
+
+  it('flags a string -TypeName outside the CLM allowlist (positional + named)', () => {
+    assert.equal(detectUnsafeNewObject('New-Object System.Net.WebClient').blocked, true);
+    assert.equal(detectUnsafeNewObject('New-Object -TypeName Net.WebClient').blocked, true);
+    assert.equal(detectUnsafeNewObject('New-Object -TypeName:System.Net.Sockets.TcpClient').blocked, true);
+    // Named value-params before the positional TypeName are skipped.
+    assert.equal(
+      detectUnsafeNewObject('New-Object -ArgumentList 1,2 System.Net.WebClient').blocked,
+      true,
+    );
+  });
+
+  it('allows an allowlisted -TypeName and ignores new-object as a bare argument', () => {
+    assert.equal(detectUnsafeNewObject('New-Object System.Collections.Hashtable').blocked, false);
+    assert.equal(detectUnsafeNewObject('New-Object PSObject').blocked, false);
+    assert.equal(detectUnsafeNewObject('Write-Output new-object').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Start-Process: elevation + nested-shell launch.
+// ---------------------------------------------------------------------------
+describe('detectStartProcessElevation', () => {
+  it('flags -Verb RunAs (space and colon / quoted forms)', () => {
+    assert.equal(detectStartProcessElevation('Start-Process notepad -Verb RunAs').blocked, true);
+    assert.equal(detectStartProcessElevation("Start-Process cmd -Verb:'RunAs'").blocked, true);
+    assert.equal(detectStartProcessElevation('saps app -v runas').blocked, true);
+  });
+
+  it('flags launching a nested PowerShell', () => {
+    assert.equal(detectStartProcessElevation('Start-Process powershell -ArgumentList "-c",$x').blocked, true);
+    assert.equal(detectStartProcessElevation('Start-Process -FilePath pwsh').blocked, true);
+  });
+
+  it('allows an ordinary Start-Process', () => {
+    assert.equal(detectStartProcessElevation('Start-Process notepad.exe').blocked, false);
+    assert.equal(detectStartProcessElevation('echo start-process').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime-state hijack: alias / variable mutation.
+// ---------------------------------------------------------------------------
+describe('detectRuntimeStateHijack', () => {
+  it('flags alias/variable mutation cmdlets, including module-qualified', () => {
+    assert.equal(detectRuntimeStateHijack('Set-Alias Get-Content Invoke-Expression').blocked, true);
+    assert.equal(detectRuntimeStateHijack('New-Variable x 1').blocked, true);
+    assert.equal(
+      detectRuntimeStateHijack('Microsoft.PowerShell.Utility\\Set-Alias ls rm').blocked,
+      true,
+    );
+  });
+
+  it('does not flag the cmdlet name as a plain argument', () => {
+    assert.equal(detectRuntimeStateHijack('Write-Output set-alias').blocked, false);
+    assert.equal(detectRuntimeStateHijack('echo hello').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Env-var manipulation: only when an env: reference is present.
+// ---------------------------------------------------------------------------
+describe('detectEnvVarManipulation', () => {
+  it('flags $env: assignment and env: write cmdlets', () => {
+    assert.equal(detectEnvVarManipulation('$env:Path = "C:\\evil"').blocked, true);
+    assert.equal(detectEnvVarManipulation('Set-Item Env:Path "x"').blocked, true);
+  });
+
+  it('leaves [Environment]::SetEnvironmentVariable to the CLM cast check (no dup)', () => {
+    // Not matched here (no env: scope token) but caught by detectUnsafeTypeCast.
+    assert.equal(
+      detectEnvVarManipulation("[Environment]::SetEnvironmentVariable('Path','x','User')").blocked,
+      false,
+    );
+    assert.equal(
+      detectUnsafeTypeCast("[Environment]::SetEnvironmentVariable('Path','x','User')").blocked,
+      true,
+    );
+  });
+
+  it('does not fire without an env: reference (reading / POSIX-shell safe)', () => {
+    assert.equal(detectEnvVarManipulation('$x = $env:Path').blocked, false);
+    assert.equal(detectEnvVarManipulation('echo $env:USERNAME').blocked, false);
+    assert.equal(detectEnvVarManipulation('set-content file.txt "hi"').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Code-exec / module-load / WMI-spawn cmdlets.
+// ---------------------------------------------------------------------------
+describe('detectDangerousPsCmdlets', () => {
+  it('flags Add-Type, module loads, and WMI/CIM spawns', () => {
+    assert.equal(detectDangerousPsCmdlets('Add-Type -TypeDefinition $code').blocked, true);
+    assert.equal(detectDangerousPsCmdlets('Import-Module .\\evil.psm1').blocked, true);
+    assert.equal(
+      detectDangerousPsCmdlets('Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList calc').blocked,
+      true,
+    );
+    assert.equal(detectDangerousPsCmdlets('Invoke-CimMethod -ClassName Win32_Process').blocked, true);
+  });
+
+  it('allows unrelated commands', () => {
+    assert.equal(detectDangerousPsCmdlets('Get-ChildItem').blocked, false);
+    assert.equal(detectDangerousPsCmdlets('echo import-module').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Aggregate + end-to-end wiring into detectPowerShellExecution /
+// validateBashSecurity. Red-green: reverting the detectDangerousPowerShellCommand
+// call in detectPowerShellExecution flips every `safe:false` here back to true.
+// ---------------------------------------------------------------------------
+describe('detectDangerousPowerShellCommand aggregate + permission-path wiring', () => {
+  it('returns the first matching detector reason', () => {
+    assert.match(
+      detectDangerousPowerShellCommand('New-Object System.Net.WebClient').reason!,
+      /New-Object/,
+    );
+    assert.match(
+      detectDangerousPowerShellCommand('Set-Alias a b').reason!,
+      /alias or variable/,
+    );
+    assert.equal(detectDangerousPowerShellCommand('Get-ChildItem').blocked, false);
+  });
+
+  it('detectPowerShellExecution blocks the new dangerous patterns', () => {
+    assert.equal(detectPowerShellExecution('New-Object System.Net.WebClient').blocked, true);
+    assert.equal(detectPowerShellExecution('Start-Process notepad -Verb RunAs').blocked, true);
+    assert.equal(detectPowerShellExecution('Add-Type -TypeDefinition $c').blocked, true);
+    assert.equal(detectPowerShellExecution('$env:Path = "x"').blocked, true);
+    // Alt-dash (en-dash) is normalized before the checks run.
+    assert.equal(detectPowerShellExecution('Start-Process cmd \u2013Verb RunAs').blocked, true);
+  });
+
+  it('validateBashSecurity treats them as not auto-approvable, bash stays safe', () => {
+    assert.equal(validateBashSecurity('New-Object System.Net.WebClient').safe, false);
+    assert.equal(validateBashSecurity('Invoke-WmiMethod -Class Win32_Process -Name Create').safe, false);
+    assert.equal(validateBashSecurity('echo hello').safe, true);
+    assert.equal(validateBashSecurity('rm file.txt').safe, true);
+    assert.equal(validateBashSecurity('set-content out.txt "data"').safe, true);
   });
 });
