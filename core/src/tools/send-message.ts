@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { isTerminalTaskStatus } from '../process-manager';
+import { normalizePermissionMode, PermissionMode, PERMISSION_MODES } from '../permissions';
 
 interface AgentMessage {
   /**
@@ -61,6 +62,12 @@ export interface PlanApprovalResponse {
   requestId: string;
   approve: boolean;
   feedback?: string;
+  // The permission mode the approving lead grants the teammate to inherit once
+  // its plan is approved (plan→default, else the lead's current mode). Carried on
+  // the response so the approved worker can exit plan-mode into the right posture
+  // without a second round-trip. Mirrors Claude Code's PlanApprovalResponseMessage
+  // `permissionMode` (validated via PermissionModeSchema).
+  permissionMode?: PermissionMode;
 }
 export interface PermissionRequest {
   type: 'permission_request';
@@ -74,6 +81,43 @@ export interface PermissionResponse {
   requestId: string;
   approve: boolean;
 }
+/**
+ * A lead assigns a unit of work to a teammate. Routed to the named teammate (not
+ * broadcast). `assignedBy` is auto-filled from the trusted sender when omitted so
+ * the recipient always knows who assigned it. Mirrors Claude Code's
+ * teammateMailbox TaskAssignmentMessage.
+ */
+export interface TaskAssignment {
+  type: 'task_assignment';
+  taskId: string;
+  subject: string;
+  description?: string;
+  assignedBy?: string;
+}
+/**
+ * A teammate reports it has gone idle / finished its turn, surfaced to the lead so
+ * the lead can reassign work without polling. Mirrors Claude Code's
+ * IdleNotificationMessage (idleReason / completedTaskId / completedStatus /
+ * failureReason / summary — all optional).
+ */
+export interface IdleNotification {
+  type: 'idle_notification';
+  idleReason?: 'available' | 'interrupted' | 'failed';
+  summary?: string;
+  completedTaskId?: string;
+  completedStatus?: 'resolved' | 'blocked' | 'failed';
+  failureReason?: string;
+}
+/**
+ * A lead requests a teammate switch to a given permission mode. Lead-only; routed
+ * to the named teammate. The mode is validated through the single canonical
+ * acceptance boundary (normalizePermissionMode). Mirrors Claude Code's
+ * ModeSetRequestMessage / createModeSetRequestMessage.
+ */
+export interface ModeSetRequest {
+  type: 'mode_set_request';
+  mode: PermissionMode;
+}
 
 export type StructuredMessage =
   | ShutdownRequest
@@ -81,12 +125,19 @@ export type StructuredMessage =
   | PlanApprovalRequest
   | PlanApprovalResponse
   | PermissionRequest
-  | PermissionResponse;
+  | PermissionResponse
+  | TaskAssignment
+  | IdleNotification
+  | ModeSetRequest;
 
 const STRUCTURED_TYPES = new Set([
   'shutdown_request', 'shutdown_response', 'plan_approval_request',
   'plan_approval_response', 'permission_request', 'permission_response',
+  'task_assignment', 'idle_notification', 'mode_set_request',
 ]);
+
+const IDLE_REASONS = new Set(['available', 'interrupted', 'failed']);
+const COMPLETED_STATUSES = new Set(['resolved', 'blocked', 'failed']);
 
 /**
  * Providers sometimes serialize booleans as strings; accept both. The decision
@@ -124,15 +175,59 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
     case 'plan_approval_request':
       if (typeof o.planContent !== 'string' || !o.planContent.trim()) return { error: 'plan_approval_request requires planContent' };
       return { type, requestId: optionalReqId, planContent: o.planContent, planFilePath: typeof o.planFilePath === 'string' ? o.planFilePath : undefined };
-    case 'plan_approval_response':
+    case 'plan_approval_response': {
       if (typeof requestId !== 'string') return { error: 'plan_approval_response requires a requestId' };
-      return { type, requestId, approve: coerceApprove(o), feedback: typeof o.feedback === 'string' ? o.feedback : undefined };
+      let permissionMode: PermissionMode | undefined;
+      if (o.permissionMode !== undefined) {
+        if (typeof o.permissionMode !== 'string') return { error: 'plan_approval_response permissionMode must be a string' };
+        const norm = normalizePermissionMode(o.permissionMode);
+        if (!norm) return { error: `plan_approval_response permissionMode must be one of: ${PERMISSION_MODES.join(', ')}` };
+        permissionMode = norm;
+      }
+      return { type, requestId, approve: coerceApprove(o), feedback: typeof o.feedback === 'string' ? o.feedback : undefined, permissionMode };
+    }
     case 'permission_request':
       if (typeof o.tool !== 'string') return { error: 'permission_request requires a tool' };
       return { type, requestId: optionalReqId, tool: o.tool, description: typeof o.description === 'string' ? o.description : '' };
     case 'permission_response':
       if (typeof requestId !== 'string') return { error: 'permission_response requires a requestId' };
       return { type, requestId, approve: coerceApprove(o) };
+    case 'task_assignment': {
+      if (typeof o.taskId !== 'string' || !o.taskId.trim()) return { error: 'task_assignment requires a taskId' };
+      if (typeof o.subject !== 'string' || !o.subject.trim()) return { error: 'task_assignment requires a subject' };
+      return {
+        type,
+        taskId: o.taskId,
+        subject: o.subject,
+        description: typeof o.description === 'string' ? o.description : undefined,
+        assignedBy: typeof o.assignedBy === 'string' ? o.assignedBy : undefined,
+      };
+    }
+    case 'idle_notification': {
+      // All fields optional (an idle teammate may report nothing but "I'm idle"),
+      // but a PRESENT enum field must be valid — a bad value is rejected with a
+      // self-correcting message rather than silently coerced.
+      if (o.idleReason !== undefined && (typeof o.idleReason !== 'string' || !IDLE_REASONS.has(o.idleReason))) {
+        return { error: `idle_notification idleReason must be one of: ${[...IDLE_REASONS].join(', ')}` };
+      }
+      if (o.completedStatus !== undefined && (typeof o.completedStatus !== 'string' || !COMPLETED_STATUSES.has(o.completedStatus))) {
+        return { error: `idle_notification completedStatus must be one of: ${[...COMPLETED_STATUSES].join(', ')}` };
+      }
+      return {
+        type,
+        idleReason: o.idleReason as IdleNotification['idleReason'],
+        summary: typeof o.summary === 'string' ? o.summary : undefined,
+        completedTaskId: typeof o.completedTaskId === 'string' ? o.completedTaskId : undefined,
+        completedStatus: o.completedStatus as IdleNotification['completedStatus'],
+        failureReason: typeof o.failureReason === 'string' ? o.failureReason : undefined,
+      };
+    }
+    case 'mode_set_request': {
+      if (typeof o.mode !== 'string') return { error: 'mode_set_request requires a mode' };
+      const norm = normalizePermissionMode(o.mode);
+      if (!norm) return { error: `mode_set_request mode must be one of: ${PERMISSION_MODES.join(', ')}` };
+      return { type, mode: norm };
+    }
     default:
       return null;
   }
@@ -197,12 +292,28 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
       return `[Plan Approval Request]${m.planFilePath ? ` (${m.planFilePath})` : ''} — teammate submitted a plan for review`;
     case 'plan_approval_response':
       return m.approve
-        ? '[Plan Approved]'
-        : `[Plan Rejected]${m.feedback ? `: ${m.feedback}` : ''}`;
+        ? `[Plan Approved] You can now proceed with implementation${m.permissionMode ? ` (mode: ${m.permissionMode})` : ''}`
+        // Default guidance when a plan is rejected with empty/missing feedback, so
+        // the teammate always has an actionable next step (mirrors Claude Code's
+        // PlanApprovalMessage: `[Plan Rejected] ${feedback || 'Please revise your plan'}`).
+        : `[Plan Rejected] ${m.feedback || 'Please revise your plan'} — revise and call ExitPlanMode again`;
     case 'permission_request':
       return `[Permission Request] tool "${m.tool}"${m.description ? `: ${m.description}` : ''}`;
     case 'permission_response':
       return m.approve ? '[Permission Granted]' : '[Permission Denied]';
+    case 'task_assignment':
+      return `[Task Assigned] #${m.taskId} - ${m.subject}`;
+    case 'idle_notification': {
+      const parts: string[] = [];
+      if (m.completedTaskId) parts.push(`#${m.completedTaskId} ${m.completedStatus ?? 'completed'}`);
+      if (m.failureReason) parts.push(`failed: ${m.failureReason}`);
+      if (m.summary) parts.push(m.summary);
+      const whoIdle = from ? ` ${from}` : '';
+      const reason = m.idleReason ? ` (${m.idleReason})` : '';
+      return `[Teammate Idle${whoIdle}]${reason}${parts.length ? ` — ${parts.join(' · ')}` : ''}`;
+    }
+    case 'mode_set_request':
+      return `[Mode Set Request]${from ? ` from ${from}` : ''} → ${m.mode}`;
   }
 }
 
@@ -563,7 +674,11 @@ export const sendMessageTool: ToolDefinition = {
     'rejection requires a reason/feedback). Approving a shutdown terminates you — do NOT originate a ' +
     'shutdown_request unless explicitly asked to. To submit your own plan for review, send a ' +
     '"plan_approval_request" (with planContent, optional planFilePath) to the reviewer. The protocol also carries ' +
-    'permission_request/permission_response for forwarding a worker\'s permission prompt to the lead.',
+    'permission_request/permission_response for forwarding a worker\'s permission prompt to the lead. ' +
+    'The lead can assign work with a "task_assignment" (taskId, subject, description) or ask a teammate to switch ' +
+    'permission posture with a "mode_set_request" (mode); a teammate reports it has finished its turn with an ' +
+    '"idle_notification" (optional idleReason/completedTaskId/completedStatus/summary) sent to the lead. Approving a ' +
+    'plan may carry a "permissionMode" the teammate inherits on exiting plan-mode.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -779,7 +894,43 @@ export const sendMessageTool: ToolDefinition = {
           }
           const originTag = requestOriginTag(structured.requestId);
           enqueue(to, { from, to, content, timestamp: Date.now() });
-          return { output: `Plan ${structured.approve ? 'approved' : 'rejected'} for ${toRaw} (id: ${structured.requestId})${originTag} [from: ${from}]` };
+          if (structured.approve) {
+            // The granted permission mode (if any) is surfaced so the lead sees
+            // what posture the teammate will inherit on exiting plan-mode.
+            const modeTag = structured.permissionMode ? ` (mode: ${structured.permissionMode})` : '';
+            return { output: `Plan approved for ${toRaw} (id: ${structured.requestId})${originTag}${modeTag} [from: ${from}]` };
+          }
+          // Rejection always carries actionable guidance, defaulting when the lead
+          // gave no explicit feedback (mirrors Claude's 'Please revise your plan').
+          const guidance = structured.feedback || 'Please revise your plan';
+          return { output: `Plan rejected for ${toRaw} (id: ${structured.requestId})${originTag} [from: ${from}] — ${guidance}; revise and call ExitPlanMode again` };
+        }
+        case 'task_assignment': {
+          // A lead assigns work to a named teammate. assignedBy is stamped from the
+          // trusted sender (not model-supplied) so provenance cannot be spoofed.
+          const assignedBy = from;
+          const wire = JSON.stringify({ ...structured, assignedBy, description: structured.description ?? '' });
+          enqueue(to, { from, to, content: wire, timestamp: Date.now() });
+          return { output: `Task #${structured.taskId} "${structured.subject}" assigned to ${toRaw} [from: ${from}]` };
+        }
+        case 'idle_notification': {
+          // A teammate reports it is idle; always surfaced to the lead so it can
+          // reassign work. Routed to the canonical lead mailbox.
+          if (toRaw !== TEAM_LEAD_NAME) {
+            return { output: `Error: idle_notification must be sent to "${TEAM_LEAD_NAME}".`, isError: true };
+          }
+          enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content, timestamp: Date.now() });
+          const reasonTag = structured.idleReason ? ` (${structured.idleReason})` : '';
+          return { output: `Idle notification sent to ${TEAM_LEAD_NAME}${reasonTag} [from: ${from}]` };
+        }
+        case 'mode_set_request': {
+          // Only the lead may change a teammate's permission mode. Routed to the
+          // named teammate, which applies it on drain.
+          if (!isSenderLead) {
+            return { output: 'Error: only the team lead can set a teammate permission mode.', isError: true };
+          }
+          enqueue(to, { from, to, content, timestamp: Date.now() });
+          return { output: `Permission mode "${structured.mode}" requested for ${toRaw} [from: ${from}]` };
         }
         case 'permission_request': {
           // A worker forwards a permission prompt up to the lead for a decision.
