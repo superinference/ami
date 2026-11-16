@@ -62,6 +62,20 @@ function isSessionBlobRef(v: unknown): v is SessionBlobRef {
 }
 
 /**
+ * Build a rehydrated message from a stored message, its {@link SessionBlobRef},
+ * and the blob bytes that were read for it (`null` when the blob is
+ * missing/unreadable → the inline preview is kept with a truncation marker).
+ * Pure: shared by the sync ({@link SessionManager.rehydrateMessage}) and async
+ * ({@link SessionManager.rehydrateMessageAsync}) paths so both produce an
+ * identical result regardless of how the bytes were fetched (no duplicated
+ * fallback logic — §0b.6).
+ */
+function applyRehydratedBlob(msg: Message, stored: SessionBlobRef, bytes: string | null): Message {
+  const content = bytes !== null ? bytes : stored.preview + '\n... (truncated; blob unavailable)';
+  return { ...msg, content: content as unknown as string };
+}
+
+/**
  * Resolve a persisted message's `content` to its plain-text form for title /
  * preview derivation. A string stays as-is; an offloaded {@link SessionBlobRef}
  * yields its inline preview; an array of content blocks (e.g. a pasted-image
@@ -369,16 +383,30 @@ export class SessionManager {
    *  with the full blob contents (or the preview if the blob is unavailable). */
   private rehydrateMessage(msg: Message, blobDir: string): Message {
     const stored = (msg as { content?: unknown }).content;
-    if (isSessionBlobRef(stored)) {
-      let content: string;
-      try {
-        content = fs.readFileSync(path.join(blobDir, `${stored.__siSessionBlob}.blob`), 'utf-8');
-      } catch {
-        content = stored.preview + '\n... (truncated; blob unavailable)';
-      }
-      return { ...msg, content: content as unknown as string };
+    if (!isSessionBlobRef(stored)) return msg;
+    let bytes: string | null;
+    try {
+      bytes = fs.readFileSync(path.join(blobDir, `${stored.__siSessionBlob}.blob`), 'utf-8');
+    } catch {
+      bytes = null;
     }
-    return msg;
+    return applyRehydratedBlob(msg, stored, bytes);
+  }
+
+  /** Async counterpart to {@link rehydrateMessage}: reads the blob sidecar off
+   *  the event loop (so a transcript with many/large blobs doesn't block the
+   *  caller) and reuses {@link applyRehydratedBlob} so the fallback text is
+   *  byte-for-byte identical to the sync path. */
+  private async rehydrateMessageAsync(msg: Message, blobDir: string): Promise<Message> {
+    const stored = (msg as { content?: unknown }).content;
+    if (!isSessionBlobRef(stored)) return msg;
+    let bytes: string | null;
+    try {
+      bytes = await fs.promises.readFile(path.join(blobDir, `${stored.__siSessionBlob}.blob`), 'utf-8');
+    } catch {
+      bytes = null;
+    }
+    return applyRehydratedBlob(msg, stored, bytes);
   }
 
   /**
@@ -416,6 +444,26 @@ export class SessionManager {
     assertPathWithin(filePath, this.sessionDir);
     if (!fs.existsSync(filePath)) return null;
     return this.readSessionFile(filePath);
+  }
+
+  /**
+   * Async counterpart to {@link load}: lazily read a session's full transcript
+   * (and rehydrate its content-addressed blob sidecars) off the main thread, so
+   * resuming a large/blob-heavy conversation does not block the event loop /
+   * freeze the TUI while the body streams in from disk. Returns `null` for a
+   * missing, oversized (> {@link MAX_SESSION_READ_BYTES}), or corrupt file —
+   * exactly like {@link load}, just non-blocking.
+   *
+   * Parity: Claude's async `loadFullLog` — a picker shows the cheap lite entry
+   * ({@link SessionListEntry} from {@link list}) immediately and only awaits the
+   * full message load when a session is actually opened, enabling a
+   * "Loading session…" affordance in front of a potentially slow read.
+   */
+  async loadAsync(id: string): Promise<Session | null> {
+    const safeId = sanitizeSessionId(id);
+    const filePath = path.join(this.sessionDir, `${safeId}.json`);
+    assertPathWithin(filePath, this.sessionDir);
+    return this.readSessionFileAsync(filePath);
   }
 
   /**
@@ -715,6 +763,28 @@ export class SessionManager {
         const safeId = path.basename(filePath).replace(/\.json$/, '');
         const blobDir = this.blobDirFor(safeId);
         parsed.messages = parsed.messages.map(m => this.rehydrateMessage(m, blobDir));
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Async counterpart to {@link readSessionFile}: same OOM boundary, JSON parse,
+   *  and blob rehydration, but all file I/O goes through `fs.promises` so a large
+   *  read never blocks the event loop. Blobs are rehydrated concurrently. */
+  private async readSessionFileAsync(filePath: string, rehydrate = true): Promise<Session | null> {
+    try {
+      const st = await fs.promises.stat(filePath);
+      if (st.size > MAX_SESSION_READ_BYTES) return null;
+      const raw = await fs.promises.readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(raw) as Session;
+      if (rehydrate && Array.isArray(parsed.messages)) {
+        const safeId = path.basename(filePath).replace(/\.json$/, '');
+        const blobDir = this.blobDirFor(safeId);
+        parsed.messages = await Promise.all(
+          parsed.messages.map(m => this.rehydrateMessageAsync(m, blobDir)),
+        );
       }
       return parsed;
     } catch {
