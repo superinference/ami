@@ -30,6 +30,14 @@ export interface SkillCatalogEntry {
    * file against its declared digest and refuses a tampered/corrupt file.
    */
   checksums?: Record<string, string>;
+  /**
+   * Optional minimum AMI version (semver) required to install this skill. When
+   * the running AMI is older, the discovery layer refuses the skill with an
+   * actionable "run `ami update`" message rather than installing something it
+   * cannot run. Absent/empty/malformed means "no floor" (graceful 0.0.0
+   * fallback), mirroring Claude Code's `checkBridgeMinVersion` default.
+   */
+  requires?: string;
 }
 
 /** Lowercase 64-char hex SHA-256 digest. */
@@ -76,6 +84,15 @@ export interface SkillSource {
 // Installed skill manifest (persisted at ~/.ami/installed-skills/)
 // ---------------------------------------------------------------------------
 
+/**
+ * Current on-disk schema version for a persisted {@link InstalledSkillManifest}.
+ * Bump this whenever the manifest layout changes incompatibly: a cached manifest
+ * stamped with a different number is treated as absent (invalidated) so a format
+ * change forces a clean re-pull instead of trusting a foreign layout. Mirrors
+ * Claude Code's install-counts cache `version` gate (`INSTALL_COUNTS_CACHE_VERSION`).
+ */
+export const INSTALLED_MANIFEST_SCHEMA_VERSION = 1;
+
 export interface InstalledSkillManifest {
   url: string;
   catalogName?: string;
@@ -83,6 +100,12 @@ export interface InstalledSkillManifest {
   catalogVersion?: string;
   /** Catalog owner/author display name declared by the publisher. */
   owner?: string;
+  /**
+   * On-disk schema version stamp (see {@link INSTALLED_MANIFEST_SCHEMA_VERSION}).
+   * Absent on legacy manifests written before the stamp existed — those are read
+   * as the implicit baseline; a PRESENT-but-mismatched stamp invalidates the cache.
+   */
+  schemaVersion?: number;
   fetchedAt: string;
   skills: Array<{ name: string; version?: string; category?: string; tags?: string[] }>;
 }
@@ -367,6 +390,7 @@ export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
       tags,
       files: safeFiles,
       checksums,
+      requires: typeof entry.requires === 'string' ? entry.requires : undefined,
     });
   }
 
@@ -383,6 +407,107 @@ export function validateCatalogIndex(raw: unknown): CatalogValidationResult {
   };
 
   return { valid: true, errors, index };
+}
+
+// ---------------------------------------------------------------------------
+// Installed-manifest validation — defensive schema check of the on-disk cache
+// ---------------------------------------------------------------------------
+
+/**
+ * Strictly validate an untrusted on-disk installed-skills manifest (the parsed
+ * JSON of `~/.ami/installed-skills/<hash>/manifest.json`) before any fs op
+ * trusts it. Returns a sanitized manifest or null (invalid/incompatible).
+ *
+ * This is the canonical manifest validator — the discovery layer parses the file
+ * and delegates here so the "trust the on-disk cache" rule lives in exactly one
+ * place (mirrors {@link validateCatalogIndex} for the remote index). Guarantees:
+ *   - the object has a string `url` and an array `skills`;
+ *   - every retained skill `name` is a SAFE single path segment, so a crafted
+ *     manifest can never drive a traversal in a later rm/read of the cache;
+ *   - a PRESENT-but-mismatched `schemaVersion` invalidates the whole manifest
+ *     (returns null) so an incompatible cache format forces a clean re-pull,
+ *     while a manifest with no stamp is accepted as the implicit baseline.
+ */
+export function validateInstalledSkillManifest(raw: unknown): InstalledSkillManifest | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.url !== 'string') return null;
+  if (!Array.isArray(o.skills)) return null;
+
+  // Schema-version gate (cache invalidation). An explicit stamp that is not a
+  // number, or does not equal the current schema, means the cache was written by
+  // an incompatible installer: discard it rather than trust a foreign layout.
+  if (o.schemaVersion !== undefined && o.schemaVersion !== INSTALLED_MANIFEST_SCHEMA_VERSION) {
+    return null;
+  }
+
+  const skills: InstalledSkillManifest['skills'] = [];
+  for (const s of o.skills) {
+    if (!s || typeof s !== 'object') continue;
+    const sr = s as Record<string, unknown>;
+    const name = sr.name;
+    if (typeof name !== 'string' || !isSafeSegment(name)) continue;
+    const version = typeof sr.version === 'string' ? sr.version : undefined;
+    const category = typeof sr.category === 'string' ? sr.category : undefined;
+    let tags: string[] | undefined;
+    if (Array.isArray(sr.tags)) {
+      const cleaned = sr.tags
+        .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+        .slice(0, MAX_TAGS_PER_SKILL);
+      if (cleaned.length > 0) tags = cleaned;
+    }
+    skills.push({ name, version, category, tags });
+  }
+
+  return {
+    url: o.url,
+    catalogName: typeof o.catalogName === 'string' ? o.catalogName : undefined,
+    catalogVersion: typeof o.catalogVersion === 'string' ? o.catalogVersion : undefined,
+    owner: typeof o.owner === 'string' ? o.owner : undefined,
+    schemaVersion: typeof o.schemaVersion === 'number' ? o.schemaVersion : undefined,
+    fetchedAt: typeof o.fetchedAt === 'string' ? o.fetchedAt : '',
+    skills,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Semver compatibility floor — "requires AMI vX" gate for catalog skills
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare two dotted-numeric version strings by their semver core
+ * (`major.minor.patch`); any `-prerelease` / `+build` suffix is ignored.
+ * Returns -1 if `a < b`, 0 if equal, 1 if `a > b`. A missing or non-numeric
+ * segment is treated as 0, so malformed input degrades to a best-effort numeric
+ * compare (graceful "0.0.0" fallback) rather than throwing.
+ */
+export function compareSemver(a: string, b: string): number {
+  const parse = (v: string): number[] =>
+    v.trim().split(/[-+]/)[0].split('.').map(seg => {
+      const n = parseInt(seg, 10);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    });
+  const pa = parse(a);
+  const pb = parse(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
+}
+
+/**
+ * Whether `current` (the running AMI version) satisfies a skill's `required`
+ * minimum version. An absent/empty `required` imposes no floor (returns true —
+ * the graceful default), mirroring Claude Code's `checkBridgeMinVersion` which
+ * passes when the configured minVersion is the default "0.0.0".
+ */
+export function isAmiVersionCompatible(required: string | undefined, current: string): boolean {
+  if (!required || typeof required !== 'string' || !required.trim()) return true;
+  return compareSemver(current, required) >= 0;
 }
 
 // ---------------------------------------------------------------------------
