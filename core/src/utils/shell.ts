@@ -1,6 +1,7 @@
 import * as child_process from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 
 /**
  * Mockable seam (ESM-safe). Tests replace these via
@@ -19,6 +20,7 @@ export const shellHooks = {
   execFileSync: child_process.execFileSync as typeof child_process.execFileSync,
   accessSync: fs.accessSync as typeof fs.accessSync,
   existsSync: fs.existsSync as typeof fs.existsSync,
+  realpathSync: fs.realpathSync as typeof fs.realpathSync,
   kill: ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); }),
   /**
    * Slow-command diagnostic sink (see {@link SLOW_EXEC_THRESHOLD_ENV}). Default
@@ -357,6 +359,159 @@ export function findSuitableShell(): string | null {
   return resolved;
 }
 
+// ---------------------------------------------------------------------------
+// Cross-shell provider abstraction (PowerShell as a first-class shell type)
+//
+// Mirrors Claude Code's `src/utils/shell/*` provider split (shellProvider.ts
+// SHELL_TYPES/ShellType, powershellProvider.ts invocation flags + exit-code
+// normalization, powershellDetection.ts pwsh-over-powershell preference + snap
+// avoidance + memoized cache, resolveDefaultShell.ts safe default). AMI keeps
+// bash/zsh as the POSIX default and treats PowerShell as an OPT-IN shell family
+// selected per call ({@link ExecCommandOptions.shellType}) or globally via the
+// `AMI_DEFAULT_SHELL` / `CLAUDE_CODE_SHELL_TYPE` env knob — never auto-flipping
+// Windows to PowerShell (parity with Claude's resolveDefaultShell, which does
+// not auto-flip either).
+// ---------------------------------------------------------------------------
+
+/** The shell families AMI can spawn a command through. */
+export const SHELL_TYPES = ['bash', 'powershell'] as const;
+export type ShellType = (typeof SHELL_TYPES)[number];
+
+/** Platform-independent default shell family (parity: Claude never auto-flips to PowerShell). */
+export const DEFAULT_SHELL_TYPE: ShellType = 'bash';
+
+/**
+ * Resolve the default shell family for commands that do not name one, from the
+ * `AMI_DEFAULT_SHELL` (or `CLAUDE_CODE_SHELL_TYPE` for parity) env knob. An
+ * unset / blank / unrecognized value safely falls back to {@link DEFAULT_SHELL_TYPE}
+ * (`'bash'`) — mirrors Claude Code's `resolveDefaultShell()` safe fallback.
+ */
+export function resolveDefaultShell(): ShellType {
+  const raw = (process.env.AMI_DEFAULT_SHELL || process.env.CLAUDE_CODE_SHELL_TYPE || '').trim().toLowerCase();
+  return (SHELL_TYPES as readonly string[]).includes(raw) ? (raw as ShellType) : DEFAULT_SHELL_TYPE;
+}
+
+/**
+ * The hardened, non-interactive PowerShell invocation flags + command. Shared so
+ * the flag set lives in exactly one place (parity with Claude Code's
+ * `buildPowerShellArgs` in powershellProvider.ts):
+ * - `-NoProfile` skips the user/system profile scripts (deterministic env, no
+ *   slow or side-effecting startup), and
+ * - `-NonInteractive` makes PowerShell fail fast instead of prompting, so a
+ *   command that would block on a `Read-Host` returns rather than hanging.
+ */
+export function buildPowerShellArgs(command: string): string[] {
+  return ['-NoProfile', '-NonInteractive', '-Command', command];
+}
+
+/**
+ * Append PowerShell exit-code normalization to a command so the spawned process
+ * exits with the correct code (parity with Claude Code's powershellProvider.ts
+ * cwd-tracking `exit $_ec`).
+ *
+ * On Windows PowerShell 5.1 a native exe that merely writes to a PS-redirected
+ * stderr (e.g. `git push 2>&1`) sets `$?` to `$false` even when the exe returned
+ * exit 0, so a naive `if (!$?)` reports a false-positive failure. `$LASTEXITCODE`
+ * holds the real native exit code and is `$null` only when no native exe has run
+ * yet — so we prefer it and fall back to `$?` for cmdlet-only pipelines.
+ */
+export function withPowerShellExitCode(command: string): string {
+  return `${command}\n$_ec = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }\nexit $_ec`;
+}
+
+/** Env knob naming an explicit PowerShell executable path (overrides detection). */
+const POWERSHELL_PATH_ENV = ['AMI_POWERSHELL_PATH', 'CLAUDE_CODE_POWERSHELL_PATH'] as const;
+
+/**
+ * Known non-snap PowerShell install locations probed when PATH resolves `pwsh`
+ * to a snap launcher (which can hang in subprocesses while snapd initializes
+ * confinement). The underlying apt/rpm binary is reliable.
+ */
+const POWERSHELL_PROBE_PATHS = ['/opt/microsoft/powershell/7/pwsh', '/usr/bin/pwsh', '/usr/local/bin/pwsh'];
+
+/** Best-effort symlink resolution; returns the input unchanged if it can't be resolved. */
+function realpathSafe(p: string): string {
+  try { return shellHooks.realpathSync(p); } catch { return p; }
+}
+
+/**
+ * True when `execPath` resolves to the current working directory — a planted
+ * `pwsh`/`powershell` in the CWD that could hijack execution. Parity with Claude
+ * Code's `where.exe` cwd-shadowing security filter (windowsPaths.ts): a candidate
+ * sitting directly in the CWD is rejected so a malicious binary dropped alongside
+ * the project files is never run in place of the real shell.
+ */
+function isCwdShadowed(execPath: string): boolean {
+  const resolved = path.resolve(execPath);
+  return path.dirname(resolved) === path.resolve(process.cwd());
+}
+
+/** Locate `cmd` on PATH (sync), returning the first hit or `null`. */
+function whichSync(cmd: string): string | null {
+  const isWindows = shellHooks.platform() === 'win32';
+  try {
+    const out = shellHooks.execFileSync(isWindows ? 'where.exe' : 'which', [cmd], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).toString();
+    return out.split(/\r?\n/).map(s => s.trim()).find(Boolean) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a PowerShell executable (uncached). Prefers `pwsh` (PowerShell 7+)
+ * over `powershell` (Windows PowerShell 5.1) — parity with Claude Code's
+ * `findPowerShell` (powershellDetection.ts). An explicit `AMI_POWERSHELL_PATH` /
+ * `CLAUDE_CODE_POWERSHELL_PATH` override wins. On Linux, when PATH (or its
+ * symlink target) points `pwsh` at a `/snap/` launcher, the known apt/rpm
+ * install locations are probed instead to avoid snap's subprocess hang. A
+ * candidate that resolves into the CWD is rejected ({@link isCwdShadowed}).
+ * Returns `null` when no PowerShell is available.
+ */
+export function findPowerShell(): string | null {
+  const override = POWERSHELL_PATH_ENV.map(k => (process.env[k] || '').trim()).find(Boolean);
+  if (override) return override;
+
+  const pwsh = whichSync('pwsh');
+  if (pwsh && !isCwdShadowed(pwsh)) {
+    if (shellHooks.platform() === 'linux') {
+      const resolved = realpathSafe(pwsh);
+      if (pwsh.startsWith('/snap/') || resolved.startsWith('/snap/')) {
+        for (const direct of POWERSHELL_PROBE_PATHS) {
+          if (!shellHooks.existsSync(direct)) continue;
+          const directResolved = realpathSafe(direct);
+          if (!direct.startsWith('/snap/') && !directResolved.startsWith('/snap/')) return direct;
+        }
+      }
+    }
+    return pwsh;
+  }
+
+  const powershell = whichSync('powershell');
+  if (powershell && !isCwdShadowed(powershell)) return powershell;
+  return null;
+}
+
+let cachedPowerShellPath: string | null | undefined;
+
+/**
+ * Memoized {@link findPowerShell}. Detection only runs once per session (it
+ * shells out to `which`/`where.exe`). Parity with Claude Code's
+ * `getCachedPowerShellPath`.
+ */
+export function getCachedPowerShellPath(): string | null {
+  if (cachedPowerShellPath === undefined) cachedPowerShellPath = findPowerShell();
+  return cachedPowerShellPath;
+}
+
+/** Reset the memoized PowerShell path (tests / after a PATH change). Parity: `resetPowerShellCache`. */
+export function resetPowerShellCache(): void {
+  cachedPowerShellPath = undefined;
+}
+
 export interface ExecCommandOptions {
   cwd: string;
   timeout?: number;
@@ -389,6 +544,23 @@ export interface ExecCommandOptions {
    * why it failed.
    */
   preserveOutputOnError?: boolean;
+  /**
+   * Shell family to run the command through (`'bash'` | `'powershell'`). When
+   * omitted, {@link resolveDefaultShell} picks it from the `AMI_DEFAULT_SHELL`
+   * env knob (default `'bash'`). Parity with Claude Code's `exec({ shellType })`
+   * (Shell.ts). PowerShell is spawned with hardened, non-interactive flags and
+   * exit-code normalization (see {@link buildPowerShellArgs} /
+   * {@link withPowerShellExitCode}).
+   */
+  shellType?: ShellType;
+  /**
+   * Explicit shell executable path, overriding auto-resolution for this call.
+   * For `'bash'` it replaces {@link findSuitableShell}; for `'powershell'` it
+   * replaces {@link getCachedPowerShellPath}. Parity with Claude Code's
+   * configurable `shellPath` provider parameter (shellProvider.ts). When blank,
+   * the resolver / env override is used.
+   */
+  shellPath?: string;
 }
 
 export interface ExecCommandResult {
@@ -410,6 +582,11 @@ export interface ExecCommandResult {
  * through an optional `onData` callback.
  *
  * Environment knobs (introspectable; apply to every `execCommand` caller):
+ * - `AMI_DEFAULT_SHELL` / `CLAUDE_CODE_SHELL_TYPE` — default shell family
+ *   (`bash` | `powershell`) when a call does not set {@link ExecCommandOptions.shellType}
+ *   (see {@link resolveDefaultShell}); unrecognized values fall back to `bash`.
+ * - `AMI_POWERSHELL_PATH` / `CLAUDE_CODE_POWERSHELL_PATH` — explicit PowerShell
+ *   executable path, overriding `pwsh`/`powershell` detection (see {@link findPowerShell}).
  * - `AMI_SHELL` / `CLAUDE_CODE_SHELL` — explicit shell path override.
  * - `AMI_LOGIN_SHELL` — when set, spawn the shell as a login shell (`-l`) so
  *   the user's profile/rc files are sourced.
@@ -436,7 +613,7 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError } = options;
+  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError, shellType, shellPath } = options;
 
   // Wall-clock start for slow-command diagnostics (see SLOW_EXEC_THRESHOLD_ENV).
   const startedAt = Date.now();
@@ -477,36 +654,62 @@ export function execCommand(
     }
 
     // --- Shell resolution ---
+    // Pick the shell family: an explicit per-call `shellType` wins, otherwise the
+    // operator default (`AMI_DEFAULT_SHELL` → `'bash'`). PowerShell is opt-in and
+    // never auto-selected (parity with Claude's resolveDefaultShell).
+    const effectiveShellType: ShellType = shellType ?? resolveDefaultShell();
+    const explicitShellPath = (shellPath || '').trim();
+
     let shell: string;
-    if (isWindows) {
-      shell = 'cmd';
-    } else {
-      const resolved = findSuitableShell();
-      if (resolved === null) {
+    let shellArgs: string[];
+
+    if (effectiveShellType === 'powershell') {
+      const psPath = explicitShellPath || getCachedPowerShellPath();
+      if (psPath === null || psPath === '') {
         resolve({
           stdout: stdoutBuf.value(),
-          stderr: stderrBuf.value() + 'No suitable shell found. AMI requires a POSIX shell: install bash or zsh, or set AMI_SHELL to its path.',
+          stderr: stderrBuf.value() + 'No PowerShell found. AMI needs PowerShell for shellType "powershell": install pwsh, or set AMI_POWERSHELL_PATH to its path.',
           exitCode: SPAWN_FAILURE_EXIT_CODE,
           signal: null,
         });
         return;
       }
-      shell = resolved;
+      shell = psPath;
+      // Hardened, non-interactive invocation with exit-code normalization. No
+      // `>nul` rewrite here — that repairs a POSIX-shell artifact; PowerShell
+      // uses `$null` and would never create a literal `nul` file.
+      shellArgs = buildPowerShellArgs(withPowerShellExitCode(command));
+    } else {
+      if (isWindows) {
+        shell = explicitShellPath || 'cmd';
+      } else {
+        const resolved = explicitShellPath || findSuitableShell();
+        if (resolved === null) {
+          resolve({
+            stdout: stdoutBuf.value(),
+            stderr: stderrBuf.value() + 'No suitable shell found. AMI requires a POSIX shell: install bash or zsh, or set AMI_SHELL to its path.',
+            exitCode: SPAWN_FAILURE_EXIT_CODE,
+            signal: null,
+          });
+          return;
+        }
+        shell = resolved;
+      }
+
+      // On the POSIX spawn path, repair hallucinated Windows `>nul` redirects so
+      // they discard output via `/dev/null` instead of creating a literal `nul`
+      // file. On Windows (cmd), `>nul` is the correct native form — leave it.
+      const normalizedCommand = isWindows ? command : rewriteWindowsNullRedirect(command);
+
+      // Optional command wrapping via a configured shell prefix. The Claude-Code
+      // name (CLAUDE_CODE_SHELL_PREFIX) is accepted as a fallback for parity.
+      const prefix = process.env.AMI_SHELL_PREFIX || process.env.CLAUDE_CODE_SHELL_PREFIX;
+      const finalCommand = prefix ? formatShellPrefixCommand(prefix, normalizedCommand) : normalizedCommand;
+
+      // Login-shell flag sources profile/rc files when requested.
+      const loginArgs = !isWindows && process.env.AMI_LOGIN_SHELL ? ['-l'] : [];
+      shellArgs = isWindows ? ['/c', finalCommand] : [...loginArgs, '-c', finalCommand];
     }
-
-    // On the POSIX spawn path, repair hallucinated Windows `>nul` redirects so
-    // they discard output via `/dev/null` instead of creating a literal `nul`
-    // file. On Windows (cmd), `>nul` is the correct native form — leave it.
-    const normalizedCommand = isWindows ? command : rewriteWindowsNullRedirect(command);
-
-    // Optional command wrapping via a configured shell prefix. The Claude-Code
-    // name (CLAUDE_CODE_SHELL_PREFIX) is accepted as a fallback for parity.
-    const prefix = process.env.AMI_SHELL_PREFIX || process.env.CLAUDE_CODE_SHELL_PREFIX;
-    const finalCommand = prefix ? formatShellPrefixCommand(prefix, normalizedCommand) : normalizedCommand;
-
-    // Login-shell flag sources profile/rc files when requested.
-    const loginArgs = !isWindows && process.env.AMI_LOGIN_SHELL ? ['-l'] : [];
-    const shellArgs = isWindows ? ['/c', finalCommand] : [...loginArgs, '-c', finalCommand];
 
     const proc = shellHooks.spawn(shell, shellArgs, {
       // Pipe stdin when the caller supplies input; otherwise honor the explicit
