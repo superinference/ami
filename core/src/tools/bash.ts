@@ -7,7 +7,7 @@ import { execCommand } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
-import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
+import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy } from './bash-sandbox';
 import {
   getDockerAvailability,
   describeDockerUnavailable,
@@ -1177,7 +1177,15 @@ export const bashTool: ToolDefinition = {
       // identically for string-serialized input.
       const disableSandbox = coerceBool(input.dangerouslyDisableSandbox);
       const useSandbox = !disableSandbox && _bashHooks.shouldUseSandbox(command, context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : undefined);
-      effectiveCommand = useSandbox ? _bashHooks.wrapWithSandbox(command, context.cwd) : command;
+      // Thread the policy's network/filesystem carve-outs (deny/allow hosts, unix
+      // sockets, proxy ports, deny-read/deny-write with allow-read re-opens) into
+      // the HOST unshare backend too — previously honored only by the container
+      // backend (see wrapWithDocker above), so the host sandbox silently ignored
+      // every configured restriction. hostSandboxConfigFromPolicy yields {} when
+      // no carve-outs are set, preserving the prior defaults.
+      effectiveCommand = useSandbox
+        ? _bashHooks.wrapWithSandbox(command, context.cwd, hostSandboxConfigFromPolicy(context.sandbox))
+        : command;
     }
 
     if (runInBackground && context.processManager) {

@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import { wildcardMatch } from '../permissions';
+import type { SandboxPolicy } from '../types';
 
 export interface SandboxConfig {
   allowNetwork: boolean;
@@ -65,6 +66,30 @@ export interface SandboxConfig {
   // `SandboxSettings.failIfUnavailable`. Additive: undefined/false preserves the
   // warn-and-run-unsandboxed default.
   failIfUnavailable?: boolean;
+  // PARITY (filesystem read RE-allow with precedence): absolute paths that must
+  // stay READABLE inside the sandbox even when they fall inside a `denyReadPaths`
+  // region. Any `denyReadPaths` entry equal to, or nested under, one of these is
+  // NOT /dev/null-bound — "allowRead wins over denyRead for matching paths".
+  // Mirrors Claude's `SandboxFilesystemConfig.allowRead`. Additive: undefined/
+  // empty leaves every `denyReadPaths` entry denied.
+  allowReadPaths?: string[];
+  // PARITY (proxy-routed network isolation): when set, the sandbox exports the
+  // standard HTTP/HTTPS proxy env vars pointing at a loopback proxy on this port
+  // so outbound traffic is routed (and can be MITM-filtered) through it instead
+  // of the raw iptables IP allowlist. Mirrors Claude's
+  // `SandboxNetworkConfig.httpProxyPort`. Additive: undefined/invalid is a no-op.
+  httpProxyPort?: number;
+  // PARITY (proxy-routed network isolation, SOCKS): loopback SOCKS proxy port
+  // exported as `all_proxy`/`ALL_PROXY`. Mirrors Claude's
+  // `SandboxNetworkConfig.socksProxyPort`. Additive: undefined/invalid is a no-op.
+  socksProxyPort?: number;
+  // PARITY (sandbox-scoped temp dir): directory to pin as the sandbox's TMPDIR/
+  // TMP/TEMP so a sandboxed command's scratch/heredoc temp files land in a
+  // writable, isolated location (created if missing) rather than leaking to a
+  // user-env TMPDIR that could point outside the sandbox. Mirrors Claude's
+  // bash/powershell provider `sandboxTmpDir` TMPDIR override. Additive:
+  // undefined is a no-op.
+  sandboxTmpDir?: string;
 }
 
 export function getDefaultMemoryMB(): number {
@@ -149,6 +174,36 @@ export interface SandboxDependencyCheck {
  * traffic is restricted when it is wide open. Additive + pure: no cfg → only the
  * platform/unshare errors; the degradation warnings require the relevant cfg.
  */
+/** Shell glob metacharacters a literal bind mount cannot expand. */
+const GLOB_METACHARS = /[*?[\]{}]/;
+
+/**
+ * Collect every configured filesystem-restriction path that contains a glob
+ * metacharacter. Such entries silently no-op under the bind-mount sandbox (which
+ * matches literal paths only), so {@link checkSandboxDependencies} surfaces them
+ * as a degradation warning. Deduped and order-stable.
+ */
+function collectGlobPatternPaths(cfg: Partial<SandboxConfig>): string[] {
+  const lists: (string[] | undefined)[] = [
+    cfg.readOnlyPaths,
+    cfg.writablePaths,
+    cfg.denyReadPaths,
+    cfg.denyWritePaths,
+    cfg.allowReadPaths,
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const p of list ?? []) {
+      if (GLOB_METACHARS.test(p) && !seen.has(p)) {
+        seen.add(p);
+        out.push(p);
+      }
+    }
+  }
+  return out;
+}
+
 export function checkSandboxDependencies(cfg?: Partial<SandboxConfig>): SandboxDependencyCheck {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -196,6 +251,25 @@ export function checkSandboxDependencies(cfg?: Partial<SandboxConfig>): SandboxD
         'not available; configured domains cannot be resolved to IPs and the rules will not match. ' +
         'Install glibc tools (Debian/Ubuntu: `apt-get install libc-bin`).',
     );
+  }
+
+  // --- glob-pattern degradation warning. The host sandbox enforces filesystem
+  //     path restrictions with literal bind mounts, which do NOT expand shell
+  //     globs. A path value containing glob metacharacters (`*?[]{}`) therefore
+  //     silently matches nothing and the restriction is a no-op — surface it so
+  //     an operator who wrote `denyRead: ['/home/*/.ssh']` learns it won't apply
+  //     rather than believing the path is protected. Mirrors Claude Code's
+  //     "glob pattern unsupported on this platform" restriction warning. ---
+  if (cfg && process.platform === 'linux') {
+    const globbed = collectGlobPatternPaths(cfg);
+    if (globbed.length > 0) {
+      warnings.push(
+        'Sandbox filesystem path restriction(s) contain glob metacharacters which the host ' +
+          'bind-mount sandbox cannot expand; these entries will NOT be enforced: ' +
+          globbed.join(', ') +
+          '. Use literal absolute paths instead.',
+      );
+    }
   }
 
   return { errors, warnings };
@@ -530,6 +604,39 @@ export function shouldUseSandbox(command: string, options?: SandboxExemptionOpti
   return false;
 }
 
+/**
+ * Map a high-level {@link SandboxPolicy} (the engine/tool-facing config, shared
+ * with the container backend) onto the low-level host {@link SandboxConfig}
+ * consumed by {@link wrapWithSandbox}. Only fields the HOST unshare backend can
+ * enforce are mapped: the per-host network allow/deny lists, the Unix-socket
+ * allowlist, the http/socks proxy ports, and the filesystem deny-read/deny-write
+ * carve-outs with the allow-read re-opens. Each field is included only when set,
+ * so an empty/absent policy yields `{}` and leaves the sandbox defaults intact
+ * (no behavior change when no policy carve-outs are configured). This is the
+ * single translation point so bash.ts stays a one-line call site and the host
+ * backend honors the same policy the container backend already does.
+ */
+export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy): Partial<SandboxConfig> {
+  const cfg: Partial<SandboxConfig> = {};
+  if (!policy) return cfg;
+  const net = policy.network;
+  if (net) {
+    if (net.allowedHosts) cfg.allowedDomains = net.allowedHosts;
+    if (net.deniedHosts) cfg.deniedDomains = net.deniedHosts;
+    if (net.allowUnixSockets) cfg.allowedUnixSockets = net.allowUnixSockets;
+    if (net.allowAllUnixSockets !== undefined) cfg.allowUnixSockets = net.allowAllUnixSockets;
+    if (net.httpProxyPort !== undefined) cfg.httpProxyPort = net.httpProxyPort;
+    if (net.socksProxyPort !== undefined) cfg.socksProxyPort = net.socksProxyPort;
+  }
+  const fs = policy.filesystem;
+  if (fs) {
+    if (fs.denyRead) cfg.denyReadPaths = fs.denyRead;
+    if (fs.denyWrite) cfg.denyWritePaths = fs.denyWrite;
+    if (fs.allowRead) cfg.allowReadPaths = fs.allowRead;
+  }
+  return cfg;
+}
+
 export function wrapWithSandbox(
   command: string,
   cwd: string,
@@ -572,13 +679,18 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
   const readDenials = buildReadDenials(cfg);
   const credentialScrub = buildCredentialScrub(cfg);
   const socketDenial = buildSocketDenial(cfg);
+  // Scratch-dir + proxy env exports apply right before the command runs so a
+  // sandboxed command's temp files are contained and its outbound traffic is
+  // proxy-routed (parity: Claude's sandboxTmpDir / http(s)/socks proxy knobs).
+  const tmpDirEnv = buildSandboxTmpDir(cfg);
+  const proxyEnv = buildProxyEnv(cfg);
   // Deny rules are emitted (and thus iptables-appended) BEFORE the allowlist's
   // accepts/default-drop, so a denied host is DROPped first → deny wins over allow.
   const networkRules =
     !cfg.allowNetwork && hasAllowedDomains
       ? buildDeniedDomainRules(cfg.deniedDomains) + buildNetworkAllowlist(cfg.allowedDomains!)
       : '';
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${configGuard}${gitGuard}${readDenials}${credentialScrub}${socketDenial}${networkRules}cd ${escapedCwd} && ${escapedCmd}'`;
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${configGuard}${gitGuard}${readDenials}${credentialScrub}${socketDenial}${networkRules}${tmpDirEnv}${proxyEnv}cd ${escapedCwd} && ${escapedCmd}'`;
 }
 
 /** Join a sandbox cwd and a relative path, normalizing a trailing slash so the
@@ -695,20 +807,79 @@ export function buildWriteDenials(cfg: SandboxConfig): string {
 }
 
 /**
- * PARITY (filesystem read-deny): bind /dev/null over each `denyReadPaths` entry
- * so a read inside the sandbox returns empty rather than the real contents.
- * Reuses the same /dev/null-bind technique as the credential file-hiding path;
- * each bind is best-effort (`2>/dev/null`). Returns '' when none are configured.
- * Mirrors Claude's `SandboxFilesystemConfig.denyRead`.
+ * True when `child` is the same path as, or nested under, `parent` (segment-
+ * aware: `/a/b` is under `/a` but `/ab` is not). Trailing slashes are normalized
+ * so `/a/` and `/a` compare equal. Used to realize the `allowRead`-over-`denyRead`
+ * precedence (a denied path inside an allowed region is re-opened).
+ */
+function pathIsWithin(child: string, parent: string): boolean {
+  const c = child.replace(/\/+$/, '');
+  const p = parent.replace(/\/+$/, '');
+  if (p.length === 0) return false;
+  return c === p || c.startsWith(p + '/');
+}
+
+/**
+ * PARITY (filesystem read-deny with allowRead precedence): bind /dev/null over
+ * each `denyReadPaths` entry so a read inside the sandbox returns empty rather
+ * than the real contents — EXCEPT any entry that is equal to, or nested under,
+ * an `allowReadPaths` region, which is left readable ("allowRead wins over
+ * denyRead for matching paths"). Reuses the same /dev/null-bind technique as the
+ * credential file-hiding path; each bind is best-effort (`2>/dev/null`). Returns
+ * '' when nothing is denied (or everything is re-allowed). Mirrors Claude's
+ * `SandboxFilesystemConfig.denyRead` + `allowRead`.
  */
 export function buildReadDenials(cfg: SandboxConfig): string {
   if (!cfg.denyReadPaths || cfg.denyReadPaths.length === 0) return '';
+  const allow = (cfg.allowReadPaths ?? []).map(a => a.trim()).filter(a => a.length > 0);
   return cfg.denyReadPaths
+    .filter((p) => !allow.some((a) => pathIsWithin(p, a)))
     .map((p) => {
       const esc = p.replace(/'/g, "'\\''");
       return `mount --bind /dev/null '${esc}' 2>/dev/null; `;
     })
     .join('');
+}
+
+/** A valid TCP port (1..65535) usable for a loopback proxy. Non-integers and
+ * out-of-range values are rejected so a bad config can never emit a bogus env. */
+function isValidProxyPort(port: unknown): port is number {
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+/**
+ * PARITY (proxy-routed network isolation): export the standard proxy env vars so
+ * a sandboxed command's outbound traffic is routed through a loopback proxy
+ * (which can allowlist/MITM-filter) instead of (or alongside) the raw iptables IP
+ * allowlist. `httpProxyPort` sets http/https proxy vars; `socksProxyPort` sets
+ * all_proxy (SOCKS). Returns '' when neither is a valid port. Ports are numbers
+ * validated to 1..65535, so the emitted env is injection-free. Mirrors Claude's
+ * `SandboxNetworkConfig.httpProxyPort` / `socksProxyPort`.
+ */
+export function buildProxyEnv(cfg: SandboxConfig): string {
+  let out = '';
+  if (isValidProxyPort(cfg.httpProxyPort)) {
+    const url = `http://127.0.0.1:${cfg.httpProxyPort}`;
+    out += `export http_proxy='${url}' https_proxy='${url}' HTTP_PROXY='${url}' HTTPS_PROXY='${url}'; `;
+  }
+  if (isValidProxyPort(cfg.socksProxyPort)) {
+    const url = `socks5://127.0.0.1:${cfg.socksProxyPort}`;
+    out += `export all_proxy='${url}' ALL_PROXY='${url}'; `;
+  }
+  return out;
+}
+
+/**
+ * PARITY (sandbox-scoped temp dir): pin TMPDIR/TMP/TEMP to `sandboxTmpDir` inside
+ * the sandbox (creating it if missing) so scratch/heredoc temp files land in a
+ * writable, contained location rather than a user-env TMPDIR that could point
+ * outside the sandbox. Returns '' when unset. Mirrors Claude's shell-provider
+ * `sandboxTmpDir` TMPDIR override.
+ */
+export function buildSandboxTmpDir(cfg: SandboxConfig): string {
+  if (!cfg.sandboxTmpDir) return '';
+  const esc = cfg.sandboxTmpDir.replace(/'/g, "'\\''");
+  return `mkdir -p '${esc}' 2>/dev/null; export TMPDIR='${esc}' TMP='${esc}' TEMP='${esc}'; `;
 }
 
 /**
@@ -825,7 +996,12 @@ function wrapWithResourceLimits(command: string, cfg: SandboxConfig): string {
   if (cfg.hiddenEnvVars && cfg.hiddenEnvVars.length > 0) {
     envScrub = 'unset ' + cfg.hiddenEnvVars.join(' ') + '; ';
   }
-  return `${buildUlimits(cfg)}${envScrub}${command}`;
+  // Scratch-dir + proxy env also apply in the resource-limits-only fallback
+  // (non-Linux / no unshare): they need no mount namespace, so a sandboxed
+  // command still gets a contained TMPDIR and proxy-routed network there.
+  const tmpDirEnv = buildSandboxTmpDir(cfg);
+  const proxyEnv = buildProxyEnv(cfg);
+  return `${buildUlimits(cfg)}${envScrub}${tmpDirEnv}${proxyEnv}${command}`;
 }
 
 function buildUlimits(cfg: SandboxConfig): string {
