@@ -5,6 +5,7 @@ import { updateConfigFile, validateConfigJson, stripJsoncComments, getGlobalConf
 import { THINKING_LEVELS } from '../model-capabilities';
 import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
 import { listProviders, MODEL_ALIASES, resolveModelAlias, validateModel } from '../model-registry';
+import { isSpecialFileStat } from '../path-safety';
 
 /**
  * Metadata describing a single supported config setting. This registry is the
@@ -436,7 +437,21 @@ export const configTool: ToolDefinition = {
   },
 };
 
-function readConfigRaw(configPath: string): { config?: Record<string, unknown>; error?: string; absent?: boolean } {
+function readConfigRaw(configPath: string): { config?: Record<string, unknown>; error?: string; absent?: boolean; unreadable?: string } {
+  // Special-file containment before the read (parity: Claude's safeResolvePath
+  // special-file check before a settings read). A config path must be a regular
+  // file: `fs.readFileSync` on a FIFO blocks indefinitely waiting for a writer
+  // (a hang that looks like a frozen tool), and a socket/char/block device is
+  // never a valid config source. `statSync` follows symlinks, so a symlink that
+  // ultimately points AT a special file is caught too. A missing/dangling path
+  // throws here and is treated as absent (the read below reports it normally).
+  try {
+    if (isSpecialFileStat(fs.statSync(configPath))) {
+      return { unreadable: `Config path ${configPath} is not a regular file (named pipe/socket/device); refusing to read it.` };
+    }
+  } catch {
+    // Does not exist / inaccessible — fall through; the read below classifies it.
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, 'utf-8');
@@ -479,7 +494,10 @@ function writeConfigMutation(configPath: string, mutate: (cfg: Record<string, un
 }
 
 function handleGet(configPath: string, key: string | undefined, scope: 'project' | 'global'): ToolResult {
-  const { config, error, absent } = readConfigRaw(configPath);
+  const { config, error, absent, unreadable } = readConfigRaw(configPath);
+  if (unreadable) {
+    return { output: unreadable, isError: true };
+  }
   if (absent) {
     const where = scope === 'global' ? 'global config (~/.ami/config.json)' : 'project config';
     return { output: `No ${where} found. Create it via action="set"${scope === 'global' ? ' scope="global"' : ''}.`, metadata: { operation: 'get', scope } };
@@ -518,7 +536,10 @@ async function handleSet(configPath: string, input: Record<string, unknown>, sco
   }
 
   // Load existing config; refuse to clobber a corrupt file (don't wipe user config).
-  const { config: existing, error: readError, absent } = readConfigRaw(configPath);
+  const { config: existing, error: readError, absent, unreadable } = readConfigRaw(configPath);
+  if (unreadable) {
+    return { output: `Refusing to write: ${unreadable}`, isError: true };
+  }
   if (readError) {
     return { output: `Refusing to write: existing config is corrupt (${readError}). Fix ${configPath} first.`, isError: true };
   }

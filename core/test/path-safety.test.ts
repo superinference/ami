@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import {
   assertPathWithin,
   canonicalizeExisting,
+  isSpecialFileStat,
   PathTraversalError,
 } from '../src/path-safety';
 
@@ -349,6 +350,23 @@ describe('canonicalizeExisting — special-file bypass', () => {
       () => fakeStat({}),
     );
     assert.equal(out, '/real/file');
+  });
+});
+
+// ==========================================================================
+// isSpecialFileStat — the shared special-file predicate reused by the symlink
+// canonicaliser and the config/settings readers (one source of truth).
+// ==========================================================================
+
+describe('isSpecialFileStat', () => {
+  for (const kind of ['isFIFO', 'isSocket', 'isCharacterDevice', 'isBlockDevice'] as const) {
+    it(`is true for a ${kind} node`, () => {
+      assert.equal(isSpecialFileStat(fakeStat({ [kind]: true })), true);
+    });
+  }
+  it('is false for a regular file / directory / symlink', () => {
+    assert.equal(isSpecialFileStat(fakeStat({})), false);
+    assert.equal(isSpecialFileStat(fakeStat({ isSymbolicLink: true })), false);
   });
 });
 

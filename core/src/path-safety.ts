@@ -24,6 +24,18 @@ export class PathTraversalError extends Error {
 }
 
 /**
+ * True for a FIFO / socket / character- or block-device stat. These "special"
+ * file types are the ones `fs.realpathSync` can block on (a FIFO waits for a
+ * writer) and that a plain `fs.readFileSync` can hang on. Callers that resolve
+ * or read a filesystem path use this to skip/refuse such entries. Centralised
+ * here so the symlink-canonicaliser and the config/settings readers apply the
+ * SAME special-file predicate (no per-site re-implementation).
+ */
+export function isSpecialFileStat(stat: fs.Stats): boolean {
+  return stat.isFIFO() || stat.isSocket() || stat.isCharacterDevice() || stat.isBlockDevice();
+}
+
+/**
  * Normalize a resolved path for case-/symlink-tolerant containment comparison.
  *
  *  - macOS routes `/var` → `/private/var` and `/tmp` → `/private/tmp` through
@@ -88,7 +100,7 @@ export function canonicalizeExisting(
   // FIFO, so skip canonicalization and let the lexical check govern them.
   try {
     const st = lstat(resolved);
-    if (st.isFIFO() || st.isSocket() || st.isCharacterDevice() || st.isBlockDevice()) {
+    if (isSpecialFileStat(st)) {
       return resolved.normalize('NFC');
     }
   } catch {
