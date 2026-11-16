@@ -293,9 +293,39 @@ describe('detectStartProcessElevation', () => {
     assert.equal(detectStartProcessElevation('Start-Process -FilePath pwsh').blocked, true);
   });
 
+  it('flags the `start` alias of Start-Process (RunAs + nested shell)', () => {
+    // `start` is a PowerShell alias for Start-Process (COMMON_ALIASES); the
+    // reference checkStartProcess matches start-process / saps / start.
+    assert.equal(detectStartProcessElevation('start notepad -Verb RunAs').blocked, true);
+    assert.equal(detectStartProcessElevation("start cmd -Verb:'RunAs'").blocked, true);
+    assert.equal(detectStartProcessElevation('start pwsh').blocked, true);
+  });
+
+  it('does not flag `start` with a benign target or as an argument', () => {
+    assert.equal(detectStartProcessElevation('start notepad.exe').blocked, false);
+    assert.equal(detectStartProcessElevation('Write-Output start').blocked, false);
+  });
+
+  it('scans EVERY Start-Process statement, not only the first', () => {
+    // Reference checkStartProcess iterates getAllCommands; a hazardous
+    // Start-Process after a leading benign one must still be surfaced.
+    assert.equal(
+      detectStartProcessElevation('Start-Process foo; Start-Process bar -Verb RunAs').blocked,
+      true,
+    );
+    assert.equal(
+      detectStartProcessElevation('Start-Process foo | Start-Process -FilePath pwsh').blocked,
+      true,
+    );
+  });
+
   it('allows an ordinary Start-Process', () => {
     assert.equal(detectStartProcessElevation('Start-Process notepad.exe').blocked, false);
     assert.equal(detectStartProcessElevation('echo start-process').blocked, false);
+    assert.equal(
+      detectStartProcessElevation('Start-Process foo; Start-Process bar').blocked,
+      false,
+    );
   });
 });
 
@@ -464,6 +494,23 @@ describe('detectDangerousPowerShellCommand aggregate + permission-path wiring', 
     assert.equal(detectPowerShellExecution('Start-Process cmd \u2013Verb RunAs').blocked, true);
     // Stop-parsing token (--%) \u2014 remainder is opaque to analysis.
     assert.equal(detectPowerShellExecution('icacls C:\\ --% /grant everyone:F').blocked, true);
+  });
+
+  it('detects the `start` alias and a non-leading Start-Process end-to-end', () => {
+    // `start` alias + hazard surfaced through the wired entry points.
+    assert.equal(detectPowerShellExecution('start pwsh').blocked, true);
+    assert.equal(validateBashSecurity('start cmd -Verb RunAs').safe, false);
+    // A hazardous Start-Process after a benign one is no longer missed.
+    assert.equal(
+      detectPowerShellExecution('Start-Process foo; Start-Process bar -Verb RunAs').blocked,
+      true,
+    );
+    assert.equal(
+      validateBashSecurity('Start-Process foo | Start-Process -FilePath pwsh').safe,
+      false,
+    );
+    // Two benign Start-Process statements still auto-approve.
+    assert.equal(validateBashSecurity('Start-Process foo; Start-Process bar').safe, true);
   });
 
   it('validateBashSecurity treats them as not auto-approvable, bash stays safe', () => {

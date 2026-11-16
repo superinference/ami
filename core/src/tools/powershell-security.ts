@@ -625,15 +625,7 @@ export function detectUnsafeNewObject(command: string): PsDetection {
  * tolerant) requests a UAC elevation, and launching a nested `pwsh`/`powershell`
  * spawns an unvalidated child shell.
  */
-export function detectStartProcessElevation(command: string): PsDetection {
-  const cmdletRe = new RegExp(
-    PS_CMD_POS_PREFIX + String.raw`(?:start-process|saps)\b`,
-    'i',
-  );
-  const args = argTokensAfter(command, cmdletRe);
-  if (args === undefined) {
-    return PS_PASS;
-  }
+function startProcessArgHazard(args: string[]): PsDetection {
   // -Verb RunAs — colon form (-Verb:'RunAs', backtick/quote tolerant).
   const colonVerb = args.some((a) =>
     /^[-/]v[a-z]*:[`'" ]*runas[`'" ]*$/i.test(a.replace(/`/g, '')),
@@ -655,6 +647,33 @@ export function detectStartProcessElevation(command: string): PsDetection {
       reason:
         'PowerShell Start-Process launches a nested PowerShell process which cannot be validated',
     };
+  }
+  return PS_PASS;
+}
+
+export function detectStartProcessElevation(command: string): PsDetection {
+  // start-process, and its aliases saps / start (COMMON_ALIASES). The `start`
+  // alias is matched too — the reference checkStartProcess keys on
+  // start-process / saps / start — but only in command position, so a bare
+  // `start` argument or a word like `restart` cannot trigger it. EVERY
+  // command-position occurrence is scanned (mirroring the reference's
+  // getAllCommands) so a hazardous Start-Process after a benign one is not
+  // missed.
+  const cmdletRe = new RegExp(
+    PS_CMD_POS_PREFIX + String.raw`(?:start-process|saps|start)\b`,
+    'gi',
+  );
+  let m: RegExpExecArray | null;
+  while ((m = cmdletRe.exec(command)) !== null) {
+    const rest = command.slice(m.index + m[0].length);
+    const segment = rest.split(/[;|\n\r]/)[0] ?? '';
+    const args = (segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? []).map((t) =>
+      t.replace(/^['"]|['"]$/g, ''),
+    );
+    const hazard = startProcessArgHazard(args);
+    if (hazard.blocked) {
+      return hazard;
+    }
   }
   return PS_PASS;
 }
