@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { expandPath } from './utils/path';
-import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand } from './tools/bash-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { getManagedConfigPath } from './config';
 
@@ -349,7 +349,7 @@ const SAFE_COMMANDS = new Set([
   // Command builder (flag-validated, target-restricted)
   'xargs',
   // Network/process inspection (flag-validated)
-  'netstat', 'lsof', 'pgrep', 'ss',
+  'netstat', 'lsof', 'pgrep', 'ss', 'ps',
   // Terminal capabilities (flag-validated)
   'tput',
   // File finders (flag-validated)
@@ -410,7 +410,7 @@ const FD_ARG_TYPES: Record<string, FlagArgType> = {
   '-g': 'string', '-p': 'string',
 };
 
-const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType> }> = {
+const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType>; dangerousArgs?: (args: string[]) => boolean }> = {
   jq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
     blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L', '--library-path']),
@@ -423,12 +423,29 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
   // program as the pager and `-H[browser]`/`--html[=browser]` launches a browser —
   // both are arbitrary-command-execution vectors, so they can never be auto-safe.
   man: { allowed: new Set([]), blocked: new Set(['-P', '--pager', '-H', '--html']) },
+  // `help` is frequently aliased to `man` (e.g. oh-my-zsh's common-aliases
+  // plugin), whose `-P`/`-l`/`-H` flags run an arbitrary pager/browser or read a
+  // local file. Restrict `help` to the bash-builtin help flags only (strict), so
+  // an aliased `help -P <cmd>` cannot be auto-approved. Mirrors Claude's `help`
+  // safeFlags allowlist (readOnlyValidation.ts L326-332).
+  help: { allowed: new Set(['-d', '-m', '-s']), blocked: new Set([]), strict: true },
   // `file`: identification is read-only, but `-C`/`--compile` WRITES a compiled
   // magic database to disk and `-m`/`--magic-file` loads an attacker-controlled
   // magic file; neither is auto-safe (Claude's `file` safeFlags restriction).
   file: { allowed: new Set([]), blocked: new Set(['-C', '--compile', '-m', '--magic-file']) },
   xargs: { allowed: new Set(['-n', '-P', '-I', '-0', '-d', '-t', '-p', '-r', '-L', '--max-procs', '--null']), blocked: new Set(['-i', '-e']) },
-  ps: { allowed: new Set(['-e', '-f', '-a', '-u', '-x', '--sort', '-o', '--no-headers', '-p']), blocked: new Set(['e']) },
+  // `ps`: UNIX `-e` (select all) is read-only and SAFE. The dangerous form is the
+  // BSD-style environment modifier `e` — a NON-dash letter-only token containing
+  // `e` (`ps axe`, `ps auxe`) that prints every process's environment (secrets).
+  // The old `blocked:['e']` both over-blocked UNIX `-e` (flag scan maps `-e`→'e')
+  // AND missed the dash-less BSD token (never entered the flag branch). A
+  // dangerousArgs callback flags only the BSD letter-only `e` token, mirroring
+  // Claude's ps additionalCommandIsDangerousCallback (readOnlyValidation.ts L420-429).
+  ps: {
+    allowed: new Set(['-e', '-f', '-a', '-u', '-x', '--sort', '-o', '--no-headers', '-p']),
+    blocked: new Set([]),
+    dangerousArgs: (args) => args.some(a => !a.startsWith('-') && /^[a-zA-Z]*e[a-zA-Z]*$/.test(a)),
+  },
   tree: { allowed: new Set(['-L', '-d', '-f', '-a', '--dirsfirst', '-I', '--prune', '-P', '--charset', '-i']), blocked: new Set(['-R']) },
   fd: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
   fdfind: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
@@ -468,6 +485,10 @@ const XARGS_SAFE_TARGETS = new Set([
 function validateCommandFlags(cmd: string, args: string[]): boolean {
   const flagDef = SAFE_COMMAND_FLAGS[cmd];
   if (!flagDef) return true;
+  // Custom per-command danger predicate (e.g. ps's BSD `e` environment modifier,
+  // a dash-less token the flag scan below never inspects). Runs first so it
+  // catches shapes the generic allow/block scan structurally cannot.
+  if (flagDef.dangerousArgs && flagDef.dangerousArgs(args)) return false;
   // Commands with a per-flag arg-type map get getopt-accurate token consumption
   // so each flag's VALUE is validated and not mis-read as a positional/target.
   if (flagDef.argTypes) return validateTypedCommandFlags(flagDef, args);
@@ -666,8 +687,35 @@ export function containsUnquotedExpansion(command: string): boolean {
  * Used for safe read-only commands where globs are harmless filename expansion.
  */
 export function containsShellSubstitution(command: string): boolean {
-  const unquoted = stripQuotedSections(command);
-  return /\$[A-Za-z_{(]/.test(unquoted);
+  // A quote-tracking scan (not a regex over quote-stripped text) so single-quote
+  // escape semantics are correct AND every `$`-expansion shape is covered. In
+  // bash a `\` is a NO-OP inside single quotes (literal), so escapes are only
+  // honored OUTSIDE single quotes — otherwise `'\'` desyncs the tracker and the
+  // scanner stays "in a quote" for the rest of the command, missing later
+  // expansions (Claude's containsUnquotedExpansion single-quote guard).
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (escaped) { escaped = false; continue; }
+    if (c === '\\' && !inSingle) { escaped = true; continue; }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (inSingle || inDouble) continue; // quoted — AMI tolerates `$VAR`/`"$f"` here
+    // UNQUOTED `$`: match a following variable-name char, a special parameter
+    // ($@ $* $# $? $! $$ $0-9 $-), or the start of a ${...} / $(...) substitution.
+    // AMI deliberately tolerates `$` inside quotes (single AND double) so the
+    // for-loop-with-glob perk (`for f in *.ts; do cat "$f"; done`) stays auto-safe
+    // — an intentional superset divergence from Claude; this adds the previously
+    // missed UNQUOTED special-parameter shapes ($@/$*/$?/…) to the parser-
+    // differential defense without regressing that perk.
+    if (c === '$') {
+      const next = command[i + 1];
+      if (next && /[A-Za-z_@*#?!$0-9({-]/.test(next)) return true;
+    }
+  }
+  return false;
 }
 
 /** Safe read-only docker subcommands. */
@@ -1105,6 +1153,9 @@ const SHELL_WRAPPERS = new Set([
   'bash', 'sh', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh',
   'env', 'sudo', 'su', 'doas', 'nohup', 'nice', 'timeout',
   'xargs', 'exec', 'eval',
+  // `time <cmd>` measures the inner command's runtime — the SAFETY of the line is
+  // the safety of the inner command, so unwrap it (Claude's `time` command spec).
+  'time',
   'watch', 'ionice', 'setarch', 'taskset', 'chrt', 'strace', 'ltrace',
 ]);
 
@@ -2088,6 +2139,10 @@ export class PermissionManager {
   private rules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
+  /** The permission mode active immediately before plan mode was entered, so a
+   *  later plan-mode exit can restore it (Claude's ToolPermissionContext.prePlanMode).
+   *  Undefined when not in plan mode or when none was captured. */
+  private _prePlanMode?: PermissionMode;
   /** Managed-rules-only lockdown (Claude's `allowManagedPermissionRulesOnly`): when
    *  true, ONLY `policySettings`-sourced rules are honored, runtime non-managed grants
    *  are refused, and nothing may be persisted. Set from the managed permissions file
@@ -2529,6 +2584,14 @@ export class PermissionManager {
     // `-l app=delete` does not false-trigger.
     if (/\bkubectl\b[^;|&\n]*\sdelete\b/.test(trimmed)) return 'destructive';
 
+    // Unsafe help/man/git-help/info forms execute arbitrary code: `man -P <cmd>`
+    // (pager exec), `man -l`/`--html`/`--pager=`, `git help --web` (browser), and
+    // `info --subnodes | …`. These must never be auto-approved even when man/help
+    // sit in SAFE_COMMANDS or an allow rule — man and help are classified by their
+    // literal command name, and `help` is often aliased to `man`. Wires the
+    // bash-security detector into the classifier (Claude's man/help safeFlags).
+    if (detectUnsafeHelpCommand(trimmed)) return 'unsafe';
+
     // A `cd`/`Set-Location` followed by a file-writing redirection resolves the
     // target against the NEW cwd at runtime — a path-desync the validator can't see.
     // Require manual approval (Claude's cd+write guard).
@@ -2911,8 +2974,42 @@ export class PermissionManager {
     if (this._disableBypass && (mode === 'bypassPermissions' || mode === 'auto-allow')) {
       return false; // blocked by managed policy
     }
+    // Entering plan mode from a non-plan mode: remember the prior mode so a later
+    // exit can restore it. A plan→plan no-op must NOT overwrite the memory, and
+    // switching to any explicit non-plan mode clears it (the caller chose the mode).
+    if (mode === 'plan') {
+      if (this.mode !== 'plan') this._prePlanMode = this.mode;
+    } else {
+      this._prePlanMode = undefined;
+    }
     this.mode = mode;
     return true;
+  }
+
+  /**
+   * The permission mode captured when plan mode was entered, or undefined if not
+   * in plan mode / none captured (Claude's ToolPermissionContext.prePlanMode).
+   */
+  getPrePlanMode(): PermissionMode | undefined {
+    return this._prePlanMode;
+  }
+
+  /**
+   * Leave plan mode, restoring the permission mode that was active before plan was
+   * entered (Claude's ExitPlanMode prePlanMode restore). When not currently in
+   * plan mode this is a no-op that returns the current mode. The restore is routed
+   * through {@link setMode} so managed policy still applies — if the captured mode
+   * was a bypass mode now forbidden by a killswitch, it falls back to 'ask'. When
+   * no prior mode was captured it also falls back to 'ask'. Returns the new mode.
+   */
+  exitPlanMode(): PermissionMode {
+    if (this.mode !== 'plan') return this.mode;
+    const restore = this._prePlanMode ?? 'ask';
+    this._prePlanMode = undefined;
+    if (!this.setMode(restore)) {
+      this.mode = 'ask';
+    }
+    return this.mode;
   }
 
   /**
