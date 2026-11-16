@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from 'child_process';
 import * as crypto from 'crypto';
-import { ToolDefinition, ToolResult } from '../types';
+import { ToolContext, ToolDefinition, ToolResult } from '../types';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
@@ -76,6 +76,99 @@ function getDefaultBranch(cwd: string): string {
   return 'main';
 }
 
+/**
+ * Non-git fallback: create (or enter) a worktree by delegating to a configured
+ * WorktreeCreate hook so worktree isolation works with VCS systems other than
+ * git (parity with Claude's hook-based createWorktreeForSession / setup.ts
+ * non-git branch). The hook is responsible for the actual on-disk isolation; we
+ * only await it, verify the target materialised, then switch the session into it
+ * (recording a `hookBased` worktree session). With no WorktreeCreate hook
+ * configured, this returns a loud error that names the cwd and the escape hatch.
+ */
+async function createViaWorktreeHook(
+  context: ToolContext,
+  name: string | undefined,
+  existingPath: string | undefined,
+  baseRefProvided: boolean,
+): Promise<ToolResult> {
+  const cwd = context.cwd || process.cwd();
+  const hookCount = context._hookManager?.getSummary?.().worktreeCreate ?? 0;
+  if (!context._hookManager || hookCount === 0) {
+    return {
+      output:
+        `Error: not inside a git repository (${cwd}). To use worktree isolation ` +
+        'with another VCS, configure WorktreeCreate/WorktreeRemove hooks in settings.',
+      isError: true,
+    };
+  }
+  // A git ref cannot be resolved outside git, so base_ref is meaningless here.
+  if (baseRefProvided) {
+    return { output: 'Error: base_ref requires a git repository (a hook-based worktree cannot resolve a git ref).', isError: true };
+  }
+
+  // Entering an existing hook-created worktree needs no git: if the directory is
+  // present, switch into it; otherwise report it missing.
+  if (existingPath) {
+    if (!fs.existsSync(existingPath)) {
+      return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
+    }
+    switchHookSession(context, cwd, path.resolve(existingPath), path.basename(existingPath));
+    return { output: `Entered existing worktree at: ${existingPath}. Run exit_worktree when done.` };
+  }
+
+  const slug = name || `wt-${crypto.randomBytes(4).toString('hex')}`;
+  if (!validateSlug(slug)) {
+    return { output: `Error: invalid worktree name "${slug}". Use letters, digits, dots, underscores, dashes (max 64 chars per segment).`, isError: true };
+  }
+  const { flattenSlug } = require('../worktree-manager');
+  const flatSlug: string = flattenSlug(slug);
+  const worktreeDir = path.join(cwd, '.ami', 'worktrees', flatSlug);
+  if (fs.existsSync(worktreeDir)) {
+    return { output: `Error: worktree "${flatSlug}" already exists at ${worktreeDir}. Use path to enter an existing worktree.`, isError: true };
+  }
+
+  try {
+    await context._hookManager.executeWorktreeCreate({ name: slug, worktreePath: worktreeDir });
+  } catch (e) {
+    return { output: `Error: WorktreeCreate hook failed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+  }
+  // The hook owns creation; if it did not materialise the directory, fail loud
+  // rather than switching the session into a path that does not exist.
+  if (!fs.existsSync(worktreeDir)) {
+    return { output: `Error: the WorktreeCreate hook did not create ${worktreeDir}.`, isError: true };
+  }
+
+  switchHookSession(context, cwd, worktreeDir, flatSlug);
+  return {
+    output:
+      `Worktree created via WorktreeCreate hook (session switched to it):\n` +
+      `  Path: ${worktreeDir}\n` +
+      '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).',
+  };
+}
+
+/** Record a hookBased worktree session and switch the context cwd into it,
+ *  firing the cwdChanged hook (shared by the create + enter-existing hook paths). */
+function switchHookSession(
+  context: ToolContext,
+  originalCwd: string,
+  worktreeDir: string,
+  worktreeName: string,
+): void {
+  const { setWorktreeSession } = require('../worktree-manager');
+  setWorktreeSession({
+    originalCwd,
+    worktreePath: worktreeDir,
+    worktreeName,
+    worktreeBranch: '',
+    hookBased: true,
+    createdAt: new Date().toISOString(),
+  });
+  (context as any)._originalCwd = originalCwd;
+  (context as any).cwd = worktreeDir;
+  context._hookManager?.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
+}
+
 export const enterWorktreeTool: ToolDefinition = {
   name: 'enter_worktree',
   description:
@@ -130,13 +223,21 @@ export const enterWorktreeTool: ToolDefinition = {
       return { output: 'Error: base_ref cannot be combined with path (base_ref only applies when creating a new worktree).', isError: true };
     }
 
+    let insideGit = true;
     try {
       _enterWorktreeHooks.exec(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
     } catch {
-      return {
-        output: 'Error: not inside a git repository. To use worktree isolation with another VCS, configure WorktreeCreate/WorktreeRemove hooks in settings.',
-        isError: true,
-      };
+      insideGit = false;
+    }
+
+    if (!insideGit) {
+      // Outside a git repository, VCS-agnostic isolation is still possible when
+      // the operator has configured a WorktreeCreate hook (parity with Claude's
+      // createWorktreeForSession hook delegation and setup.ts's non-git
+      // fallback): the hook performs the actual VCS-specific worktree creation.
+      // With no such hook we fail loud and NAME the cwd so the user knows which
+      // directory is not a repo and how to enable the escape hatch.
+      return createViaWorktreeHook(context, name, existingPath, baseRefProvided);
     }
 
     // Nested-isolation guard: refuse to create a NEW worktree while the current
