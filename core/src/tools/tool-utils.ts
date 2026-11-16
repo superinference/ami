@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import type { ToolResult } from '../types';
+import type { ToolResult, DiffHunk } from '../types';
 import { isCredentialPath } from './bash-security';
 import { validatePathExpansionSafety, normalizeCaseForComparison } from '../utils/path';
 
@@ -752,6 +752,23 @@ export function scanAddedSecrets(before: string, after: string): SecretMatch[] {
   return scanForSecrets(added.join('\n'));
 }
 
+/**
+ * Build the canonical write-block message for detected secrets — ONE source of
+ * truth for every edit mode (single replace, replace_all, multi-edit, full
+ * overwrite) so the wording never drifts between paths. Parity with Claude Code's
+ * secret guard, which both NAMES the matched secret labels AND states the
+ * sharing-risk rationale (a committed secret is exposed to everyone with
+ * repository access), not just the type list. `where` distinguishes a fresh
+ * write ("content") from an in-place edit ("edited content"). Labels only — the
+ * matched secret bytes are never echoed.
+ */
+export function secretWarning(secrets: SecretMatch[], where: 'content' | 'edited content'): string {
+  const labels = secrets.map(s => s.label).join(', ');
+  return `Warning: Potential secrets detected in ${where}: ${labels}. ` +
+    'A committed secret is exposed to everyone with access to this repository and its history — ' +
+    'remove the secret (use an env var or secret manager) before writing.';
+}
+
 // ---------------------------------------------------------------------------
 // CRLF-aware line ending helpers (shared by file-edit)
 // ---------------------------------------------------------------------------
@@ -1012,12 +1029,19 @@ function lineDiffOps(oldLines: string[], newLines: string[], ignoreWhitespace: b
 }
 
 /** Render a flat op sequence into one-or-more `@@` hunks with `context` lines around each change. */
-function renderHunks(ops: DiffOp[], label: string, context: number): string {
-  // Flag every op within `context` positions of a change; contiguous flagged
-  // runs become hunks. Changes separated by <= 2·context unchanged lines merge
-  // into one hunk (their context windows touch), exactly like a unified diff.
+/**
+ * Group a line-diff op stream into {@link DiffHunk} objects — the ONE canonical
+ * hunk-grouping used by BOTH the text renderer ({@link renderHunks}) and the
+ * machine-readable {@link buildStructuredPatch}, so the two can never diverge.
+ * Every op within `context` positions of a change is kept; contiguous kept runs
+ * become one hunk (changes separated by <= 2·context unchanged lines merge, like
+ * a unified diff). Each hunk's `lines` carry the leading ` `/`+`/`-` prefix,
+ * matching Claude Code's `structuredPatch` hunk shape. Returns `[]` when there
+ * is no change.
+ */
+function groupHunks(ops: DiffOp[], context: number): DiffHunk[] {
   const changed = ops.map(o => o.type !== ' ');
-  if (!changed.some(Boolean)) return '(no changes detected)';
+  if (!changed.some(Boolean)) return [];
   const keep = new Array(ops.length).fill(false);
   for (let k = 0; k < ops.length; k++) {
     if (!changed[k]) continue;
@@ -1027,7 +1051,7 @@ function renderHunks(ops: DiffOp[], label: string, context: number): string {
     }
   }
 
-  const out: string[] = [`--- ${label}`, `+++ ${label}`];
+  const hunks: DiffHunk[] = [];
   let oldNo = 0; // old lines consumed before the current op
   let newNo = 0; // new lines consumed before the current op
   let k = 0;
@@ -1040,20 +1064,34 @@ function renderHunks(ops: DiffOp[], label: string, context: number): string {
     }
     const hunkStartOld = oldNo;
     const hunkStartNew = newNo;
-    const body: string[] = [];
+    const lines: string[] = [];
     let oldLen = 0;
     let newLen = 0;
     while (k < ops.length && keep[k]) {
       const op = ops[k];
-      body.push(`${op.type}${op.line}`);
+      lines.push(`${op.type}${op.line}`);
       if (op.type !== '+') { oldNo++; oldLen++; }
       if (op.type !== '-') { newNo++; newLen++; }
       k++;
     }
-    const oldStart = oldLen > 0 ? hunkStartOld + 1 : hunkStartOld;
-    const newStart = newLen > 0 ? hunkStartNew + 1 : hunkStartNew;
-    out.push(`@@ -${oldStart},${oldLen} +${newStart},${newLen} @@`);
-    out.push(...body);
+    hunks.push({
+      oldStart: oldLen > 0 ? hunkStartOld + 1 : hunkStartOld,
+      oldLines: oldLen,
+      newStart: newLen > 0 ? hunkStartNew + 1 : hunkStartNew,
+      newLines: newLen,
+      lines,
+    });
+  }
+  return hunks;
+}
+
+function renderHunks(ops: DiffOp[], label: string, context: number): string {
+  const hunks = groupHunks(ops, context);
+  if (hunks.length === 0) return '(no changes detected)';
+  const out: string[] = [`--- ${label}`, `+++ ${label}`];
+  for (const h of hunks) {
+    out.push(`@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`);
+    out.push(...h.lines);
   }
   return out.join('\n');
 }
@@ -1138,6 +1176,29 @@ export function buildUnifiedDiff(
 
   if (diff === '(no changes detected)') return diff;
   return options.maxBytes !== undefined ? capDiffBytes(diff, options.maxBytes) : diff;
+}
+
+/**
+ * Build the machine-readable {@link DiffHunk}[] for a file mutation — parity with
+ * Claude Code's FileEdit `structuredPatch` output field, which lets a frontend
+ * render/fold a diff per-hunk programmatically instead of re-parsing the text
+ * `output`. Shares the EXACT hunk-grouping of {@link buildUnifiedDiff} (via
+ * {@link groupHunks}) so the structured patch and the text diff are always
+ * consistent. Returns `[]` when there is no change. The degenerate-input guard
+ * ({@link MAX_DIFF_CELLS}) returns `[]` rather than an approximate single-region
+ * hunk: callers already carry the (capped) text diff for display, and a huge
+ * machine patch would blow the per-turn budget it is meant to economize.
+ */
+export function buildStructuredPatch(
+  oldContent: string,
+  newContent: string,
+  options: { contextLines?: number; ignoreWhitespace?: boolean } = {},
+): DiffHunk[] {
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  if (oldLines.length * newLines.length > MAX_DIFF_CELLS) return [];
+  const ops = lineDiffOps(oldLines, newLines, options.ignoreWhitespace ?? false);
+  return groupHunks(ops, options.contextLines ?? DIFF_CONTEXT_LINES);
 }
 
 /**

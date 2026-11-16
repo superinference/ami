@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import { suggestPathUnderCwd } from './path-suggest';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { coerceBool } from '../utils/coerce';
@@ -399,7 +399,7 @@ export async function writeEntireFile(
 
   const secrets = scanAddedSecrets(oldContent, content);
   if (secrets.length > 0) {
-    return { output: `Warning: Potential secrets detected in content: ${secrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
+    return { output: secretWarning(secrets, 'content'), isError: true };
   }
 
   const jsonErr = validateJsonEdit(resolved, oldContent, content);
@@ -432,6 +432,7 @@ export async function writeEntireFile(
     const createdLabel = !fileExists ? 'Created new file' : 'Populated empty file';
     return {
       output: `${createdLabel}: ${resolved}\nSuccessfully wrote ${resolved} (new file, ${lineCount} lines)\n\n--- /dev/null\n+++ ${resolved}\n@@ -0,0 +1,${lineCount} @@\n${body}${truncNote}`,
+      structuredPatch: buildStructuredPatch(normalizeToLf(oldContent), normalizeToLf(content)),
     };
   }
 
@@ -440,7 +441,10 @@ export async function writeEntireFile(
   // as removed and the entire new file as added. For a small edit inside a large
   // file this keeps the overwrite diff proportional to what actually changed.
   const diff = buildUnifiedDiff(normalizeToLf(oldContent), normalizeToLf(content), resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
-  return { output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n${diff}` };
+  return {
+    output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n${diff}`,
+    structuredPatch: buildStructuredPatch(normalizeToLf(oldContent), normalizeToLf(content)),
+  };
 }
 
 async function applySequentialEdits(
@@ -558,7 +562,7 @@ async function applySequentialEdits(
 
   const secrets = scanAddedSecrets(rawContent, content);
   if (secrets.length > 0) {
-    return { output: `Warning: Potential secrets detected in edited content: ${secrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
+    return { output: secretWarning(secrets, 'edited content'), isError: true };
   }
 
   const jsonErr = validateJsonEdit(resolved, rawContent, content);
@@ -585,13 +589,21 @@ async function applySequentialEdits(
     summary.push(`\n${diff}`);
   }
 
-  return { output: summary.join('\n'), isError: false };
+  return {
+    output: summary.join('\n'),
+    isError: false,
+    structuredPatch: buildStructuredPatch(normalizeToLf(rawContent), content),
+  };
 }
 
 export const fileEditTool: ToolDefinition = {
   name: 'file_edit',
+  // Discovery hint for tool_search: synonyms a model might phrase the intent with
+  // that are not in the formal name/description (parity: Claude's Tool.searchHint
+  // 'modify file contents in place'). Consumed by tool-search.ts scoring.
+  searchHint: 'modify file contents in place create overwrite write edit replace rewrite patch',
   description:
-    'Create or edit a file. You MUST file_read an existing file before changing it. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers. Never use bash sed/awk to edit files.',
+    'Create or edit a file. You MUST file_read an existing file before changing it. ALWAYS prefer editing an existing file (one of the replace modes, which send only the diff) over creating a new one; use the Write/create mode only to create a genuinely new file or for a complete rewrite. NEVER proactively create documentation files (*.md) or README files unless the User explicitly requests them. Only write emojis into a file if the User explicitly asks for them. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers. Never use bash sed/awk to edit files.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -847,7 +859,7 @@ export const fileEditTool: ToolDefinition = {
         const replaced = content.split(normalizedOld).join(normalizedNew);
         const addedSecrets = scanAddedSecrets(content, replaced);
         if (addedSecrets.length > 0) {
-          return { output: `Warning: Potential secrets detected in edited content: ${addedSecrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
+          return { output: secretWarning(addedSecrets, 'edited content'), isError: true };
         }
         const jsonErr = validateJsonEdit(resolved, rawContent, replaced);
         if (jsonErr) return jsonErr;
@@ -858,6 +870,7 @@ export const fileEditTool: ToolDefinition = {
         const diff = buildUnifiedDiff(content, replaced, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
+          structuredPatch: buildStructuredPatch(content, replaced),
         };
       }
       return {
@@ -874,7 +887,7 @@ export const fileEditTool: ToolDefinition = {
 
     const secrets = scanAddedSecrets(rawContent, newContent);
     if (secrets.length > 0) {
-      return { output: `Warning: Potential secrets detected in content: ${secrets.map(s => s.label).join(', ')}. Remove secrets before writing.`, isError: true };
+      return { output: secretWarning(secrets, 'content'), isError: true };
     }
 
     await trackFileHistory(resolved, rawContent, context.cwd);
@@ -888,6 +901,7 @@ export const fileEditTool: ToolDefinition = {
     const patchInfo = `[edit: ${path.basename(resolved)}, +${additions} -${removals}]`;
     return {
       output: `${patchInfo}\nSuccessfully edited ${resolved}${strategyNote}\n\n${diff}`,
+      structuredPatch: buildStructuredPatch(content, normalizeToLf(newContent)),
     };
   },
 };
