@@ -12,7 +12,8 @@ import type { SessionFact } from './session-memory';
 import { log as coreLog } from './logger';
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
-import { abbreviateHome } from './utils/path';
+import { abbreviateHome, isPathWithin } from './utils/path';
+import { scanForSecrets } from './tools/tool-utils';
 
 /**
  * Home-abbreviated path for log/diagnostic lines. Memory diagnostics name the
@@ -129,6 +130,17 @@ export type MemoryType = (typeof MEMORY_TYPES)[number];
  */
 export const MEMORY_SCOPES = ['private', 'team'] as const;
 export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+
+/**
+ * Which on-disk memory STORE a path physically belongs to, as resolved by
+ * {@link MemoryManager.memoryScopeForPath}. Distinct from the authoring
+ * {@link MemoryScope} (`private`/`team`): this is the classifier used by
+ * permission/telemetry/collapse logic to recognize a path, and names the
+ * personal store `personal` (the auto-memory root) to mirror Claude Code's
+ * `memoryScopeForPath` return type (utils/memoryFileDetection.ts). `null` means
+ * the path is not inside any memory store.
+ */
+export type MemoryPathScope = 'personal' | 'team';
 
 /**
  * Per-type memory taxonomy guidance surfaced in the system prompt. Mirrors Claude
@@ -1903,6 +1915,35 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
           if (this._statSync(candidate).size > MAX_MEMORY_FILE_BYTES) continue;
         } catch { continue; }
         const raw = fs.readFileSync(candidate, 'utf-8');
+        // SECRET BOUNDARY FOR SHARED MEMORY: a team-memory file is shared with and
+        // synced to every collaborator, so a leaked API key / token in it would
+        // both land in this session's system prompt AND propagate to everyone.
+        // Scan shared files BEFORE loading; on a hit, SKIP the file entirely (never
+        // surface it to the model) and emit a user-facing `memorySecretWarning` so
+        // the credential can be removed. Mirrors Claude Code's destination-scoped
+        // team-memory secret guard (teamMemorySync/index.ts + teamMemSecretGuard.ts):
+        // detection is scoped to the SHARED store — private memory is already
+        // credential-redacted on write (see saveMemory), so this does not double-scan it.
+        if (this.memoryScopeForPath(candidate) === 'team') {
+          const secrets = scanForSecrets(raw);
+          if (secrets.length > 0) {
+            if (this._hookCallback) {
+              this._hookCallback('memorySecretWarning', {
+                filePath: candidate,
+                scope: 'team',
+                location: this.getMemoryScopeDisplay(candidate),
+                credentials: secrets.map(s => s.label),
+              });
+            }
+            coreLog(
+              'memory',
+              `skipping shared memory file with potential secrets ${redactLogPath(candidate)}`,
+              { credentials: secrets.map(s => s.label).join(', ') },
+              'warn',
+            );
+            continue;
+          }
+        }
         const { body } = parseFrontmatter(raw, candidate);
         const content = sanitizeContent(body.trim(), candidate);
         if (content.length > 0) out.push(content);
@@ -1926,6 +1967,88 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     // not the raw cwd, so every worktree and subdirectory of one repo shares a single
     // auto-memory directory instead of fragmenting it per `cd`/per worktree.
     return projectStateDir(canonicalGitRoot(this.cwd), 'memory');
+  }
+
+  /**
+   * Absolute path to the shared TEAM memory sub-directory (`<memoryDir>/team`),
+   * the one {@link loadTeamMemories} reads and {@link saveMemory} with
+   * `scope: 'team'` writes into. Team memory is shared with everyone working in
+   * the project and (typically) checked into VCS.
+   */
+  getTeamMemoryDir(): string {
+    return path.join(this.getMemoryDir(), 'team');
+  }
+
+  /**
+   * Is `absPath` inside the auto-memory tree at all (private root OR the nested
+   * team sub-dir)? Traversal-safe: the boundary check normalizes/expands and
+   * symlink-resolves via the shared {@link isPathWithin} primitive, so a
+   * `..`-laden or symlinked path cannot spoof membership. Mirrors Claude Code's
+   * `isAutoMemPath` (memdir/paths.ts) / `isAgentMemoryPath` (AgentTool/
+   * agentMemory.ts) `normalize().startsWith(dir + sep)` membership predicate,
+   * reusing AMI's one canonical containment helper instead of a second
+   * normalize-based check. Used by permission/collapse classification.
+   */
+  isMemoryPath(absPath: string): boolean {
+    return isPathWithin(absPath, this.getMemoryDir(), this.cwd);
+  }
+
+  /**
+   * Is `absPath` a MEMORY FILE (a `.md` inside the auto-memory tree)? Parity with
+   * Claude Code's `isMemoryFilePath` (utils/claudemd.ts): recognizes a path as a
+   * memory file so an edit to it can trigger a memory-section refresh. Narrows
+   * {@link isMemoryPath} to markdown so a sibling non-memory artifact in the dir
+   * is not misclassified.
+   */
+  isMemoryFilePath(absPath: string): boolean {
+    return absPath.toLowerCase().endsWith('.md') && this.isMemoryPath(absPath);
+  }
+
+  /**
+   * Is `absPath` inside the shared TEAM memory sub-dir? Traversal-safe (shared
+   * {@link isPathWithin}). Parity with Claude Code's `isTeamMemFile`
+   * (memdir/teamMemPaths.ts via utils/teamMemoryOps.ts): the classifier a
+   * search/write/edit guard uses to recognize an operation that targets shared
+   * team memory and must be routed through the stricter (secret-scanned) path.
+   */
+  isTeamMemFile(absPath: string): boolean {
+    return isPathWithin(absPath, this.getTeamMemoryDir(), this.cwd);
+  }
+
+  /**
+   * Resolve which memory STORE a path belongs to, or `null` when it is outside
+   * every store. TEAM IS CHECKED FIRST because the team dir is nested inside the
+   * memory root (`<memoryDir>/team`), so a team path also satisfies
+   * {@link isMemoryPath}; the team-before-personal order is the invariant that
+   * keeps a shared path from being mislabeled `personal`. Mirrors Claude Code's
+   * `memoryScopeForPath` (utils/memoryFileDetection.ts).
+   */
+  memoryScopeForPath(absPath: string): MemoryPathScope | null {
+    if (this.isTeamMemFile(absPath)) return 'team';
+    if (this.isMemoryPath(absPath)) return 'personal';
+    return null;
+  }
+
+  /**
+   * Human-readable "scope (resolved path)" label for a memory location, for the
+   * `/memory` surface and diagnostics. With no argument, describes the default
+   * private store; with a path, names the store the path resolves to (or
+   * `External` when it is outside every memory store). Mirrors Claude Code's
+   * `getMemoryScopeDisplay` (AgentTool/agentMemory.ts) which renders a
+   * capitalized scope plus its directory.
+   */
+  getMemoryScopeDisplay(absPath?: string): string {
+    if (absPath === undefined) {
+      return `Private (${abbreviateHome(this.getMemoryDir())})`;
+    }
+    switch (this.memoryScopeForPath(absPath)) {
+      case 'team':
+        return `Team (${abbreviateHome(this.getTeamMemoryDir())})`;
+      case 'personal':
+        return `Private (${abbreviateHome(this.getMemoryDir())})`;
+      default:
+        return `External (${abbreviateHome(absPath)})`;
+    }
   }
 
   /**
