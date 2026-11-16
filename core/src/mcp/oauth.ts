@@ -41,6 +41,35 @@ export const OAUTH_HTTP_TIMEOUT_MS = 30_000;
 export const DEFAULT_TOKEN_LIFETIME_SEC = 3600;
 
 /**
+ * Env var (Claude-parity) overriding the Client ID Metadata Document URL used for
+ * CIMD (SEP-991). When set, it takes precedence over any configured
+ * `clientMetadataUrl`, so an operator can point the flow at a testing / FedStart
+ * metadata document without editing server config.
+ */
+export const MCP_OAUTH_CLIENT_METADATA_URL_ENV = 'MCP_OAUTH_CLIENT_METADATA_URL';
+
+/**
+ * Resolve the Client ID Metadata Document URL (CIMD / SEP-991) for an OAuth flow:
+ * the `MCP_OAUTH_CLIENT_METADATA_URL` env override wins, else the operator-configured
+ * `clientMetadataUrl`, else undefined (CIMD disabled — fall back to Dynamic Client
+ * Registration). Unlike Claude Code, AMI ships NO hardcoded default document (that
+ * would point at a vendor's infrastructure); CIMD is strictly opt-in. A resolved URL
+ * MUST be https:// — a `client_id` that is a URL is a public identifier the auth
+ * server dereferences, so a plaintext one is refused.
+ */
+export function resolveClientMetadataUrl(
+  configured?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const raw = env[MCP_OAUTH_CLIENT_METADATA_URL_ENV] || configured;
+  if (!raw) return undefined;
+  if (!raw.startsWith('https://')) {
+    throw new Error(`client-id metadata document URL must use https:// (got: ${raw})`);
+  }
+  return raw;
+}
+
+/**
  * Transport-downgrade guard. OAuth carries bearer tokens, authorization codes
  * and client secrets, so every issuer/discovery/authorization/token endpoint
  * MUST be https. Plaintext http is tolerated ONLY for loopback (local dev auth
@@ -335,6 +364,12 @@ export interface AuthServerMetadata {
   revocationEndpoint?: string;
   /** RFC 8414 `revocation_endpoint_auth_methods_supported` — client-auth methods the revocation endpoint accepts. */
   revocationEndpointAuthMethodsSupported?: string[];
+  /**
+   * SEP-991 `client_id_metadata_document_supported`. When true, the client MAY use
+   * a Client ID Metadata Document URL directly as its `client_id` instead of
+   * performing Dynamic Client Registration (RFC 7591). See {@link resolveClientMetadataUrl}.
+   */
+  clientIdMetadataDocumentSupported?: boolean;
 }
 
 export interface OAuthTokens {
@@ -344,6 +379,12 @@ export interface OAuthTokens {
   /** Absolute epoch-ms expiry (computed from expires_in at receipt). */
   expiresAt?: number;
   scope?: string;
+  /**
+   * The `client_id` these tokens were minted under. Persisted so a session can
+   * detect a configured-clientId CHANGE across restarts and invalidate the now-stale
+   * grant (the old client's tokens/secret would fail with opaque `invalid_client`).
+   */
+  clientId?: string;
 }
 
 /**
@@ -372,6 +413,13 @@ export interface McpOAuthProvider {
    * cannot revoke simply omits it.
    */
   revoke?(): Promise<void>;
+  /**
+   * Local, granular credential invalidation (no server-side call): drop the named
+   * slice of auth state (`tokens` / `client` / `discovery` / `verifier` / `all`).
+   * Used on a full "forget" to tear down the dynamically-registered client and cached
+   * discovery in addition to the tokens that revoke() already clears. Optional.
+   */
+  invalidateCredentials?(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void>;
 }
 
 const base64url = (buf: Buffer): string =>
@@ -626,6 +674,7 @@ export async function discoverAuthServer(
     revocationEndpoint: typeof doc.revocation_endpoint === 'string' ? doc.revocation_endpoint : undefined,
     revocationEndpointAuthMethodsSupported: Array.isArray(doc.revocation_endpoint_auth_methods_supported)
       ? (doc.revocation_endpoint_auth_methods_supported as string[]) : undefined,
+    clientIdMetadataDocumentSupported: doc.client_id_metadata_document_supported === true,
   };
 }
 
@@ -932,16 +981,49 @@ export class OAuthTokenStore {
  * (owner-only — they are bearer credentials). All disk I/O is best-effort: a
  * failed read/write degrades to in-memory behavior rather than throwing.
  */
+export interface FileOAuthTokenStoreOptions {
+  skewMs?: number;
+  /** Max attempts to acquire the cross-process refresh lock before proceeding without it. */
+  lockRetries?: number;
+  /** Steal a lock whose directory is older than this many ms (crashed holder). */
+  lockStaleMs?: number;
+  /** Injectable sleep (ms) for deterministic lock-contention tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Clock seam (epoch ms) for stale-lock detection in tests. */
+  now?: () => number;
+}
+
 export class FileOAuthTokenStore extends OAuthTokenStore {
-  constructor(private readonly filePath: string, skewMs = 30_000) {
-    super(skewMs);
+  private readonly lockPath: string;
+  private readonly lockRetries: number;
+  private readonly lockStaleMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly clock: () => number;
+
+  constructor(private readonly filePath: string, opts: FileOAuthTokenStoreOptions = {}) {
+    super(opts.skewMs ?? 30_000);
+    this.lockPath = `${filePath}.lock`;
+    this.lockRetries = opts.lockRetries ?? 20;
+    this.lockStaleMs = opts.lockStaleMs ?? 60_000;
+    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => { const t = setTimeout(r, ms); if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref(); }));
+    this.clock = opts.now ?? (() => Date.now());
+    this.reload();
+  }
+
+  /**
+   * Re-read the persisted tokens from disk into memory WITHOUT rewriting the file.
+   * Used after acquiring the cross-process refresh lock so a refresh landed by a
+   * concurrent process is picked up instead of being re-minted redundantly. Routes
+   * through the base (in-memory) set, so no disk write is triggered.
+   */
+  reload(): void {
     try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as OAuthTokens;
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as OAuthTokens;
       if (parsed && typeof parsed.accessToken === 'string' && typeof parsed.tokenType === 'string') {
         super.set(parsed);
       }
     } catch {
-      /* no cached tokens (or unreadable) — start empty */
+      /* no cached tokens (or unreadable) — leave current in-memory state */
     }
   }
 
@@ -958,6 +1040,41 @@ export class FileOAuthTokenStore extends OAuthTokenStore {
   clear(): void {
     super.clear();
     try { fs.rmSync(this.filePath, { force: true }); } catch { /* ignore */ }
+  }
+
+  /**
+   * Run `fn` holding a cross-process refresh lock so only ONE process at a time
+   * refreshes this server's (typically single-use, rotating) refresh_token — a
+   * concurrent refresh in another AMI process would race, and all-but-one POST
+   * would get `invalid_grant` and corrupt the shared token file. The lock is an
+   * atomic `mkdir` of `<file>.lock` (atomic on POSIX and Windows); on contention
+   * it retries with jittered backoff, steals a stale lock left by a crashed holder
+   * (older than `lockStaleMs`), and — matching Claude Code — proceeds WITHOUT the
+   * lock rather than failing the refresh if it cannot be acquired. The lock dir is
+   * always removed in a finally so a clean exit never leaves it behind.
+   */
+  async withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+    let held = false;
+    for (let attempt = 0; attempt < this.lockRetries; attempt++) {
+      try {
+        fs.mkdirSync(this.lockPath);
+        held = true;
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') break; // non-contention error — proceed unlocked
+        // Steal a stale lock whose directory predates `lockStaleMs` (crashed holder).
+        try {
+          const age = this.clock() - fs.statSync(this.lockPath).mtimeMs;
+          if (age > this.lockStaleMs) { fs.rmSync(this.lockPath, { recursive: true, force: true }); continue; }
+        } catch { /* lock vanished between calls — retry immediately */ continue; }
+        await this.sleep(50 + Math.floor(Math.random() * 100));
+      }
+    }
+    try {
+      return await fn();
+    } finally {
+      if (held) { try { fs.rmSync(this.lockPath, { recursive: true, force: true }); } catch { /* already gone */ } }
+    }
   }
 }
 
@@ -1004,6 +1121,14 @@ export interface McpOAuthSessionOptions {
   clientId?: string;
   /** Confidential-client secret (RFC 6749). Sent on token/refresh exchanges when set. */
   clientSecret?: string;
+  /**
+   * Client ID Metadata Document URL (CIMD / SEP-991). When set — and the
+   * authorization server advertises `client_id_metadata_document_supported` — this
+   * URL is used directly as the `client_id`, skipping Dynamic Client Registration.
+   * The `MCP_OAUTH_CLIENT_METADATA_URL` env var overrides it ({@link resolveClientMetadataUrl}).
+   * Ignored when a static `clientId` is configured. MUST be https://.
+   */
+  clientMetadataUrl?: string;
   scope?: string;
   /**
    * Pin the authorization-server metadata URL (RFC 8414), bypassing well-known
@@ -1088,6 +1213,15 @@ export class McpOAuthSession implements McpOAuthProvider {
     this.resource = opts.serverUrl;
     this.effectiveClientId = opts.clientId;
     this.effectiveClientSecret = opts.clientSecret;
+    // clientId-change invalidation (parity with Claude's xaaIdpCommand): if a static
+    // clientId is configured and differs from the one the persisted tokens were minted
+    // under, the stored grant is for the OLD client registration — it would fail with
+    // opaque `invalid_client`. Drop the stale tokens so a fresh consent runs under the
+    // new client id. (A matching or absent stored clientId keeps the tokens.)
+    const stored = this.store.get();
+    if (opts.clientId && stored?.clientId && stored.clientId !== opts.clientId) {
+      this.store.clear();
+    }
   }
 
   /** Emit a redacted diagnostic event to the optional observer (best-effort). */
@@ -1130,8 +1264,35 @@ export class McpOAuthSession implements McpOAuthProvider {
     return this.refreshInFlight;
   }
 
-  /** Perform one silent refresh of the stored tokens; returns the new header or null. */
+  /**
+   * Perform one silent refresh of the stored tokens; returns the new header or null.
+   * When the store is file-backed the whole refresh runs under a CROSS-PROCESS lock
+   * (so concurrent AMI processes do not each burn the single-use rotating
+   * refresh_token): after acquiring the lock we re-read the token file, and if a
+   * sibling process already landed a still-valid access token we adopt it and skip
+   * the network POST entirely (re-read-after-lock dedup — parity with Claude's
+   * `refreshAuthorization`).
+   */
   private async doRefresh(): Promise<string | null> {
+    const store = this.store;
+    if (store instanceof FileOAuthTokenStore) {
+      return store.withRefreshLock(async () => {
+        // Another process may have refreshed while we waited for the lock — re-read
+        // from disk and, if the token is live again, reuse it instead of POSTing.
+        store.reload();
+        const fresh = store.authorizationHeader(this.now());
+        if (fresh) {
+          this.log({ step: 'refresh', message: 'another process already refreshed the token; reusing it', ok: true });
+          return fresh;
+        }
+        return this.performRefreshPost();
+      });
+    }
+    return this.performRefreshPost();
+  }
+
+  /** The actual refresh_token POST + store-commit, shared by the locked and unlocked paths. */
+  private async performRefreshPost(): Promise<string | null> {
     const authMeta = this.authMeta!;
     const clientId = this.effectiveClientId!;
     const clientSecret = this.effectiveClientSecret;
@@ -1154,6 +1315,9 @@ export class McpOAuthSession implements McpOAuthProvider {
         }, this.now()),
         { ...this.opts.retry, isRetryable: this.opts.retry?.isRetryable ?? isTransientOAuthError },
       );
+      // Stamp the client id the token was minted under so a later clientId change is
+      // detectable across restarts (clientId-change invalidation).
+      refreshed.clientId = clientId;
       // Discard a stale refresh whose generation was superseded mid-flight.
       if (!this.store.applyRefresh(refreshed, generation)) {
         this.log({ step: 'refresh', message: 'refresh superseded by a concurrent credential change', ok: false });
@@ -1162,9 +1326,9 @@ export class McpOAuthSession implements McpOAuthProvider {
       this.log({ step: 'refresh', message: 'access token refreshed', ok: true });
       return this.store.authorizationHeader(this.now());
     } catch (error) {
-      // A dead grant (invalid_grant) can never recover by retry — clear the
-      // stored tokens so the next 401 drives a full interactive re-auth.
-      if (error instanceof OAuthError && error.code === 'invalid_grant') this.store.clear();
+      // A dead grant (invalid_grant) can never recover by retry — drop the stored
+      // tokens so the next 401 drives a full interactive re-auth.
+      if (error instanceof OAuthError && error.code === 'invalid_grant') await this.invalidateCredentials('tokens');
       this.log({ step: 'refresh', message: 'refresh failed', ok: false, error: redactTokenBody(error instanceof Error ? error.message : String(error)) });
       return null; // fall through to a full re-auth on the next 401
     }
@@ -1233,6 +1397,34 @@ export class McpOAuthSession implements McpOAuthProvider {
       this.store.clear();
       this.log({ step: 'revoke', message: 'local credentials cleared', ok: true });
     }
+  }
+
+  /**
+   * Granular credential invalidation (parity with Claude Code's
+   * `invalidateCredentials`). Clears exactly the slice of local auth state named by
+   * `scope`, leaving the rest intact so a caller can force the MINIMAL re-work:
+   *   - `tokens`    — drop the access/refresh tokens (next request re-auths/refreshes);
+   *   - `client`    — drop the (dynamically-registered) client id/secret so the next
+   *                   flow re-registers; resets to the configured clientId/secret, if any;
+   *   - `discovery` — drop cached authorization-server metadata so the next flow
+   *                   re-runs RFC 9728/8414 discovery (e.g. after the AS rotated endpoints);
+   *   - `verifier`  — no-op: the PKCE verifier is per-flow and never persisted here,
+   *                   so there is nothing to clear (kept for API parity/completeness);
+   *   - `all`       — every slice above.
+   * Unlike revoke(), this is purely LOCAL (no server-side RFC 7009 call) — use it to
+   * drop state that is stale/unusable rather than to sign out.
+   */
+  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void> {
+    if (scope === 'tokens' || scope === 'all') this.store.clear();
+    if (scope === 'client' || scope === 'all') {
+      this.effectiveClientId = this.opts.clientId;
+      this.effectiveClientSecret = this.opts.clientSecret;
+    }
+    if (scope === 'discovery' || scope === 'all') {
+      this.authMeta = null;
+      this.resource = this.opts.serverUrl;
+    }
+    this.log({ step: 'revoke', message: `invalidated local credentials (scope: ${scope})`, ok: true });
   }
 
   async onForbidden(wwwAuthenticate: string | null): Promise<boolean> {
@@ -1336,17 +1528,27 @@ export class McpOAuthSession implements McpOAuthProvider {
 
       const redirectUri = await this.getRedirectUri();
       if (!this.effectiveClientId) {
-        if (!authMeta.registrationEndpoint) throw new Error('no client_id and no registration endpoint');
-        // Register with an auth method the server actually accepts (per its
-        // advertised token_endpoint_auth_methods_supported), not an assumed `none`.
-        this.log({ step: 'register-client', message: 'registering a dynamic OAuth client (RFC 7591)' });
-        const reg = await registerClient(
-          this.fetch, authMeta.registrationEndpoint, [redirectUri], undefined, authMeta.tokenEndpointAuthMethodsSupported,
-        );
-        this.effectiveClientId = reg.clientId;
-        // A confidential client registered dynamically returns its secret once.
-        if (reg.clientSecret) this.effectiveClientSecret = reg.clientSecret;
-        this.log({ step: 'register-client', message: 'dynamic client registered', ok: true });
+        // CIMD (SEP-991): when a Client ID Metadata Document URL is configured AND
+        // the authorization server advertises client_id_metadata_document_supported,
+        // use that URL directly as the client_id — the server dereferences it for the
+        // client's metadata, so Dynamic Client Registration is skipped entirely.
+        const cimdUrl = resolveClientMetadataUrl(this.opts.clientMetadataUrl);
+        if (cimdUrl && authMeta.clientIdMetadataDocumentSupported) {
+          this.effectiveClientId = cimdUrl;
+          this.log({ step: 'register-client', message: 'using client-id metadata document (CIMD/SEP-991), skipping dynamic registration', ok: true });
+        } else {
+          if (!authMeta.registrationEndpoint) throw new Error('no client_id and no registration endpoint');
+          // Register with an auth method the server actually accepts (per its
+          // advertised token_endpoint_auth_methods_supported), not an assumed `none`.
+          this.log({ step: 'register-client', message: 'registering a dynamic OAuth client (RFC 7591)' });
+          const reg = await registerClient(
+            this.fetch, authMeta.registrationEndpoint, [redirectUri], undefined, authMeta.tokenEndpointAuthMethodsSupported,
+          );
+          this.effectiveClientId = reg.clientId;
+          // A confidential client registered dynamically returns its secret once.
+          if (reg.clientSecret) this.effectiveClientSecret = reg.clientSecret;
+          this.log({ step: 'register-client', message: 'dynamic client registered', ok: true });
+        }
       }
 
       const pkce = generatePkce();
@@ -1388,6 +1590,9 @@ export class McpOAuthSession implements McpOAuthProvider {
         redirectUri,
         resource: this.resource,
       }, this.now());
+      // Stamp the client id these tokens were minted under so a configured-clientId
+      // change across restarts invalidates the now-stale grant (see constructor).
+      tokens.clientId = this.effectiveClientId;
       this.store.set(tokens);
       this.log({ step: 'token-stored', message: 'access token obtained and stored', ok: true });
       return true;

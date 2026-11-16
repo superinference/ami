@@ -360,7 +360,7 @@ export interface McpServerConfig {
   url?: string;
   containerConfig?: ContainerConfig;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
-  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; scope?: string; authServerMetadataUrl?: string; loginHint?: string; refreshBufferMs?: number };
+  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; clientMetadataUrl?: string; scope?: string; authServerMetadataUrl?: string; loginHint?: string; refreshBufferMs?: number };
 }
 
 export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled', 'needs-auth'] as const;
@@ -859,7 +859,7 @@ export class McpManager extends EventEmitter {
         path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(credentialKey)),
         // Proactive refresh-ahead window: refresh this many ms before real expiry
         // so a long-running session never presents an expired token mid-request.
-        config.oauth.refreshBufferMs,
+        { skewMs: config.oauth.refreshBufferMs },
       );
       // Per-server cancellation: aborting this controller (on stop/remove) aborts
       // any in-flight OAuth HTTP request so a user-cancelled / torn-down server
@@ -893,6 +893,10 @@ export class McpManager extends EventEmitter {
           : async () => buildRedirectUri(await findAvailablePort()),
         clientId: config.oauth.clientId,
         clientSecret: config.oauth.clientSecret,
+        // CIMD (SEP-991): when configured (or via MCP_OAUTH_CLIENT_METADATA_URL) and
+        // the AS advertises client_id_metadata_document_supported, the flow uses this
+        // URL as the client_id instead of Dynamic Client Registration.
+        clientMetadataUrl: config.oauth.clientMetadataUrl,
         scope: config.oauth.scope,
         authServerMetadataUrl: config.oauth.authServerMetadataUrl,
         loginHint: config.oauth.loginHint,

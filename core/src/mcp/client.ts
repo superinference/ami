@@ -1221,6 +1221,12 @@ export class McpClient extends EventEmitter {
    */
   async revokeAuth(): Promise<void> {
     await this.oauth?.revoke?.();
+    // A forget is a FULL sign-out: beyond the server-side token revocation above,
+    // drop ALL local auth state — the dynamically-registered client id/secret and
+    // cached discovery, not just the tokens revoke() already cleared — so a later
+    // re-add re-registers and re-discovers from scratch rather than reusing a stale
+    // dynamic registration.
+    await this.oauth?.invalidateCredentials?.('all');
   }
 
   disconnect(): void {
