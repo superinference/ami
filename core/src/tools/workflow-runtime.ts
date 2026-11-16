@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { parseEnvInt } from '../utils/env';
+import type { PermissionMode } from '../permissions';
 
 /**
  * Opt-in cache of completed agent() results so a re-run/resume of a workflow
@@ -19,8 +20,8 @@ export interface WorkflowAgentCache {
  *  which are display-only, are excluded so a relabel does not bust the cache).
  *  `maxTurns` is a semantic cap on the agent's work, so it participates in the
  *  key — two calls that differ only by their turn budget are not conflated. */
-export function workflowAgentCacheKey(prompt: string, opts?: { schema?: unknown; model?: string; isolation?: string; agentType?: string; maxTurns?: number }): string {
-  const norm = { prompt, schema: opts?.schema ?? null, model: opts?.model ?? null, isolation: opts?.isolation ?? null, agentType: opts?.agentType ?? null, maxTurns: opts?.maxTurns ?? null };
+export function workflowAgentCacheKey(prompt: string, opts?: { schema?: unknown; model?: string; isolation?: string; agentType?: string; maxTurns?: number; permissionMode?: string }): string {
+  const norm = { prompt, schema: opts?.schema ?? null, model: opts?.model ?? null, isolation: opts?.isolation ?? null, agentType: opts?.agentType ?? null, maxTurns: opts?.maxTurns ?? null, permissionMode: opts?.permissionMode ?? null };
   return crypto.createHash('sha256').update(JSON.stringify(norm)).digest('hex');
 }
 
@@ -69,6 +70,15 @@ export interface AgentOptions {
   model?: string;
   isolation?: 'worktree';
   agentType?: string;
+  /**
+   * [FUNCTIONAL PARITY] Per-agent permission posture for this single `agent()`
+   * call (parity with the reference AgentTool `mode`). When set to a recognized
+   * {@link PermissionMode} it overrides the workflow's default `auto-allow`
+   * posture for just this spawned agent (e.g. `'plan'` to require plan approval,
+   * `'deny-all'` to tighten). It is part of {@link workflowAgentCacheKey} so two
+   * otherwise-identical calls run under different postures are cached separately.
+   */
+  permissionMode?: PermissionMode;
   /**
    * [FUNCTIONAL PARITY] Cap the number of agentic turns this single `agent()`
    * call may take (parity with the reference per-agent `maxTurns`). It is passed

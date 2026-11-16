@@ -2,9 +2,33 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { projectStateDir } from '../reference-journal';
 import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache } from './workflow-runtime';
 import { SUBAGENT_RETURN_DIRECTIVE } from './task';
+import { normalizePermissionMode } from '../permissions';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+
+/**
+ * Write a workflow sub-agent's captured output WITHOUT following a symlink at
+ * the destination path. The tasks directory is writable by sandboxed agents, so
+ * a plain `fs.writeFileSync` would follow a planted symlink and clobber whatever
+ * it points to on the host. Opening with `O_NOFOLLOW | O_EXCL`-equivalent flags
+ * (fail on symlink → ELOOP) closes that vector — parity with the reference task
+ * output writer, which opens every output file with O_NOFOLLOW for exactly this
+ * reason. On platforms lacking O_NOFOLLOW (Windows) the constant is 0 and the
+ * open degrades to a normal truncating create; the sandbox attack vector is
+ * Unix-only. The file is truncated so a resumed/retried agent overwrites a prior
+ * run's output.
+ */
+export function writeTaskOutputNoFollow(filePath: string, data: string): void {
+  const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | O_NOFOLLOW;
+  const fd = fs.openSync(filePath, flags, 0o600);
+  try {
+    fs.writeFileSync(fd, data);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 /**
  * Upper bound on a workflow script's size. A workflow body is compiled with the
@@ -141,7 +165,15 @@ export const workflowTool: ToolDefinition = {
       if (!fs.existsSync(scriptPath)) {
         return { output: `Error: Script file not found: ${scriptPath}`, isError: true };
       }
-      script = fs.readFileSync(scriptPath, 'utf-8');
+      // existsSync → readFileSync is a TOCTOU window: the path may be unreadable
+      // (EACCES), a directory (EISDIR), or deleted between the two calls. Convert
+      // any such failure into a clean, caller-inspectable ToolResult rather than
+      // letting the exception escape execute() as an unhandled rejection.
+      try {
+        script = fs.readFileSync(scriptPath, 'utf-8');
+      } catch (err) {
+        return { output: `Error: cannot read workflow script: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
       scriptPathUsed = scriptPath;
     } else if (input.name) {
       const name = input.name as string;
@@ -153,7 +185,12 @@ export const workflowTool: ToolDefinition = {
       if (!found) {
         return { output: `Error: Workflow '${name}' not found in .ami/workflows/`, isError: true };
       }
-      script = fs.readFileSync(found, 'utf-8');
+      // Same TOCTOU hardening as the scriptPath branch above.
+      try {
+        script = fs.readFileSync(found, 'utf-8');
+      } catch (err) {
+        return { output: `Error: cannot read workflow script: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
       nameUsed = name;
     } else if (input.script) {
       script = input.script as string;
@@ -194,6 +231,20 @@ export const workflowTool: ToolDefinition = {
     // a resumed run reuses the finished agents of the original.
     const effectiveRunId = resumeFromRunId ? sanitizeWorkflowRunId(resumeFromRunId) : runId;
 
+    // Recovery/continuation affordance (parity: the reference agent result surfaces
+    // how to resume/continue). When this run opted into resumability, tell the
+    // model exactly how to re-invoke and skip already-completed agents — surfaced
+    // on BOTH the success and failure paths so a workflow that dies partway still
+    // advertises how to pick up where it left off.
+    const resumeKeyGiven = typeof input.resumeKey === 'string' && input.resumeKey.trim()
+      ? input.resumeKey.trim()
+      : undefined;
+    const resumeHint = effectiveRunId
+      ? `Re-run with resumeFromRunId '${effectiveRunId}' to replay this run and skip already-completed agents.`
+      : resumeKeyGiven
+        ? `Re-run with resumeKey '${resumeKeyGiven}' to skip already-completed agents.`
+        : undefined;
+
     // One flow per workflow invocation so the inspector shows "1 flow, many
     // agents" — each agent()/parallel()/pipeline() call joins it. Guarded on
     // processManager so the workflow runs unchanged when there is none.
@@ -218,10 +269,21 @@ export const workflowTool: ToolDefinition = {
         });
         if (fm && workflowFlowId) fm.addAgent(workflowFlowId, taskId);
       }
+      // Per-agent model override (parity: AgentTool `model`). When the step
+      // requests a specific model, layer it onto a COPY of the parent provider
+      // config so the shared config object is never mutated.
+      const provider = opts?.model
+        ? { ...context._providerConfig!, model: opts.model as string }
+        : context._providerConfig!;
+      // Per-agent permission posture (parity: AgentTool `mode`). Default stays
+      // 'auto-allow'; an unrecognized value falls back to that default rather
+      // than silently loosening or erroring the whole workflow.
+      const permissionMode = (opts?.permissionMode && normalizePermissionMode(String(opts.permissionMode)))
+        || 'auto-allow';
       const subEngine = context._engineFactory({
-        provider: context._providerConfig!,
+        provider,
         cwd: context.cwd,
-        permissionMode: 'auto-allow',
+        permissionMode,
         tools: opts?.tools,
       });
       // Same return-and-stop framing as task sub-agents: a workflow agent should
@@ -229,7 +291,7 @@ export const workflowTool: ToolDefinition = {
       const framedPrompt = `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
       const finish = (status: 'completed' | 'failed', text: string): void => {
         if (!pm || !taskId) return;
-        try { if (outputPath) fs.writeFileSync(outputPath, text || '(no output)'); } catch { /* dir gone */ }
+        try { if (outputPath) writeTaskOutputNoFollow(outputPath, text || '(no output)'); } catch { /* dir gone or symlink planted at the path */ }
         pm.updateEntry(taskId, { status, exitCode: status === 'failed' ? 1 : 0 });
       };
       let result = '';
@@ -289,12 +351,16 @@ export const workflowTool: ToolDefinition = {
         effectiveRunId ? `Run id: ${effectiveRunId}` : '',
         result.logs.length > 0 ? `\nLogs:\n${result.logs.map(l => `  - ${l}`).join('\n')}` : '',
         result.result !== null ? `\nResult: ${JSON.stringify(result.result, null, 2)}` : '',
+        resumeHint ? `\n${resumeHint}` : '',
       ].filter(Boolean).join('\n');
 
       return { output, isError: false };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return { output: `Error executing workflow: ${message}`, isError: true };
+      const output = resumeHint
+        ? `Error executing workflow: ${message}\n${resumeHint}`
+        : `Error executing workflow: ${message}`;
+      return { output, isError: true };
     }
   },
 };
