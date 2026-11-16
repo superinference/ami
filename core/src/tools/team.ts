@@ -54,6 +54,36 @@ export interface TeamMember {
   joinedAt: string;
   /** false => idle/finished/crashed; undefined/true => active. */
   isActive?: boolean;
+  /** ISO timestamp of when the member last went idle (set when isActive flips to false). */
+  idleSince?: string;
+}
+
+/**
+ * The derived run-state of a teammate, mirroring Claude Code's `TeammateStatus`
+ * (teamDiscovery.ts). Projected from a {@link TeamMember} on read: `isActive`
+ * defaults to active when undefined, so an absent flag maps to `'running'`.
+ */
+export interface TeammateStatus {
+  name: string;
+  agentId: string;
+  agentType?: string;
+  model?: string;
+  status: 'running' | 'idle';
+  mode?: string;
+  cwd?: string;
+  idleSince?: string;
+}
+
+/**
+ * Aggregate counts for a team, mirroring Claude Code's `TeamSummary`. The lead is
+ * excluded from every count (membership-role boundary), so the figures describe
+ * the worker roster only.
+ */
+export interface TeamSummary {
+  name: string;
+  memberCount: number;
+  runningCount: number;
+  idleCount: number;
 }
 
 /**
@@ -333,12 +363,21 @@ export function registerTeamMember(member: Omit<TeamMember, 'joinedAt' | 'isActi
   persistTeam();
 }
 
-/** Mark a teammate active/idle by name or agentId. No-op when no team or member. */
+/**
+ * Mark a teammate active/idle by name or agentId. No-op when no team or member.
+ * Skips the disk write when the value is unchanged (write-if-changed guard,
+ * mirroring Claude Code's `setMemberActive`). Stamps `idleSince` when a member
+ * transitions to idle and clears it when it becomes active again.
+ */
 export function setTeamMemberActive(nameOrId: string, active: boolean): void {
   if (!currentTeam) return;
   const m = currentTeam.members.find(x => x.name === nameOrId || x.agentId === nameOrId);
   if (!m) return;
+  // Write-if-changed: skip the persist entirely when the stored flag already
+  // matches (mirrors Claude's `if (member.isActive === isActive) return`).
+  if (m.isActive === active) return;
   m.isActive = active;
+  m.idleSince = active ? undefined : new Date().toISOString();
   persistTeam();
   // Cancellation/abort boundary (PARITY): when a teammate goes inactive — it
   // finished, errored, stalled, or was killed — release any unresolved tasks it
@@ -378,6 +417,9 @@ export function setMemberMode(nameOrId: string, mode: string): PermissionMode | 
   if (!valid) return null;
   const m = currentTeam.members.find(x => x.name === nameOrId || x.agentId === nameOrId);
   if (!m) return null;
+  // Write-if-changed: a no-op mode set does not touch disk (mirrors Claude's
+  // `if (member.mode === mode) return true`).
+  if (m.permissionMode === valid) return valid;
   m.permissionMode = valid;
   persistTeam();
   return valid;
@@ -395,4 +437,122 @@ export function cycleMemberMode(nameOrId: string): PermissionMode | null {
   m.permissionMode = next;
   persistTeam();
   return next;
+}
+
+/**
+ * Apply many per-teammate permission-mode changes in ONE atomic read-modify-write
+ * (mirrors Claude Code's `setMultipleMemberModes`). Updates are keyed by member
+ * name or agentId via a Map for O(1) lookup, and the team file is persisted only
+ * once — and only if at least one member actually changed (the `anyChanged`
+ * guard), avoiding the race of N separate read/write cycles clobbering each other.
+ *
+ * Returns the number of members whose mode changed (0 when nothing changed, no
+ * team is active, or every supplied mode string was invalid). Invalid mode
+ * strings are skipped rather than aborting the whole batch.
+ */
+export function setMultipleMemberModes(updates: Array<{ nameOrId: string; mode: string }>): number {
+  if (!currentTeam) return 0;
+  const updateMap = new Map<string, PermissionMode>();
+  for (const u of updates) {
+    const valid = normalizePermissionMode(u.mode);
+    if (valid) updateMap.set(u.nameOrId, valid);
+  }
+  let changed = 0;
+  for (const m of currentTeam.members) {
+    const next = updateMap.get(m.name) ?? updateMap.get(m.agentId);
+    if (next !== undefined && m.permissionMode !== next) {
+      m.permissionMode = next;
+      changed += 1;
+    }
+  }
+  if (changed > 0) persistTeam();
+  return changed;
+}
+
+/**
+ * Cycle the permission mode of EVERY non-lead teammate in tandem (mirrors Claude
+ * Code's `cycleAllTeammateModes`). Default rule: when the teammates' current modes
+ * DIVERGE, reset them all to the canonical default; when they already AGREE,
+ * advance them all to the next mode in the cycle. The whole change is applied in a
+ * single atomic batch write.
+ *
+ * Returns the target mode applied to all teammates, or null when there are no
+ * non-lead teammates / no active team.
+ */
+export function cycleAllMemberModes(): PermissionMode | null {
+  if (!currentTeam) return null;
+  const teammates = currentTeam.members.filter(m => m.name !== TEAM_LEAD_NAME);
+  if (teammates.length === 0) return null;
+  // 'default' is the Claude wire name; normalizePermissionMode maps it to AMI's
+  // canonical interactive default. Non-null because 'default' is a known alias.
+  const resetMode = normalizePermissionMode('default')!;
+  const modes = teammates.map(m => m.permissionMode ? normalizePermissionMode(m.permissionMode) : resetMode);
+  const allSame = modes.every(x => x === modes[0]);
+  const target: PermissionMode = !allSame ? resetMode : getNextPermissionMode(modes[0] ?? undefined);
+  setMultipleMemberModes(teammates.map(m => ({ nameOrId: m.name, mode: target })));
+  return target;
+}
+
+/**
+ * Remove a teammate from the active team by name OR agentId (mirrors Claude Code's
+ * `removeTeammateFromTeamFile`, which filters by either identifier). Keying on the
+ * stable per-member agentId disambiguates when several in-process teammates would
+ * otherwise collide on a shared value. The lead is never removable. Returns the
+ * removed {@link TeamMember} (persisting the change), or null when there is no
+ * active team, no matching member, or the target is the lead.
+ */
+export function removeTeamMember(nameOrId: string): TeamMember | null {
+  if (!currentTeam) return null;
+  const idx = currentTeam.members.findIndex(m => m.name === nameOrId || m.agentId === nameOrId);
+  if (idx === -1) return null;
+  if (currentTeam.members[idx].name === TEAM_LEAD_NAME) return null;
+  const [removed] = currentTeam.members.splice(idx, 1);
+  persistTeam();
+  return removed;
+}
+
+/**
+ * Project each non-lead member of a team into a {@link TeammateStatus} record
+ * (mirrors Claude Code's `getTeammateStatuses`). The lead is excluded. A member's
+ * run-state is derived with the default-to-active rule: `isActive !== false` maps
+ * to `'running'`, otherwise `'idle'`. Defaults to the active team when no team is
+ * passed, so a disk-loaded team (via {@link readTeamFile}) can also be projected.
+ * Returns [] when there is no team.
+ */
+export function getTeammateStatuses(team: TeamFile | null = currentTeam): TeammateStatus[] {
+  if (!team) return [];
+  const out: TeammateStatus[] = [];
+  for (const m of team.members) {
+    if (m.name === TEAM_LEAD_NAME) continue;
+    const running = m.isActive !== false;
+    out.push({
+      name: m.name,
+      agentId: m.agentId,
+      agentType: m.agentType,
+      model: m.model,
+      status: running ? 'running' : 'idle',
+      mode: m.permissionMode,
+      cwd: m.cwd,
+      idleSince: running ? undefined : m.idleSince,
+    });
+  }
+  return out;
+}
+
+/**
+ * Aggregate a team's worker roster into a {@link TeamSummary} (mirrors Claude
+ * Code's team summary used by the footer UI): the lead is excluded from every
+ * count, and running/idle are derived with the same default-to-active rule as
+ * {@link getTeammateStatuses}. Returns null when there is no team.
+ */
+export function getTeamSummary(team: TeamFile | null = currentTeam): TeamSummary | null {
+  if (!team) return null;
+  const statuses = getTeammateStatuses(team);
+  const runningCount = statuses.filter(s => s.status === 'running').length;
+  return {
+    name: team.name,
+    memberCount: statuses.length,
+    runningCount,
+    idleCount: statuses.length - runningCount,
+  };
 }
