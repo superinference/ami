@@ -862,59 +862,240 @@ export function getErrnoCode(err: unknown): string | undefined {
 export const DIFF_CONTEXT_LINES = 3;
 
 /**
- * Build a minimal unified diff between two text blobs: a common prefix/suffix scan
- * isolates the single changed region and emits only that hunk plus surrounding
- * context, instead of marking the whole file -/+. Single source of truth for
- * tool diff previews (full-file writes, replace edits, notebook cell edits) so the
- * diff format is never re-implemented per tool. `label` is the path/identifier
- * shown on the ---/+++ header.
+ * Context width that forces the WHOLE file into a single hunk (mirrors Claude
+ * Code's `singleHunk` → `context: 100_000`). Any realistic file has fewer than
+ * this many unchanged lines between two edits, so every change folds into one
+ * contiguous hunk.
  */
-export function buildUnifiedDiff(oldContent: string, newContent: string, label: string): string {
-  const oldLines = oldContent.split('\n');
-  const newLines = newContent.split('\n');
+export const DIFF_SINGLE_HUNK_CONTEXT = 100_000;
 
+/**
+ * Upper bound (old-line-count × new-line-count) for running the exact O(n·m)
+ * line LCS. Past this the diff would be too slow/memory-hungry to compute on the
+ * request path, so we fall back to the cheap O(n) prefix/suffix single-region
+ * differ — mirroring Claude Code's `DIFF_TIMEOUT_MS` guard where `structuredPatch`
+ * bails and the caller degrades gracefully rather than hanging.
+ */
+const MAX_DIFF_CELLS = 4_000_000;
+
+/**
+ * Options for {@link buildUnifiedDiff}. All optional; the defaults reproduce the
+ * previous single-purpose behavior (3 context lines, whitespace-sensitive, no
+ * cap) so existing call sites are unaffected.
+ */
+export interface UnifiedDiffOptions {
+  /** Unchanged lines shown around each change region. Default {@link DIFF_CONTEXT_LINES}. */
+  contextLines?: number;
+  /** Compare lines with whitespace collapsed/trimmed when deciding equality. */
+  ignoreWhitespace?: boolean;
+  /** Emit everything as one hunk (sets context to {@link DIFF_SINGLE_HUNK_CONTEXT}). */
+  singleHunk?: boolean;
+  /** Byte cap on the rendered diff; past it, truncate at a line boundary with a marker. */
+  maxBytes?: number;
+}
+
+type DiffOpType = ' ' | '-' | '+';
+interface DiffOp { type: DiffOpType; line: string }
+
+/** Normalizer used for equality when {@link UnifiedDiffOptions.ignoreWhitespace} is set. */
+function diffEq(a: string, b: string, ignoreWhitespace: boolean): boolean {
+  if (a === b) return true;
+  if (!ignoreWhitespace) return false;
+  return a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Exact line-level LCS → a flat op sequence (equal/remove/add). O(n·m); callers
+ * must gate on {@link MAX_DIFF_CELLS} before invoking it.
+ */
+function lineDiffOps(oldLines: string[], newLines: string[], ignoreWhitespace: boolean): DiffOp[] {
+  const n = oldLines.length;
+  const m = newLines.length;
+  const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = diffEq(oldLines[i], newLines[j], ignoreWhitespace)
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ops: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (diffEq(oldLines[i], newLines[j], ignoreWhitespace)) {
+      ops.push({ type: ' ', line: oldLines[i] });
+      i++; j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: '-', line: oldLines[i] });
+      i++;
+    } else {
+      ops.push({ type: '+', line: newLines[j] });
+      j++;
+    }
+  }
+  while (i < n) ops.push({ type: '-', line: oldLines[i++] });
+  while (j < m) ops.push({ type: '+', line: newLines[j++] });
+  return ops;
+}
+
+/** Render a flat op sequence into one-or-more `@@` hunks with `context` lines around each change. */
+function renderHunks(ops: DiffOp[], label: string, context: number): string {
+  // Flag every op within `context` positions of a change; contiguous flagged
+  // runs become hunks. Changes separated by <= 2·context unchanged lines merge
+  // into one hunk (their context windows touch), exactly like a unified diff.
+  const changed = ops.map(o => o.type !== ' ');
+  if (!changed.some(Boolean)) return '(no changes detected)';
+  const keep = new Array(ops.length).fill(false);
+  for (let k = 0; k < ops.length; k++) {
+    if (!changed[k]) continue;
+    for (let d = -context; d <= context; d++) {
+      const idx = k + d;
+      if (idx >= 0 && idx < ops.length) keep[idx] = true;
+    }
+  }
+
+  const out: string[] = [`--- ${label}`, `+++ ${label}`];
+  let oldNo = 0; // old lines consumed before the current op
+  let newNo = 0; // new lines consumed before the current op
+  let k = 0;
+  while (k < ops.length) {
+    if (!keep[k]) {
+      if (ops[k].type !== '+') oldNo++;
+      if (ops[k].type !== '-') newNo++;
+      k++;
+      continue;
+    }
+    const hunkStartOld = oldNo;
+    const hunkStartNew = newNo;
+    const body: string[] = [];
+    let oldLen = 0;
+    let newLen = 0;
+    while (k < ops.length && keep[k]) {
+      const op = ops[k];
+      body.push(`${op.type}${op.line}`);
+      if (op.type !== '+') { oldNo++; oldLen++; }
+      if (op.type !== '-') { newNo++; newLen++; }
+      k++;
+    }
+    const oldStart = oldLen > 0 ? hunkStartOld + 1 : hunkStartOld;
+    const newStart = newLen > 0 ? hunkStartNew + 1 : hunkStartNew;
+    out.push(`@@ -${oldStart},${oldLen} +${newStart},${newLen} @@`);
+    out.push(...body);
+  }
+  return out.join('\n');
+}
+
+/** Cheap O(n) single-region differ used as the degenerate-input fallback. */
+function fastSingleRegionDiff(oldLines: string[], newLines: string[], label: string, context: number): string {
   let firstDiff = 0;
   while (firstDiff < oldLines.length && firstDiff < newLines.length && oldLines[firstDiff] === newLines[firstDiff]) {
     firstDiff++;
   }
-
   let oldEnd = oldLines.length - 1;
   let newEnd = newLines.length - 1;
   while (oldEnd > firstDiff && newEnd > firstDiff && oldLines[oldEnd] === newLines[newEnd]) {
     oldEnd--;
     newEnd--;
   }
+  if (firstDiff > oldEnd && firstDiff > newEnd) return '(no changes detected)';
 
-  if (firstDiff > oldEnd && firstDiff > newEnd) {
-    return '(no changes detected)';
-  }
-
-  const ctxStart = Math.max(0, firstDiff - DIFF_CONTEXT_LINES);
-  const ctxOldEnd = Math.min(oldLines.length - 1, oldEnd + DIFF_CONTEXT_LINES);
-  const ctxNewEnd = Math.min(newLines.length - 1, newEnd + DIFF_CONTEXT_LINES);
-
-  const result: string[] = [];
-  result.push(`--- ${label}`);
-  result.push(`+++ ${label}`);
-  result.push(`@@ -${ctxStart + 1},${ctxOldEnd - ctxStart + 1} +${ctxStart + 1},${ctxNewEnd - ctxStart + 1} @@`);
-
-  for (let i = ctxStart; i < firstDiff; i++) {
-    result.push(` ${oldLines[i]}`);
-  }
-
-  for (let i = firstDiff; i <= oldEnd; i++) {
-    result.push(`-${oldLines[i]}`);
-  }
-
-  for (let i = firstDiff; i <= newEnd; i++) {
-    result.push(`+${newLines[i]}`);
-  }
-
-  const afterStart = oldEnd + 1;
-  const afterEnd = Math.min(oldLines.length - 1, oldEnd + DIFF_CONTEXT_LINES);
-  for (let i = afterStart; i <= afterEnd; i++) {
-    result.push(` ${oldLines[i]}`);
-  }
-
+  const ctxStart = Math.max(0, firstDiff - context);
+  const result: string[] = [`--- ${label}`, `+++ ${label}`];
+  const oldWindowEnd = Math.min(oldLines.length - 1, oldEnd + context);
+  const newWindowEnd = Math.min(newLines.length - 1, newEnd + context);
+  result.push(`@@ -${ctxStart + 1},${oldWindowEnd - ctxStart + 1} +${ctxStart + 1},${newWindowEnd - ctxStart + 1} @@`);
+  for (let i = ctxStart; i < firstDiff; i++) result.push(` ${oldLines[i]}`);
+  for (let i = firstDiff; i <= oldEnd; i++) result.push(`-${oldLines[i]}`);
+  for (let i = firstDiff; i <= newEnd; i++) result.push(`+${newLines[i]}`);
+  for (let i = oldEnd + 1; i <= oldWindowEnd; i++) result.push(` ${oldLines[i]}`);
   return result.join('\n');
+}
+
+/**
+ * Apply the {@link UnifiedDiffOptions.maxBytes} cap: truncate at the last line
+ * boundary within the cap and append a `... [N lines truncated] ...` marker
+ * (matching Claude Code's snippet-truncation convention), so a huge diff can
+ * never blow the per-turn token budget.
+ */
+function capDiffBytes(diff: string, maxBytes: number): string {
+  if (Buffer.byteLength(diff, 'utf8') <= maxBytes) return diff;
+  // Operate on characters bounded by the byte cap (a byte cap is an upper bound
+  // on the char count for UTF-8), finding the last newline that fits.
+  let cutoff = diff.lastIndexOf('\n', maxBytes);
+  if (cutoff <= 0) cutoff = Math.min(maxBytes, diff.length);
+  const kept = diff.slice(0, cutoff);
+  const remaining = diff.slice(cutoff).split('\n').length;
+  return `${kept}\n\n... [${remaining} lines truncated] ...`;
+}
+
+/**
+ * Build a unified diff between two text blobs. Produces SEPARATE `@@` hunks for
+ * each non-contiguous change region (with `contextLines` of context around each),
+ * so scattered edits no longer collapse into one unbounded hunk. Single source of
+ * truth for tool diff previews (full-file writes, replace edits, notebook cell
+ * edits) so the diff format is never re-implemented per tool. `label` is the
+ * path/identifier shown on the ---/+++ header.
+ *
+ * Options (all optional, defaults preserve prior behavior):
+ *  - `contextLines`  — unchanged lines around each change (default 3).
+ *  - `ignoreWhitespace` — treat whitespace-only differences as equal.
+ *  - `singleHunk` — fold everything into one hunk (context 100 000).
+ *  - `maxBytes` — cap the rendered diff, truncating with a `[N lines truncated]` marker.
+ */
+export function buildUnifiedDiff(
+  oldContent: string,
+  newContent: string,
+  label: string,
+  options: UnifiedDiffOptions = {},
+): string {
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  const context = options.singleHunk
+    ? DIFF_SINGLE_HUNK_CONTEXT
+    : (options.contextLines ?? DIFF_CONTEXT_LINES);
+
+  let diff: string;
+  if (oldLines.length * newLines.length > MAX_DIFF_CELLS) {
+    // Degenerate input: skip the exact LCS and degrade to the bounded O(n) differ.
+    diff = fastSingleRegionDiff(oldLines, newLines, label, Math.min(context, DIFF_CONTEXT_LINES));
+  } else {
+    const ops = lineDiffOps(oldLines, newLines, options.ignoreWhitespace ?? false);
+    diff = renderHunks(ops, label, context);
+  }
+
+  if (diff === '(no changes detected)') return diff;
+  return options.maxBytes !== undefined ? capDiffBytes(diff, options.maxBytes) : diff;
+}
+
+/**
+ * Count the lines added vs removed between two blobs. Mirrors Claude Code's
+ * `countLinesChanged`: a brand-new file (empty old content) counts every new
+ * line as an addition; otherwise additions/removals are tallied independently
+ * from the line LCS so a modified line shows as one removal + one addition.
+ */
+export function countLinesChanged(
+  oldContent: string,
+  newContent: string,
+  options: { ignoreWhitespace?: boolean } = {},
+): { additions: number; removals: number } {
+  if (oldContent.length === 0) {
+    return { additions: newContent.length === 0 ? 0 : newContent.split('\n').length, removals: 0 };
+  }
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  if (oldLines.length * newLines.length > MAX_DIFF_CELLS) {
+    // Bounded fallback: approximate via the net line-count delta rather than an
+    // exact LCS, consistent with buildUnifiedDiff's degenerate-input guard.
+    const delta = newLines.length - oldLines.length;
+    return { additions: Math.max(0, delta), removals: Math.max(0, -delta) };
+  }
+  const ops = lineDiffOps(oldLines, newLines, options.ignoreWhitespace ?? false);
+  let additions = 0;
+  let removals = 0;
+  for (const op of ops) {
+    if (op.type === '+') additions++;
+    else if (op.type === '-') removals++;
+  }
+  return { additions, removals };
 }

@@ -2,11 +2,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, stripTrailingWhitespace, isMarkdownPath } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, countLinesChanged, stripTrailingWhitespace, isMarkdownPath } from './tool-utils';
 import { coerceBool } from '../utils/coerce';
 import { getFileCache } from '../file-cache';
 
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
+
+/**
+ * Byte cap on an edit/overwrite success diff. A large scattered edit can produce
+ * a diff bigger than the content it describes; bounding it here keeps the
+ * per-turn token cost proportional (parity with Claude Code's snippet cap) while
+ * still showing the leading hunks. buildUnifiedDiff truncates at a line boundary
+ * and appends a `... [N lines truncated] ...` marker past this size.
+ */
+const EDIT_DIFF_MAX_BYTES = 16_384;
 
 /**
  * Every parameter the file_edit tool understands, including the accepted aliases
@@ -347,7 +356,7 @@ export async function writeEntireFile(
   // via the common-prefix/suffix differ, instead of marking the entire old file
   // as removed and the entire new file as added. For a small edit inside a large
   // file this keeps the overwrite diff proportional to what actually changed.
-  const diff = buildUnifiedDiff(normalizeToLf(oldContent), normalizeToLf(content), resolved);
+  const diff = buildUnifiedDiff(normalizeToLf(oldContent), normalizeToLf(content), resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
   return { output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n${diff}` };
 }
 
@@ -397,6 +406,13 @@ async function applySequentialEdits(
 
   const applied: string[] = [];
   const failed: string[] = [];
+  // Track the new_strings of edits already applied in this batch. A later edit
+  // whose old_string is a substring of an earlier edit's new_string is almost
+  // always a model mistake (it would re-edit text the previous edit just wrote,
+  // not the original file), so reject it — mirroring Claude Code's sequential-edit
+  // guard (FileEditTool/utils.ts). Trailing newlines are stripped before the
+  // containment test, matching the reference.
+  const appliedNewStrings: string[] = [];
 
   for (let i = 0; i < edits.length; i++) {
     const { old_string, new_string, replace_all: replaceAll } = edits[i];
@@ -408,6 +424,12 @@ async function applySequentialEdits(
 
     if (old_string === new_string) {
       failed.push(`Edit ${i + 1}: old_string and new_string are identical`);
+      continue;
+    }
+
+    const oldStringToCheck = old_string.replace(/\n+$/, '');
+    if (oldStringToCheck !== '' && appliedNewStrings.some(prev => prev.includes(oldStringToCheck))) {
+      failed.push(`Edit ${i + 1}: old_string is a substring of a new_string from a previous edit. Each edit must target the original file content, not text inserted by an earlier edit in this batch.`);
       continue;
     }
 
@@ -429,6 +451,7 @@ async function applySequentialEdits(
       }
       if (replaceAll && result.matchCount > 1) {
         content = content.split(normalizedOld).join(normalizedNew);
+        appliedNewStrings.push(normalizedNew);
         applied.push(`Edit ${i + 1}: replaced ${result.matchCount} occurrences`);
         continue;
       }
@@ -437,6 +460,7 @@ async function applySequentialEdits(
     }
 
     content = result.newContent!;
+    appliedNewStrings.push(normalizedNew);
     const strategyNote = result.strategy !== 'exact' ? ` (${result.strategy})` : '';
     applied.push(`Edit ${i + 1}: applied${strategyNote}`);
   }
@@ -461,12 +485,20 @@ async function applySequentialEdits(
   const writeErr = commitWrite(resolved, finalContent, content, context);
   if (writeErr) return { output: writeErr, isError: true };
 
+  const { additions, removals } = countLinesChanged(normalizeToLf(rawContent), content);
   const summary = [
     `Successfully edited ${resolved}`,
-    `${applied.length}/${edits.length} edits applied.`,
+    `${applied.length}/${edits.length} edits applied (+${additions} -${removals}).`,
   ];
   if (failed.length > 0) {
     summary.push(`\nFailed edits:\n${failed.join('\n')}`);
+  }
+
+  // Append a unified diff so the TUI diff view renders the multi-edit result,
+  // just like the single-replace and full-write modes do.
+  const diff = buildUnifiedDiff(normalizeToLf(rawContent), content, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
+  if (diff !== '(no changes detected)') {
+    summary.push(`\n${diff}`);
   }
 
   return { output: summary.join('\n'), isError: false };
@@ -708,7 +740,7 @@ export const fileEditTool: ToolDefinition = {
         await trackFileHistory(resolved, rawContent, context.cwd);
         const writeErr = commitWrite(resolved, finalContent, normalizeToLf(finalContent), context);
         if (writeErr) return { output: writeErr, isError: true };
-        const diff = buildUnifiedDiff(content, replaced, resolved);
+        const diff = buildUnifiedDiff(content, replaced, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
         };
@@ -734,11 +766,11 @@ export const fileEditTool: ToolDefinition = {
     const writeErr = commitWrite(resolved, newContent, normalizeToLf(newContent), context);
     if (writeErr) return { output: writeErr, isError: true };
 
-    const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved);
+    const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
 
     const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
-    const diffLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length;
-    const patchInfo = `[edit: ${path.basename(resolved)}, ${diffLines} lines changed]`;
+    const { additions, removals } = countLinesChanged(content, normalizeToLf(newContent));
+    const patchInfo = `[edit: ${path.basename(resolved)}, +${additions} -${removals}]`;
     return {
       output: `${patchInfo}\nSuccessfully edited ${resolved}${strategyNote}\n\n${diff}`,
     };
