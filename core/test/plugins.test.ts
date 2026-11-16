@@ -525,8 +525,13 @@ describe('CommandDefinition shape', () => {
     assert.equal(typeof cmd.description, 'string');
     assert.equal(typeof cmd.prompt, 'string');
     assert.equal(typeof cmd.filePath, 'string');
-    // Verify no extra enumerable properties
+    // Verify no UNEXPECTED enumerable properties. `namespace` (the on-disk
+    // sub-path, empty for a top-level command) and `type` ('prompt' for a command
+    // file) are always-present parity fields; every other knob stays omitted when
+    // the file declares none.
     const keys = Object.keys(cmd).sort();
-    assert.deepEqual(keys, ['description', 'filePath', 'name', 'prompt']);
+    assert.deepEqual(keys, ['description', 'filePath', 'name', 'namespace', 'prompt', 'type']);
+    assert.deepEqual(cmd.namespace, []);
+    assert.equal(cmd.type, 'prompt');
   });
 });

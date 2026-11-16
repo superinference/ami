@@ -200,6 +200,27 @@ export interface PluginBundle {
    * `defaultEnabled` > true). `undefined` when the manifest omits it (treated as true).
    */
   defaultEnabled?: boolean;
+  /**
+   * Manifest `description` surfaced on the loaded bundle (Claude parity: the
+   * plugin manifest's human-readable description) so a `/plugin` listing can show
+   * what a bundle provides without re-reading its manifest. `undefined` when the
+   * manifest omits it or it is not a non-empty string.
+   */
+  description?: string;
+  /**
+   * Manifest author display name, normalized to a string (Claude parity: a
+   * manifest `author` may be a bare string or a `{ name, … }` object — both reduce
+   * to the display name here). `undefined` when absent/blank. Feeds
+   * {@link generatePluginId} for the deterministic bundle {@link PluginBundle.id}.
+   */
+  author?: string;
+  /**
+   * Deterministic plugin id derived from `author` + `name` via
+   * {@link generatePluginId} (Claude parity: generateExtensionId). Present only
+   * when the manifest carries an author, so distinct bundles get a stable,
+   * collision-resistant identifier. `undefined` when no author is declared.
+   */
+  id?: string;
 }
 
 /**
@@ -231,7 +252,63 @@ export interface CommandDefinition {
   /** User-facing display name (Claude's `name` frontmatter → `userFacingName()`),
    *  distinct from the namespaced lookup `name`. Omitted when unset. */
   displayName?: string;
+  /**
+   * Subdirectory path (relative to the commands root) this command was discovered
+   * under, with each path segment as an element (Claude parity:
+   * walkPluginMarkdown's `namespace` array). Empty for a top-level command.
+   * Carried alongside `name` so a UI can group commands by their folder without
+   * re-parsing the `:`-joined name — and distinct from `name` so the plugin-name
+   * prefix is NOT conflated with the on-disk folder structure.
+   */
+  namespace?: string[];
+  /**
+   * User-facing in-progress hint shown while a prompt/skill command runs (Claude
+   * parity: Command.progressMessage, e.g. "committing changes"). Purely an
+   * affordance — omitted when the command file declares none.
+   */
+  progressMessage?: string;
+  /**
+   * Named positional arguments this command accepts (Claude parity:
+   * Command.argNames). Surfaced in suggestion descriptions and mutually
+   * exclusive with a single free-form {@link argumentHint}.
+   */
+  argNames?: string[];
+  /**
+   * Command kind tag (Claude parity: Command.kind, e.g. `'workflow'`). Drives the
+   * suggestion `workflow` affordance; omitted for an ordinary command.
+   */
+  kind?: string;
+  /**
+   * Alternate invocation names for this command (Claude parity:
+   * CommandBase.aliases) — each resolves to the same command as the primary name.
+   */
+  aliases?: string[];
+  /**
+   * Provenance of the command definition (Claude parity: Command.source). A
+   * plugin-discovered command defaults to `'plugin'`; a bare-directory load leaves
+   * it unset unless the file declares one.
+   */
+  source?: CommandSource;
+  /**
+   * Command behavior discriminator (Claude parity: Command.type). Plugin/user
+   * command FILES are always `'prompt'` commands (the body/`prompt` is injected);
+   * the field is set so a consumer can branch without re-deriving it.
+   */
+  type?: CommandType;
+  /**
+   * Whether this command is usable from the non-interactive/detached runner
+   * (Claude parity: Command.supportsNonInteractive). Omitted (treated as allowed)
+   * unless the file opts out with `supports-non-interactive = false`.
+   */
+  supportsNonInteractive?: boolean;
 }
+
+/** Provenance of a command definition (Claude parity: Command.source). */
+export const COMMAND_SOURCES = ['builtin', 'plugin', 'user', 'project'] as const;
+export type CommandSource = (typeof COMMAND_SOURCES)[number];
+/** Behavior discriminator of a command (Claude parity: Command.type). */
+export const COMMAND_TYPES = ['prompt', 'local', 'local-jsx'] as const;
+export type CommandType = (typeof COMMAND_TYPES)[number];
 
 /**
  * Resolve a component path within a plugin root, rejecting any path that escapes
@@ -434,6 +511,23 @@ function applyCommandKnobs(
   if (disableModelInvocation !== undefined) cmd.disableModelInvocation = disableModelInvocation;
   const userInvocable = getBool('user-invocable');
   if (userInvocable !== undefined) cmd.userInvocable = userInvocable;
+  const progressMessage = getStr('progress-message') ?? getStr('progressMessage');
+  if (progressMessage) cmd.progressMessage = progressMessage;
+  const argNames = getList('arg-names') ?? getList('argNames');
+  if (argNames) cmd.argNames = argNames;
+  const kind = getStr('kind');
+  if (kind) cmd.kind = kind;
+  const aliases = getList('aliases');
+  if (aliases) cmd.aliases = aliases;
+  const supportsNonInteractive = getBool('supports-non-interactive') ?? getBool('supportsNonInteractive');
+  if (supportsNonInteractive !== undefined) cmd.supportsNonInteractive = supportsNonInteractive;
+  // Provenance/type discriminators: honor a declared value only when it is a
+  // recognized enum member (an unknown string is ignored rather than written
+  // through, so a consumer can trust the field's type).
+  const source = getStr('source');
+  if (source && (COMMAND_SOURCES as readonly string[]).includes(source)) cmd.source = source as CommandSource;
+  const type = getStr('type');
+  if (type && (COMMAND_TYPES as readonly string[]).includes(type)) cmd.type = type as CommandType;
 }
 
 /**
@@ -450,7 +544,9 @@ function parseTomlCommandFile(content: string, filePath: string, name: string): 
   // prompt (Claude parity) instead of being silently discarded or labelled
   // generically.
   if (!prompt) return undefined;
-  const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath };
+  // A command FILE injects its body/prompt, so it is a `'prompt'` command (Claude
+  // parity: Command.type) unless the file explicitly declares another type.
+  const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath, type: 'prompt' };
   applyCommandKnobs(
     cmd,
     key => parseTomlString(content, key),
@@ -473,7 +569,7 @@ function parseMarkdownCommandFile(content: string, filePath: string, name: strin
   const prompt = body.trim();
   if (!prompt) return undefined; // a command with no body does nothing — skip
   const desc = frontmatter.description?.trim();
-  const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath };
+  const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath, type: 'prompt' };
   applyCommandKnobs(
     cmd,
     key => { const v = frontmatter[key]; return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined; },
@@ -547,7 +643,7 @@ function commandBaseName(fileName: string): string | null {
  * contained to the plugin's own tree — consistent with the realpath hardening
  * used everywhere else in this module.
  */
-function walkCommandDir(dir: string, namespace: string[], out: CommandDefinition[]): void {
+function walkCommandDir(dir: string, subPath: string[], pluginName: string | undefined, out: CommandDefinition[]): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -557,15 +653,26 @@ function walkCommandDir(dir: string, namespace: string[], out: CommandDefinition
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkCommandDir(full, [...namespace, entry.name], out);
+      walkCommandDir(full, [...subPath, entry.name], pluginName, out);
       continue;
     }
     if (!entry.isFile()) continue;
     const base = commandBaseName(entry.name);
     if (base === null) continue;
-    const name = namespace.length > 0 ? `${namespace.join(':')}:${base}` : base;
+    // The looked-up `name` keeps its original composition: optional plugin-name
+    // segment, then the sub-path, then the base. The `namespace` field tracks ONLY
+    // the on-disk sub-path (Claude parity: walkPluginMarkdown), so the plugin-name
+    // prefix is not conflated with the folder structure.
+    const nameSegs = [...(pluginName ? [pluginName] : []), ...subPath, base];
+    const name = nameSegs.join(':');
     const cmd = parseCommandFile(full, name);
-    if (cmd) out.push(cmd);
+    if (cmd) {
+      cmd.namespace = subPath;
+      // Provenance defaults to 'plugin' for a bundle walk (a pluginName was given)
+      // unless the file already declared an explicit source.
+      if (pluginName && cmd.source === undefined) cmd.source = 'plugin';
+      out.push(cmd);
+    }
   }
 }
 
@@ -581,8 +688,8 @@ function walkCommandDir(dir: string, namespace: string[], out: CommandDefinition
  */
 export function loadCommands(dir: string, pluginName?: string): CommandDefinition[] {
   const commands: CommandDefinition[] = [];
-  const base = pluginName && pluginName.trim() !== '' ? [pluginName.trim()] : [];
-  walkCommandDir(dir, base, commands);
+  const plugin = pluginName && pluginName.trim() !== '' ? pluginName.trim() : undefined;
+  walkCommandDir(dir, [], plugin, commands);
   return commands;
 }
 
@@ -1047,17 +1154,85 @@ export function isNamespaceSafeName(name: string): boolean {
 }
 
 /**
+ * True when `err` is a filesystem "no such file or directory" error (errno code
+ * `ENOENT`), matching Claude Code's `isENOENT` guard (utils/errors.ts). Used to
+ * distinguish an EXPECTED-absent path (a plugin that simply ships none of an
+ * optional component — swallow it) from a REAL I/O error (EACCES/ENOTDIR/… —
+ * surface it) so a genuine misconfiguration is not silently discarded.
+ */
+export function isENOENT(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/** Compact, non-throwing message for a caught error (used in load-failure reasons). */
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Sanitize one segment of a plugin/extension id (Claude parity: the `sanitize`
+ * pipeline in utils/dxt/helpers.ts `generateExtensionId`), applied IN ORDER:
+ * lower-case → collapse whitespace runs to `-` → drop any char outside
+ * `[a-z0-9-_.]` → collapse `-` runs → trim leading/trailing `-`. Deterministic:
+ * the same input always yields the same segment.
+ */
+export function sanitizePluginIdSegment(str: string): string {
+  return str
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-_.]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** Prefixes a deterministic plugin id may carry (Claude parity: local unpacked vs
+ *  packaged `.dxt`/`.mcpb` bundle). */
+export type PluginIdPrefix = 'local.unpacked' | 'local.dxt';
+
+/**
+ * Generate a deterministic plugin/extension id from an author name and a plugin
+ * name (Claude parity: generateExtensionId, utils/dxt/helpers.ts). Each part is
+ * run through {@link sanitizePluginIdSegment}; an optional `prefix` is prepended.
+ * The result is `${author}.${name}` (or `${prefix}.${author}.${name}`) — stable
+ * across runs so the same plugin always resolves to the same id.
+ */
+export function generatePluginId(authorName: string, name: string, prefix?: PluginIdPrefix): string {
+  const author = sanitizePluginIdSegment(authorName);
+  const sanitizedName = sanitizePluginIdSegment(name);
+  return prefix ? `${prefix}.${author}.${sanitizedName}` : `${author}.${sanitizedName}`;
+}
+
+/**
+ * Normalize a manifest `author` (string or `{ name, … }` object — Claude parity)
+ * to a non-empty display-name string, or undefined when absent/blank/malformed.
+ */
+function manifestAuthorName(author: unknown): string | undefined {
+  if (typeof author === 'string') return author.trim() !== '' ? author.trim() : undefined;
+  if (author && typeof author === 'object' && !Array.isArray(author)) {
+    const name = (author as Record<string, unknown>).name;
+    if (typeof name === 'string' && name.trim() !== '') return name.trim();
+  }
+  return undefined;
+}
+
+/**
  * Discover local plugin bundles under `dir`, ALSO returning structured load
  * failures (invalid JSON / failed manifest validation) so callers can surface
  * actionable guidance instead of silently dropping a broken plugin. A directory
  * with no manifest at all is not a failure (it simply isn't a plugin).
+ *
+ * The top-level directory read distinguishes ENOENT (the plugins dir simply does
+ * not exist yet — not a failure) from a real I/O error (e.g. ENOTDIR/EACCES),
+ * which is surfaced as a {@link PluginLoadFailure} rather than silently yielding
+ * an empty list (Claude parity: isENOENT discrimination).
  */
 export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[]; failures: PluginLoadFailure[] } {
   let entries: string[];
   try {
     entries = fs.readdirSync(dir);
-  } catch {
-    return { bundles: [], failures: [] };
+  } catch (err) {
+    if (isENOENT(err)) return { bundles: [], failures: [] };
+    return { bundles: [], failures: [{ root: dir, reason: `Failed to read plugins directory: ${errMessage(err)}` }] };
   }
   const bundles: PluginBundle[] = [];
   const failures: PluginLoadFailure[] = [];
@@ -1108,10 +1283,18 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
     // lookups never break on an invalid id.
     const manifestName = manifest.name;
     const name = typeof manifestName === 'string' && isNamespaceSafeName(manifestName) ? manifestName : entry;
+    const description = typeof manifest.description === 'string' && manifest.description.trim() !== '' ? manifest.description.trim() : undefined;
+    const author = manifestAuthorName(manifest.author);
     bundles.push({
       name,
       version: (manifest.version as string | undefined) ?? '0.0.0',
       root,
+      description,
+      author,
+      // Deterministic, collision-resistant id derived from author + name (Claude
+      // parity: generateExtensionId). Only set when an author is declared, since
+      // the id is anchored on it.
+      id: author !== undefined ? generatePluginId(author, name) : undefined,
       defaultEnabled: typeof manifest.defaultEnabled === 'boolean' ? manifest.defaultEnabled : undefined,
       // Component paths: honor a manifest-declared relative override (Claude parity)
       // and fall back to the fixed default directory when none is declared. The
