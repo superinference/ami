@@ -4,6 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { execCommand } from '../utils/shell';
+import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox } from './bash-sandbox';
@@ -175,13 +176,26 @@ export function injectFindMaxdepth(command: string): string {
  * work (e.g. a `cd <cwd> && git …` won't be mistaken for a relocation) and
  * matches the executed command the model sees. Only the literal current-cwd
  * prefix is stripped — a `cd` into any OTHER directory is preserved.
+ *
+ * On Windows the session cwd is a native path (`C:\proj`) but a model running
+ * under Git Bash routinely emits the POSIX drive form (`cd /c/proj && …`); both
+ * variants are stripped. `platform` is injectable so the Windows branch is
+ * testable off-Windows.
  * Parity: Claude Code api.ts BashTool normalizeToolInput (L586-592).
  */
-export function stripRedundantCdPrefix(command: string, cwd: string | undefined): string {
+export function stripRedundantCdPrefix(
+  command: string,
+  cwd: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (!cwd) return command;
   // String.replace with a string pattern replaces only the FIRST occurrence and
   // treats the pattern literally (no regex metachar surprises in the path).
-  return command.replace(`cd ${cwd} && `, '');
+  let out = command.replace(`cd ${cwd} && `, '');
+  if (platform === 'win32') {
+    out = out.replace(`cd ${windowsPathToPosixPath(cwd)} && `, '');
+  }
+  return out;
 }
 
 /**
@@ -199,14 +213,28 @@ export function rewriteWindowsNullRedirect(command: string): string {
 }
 
 /**
+ * Collapse an over-escaped `find -exec … \\;` terminator to `\;`. Models
+ * frequently double-escape the terminator through JSON, emitting
+ * `find … -exec rm {} \\;` (literal backslash-backslash-semicolon) which breaks
+ * `find` at the shell boundary. Parity: Claude Code api.ts normalizeToolInput
+ * (`normalizedCommand.replace(/\\\\;/g, '\\;')`, L594-595).
+ */
+export function collapseFindExecEscape(command: string): string {
+  return command.replace(/\\\\;/g, '\\;');
+}
+
+/**
  * Pre-execution normalization applied to every bash command before security
- * checks and execution: drop a redundant `cd <cwd> && ` prefix and rewrite
- * Windows `>nul` redirects to `/dev/null`. Behavior-preserving transforms that
- * make the command the model actually wrote run correctly on the POSIX shell.
+ * checks and execution: drop a redundant `cd <cwd> && ` prefix (native + Windows
+ * POSIX variant), rewrite Windows `>nul` redirects to `/dev/null`, and collapse
+ * the double-escaped `find -exec … \\;` terminator. Behavior-preserving
+ * transforms that make the command the model actually wrote run correctly on the
+ * POSIX shell.
  */
 export function normalizeBashInput(command: string, cwd: string | undefined): string {
   let out = stripRedundantCdPrefix(command, cwd);
   out = rewriteWindowsNullRedirect(out);
+  out = collapseFindExecEscape(out);
   return out;
 }
 

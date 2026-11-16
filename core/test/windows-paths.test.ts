@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import {
   memoizeWithLRU,
   posixPathToWindowsPath,
+  windowsPathToPosixPath,
   maybePosixToWindows,
 } from '../src/utils/windows-paths';
 import { expandPath } from '../src/utils/path';
@@ -47,6 +48,39 @@ describe('posixPathToWindowsPath', () => {
     const b = posixPathToWindowsPath('/c/repeat/path');
     assert.equal(a, b);
     assert.equal(a, 'C:\\repeat\\path');
+  });
+});
+
+describe('windowsPathToPosixPath', () => {
+  it('converts a native drive path (C:\\Users\\foo -> /c/Users/foo)', () => {
+    assert.equal(windowsPathToPosixPath('C:\\Users\\foo'), '/c/Users/foo');
+  });
+
+  it('converts a bare drive root (C:\\ -> /c)', () => {
+    assert.equal(windowsPathToPosixPath('C:\\'), '/c');
+  });
+
+  it('converts a drive with no trailing separator (D: -> /d)', () => {
+    assert.equal(windowsPathToPosixPath('D:'), '/d');
+  });
+
+  it('converts UNC paths (\\\\server\\share -> //server/share)', () => {
+    assert.equal(windowsPathToPosixPath('\\\\server\\share'), '//server/share');
+  });
+
+  it('flips slashes for relative / non-drive paths', () => {
+    assert.equal(windowsPathToPosixPath('relative\\sub\\path'), 'relative/sub/path');
+  });
+
+  it('round-trips with posixPathToWindowsPath for a drive path', () => {
+    assert.equal(windowsPathToPosixPath(posixPathToWindowsPath('/c/Users/foo')), '/c/Users/foo');
+  });
+
+  it('memoizes: the same input returns an identical result', () => {
+    const a = windowsPathToPosixPath('C:\\repeat\\path');
+    const b = windowsPathToPosixPath('C:\\repeat\\path');
+    assert.equal(a, b);
+    assert.equal(a, '/c/repeat/path');
   });
 });
 

@@ -101,6 +101,30 @@ export const posixPathToWindowsPath = memoizeWithLRU((posixPath: string): string
 });
 
 /**
+ * Convert a native Windows path to its POSIX (Git-Bash/MSYS2) form — the inverse
+ * of {@link posixPathToWindowsPath}. Handles UNC (`\\server\share` →
+ * `//server/share`), drive (`C:\Users\...` → `/c/Users/...`, `C:\`/`C:` → `/c`),
+ * and otherwise just flips backslashes to forward slashes. Memoized (500-entry
+ * LRU). Used to strip a model's redundant `cd <cwd> && ` prefix when the model
+ * emitted the Git-Bash drive form of the (native) session cwd.
+ */
+export const windowsPathToPosixPath = memoizeWithLRU((winPath: string): string => {
+  // UNC: \\server\share -> //server/share
+  if (winPath.startsWith('\\\\')) {
+    return winPath.replace(/\\/g, '/');
+  }
+  // Drive: C:\Users\... -> /c/Users/... ; C:\ and C: both -> /c
+  const driveMatch = winPath.match(/^([A-Za-z]):(\\|\/|$)/);
+  if (driveMatch) {
+    const driveLetter = driveMatch[1].toLowerCase();
+    const rest = winPath.slice(2).replace(/\\/g, '/');
+    return '/' + driveLetter + (rest === '/' ? '' : rest);
+  }
+  // Already POSIX or relative — just flip slashes.
+  return winPath.replace(/\\/g, '/');
+});
+
+/**
  * On Windows, convert a POSIX-style drive path (`/c/Users/...`) to its native
  * form; on any other platform, or for a path that is not a POSIX drive path,
  * return the input unchanged. `platform` is injectable so the Windows branch is

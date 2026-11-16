@@ -5,6 +5,7 @@ import {
   _bashHooks,
   stripRedundantCdPrefix,
   rewriteWindowsNullRedirect,
+  collapseFindExecEscape,
   normalizeBashInput,
   stripEmptyLines,
 } from '../src/tools/bash';
@@ -42,6 +43,54 @@ describe('U030 stripRedundantCdPrefix', () => {
   it('is a no-op when cwd is undefined/empty', () => {
     assert.equal(stripRedundantCdPrefix('cd /proj && ls', undefined), 'cd /proj && ls');
     assert.equal(stripRedundantCdPrefix('cd /proj && ls', ''), 'cd /proj && ls');
+  });
+  it('strips the Windows posix-path variant of the cwd on win32', () => {
+    // On Windows the cwd is native (C:\proj) but a Git-Bash model emits the
+    // POSIX drive form (/c/proj). Parity: Claude strips both variants.
+    assert.equal(stripRedundantCdPrefix('cd /c/proj && ls', 'C:\\proj', 'win32'), 'ls');
+  });
+  it('still strips the native cwd prefix on win32', () => {
+    assert.equal(stripRedundantCdPrefix('cd C:\\proj && ls', 'C:\\proj', 'win32'), 'ls');
+  });
+  it('does NOT apply the posix-path variant off-Windows', () => {
+    // On linux the cwd is already posix; a /c/proj prefix is a real other-dir cd.
+    assert.equal(stripRedundantCdPrefix('cd /c/proj && ls', 'C:\\proj', 'linux'), 'cd /c/proj && ls');
+  });
+});
+
+describe('U030 collapseFindExecEscape', () => {
+  it('replaces every `\\\\;` with `\\;`', () => {
+    assert.equal(collapseFindExecEscape('find a -exec x {} \\\\;'), 'find a -exec x {} \\;');
+  });
+  it('collapses multiple occurrences globally', () => {
+    assert.equal(
+      collapseFindExecEscape('find a -exec x {} \\\\; ; find b -exec y {} \\\\;'),
+      'find a -exec x {} \\; ; find b -exec y {} \\;',
+    );
+  });
+  it('leaves an already-correct `\\;` unchanged', () => {
+    assert.equal(collapseFindExecEscape('find a -exec x {} \\;'), 'find a -exec x {} \\;');
+  });
+});
+
+describe('U030 normalizeBashInput — find -exec double-escape collapse', () => {
+  it('collapses an over-escaped `\\\\;` find -exec terminator to `\\;`', () => {
+    assert.equal(
+      normalizeBashInput('find . -name "*.tmp" -exec rm {} \\\\;', '/proj'),
+      'find . -name "*.tmp" -exec rm {} \\;',
+    );
+  });
+  it('leaves a correctly-escaped `\\;` terminator untouched', () => {
+    assert.equal(
+      normalizeBashInput('find . -exec rm {} \\;', '/proj'),
+      'find . -exec rm {} \\;',
+    );
+  });
+  it('applies cd-strip, nul-rewrite, and find-exec collapse together', () => {
+    assert.equal(
+      normalizeBashInput('cd /proj && find . -exec rm {} \\\\; 2>nul', '/proj'),
+      'find . -exec rm {} \\; 2>/dev/null',
+    );
   });
 });
 
@@ -120,6 +169,14 @@ describe('U030 bashTool.execute — normalization reaches the executed command',
     const getSeen = captureExec();
     await bashTool.execute({ command: 'echo hi 2>nul' }, ctx());
     assert.equal(getSeen(), 'echo hi 2>/dev/null');
+  });
+
+  it('collapses an over-escaped find -exec terminator before execution', async () => {
+    const getSeen = captureExec();
+    await bashTool.execute({ command: 'find . -name "*.tmp" -exec echo {} \\\\;' }, ctx());
+    // The double-escaped `\\;` the model emitted is collapsed to `\;` so find runs.
+    assert.ok(getSeen().includes('-exec echo {} \\;'), getSeen());
+    assert.ok(!getSeen().includes('\\\\;'), getSeen());
   });
 
 });
