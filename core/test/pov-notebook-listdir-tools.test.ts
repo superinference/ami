@@ -324,7 +324,7 @@ describe('notebook_edit — cell_id selection', () => {
       { cell_type: 'code', source: 'two', id: 'b' },
     ]);
     const res = await notebookEditTool.execute(
-      { notebook_path: file, cell_id: 'a', new_source: 'one', edit_mode: 'insert' },
+      { notebook_path: file, cell_id: 'a', new_source: 'one', edit_mode: 'insert', cell_type: 'code' },
       ctx(),
     );
     assert.ok(!res.isError, res.output);

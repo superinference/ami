@@ -59,7 +59,7 @@ describe('notebook_edit – cell diff preview on replace', () => {
   it('does not emit a diff for insert mode', async () => {
     writeNotebook([{ cell_type: 'code', source: ['a\n'], id: 'c0' }]);
     const result = await notebookEditTool.execute(
-      { notebook_path: nbPath, edit_mode: 'insert', new_source: 'b\n' },
+      { notebook_path: nbPath, edit_mode: 'insert', new_source: 'b\n', cell_type: 'code' },
       ctx(),
     );
     assert.ok(!result.isError, result.output);

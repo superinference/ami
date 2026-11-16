@@ -54,7 +54,7 @@ describe('notebookEditTool – nbformat > 4 id generation (line 242 first OR arm
     });
 
     const result = await notebookEditTool.execute(
-      { notebook_path: file, new_source: 'b = 2', edit_mode: 'insert' },
+      { notebook_path: file, new_source: 'b = 2', edit_mode: 'insert', cell_type: 'code' },
       ctx(),
     );
 

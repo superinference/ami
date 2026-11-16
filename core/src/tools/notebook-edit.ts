@@ -2,7 +2,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache } from '../file-cache';
-import { validateFilePath, validateFileWritePath, buildUnifiedDiff } from './tool-utils';
+import {
+  validateFilePath,
+  validateFileWritePath,
+  buildUnifiedDiff,
+  decodeBuffer,
+  encodeText,
+  detectLineEnding,
+  convertToLineEnding,
+} from './tool-utils';
 
 /** Normalize a notebook cell source (string or string[]) to a single string. */
 function cellSourceToString(source: string | string[] | undefined): string {
@@ -29,34 +37,43 @@ interface NotebookContent {
 export const notebookEditTool: ToolDefinition = {
   name: 'notebook_edit',
   description:
-    'Edit a Jupyter notebook (.ipynb file). Can replace cell content, insert new cells, or delete cells.',
+    'Replace, insert, or delete a specific cell in a Jupyter notebook (.ipynb file). ' +
+    'Jupyter notebooks are interactive documents that combine code, text, and visualizations, ' +
+    'commonly used for data analysis and scientific computing. The notebook_path must be an ' +
+    'absolute path. Use edit_mode=insert to add a new cell after the selected cell (or at the ' +
+    'end when no cell is selected); use edit_mode=delete to remove the selected cell.',
   inputSchema: {
     type: 'object',
     properties: {
       notebook_path: {
         type: 'string',
-        description: 'Path to the .ipynb file',
+        description: 'The absolute path to the Jupyter notebook file to edit (must be absolute, not relative).',
       },
       cell_number: {
         type: 'number',
-        description: '0-based cell index to edit',
+        description: '0-based cell index to edit. Ignored when cell_id resolves to a cell.',
       },
       cell_id: {
         type: 'string',
-        description: 'Cell ID (from notebook metadata) to select the cell. Takes precedence over cell_number if both provided.',
+        description:
+          'The ID of the cell to edit. Matched against the cell\'s actual id first, then against the ' +
+          'positional "cell-N" alias. When inserting a new cell, it is inserted after the cell with this ID. ' +
+          'Takes precedence over cell_number if both provided.',
       },
       new_source: {
         type: 'string',
-        description: 'New source content for the cell',
+        description: 'The new source for the cell.',
       },
       cell_type: {
         type: 'string',
-        description: 'Cell type: code or markdown',
+        description:
+          'The type of the cell (code or markdown). If not specified, it defaults to the current cell type. ' +
+          'Required when edit_mode is insert.',
         enum: ['code', 'markdown'],
       },
       edit_mode: {
         type: 'string',
-        description: 'replace, insert, or delete',
+        description: 'The type of edit to make (replace, insert, delete). Defaults to replace.',
         enum: ['replace', 'insert', 'delete'],
       },
     },
@@ -98,6 +115,17 @@ export const notebookEditTool: ToolDefinition = {
     if (editMode !== 'replace' && editMode !== 'insert' && editMode !== 'delete') {
       return {
         output: `Error: edit_mode must be "replace", "insert", or "delete". Got "${editMode}".`,
+        isError: true,
+      };
+    }
+
+    // FUNCTIONAL (Claude parity, errorCode 5): when inserting a new cell there is
+    // no existing cell to inherit the type from, so cell_type is required. Without
+    // this guard a bare insert silently defaulted to a code cell, which can produce
+    // the wrong cell kind (e.g. markdown content persisted as a code cell).
+    if (editMode === 'insert' && cellType === undefined) {
+      return {
+        output: 'Error: cell_type is required when using edit_mode=insert (specify "code" or "markdown").',
         isError: true,
       };
     }
@@ -149,9 +177,13 @@ export const notebookEditTool: ToolDefinition = {
     }
 
     // --- Read and parse the notebook ---
-    let raw: string;
+    // Read as raw bytes so the original encoding (BOM / UTF-16) and line endings
+    // can be preserved on write, mirroring file-edit.ts. Editing a UTF-16 or
+    // BOM-prefixed / CRLF notebook as plain UTF-8 would otherwise silently rewrite
+    // its encoding and churn every line.
+    let rawBuf: Buffer;
     try {
-      raw = await fs.promises.readFile(resolved, 'utf-8');
+      rawBuf = await fs.promises.readFile(resolved);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('ENOENT')) {
@@ -165,6 +197,8 @@ export const notebookEditTool: ToolDefinition = {
         isError: true,
       };
     }
+    const { text: raw, encoding } = decodeBuffer(rawBuf);
+    const lineEnding = detectLineEnding(raw);
 
     let notebook: NotebookContent;
     try {
@@ -186,18 +220,27 @@ export const notebookEditTool: ToolDefinition = {
     }
 
     // --- Resolve cell_id to cell_number ---
+    // Claude resolution order (NotebookEditTool L270-288): match the cell's ACTUAL
+    // id first, and only fall back to the positional "cell-N" alias when no real id
+    // matches. The alias regex is strictly anchored (/^cell-(\d+)$/) so a real id
+    // like "cell-foo" or "cell-2x" is never mis-parsed as an index.
     if (cellId && cellNumber === undefined) {
-      // Support cell-N alias (e.g. "cell-0", "cell-5")
-      if (typeof cellId === 'string' && cellId.startsWith('cell-')) {
-        const idx = parseInt(cellId.slice(5), 10);
-        if (!isNaN(idx) && idx >= 0 && idx < notebook.cells.length) {
-          cellNumber = idx;
-        }
-      }
-
-      if (cellNumber === undefined) {
-        const idx = notebook.cells.findIndex(c => c.id === cellId);
-        if (idx === -1) {
+      const byId = notebook.cells.findIndex(c => c.id === cellId);
+      if (byId !== -1) {
+        cellNumber = byId;
+      } else {
+        const aliasMatch = /^cell-(\d+)$/.exec(cellId);
+        if (aliasMatch) {
+          const idx = parseInt(aliasMatch[1], 10);
+          if (idx >= 0 && idx < notebook.cells.length) {
+            cellNumber = idx;
+          } else {
+            return {
+              output: `Error: cell index ${idx} (from cell_id "${cellId}") does not exist (notebook has ${notebook.cells.length} cell(s)).`,
+              isError: true,
+            };
+          }
+        } else {
           const available = notebook.cells
             .map((c, i) => c.id ? `${i}:${c.id}` : `${i}:(no id)`)
             .join(', ');
@@ -206,7 +249,6 @@ export const notebookEditTool: ToolDefinition = {
             isError: true,
           };
         }
-        cellNumber = idx;
       }
     }
 
@@ -257,7 +299,8 @@ export const notebookEditTool: ToolDefinition = {
         };
       }
 
-      const type = cellType ?? 'code';
+      // cell_type is required for insert (validated above), so it is always defined here.
+      const type = cellType as 'code' | 'markdown';
       const newCell: NotebookCell = {
         cell_type: type,
         source: newSource,
@@ -352,20 +395,30 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
-    // FUNCTIONAL: write to a temp file in the same directory, then atomically rename
-    // it over the target. A crash mid-write can no longer leave a truncated /
-    // corrupted .ipynb — the original stays intact until the rename swaps it in one
-    // operation. The temp lives in the same dir so the rename is same-filesystem
-    // (atomic), and is hidden so it is never picked up as a stray notebook.
+    // FUNCTIONAL: write to a temp file in the same directory, fsync it, then
+    // atomically rename it over the target. The fsync flushes the bytes to disk
+    // BEFORE the rename, so a crash/power-loss mid-write can no longer leave a
+    // truncated / corrupted .ipynb — the original stays intact until the rename
+    // swaps the fully-durable copy in one operation. The temp lives in the same
+    // dir so the rename is same-filesystem (atomic), and is hidden so it is never
+    // picked up as a stray notebook. The original encoding (BOM / UTF-16) and line
+    // endings detected on read are reapplied so an edit never silently rewrites them.
+    const outputBytes = encodeText(convertToLineEnding(updatedJson, lineEnding), encoding);
     const tmpPath = path.join(
       path.dirname(resolved),
       `.${path.basename(resolved)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`,
     );
     try {
-      await fs.promises.writeFile(tmpPath, updatedJson, 'utf-8');
+      const fh = await fs.promises.open(tmpPath, 'w');
+      try {
+        await fh.writeFile(outputBytes);
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
       await fs.promises.rename(tmpPath, resolved);
     } catch (err: unknown) {
-      // Best-effort cleanup of the temp file (it may not exist if writeFile failed).
+      // Best-effort cleanup of the temp file (it may not exist if open failed).
       try {
         await fs.promises.unlink(tmpPath);
       } catch { /* temp file never created — nothing to clean up */ }

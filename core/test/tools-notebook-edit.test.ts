@@ -232,7 +232,7 @@ describe('notebookEditTool – insert', () => {
     ]);
 
     const result = await notebookEditTool.execute(
-      { notebook_path: file, new_source: 'appended', edit_mode: 'insert' },
+      { notebook_path: file, new_source: 'appended', edit_mode: 'insert', cell_type: 'code' },
       ctx(),
     );
     assert.ok(!result.isError);
@@ -241,12 +241,12 @@ describe('notebookEditTool – insert', () => {
     assert.equal(nb.cells[1].source, 'appended');
   });
 
-  it('defaults to code cell type', async () => {
+  it('creates a code cell when cell_type=code is specified', async () => {
     const file = writeNotebook('insertdefault.ipynb', [
       { cell_type: 'code', source: 'x' },
     ]);
     const result = await notebookEditTool.execute(
-      { notebook_path: file, new_source: 'y = 1', edit_mode: 'insert' },
+      { notebook_path: file, new_source: 'y = 1', edit_mode: 'insert', cell_type: 'code' },
       ctx(),
     );
     assert.ok(!result.isError);
@@ -261,7 +261,7 @@ describe('notebookEditTool – insert', () => {
       { cell_type: 'code', source: 'x' },
     ], 4, 5);
     const result = await notebookEditTool.execute(
-      { notebook_path: file, new_source: 'new', edit_mode: 'insert' },
+      { notebook_path: file, new_source: 'new', edit_mode: 'insert', cell_type: 'code' },
       ctx(),
     );
     assert.ok(!result.isError);
@@ -274,7 +274,7 @@ describe('notebookEditTool – insert', () => {
       { cell_type: 'code', source: 'x' },
     ], 4, 4);
     const result = await notebookEditTool.execute(
-      { notebook_path: file, new_source: 'new', edit_mode: 'insert' },
+      { notebook_path: file, new_source: 'new', edit_mode: 'insert', cell_type: 'code' },
       ctx(),
     );
     assert.ok(!result.isError);
@@ -302,7 +302,7 @@ describe('notebookEditTool – insert', () => {
       { cell_type: 'code', source: 'x' },
     ]);
     const result = await notebookEditTool.execute(
-      { notebook_path: file, cell_number: 10, new_source: 'y', edit_mode: 'insert' },
+      { notebook_path: file, cell_number: 10, new_source: 'y', edit_mode: 'insert', cell_type: 'code' },
       ctx(),
     );
     assert.equal(result.isError, true);
