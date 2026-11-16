@@ -1,7 +1,7 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { projectStateDir } from '../reference-journal';
 import { redactSecrets } from './tool-utils';
-import { GIT_NO_PROMPT_ENV, validateGitSource } from '../plugins';
+import { GIT_NO_PROMPT_ENV, validateGitSource, isScpLikeGitSource } from '../plugins';
 import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -77,6 +77,27 @@ export function scoutSearchWindow(input: Record<string, unknown>): { limit: numb
   return { limit, offset };
 }
 
+/**
+ * Resolve the user-supplied `repo` into a source `git clone` understands. Only a
+ * bare GitHub shorthand (`owner/repo`) is expanded to an HTTPS URL; a full remote
+ * URL (`https://`, `http://`, `ssh://`, `git://`, `file://`), an scp-style SSH
+ * remote (`git@host:owner/repo.git`), or a local path (`/…`, `./…`) is handed to
+ * git verbatim — its trailing `.git` and host port are preserved by git itself.
+ * The scp carve-out is essential: without it `git@host:owner/repo.git` would be
+ * mangled into the broken URL `https://github.com/git@host:owner/repo.git`.
+ */
+export function resolveScoutRepoUrl(repo: string): string {
+  if (
+    repo.includes('://') ||
+    repo.startsWith('/') ||
+    repo.startsWith('.') ||
+    isScpLikeGitSource(repo)
+  ) {
+    return repo;
+  }
+  return `https://github.com/${repo}`;
+}
+
 /** Strip `user:password@` userinfo from any URL so credentials in a repo URL never
  *  leak into an error message or spawned-command echo. */
 export function stripUrlCredentials(text: string): string {
@@ -137,7 +158,7 @@ export const scoutTool: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      repo: { type: 'string', description: 'Repository URL or shorthand (e.g., "owner/repo" for GitHub).' },
+      repo: { type: 'string', description: 'Repository to research. Accepts: a GitHub shorthand ("owner/repo"), a full URL (https://, http://, ssh://, git://), an scp-style SSH remote ("git@host:owner/repo.git"), or a local path. A trailing ".git" and host port are preserved.' },
       query: { type: 'string', description: 'What to look for in the repository.' },
       glob: { type: 'string', description: 'Glob pattern to restrict the search to (e.g. "*.java", "*.rb"). Overrides the default extension set.' },
       file_type: { type: 'string', description: 'Language to search (e.g. "java", "ruby", "markdown"). Maps to the matching file extensions.' },
@@ -160,10 +181,7 @@ export const scoutTool: ToolDefinition = {
     if (!sourceCheck.ok) {
       return { output: `Error scouting ${stripUrlCredentials(String(repo))}: ${sourceCheck.reason}`, isError: true };
     }
-    const repoUrl =
-      repo.includes('://') || repo.startsWith('/') || repo.startsWith('.')
-        ? repo
-        : `https://github.com/${repo}`;
+    const repoUrl = resolveScoutRepoUrl(repo);
     const cacheDir = projectStateDir(context.cwd, 'scout-cache');
     const repoName = repo.replace(/[^a-zA-Z0-9_-]/g, '_');
     const localPath = path.join(cacheDir, repoName);

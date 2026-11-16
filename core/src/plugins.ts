@@ -30,6 +30,17 @@ export interface GitSourceValidation {
 
 /** scp-style SSH remote, e.g. `git@github.com:owner/repo.git`. */
 const SSH_SCP_RE = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+:.+/;
+
+/**
+ * True when `source` is an scp-style SSH git remote (`user@host:path`). git clone
+ * accepts this form verbatim, so a caller that otherwise expands bare shorthand to
+ * a GitHub URL must NOT rewrite it — doing so produces a broken
+ * `https://github.com/git@host:…` URL. Shares the single SSH_SCP_RE so the
+ * accept-and-clone paths can never diverge from validateGitSource.
+ */
+export function isScpLikeGitSource(source: string): boolean {
+  return typeof source === 'string' && SSH_SCP_RE.test(source.trim());
+}
 /** GitHub shorthand `owner/repo` (single separator, no scheme, no host). */
 const GITHUB_SHORTHAND_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 /** A git transport-helper prefix, e.g. `ext::`, `fd::`, `file::` — these can run
