@@ -138,6 +138,74 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
   }
 }
 
+/**
+ * True when raw content is a structured control-plane message (a known protocol
+ * discriminator), as opposed to plain conversational text. Mirrors Claude Code's
+ * teammateMailbox.isStructuredProtocolMessage: such a message must be ROUTED and
+ * rendered concisely, never dumped as raw JSON into the model's context — bundling
+ * it as opaque text both leaks control-plane noise into the LLM and bypasses its
+ * intended handling. Returns true for both a well-formed protocol message and one
+ * whose discriminator is recognized but payload is malformed (parseStructuredMessage
+ * returns `{ error }`), since either way it is control-plane, not conversation.
+ */
+export function isStructuredProtocolMessage(content: string): boolean {
+  return parseStructuredMessage(content) !== null;
+}
+
+/**
+ * A brief, one-line summary of a shutdown message with a distinct format per state
+ * (request / approved / rejected), for inbox/queue listings and concise relay into
+ * context. Returns null when the content is not a shutdown message. Mirrors Claude
+ * Code's ShutdownMessage.getShutdownMessageSummary; `from` (the envelope sender) is
+ * woven into the summary the way Claude reads it off the payload.
+ */
+export function getShutdownMessageSummary(content: string, from?: string): string | null {
+  const parsed = parseStructuredMessage(content);
+  if (!parsed || 'error' in parsed) return null;
+  const who = from ? ` from ${from}` : '';
+  if (parsed.type === 'shutdown_request') {
+    return `[Shutdown Request${who}]${parsed.reason ? ` ${parsed.reason}` : ''}`;
+  }
+  if (parsed.type === 'shutdown_response') {
+    if (parsed.approve) {
+      return `[Shutdown Approved]${from ? ` ${from} is now exiting` : ''}`;
+    }
+    // Rejection carries the required reason plus the non-fatal fallback boundary
+    // ("continue working; request again later") so a requester reading the queue
+    // knows the worker declined and how to proceed. Mirrors ShutdownRejectedDisplay.
+    const reasonTag = parsed.reason ? `: ${parsed.reason}` : '';
+    return `[Shutdown Rejected]${from ? ` ${from}` : ''}${reasonTag} — teammate is continuing to work; you may request shutdown again later`;
+  }
+  return null;
+}
+
+/**
+ * A concise, human/model-readable one-line summary of any structured control
+ * message, used to relay it into context WITHOUT exposing the raw JSON. Returns
+ * null for plain text or a malformed protocol payload (nothing meaningful to
+ * summarize). Shutdown messages delegate to getShutdownMessageSummary so the
+ * per-state wording stays single-sourced.
+ */
+export function summarizeStructuredMessage(content: string, from?: string): string | null {
+  const m = parseStructuredMessage(content);
+  if (!m || 'error' in m) return null;
+  switch (m.type) {
+    case 'shutdown_request':
+    case 'shutdown_response':
+      return getShutdownMessageSummary(content, from);
+    case 'plan_approval_request':
+      return `[Plan Approval Request]${m.planFilePath ? ` (${m.planFilePath})` : ''} — teammate submitted a plan for review`;
+    case 'plan_approval_response':
+      return m.approve
+        ? '[Plan Approved]'
+        : `[Plan Rejected]${m.feedback ? `: ${m.feedback}` : ''}`;
+    case 'permission_request':
+      return `[Permission Request] tool "${m.tool}"${m.description ? `: ${m.description}` : ''}`;
+    case 'permission_response':
+      return m.approve ? '[Permission Granted]' : '[Permission Denied]';
+  }
+}
+
 // --- Structured request identifiers ----------------------------------------
 // A request id is self-describing: `{requestType}-{timestamp}@{agentId}`, e.g.
 // `shutdown-1702500000000@researcher`. It encodes who the request is about and
