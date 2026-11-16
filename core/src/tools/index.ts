@@ -316,7 +316,8 @@ export type {
 export { shouldUseSandbox, wrapWithSandbox, getSandboxStatus, checkSandboxDependencies, resetSandboxCache } from './bash-sandbox';
 export type { SandboxDependencyCheck } from './bash-sandbox';
 export type { SandboxConfig } from './bash-sandbox';
-export { teamCreateTool, teamDeleteTool, getCurrentTeam, resetTeam } from './team';
+export { teamCreateTool, teamDeleteTool, getCurrentTeam, resetTeam, getSelfIdentity, getSelfPlanModeRequired, getSelfParentSessionId } from './team';
+export type { SelfIdentity } from './team';
 export { todoWriteTool, todoReadTool, resetTodos, getTodos, setTodos, formatTodoReadOutput, validateInProgressActiveForm, extractTodosFromTranscript, rehydrateTodosFromTranscript } from './todo-write';
 export { createMcpAuthTool } from './mcp-auth';
 export { createMcpTool } from './mcp-tool';

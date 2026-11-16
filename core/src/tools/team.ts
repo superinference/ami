@@ -366,6 +366,28 @@ export function getSelfColor(): AgentColorName | undefined {
 }
 
 /**
+ * This process's resolved plan-mode-required flag (parity: Claude Code's
+ * `isPlanModeRequired`), following the identity precedence chain in-process
+ * {@link TeammateContext} (AsyncLocalStorage) > runtime {@link DynamicTeamContext}.
+ * Defaults to false when no teammate identity is bound — a standalone session is
+ * never forced into plan mode.
+ */
+export function getSelfPlanModeRequired(): boolean {
+  return getTeammateContext()?.planModeRequired ?? dynamicTeamContext?.planModeRequired ?? false;
+}
+
+/**
+ * This process's resolved parent (lead) session id (parity: Claude Code's
+ * `getParentSessionId`), following ALS > dynamic > the active team's
+ * `leadSessionId`. Lets a teammate correlate its transcript back to the lead's
+ * session. Undefined for a standalone session with no team lineage.
+ */
+export function getSelfParentSessionId(): string | undefined {
+  return getTeammateContext()?.parentSessionId ?? dynamicTeamContext?.parentSessionId
+    ?? currentTeam?.leadSessionId;
+}
+
+/**
  * Whether THIS session is running as a (non-lead) teammate in a swarm (parity:
  * isTeammate). True when executing inside an in-process teammate scope, OR when a
  * bound id+team resolves to an agent that is NOT the team lead. The lead — which
@@ -398,6 +420,49 @@ export function isLeader(team: TeamFile | null = currentTeam): boolean {
   if (myId === team.leadAgentId) return true;
   if (!myId) return true; // backwards compat: the original creator session
   return false;
+}
+
+/**
+ * A fully-resolved snapshot of THIS session's swarm identity (parity: Claude Code's
+ * `getDynamicTeamContext` "for inspection/debugging" aggregate, combined with
+ * `getAgentId`/`getAgentName`/`getTeamName`/`getTeammateColor`/`isTeammate`).
+ * Unlike {@link getDynamicTeamContext} — which exposes ONLY the runtime dynamic
+ * layer — this folds in the full precedence chain (in-process ALS > dynamic > env)
+ * for every field and the derived role flags, so a single call answers the whole
+ * "who am I in this swarm?" question: am I a teammate, which agent/team/color am I,
+ * am I the lead, and am I running in-process. Always returns a record; identity
+ * fields are undefined for a standalone, non-team session.
+ */
+export interface SelfIdentity {
+  agentId?: string;
+  agentName?: string;
+  teamName?: string;
+  color?: AgentColorName;
+  planModeRequired: boolean;
+  parentSessionId?: string;
+  isTeammate: boolean;
+  isLeader: boolean;
+  isInProcess: boolean;
+}
+
+/**
+ * Resolve this session's full swarm identity through the precedence chain — the
+ * single cohesive introspection surface (parity: Claude Code's inspection aggregate).
+ * Reuses the per-field accessors (no duplicated resolution logic) so it never drifts
+ * from {@link getSelfAgentId} / {@link isTeammate} / {@link isLeader} et al.
+ */
+export function getSelfIdentity(): SelfIdentity {
+  return {
+    agentId: getSelfAgentId(),
+    agentName: getSelfAgentName(),
+    teamName: getSelfTeamName(),
+    color: getSelfColor(),
+    planModeRequired: getSelfPlanModeRequired(),
+    parentSessionId: getSelfParentSessionId(),
+    isTeammate: isTeammate(),
+    isLeader: isLeader(),
+    isInProcess: isInProcessTeammate(),
+  };
 }
 
 /**
@@ -1005,7 +1070,10 @@ export const teamCreateTool: ToolDefinition = {
     const declaredNote = parsedMembers.members.length > 0
       ? ` ${parsedMembers.members.length} teammate(s) pre-declared: ${parsedMembers.members.map(m => m.name).join(', ')}.`
       : '';
-    const roleNote = ` You are the ${isLeader() ? 'team lead' : 'teammate'} (self: ${getSelfAgentName()}).`;
+    // Surface this session's resolved swarm identity via the cohesive introspection
+    // aggregate (consolidates the former ad-hoc isLeader()/getSelfAgentName() reads).
+    const self = getSelfIdentity();
+    const roleNote = ` You are the ${self.isLeader ? 'team lead' : 'teammate'} (self: ${self.agentName}).`;
     return {
       output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}.${declaredNote}${roleNote} ` +
         `Spawn teammates with task({ name: "<teammate>" }) to add members.`,
