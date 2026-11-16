@@ -94,6 +94,10 @@ export function validateTodoInput(input: Record<string, unknown>): string | null
 
 export const todoWriteTool: ToolDefinition = {
   name: 'todo_write',
+  // Terse, intent-focused discovery phrase (synonyms not in the long
+  // description) so tool_search can surface this by purpose. Parity: Claude's
+  // TodoWriteTool.searchHint ('manage the session task checklist').
+  searchHint: 'manage the session task checklist plan progress',
   description:
     'Create or update a structured todo list for the current task. ' +
     'Use this for non-trivial, multi-step work: tasks that need 3+ distinct ' +
@@ -183,7 +187,14 @@ export const todoWriteTool: ToolDefinition = {
     const allCompleted = current.length > 0 && current.every(t => t.status === 'completed');
     const hasVerifyStep = current.some(t => /verif/i.test(t.content));
     if (allCompleted && current.length >= 3 && !hasVerifyStep && !context?.agentId) {
-      summary += '\n\n[Verification suggested: all items completed and no verification step was tracked. Review/verify the results before finishing.]';
+      // Directive, actionable nudge (parity: Claude's TaskUpdate/TodoWrite
+      // close-out note) — name the concrete next action and forbid self-declared
+      // success, rather than a vague "consider reviewing".
+      summary +=
+        `\n\n[Verification required: you just closed out a ${current.length}-item task list and none of ` +
+        'the items was a verification step. Before writing your final summary, verify the results — ' +
+        'run the relevant tests/build or spawn a verification subagent — and do NOT declare success by ' +
+        'listing caveats without a real check.]';
     }
 
     // T1: emit the current list so frontends can render it live.

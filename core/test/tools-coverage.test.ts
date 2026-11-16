@@ -2348,7 +2348,7 @@ describe('todoWriteTool — coverage', () => {
         { id: '3', content: 'C', status: 'completed' },
       ],
     }, ctx());
-    assert.ok(r.output.includes('Verification suggested'));
+    assert.ok(r.output.includes('Verification required'));
   });
 
   it('does not show verification suggestion for < 3 completed', async () => {
@@ -2359,7 +2359,7 @@ describe('todoWriteTool — coverage', () => {
         { id: '3', content: 'C', status: 'pending' },
       ],
     }, ctx());
-    assert.ok(!r.output.includes('Verification suggested'));
+    assert.ok(!r.output.includes('Verification required'));
   });
 
   it('returns metadata with old and new todo IDs', async () => {

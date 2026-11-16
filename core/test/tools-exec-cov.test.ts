@@ -353,7 +353,7 @@ describe('todo-write', () => {
         { id: '3', content: 'c', status: 'completed' },
       ],
     });
-    assert.match(r.output, /Verification suggested/);
+    assert.match(r.output, /Verification required/);
   });
 });
 

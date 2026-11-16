@@ -151,7 +151,7 @@ describe('todo-write cluster (T1-T8)', () => {
         { id: '3', content: 'c', status: 'completed' },
       ],
     }, context);
-    assert.match(r.output, /Verification suggested/);
+    assert.match(r.output, /Verification required/);
   });
 
   it('T6: does NOT nudge for a 2-item completed list (below the 3-item threshold)', async () => {
@@ -162,7 +162,7 @@ describe('todo-write cluster (T1-T8)', () => {
         { id: '2', content: 'b', status: 'completed' },
       ],
     }, context);
-    assert.doesNotMatch(r.output, /Verification suggested/);
+    assert.doesNotMatch(r.output, /Verification required/);
   });
 
   it('T6: does NOT nudge when the list already contains a verification step', async () => {
@@ -174,7 +174,7 @@ describe('todo-write cluster (T1-T8)', () => {
         { id: '3', content: 'verify the results', status: 'completed' },
       ],
     }, context);
-    assert.doesNotMatch(r.output, /Verification suggested/);
+    assert.doesNotMatch(r.output, /Verification required/);
   });
 
   it('T6: does NOT nudge when running inside a subagent (agentId set)', async () => {
@@ -186,7 +186,7 @@ describe('todo-write cluster (T1-T8)', () => {
         { id: '3', content: 'c', status: 'completed' },
       ],
     }, context);
-    assert.doesNotMatch(r.output, /Verification suggested/);
+    assert.doesNotMatch(r.output, /Verification required/);
   });
 
   it('T6: does NOT nudge on partial completion', async () => {
@@ -197,13 +197,13 @@ describe('todo-write cluster (T1-T8)', () => {
         { id: '2', content: 'b', status: 'pending' },
       ],
     }, context);
-    assert.doesNotMatch(r.output, /Verification suggested/);
+    assert.doesNotMatch(r.output, /Verification required/);
   });
 
   it('T6: does NOT nudge for an empty list', async () => {
     const { context } = ctx({ sessionId: 's1' });
     const r = await todoWriteTool.execute({ todos: [] }, context);
-    assert.doesNotMatch(r.output, /Verification suggested/);
+    assert.doesNotMatch(r.output, /Verification required/);
   });
 
   // --- T7: clear-when-done ---------------------------------------------------
@@ -295,5 +295,44 @@ describe('todo-write cluster (T1-T8)', () => {
     assert.match(d, /ONLY mark an item completed when it is FULLY accomplished/);
     assert.match(d, /in_progress BEFORE/);
     assert.match(d, /no longer relevant/);
+  });
+
+  // --- searchHint discovery surface (parity: Claude's Tool.searchHint) --------
+  it('declares a concise searchHint distinct from the long description', () => {
+    assert.equal(typeof todoWriteTool.searchHint, 'string');
+    assert.ok((todoWriteTool.searchHint as string).length > 0);
+    // The hint must be a crisp phrase, not a copy of the verbose description.
+    assert.ok((todoWriteTool.searchHint as string).length < todoWriteTool.description.length);
+    assert.match(todoWriteTool.searchHint as string, /task|checklist|todo/i);
+  });
+
+  // --- directive verification nudge wording -----------------------------------
+  describe('directive verification nudge', () => {
+    const closeOut = async () => {
+      const { context } = ctx({ sessionId: 's1' });
+      return todoWriteTool.execute({
+        todos: [
+          { id: '1', content: 'a', status: 'completed' },
+          { id: '2', content: 'b', status: 'completed' },
+          { id: '3', content: 'c', status: 'completed' },
+        ],
+      }, context);
+    };
+
+    it('names a concrete next action (verify / spawn a verification subagent)', async () => {
+      const r = await closeOut();
+      assert.match(r.output, /spawn a verification subagent/i);
+      assert.match(r.output, /verify the results/i);
+    });
+
+    it('warns against self-declaring success without a real check', async () => {
+      const r = await closeOut();
+      assert.match(r.output, /do NOT declare success/i);
+    });
+
+    it('reports the closed-out item count in the nudge', async () => {
+      const r = await closeOut();
+      assert.match(r.output, /3-item/);
+    });
   });
 });

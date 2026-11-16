@@ -314,7 +314,9 @@ async function runToolSearch(
     const nameLower = tool.name.toLowerCase();
     // A +term must appear in the NAME (deliberate: keeps the gate precise).
     if (!requiredTerms.every(rt => nameLower.includes(rt))) return { tool, score: 0 };
-    const text = `${tool.name} ${tool.description}`.toLowerCase();
+    // Weigh the terse searchHint (synonyms NOT in the name/description) so a
+    // deferred tool is findable by intent. Parity: Claude's Tool.searchHint.
+    const text = `${tool.name} ${tool.description} ${tool.searchHint ?? ''}`.toLowerCase();
     const score = requiredTerms.length * 2 + gradedScore(tool.name, text, rankTerms);
     return { tool, score };
   })

@@ -701,3 +701,35 @@ describe('tool_search — parity enhancements', () => {
     assert.ok(!result.output.includes('truncated'));
   });
 });
+
+describe('tool_search searchHint ranking', () => {
+  // A tool whose only match is via its searchHint synonym — the term appears in
+  // NEITHER the name NOR the description, so it can only be found if tool_search
+  // weighs searchHint (parity: Claude's Tool.searchHint discovery surface).
+  const hintTool: ToolDefinition = {
+    name: 'notebook_edit',
+    description: 'Edit a cell in a document',
+    searchHint: 'jupyter ipynb kernel execution output',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    isReadOnly: false,
+    execute: async () => ({ output: '', isError: false }),
+  };
+
+  beforeEach(() => { setSearchableTools([hintTool]); });
+
+  it('matches a tool by a synonym present only in its searchHint', async () => {
+    const result = await toolSearchTool.execute({ query: 'jupyter' }, ctx);
+    assert.equal(result.isError, false);
+    // Must be a genuine ranked match, NOT the "No tools matched" fallback that
+    // merely lists every available tool name.
+    assert.ok(!result.output.includes('No tools or skills matched'), 'should be a real match, not the miss fallback');
+    assert.ok(result.output.includes('Tools matching'), 'searchHint term should produce a match section');
+    assert.ok(result.output.includes('notebook_edit'), 'searchHint term should surface the tool');
+    assert.deepEqual((result.metadata as any).matches, ['notebook_edit']);
+  });
+
+  it('still misses when the term is in neither name, description, nor searchHint', async () => {
+    const result = await toolSearchTool.execute({ query: 'kubernetes' }, ctx);
+    assert.ok(result.output.includes('No tools or skills matched'));
+  });
+});
