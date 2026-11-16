@@ -756,6 +756,270 @@ export function detectStopParsingToken(command: string): PsDetection {
   return PS_PASS;
 }
 
+// ---------------------------------------------------------------------------
+// PowerShell common parameters.
+//
+// Mirrors Claude Code's PowerShellTool/commonParameters.ts: the switches and
+// value-taking parameters that [CmdletBinding()] adds to EVERY advanced cmdlet.
+// A value-param consumes the token after it, so a positional-argument scanner
+// must skip those values — otherwise `Start-Job -ErrorAction Stop` would
+// mistake `Stop` for a positional -FilePath. Stored lowercase with a leading
+// dash; callers lowercase their input. Source: about_CommonParameters.
+// ---------------------------------------------------------------------------
+
+export const COMMON_SWITCHES: readonly string[] = ['-verbose', '-debug'];
+
+export const COMMON_VALUE_PARAMS: readonly string[] = [
+  '-erroraction',
+  '-warningaction',
+  '-informationaction',
+  '-progressaction',
+  '-errorvariable',
+  '-warningvariable',
+  '-informationvariable',
+  '-outvariable',
+  '-outbuffer',
+  '-pipelinevariable',
+];
+
+export const COMMON_PARAMETERS: ReadonlySet<string> = new Set([
+  ...COMMON_SWITCHES,
+  ...COMMON_VALUE_PARAMS,
+]);
+
+/**
+ * Script-block consumers that only ever filter/transform pipeline input — their
+ * block is a predicate/selector, not arbitrary script to run. A script block
+ * passed to any OTHER cmdlet is treated as potential arbitrary code. Mirrors
+ * Claude's SAFE_SCRIPT_BLOCK_CMDLETS. `foreach-object` is intentionally absent:
+ * its block is arbitrary script, not a predicate.
+ */
+export const SAFE_SCRIPT_BLOCK_CMDLETS: ReadonlySet<string> = new Set([
+  'where-object',
+  'sort-object',
+  'select-object',
+  'group-object',
+  'format-table',
+  'format-list',
+  'format-wide',
+  'format-custom',
+]);
+
+/**
+ * Scheduled-task persistence cmdlets. Creating/modifying a scheduled task
+ * establishes persistence that survives the session. Mirrors Claude's
+ * SCHEDULED_TASK_CMDLETS; the legacy `schtasks.exe /create|/change` form is
+ * handled separately by detectScheduledTask.
+ */
+export const SCHEDULED_TASK_CMDLETS: ReadonlySet<string> = new Set([
+  'register-scheduledtask',
+  'new-scheduledtask',
+  'new-scheduledtaskaction',
+  'set-scheduledtask',
+]);
+
+// Alt parameter-prefix characters PowerShell's tokenizer (SpecialCharacters.
+// IsDash) accepts as equivalent to ASCII '-': '/', en-dash, em-dash, horizontal
+// bar. Normalized to '-' before any parameter-abbreviation test so
+// `Start-Job –FilePath x` (en-dash) cannot bypass the check.
+const PS_ALT_PARAM_PREFIX_RE = /^[/–—―]/;
+
+function normalizeParamToken(token: string): string {
+  return token.replace(/`/g, '').replace(PS_ALT_PARAM_PREFIX_RE, '-').toLowerCase();
+}
+
+/**
+ * True if `arg` is an abbreviation of `fullParam` at least as long as
+ * `minPrefix` (e.g. matches `-f`, `-fi`, … `-filepath` for fullParam
+ * `-filepath`, minPrefix `-f`). Tolerant of alt dash prefixes and colon-bound
+ * values (`-FilePath:x`). Mirrors Claude's psExeHasParamAbbreviation.
+ */
+function argMatchesParam(arg: string, fullParam: string, minPrefix: string): boolean {
+  const name = normalizeParamToken(arg).split(':')[0]!;
+  return (
+    name.startsWith('-') &&
+    name.length >= minPrefix.length &&
+    fullParam.startsWith(name)
+  );
+}
+
+/**
+ * True if the token list contains a non-dash positional string argument, after
+ * accounting for common value-parameters (which consume the following token).
+ * Over-flagging any positional string is fail-safe — the reference does the same
+ * for -FilePath / -MemberName positional binding.
+ */
+function hasPositionalStringArg(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const norm = normalizeParamToken(args[i]!);
+    // A script-block argument (`{ … }`) selects the ScriptBlock parameter-set,
+    // not -FilePath/-MemberName, so a positional path/member cannot bind. Stop
+    // scanning — the script-block hazard is covered by detectScriptBlockInjection.
+    if (args[i]!.startsWith('{')) {
+      return false;
+    }
+    if (norm.startsWith('-')) {
+      const name = norm.split(':')[0]!;
+      if (
+        !norm.includes(':') &&
+        COMMON_VALUE_PARAMS.some((p) => name.length >= 3 && p.startsWith(name))
+      ) {
+        i++; // value-param consumes its following value
+      }
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * `-FilePath`/positional script execution on the FILEPATH_EXECUTION_CMDLETS
+ * (Invoke-Command, Start-Job, …). A `-FilePath`/`-LiteralPath` flag OR any
+ * positional string arg (which binds to -FilePath via parameter-set resolution)
+ * executes an arbitrary script file — the same risk as Invoke-Expression.
+ * Mirrors Claude's checkDangerousFilePathExecution.
+ */
+export function detectFilePathExecution(command: string): PsDetection {
+  for (const name of FILEPATH_EXECUTION_CMDLETS) {
+    const re = new RegExp(PS_CMD_POS_PREFIX + escapeRegExp(name) + String.raw`\b`, 'gi');
+    const args = argTokensAfter(command, re);
+    if (args === undefined) {
+      continue;
+    }
+    if (
+      args.some(
+        (a) =>
+          argMatchesParam(a, '-filepath', '-f') ||
+          argMatchesParam(a, '-literalpath', '-l'),
+      ) ||
+      hasPositionalStringArg(args)
+    ) {
+      return {
+        blocked: true,
+        reason: `PowerShell ${name} executes an arbitrary script file (-FilePath / positional path binding)`,
+      };
+    }
+  }
+  return PS_PASS;
+}
+
+/**
+ * `ForEach-Object -MemberName` (or a positional member name) invokes a method by
+ * string name on every piped object — e.g. `Get-Process | ForEach-Object Kill`
+ * — with no script-block or `.Method()` syntax for other checks to catch.
+ * Aliases `%` / `foreach` resolve to foreach-object. Mirrors Claude's
+ * checkForEachMemberName.
+ */
+export function detectForEachMemberName(command: string): PsDetection {
+  // `%` is a non-word char so a trailing `\b` would fail before a space; match
+  // it without the word boundary while keeping `\b` for the word-form names.
+  const re = new RegExp(
+    PS_CMD_POS_PREFIX + String.raw`(?:(?:foreach-object|foreach)\b|%)`,
+    'gi',
+  );
+  const args = argTokensAfter(command, re);
+  if (args === undefined) {
+    return PS_PASS;
+  }
+  if (args.some((a) => argMatchesParam(a, '-membername', '-m')) || hasPositionalStringArg(args)) {
+    return {
+      blocked: true,
+      reason:
+        'PowerShell ForEach-Object invokes a method by name (-MemberName / positional) which cannot be validated',
+    };
+  }
+  return PS_PASS;
+}
+
+/**
+ * Scheduled-task persistence (mirrors Claude's checkScheduledTask): a
+ * SCHEDULED_TASK_CMDLETS cmdlet in command position, or legacy
+ * `schtasks(.exe) /create|/change` (both `-`/`/` delimiter forms).
+ */
+export function detectScheduledTask(command: string): PsDetection {
+  if (cmdletInCommandPosition(command, SCHEDULED_TASK_CMDLETS)) {
+    return {
+      blocked: true,
+      reason: 'PowerShell creates or modifies a scheduled task (persistence primitive)',
+    };
+  }
+  const schtasks = new RegExp(
+    PS_CMD_POS_PREFIX + String.raw`schtasks(?:\.exe)?\b`,
+    'i',
+  );
+  if (schtasks.test(command) && /[-/](?:create|change)\b/i.test(command)) {
+    return {
+      blocked: true,
+      reason: 'schtasks create/change modifies scheduled tasks (persistence primitive)',
+    };
+  }
+  return PS_PASS;
+}
+
+/**
+ * `Invoke-Item` / `ii` opens a path with the default shell handler
+ * (ShellExecute); on an executable it runs arbitrary code. Mirrors Claude's
+ * checkInvokeItem.
+ */
+export function detectInvokeItem(command: string): PsDetection {
+  if (cmdletInCommandPosition(command, ['invoke-item', 'ii'])) {
+    return {
+      blocked: true,
+      reason:
+        'PowerShell Invoke-Item opens a file with its default handler (ShellExecute) — runs arbitrary code on executables',
+    };
+  }
+  return PS_PASS;
+}
+
+/**
+ * Script-block injection (mirrors Claude's checkScriptBlockInjection, denylist
+ * half): when a `{ … }` script block is present as an argument, any
+ * DANGEROUS_SCRIPT_BLOCK_CMDLETS cmdlet (Invoke-Command, Start-Job, Register-*
+ * event, New/Enter-PSSession, Invoke-Expression) in command position executes
+ * that block as arbitrary code. The reference's allowlist "all commands safe"
+ * second pass is intentionally omitted here: detectPowerShellExecution runs over
+ * EVERY command (not a PowerShell-only AST like Claude), so an allowlist default
+ * would over-flag ordinary POSIX commands that merely contain `{ … }` brace
+ * groups. The denylist keys on PowerShell-only cmdlet names, so it cannot
+ * misfire on bash.
+ */
+export function detectScriptBlockInjection(command: string): PsDetection {
+  if (!/\{[^}]*\}/.test(command)) {
+    return PS_PASS;
+  }
+  const hit = cmdletInCommandPosition(command, DANGEROUS_SCRIPT_BLOCK_CMDLETS);
+  if (hit) {
+    return {
+      blocked: true,
+      reason:
+        'PowerShell passes a script block to a cmdlet that executes it as arbitrary code',
+    };
+  }
+  return PS_PASS;
+}
+
+/**
+ * Dynamic command-name invocation (mirrors Claude's checkDynamicCommandName):
+ * the call operator `&` applied to a runtime expression rather than a literal
+ * command name — `& ('i'+'ex')`, `& ('iex','x')[0]`, `& ${function:Invoke-Expression}`,
+ * `& @(...)`. The command name is computed at runtime and cannot be statically
+ * validated, so it is surfaced for approval. Only the PowerShell-distinctive
+ * forms (`& (` quoted/concat expr, `& ${…}`, `& @(`) are matched so the check
+ * cannot misfire on a POSIX background `cmd &` + subshell.
+ */
+export function detectDynamicCommandName(command: string): PsDetection {
+  if (/&\s*(?:\$\{|\(\s*['"]|@\()/.test(command)) {
+    return {
+      blocked: true,
+      reason:
+        'PowerShell invokes a command whose name is a dynamic expression (call operator &) which cannot be statically validated',
+    };
+  }
+  return PS_PASS;
+}
+
 /**
  * Aggregate of the PowerShell dangerous-pattern detectors added on top of the
  * download-cradle / encoded-command / CLM-cast checks already in
@@ -773,6 +1037,12 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
     detectEnvVarManipulation,
     detectDangerousPsCmdlets,
     detectStopParsingToken,
+    detectDynamicCommandName,
+    detectScriptBlockInjection,
+    detectFilePathExecution,
+    detectForEachMemberName,
+    detectScheduledTask,
+    detectInvokeItem,
   ];
   for (const check of checks) {
     const r = check(command);

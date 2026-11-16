@@ -23,6 +23,17 @@ import {
   ARG_GATED_CMDLETS,
   POWERSHELL_NEVER_SUGGEST,
   isPowerShellNeverSuggest,
+  COMMON_SWITCHES,
+  COMMON_VALUE_PARAMS,
+  COMMON_PARAMETERS,
+  SAFE_SCRIPT_BLOCK_CMDLETS,
+  SCHEDULED_TASK_CMDLETS,
+  detectFilePathExecution,
+  detectForEachMemberName,
+  detectScheduledTask,
+  detectInvokeItem,
+  detectScriptBlockInjection,
+  detectDynamicCommandName,
 } from '../src/tools/powershell-security';
 import { validateBashSecurity, detectPowerShellExecution } from '../src/tools/bash-security';
 
@@ -539,6 +550,191 @@ describe('POWERSHELL_NEVER_SUGGEST wildcard-prefix suggestion gate', () => {
   it('does not block benign commands', () => {
     for (const c of ['git', 'npm', 'ls', 'cargo', 'get-childitem', 'get-content']) {
       assert.equal(isPowerShellNeverSuggest(c), false, c);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Common parameters (mirrors commonParameters.ts) — the correctness pivot that
+// lets positional-arg scanning skip value-parameter values.
+// ---------------------------------------------------------------------------
+describe('PowerShell common parameters', () => {
+  it('exposes switches and value-params merged into COMMON_PARAMETERS', () => {
+    for (const s of COMMON_SWITCHES) {
+      assert.equal(COMMON_PARAMETERS.has(s), true, s);
+    }
+    for (const v of COMMON_VALUE_PARAMS) {
+      assert.equal(COMMON_PARAMETERS.has(v), true, v);
+    }
+    assert.equal(COMMON_PARAMETERS.has('-verbose'), true);
+    assert.equal(COMMON_PARAMETERS.has('-erroraction'), true);
+    // not a common parameter
+    assert.equal(COMMON_PARAMETERS.has('-filepath'), false);
+  });
+
+  it('value-param values are skipped so they are not mistaken for a positional path', () => {
+    // -ErrorAction Stop consumes `Stop`; without any real positional path there
+    // is nothing to flag.
+    assert.equal(detectFilePathExecution('Start-Job -ErrorAction Stop').blocked, false);
+    // but a trailing positional path after the consumed value IS flagged.
+    assert.equal(detectFilePathExecution('Start-Job -ErrorAction Stop evil.ps1').blocked, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectFilePathExecution — FILEPATH_EXECUTION_CMDLETS -FilePath / positional.
+// ---------------------------------------------------------------------------
+describe('detectFilePathExecution', () => {
+  it('flags -FilePath (and abbreviations / alt-dash) on executor cmdlets', () => {
+    assert.equal(detectFilePathExecution('Invoke-Command -FilePath script.ps1').blocked, true);
+    assert.equal(detectFilePathExecution('Start-Job -f script.ps1').blocked, true);
+    assert.equal(detectFilePathExecution('Start-Job \u2013FilePath script.ps1').blocked, true);
+    assert.equal(detectFilePathExecution('Invoke-Command -LiteralPath ./x.ps1').blocked, true);
+  });
+
+  it('flags positional path binding (Start-Job script.ps1)', () => {
+    assert.equal(detectFilePathExecution('Start-Job script.ps1').blocked, true);
+    assert.equal(detectFilePathExecution('ls | Start-ThreadJob payload.ps1').blocked, true);
+  });
+
+  it('includes an explanatory reason', () => {
+    const r = detectFilePathExecution('Invoke-Command -FilePath x.ps1');
+    assert.match(r.reason!, /executes an arbitrary script file/);
+  });
+
+  it('does not fire on unrelated / POSIX commands', () => {
+    assert.equal(detectFilePathExecution('ls -la /tmp').blocked, false);
+    assert.equal(detectFilePathExecution('git commit -m msg').blocked, false);
+    // a scriptblock form binds the ScriptBlock parameter-set, not -FilePath.
+    assert.equal(detectFilePathExecution('Start-Job -ScriptBlock { Get-Date }').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectForEachMemberName — method-by-name invocation.
+// ---------------------------------------------------------------------------
+describe('detectForEachMemberName', () => {
+  it('flags -MemberName and positional member names', () => {
+    assert.equal(detectForEachMemberName('Get-Process | ForEach-Object -MemberName Kill').blocked, true);
+    assert.equal(detectForEachMemberName('Get-Process | ForEach-Object Kill').blocked, true);
+    assert.equal(detectForEachMemberName('gps | % Kill').blocked, true);
+    assert.equal(detectForEachMemberName('gps | foreach Kill').blocked, true);
+  });
+
+  it('does not fire without ForEach-Object in command position', () => {
+    assert.equal(detectForEachMemberName('Write-Output ForEach-Object').blocked, false);
+    assert.equal(detectForEachMemberName('echo 50% done').blocked, false);
+    // scriptblock form is a predicate/arbitrary block, caught elsewhere not here.
+    assert.equal(detectForEachMemberName('gps | ForEach-Object { $_.Name }').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectScheduledTask — persistence.
+// ---------------------------------------------------------------------------
+describe('detectScheduledTask', () => {
+  it('flags scheduled-task cmdlets and schtasks create/change', () => {
+    for (const c of SCHEDULED_TASK_CMDLETS) {
+      assert.equal(detectScheduledTask(`${c} -TaskName t`).blocked, true, c);
+    }
+    assert.equal(detectScheduledTask('schtasks /create /tn t /tr evil.exe').blocked, true);
+    assert.equal(detectScheduledTask('schtasks.exe -change -tn t').blocked, true);
+  });
+
+  it('does not fire on schtasks query or unrelated commands', () => {
+    assert.equal(detectScheduledTask('schtasks /query').blocked, false);
+    assert.equal(detectScheduledTask('Get-ScheduledTask').blocked, false);
+    assert.equal(detectScheduledTask('ls -la').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectInvokeItem — ShellExecute default handler.
+// ---------------------------------------------------------------------------
+describe('detectInvokeItem', () => {
+  it('flags Invoke-Item and the ii alias', () => {
+    assert.equal(detectInvokeItem('Invoke-Item ./payload.exe').blocked, true);
+    assert.equal(detectInvokeItem('ii evil.lnk').blocked, true);
+    assert.equal(detectInvokeItem('ls | Invoke-Item').blocked, true);
+  });
+
+  it('does not fire on unrelated commands', () => {
+    assert.equal(detectInvokeItem('Get-Item ./x').blocked, false);
+    assert.equal(detectInvokeItem('git commit').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectScriptBlockInjection — dangerous cmdlet + script block.
+// ---------------------------------------------------------------------------
+describe('detectScriptBlockInjection', () => {
+  it('flags a script block passed to a dangerous consumer', () => {
+    assert.equal(detectScriptBlockInjection('Start-Job { Remove-Item -Recurse / }').blocked, true);
+    assert.equal(detectScriptBlockInjection('Invoke-Command { whoami }').blocked, true);
+    assert.equal(detectScriptBlockInjection('Enter-PSSession host; Invoke-Command { ls }').blocked, true);
+  });
+
+  it('exposes SAFE_SCRIPT_BLOCK_CMDLETS and does not flag safe filtering blocks', () => {
+    assert.equal(SAFE_SCRIPT_BLOCK_CMDLETS.has('where-object'), true);
+    assert.equal(SAFE_SCRIPT_BLOCK_CMDLETS.has('foreach-object'), false);
+    assert.equal(detectScriptBlockInjection('gps | Where-Object { $_.CPU -gt 1 }').blocked, false);
+  });
+
+  it('does not fire without a script block or on POSIX brace groups', () => {
+    assert.equal(detectScriptBlockInjection('Invoke-Command host').blocked, false);
+    // bash brace group with no dangerous PS cmdlet must not misfire.
+    assert.equal(detectScriptBlockInjection('echo {a,b,c}').blocked, false);
+    assert.equal(detectScriptBlockInjection('mkdir -p {a,b}/sub').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDynamicCommandName — call operator on a runtime expression.
+// ---------------------------------------------------------------------------
+describe('detectDynamicCommandName', () => {
+  it('flags call-operator invocation of a computed name', () => {
+    assert.equal(detectDynamicCommandName("& ('i'+'ex')").blocked, true);
+    assert.equal(detectDynamicCommandName("& ('iex','x')[0]").blocked, true);
+    assert.equal(detectDynamicCommandName('& ${function:Invoke-Expression}').blocked, true);
+    assert.equal(detectDynamicCommandName('& @(Get-Command)').blocked, true);
+  });
+
+  it('does not fire on a literal call target or POSIX background + subshell', () => {
+    assert.equal(detectDynamicCommandName("& 'C:\\\\bin\\\\git.exe' status").blocked, false);
+    assert.equal(detectDynamicCommandName('sleep 1 & (echo done)').blocked, false);
+    assert.equal(detectDynamicCommandName('git commit -m x').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: the new detectors flow through detectPowerShellExecution and the
+// full bash-security validation path (same wiring Claude uses for pwsh).
+// ---------------------------------------------------------------------------
+describe('new PowerShell detectors — end-to-end via detectPowerShellExecution', () => {
+  const cases: Array<[string, RegExp]> = [
+    ['Start-Job payload.ps1', /script file/],
+    ['Get-Process | ForEach-Object Kill', /method by name/],
+    ['schtasks /create /tn t /tr evil.exe', /scheduled task/],
+    ['Invoke-Item ./payload.exe', /Invoke-Item/],
+    ['Start-Job { Remove-Item / }', /script block/],
+    ["& ('i'+'ex')", /dynamic expression/],
+  ];
+  for (const [cmd, re] of cases) {
+    it(`detectPowerShellExecution blocks: ${cmd}`, () => {
+      const r = detectPowerShellExecution(cmd);
+      assert.equal(r.blocked, true, cmd);
+      assert.match(r.reason!, re);
+    });
+  }
+
+  it('validateBashSecurity surfaces the new PowerShell hazards', () => {
+    assert.equal(validateBashSecurity('Start-Job -FilePath evil.ps1').safe, false);
+  });
+
+  it('does not regress benign POSIX commands through the full path', () => {
+    for (const c of ['ls -la /tmp', 'git status', 'echo {a,b,c}', 'sleep 1 & (echo ok)']) {
+      const r = detectPowerShellExecution(c);
+      assert.equal(r.blocked, false, c);
     }
   });
 });
