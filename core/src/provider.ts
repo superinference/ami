@@ -17,7 +17,7 @@ import { createCerebras } from '@ai-sdk/cerebras';
 import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
-import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel } from './model-capabilities';
+import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, normalizeModelStringForAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
@@ -1437,7 +1437,12 @@ export function resolveModel(config: ProviderConfig) {
   // explicit config > openrouter/ model prefix > inferred.
   const isOpenRouterModel = rawModel.startsWith('openrouter/');
   const provider = (config.provider as ProviderName) || (isOpenRouterModel ? 'openrouter' : inferred?.provider);
-  const model = stripOpenRouterPrefix(rawModel);
+  // Strip the synthetic [1m]/[2m] context marker before the id reaches any SDK:
+  // the marker is a LOCAL knob (context sizing via getContextWindow(config.model),
+  // beta selection via supportsOneMillionContextBeta which is family-based, not
+  // marker-based) and the endpoint rejects a model id carrying it. Mirrors Claude
+  // Code's normalizeModelStringForAPI applied right before the request.
+  const model = normalizeModelStringForAPI(stripOpenRouterPrefix(rawModel));
   const baseUrl = config.baseUrl || (isOpenRouterModel ? PROVIDER_BASE_URLS.openrouter! : inferred?.defaultBaseUrl || '');
   // Proxy routing (HTTPS_PROXY/HTTP_PROXY/NO_PROXY). A no-op when no proxy env
   // is set, so proxyFetch === globalThis.fetch and behavior is unchanged.

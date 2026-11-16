@@ -191,6 +191,23 @@ export function supportsOneMillionContextBeta(modelId: string): boolean {
 }
 
 /**
+ * Strip the synthetic context-window marker from a model id before it is sent to
+ * the provider API. The `[1m]`/`[2m]` bracket suffix (and AMI's trailing
+ * `-1m`/`_1m` forms recognized by {@link hasOneMillionMarker}) is a LOCAL knob
+ * that only sizes the context budget / selects the beta header — the endpoint's
+ * model id has no such marker and rejects it (an unknown model) when it leaks
+ * through. Callers resolve betas/window sizing from the marker-carrying id FIRST,
+ * then normalize right before the request. Mirrors Claude Code's
+ * `normalizeModelStringForAPI` (utils/model/model.ts:L616-L618), extended to the
+ * `-1m`/`_1m` suffix forms AMI also treats as markers. A non-string id passes
+ * through unchanged.
+ */
+export function normalizeModelStringForAPI(modelId: string): string {
+  if (typeof modelId !== 'string') return modelId;
+  return modelId.replace(/\[(?:1|2)m\]/gi, '').replace(/[-_]1m\b/gi, '');
+}
+
+/**
  * Operator env-var override that caps the EFFECTIVE context window used for local
  * decisions (compaction timing, output fitting, model-switch warnings), regardless
  * of the model's published window or any 1M-beta detection. Set
@@ -206,6 +223,35 @@ export function getContextWindowOverride(): number | undefined {
   const parsed = parseInt(raw.trim(), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
   return parsed;
+}
+
+/**
+ * Env vars naming a dedicated small/fast model for cheap, throwaway auxiliary LLM
+ * calls (prompt-hook verification verdicts, away/session recaps, title
+ * generation) so they do not burn the main model's budget/latency. Checked in
+ * order; the first non-empty value wins. Mirrors Claude Code's
+ * `getSmallFastModel` (utils/model/model.ts:L36-L38), which keys off
+ * `ANTHROPIC_SMALL_FAST_MODEL`; AMI also honors a provider-neutral `AMI_SMALL_FAST_MODEL`.
+ */
+export const SMALL_FAST_MODEL_ENV_VARS = ['ANTHROPIC_SMALL_FAST_MODEL', 'AMI_SMALL_FAST_MODEL'] as const;
+
+/**
+ * The configured small/fast model id for cheap auxiliary calls, or `fallback`
+ * when none is set. Unlike Claude (which hardcodes a Haiku default), AMI is
+ * multi-provider, so the knob only activates when an operator sets it — callers
+ * pass the session model as `fallback` to preserve current behavior (aux calls
+ * reuse the main model) when the env is unset. Read at call time so it can be
+ * toggled per process/test.
+ */
+export function getSmallFastModel(
+  fallback?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  for (const key of SMALL_FAST_MODEL_ENV_VARS) {
+    const value = env[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  return fallback;
 }
 
 export function getContextWindow(modelId: string): number {

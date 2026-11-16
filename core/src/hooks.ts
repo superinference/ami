@@ -18,6 +18,7 @@ import { stripBom } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
+import { getSmallFastModel } from './model-capabilities';
 
 // ---------------------------------------------------------------------------
 // Hook output sanitization — strip system-reminder tags to prevent injection
@@ -3439,7 +3440,17 @@ export class HookManager extends EventEmitter {
       return { output: '' };
     }
     const providerConfig = { ...(this._providerConfig || {}) };
-    if (model) providerConfig.model = model;
+    if (model) {
+      providerConfig.model = model;
+    } else if (kind === 'prompt') {
+      // A prompt hook is a cheap, single-shot verification verdict — default it to
+      // the operator-configured small/fast model when one is set, so it doesn't burn
+      // the main model's budget/latency. Parity: execPromptHook `model: hook.model ??
+      // getSmallFastModel()`. With no env set, getSmallFastModel() returns undefined
+      // and the session model is kept unchanged (current behavior preserved).
+      const fast = getSmallFastModel();
+      if (fast) providerConfig.model = fast;
+    }
 
     const timeoutMs = resolveHookTimeoutMs(timeoutSeconds, defaultMs);
     const abort = combineHookAbort(signal, timeoutMs);
