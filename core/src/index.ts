@@ -136,6 +136,7 @@ export {
   isPathWithin,
   abbreviateHome,
   displayPath,
+  shortestDisplayPath,
   stripTrailingSep,
 } from './utils/path';
 export { generateTitle, sanitizeTitle, truncateTitle } from './title-generator';

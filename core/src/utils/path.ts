@@ -237,6 +237,56 @@ export function abbreviateHome(filePath: string, home: string = os.homedir()): s
 }
 
 /**
+ * Produces the shortest human-friendly display form of an absolute path by
+ * computing BOTH representations and returning whichever string is shorter:
+ *
+ *   - home-relative: `~` for the home dir itself, otherwise `~` + the remainder
+ *                    beneath home (e.g. `~/notes.md`)
+ *   - cwd-relative:  `./` for the cwd itself, otherwise `./` + the remainder
+ *                    beneath cwd (e.g. `./src/app.ts`)
+ *
+ * When both forms apply the shorter one wins, ties going to the home form
+ * (`<=`); when only one applies that one is used; otherwise the absolute,
+ * normalized path is returned. Input is expanded first, so `~`, relative, and
+ * trailing-separator inputs are all accepted.
+ *
+ * This is a distinct display POLICY from {@link displayPath}, which always
+ * prefers the cwd-relative form (and renders cwd as `.`); this helper picks the
+ * more compact of the two spellings.
+ *
+ * [FUNCTIONAL CHANGE] New exported helper — "shortest of ~home vs ./cwd"
+ * display parity with Claude Code's `getRelativeMemoryPath`
+ * (components/memory/MemoryUpdateNotification.tsx). Superset improvement over
+ * the reference: boundary membership uses the separator-aware containment check
+ * (so a sibling prefix dir like `/home/user2` is not treated as inside
+ * `/home/user`), where Claude uses a raw `startsWith`.
+ */
+export function shortestDisplayPath(
+  filePath: string,
+  cwd: string = process.cwd(),
+  home: string = os.homedir(),
+): string {
+  const resolved = expandPath(filePath, cwd);
+  const normalizedCwd = stripTrailingSep(path.normalize(cwd).normalize('NFC'));
+  const normalizedHome = stripTrailingSep(path.normalize(home).normalize('NFC'));
+
+  const relativeToHome = isDescendant(resolved, normalizedHome)
+    ? resolved === normalizedHome
+      ? '~'
+      : '~' + path.sep + path.relative(normalizedHome, resolved)
+    : null;
+
+  const relativeToCwd = isDescendant(resolved, normalizedCwd)
+    ? './' + path.relative(normalizedCwd, resolved)
+    : null;
+
+  if (relativeToHome !== null && relativeToCwd !== null) {
+    return relativeToHome.length <= relativeToCwd.length ? relativeToHome : relativeToCwd;
+  }
+  return relativeToHome ?? relativeToCwd ?? resolved;
+}
+
+/**
  * Produces a short, human-friendly path for display relative to a workspace:
  *
  *   - inside `cwd`           -> a cwd-relative path (`src/app.ts`); the cwd
