@@ -1,5 +1,6 @@
 import { parseBashAST, extractCommands, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
+import { detectUnsafeTypeCast } from './powershell-security';
 import { redactCredentials } from '../credential-guard';
 
 export interface SecurityCheckResult {
@@ -4052,6 +4053,19 @@ export function detectPowerShellExecution(command: string): { blocked: boolean; 
   }
   if (/\bstart-bitstransfer\b/i.test(stripped)) {
     return { blocked: true, reason: 'Start-BitsTransfer can download remote payloads' };
+  }
+
+  // 5. Constrained-Language-Mode type-cast boundary. A cast / static-member
+  //    access to any .NET type outside Microsoft's CLM safe-type allowlist
+  //    (e.g. [adsi]'LDAP://...', [wmi]'...', [System.Reflection.Assembly]::Load)
+  //    can perform network binds, reflection, or process spawning and must be
+  //    surfaced for approval. One allowlist check replaces enumerating every
+  //    individual dangerous type.
+  {
+    const typeCast = detectUnsafeTypeCast(stripped);
+    if (typeCast.blocked) {
+      return { blocked: true, reason: typeCast.reason };
+    }
   }
 
   return { blocked: false };

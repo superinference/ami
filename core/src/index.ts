@@ -151,6 +151,7 @@ export type { McpAuthStatus, McpAuthErrorKind, McpAuthServerConfig } from './too
 export { scheduleWakeupTool, clampWakeupDelay, resetLoopPacingState, LOOP_CONTINUE_SENTINEL, NOOP_STREAK_WARN_THRESHOLD, WAKEUP_MIN_DELAY_SECONDS, WAKEUP_MAX_DELAY_SECONDS } from './tools/schedule-wakeup';
 export { CODE_LOADING_VARIABLES, POLICY_SOURCE_VARIABLES, detectCodeLoadingEnvSet, detectDangerousRm, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, detectZshRegexConditional, detectDnsExfiltration, detectPersistenceCommands, detectDangerousDd, detectContainerEscape, detectBase64ShellPipe, detectPrivilegeEscalation, detectPackageManagerHijack, detectAliasRedefinition, detectSourceExecution, extractInputRedirectionPaths, detectUnsafeFileCommand, detectShellStartupWrite, detectGitInternalWrite, detectPowerShellExecution, detectArchiveToolExecution } from './tools/bash-security';
 export type { NuclearCheckResult } from './tools/bash-security';
+export { CLM_ALLOWED_TYPES, normalizeTypeName, isClmAllowedType, detectUnsafeTypeCast } from './tools/powershell-security';
 export {
   isDockerAvailable,
   getDockerAvailability,
