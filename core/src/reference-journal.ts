@@ -23,7 +23,8 @@ import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
-import { logError } from './logger';
+import { log, logError } from './logger';
+import { getGlobalConfigPath, updateConfigFile } from './config';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
 export const COMPAT_VERSION = '2.1.307';
@@ -176,6 +177,77 @@ export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeD
     }
   }
   return migrated;
+}
+
+/** The observable outcome of a {@link migrateDeprecatedModelAlias} pass. */
+export interface ModelAliasMigration {
+  /** The deprecated/removed model id that was persisted in settings. */
+  from: string;
+  /** The current successor id it was rewritten to. */
+  to: string;
+  /** The settings file that was rewritten. */
+  path: string;
+}
+
+/**
+ * One-time, idempotent startup migration of a persisted, DEPRECATED/renamed pinned
+ * `model` string in the GLOBAL (user-level) settings to its current successor id —
+ * so the settings file, `/model`, and downstream pricing all reflect a live model
+ * instead of a retired one (parity: Claude's migrateLegacyOpusToCurrent /
+ * migrateFennecToOpus settings-value migrations). Runs alongside
+ * {@link migrateLegacyDataDir} at startup.
+ *
+ * Scoped to the SINGLE global/user settings source (read+write the same file), which
+ * keeps it idempotent with no completion flag: once rewritten, the new id is not
+ * deprecated, so {@link suggestDeprecatedReplacement} returns nothing and the next run
+ * is a no-op. Project/local/managed `model` values are deliberately left alone — we
+ * can't safely rewrite those, and merging them here would risk silent global promotion.
+ *
+ * The deprecated→successor knowledge is the SINGLE canonical table in model-registry
+ * ({@link suggestDeprecatedReplacement}), reused via a LAZY import so this module —
+ * on many hot paths — never statically pulls in the heavy provider/model-registry
+ * graph. The actual write goes through {@link updateConfigFile} (atomic temp+rename,
+ * lost-update + corrupt-file guard). Returns the migration that happened (observable
+ * outcome), or null when nothing was stale. Best-effort: never throws into startup.
+ */
+export async function migrateDeprecatedModelAlias(
+  configPath: string | null = getGlobalConfigPath(),
+): Promise<ModelAliasMigration | null> {
+  if (!configPath) return null;
+  let suggest: (id: string, available: string[]) => string | undefined;
+  try {
+    ({ suggestDeprecatedReplacement: suggest } = await import('./model-registry'));
+  } catch (err) {
+    logError('migrate-model-alias', 'could not load the model-registry', { error: String(err) });
+    return null;
+  }
+  let pending: ModelAliasMigration | null = null;
+  try {
+    const res = updateConfigFile(configPath, current => {
+      const model = current.model;
+      if (typeof model !== 'string' || !model.trim()) return current;
+      const to = suggest(model, []);
+      // Not deprecated, or already current → same reference = no write (idempotent).
+      if (!to || to === model) return current;
+      pending = { from: model, to, path: configPath };
+      return { ...current, model: to };
+    });
+    // The assertion re-widens `pending` (TS keeps the let narrowed to `null` because
+    // the only assignment is inside the updater callback).
+    const migration = pending as ModelAliasMigration | null;
+    if (migration) {
+      if (res.written) {
+        log('migrate-model-alias', `rewrote deprecated model "${migration.from}" -> "${migration.to}"`, { path: configPath }, 'info');
+        return migration;
+      }
+      // The updater matched but the write was refused (corrupt/no-change) — surface it
+      // so a failed settings migration is diagnosable rather than silently dropped.
+      logError('migrate-model-alias', `deprecated model "${migration.from}" not rewritten (${res.reason})`, { path: configPath });
+    }
+  } catch (err) {
+    logError('migrate-model-alias', 'migration failed', { error: String(err) });
+  }
+  return null;
 }
 
 /**

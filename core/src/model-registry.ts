@@ -295,7 +295,16 @@ const DEPRECATED_REPLACEMENTS: ReadonlyArray<{ pattern: RegExp; replacement: str
   { pattern: /gpt-?3[._-]?5/i, replacement: 'gpt-4o-mini' },
 ];
 
-function suggestDeprecatedReplacement(modelId: string, available: string[]): string | undefined {
+/**
+ * Map a deprecated/removed/renamed model id to its currently-recommended successor,
+ * preferring a successor the provider actually lists (`available`) and otherwise the
+ * canonical successor id. Returns undefined when `modelId` is not a known-deprecated
+ * id. The SINGLE source of the deprecated→successor knowledge (feeds both the
+ * advisory `validateModel` suggestion and the persisted-settings startup migration —
+ * no parallel deprecation tables). Pass `[]` for `available` to get the canonical
+ * successor without a provider round-trip.
+ */
+export function suggestDeprecatedReplacement(modelId: string, available: string[]): string | undefined {
   for (const { pattern, replacement } of DEPRECATED_REPLACEMENTS) {
     if (pattern.test(modelId)) {
       // Prefer the successor the provider actually lists; otherwise suggest the

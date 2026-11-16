@@ -20,7 +20,7 @@ export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, esti
 export { diffStringLists } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta, CacheBreakCause } from './cost-tracker';
 export {
-  resolveConfigDir, migrateLegacyDataDir, projectStateDir, projectSlug, MAX_SLUG_LENGTH, MAX_SESSION_ID_LENGTH, journalPathFor, subagentJournalPathFor,
+  resolveConfigDir, migrateLegacyDataDir, migrateDeprecatedModelAlias, projectStateDir, projectSlug, MAX_SLUG_LENGTH, MAX_SESSION_ID_LENGTH, journalPathFor, subagentJournalPathFor,
   canonicalizePath, canonicalGitRoot,
   toReferenceToolName, toReferenceModelId, buildUsageFields,
   buildAssistantEntry, buildUserEntry, appendEntry, ndjsonSafeStringify,
@@ -29,7 +29,7 @@ export {
 } from './reference-journal';
 export type {
   JournalUsageInput, JournalUsage, JournalContentBlock, StructuredPatchHunk,
-  AssistantEntry, AssistantEntryArgs, UserEntry, UserEntryArgs,
+  AssistantEntry, AssistantEntryArgs, UserEntry, UserEntryArgs, ModelAliasMigration,
 } from './reference-journal';
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
 export { safeReadFile, safeLstat, FILE_ENCODINGS } from './tools/tool-utils';
