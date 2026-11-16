@@ -139,8 +139,14 @@ export interface ProjectConfig {
    * reproducible dirs like `node_modules`, `vendor`, `.venv`). When this key is
    * CONFIGURED (including as an empty array → symlink nothing), it is honored
    * exactly; when ABSENT, AMI keeps its default of symlinking `node_modules`.
+   * `sparsePaths` is an opt-in cone-mode sparse-checkout allow-list: when a
+   * non-empty list is configured, a freshly-created worktree is added with
+   * `--no-checkout`, its sparse-checkout cone is set to exactly those paths, and
+   * `HEAD` is checked out — so only the listed subtrees materialise on disk (fast
+   * worktree creation for huge monorepos). When ABSENT or empty, the full tree is
+   * checked out as usual.
    */
-  worktree?: { symlinkDirectories?: string[] };
+  worktree?: { symlinkDirectories?: string[]; sparsePaths?: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +734,9 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     const wt = config.worktree as Record<string, unknown>;
     if (wt.symlinkDirectories !== undefined && !matchesConfigFieldType(wt.symlinkDirectories, 'string[]')) {
       issues.push({ field: 'worktree.symlinkDirectories', message: `must be a string[] (got ${describeJsonType(wt.symlinkDirectories)})`, value: wt.symlinkDirectories, tip: getConfigValidationTip('worktree.symlinkDirectories', { kind: 'type', type: 'string[]' }) });
+    }
+    if (wt.sparsePaths !== undefined && !matchesConfigFieldType(wt.sparsePaths, 'string[]')) {
+      issues.push({ field: 'worktree.sparsePaths', message: `must be a string[] (got ${describeJsonType(wt.sparsePaths)})`, value: wt.sparsePaths, tip: getConfigValidationTip('worktree.sparsePaths', { kind: 'type', type: 'string[]' }) });
     }
   }
   return issues;

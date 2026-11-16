@@ -94,6 +94,29 @@ function resolveSymlinkDirs(cwd: string): string[] | undefined {
   return undefined;
 }
 
+/**
+ * Resolve the opt-in `settings.worktree.sparsePaths` cone-mode allow-list (parity
+ * with Claude's `getInitialSettings().worktree?.sparsePaths`). Project config
+ * (`<cwd>/.ami/config.json`) takes precedence over the global config
+ * (`~/.ami/config.json`). Returns `undefined` when NEITHER tier configures a
+ * non-empty list, so the caller does a normal full checkout. A configured
+ * non-empty list is returned verbatim so only those subtrees materialise.
+ * Config-read failures fall back to the full checkout.
+ */
+function resolveSparsePaths(cwd: string): string[] | undefined {
+  try {
+    const { loadProjectConfig, loadGlobalConfig } = require('../config');
+    // Project config is authoritative when it DEFINES the key: a project that
+    // explicitly configures `sparsePaths` (even as an empty array → "full
+    // checkout, ignore any global sparse policy") wins over the global tier.
+    const proj = loadProjectConfig(cwd)?.worktree?.sparsePaths;
+    if (Array.isArray(proj)) return proj.length > 0 ? proj : undefined;
+    const glob = loadGlobalConfig()?.worktree?.sparsePaths;
+    if (Array.isArray(glob) && glob.length > 0) return glob;
+  } catch { /* unreadable config → full checkout */ }
+  return undefined;
+}
+
 function validateSlug(name: string): boolean {
   if (name.length > 64) return false;
   if (path.isAbsolute(name)) return false;
@@ -170,7 +193,8 @@ async function createViaWorktreeHook(
       return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
     }
     switchHookSession(context, cwd, path.resolve(existingPath), path.basename(existingPath));
-    return { output: `Entered existing worktree at: ${existingPath}. Run exit_worktree when done.` };
+    const enteredMessage = `Entered existing worktree at: ${existingPath}. Run exit_worktree when done.`;
+    return { output: enteredMessage, metadata: { worktreePath: path.resolve(existingPath), message: enteredMessage } };
   }
 
   const slug = name || defaultWorktreeName(path.join(cwd, '.ami', 'worktrees'));
@@ -196,12 +220,11 @@ async function createViaWorktreeHook(
   }
 
   switchHookSession(context, cwd, worktreeDir, flatSlug);
-  return {
-    output:
-      `Worktree created via WorktreeCreate hook (session switched to it):\n` +
-      `  Path: ${worktreeDir}\n` +
-      '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).',
-  };
+  const createdMessage =
+    `Worktree created via WorktreeCreate hook (session switched to it):\n` +
+    `  Path: ${worktreeDir}\n` +
+    '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).';
+  return { output: createdMessage, metadata: { worktreePath: worktreeDir, message: createdMessage } };
 }
 
 /** Record a hookBased worktree session and switch the context cwd into it,
@@ -255,6 +278,20 @@ export const enterWorktreeTool: ToolDefinition = {
         description: 'Pull request to base the new worktree on — a PR URL (https://<host>/owner/repo/pull/N) or "#N". Fetches origin pull/N/head and bases the worktree on it; names it pr-N if name is omitted. Mutually exclusive with path and base_ref.',
       },
     },
+  },
+  // Structured result shape (parity: Claude's EnterWorktreeTool `outputSchema`
+  // returning `{worktreePath, worktreeBranch?, message}`). A frontend / resume
+  // path can consume the machine-readable fields carried on `metadata` alongside
+  // the human text. Object-root (ToolInputSchema) so it passes the provider's
+  // object-root-only exposure guard.
+  outputSchema: {
+    type: 'object',
+    properties: {
+      worktreePath: { type: 'string', description: 'Absolute path of the worktree that was created or entered.' },
+      worktreeBranch: { type: 'string', description: 'Branch the worktree is on, when known.' },
+      message: { type: 'string', description: 'Human-readable summary of what happened.' },
+    },
+    required: ['worktreePath', 'message'],
   },
   isReadOnly: false,
 
@@ -367,12 +404,19 @@ export const enterWorktreeTool: ToolDefinition = {
       // ground truth; best-effort — a detached HEAD or a rev-parse failure simply
       // omits the branch label rather than failing the entry.
       let branchLabel = '';
+      let enteredBranch: string | undefined;
       try {
         const head = _enterWorktreeHooks.exec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: existingPath, stdio: 'pipe' });
-        if (head && head !== 'HEAD') branchLabel = ` on branch ${head}`;
+        if (head && head !== 'HEAD') { branchLabel = ` on branch ${head}`; enteredBranch = head; }
       } catch { /* detached / unreadable — omit the branch label */ }
+      const enteredMessage = `Entered existing worktree at: ${existingPath}${branchLabel}. Run exit_worktree when done.`;
       return {
-        output: `Entered existing worktree at: ${existingPath}${branchLabel}. Run exit_worktree when done.`,
+        output: enteredMessage,
+        metadata: {
+          worktreePath: path.resolve(existingPath),
+          ...(enteredBranch ? { worktreeBranch: enteredBranch } : {}),
+          message: enteredMessage,
+        },
       };
     }
 
@@ -472,16 +516,38 @@ export const enterWorktreeTool: ToolDefinition = {
     // This matches git's own base-selection priority so a worktree branches from
     // the ref the user is actually tracking rather than a hardcoded origin/main.
     const baseRef = prBaseRef || requestedBaseRef || findRemoteBase(context.cwd) || `origin/${defaultBranch}`;
+    // Opt-in sparse-checkout (parity: Claude's getOrCreateWorktree sparsePaths path,
+    // worktree.ts L321-366). When configured, the worktree is added with
+    // `--no-checkout` so NO files land yet; the cone is then narrowed and HEAD
+    // checked out below, so only the listed subtrees materialise.
+    const sparsePaths = resolveSparsePaths(context.cwd);
+    const addArgs = sparsePaths ? ['worktree', 'add', '--no-checkout'] : ['worktree', 'add'];
     try {
       try {
         _enterWorktreeHooks.exec(['rev-parse', '--verify', baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
-        _enterWorktreeHooks.exec(['worktree', 'add', '-B', branchName, worktreeDir, baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec([...addArgs, '-B', branchName, worktreeDir, baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       } catch {
         if (requestedBaseRef) throw new Error(`could not create worktree from base_ref "${requestedBaseRef}"`);
-        _enterWorktreeHooks.exec(['worktree', 'add', '-B', branchName, worktreeDir, 'HEAD'], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec([...addArgs, '-B', branchName, worktreeDir, 'HEAD'], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       }
     } catch (e) {
       return { output: `Error creating worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+    }
+
+    // Narrow the cone + check out HEAD (parity: worktree.ts L336-366). If EITHER
+    // step fails after `--no-checkout`, the worktree is registered with an empty
+    // working tree; a later fast-resume (rev-parse HEAD) would succeed and present
+    // that broken worktree as "resumed". Tear it down (remove --force + drop the
+    // branch, matching the post-setup teardown below) before surfacing the error.
+    if (sparsePaths) {
+      try {
+        _enterWorktreeHooks.exec(['sparse-checkout', 'set', '--cone', '--', ...sparsePaths], { cwd: worktreeDir, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['checkout', 'HEAD'], { cwd: worktreeDir, stdio: 'ignore', env: gitEnv });
+      } catch (e) {
+        try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
+        try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
+        return { output: `Error: sparse-checkout setup failed, rolled back: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+      }
     }
 
     let commitHash: string;
@@ -532,11 +598,15 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     const baseLabel = prNumber != null ? `PR #${prNumber}` : baseRef;
+    const createdMessage =
+      `Worktree created (session switched to it):\n` +
+      `  Path: ${worktreeDir}\n  Branch: ${branchName} (based on ${baseLabel})\n  Base commit: ${commitHash}\n` +
+      '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).';
     return {
-      output:
-        `Worktree created (session switched to it):\n` +
-        `  Path: ${worktreeDir}\n  Branch: ${branchName} (based on ${baseLabel})\n  Base commit: ${commitHash}\n` +
-        '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).',
+      output: createdMessage,
+      // Structured fields (parity: Claude's outputSchema result) for programmatic
+      // consumers; mirrors the text above.
+      metadata: { worktreePath: worktreeDir, worktreeBranch: branchName, message: createdMessage },
     };
   },
 };
