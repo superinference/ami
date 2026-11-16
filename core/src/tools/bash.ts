@@ -21,7 +21,7 @@ import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
-import { isBackgroundTasksDisabled } from './tool-gates';
+import { isBackgroundTasksDisabled, isGitInstructionsDisabled } from './tool-gates';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -923,21 +923,40 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   return env;
 }
 
-// Base description shared by every mode, ending at the sleep guidance. The
-// background guidance sentence is appended only when background tasks are enabled.
-const BASH_DESCRIPTION_HEAD =
+// Base description shared by every mode, up to (but not including) the git
+// guidance. The git sentence and the background sentence are appended
+// conditionally (see buildBashDescription) so an operator can suppress either.
+const BASH_DESCRIPTION_BASE =
   'Execute a bash command. Use for running scripts, installing packages, compiling, git operations, and any shell task. '
   + 'IMPORTANT — prefer the dedicated tools over shell equivalents: read files with file_read (NOT cat/head/tail), '
   + 'edit files with file_edit (NOT sed/awk), search with grep/glob (NOT grep/rg/find), and write files with file_write '
   + '(NOT echo >/cat <<EOF). Communicate by writing text directly (NOT echo/printf to the shell). '
   + 'Use absolute paths. Quote paths with spaces. '
+  // [functional parity] Affordance hint (Claude prompt.ts:L332): verify the
+  // parent directory before creating files/dirs so a typo'd path fails loudly
+  // instead of silently writing to the wrong place.
+  + 'If a command will create new files or directories, first run `ls` to verify the parent directory exists and is the '
+  + 'correct location. '
   + 'The working directory persists between commands, but shell state does NOT: each call runs in a fresh non-interactive '
   + 'shell that is not initialized from your profile (~/.bashrc/.zshrc), so a prior `cd`, exported variables, and your '
   + 'user-defined aliases/functions are unavailable in the next call — use absolute paths and chain dependent commands with &&. '
+  // [functional parity] Multiple-command guidance (Claude prompt.ts:L297-L302):
+  // separate commands with `&&`/`;`, never newlines (newlines are fine only
+  // inside quoted strings).
+  + 'When issuing multiple commands, separate them with `&&` (stop on failure) or `;` (run regardless); do NOT use newlines '
+  + 'to separate commands (newlines are OK inside quoted strings). '
   + 'Do not run interactive/blocking commands that wait for input (e.g. `git rebase -i`, `git add -i`, or anything that opens '
-  + 'an editor or prompts for a password); they will hang. '
-  + 'Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never '
-  + 'commit unless explicitly asked. Do not sleep between commands.';
+  + 'an editor or prompts for a password); they will hang. ';
+
+// Git guidance, suppressed when git instructions are disabled (parity: Claude's
+// prompt.ts shouldIncludeGitInstructions()/getCommitAndPRInstructions() gate,
+// which drops the git/commit-PR section for deployments that don't want it).
+const BASH_DESCRIPTION_GIT =
+  'Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never '
+  + 'commit unless explicitly asked. ';
+
+// Closing sleep guidance, always present (it is not git- or background-specific).
+const BASH_DESCRIPTION_TAIL = 'Do not sleep between commands.';
 
 // Background-task guidance, suppressed when background tasks are disabled so the
 // model is never told about a capability that is turned off for this deployment.
@@ -948,10 +967,13 @@ const BASH_DESCRIPTION_BACKGROUND =
 /**
  * Model-facing bash description. When background tasks are disabled the
  * run_in_background guidance is dropped (parity: Claude's prompt.ts suppresses the
- * background usage note behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).
+ * background usage note behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS). When git
+ * instructions are disabled the git/commit sentence is dropped (parity: Claude's
+ * shouldIncludeGitInstructions()/getCommitAndPRInstructions() gate).
  */
-export function buildBashDescription(backgroundDisabled: boolean): string {
-  return backgroundDisabled ? BASH_DESCRIPTION_HEAD : BASH_DESCRIPTION_HEAD + BASH_DESCRIPTION_BACKGROUND;
+export function buildBashDescription(backgroundDisabled: boolean, gitDisabled = false): string {
+  const head = BASH_DESCRIPTION_BASE + (gitDisabled ? '' : BASH_DESCRIPTION_GIT) + BASH_DESCRIPTION_TAIL;
+  return backgroundDisabled ? head : head + BASH_DESCRIPTION_BACKGROUND;
 }
 
 /**
@@ -1010,7 +1032,7 @@ export const bashTool: ToolDefinition = {
   // Getters so the env knob is read at advertise-time (every access), keeping the
   // schema/description in sync with AMI_DISABLE_BACKGROUND_TASKS without a restart.
   get description(): string {
-    return buildBashDescription(isBackgroundTasksDisabled());
+    return buildBashDescription(isBackgroundTasksDisabled(), isGitInstructionsDisabled());
   },
   get inputSchema(): ToolInputSchema {
     return buildBashInputSchema(isBackgroundTasksDisabled());

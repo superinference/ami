@@ -87,6 +87,27 @@ export function isBackgroundTasksDisabled(env: NodeJS.ProcessEnv = process.env):
   return isEnvTruthy(env[DISABLE_BACKGROUND_TASKS_ENV]) || isEnvTruthy(env[DISABLE_BACKGROUND_TASKS_ENV_COMPAT]);
 }
 
+/**
+ * Env var that disables the git/commit guidance in the bash tool description
+ * (default: ENABLED — the git sentence is shown). When truthy, the bash tool
+ * drops the "Git: `git commit` via bash is blocked … never commit unless
+ * explicitly asked" sentence from its model-facing description. Parity: Claude
+ * Code's `shouldIncludeGitInstructions()` / `getCommitAndPRInstructions()` gate
+ * (prompt.ts), which omits the git/commit-PR section for deployments that steer
+ * the model away from git entirely. This is a disable switch, so it uses truthy
+ * detection rather than {@link capabilityEnabled}'s default-ON semantics.
+ */
+export const DISABLE_GIT_INSTRUCTIONS_ENV = 'AMI_DISABLE_GIT_INSTRUCTIONS';
+
+/**
+ * True when the bash git/commit guidance is disabled by
+ * {@link DISABLE_GIT_INSTRUCTIONS_ENV}. Default OFF → git guidance stays in the
+ * description.
+ */
+export function isGitInstructionsDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[DISABLE_GIT_INSTRUCTIONS_ENV]);
+}
+
 /** Env var that toggles the workflow-scripts tool (default ON). */
 export const WORKFLOW_SCRIPTS_ENV = 'AMI_WORKFLOW_SCRIPTS';
 
