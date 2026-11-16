@@ -909,7 +909,7 @@ function destroyStreams(proc: child_process.ChildProcess): void {
  * the kill is safe by construction. Falls back to `[rootPid]` if the process
  * table can't be read.
  */
-function collectProcessTree(rootPid: number): number[] {
+export function collectProcessTree(rootPid: number): number[] {
   let table: string;
   try {
     table = shellHooks.execSync('ps -A -o pid=,ppid=', {
@@ -951,7 +951,7 @@ function collectProcessTree(rootPid: number): number[] {
  * group (negative pid) to mop up anything the `ps` snapshot missed due to a
  * race. If nothing could be signalled, fall back to the ChildProcess handle.
  */
-function killTree(proc: child_process.ChildProcess): void {
+export function killTree(proc: child_process.ChildProcess): void {
   if (proc.pid == null) return;
 
   if (shellHooks.platform() === 'win32') {

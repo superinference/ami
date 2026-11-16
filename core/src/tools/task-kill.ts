@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import type { ProcessManager } from '../process-manager';
+import type { ProcessManager, TaskKind } from '../process-manager';
 import { previewCommand } from './command-preview';
 
 const ALLOWED_KEYS = new Set(['task_id', 'cleanup']);
@@ -25,6 +25,13 @@ export interface TaskKillMetadata {
   taskId?: string;
   /** 'agent' | 'bash' when known — parity with Claude's `task_type`. */
   taskType?: 'agent' | 'bash';
+  /**
+   * The full task-KIND discriminator ('bash' | 'monitor' | 'agent') when the
+   * manager exposes it. Richer than {@link taskType} (which collapses a monitor to
+   * undefined): lets a programmatic caller distinguish a stopped internal monitor
+   * from a stopped shell. Mirrors Claude Code's per-task-type kill taxonomy.
+   */
+  kind?: TaskKind;
   /** FULL (untruncated) command/description of the stopped task. */
   command?: string;
   status?: string;
@@ -128,6 +135,9 @@ export const taskKillTool: ToolDefinition = {
     // structured result, when the manager exposes it (real ProcessManager; mock
     // stubs may omit it). Mirrors Claude's `task_type`.
     const taskType = typeof pm.taskType === 'function' ? pm.taskType(taskId) : undefined;
+    // The full task-KIND discriminator (bash/monitor/agent) when available, so a
+    // programmatic caller can tell a stopped monitor from a stopped shell.
+    const kind = typeof pm.taskKind === 'function' ? pm.taskKind(taskId) : undefined;
 
     // Echo the command/description so the model can confirm what it stopped. The
     // human-readable label is truncated to a bounded preview (2 lines / 160 chars)
@@ -143,7 +153,7 @@ export const taskKillTool: ToolDefinition = {
       // task has a null exit code, and printing "exit code: null" was noise.
       const exitPart = task.exitCode !== null && task.exitCode !== undefined ? ` (exit code: ${task.exitCode})` : '';
       const out = `Task "${taskId}"${labelTag} is already ${task.status}${exitPart}.` + maybeCleanup(pm, taskId, cleanup);
-      return { output: out, isError: false, metadata: meta({ reason: 'already_terminal', taskId, taskType, command: fullLabel || undefined, status: task.status, exitCode: task.exitCode }) };
+      return { output: out, isError: false, metadata: meta({ reason: 'already_terminal', taskId, taskType, kind, command: fullLabel || undefined, status: task.status, exitCode: task.exitCode }) };
     }
 
     // suppressCompletion: this is an EXPLICIT model-initiated stop, so a bash
@@ -155,7 +165,7 @@ export const taskKillTool: ToolDefinition = {
     const killed = pm.kill(taskId, { suppressCompletion: true });
     if (killed) {
       const out = `Task "${taskId}" (PID ${task.pid})${labelTag} killed successfully.` + maybeCleanup(pm, taskId, cleanup);
-      return { output: out, isError: false, metadata: meta({ reason: 'killed', taskId, taskType, command: fullLabel || undefined, pid: task.pid }) };
+      return { output: out, isError: false, metadata: meta({ reason: 'killed', taskId, taskType, kind, command: fullLabel || undefined, pid: task.pid }) };
     }
 
     // FUNCTIONAL (parity): race-safe idempotency. kill() returns false only when
@@ -167,9 +177,9 @@ export const taskKillTool: ToolDefinition = {
     const nowStatus = typeof pm.getStatus === 'function' ? pm.getStatus(taskId) : undefined;
     if (nowStatus && nowStatus !== 'running') {
       const out = `Task "${taskId}"${labelTag} had already ${nowStatus} before it could be killed.` + maybeCleanup(pm, taskId, cleanup);
-      return { output: out, isError: false, metadata: meta({ reason: 'already_terminal', taskId, taskType, command: fullLabel || undefined, status: nowStatus }) };
+      return { output: out, isError: false, metadata: meta({ reason: 'already_terminal', taskId, taskType, kind, command: fullLabel || undefined, status: nowStatus }) };
     }
 
-    return { output: `Error: Failed to kill task "${taskId}". [code: kill_failed]`, isError: true, metadata: meta({ reason: 'kill_failed', taskId, taskType, command: fullLabel || undefined }) };
+    return { output: `Error: Failed to kill task "${taskId}". [code: kill_failed]`, isError: true, metadata: meta({ reason: 'kill_failed', taskId, taskType, kind, command: fullLabel || undefined }) };
   },
 };

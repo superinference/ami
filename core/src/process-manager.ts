@@ -6,6 +6,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
 import { FlowManager } from './flow-manager';
+import { killTree } from './utils/shell';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024; // 5 MB per task
 
@@ -135,6 +136,21 @@ export function validateBackgroundCommand(command: string): { allowed: boolean; 
 /** The lifecycle states of a background task/agent. */
 export const TASK_STATUS = ['running', 'completed', 'failed', 'killed'] as const;
 export type TaskStatus = (typeof TASK_STATUS)[number];
+
+/**
+ * Task-KIND discriminator (parity with Claude Code's BackgroundTaskState `type`
+ * union + LocalShellTask `kind`): what sort of background work a tracked task is.
+ *   - `bash`    → a spawned background shell (real child process)
+ *   - `monitor` → an internal poller (MCP health check) with no user-facing output
+ *   - `agent`   → an in-process sub-agent registered via registerAgent (no child)
+ * Distinct from {@link TaskStatus} (the lifecycle) and recorded on every entry so
+ * callers (task_list pill labels, task_kill metadata, orphan reaping) can branch
+ * on the kind of task WITHOUT brittle command-string heuristics (`startsWith
+ * '[agent]'` / `'monitor:'`), which miscounted a shell whose command merely began
+ * with those words. Mirrors Claude's getPillLabel splitting "1 shell, 1 monitor".
+ */
+export const TASK_KINDS = ['bash', 'monitor', 'agent'] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
 
 /** Terminal states — a task in one of these will never run again. */
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(['completed', 'failed', 'killed']);
@@ -356,6 +372,13 @@ export interface BackgroundProcess {
   command: string;
   description: string;
   status: TaskStatus;
+  /**
+   * The task-KIND discriminator (bash | monitor | agent) — see {@link TaskKind}.
+   * Set at creation (spawn ⇒ 'bash', monitorMcp ⇒ 'monitor', registerAgent ⇒
+   * 'agent') so every consumer can reliably tell a background shell from an
+   * internal monitor from an in-process agent without parsing the command text.
+   */
+  kind: TaskKind;
   exitCode: number | null;
   outputPath: string;
   startTime: number;
@@ -429,6 +452,14 @@ export interface KilledTaskEvent {
   /** True when the kill latched `notified` (explicit model/user stop), so the
    *  completion note is suppressed. */
   suppressed: boolean;
+  /**
+   * Human-readable cause of the kill, when the caller supplied one (parity with
+   * Claude Code's `killShellTasksForAgent: killing orphaned shell task ${taskId}
+   * (agent ${agentId} exiting)` debug line). Lets a frontend/analytics trace WHY a
+   * background process disappeared — e.g. `agent <id> exiting` for an orphan reap,
+   * or `output exceeded disk cap`. Undefined for a plain user/model stop.
+   */
+  reason?: string;
 }
 
 interface InternalProcess extends BackgroundProcess {
@@ -532,6 +563,7 @@ export class ProcessManager extends EventEmitter {
       command,
       description: opts.description || command.slice(0, 80),
       status: 'running',
+      kind: 'bash',
       exitCode: null,
       outputPath,
       startTime: Date.now(),
@@ -704,7 +736,7 @@ export class ProcessManager extends EventEmitter {
    * branch is the only latch site) so their abort completion, which carries the
    * partial result, always surfaces — matching Claude's bash-vs-agent split.
    */
-  kill(taskId: string, opts: { suppressCompletion?: boolean } = {}): boolean {
+  kill(taskId: string, opts: { suppressCompletion?: boolean; reason?: string } = {}): boolean {
     const entry = this.processes.get(taskId);
     if (!entry || entry.status !== 'running') return false;
 
@@ -743,15 +775,14 @@ export class ProcessManager extends EventEmitter {
       // can throw EBADF when it tries to close the now-invalid fds.
       this.destroyStreams(entry.proc);
 
-      try {
-        if (osHooks.platform() === 'win32') {
-          child_process.execSync(`taskkill /pid ${entry.proc.pid} /T /F`, { stdio: 'ignore' });
-        } else {
-          process.kill(-entry.proc.pid!, 'SIGKILL');
-        }
-      } catch {
-        try { entry.proc.kill('SIGKILL'); } catch { /* already dead */ }
-      }
+      // Robust process-TREE kill (parity with Claude Code's ShellCommand #doKill →
+      // treeKill). A bare process-group signal (`process.kill(-pid)`) misses a
+      // descendant that escaped the group via setsid()/double-fork/nohup, leaving an
+      // orphaned process alive after the stop. killTree() enumerates the full
+      // descendant tree (ps/ppid walk) and signals each pid individually, THEN
+      // sweeps the group, so a session leader that broke away is still reaped.
+      // Shared helper — not re-implemented here (No-Duplication rule).
+      killTree(entry.proc);
     }
 
     if (entry.outputFd !== null) {
@@ -767,8 +798,11 @@ export class ProcessManager extends EventEmitter {
     const killed: KilledTaskEvent = {
       taskId,
       description: entry.description,
-      taskType: entry._registered ? 'agent' : (entry.command?.startsWith('monitor:') ? undefined : 'bash'),
+      // Derive the agent/bash discriminator from the authoritative `kind` field
+      // (a monitor maps to undefined) instead of brittle command-string parsing.
+      taskType: this.taskType(taskId),
       suppressed: !!entry.notified,
+      ...(opts.reason ? { reason: opts.reason } : {}),
     };
     this.emit('killed', killed);
 
@@ -954,9 +988,23 @@ export class ProcessManager extends EventEmitter {
    * kind of task without inspecting internals.
    */
   taskType(taskId: string): 'agent' | 'bash' | undefined {
-    const entry = this.processes.get(taskId);
-    if (!entry) return undefined;
-    return entry._registered ? 'agent' : 'bash';
+    const kind = this.processes.get(taskId)?.kind;
+    if (kind === 'agent') return 'agent';
+    if (kind === 'bash') return 'bash';
+    // A monitor (or an untracked id) has no agent/bash task_type — previously a
+    // monitor was MISCLASSIFIED as 'bash' (it ran the non-registered branch).
+    return undefined;
+  }
+
+  /**
+   * PARITY (additive): the full task-KIND discriminator for a tracked task —
+   * `'bash' | 'monitor' | 'agent'`, or undefined when the id isn't tracked. Unlike
+   * {@link taskType} (which collapses monitors to undefined to keep its agent/bash
+   * contract) this exposes the monitor kind too, so a pill/label renderer can split
+   * "1 shell, 1 monitor" exactly like Claude Code's getPillLabel.
+   */
+  taskKind(taskId: string): TaskKind | undefined {
+    return this.processes.get(taskId)?.kind;
   }
 
   /**
@@ -1011,7 +1059,9 @@ export class ProcessManager extends EventEmitter {
     for (const taskId of Array.from(this.processes.keys())) {
       const entry = this.processes.get(taskId);
       if (!entry || entry.agentId !== agentId || entry.status !== 'running') continue;
-      if (this.kill(taskId)) killed++;
+      // Reason-bearing kill (parity with Claude Code's killShellTasksForAgent debug
+      // line) so the emitted 'killed' event explains WHY the orphan shell vanished.
+      if (this.kill(taskId, { reason: `agent ${agentId} exiting` })) killed++;
     }
     return killed;
   }
@@ -1215,6 +1265,7 @@ export class ProcessManager extends EventEmitter {
       command: opts.command,
       description: opts.description,
       status: 'running',
+      kind: 'agent',
       exitCode: null,
       outputPath: opts.outputPath,
       startTime: Date.now(),
@@ -1265,6 +1316,7 @@ export class ProcessManager extends EventEmitter {
       command: `monitor:${serverId}`,
       description: `MCP monitor: ${serverId}`,
       status: 'running',
+      kind: 'monitor',
       exitCode: null,
       outputPath: '',
       startTime: Date.now(),
