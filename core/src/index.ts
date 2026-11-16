@@ -14,8 +14,8 @@ export type { PluginBundle, CommandDefinition, GitSourceValidation, PluginValida
 export type { SkillDefinition, AgentDefinition, SkillManagerLike, EffortLevel, AgentValidationResult, AgentColorName, AgentMemoryScope, AgentIsolationMode } from './skills';
 export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS, AGENT_SOURCES, coerceDescriptionToString, EFFORT_LEVELS, parseEffort, isValidEffort, parseArgumentNames, AGENT_PERMISSION_MODES, validateAgentDefinition, AGENT_COLORS, parseAgentColor, AGENT_MEMORY_SCOPES, parseMemoryScope, AGENT_ISOLATION_MODES, parseIsolationMode, parseBackgroundFlag } from './skills';
 // Skill catalog types + path-safety for URL-based skill discovery.
-export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult } from './skill-catalog';
-export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256 } from './skill-catalog';
+export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult, SkillSourcePolicy } from './skill-catalog';
+export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256, isValidCatalogName, isValidGitRef, isSkillSourceAllowed } from './skill-catalog';
 export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, estimateUsageCost, diffToolHashes, WEB_SEARCH_COST_PER_REQUEST, MIN_CACHE_MISS_TOKENS, PARTIAL_CACHE_BREAK_RATIO, formatPrice, formatModelPricing, getModelPricingString } from './cost-tracker';
 export { diffStringLists } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta, CacheBreakCause } from './cost-tracker';
