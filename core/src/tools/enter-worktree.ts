@@ -62,11 +62,18 @@ function getDefaultBranch(cwd: string): string {
     const match = sym.match(/^origin\/(.+)$/);
     if (match) return match[1];
   } catch { /* fallback */ }
-  try {
-    _enterWorktreeHooks.exec(['rev-parse', '--verify', 'refs/heads/main'], { cwd, stdio: 'ignore' });
-    return 'main';
-  } catch { /* fallback */ }
-  return 'master';
+  // Offline candidate probe: check the conventional default branches in order
+  // and return the first that actually exists as a local ref. Only when NONE
+  // exist do we fall back to 'main' (parity with Claude's computeDefaultBranch,
+  // whose final fallback is 'main' — never a 'master' guess for a ref that is
+  // not present).
+  for (const candidate of ['main', 'master']) {
+    try {
+      _enterWorktreeHooks.exec(['rev-parse', '--verify', `refs/heads/${candidate}`], { cwd, stdio: 'ignore' });
+      return candidate;
+    } catch { /* try next candidate */ }
+  }
+  return 'main';
 }
 
 export const enterWorktreeTool: ToolDefinition = {
@@ -169,8 +176,17 @@ export const enterWorktreeTool: ToolDefinition = {
       } catch (e) {
         return { output: `Error listing worktrees: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
+      // Name the branch the entered worktree is on (parity with Claude's
+      // "on branch <branch>" worktree messages). The worktree's live HEAD is the
+      // ground truth; best-effort — a detached HEAD or a rev-parse failure simply
+      // omits the branch label rather than failing the entry.
+      let branchLabel = '';
+      try {
+        const head = _enterWorktreeHooks.exec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: existingPath, stdio: 'pipe' });
+        if (head && head !== 'HEAD') branchLabel = ` on branch ${head}`;
+      } catch { /* detached / unreadable — omit the branch label */ }
       return {
-        output: `Entered existing worktree at: ${existingPath}. Run exit_worktree when done.`,
+        output: `Entered existing worktree at: ${existingPath}${branchLabel}. Run exit_worktree when done.`,
       };
     }
 
@@ -179,9 +195,21 @@ export const enterWorktreeTool: ToolDefinition = {
       return { output: `Error: invalid worktree name "${slug}". Use letters, digits, dots, underscores, dashes (max 64 chars per segment).`, isError: true };
     }
 
-    const { validateWorktreeSlug } = require('../worktree-manager');
+    const { validateWorktreeSlug, flattenSlug } = require('../worktree-manager');
     const validationError = validateWorktreeSlug(slug);
     if (validationError) return { output: `Error: ${validationError}`, isError: true };
+
+    // Flatten any '/' in the (validated) slug to '+' BEFORE it is used for the
+    // on-disk directory or the branch ref. A slug like "user/feature" would
+    // otherwise (a) nest the worktree dir at `.ami/worktrees/user/feature`, which
+    // lives INSIDE the `user` worktree so `git worktree remove`/cleanup on the
+    // parent silently deletes the child's uncommitted work, and (b) create a
+    // directory-form ref `worktree/user/feature` that collides (D/F conflict)
+    // with the file-form ref `worktree/user` git refuses to hold simultaneously.
+    // Flattening both path and branch to a single `user+feature` segment removes
+    // both hazards (parity with Claude's worktreePathFor/flattenSlug). The shared
+    // flattenSlug helper is reused so there is one canonical flattening.
+    const flatSlug: string = flattenSlug(slug);
 
     // Opportunistically clean up stale worktrees (> 30 days, no uncommitted changes)
     const worktreesBase = path.join(context.cwd, '.ami', 'worktrees');
@@ -209,13 +237,13 @@ export const enterWorktreeTool: ToolDefinition = {
       }
     } catch { /* unreadable worktrees dir — do not block creation */ }
 
-    const worktreeDir = path.join(context.cwd, '.ami', 'worktrees', slug);
+    const worktreeDir = path.join(context.cwd, '.ami', 'worktrees', flatSlug);
     if (fs.existsSync(worktreeDir)) {
-      return { output: `Error: worktree "${slug}" already exists at ${worktreeDir}. Use path to enter an existing worktree.`, isError: true };
+      return { output: `Error: worktree "${flatSlug}" already exists at ${worktreeDir}. Use path to enter an existing worktree.`, isError: true };
     }
 
     const defaultBranch = getDefaultBranch(context.cwd);
-    const branchName = `worktree/${slug}`;
+    const branchName = `worktree/${flatSlug}`;
 
     const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' };
 
@@ -250,7 +278,11 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     const { createWorktreeSession, setWorktreeSession, symlinkLargeDirectories } = require('../worktree-manager');
-    const session = createWorktreeSession(context.cwd, slug);
+    // Pass the FLATTENED slug so the session's computed worktree dir matches the
+    // one just created on disk (otherwise a '/'-containing slug would make
+    // createWorktreeSession look for the raw nested path, miss it, and add a
+    // second worktree).
+    const session = createWorktreeSession(context.cwd, flatSlug);
     setWorktreeSession(session);
     symlinkLargeDirectories(context.cwd, session.worktreePath);
 
