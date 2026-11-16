@@ -1,4 +1,5 @@
 import { isDangerousSettingsEnvVar } from './env-protection';
+import { CUSTOMIZATION_SURFACES } from './plugin-only-policy';
 
 export const SETTINGS_TIERS = ['managed', 'global', 'project', 'local', 'env', 'cli'] as const;
 export type SettingsTier = (typeof SETTINGS_TIERS)[number];
@@ -275,6 +276,105 @@ export function isManagedHooksOnly(
   config: { allowManagedHooksOnly?: unknown } | null | undefined,
 ): boolean {
   return config?.allowManagedHooksOnly === true;
+}
+
+/**
+ * Managed slice relevant to the sandbox-exemption policy lock. These sub-settings
+ * weaken the container sandbox, so when an admin/managed config owns ANY of them a
+ * lower (project/local/env/cli) tier must not be able to add or relax its own.
+ */
+export interface SandboxPolicyLockInput {
+  /** Top-level command-exemption list (bash commands allowed to skip the sandbox). */
+  sandboxExcludedCommands?: unknown;
+  sandbox?: {
+    /** 'off' | 'container' — turning the sandbox off is itself an exemption. */
+    mode?: unknown;
+    /** Auto-approve bash inside the container (skips the permission prompt). */
+    autoAllowBashIfSandboxed?: unknown;
+    /** Gate on the `dangerouslyDisableSandbox` escape hatch. */
+    allowUnsandboxedCommands?: unknown;
+  } | null;
+}
+
+/**
+ * True when sandbox-exemption settings are locked by admin/managed policy: the
+ * MANAGED config pins any of `sandboxExcludedCommands`, `sandbox.mode`,
+ * `sandbox.autoAllowBashIfSandboxed`, or `sandbox.allowUnsandboxedCommands`. A
+ * local change (e.g. a `/sandbox exclude` write) must then be refused with
+ * "overridden by a higher-priority configuration and cannot be changed locally",
+ * because `mergeConfigs` makes managed sandbox settings authoritative and a local
+ * edit would be silently ineffective. Pass the MANAGED config slice specifically
+ * (the admin-sourced tier), mirroring Claude's check of the policy/flag sources.
+ * Parity: Claude Code's `SandboxManager.areSandboxSettingsLockedByPolicy()`.
+ */
+export function areSandboxSettingsLockedByPolicy(
+  managedConfig: SandboxPolicyLockInput | null | undefined,
+): boolean {
+  if (!managedConfig) return false;
+  if (managedConfig.sandboxExcludedCommands !== undefined) return true;
+  const s = managedConfig.sandbox;
+  if (!s || typeof s !== 'object') return false;
+  return (
+    s.mode !== undefined ||
+    s.autoAllowBashIfSandboxed !== undefined ||
+    s.allowUnsandboxedCommands !== undefined
+  );
+}
+
+/**
+ * An admin-facing diagnostic about a managed-policy value that the loader accepted
+ * but will (partly) IGNORE — a silent-drop forward-compat hazard.
+ */
+export interface ManagedPolicyWarning {
+  /** The policy field the warning is about. */
+  key: string;
+  /** Human-readable description of what is wrong. */
+  issue: string;
+  /** How the admin should fix it. */
+  fix: string;
+}
+
+/**
+ * Validate the per-field VALUES of a well-formed managed-settings object and
+ * surface any that this client version will silently ignore. Checks the
+ * `strictPluginOnlyCustomization` policy against the known
+ * {@link CUSTOMIZATION_SURFACES} enum: a wrong type (not boolean/array) is rescued
+ * by the loader's degrade-safe parse and therefore NOT enforced, and array entries
+ * naming surfaces this client does not recognize (or non-string entries) are
+ * dropped forward-compat — in both cases an admin believes a lockdown is active
+ * when part of it is not. Returns one {@link ManagedPolicyWarning} per problem
+ * (empty when the policy file is clean or absent). Parity: Claude Code's doctor
+ * managed-settings forward-compat diagnostic (`doctorDiagnostic.ts`).
+ */
+export function validateManagedPolicyValues(
+  rawManagedConfig: Record<string, unknown> | null | undefined,
+): ManagedPolicyWarning[] {
+  const warnings: ManagedPolicyWarning[] = [];
+  if (!rawManagedConfig || typeof rawManagedConfig !== 'object') return warnings;
+
+  const known = CUSTOMIZATION_SURFACES.join(', ');
+  const field = rawManagedConfig.strictPluginOnlyCustomization;
+  if (field !== undefined && typeof field !== 'boolean') {
+    if (!Array.isArray(field)) {
+      warnings.push({
+        key: 'strictPluginOnlyCustomization',
+        issue: `strictPluginOnlyCustomization has an invalid value (expected true or an array, got ${typeof field})`,
+        fix: `The field is silently ignored. Set it to true, or an array of: ${known}.`,
+      });
+    } else {
+      const bad = field.filter(
+        x => typeof x !== 'string' || !(CUSTOMIZATION_SURFACES as readonly string[]).includes(x),
+      );
+      if (bad.length > 0) {
+        warnings.push({
+          key: 'strictPluginOnlyCustomization',
+          issue: `strictPluginOnlyCustomization has ${bad.length} value(s) this client doesn't recognize: ${bad.map(String).join(', ')}`,
+          fix: `These are silently ignored (forward-compat). Known surfaces: ${known}. Remove them, or this client is older than the policy intended.`,
+        });
+      }
+    }
+  }
+  return warnings;
 }
 
 export const TIER_LOCKED_KEYS = new Set([
