@@ -73,6 +73,43 @@ export function isProcessRunning(pid: number): boolean {
   }
 }
 
+/** A scheduler lock-file record, written by the owning session each tick. */
+export interface CronLockRecord {
+  sessionId: string;
+  pid: number;
+  timestamp: number;
+}
+
+/** Non-throwing, schema-validated parse of an untrusted cron lock-file body.
+ *  Returns null for anything that is not a well-formed {sessionId, pid, timestamp}
+ *  record — unparseable JSON, a non-object, or a missing/mis-typed field — so every
+ *  caller treats a corrupt or partially-written lock as "no valid owner" (stale)
+ *  rather than trusting ad-hoc field casts on untrusted on-disk JSON. Mirrors
+ *  Claude's zod-validated readLock (src/utils/cronTasksLock.ts). */
+export function parseCronLock(raw: string): CronLockRecord | null {
+  let data: unknown;
+  try { data = JSON.parse(raw); } catch { return null; }
+  if (!data || typeof data !== 'object') return null;
+  const r = data as Record<string, unknown>;
+  if (typeof r.sessionId !== 'string') return null;
+  if (typeof r.pid !== 'number' || !Number.isFinite(r.pid)) return null;
+  if (typeof r.timestamp !== 'number' || !Number.isFinite(r.timestamp)) return null;
+  return { sessionId: r.sessionId, pid: r.pid, timestamp: r.timestamp };
+}
+
+/** Errno codes meaning "the file is not there / can't be gotten at" — a missing or
+ *  inaccessible persisted-state file is the normal empty state, not a fault worth a
+ *  diagnostic. Mirrors Claude's isFsInaccessible set (src/utils/errors.ts). */
+const FS_INACCESSIBLE_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR', 'ELOOP']);
+
+/** True when a caught fs error is an expected "missing / inaccessible" condition
+ *  (so the caller can treat it as an empty state silently) vs a genuine, unexpected
+ *  read fault (I/O error, EISDIR, …) that deserves a logged diagnostic trail. */
+export function isFsInaccessible(err: unknown): boolean {
+  const code = err && typeof err === 'object' ? (err as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && FS_INACCESSIBLE_CODES.has(code);
+}
+
 /** Deterministic per-job forward jitter for a recurring fire, proportional to the
  *  ACTUAL gap between its next two fires — so at the defaults an hourly job spreads
  *  across minutes while a per-minute job spreads by only a few seconds — capped by
@@ -557,12 +594,13 @@ export class CronScheduler {
    *  lease is compromised — we yield it so the new owner fires unopposed. */
   private heartbeatLock(): void {
     if (!this.holdsLock) return;
-    let lock: { sessionId?: string } | null = null;
+    let raw: string | null = null;
     try {
-      lock = JSON.parse(fs.readFileSync(this.lockPath, 'utf-8'));
+      raw = fs.readFileSync(this.lockPath, 'utf-8');
     } catch {
-      lock = null; // missing or unparseable
+      raw = null; // missing or unreadable
     }
+    const lock = raw !== null ? parseCronLock(raw) : null;
     if (!lock || lock.sessionId !== this.sessionId) {
       this.onLockCompromised(lock ? `taken over by ${lock.sessionId}` : 'removed');
       return;
@@ -592,13 +630,16 @@ export class CronScheduler {
   private acquireLock(): boolean {
     try {
       if (fs.existsSync(this.lockPath)) {
-        let lock: { sessionId?: string; pid?: number; timestamp?: number } | null = null;
+        let raw: string | null = null;
         try {
-          lock = JSON.parse(fs.readFileSync(this.lockPath, 'utf-8'));
+          raw = fs.readFileSync(this.lockPath, 'utf-8');
         } catch {
-          lock = null; // corrupt/unparseable → treat as stale and reclaim
+          raw = null; // unreadable → treat as stale and reclaim
         }
-        if (lock && typeof lock === 'object' && lock.sessionId && typeof lock.timestamp === 'number') {
+        // Schema-validated parse: anything that is not a well-formed lock record
+        // (unparseable, non-object, or missing/mis-typed fields) is reclaimed as stale.
+        const lock = raw !== null ? parseCronLock(raw) : null;
+        if (lock) {
           // We already own it (idempotent re-acquire). After --resume the sessionId
           // is restored but the process has a new PID; rewrite the lock with the
           // live PID so other sessions see a live owner and don't steal the lease.
@@ -610,7 +651,7 @@ export class CronScheduler {
                   pid: process.pid,
                   timestamp: Date.now(),
                 }));
-                coreLog('cron', `Re-acquired cron lock with new pid ${process.pid} (session ${this.sessionId}, was pid ${lock.pid ?? '?'})`);
+                coreLog('cron', `Re-acquired cron lock with new pid ${process.pid} (session ${this.sessionId}, was pid ${lock.pid})`);
               } catch { /* best effort — we still own the lease */ }
             }
             this.lastBlockedBy = null;
@@ -623,17 +664,17 @@ export class CronScheduler {
           // host) is kept alive by its advancing timestamp instead of being falsely
           // reclaimed after the fixed stale window.
           const heartbeatFresh = Date.now() - lock.timestamp < LOCK_STALE_MS;
-          const ownerAlive = (typeof lock.pid === 'number' && isProcessRunning(lock.pid)) || heartbeatFresh;
+          const ownerAlive = isProcessRunning(lock.pid) || heartbeatFresh;
           if (ownerAlive) {
             // Contention diagnostic, de-duplicated: log once per distinct owner so a
             // passive session polling a live owner every tick does not spam the log.
             if (this.lastBlockedBy !== lock.sessionId) {
               this.lastBlockedBy = lock.sessionId;
-              coreLog('cron', `cron lock held by session ${lock.sessionId} (pid ${lock.pid ?? '?'})`);
+              coreLog('cron', `cron lock held by session ${lock.sessionId} (pid ${lock.pid})`);
             }
             return false; // live owner — never steal the lease
           }
-          coreLog('cron', `Reclaiming stale lock from dead owner (pid ${lock.pid ?? '?'}, session ${lock.sessionId})`);
+          coreLog('cron', `Reclaiming stale lock from dead owner (pid ${lock.pid}, session ${lock.sessionId})`);
         } else {
           coreLog('cron', 'Reclaiming corrupt/unparseable cron lock');
         }
@@ -675,9 +716,12 @@ export class CronScheduler {
     this.lastBlockedBy = null;
     try {
       if (fs.existsSync(this.lockPath)) {
-        const lock = JSON.parse(fs.readFileSync(this.lockPath, 'utf-8'));
-        if (lock.sessionId === this.sessionId) {
+        const lock = parseCronLock(fs.readFileSync(this.lockPath, 'utf-8'));
+        if (lock && lock.sessionId === this.sessionId) {
           fs.unlinkSync(this.lockPath);
+          // Lock-lifecycle introspection: pair the acquire/reclaim logs with a
+          // release line so the full lease lifecycle is observable in the log.
+          coreLog('cron', `Released cron lock (session ${this.sessionId}, pid ${process.pid})`);
         }
       }
     } catch { /* ignore */ }
@@ -821,8 +865,17 @@ export class CronScheduler {
     let raw: string;
     try {
       raw = fs.readFileSync(this.persistPath, 'utf-8');
-    } catch {
-      return; // no file
+    } catch (err) {
+      // A missing or inaccessible file is the normal empty state and is silent;
+      // an UNEXPECTED read fault (I/O error, EISDIR, a directory where the file
+      // should be, …) is a real failure and must leave a diagnostic trail instead
+      // of vanishing identically to "no tasks yet". Mirrors Claude's readCronTasks
+      // isFsInaccessible→silent vs logError split (src/utils/cronTasks.ts).
+      if (!isFsInaccessible(err)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        coreLog('cron', `Failed to read scheduled_tasks.json: ${msg}`);
+      }
+      return;
     }
     let data: unknown;
     try {
