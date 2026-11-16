@@ -11,6 +11,7 @@ import * as os from 'os';
 import type { SessionFact } from './session-memory';
 import { log as coreLog } from './logger';
 import { redactCredentials } from './credential-guard';
+import { isEnvTruthy } from './analytics';
 
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.tif',
@@ -271,6 +272,31 @@ const MAX_INSTRUCTION_FILE_SIZE = 10_240;
 export const MAX_ENTRYPOINT_LINES = 200;
 export const MAX_ENTRYPOINT_BYTES = 25_000;
 
+/** The MEMORY.md index is a table of contents, not a memory body — it is loaded
+ *  separately (readMemoryIndex) and must be excluded from the memory-body scan. */
+const MEMORY_INDEX_FILENAME = 'MEMORY.md';
+
+/**
+ * Two-step save guidance teaching the MEMORY.md index pattern (Claude Code
+ * memdir/memdir.ts `## How to save memories`). A memory is NOT a single dump: it
+ * is a topic file PLUS a one-line pointer in the always-loaded MEMORY.md index.
+ * Without this the model writes memory bodies straight into the index (which is
+ * line/byte-capped — see {@link MAX_ENTRYPOINT_LINES}) and never learns the
+ * one-line-hook entry format {@link MemoryManager.addToMemoryIndex} expects.
+ */
+const TWO_STEP_SAVE_GUIDANCE = [
+  '### How to save a memory (two steps)',
+  'Saving a memory is a two-step process:',
+  '',
+  '**Step 1** — write the memory to its own topic file (e.g. `user_role.md`, `feedback_testing.md`) using the frontmatter format above. Organize by topic, not chronologically.',
+  `**Step 2** — add a one-line pointer to that file in \`${MEMORY_INDEX_FILENAME}\`. \`${MEMORY_INDEX_FILENAME}\` is an INDEX, not a memory: each entry is a single line under ~150 characters — \`- [Title](file.md) — one-line hook\` — and it has no frontmatter. Never write memory content directly into \`${MEMORY_INDEX_FILENAME}\`.`,
+  '',
+  `- \`${MEMORY_INDEX_FILENAME}\` is loaded into context every turn; entries past ${MAX_ENTRYPOINT_LINES} lines are truncated, so keep the index concise.`,
+  '- Keep each memory file\'s name / description / type fields in sync with its content.',
+  '- Update or remove memories that turn out to be wrong or outdated.',
+  '- Do not write duplicate memories — check for an existing memory to update before writing a new one.',
+].join('\n');
+
 /**
  * Recommended maximum character count for a single memory file (parity with
  * Claude Code's `MAX_MEMORY_CHARACTER_COUNT`, utils/claudemd.ts). Files over this
@@ -307,6 +333,39 @@ export function resolveMemoryDirOverride(env: NodeJS.ProcessEnv = process.env): 
     return null;
   }
   return expanded.normalize('NFC');
+}
+
+/**
+ * Environment variable that force-disables ALL auto-memory behavior (the stored-
+ * memory / team-memory prompt injection, the oversized-file health warning, and
+ * the memory save/recall guidance block). Parity with Claude Code's
+ * `CLAUDE_CODE_DISABLE_AUTO_MEMORY` (memdir/paths.ts `isAutoMemoryEnabled`):
+ * project/user INSTRUCTION files (CLAUDE.md / AGENTS.md) are NOT auto-memory and
+ * always load; only the persistent memory system is gated.
+ */
+const DISABLE_AUTO_MEMORY_ENV = 'AMI_DISABLE_AUTO_MEMORY';
+
+/**
+ * Whether the auto-memory system is enabled. Priority chain (first that applies
+ * wins), mirroring Claude Code's `isAutoMemoryEnabled`:
+ *   1. `AMI_DISABLE_AUTO_MEMORY` env var — a truthy value ({@link isEnvTruthy})
+ *      forces OFF; an explicitly-falsy value (`0`/`false`/`no`/`off`) forces ON,
+ *      overriding a settings opt-out. An unset/blank value defers downstream.
+ *   2. `settingsEnabled` (the resolved `autoMemoryEnabled` setting) — supports a
+ *      project-level opt-out when the env var is unset.
+ *   3. Default: enabled.
+ */
+export function isAutoMemoryEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsEnabled?: boolean,
+): boolean {
+  const raw = env[DISABLE_AUTO_MEMORY_ENV];
+  if (raw !== undefined && raw.trim() !== '') {
+    // Env var explicitly set: truthy ⇒ disabled, falsy ⇒ force-enabled.
+    return !isEnvTruthy(raw);
+  }
+  if (settingsEnabled !== undefined) return settingsEnabled;
+  return true;
 }
 
 /**
@@ -578,10 +637,6 @@ function buildFrontmatter(
   const modified = new Date().toISOString();
   return `---\nname: ${sanitizeFrontmatterValue(name)}\ndescription: ${sanitizeFrontmatterValue(description)}\ntype: ${memoryType}\nmodified: ${modified}\n---\n`;
 }
-
-/** The MEMORY.md index is a table of contents, not a memory body — it is loaded
- *  separately (readMemoryIndex) and must be excluded from the memory-body scan. */
-const MEMORY_INDEX_FILENAME = 'MEMORY.md';
 
 /** Per-file upper bound when scanning the memory dir: a single runaway file must
  *  not be slurped whole into the context/scan. */
@@ -1024,7 +1079,27 @@ export class MemoryManager {
     return null;
   }
 
-  getMemoryContext(opts?: { storedInlineBudget?: number }): string {
+  /**
+   * `### Searching past context` guidance (Claude Code memdir/memdir.ts
+   * `buildSearchingPastContextSection`). Gives the model the concrete shell
+   * commands to recall prior work: a recursive grep over its own memory topic
+   * files (`*.md`) and, as a last resort, over the per-project session transcript
+   * JSONL store. Both paths are resolved from the live store locations so the
+   * commands are copy-paste runnable for THIS project, not placeholders.
+   */
+  buildSearchingPastContextSection(): string {
+    const memDir = this.getMemoryDir();
+    const sessionDir = projectStateDir(canonicalGitRoot(this.cwd), 'sessions');
+    return [
+      '### Searching past context',
+      'When looking for prior work or context:',
+      `1. Search topic files in your memory directory: \`grep -rn "<search term>" ${memDir} --include="*.md"\``,
+      `2. Session transcript logs (last resort — large files, slow): \`grep -rn "<search term>" ${sessionDir} --include="*.jsonl"\``,
+      'Use narrow search terms (error messages, file paths, function names) rather than broad keywords.',
+    ].join('\n');
+  }
+
+  getMemoryContext(opts?: { storedInlineBudget?: number; autoMemoryEnabled?: boolean }): string {
     const sections: string[] = [];
 
     const userGlobal = this.loadUserGlobalInstructions();
@@ -1035,6 +1110,15 @@ export class MemoryManager {
     const instructions = this.loadProjectInstructions();
     if (instructions) {
       sections.push(`## Project Instructions\n\n${instructions}`);
+    }
+
+    // Auto-memory gate: when disabled (AMI_DISABLE_AUTO_MEMORY env or the resolved
+    // autoMemoryEnabled setting), the persistent memory system is suppressed from
+    // the prompt entirely — no stored/team memories, no health warning, no memory
+    // guidance. Project/user INSTRUCTION files above are NOT auto-memory and still
+    // load. Mirrors Claude Code's isAutoMemoryEnabled dropping the memory section.
+    if (!isAutoMemoryEnabled(process.env, opts?.autoMemoryEnabled)) {
+      return sections.join('\n\n');
     }
 
     const memories = this.loadMemories();
@@ -1119,11 +1203,15 @@ ${MEMORY_SCOPE_GUIDANCE}
 
 ${WHEN_TO_ACCESS_GUIDANCE}
 
+${this.buildSearchingPastContextSection()}
+
 ${BEFORE_RECOMMENDING_GUIDANCE}
 
 ### Saving a memory
 Lead feedback/project memories with the rule/fact, then a **Why:** line and a **How to apply:** line. Use this frontmatter:
-${MEMORY_FRONTMATTER_EXAMPLE}${driftCaveat}`;
+${MEMORY_FRONTMATTER_EXAMPLE}
+
+${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
       sections.push(memoryGuidance);
     }
 
