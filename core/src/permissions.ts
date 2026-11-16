@@ -146,6 +146,44 @@ export function isManagedPermissionSource(source: PermissionRuleSource | undefin
   return source === 'policySettings';
 }
 
+/**
+ * Is a rule's {@link PermissionRuleSource} SHARED (visible to / imposed on other
+ * users) rather than PERSONAL to this machine/run? Shared tiers are committed or
+ * pushed to the whole team: `projectSettings` (committed to git), `policySettings`
+ * (enterprise-managed), and `command` (slash-command frontmatter). Personal tiers
+ * (`userSettings`, `localSettings`, `cliArg`, `session`, `flagSettings`) only
+ * affect the current user. An undefined source is treated as personal (the safe
+ * default — it is never attributed to the team). Mirrors Claude's
+ * `isSharedSettingSource` (utils/permissions/shadowedRuleDetection.ts L61-67); it
+ * gates whether the sandbox-auto-allow shadow carve-out applies (a personal ask
+ * rule a user's own sandbox would auto-allow is NOT reported as shadowing, but a
+ * shared one still warns because teammates may lack the sandbox).
+ */
+export function isSharedSettingSource(source: PermissionRuleSource | undefined): boolean {
+  return source === 'projectSettings' || source === 'policySettings' || source === 'command';
+}
+
+/** Human-readable prose for each {@link PermissionRuleSource}, for naming WHERE a
+ *  rule came from in `/permissions` shadow warnings, `/doctor` findings, and fix
+ *  suggestions (an opaque token like `localSettings` is unreadable). Mirrors
+ *  Claude's `permissionRuleSourceDisplayString`. */
+const PERMISSION_RULE_SOURCE_DISPLAY: Record<PermissionRuleSource, string> = {
+  userSettings: 'user settings',
+  projectSettings: 'project settings',
+  localSettings: 'local settings',
+  session: 'session rules',
+  cliArg: 'command-line arguments',
+  policySettings: 'enterprise managed settings',
+  flagSettings: 'flag settings',
+  command: 'slash command',
+};
+
+/** Prose label for a rule source ('project settings', …); 'an unknown source'
+ *  when the rule carries no source tag. Used in shadow-detection reasons/fixes. */
+export function permissionRuleSourceDisplayString(source: PermissionRuleSource | undefined): string {
+  return source ? PERMISSION_RULE_SOURCE_DISPLAY[source] : 'an unknown source';
+}
+
 export interface PermissionRule {
   tool: string;       // tool name or '*'
   pattern?: string;   // glob pattern for args (e.g., "git *")
@@ -155,6 +193,49 @@ export interface PermissionRule {
   reason?: string;    // optional reason for deny rules
   /** Tier this rule originated from (set when loaded from a source file). */
   source?: PermissionRuleSource;
+}
+
+/**
+ * How a higher-priority rule makes a lower one unreachable:
+ *  - `deny` — the allow is COMPLETELY blocked (a tool-wide deny always wins); the
+ *    more severe case.
+ *  - `ask`  — the allow is never reached because a preceding tool-wide ask always
+ *    prompts first (it still "fires", just never silently allows).
+ * Mirrors Claude's `ShadowType` (utils/permissions/shadowedRuleDetection.ts).
+ */
+export type ShadowType = 'deny' | 'ask';
+
+/**
+ * A permission rule that can never fire because a higher-priority rule shadows it,
+ * with a human-readable {@link reason} naming the shadowing rule + its source and a
+ * concrete {@link fix} telling the user which rule to remove to make it reachable.
+ * Returned by {@link PermissionManager.detectShadowedRules}. Mirrors Claude's
+ * `UnreachableRule`.
+ */
+export interface UnreachableRule {
+  /** The shadowed (unreachable) allow rule. */
+  rule: PermissionRule;
+  /** The higher-priority rule that shadows it. */
+  shadowedBy: PermissionRule;
+  /** Whether the shadow is a hard block (`deny`) or an always-prompt (`ask`). */
+  shadowType: ShadowType;
+  /** Human sentence: `Blocked by "bash" deny rule (from project settings)`, etc. */
+  reason: string;
+  /** Actionable remediation naming the exact rules + sources to change. */
+  fix: string;
+}
+
+/**
+ * Options for {@link PermissionManager.detectShadowedRules}. When
+ * `sandboxAutoAllowEnabled` is true, a tool-wide Bash *ask* rule from PERSONAL
+ * settings is NOT reported as shadowing a specific Bash allow — sandboxed commands
+ * are auto-allowed so the ask never actually gates them for this user (shared-source
+ * ask rules still warn, since teammates may lack the sandbox). Mirrors Claude's
+ * `DetectUnreachableRulesOptions`. Omitted → derived from the manager's own sandbox
+ * policy.
+ */
+export interface DetectUnreachableRulesOptions {
+  sandboxAutoAllowEnabled?: boolean;
 }
 
 /**
@@ -3603,36 +3684,79 @@ export class PermissionManager {
   }
 
   /**
-   * Detect rules that are shadowed by higher-priority rules and will never fire.
+   * Detect allow rules that are shadowed by a higher-priority rule and can never
+   * take effect, each with a {@link ShadowType}, a human-readable {@link
+   * UnreachableRule.reason}, and an actionable {@link UnreachableRule.fix}.
+   *
+   * Severity ordering (parity with Claude's detectUnreachableRules): deny-shadowing
+   * is checked FIRST and, on a hit, the allow is reported ONCE as `deny` and ask
+   * shadowing is NOT also reported — each unreachable allow yields exactly one
+   * finding, the most severe. A tool-wide deny is order-independent (a matching deny
+   * unconditionally wins in {@link check}); a tool-wide ask only shadows when it
+   * PRECEDES the allow, because an ask AFTER the allow never fires (AMI evaluates in
+   * rule order — this is an intentional superset-accurate divergence from Claude's
+   * order-agnostic ask scan, matching AMI's real evaluation).
+   *
+   * Sandbox carve-out: when sandbox auto-allow is active (from `options` or the
+   * manager's own sandbox policy), a tool-wide Bash ask rule from PERSONAL settings
+   * is not reported as shadowing — sandboxed bash is auto-allowed for this user — but
+   * a shared-source ask rule still warns. Mirrors Claude's
+   * `isAllowRuleShadowedByAskRule` exception.
    */
-  detectShadowedRules(): Array<{ rule: PermissionRule; shadowedBy: PermissionRule }> {
-    const shadows: Array<{ rule: PermissionRule; shadowedBy: PermissionRule }> = [];
+  detectShadowedRules(options: DetectUnreachableRulesOptions = {}): UnreachableRule[] {
+    const sandboxAutoAllow = options.sandboxAutoAllowEnabled
+      ?? (this.sandboxPolicy?.mode === 'container' && this.sandboxPolicy.autoAllowBashIfSandboxed === true);
+    const shadows: UnreachableRule[] = [];
     for (let i = 0; i < this.rules.length; i++) {
-      const allow = this.rules[i];
+      const allow = this.rules[i]!;
       if (allow.action !== 'allow') continue;
+      // Scan once for the most-severe shadower: a tool-wide deny (order-independent)
+      // beats a preceding tool-wide ask.
+      let denyShadow: PermissionRule | undefined;
+      let askShadow: PermissionRule | undefined;
       for (let j = 0; j < this.rules.length; j++) {
         if (i === j) continue;
-        const shadower = this.rules[j];
+        const shadower = this.rules[j]!;
         if (shadower.tool !== allow.tool) continue;
         // A paramPattern rule is narrow (matches only specific named params),
         // so it never blanket-shadows a later allow.
         if (shadower.paramPattern) continue;
         const blanket = !shadower.pattern || shadower.pattern === '*';
         if (!blanket) continue;
-        // ASK shadowers only count when they precede the allow (order matters:
-        // an ask AFTER the allow never fires because the allow wins first). DENY
-        // shadowers are ORDER-INDEPENDENT — a matching deny UNCONDITIONALLY wins
-        // over any allow regardless of position (check()'s anyDenyMatches), so an
-        // allow shadowed by ANY tool-wide deny is unreachable wherever the deny
-        // sits. Mirrors Claude's isAllowRuleShadowedByDenyRule full-list scan.
-        if (shadower.action === 'deny') {
-          shadows.push({ rule: allow, shadowedBy: shadower });
-        } else if (shadower.action === 'ask' && j < i) {
-          shadows.push({ rule: allow, shadowedBy: shadower });
+        if (shadower.action === 'deny') denyShadow ??= shadower;
+        else if (shadower.action === 'ask' && j < i) askShadow ??= shadower;
+      }
+      if (denyShadow) {
+        shadows.push(this.buildUnreachableRule(allow, denyShadow, 'deny'));
+        continue; // most-severe only — do not also report ask-shadowing.
+      }
+      if (askShadow) {
+        // Sandbox carve-out: a personal-source tool-wide Bash ask rule is auto-allowed
+        // for this user, so it does not actually shadow the specific allow.
+        if (sandboxAutoAllow && normalizeToolName(allow.tool) === 'bash' && !isSharedSettingSource(askShadow.source)) {
+          continue;
         }
+        shadows.push(this.buildUnreachableRule(allow, askShadow, 'ask'));
       }
     }
     return shadows;
+  }
+
+  /** Assemble an {@link UnreachableRule} with a reason + fix naming both rules'
+   *  sources. Shared across the deny/ask branches of {@link detectShadowedRules}. */
+  private buildUnreachableRule(
+    allow: PermissionRule,
+    shadower: PermissionRule,
+    shadowType: ShadowType,
+  ): UnreachableRule {
+    const tool = shadower.tool;
+    const shadowerSource = permissionRuleSourceDisplayString(shadower.source);
+    const allowSource = permissionRuleSourceDisplayString(allow.source);
+    const reason = shadowType === 'deny'
+      ? `Blocked by "${tool}" deny rule (from ${shadowerSource})`
+      : `Shadowed by "${tool}" ask rule (from ${shadowerSource})`;
+    const fix = `Remove the "${tool}" ${shadowType} rule from ${shadowerSource}, or remove the specific allow rule from ${allowSource}`;
+    return { rule: allow, shadowedBy: shadower, shadowType, reason, fix };
   }
 
   // -------------------------------------------------------------------------
