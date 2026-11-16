@@ -444,6 +444,34 @@ const MODEL_ALIAS_TARGETS: Record<ModelAlias, string> = {
   'opus[1m]': 'claude-opus-4',
 };
 
+/**
+ * Version-specific SHORT MODEL KEYS — stable, typeable selectors that name a
+ * concrete model generation without the dated, provider-prefixed literal (e.g.
+ * `opus45` → `claude-opus-4-5`). Mirrors Claude Code's ALL_MODEL_CONFIGS /
+ * ModelKey set (utils/model/configs.ts:L86-L101) so a user can pin an exact
+ * version with a memorable key anywhere a model id is accepted (`--model`,
+ * `/model`, the subagent `model` override). This is DISTINCT from the bare
+ * FAMILY aliases in {@link MODEL_ALIASES} (opus/sonnet/haiku), which resolve to
+ * the family default and act as anti-downgrade wildcards; a short key always
+ * pins one concrete generation. Every target id is a model AMI recognizes in
+ * model-capabilities, so the context-window / thinking-budget lookup resolves.
+ * (Functional change: new version-keyed short-key selector — parity gap
+ * config-resolver/configs "stable short model keys as a user-facing selector".)
+ */
+export const MODEL_SHORT_KEYS: Record<string, string> = {
+  haiku35: 'claude-3-5-haiku',
+  haiku45: 'claude-haiku-4-5',
+  sonnet35: 'claude-3-5-sonnet',
+  sonnet37: 'claude-3-7-sonnet',
+  sonnet40: 'claude-sonnet-4',
+  sonnet45: 'claude-sonnet-4-5',
+  sonnet46: 'claude-sonnet-4-6',
+  opus40: 'claude-opus-4',
+  opus41: 'claude-opus-4-1',
+  opus45: 'claude-opus-4-5',
+  opus46: 'claude-opus-4-6',
+};
+
 /** Normalize an input for alias matching: trimmed + lower-cased. */
 function normalizeAlias(input: string): string {
   return typeof input === 'string' ? input.trim().toLowerCase() : '';
@@ -452,6 +480,15 @@ function normalizeAlias(input: string): string {
 /** True when `input` (trimmed, case-insensitive) is a recognized model alias. */
 export function isModelAlias(input: string): boolean {
   return (MODEL_ALIASES as readonly string[]).includes(normalizeAlias(input));
+}
+
+/**
+ * True when `input` (trimmed, case-insensitive) is a recognized version-specific
+ * short model key (e.g. `opus45`, `sonnet46`). Distinct from {@link isModelAlias},
+ * which covers the bare family aliases.
+ */
+export function isModelShortKey(input: string): boolean {
+  return Object.prototype.hasOwnProperty.call(MODEL_SHORT_KEYS, normalizeAlias(input));
 }
 
 /** True when `input` is a bare family alias (sonnet/opus/haiku). */
@@ -466,7 +503,10 @@ export function isModelFamilyAlias(input: string): boolean {
  */
 export function resolveModelAlias(input: string): string | undefined {
   const key = normalizeAlias(input);
-  return isModelAlias(key) ? MODEL_ALIAS_TARGETS[key as ModelAlias] : undefined;
+  if (isModelAlias(key)) return MODEL_ALIAS_TARGETS[key as ModelAlias];
+  // Version-specific short keys (opus45/sonnet46/…) pin a concrete generation.
+  if (isModelShortKey(key)) return MODEL_SHORT_KEYS[key];
+  return undefined;
 }
 
 /**
