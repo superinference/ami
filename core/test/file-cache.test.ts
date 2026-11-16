@@ -4,7 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { FileCache, getFileCache, releaseFileCache, MAX_CACHE_BYTES, DEFAULT_MAX_ENTRIES, MAX_CONTENT_HASH_SIZE } from '../src/file-cache';
+import { FileCache, getFileCache, releaseFileCache, mergeFileStateCaches, MAX_CACHE_BYTES, DEFAULT_MAX_ENTRIES, MAX_CONTENT_HASH_SIZE } from '../src/file-cache';
+import type { FileCacheDump } from '../src/file-cache';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1058,5 +1059,146 @@ describe('FileCache — file-type-aware tokenEstimate', () => {
     const c = new FileCache();
     c.set('/x/a.ts', 'y'.repeat(40), 1); // ratio 4 => 10
     assert.equal(c.getTotalTokens(), 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dump / load / fromDump / clone  (serialization + size-config preservation)
+// ---------------------------------------------------------------------------
+describe('FileCache – dump/load/fromDump', () => {
+  it('dump() captures size config + every entry in LRU order', () => {
+    const c = new FileCache(1234, 7);
+    c.set('/a.ts', 'aaa', 10);
+    c.set('/b.ts', 'bbbb', 20);
+    c.set('/a.ts', 'aaa', 10); // re-set promotes a.ts to most-recently-used
+    const d = c.dump();
+    assert.equal(d.maxSizeBytes, 1234);
+    assert.equal(d.maxEntries, 7);
+    assert.deepEqual(d.entries.map(([k]) => k), ['/b.ts', '/a.ts']);
+    assert.equal(d.entries[1][1].content, 'aaa');
+  });
+
+  it('dump() entries are copies — mutating them does not corrupt the cache', () => {
+    const c = new FileCache();
+    c.set('/a.ts', 'orig', 10);
+    const d = c.dump();
+    d.entries[0][1].content = 'TAMPERED';
+    assert.equal(c.dump().entries[0][1].content, 'orig');
+  });
+
+  it('fromDump() reconstructs an independent cache preserving config + order', () => {
+    const c = new FileCache(9999, 5);
+    c.set('/x.ts', 'xx', 1);
+    c.set('/y.ts', 'yyy', 2);
+    const copy = FileCache.fromDump(c.dump());
+    assert.deepEqual(copy.listPaths(), ['/x.ts', '/y.ts']);
+    assert.equal(copy.getTotalBytes(), c.getTotalBytes());
+    // Independence: mutating the copy must not affect the source.
+    copy.set('/z.ts', 'zzzz', 3);
+    assert.equal(c.listPaths().includes('/z.ts'), false);
+  });
+
+  it('load() replaces this cache contents with a dump and recomputes bytes', () => {
+    const src = new FileCache();
+    src.set('/one.ts', 'hello', 1);
+    const dst = new FileCache();
+    dst.set('/stale.ts', 'goodbye-stale', 9);
+    dst.load(src.dump());
+    assert.deepEqual(dst.listPaths(), ['/one.ts']);
+    assert.equal(dst.getTotalBytes(), Buffer.byteLength('hello'));
+  });
+
+  it('load() enforces THIS instance bounds (entry ceiling), not the dump config', () => {
+    const src = new FileCache(MAX_CACHE_BYTES, 100);
+    src.set('/1.ts', 'a', 1);
+    src.set('/2.ts', 'b', 2);
+    src.set('/3.ts', 'c', 3);
+    const small = new FileCache(MAX_CACHE_BYTES, 2);
+    small.load(src.dump());
+    // Only the 2 most-recently-used survive the 2-entry ceiling.
+    assert.deepEqual(small.listPaths(), ['/2.ts', '/3.ts']);
+  });
+
+  it('clone() delegates to dump/load and preserves full LRU state (no duplication)', () => {
+    const c = new FileCache(5000, 50);
+    c.set('/p.ts', 'pp', 1);
+    c.set('/q.ts', 'qqq', 2);
+    c.set('/p.ts', 'pp', 1); // promote via re-set
+    const cl = c.clone();
+    assert.deepEqual(cl.listPaths(), c.listPaths());
+    assert.equal(cl.getTotalBytes(), c.getTotalBytes());
+  });
+
+  it('a hand-built FileCacheDump can seed a cache', () => {
+    const dump: FileCacheDump = {
+      maxSizeBytes: MAX_CACHE_BYTES,
+      maxEntries: DEFAULT_MAX_ENTRIES,
+      entries: [['/h.ts', { path: '/h.ts', content: 'hc', mtime: 42, contentHash: '', tokenEstimate: 1 }]],
+    };
+    const c = FileCache.fromDump(dump);
+    assert.equal(c.listPaths().length, 1);
+    assert.equal(c.getTotalBytes(), Buffer.byteLength('hc'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mergeFileStateCaches  (timestamp-wins reconciliation)
+// ---------------------------------------------------------------------------
+describe('mergeFileStateCaches', () => {
+  it('a newer entry in second overrides first; older is ignored', () => {
+    const first = new FileCache();
+    first.set('/f.ts', 'old-content', 100);
+    const second = new FileCache();
+    second.set('/f.ts', 'new-content', 200); // strictly newer mtime
+    const merged = mergeFileStateCaches(first, second);
+    assert.deepEqual(merged.listPaths(), ['/f.ts']);
+    // Pull the merged state via dump (get() would re-read disk and fail).
+    const state = merged.dump().entries.find(([k]) => k === '/f.ts')![1];
+    assert.equal(state.content, 'new-content');
+    assert.equal(state.mtime, 200);
+  });
+
+  it('an equal-or-older entry in second does NOT override first', () => {
+    const first = new FileCache();
+    first.set('/f.ts', 'keep-this', 500);
+    const secondOlder = new FileCache();
+    secondOlder.set('/f.ts', 'older', 300);
+    const secondEqual = new FileCache();
+    secondEqual.set('/f.ts', 'equal', 500);
+    for (const s of [secondOlder, secondEqual]) {
+      const merged = mergeFileStateCaches(first, s);
+      const state = merged.dump().entries.find(([k]) => k === '/f.ts')![1];
+      assert.equal(state.content, 'keep-this', 'fresher/equal first entry must be kept');
+      assert.equal(state.mtime, 500);
+    }
+  });
+
+  it('a path only in second is added to the merge', () => {
+    const first = new FileCache();
+    first.set('/a.ts', 'a', 1);
+    const second = new FileCache();
+    second.set('/b.ts', 'b', 2);
+    const merged = mergeFileStateCaches(first, second);
+    assert.deepEqual(merged.listPaths().sort(), ['/a.ts', '/b.ts']);
+  });
+
+  it('merge leaves BOTH inputs untouched (returns a new cache)', () => {
+    const first = new FileCache();
+    first.set('/a.ts', 'a', 1);
+    const second = new FileCache();
+    second.set('/a.ts', 'a2', 9);
+    const merged = mergeFileStateCaches(first, second);
+    assert.equal(first.dump().entries[0][1].content, 'a');
+    assert.equal(second.dump().entries[0][1].content, 'a2');
+    assert.equal(merged.dump().entries[0][1].content, 'a2');
+  });
+
+  it('merge preserves partial-view flag from the fresher entry', () => {
+    const first = new FileCache();
+    first.set('/f.ts', 'full', 100);
+    const second = new FileCache();
+    second.markPartialView('/f.ts', 200);
+    const merged = mergeFileStateCaches(first, second);
+    assert.equal(merged.isPartialView('/f.ts'), true);
   });
 });

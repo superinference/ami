@@ -60,6 +60,20 @@ export interface FileChangeResult {
 }
 
 /**
+ * Serialized snapshot of a {@link FileCache} — its size configuration (byte + entry
+ * ceilings) plus every entry in least-recently-used→most-recently-used order.
+ * Produced by {@link FileCache.dump} and consumed by {@link FileCache.load} /
+ * {@link FileCache.fromDump}, so read-file-state can be snapshotted across a
+ * compaction boundary or forked for an isolated sub-agent branch WITHOUT losing the
+ * size config. Mirrors Claude Code's `FileStateCache.dump()`/`load()` serialization.
+ */
+export interface FileCacheDump {
+  maxSizeBytes: number;
+  maxEntries: number;
+  entries: Array<[string, FileState]>;
+}
+
+/**
  * Build the Claude-style "read it again" affordance message for a stale file, naming the
  * LIKELY cause (user/tool vs linter/formatter vs deletion) and the exact next action, so the
  * model recovers correctly instead of seeing a flat "modified since read". Driven by the
@@ -447,6 +461,70 @@ export class FileCache {
   }
 
   /**
+   * Insert/overwrite a FULL {@link FileState} entry, preserving every field
+   * (content, mtime, hash, token estimate, isPartialView, offset/limit, encoding)
+   * rather than recomputing them like {@link set}. Keeps the byte accounting and
+   * LRU order correct (delete-before-set moves it to the most-recently-used slot)
+   * and enforces the eviction bounds. Backs {@link load} and {@link mergeFrom},
+   * which must reconstitute entries verbatim, not re-derive them from raw content.
+   */
+  private putState(rawKey: string, state: FileState): void {
+    const key = this.norm(rawKey);
+    const existing = this.cache.get(key);
+    if (existing) this.totalBytes -= Buffer.byteLength(existing.content, 'utf-8');
+    this.cache.delete(key);
+    this.cache.set(key, { ...state, path: key });
+    this.totalBytes += Buffer.byteLength(state.content, 'utf-8');
+    this.evict(key);
+  }
+
+  /**
+   * Every cached entry as `[key, FileState]` pairs in least-recently-used→
+   * most-recently-used order. Each FileState is a shallow COPY, so a caller that
+   * mutates a returned entry cannot corrupt the live cache. Backs {@link dump} and
+   * the timestamp-wins reconciliation in {@link mergeFrom} / {@link mergeFileStateCaches}.
+   */
+  entries(): Array<[string, FileState]> {
+    return Array.from(this.cache, ([key, state]): [string, FileState] => [key, { ...state }]);
+  }
+
+  /**
+   * Serialize the whole cache — size configuration + every entry in LRU order — to a
+   * plain {@link FileCacheDump} object that can be persisted across a compaction
+   * boundary or handed to {@link FileCache.fromDump} to reconstruct an independent
+   * copy. Mirrors Claude Code's `FileStateCache.dump()`.
+   */
+  dump(): FileCacheDump {
+    return { maxSizeBytes: this.maxSizeBytes, maxEntries: this.maxEntries, entries: this.entries() };
+  }
+
+  /**
+   * Replace this cache's contents with the entries from a {@link FileCacheDump}
+   * (restoring their LRU order and recomputing the byte total), enforcing THIS
+   * instance's current eviction bounds. The dump's size config is informational —
+   * this instance keeps the ceilings it was constructed with; use {@link FileCache.fromDump}
+   * to reconstruct an instance that also adopts the dumped config. Mirrors Claude
+   * Code's `FileStateCache.load()`.
+   */
+  load(dump: FileCacheDump): void {
+    this.cache.clear();
+    this.totalBytes = 0;
+    for (const [key, state] of dump.entries) this.putState(key, state);
+  }
+
+  /**
+   * Reconstruct a fresh cache from a {@link FileCacheDump}, adopting BOTH its size
+   * configuration (byte + entry ceilings) and its entries/LRU order. Mirrors Claude
+   * Code's `cloneFileStateCache`, which recreates the cache preserving max-entries +
+   * max-bytes before loading the dumped entries.
+   */
+  static fromDump(dump: FileCacheDump): FileCache {
+    const cache = new FileCache(dump.maxSizeBytes, dump.maxEntries);
+    cache.load(dump);
+    return cache;
+  }
+
+  /**
    * Deep-copy this cache into a new, fully independent instance, preserving the
    * size configuration (byte + entry ceilings), the accumulated byte total, and
    * the complete least-recently-used→most-recently-used order.
@@ -459,12 +537,23 @@ export class FileCache {
    * parent's `readFileState` into every forked agent context.
    */
   clone(): FileCache {
-    const copy = new FileCache(this.maxSizeBytes, this.maxEntries);
-    for (const [key, state] of this.cache) {
-      copy.cache.set(key, { ...state });
+    return FileCache.fromDump(this.dump());
+  }
+
+  /**
+   * Reconcile another cache INTO this one with timestamp-wins semantics: for each
+   * path the other cache knows, adopt its entry ONLY when this cache has no entry
+   * for that path OR the other's entry is strictly NEWER (larger `mtime`). An
+   * equal-or-older entry is left untouched, so a merge never regresses the fresher
+   * view. Backs {@link mergeFileStateCaches}; the primitive for reconciling two
+   * independently-read caches (e.g. a compaction branch or a finished sub-agent)
+   * without losing the most-recent read-state per file.
+   */
+  mergeFrom(other: FileCache): void {
+    for (const [key, state] of other.entries()) {
+      const existing = this.cache.get(this.norm(key));
+      if (!existing || state.mtime > existing.mtime) this.putState(key, state);
     }
-    copy.totalBytes = this.totalBytes;
-    return copy;
   }
 
   /** Remove a single file from the cache (e.g. after a failed edit so the next read returns full content). */
@@ -508,6 +597,21 @@ export class FileCache {
       entries: Array.from(this.cache.keys()),
     };
   }
+}
+
+/**
+ * Merge two file caches with timestamp-wins semantics, returning a NEW cache that
+ * leaves both inputs untouched. Clones `first`, then overlays each of `second`'s
+ * entries only where it is strictly newer (by `mtime`) than — or absent from —
+ * `first`. The result inherits `first`'s size configuration. Mirrors Claude Code's
+ * `mergeFileStateCaches(first, second)` — the primitive for reconciling two
+ * independently-read read-file-state views (compaction/sub-agent branches) while
+ * keeping the freshest entry per file.
+ */
+export function mergeFileStateCaches(first: FileCache, second: FileCache): FileCache {
+  const merged = first.clone();
+  merged.mergeFrom(second);
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
