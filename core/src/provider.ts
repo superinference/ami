@@ -17,7 +17,7 @@ import { createCerebras } from '@ai-sdk/cerebras';
 import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
-import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta } from './model-capabilities';
+import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
@@ -1612,7 +1612,12 @@ export function buildThinkingOptions(
   // thinking lets the model decide depth; `effort` (mapped from the thinking level) is
   // the supported depth control that replaces the fixed token budget.
   if (caps?.supportsAdaptiveThinking) {
-    const effort = ADAPTIVE_EFFORT_BY_LEVEL[thinking.level] ?? 'high';
+    // The top 'max' effort tier is Opus-4.6+-class only; the API rejects
+    // effort:'max' on every other adaptive model (e.g. sonnet-4-6). Downgrade
+    // max→high per model before mapping so the request never 400s — mirrors
+    // Claude's resolveAppliedEffort (utils/effort.ts). Other levels pass through.
+    const appliedLevel = resolveMaxEffortLevel(thinking.level, modelId);
+    const effort = ADAPTIVE_EFFORT_BY_LEVEL[appliedLevel] ?? 'high';
     return {
       providerOptions: {
         anthropic: {

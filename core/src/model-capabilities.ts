@@ -1050,6 +1050,47 @@ export function clampEffortLevel(requested: ThinkingLevel, maxLevel: ThinkingLev
   return maxLevel;
 }
 
+/**
+ * Whether the model accepts the top `max` reasoning-effort tier.
+ *
+ * Per Anthropic's API docs the `max` effort value is accepted ONLY by the
+ * Opus 4.6+ class (public models); every other model — including Sonnet 4.6 —
+ * returns an error when sent `effort: 'max'`. This is a PER-MODEL capability,
+ * not a global config knob: the `max` tier can be offered/applied on one model
+ * and must be downgraded on another.
+ *
+ * Resolution order mirrors Claude's `modelSupportsMaxEffort`
+ * (utils/effort.ts:L50-65):
+ *  1. An explicit 3rd-party `max_effort` capability override (pinned-tier env,
+ *     gateway/proxy endpoints only) wins — see {@link get3PModelCapabilityOverride}.
+ *  2. Otherwise the Opus family at version 4.6+ (and the 5.x line) supports it,
+ *     matching the `supportsAdaptiveThinking` version gate's shape; all other
+ *     families/versions do not.
+ * An empty/non-string id supports nothing.
+ */
+export function modelSupportsMaxEffort(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  const override = get3PModelCapabilityOverride(modelId, 'max_effort');
+  if (override !== undefined) return override;
+  const v = parseClaudeVersion(modelId);
+  if (!v || v.family !== 'opus') return false;
+  return v.major >= 5 || (v.major === 4 && v.minor >= 6);
+}
+
+/**
+ * Downgrade a requested reasoning-effort/thinking level to what the model will
+ * actually accept. The top `max` tier is clamped to `high` when the model is not
+ * max-effort-capable ({@link modelSupportsMaxEffort}), so the provider never
+ * sends `effort: 'max'` to a model that would reject it with an API error — and
+ * the displayed level stays consistent with what is sent. Every other level
+ * passes through unchanged. Mirrors Claude's `resolveAppliedEffort` max→high
+ * downgrade (utils/effort.ts:L162-165).
+ */
+export function resolveMaxEffortLevel(level: ThinkingLevel, modelId: string): ThinkingLevel {
+  if (level === 'max' && !modelSupportsMaxEffort(modelId)) return 'high';
+  return level;
+}
+
 const PROVIDER_SAMPLING_DEFAULTS: Record<string, { temperature?: number; topP?: number; topK?: number }> = {
   'gemini': { temperature: 1.0, topK: 64 },
   'qwen': { temperature: 0.55, topP: 1 },
