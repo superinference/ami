@@ -587,6 +587,29 @@ export function parseFrontmatterList(value: string): string[] {
   return value.split(',').map(s => s.trim()).filter(s => s.length > 0);
 }
 
+/**
+ * Normalize a rule's `paths:` globs the way Claude Code's `parseFrontmatterPaths`
+ * does (utils/claudemd.ts): if EVERY pattern is the match-all `**` (after ignoring a
+ * trailing `/**`, since `path` and `path/**` denote the same membership), the rule is
+ * UNCONDITIONAL — `null` is returned so the caller loads it eagerly instead of routing
+ * it through the per-file conditional filter.
+ *
+ * The *matching* globs are returned UNCHANGED (trailing `/**` preserved): AMI's
+ * {@link matchesPaths} does a full-string regex match where `src/**` already matches
+ * `src/foo.ts` via `**`→`.*`, so stripping `/**` to `src` (which would full-match only
+ * the literal string `src`) would break subtree matching. The `/**` strip is therefore
+ * applied ONLY to the unconditional decision, not to the patterns handed to the matcher.
+ *
+ * @returns the glob list to match against, or `null` when the rule applies to all files
+ *   (empty after filtering, or every pattern is a match-all double-star).
+ */
+export function normalizeFrontmatterPaths(globs: string[]): string[] | null {
+  const kept = globs.filter(p => p.length > 0);
+  const stripped = kept.map(p => (p.endsWith('/**') ? p.slice(0, -3) : p)).filter(p => p.length > 0);
+  if (stripped.length === 0 || stripped.every(p => p === '**')) return null;
+  return kept;
+}
+
 /** Directory name for SuperInference memory storage. */
 
 const STALE_MEMORY_DAYS = 30;
@@ -610,23 +633,53 @@ function memoryFreshness(ageDays: number): string {
 /**
  * Parse YAML-like frontmatter from a markdown string.
  * Returns the extracted fields and the body after the frontmatter block.
+ *
+ * Delimiter matching is LINE-ANCHORED (parity with + superset of Claude Code's
+ * `FRONTMATTER_REGEX` `/^---\s*\n([\s\S]*?)---\s*\n?/`): both the opening and the
+ * closing `---` must occupy a line by themselves (trailing whitespace allowed).
+ * This fixes two defects of a naive `startsWith('---')` + `indexOf('---', 3)`:
+ *   (a) a run-together `---foo` is NOT a valid opener (needs an end-of-line after
+ *       the dashes), and
+ *   (b) a `---` substring INSIDE a value (e.g. `description: a --- b`) no longer
+ *       prematurely closes the block, so later keys (`type:` …) survive.
+ *
+ * @param sourcePath optional path of the file being parsed; when a block opens
+ *   with `---` but is never closed (malformed frontmatter) a `warn` diagnostic is
+ *   logged naming the file, mirroring Claude Code's `logForDebugging(...Failed to
+ *   parse YAML frontmatter in ${sourcePath})`, instead of silently swallowing it.
  */
-export function parseFrontmatter(raw: string): {
+export function parseFrontmatter(raw: string, sourcePath?: string): {
   frontmatter: Record<string, string>;
   body: string;
 } {
-  const trimmed = raw.trimStart();
-  if (!trimmed.startsWith('---')) {
+  const rawLines = raw.split('\n');
+  // Allow leading blank lines before the opener (mirrors the previous trimStart).
+  let openIdx = 0;
+  while (openIdx < rawLines.length && rawLines[openIdx].trim() === '') openIdx++;
+  // Opener must be a line that is EXACTLY `---` (trailing whitespace / CR ok).
+  if (openIdx >= rawLines.length || rawLines[openIdx].replace(/\r$/, '').trim() !== '---') {
     return { frontmatter: {}, body: raw };
   }
 
-  const endIndex = trimmed.indexOf('---', 3);
-  if (endIndex === -1) {
+  // Closer: the first SUBSEQUENT line that is exactly `---` (line-anchored).
+  let closeIdx = -1;
+  for (let i = openIdx + 1; i < rawLines.length; i++) {
+    if (rawLines[i].replace(/\r$/, '').trim() === '---') { closeIdx = i; break; }
+  }
+  if (closeIdx === -1) {
+    // Opened but never closed → malformed. Surface it (named) rather than silently
+    // treating the whole file as a frontmatter-less body.
+    coreLog(
+      'memory',
+      `Failed to parse frontmatter${sourcePath ? ` in ${sourcePath}` : ''}: unterminated '---' block`,
+      undefined,
+      'warn',
+    );
     return { frontmatter: {}, body: raw };
   }
 
-  const fmBlock = trimmed.slice(3, endIndex).trim();
-  const body = trimmed.slice(endIndex + 3).replace(/^\r?\n/, '');
+  const fmBlock = rawLines.slice(openIdx + 1, closeIdx).join('\n').trim();
+  const body = rawLines.slice(closeIdx + 1).join('\n').replace(/^\r?\n/, '');
 
   const frontmatter: Record<string, string> = {};
   const lines = fmBlock.split('\n');
@@ -990,7 +1043,7 @@ export class MemoryManager {
         // Bounded read: skip a runaway memory file rather than slurping it whole.
         if (stat.size > MAX_MEMORY_FILE_BYTES) continue;
         const raw = fs.readFileSync(filePath, 'utf-8');
-        const { frontmatter, body } = parseFrontmatter(raw);
+        const { frontmatter, body } = parseFrontmatter(raw, filePath);
         const sanitizedBody = sanitizeContent(body.trim(), filePath);
         const ageDays = memoryAgeDays(stat.mtimeMs);
         const freshness = memoryFreshness(ageDays);
@@ -1384,7 +1437,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
           if (this._statSync(candidate).size > MAX_MEMORY_FILE_BYTES) continue;
         } catch { continue; }
         const raw = fs.readFileSync(candidate, 'utf-8');
-        const { body } = parseFrontmatter(raw);
+        const { body } = parseFrontmatter(raw, candidate);
         const content = sanitizeContent(body.trim(), candidate);
         if (content.length > 0) out.push(content);
       }
@@ -1565,12 +1618,16 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
         const filePath = path.join(parentDir, entry.name);
         try {
           const raw = await fsp.readFile(filePath, 'utf-8');
-          const { frontmatter, body } = parseFrontmatter(raw);
+          const { frontmatter, body } = parseFrontmatter(raw, filePath);
 
-          // Conditional rules: skip if paths: is set and doesn't match
+          // Conditional rules: skip if paths: is set and doesn't match. A rule
+          // whose patterns normalize to "unconditional" (all `**`, or empty) is
+          // loaded eagerly rather than filtered per-file (normalizeFrontmatterPaths
+          // returns null), and a trailing `/**` is stripped so `src/**` matches
+          // `src/foo.ts` via the same subtree semantics as `src`.
           if (frontmatter.paths) {
-            const globs = parseFrontmatterList(frontmatter.paths);
-            if (globs.length > 0 && !matchesPaths(globs, currentFile)) {
+            const globs = normalizeFrontmatterPaths(parseFrontmatterList(frontmatter.paths));
+            if (globs && !matchesPaths(globs, currentFile)) {
               continue;
             }
           }
