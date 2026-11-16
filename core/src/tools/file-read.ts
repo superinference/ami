@@ -720,7 +720,10 @@ async function readFileInRange(
     // Reaching this line means at least one line exists past the window, so the
     // output is being capped by `limit` (not EOF) — signal that to the caller.
     if (lineNum > offset + limit) { hasMore = true; break; }
-    if (lineNum > offset) lines.push(`${lineNum}\t${line}`);
+    // Normalize leading tabs in the SOURCE line (not the gutter separator) so a
+    // streamed range renders indentation tab-width-independently, matching the
+    // full-read path. See convertLeadingTabsToSpaces.
+    if (lineNum > offset) lines.push(`${lineNum}\t${convertLeadingTabsToSpaces(line)}`);
   }
   stream.destroy();
   // `scannedLines` is the number of lines actually seen. When the window yields no
@@ -729,10 +732,40 @@ async function readFileInRange(
   return { text: lines.join('\n'), hasMore, scannedLines: lineNum };
 }
 
+/**
+ * Actionable stub returned when a FULL re-read hits the unchanged-file cache.
+ * Beyond stating the fact, it tells the model what to DO — reuse the earlier
+ * Read tool_result instead of looping on re-reads — so a model does not re-issue
+ * the read or stall. Mirrors Claude Code's FILE_UNCHANGED_STUB (FileReadTool/prompt.ts).
+ */
+export const FILE_UNCHANGED_STUB =
+  'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.';
+
+/**
+ * Marker prefixing the current working directory in a file-not-found error, so
+ * the model (and any UI renderer keying off the marker) can self-correct a wrong
+ * relative/absolute path assumption. Mirrors Claude Code's FILE_NOT_FOUND_CWD_NOTE
+ * (utils/file.ts).
+ */
+export const FILE_NOT_FOUND_CWD_NOTE = 'Note: your current working directory is';
+
+/**
+ * Replace each run of leading tabs on every line with 2 spaces per tab so
+ * rendered file content has consistent, tab-width-independent indentation — a
+ * terminal expands a raw `\t` to a variable number of cells (commonly 8), which
+ * misaligns the line-number gutter. Fast-paths the common tab-free case to avoid
+ * the per-line scan. Mirrors Claude Code's convertLeadingTabsToSpaces (utils/file.ts).
+ */
+export function convertLeadingTabsToSpaces(content: string): string {
+  if (!content.includes('\t')) return content;
+  // eslint-disable-next-line security/detect-unsafe-regex -- anchored ^\t+ per line via /m; linear
+  return content.replace(/^\t+/gm, (tabs) => '  '.repeat(tabs.length));
+}
+
 export const fileReadTool: ToolDefinition = {
   name: 'file_read',
   description:
-    'Read a file from the filesystem. Returns file content with line numbers. For image files (.png, .jpg, .jpeg, .gif, .webp) returns base64-encoded content.',
+    'Read a file from the filesystem. Returns file content with line numbers (cat -n format). For image files (.png, .jpg, .jpeg, .gif, .webp) returns base64-encoded content presented visually. Can read PDF files (.pdf) — for large PDFs (more than 10 pages) you MUST provide the pages parameter to read a specific page range (e.g. pages: "1-5"); maximum 20 pages per request. Can read Jupyter notebooks (.ipynb) and returns all cells with their outputs, combining code, text, and visualizations. This tool reads files only, not directories — to list a directory, use an ls command via the bash tool.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -825,13 +858,18 @@ export const fileReadTool: ToolDefinition = {
         let suggestions = '';
         const similar = suggestSimilarPaths(resolved, path.dirname(resolved));
         if (similar.length > 0) suggestions = `\nDid you mean: ${similar.join(', ')}?`;
+        // Always surface the cwd so the model (and UI renderers keying off the
+        // marker) can self-correct a wrong relative/absolute path assumption —
+        // the note is UNCONDITIONAL (Claude Code parity: FILE_NOT_FOUND_CWD_NOTE
+        // is appended to every not-found error regardless of a suggestion).
+        suggestions += `\n${FILE_NOT_FOUND_CWD_NOTE} ${context.cwd}.`;
         // PARITY (dropped-repo-folder recovery): when the model built an absolute
         // path as a SIBLING of the project root instead of inside it (reachable
         // when a broader read root is permitted), surface the corrected path
         // under cwd. Mirrors Claude Code's suggestPathUnderCwd note.
         const underCwd = suggestPathUnderCwd(resolved, context.cwd);
         if (underCwd) {
-          suggestions += `\nNote: your current working directory is ${context.cwd}. Did you mean ${underCwd}?`;
+          suggestions += ` Did you mean ${underCwd}?`;
         }
         return {
           output: `Error: File not found or not readable: ${resolved}${suggestions}`,
@@ -863,7 +901,7 @@ export const fileReadTool: ToolDefinition = {
     const stat = await fs.promises.stat(resolved);
     if (stat.isDirectory()) {
       return {
-        output: `Error: ${resolved} is a directory, not a file.`,
+        output: `Error: ${resolved} is a directory, not a file. This tool can only read files, not directories. To read a directory, use an ls command via the bash tool.`,
         isError: true,
       };
     }
@@ -896,7 +934,9 @@ export const fileReadTool: ToolDefinition = {
         fs.closeSync(fd);
         const partial = buf.slice(0, bytesRead).toString('utf-8');
         const lines = partial.split('\n').slice(0, PARTIAL_VIEW_LINES);
-        const numbered = lines.map((l, i) => `${i + 1}\t${l}`).join('\n');
+        // Normalize leading tabs in the SOURCE line (not the gutter separator),
+        // matching the full/range read paths. See convertLeadingTabsToSpaces.
+        const numbered = lines.map((l, i) => `${i + 1}\t${convertLeadingTabsToSpaces(l)}`).join('\n');
         const totalLines = partial.split('\n').length;
         context.filesRead?.add(resolved);
         // Flag the cache so a later full-file overwrite is blocked until the model
@@ -1202,7 +1242,7 @@ export const fileReadTool: ToolDefinition = {
     const cached = fileCache.get(resolved);
     if (cached && input.offset === undefined && input.limit === undefined) {
       const lineCount = cached.content.split('\n').length;
-      return { output: `File unchanged since last read: ${resolved} (${lineCount} lines)` };
+      return { output: `${FILE_UNCHANGED_STUB} (${resolved}, ${lineCount} lines)` };
     }
 
     // Use streaming for explicit range reads to avoid loading entire file
@@ -1213,7 +1253,7 @@ export const fileReadTool: ToolDefinition = {
       // range dedup short-circuit (a brand-new range still falls through below).
       if (fileCache.isRangeUnchanged(resolved, offset, limit)) {
         context.filesRead?.add(resolved);
-        return { output: `File unchanged since last read: ${resolved} (lines ${offset + 1}-${offset + limit})` };
+        return { output: `${FILE_UNCHANGED_STUB} (${resolved}, lines ${offset + 1}-${offset + limit})` };
       }
       fileCache.trackMtime(resolved, stat.mtimeMs);
       const { text: rawRangeText, hasMore, scannedLines } = await readFileInRange(resolved, offset, limit, context.abortSignal);
@@ -1284,7 +1324,9 @@ export const fileReadTool: ToolDefinition = {
     const numbered = selectedLines
       .map((line, i) => {
         const lineNum = String(startLine + i + 1).padStart(lineNumberWidth);
-        return `${lineNum}\t${line}`;
+        // Normalize leading tabs in the SOURCE line (not the gutter separator) so
+        // indentation renders tab-width-independently. See convertLeadingTabsToSpaces.
+        return `${lineNum}\t${convertLeadingTabsToSpaces(line)}`;
       })
       .join('\n');
 
