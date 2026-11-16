@@ -281,7 +281,7 @@ export class CronScheduler {
     };
   }
 
-  create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number }): CronJob {
+  create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number; maxAgeDays?: number }): CronJob {
     if (this.jobs.size >= MAX_JOBS) {
       throw new Error(`Maximum of ${MAX_JOBS} cron jobs reached. Delete existing jobs first.`);
     }
@@ -295,6 +295,13 @@ export class CronScheduler {
     // or never, both of which are silent surprises).
     if (opts.maxRuns !== undefined && (!Number.isInteger(opts.maxRuns) || opts.maxRuns < 1)) {
       throw new Error(`maxRuns must be a positive integer (got ${opts.maxRuns}).`);
+    }
+    // FUNCTIONAL: expose the per-job expiry window at creation. Must be a
+    // non-negative integer number of days; 0 means "never expire" (unlimited),
+    // mirroring Claude's recurringMaxAgeMs===0 sentinel. A fractional/negative
+    // value would silently truncate or disable expiry, so reject it up front.
+    if (opts.maxAgeDays !== undefined && (!Number.isInteger(opts.maxAgeDays) || opts.maxAgeDays < 0)) {
+      throw new Error(`maxAgeDays must be a non-negative integer (got ${opts.maxAgeDays}); use 0 for unlimited.`);
     }
     const recurring = opts.recurring ?? true;
     // Runaway-schedule guard: a recurring job may not fire more often than the floor.
@@ -331,6 +338,7 @@ export class CronScheduler {
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.permanent ? { permanent: true } : {}),
       ...(opts.maxRuns !== undefined ? { maxRuns: opts.maxRuns, runCount: 0 } : {}),
+      ...(opts.maxAgeDays !== undefined ? { maxAgeDays: opts.maxAgeDays } : {}),
     };
     this.jobs.set(id, job);
     if (job.durable) this.saveDurable();
@@ -862,10 +870,22 @@ export class CronScheduler {
     const [min, hour, dom, mon, dow] = parts;
     const pieces: string[] = [];
 
+    const minPlain = min !== '*' && !min.includes('/') && !min.includes(',') && !min.includes('-');
+    const hourStepMatch = /^\*\/(\d+)$/.exec(hour);
+
     // A specific minute + specific hour reads best as a 12-hour wall-clock time.
-    if (min !== '*' && !min.includes('/') && !min.includes(',') && !min.includes('-') &&
+    if (minPlain &&
         hour !== '*' && !hour.includes('/') && !hour.includes(',') && !hour.includes('-')) {
       pieces.push(`at ${to12Hour(parseInt(hour, 10), parseInt(min, 10))}`);
+    } else if (hourStepMatch && minPlain) {
+      // "every N hours at :MM": an hour STEP paired with a fixed minute. The :MM
+      // suffix is dropped when the minute is :00 (the common top-of-hour case), so
+      // "0 */2 * * *" reads "every 2 hours" while "30 */2 * * *" reads
+      // "every 2 hours at :30". Mirrors Claude's cronToHuman every-N-hours branch.
+      const n = parseInt(hourStepMatch[1], 10);
+      const m = parseInt(min, 10);
+      const suffix = m === 0 ? '' : ` at :${String(m).padStart(2, '0')}`;
+      pieces.push((n === 1 ? 'every hour' : `every ${n} hours`) + suffix);
     } else {
       if (min.startsWith('*/')) {
         const n = min.slice(2);
@@ -880,6 +900,13 @@ export class CronScheduler {
     if (mon !== '*') pieces.push(`in month ${mon}`);
     if (dow !== '*') {
       const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      // The Monday-through-Friday range reads best as "Weekdays"; keep AMI's
+      // explicit day expansion alongside it (superset) so the prose names the
+      // concept Claude labels while still showing the underlying range.
+      if (dow === '1-5') {
+        pieces.push('on Weekdays (Mon to Fri)');
+        return pieces.join(', ') || 'every minute';
+      }
       const dayNames = dow.split(',').map(d => {
         if (d.includes('-')) {
           const [lo, hi] = d.split('-').map(Number);
@@ -963,6 +990,9 @@ export class CronScheduler {
     // cannot smuggle in a job that fires forever or is retired with a bogus count.
     if (j.maxRuns !== undefined && (!Number.isInteger(j.maxRuns) || (j.maxRuns as number) < 1)) return false;
     if (j.runCount !== undefined && (!Number.isInteger(j.runCount) || (j.runCount as number) < 0)) return false;
+    // A corrupt on-disk maxAgeDays (negative / fractional) could silently disable or
+    // truncate expiry, so reject the whole entry rather than trust it.
+    if (j.maxAgeDays !== undefined && (!Number.isInteger(j.maxAgeDays) || (j.maxAgeDays as number) < 0)) return false;
     return true;
   }
 
