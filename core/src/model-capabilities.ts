@@ -1083,6 +1083,44 @@ export function clampEffortLevel(requested: ThinkingLevel, maxLevel: ThinkingLev
 }
 
 /**
+ * The thinking level a model runs at when the user asks for "auto" / the default
+ * (no explicit level). Resolved PER MODEL from its detected
+ * {@link ModelCapabilities} — a reasoning model yields its
+ * `defaultThinkingLevel` (e.g. Gemini-flash defaults to `low`, Claude to
+ * `medium`), while a non-reasoning model yields `off` because it cannot think.
+ * This is the resolver behind the `/thinking auto` sentinel: it lets the UI show
+ * "auto (currently <level>)" with the level that will actually be applied on the
+ * active model. Mirrors Claude's per-model default-effort resolution
+ * (commands/effort/effort.tsx `auto` state). An empty / unknown id → `off`.
+ */
+export function getDefaultThinkingLevel(modelId: string): ThinkingLevel {
+  return getModelCapabilities(modelId)?.defaultThinkingLevel ?? 'off';
+}
+
+/**
+ * Step a thinking level one rung in `direction` (+1 up, -1 down) with wraparound,
+ * so an interactive cycle (`/thinking up`/`down`, a keybinding) never lands
+ * out of range. When `includeMax` is false the top `max` rung is skipped — used
+ * where a model does not accept the `max` effort tier so cycling clamps to `high`
+ * instead of offering an unusable level. Mirrors Claude's ModelPicker effort
+ * cycling with wraparound + clamp-to-high (components/ModelPicker.tsx). An
+ * unrecognized `current` is treated as the first rung (`off`).
+ */
+export function cycleThinkingLevel(
+  current: ThinkingLevel,
+  direction: 1 | -1,
+  includeMax = true,
+): ThinkingLevel {
+  const scale = (includeMax ? THINKING_LEVELS : THINKING_LEVELS.filter(l => l !== 'max')) as readonly ThinkingLevel[];
+  const idx = scale.indexOf(current);
+  // An unknown current (or a 'max' excluded by includeMax=false) starts the walk
+  // from the first rung so direction still produces a valid in-range level.
+  const base = idx === -1 ? 0 : idx;
+  const next = (base + direction + scale.length) % scale.length;
+  return scale[next];
+}
+
+/**
  * Whether the model accepts the top `max` reasoning-effort tier.
  *
  * Per Anthropic's API docs the `max` effort value is accepted ONLY by the
