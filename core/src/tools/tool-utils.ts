@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { ToolResult } from '../types';
 import { isCredentialPath } from './bash-security';
-import { validatePathExpansionSafety } from '../utils/path';
+import { validatePathExpansionSafety, normalizeCaseForComparison } from '../utils/path';
 
 /**
  * Dependency seam so tests can drive branches that are otherwise shadowed by
@@ -69,6 +69,11 @@ export const BLOCKED_PATHS = [
   // dump raw RAM (leaking any process's secrets) or hard-hang the reader;
   // /proc/kcore exposes the live kernel core image for the same reason.
   '/dev/mem', '/dev/kmem', '/dev/port', '/proc/kcore',
+  // PARITY ADD: complete the hang-inducing device set (Claude Code's
+  // BLOCKED_DEVICE_PATHS). `/dev/full` always reports ENOSPC and produces
+  // infinite zero bytes on read; `/dev/tty` and `/dev/console` block forever
+  // waiting on terminal input. Reading any of these hangs or floods the tool.
+  '/dev/full', '/dev/tty', '/dev/console',
 ];
 
 export function isBlockedPath(filePath: string): boolean {
@@ -257,16 +262,25 @@ const SENSITIVE_HOME_FILES = [
 ];
 
 export function isSensitivePath(filePath: string): boolean {
-  const normalized = path.resolve(filePath);
-  if (SENSITIVE_PATH_PREFIXES.some(p => normalized === p || normalized.startsWith(p))) return true;
+  // Case-fold the WHOLE path for the comparison on case-insensitive filesystems
+  // (Windows NTFS, macOS APFS/HFS+). Without this, `~/.SSH`, `~/.Aws`, or
+  // `/ETC/shadow` would slip past the sensitive-path guard on those platforms
+  // and read a credential store the check is meant to protect. On case-sensitive
+  // Linux the path is returned unchanged, so behavior there is unaffected. Shares
+  // the single canonical fold helper used by the containment checks (utils/path).
+  const normalized = normalizeCaseForComparison(path.resolve(filePath));
+  if (SENSITIVE_PATH_PREFIXES.some(p => {
+    const fp = normalizeCaseForComparison(p);
+    return normalized === fp || normalized.startsWith(fp);
+  })) return true;
   const home = process.env.HOME || process.env.USERPROFILE || '';
   if (!home) return false;
   for (const dir of SENSITIVE_HOME_DIRS) {
-    const dirPath = path.join(home, dir);
+    const dirPath = normalizeCaseForComparison(path.join(home, dir));
     if (normalized === dirPath || normalized.startsWith(dirPath + path.sep)) return true;
   }
   for (const file of SENSITIVE_HOME_FILES) {
-    if (normalized === path.join(home, file)) return true;
+    if (normalized === normalizeCaseForComparison(path.join(home, file))) return true;
   }
   return false;
 }
@@ -570,6 +584,10 @@ const SECRET_RULES: SecretRule[] = [
   // temp credentials) and the A3T…/ABIA/ACCA prefixes, not just long-lived AKIA.
   { id: 'aws-access-token', source: '(?:^|[^a-zA-Z0-9])((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})' },
   { id: 'gcp-api-key', source: '(?:^|[^a-zA-Z0-9])(AIza[a-zA-Z0-9_-]{35})' },
+  // GCP / Vertex AI service-account identities (`<name>@<project>.iam.gserviceaccount.com`).
+  // These name a privileged service identity; redacting + detecting them keeps a
+  // leaked service-account email out of shared transcripts (Claude Code parity).
+  { id: 'gcp-service-account', source: '(?:^|[^a-zA-Z0-9])([a-z0-9-]+@[a-z0-9-]+\\.iam\\.gserviceaccount\\.com)' },
   // Google OAuth access/refresh tokens (`ya29.<token>`).
   { id: 'google-oauth-token', source: '(?:^|[^a-zA-Z0-9])(ya29\\.[0-9A-Za-z_-]{20,})' },
   // Stripe secret / restricted keys (`sk_live_`, `rk_test_`, …) — underscore-delimited.
@@ -783,6 +801,18 @@ export function deduplicateToolCalls(
  * Symlinks at the target path could redirect writes to arbitrary files.
  * If the file doesn't exist yet, that's fine — allow writes to new files.
  */
+/** Glob metacharacters that must never appear in a NEW write/create target.
+ *  A create path like `src/*.ts` or `out/{a,b}` would pass base-directory
+ *  validation but resolve to an unintended literal path (the write tool never
+ *  expands globs), so a non-existent target containing any of `* ? [ ] { }` is
+ *  hard-denied (Claude Code `GLOB_PATTERN_REGEX`). SUPERSET over Claude: the
+ *  block is scoped to NON-existent targets, so editing an EXISTING literal file
+ *  whose name legitimately contains brackets (e.g. a Next.js `[id].tsx` dynamic
+ *  route) still works — there is no base-dir bypass when the literal path
+ *  already exists on disk. */
+// eslint-disable-next-line no-useless-escape -- explicit class members for clarity
+const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
+
 export function validateFileWritePath(filePath: string): { valid: boolean; error?: string } {
   const nullCheck = validateFilePath(filePath);
   if (nullCheck) return { valid: false, error: nullCheck.output };
@@ -793,7 +823,15 @@ export function validateFileWritePath(filePath: string): { valid: boolean; error
       return { valid: false, error: `Error: "${filePath}" is a symlink — write blocked to prevent symlink redirect attack.` };
     }
   } catch {
-    // File doesn't exist yet — that's fine for new file creation
+    // File doesn't exist yet — a create. A glob metacharacter in a create target
+    // is a base-dir-validation bypass, so reject it (write tools use the path
+    // literally and never expand globs).
+    if (GLOB_PATTERN_REGEX.test(filePath)) {
+      return {
+        valid: false,
+        error: `Error: "${filePath}" contains glob metacharacters (*?[]{}). Provide a single literal file path for write/create operations.`,
+      };
+    }
   }
 
   return { valid: true };

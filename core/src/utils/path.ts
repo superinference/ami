@@ -26,7 +26,7 @@ export const _pathHooks: { platform: NodeJS.Platform } = { platform: process.pla
  *
  * [FUNCTIONAL CHANGE] New helper — case-insensitive path containment parity.
  */
-function normalizeCaseForComparison(p: string): string {
+export function normalizeCaseForComparison(p: string): string {
   const plat = _pathHooks.platform;
   if (plat === 'win32' || plat === 'darwin') {
     return p.toLowerCase();
