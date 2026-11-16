@@ -3,9 +3,10 @@ import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as child_process from 'child_process';
-import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
+import { ToolDefinition, ToolContext, ToolResult, EngineConfig, ToolInputSchema, JsonSchemaProperty } from '../types';
 import { createDefaultTools } from './index';
 import { coerceBool } from '../utils/coerce';
+import { isEnvTruthy } from '../analytics';
 import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
 import { getCurrentTeam, registerTeamMember, setTeamMemberActive } from './team';
@@ -442,6 +443,144 @@ export function filterToolsForAsyncAgent(tools: ToolDefinition[]): ToolDefinitio
   return tools.filter(t => ASYNC_AGENT_ALLOWED_TOOLS.has(t.name));
 }
 
+/**
+ * Env knob that globally disables background (`run_in_background`) subagents —
+ * mirrors Claude Code's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`. When truthy the
+ * `run_in_background` field is OMITTED from the advertised input schema (so the
+ * model is never offered the flag) AND a late attempt to set it (e.g. a stale /
+ * replayed call) is rejected at runtime. Operators/CI use it to turn detached
+ * agent spawning off in environments where unsupervised background work is
+ * disallowed.
+ */
+export const DISABLE_BACKGROUND_TASKS_ENV = 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS';
+
+/** True when background subagents are disabled via {@link DISABLE_BACKGROUND_TASKS_ENV}. */
+export function isBackgroundTasksDisabled(): boolean {
+  return isEnvTruthy(process.env[DISABLE_BACKGROUND_TASKS_ENV]);
+}
+
+/** Valid values for the per-spawn `system_prompt_mode` knob. */
+export const SYSTEM_PROMPT_MODES = ['default', 'replace', 'append'] as const;
+export type SystemPromptMode = (typeof SYSTEM_PROMPT_MODES)[number];
+
+/**
+ * System-prompt addendum appended to a subagent that is spawned as a named member
+ * of an active team (mirrors Claude Code's teammatePromptAddendum). AMI already
+ * has all the machinery — `send_message` (with `to: "*"` broadcast), team
+ * mailboxes with eager delivery, the shared team task list — but nothing TOLD a
+ * teammate that (a) it is one agent in a team, (b) it reaches teammates via
+ * `send_message({ to: "<name>" })`, (c) a plain text reply is invisible to
+ * teammates so `send_message` is REQUIRED, and (d) the user talks mainly to the
+ * lead and work is coordinated through the task system + messaging.
+ */
+export const TEAMMATE_PROMPT_ADDENDUM =
+  `You are running as an agent in a team of agents collaborating on this work.
+- Reach a teammate with the send_message tool: send_message({ to: "<name>", message: ... }); broadcast to everyone with to: "*".
+- CRITICAL: just writing a response in text is NOT visible to others on your team — you MUST use the send_message tool to communicate with them.
+- The user interacts primarily with the team lead. Your work is coordinated through the shared task system and teammate messaging, not by replying in plain text.`;
+
+/**
+ * Build the caller-requested thoroughness directive for an `explore`-mode
+ * sub-agent (mirrors Claude Code's exploreAgent thoroughness parameter). The
+ * explore prompt tells the agent to "adapt your search breadth to the
+ * thoroughness the caller requests"; this turns an abstract instruction into a
+ * concrete, caller-chosen depth dial so a "very thorough" request produces a
+ * comprehensive multi-location/naming-convention sweep and a "quick" request a
+ * single-pass lookup.
+ */
+export function buildThoroughnessDirective(level: string): string {
+  switch (level) {
+    case 'quick':
+      return '[Thoroughness: quick] Do a fast, single-pass lookup — the smallest search that answers the question, then stop.';
+    case 'very thorough':
+      return `[Thoroughness: very thorough] Do a comprehensive sweep: search across multiple locations and alternate naming conventions, run well beyond the ${EXPLORE_AGENT_MIN_QUERIES}-query floor, and cross-check before concluding.`;
+    case 'medium':
+    default:
+      return '[Thoroughness: medium] Do moderate exploration — check the obvious locations and a couple of alternate strategies before reporting.';
+  }
+}
+
+/** Valid values for the explore `thoroughness` dial. */
+export const EXPLORE_THOROUGHNESS_LEVELS = ['quick', 'medium', 'very thorough'] as const;
+
+/**
+ * Static property set for the task tool's input schema. Extracted to a named
+ * constant so the schema can be rebuilt per-advertisement (the `inputSchema`
+ * getter below omits `run_in_background` when background tasks are disabled).
+ */
+const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
+  prompt: {
+    type: 'string',
+    description: 'The task for the subagent to perform.',
+  },
+  mode: {
+    type: 'string',
+    description: 'Agent mode. "explore" gives read-only tools only (state the desired thoroughness in the prompt or via the thoroughness field: "quick", "medium", or "very thorough"). "general" gives all tools including nested task (up to max depth). "fork" clones parent conversation context.',
+    enum: ['explore', 'general', 'fork'],
+  },
+  permission_mode: {
+    type: 'string',
+    description: 'Permission mode for the spawned subagent (overrides the default). E.g. "plan", "acceptEdits", "auto-allow". Distinct from "mode", which selects the tool tier.',
+    enum: [...PERMISSION_MODES],
+  },
+  isolation: {
+    type: 'string',
+    enum: ['worktree'],
+    description: 'Run the subagent in an isolated git worktree.',
+  },
+  subagent_type: {
+    type: 'string',
+    description: 'Name of an agent definition to use (from .ami/agents/). Overrides mode, tools, and system prompt.',
+  },
+  model: {
+    type: 'string',
+    description: 'Model override. Accepts full names or aliases: "sonnet", "opus", "haiku", "gpt-4o", "gemini-pro". The special value "inherit" runs the subagent on the same model as the main conversation.',
+  },
+  system_prompt: {
+    type: 'string',
+    description: 'Inline system prompt for this one spawn, decoupled from any on-disk agent definition. By default it REPLACES the subagent\'s base system prompt; use system_prompt_mode:"append" to layer it on top of the base stance instead.',
+  },
+  system_prompt_mode: {
+    type: 'string',
+    enum: [...SYSTEM_PROMPT_MODES],
+    description: 'How system_prompt is applied: "replace"/"default" fully replaces the subagent\'s base system prompt; "append" appends it to the base (explore/general/named-agent only — fork has no replaceable base). Ignored when system_prompt is absent.',
+  },
+  thoroughness: {
+    type: 'string',
+    enum: [...EXPLORE_THOROUGHNESS_LEVELS],
+    description: 'Explore-mode search depth dial: "quick" for a single-pass lookup, "medium" for moderate exploration, "very thorough" for a comprehensive multi-location/naming-convention sweep. Only affects mode:"explore".',
+  },
+  cwd: {
+    type: 'string',
+    description: 'Override working directory for the subagent. Must be an absolute path.',
+  },
+  name: {
+    type: 'string',
+    description: 'Name for the agent (addressable via send_message). Must be unique.',
+  },
+  description: {
+    type: 'string',
+    description: 'Short human-readable label for the task (3-5 words).',
+  },
+  run_in_background: {
+    type: 'boolean',
+    description: 'When true, runs the subagent in the background and returns a task_id immediately instead of waiting for completion.',
+  },
+  resume: {
+    type: 'string',
+    description: 'Resume a previously stopped agent by task ID or name. The prompt is sent as a follow-up message to the existing agent context.',
+  },
+  effort: {
+    type: 'string',
+    description: 'Reasoning effort for this subagent. Controls thinking depth.',
+    enum: ['low', 'medium', 'high', 'max'],
+  },
+  max_turns: {
+    type: 'number',
+    description: 'Maximum number of agentic turns (API round-trips) for this subagent before it stops. Caps a mode-only general/explore/fork subagent that has no named agent definition to set one. Must be a positive integer.',
+  },
+};
+
 export const taskTool: ToolDefinition = {
   name: 'task',
   description:
@@ -464,67 +603,16 @@ export const taskTool: ToolDefinition = {
     'With run_in_background:true the agent runs detached and you collect it with task_output. Set ' +
     'isolation:"worktree" to give the agent an isolated copy of the repo (auto-removed if it makes no changes). ' +
     'Use resume with an agent id/name to continue a prior agent with its context preserved.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      prompt: {
-        type: 'string',
-        description: 'The task for the subagent to perform.',
-      },
-      mode: {
-        type: 'string',
-        description: 'Agent mode. "explore" gives read-only tools only (state the desired thoroughness in the prompt: "quick", "medium", or "very thorough"). "general" gives all tools including nested task (up to max depth). "fork" clones parent conversation context.',
-        enum: ['explore', 'general', 'fork'],
-      },
-      permission_mode: {
-        type: 'string',
-        description: 'Permission mode for the spawned subagent (overrides the default). E.g. "plan", "acceptEdits", "auto-allow". Distinct from "mode", which selects the tool tier.',
-        enum: [...PERMISSION_MODES],
-      },
-      isolation: {
-        type: 'string',
-        enum: ['worktree'],
-        description: 'Run the subagent in an isolated git worktree.',
-      },
-      subagent_type: {
-        type: 'string',
-        description: 'Name of an agent definition to use (from .ami/agents/). Overrides mode, tools, and system prompt.',
-      },
-      model: {
-        type: 'string',
-        description: 'Model override. Accepts full names or aliases: "sonnet", "opus", "haiku", "gpt-4o", "gemini-pro". The special value "inherit" runs the subagent on the same model as the main conversation.',
-      },
-      cwd: {
-        type: 'string',
-        description: 'Override working directory for the subagent. Must be an absolute path.',
-      },
-      name: {
-        type: 'string',
-        description: 'Name for the agent (addressable via send_message). Must be unique.',
-      },
-      description: {
-        type: 'string',
-        description: 'Short human-readable label for the task (3-5 words).',
-      },
-      run_in_background: {
-        type: 'boolean',
-        description: 'When true, runs the subagent in the background and returns a task_id immediately instead of waiting for completion.',
-      },
-      resume: {
-        type: 'string',
-        description: 'Resume a previously stopped agent by task ID or name. The prompt is sent as a follow-up message to the existing agent context.',
-      },
-      effort: {
-        type: 'string',
-        description: 'Reasoning effort for this subagent. Controls thinking depth.',
-        enum: ['low', 'medium', 'high', 'max'],
-      },
-      max_turns: {
-        type: 'number',
-        description: 'Maximum number of agentic turns (API round-trips) for this subagent before it stops. Caps a mode-only general/explore/fork subagent that has no named agent definition to set one. Must be a positive integer.',
-      },
-    },
-    required: ['prompt'],
+  // Rebuilt per advertisement so `run_in_background` can be dynamically OMITTED
+  // when background tasks are disabled via CLAUDE_CODE_DISABLE_BACKGROUND_TASKS —
+  // the model is then never offered the flag (mirrors Claude Code's
+  // fullInputSchema().omit({run_in_background:true}) gate).
+  get inputSchema(): ToolInputSchema {
+    const properties: Record<string, JsonSchemaProperty> = { ...TASK_TOOL_PROPERTIES };
+    if (isBackgroundTasksDisabled()) {
+      delete properties.run_in_background;
+    }
+    return { type: 'object', properties, required: ['prompt'] };
   },
   isReadOnly: false,
 
@@ -539,6 +627,12 @@ export const taskTool: ToolDefinition = {
     const resumeTarget = input.resume as string | undefined;
     const effortOverride = input.effort as string | undefined;
     const requestedPermissionMode = input.permission_mode as string | undefined;
+    const customSystemPromptRaw = input.system_prompt as string | undefined;
+    const customSystemPrompt = customSystemPromptRaw && customSystemPromptRaw.trim().length > 0
+      ? customSystemPromptRaw
+      : undefined;
+    const systemPromptMode = (input.system_prompt_mode as string | undefined) || 'default';
+    const thoroughness = input.thoroughness as string | undefined;
 
     if (!prompt || prompt.trim().length === 0) {
       return { output: 'Error: prompt must not be empty.', isError: true };
@@ -547,6 +641,32 @@ export const taskTool: ToolDefinition = {
     if (requestedPermissionMode && !(PERMISSION_MODES as readonly string[]).includes(requestedPermissionMode)) {
       return {
         output: `Error: invalid permission_mode "${requestedPermissionMode}". Valid values: ${PERMISSION_MODES.join(', ')}.`,
+        isError: true,
+      };
+    }
+
+    if (input.system_prompt_mode !== undefined && !(SYSTEM_PROMPT_MODES as readonly string[]).includes(systemPromptMode)) {
+      return {
+        output: `Error: invalid system_prompt_mode "${systemPromptMode}". Valid values: ${SYSTEM_PROMPT_MODES.join(', ')}.`,
+        isError: true,
+      };
+    }
+
+    if (thoroughness !== undefined && !(EXPLORE_THOROUGHNESS_LEVELS as readonly string[]).includes(thoroughness)) {
+      return {
+        output: `Error: invalid thoroughness "${thoroughness}". Valid values: ${EXPLORE_THOROUGHNESS_LEVELS.join(', ')}.`,
+        isError: true,
+      };
+    }
+
+    // Background tasks can be globally disabled by CLAUDE_CODE_DISABLE_BACKGROUND_TASKS.
+    // The flag is already omitted from the advertised schema when disabled; a stale /
+    // replayed call that still sets it is rejected here so it cannot silently spawn a
+    // detached agent in an environment that forbids them.
+    if (coerceBool(input.run_in_background) && isBackgroundTasksDisabled()) {
+      return {
+        output: `Error: background subagents are disabled (${DISABLE_BACKGROUND_TASKS_ENV} is set). ` +
+          'Run this task in the foreground (omit run_in_background), or unset the env knob.',
         isError: true,
       };
     }
@@ -811,6 +931,34 @@ export const taskTool: ToolDefinition = {
       ? (mode === 'explore' ? EXPLORE_SUBAGENT_SYSTEM_PROMPT : SUBAGENT_SYSTEM_PROMPT)
       : undefined;
 
+    // The subagent's base system prompt (named-agent identity or the lean
+    // mode-only stance); undefined for `fork`, which inherits the parent's full
+    // stance assembled by the engine (no string base here to replace/append to).
+    const baseSystemPrompt = agentSystemPrompt || modeOnlySystemPrompt;
+
+    // Per-spawn `system_prompt` knob (mirrors Claude Code's config.systemPrompt +
+    // systemPromptMode): layer a one-off inline persona on a spawn WITHOUT a
+    // persisted agent file. "replace"/"default" fully replaces the base; "append"
+    // adds it after the base. Append needs a string base to build on — `fork` has
+    // none (its stance is assembled by the child engine), so append is rejected
+    // there rather than silently replacing the inherited stance.
+    let finalSystemPrompt = baseSystemPrompt;
+    if (customSystemPrompt) {
+      if (systemPromptMode === 'append') {
+        if (!baseSystemPrompt) {
+          return {
+            output: 'Error: system_prompt_mode "append" has no base system prompt to append to in ' +
+              'fork mode (the fork inherits the parent\'s full stance). Use mode "explore"/"general", a ' +
+              'subagent_type, or system_prompt_mode "replace".',
+            isError: true,
+          };
+        }
+        finalSystemPrompt = `${baseSystemPrompt}\n\n${customSystemPrompt}`;
+      } else {
+        finalSystemPrompt = customSystemPrompt;
+      }
+    }
+
     const childDepth = getSubagentDepthContext(currentDepth, maxDepth);
     const subConfig: EngineConfig = {
       provider: providerConfig,
@@ -841,7 +989,7 @@ export const taskTool: ToolDefinition = {
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip stance-skill resolution (which would inject e.g. the
       // swebench stance workflow into a verification-only agent).
-      systemPrompt: agentSystemPrompt || modeOnlySystemPrompt || undefined,
+      systemPrompt: finalSystemPrompt || undefined,
       tokenBudget: agentTokenBudget || undefined,
     };
 
@@ -858,9 +1006,21 @@ export const taskTool: ToolDefinition = {
     // Only `fork` (no agentSystemPrompt, no lean prompt — it inherits the full stance as
     // a clone) still needs the user-message directive to bound it. A named subagent_type
     // keeps its own authoritative identity (no directive).
-    let effectivePrompt = (agentSystemPrompt || modeOnlySystemPrompt)
+    // A subagent that has an authoritative system prompt (named-agent, lean
+    // mode-only, or a per-spawn custom system_prompt) does not need the
+    // user-message return directive. Only `fork` with no custom system_prompt —
+    // which inherits the full stance as a clone — still needs it to bound it.
+    let effectivePrompt = finalSystemPrompt
       ? prompt
       : `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
+
+    // Caller-specified thoroughness dial for explore-mode agents: turns the
+    // explore prompt's abstract "adapt to the requested thoroughness" into a
+    // concrete, caller-chosen search depth (mirrors Claude Code's exploreAgent
+    // thoroughness parameter). Only meaningful when exploring.
+    if (thoroughness && mode === 'explore') {
+      effectivePrompt = `${buildThoroughnessDirective(thoroughness)}\n\n---\n\n${effectivePrompt}`;
+    }
 
     // When the subagent runs in an isolated worktree, prepend a notice so it
     // translates inherited paths to the worktree root, re-reads stale files, and
@@ -878,6 +1038,16 @@ export const taskTool: ToolDefinition = {
     const rawAgentName = input.name as string | undefined;
     const sanitizedName = rawAgentName ? sanitizeAgentName(rawAgentName) : undefined;
     const agentName = sanitizedName ? uniqueAgentName(sanitizedName) : undefined;
+
+    // A named agent spawned while a team is active joins that team as a member
+    // (see registerTeamMember below). Tell it HOW to collaborate: it is one agent
+    // in a team, it reaches teammates via send_message, a plain-text reply is
+    // invisible to them, and the user talks mainly to the lead (mirrors Claude
+    // Code's teammatePromptAddendum). Without this the machinery exists but the
+    // teammate is never told it can/should message its peers.
+    if (agentName && getCurrentTeam()) {
+      effectivePrompt = `${TEAMMATE_PROMPT_ADDENDUM}\n\n---\n\n${effectivePrompt}`;
+    }
 
     if (runInBackground) {
       incrementSpawnCount(context);
