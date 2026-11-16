@@ -205,8 +205,8 @@ describe('MemoryManager — resolveIncludes', () => {
       'Before\n@include image.png\nMiddle\n@include data.pdf\nAfter',
       path.join(dir, 'root.md'),
     );
-    assert.ok(result.includes('[binary file skipped: image.png]'));
-    assert.ok(result.includes('[binary file skipped: data.pdf]'));
+    assert.ok(result.includes('[non-text file skipped: image.png]'));
+    assert.ok(result.includes('[non-text file skipped: data.pdf]'));
     assert.ok(result.includes('Before'));
     assert.ok(result.includes('After'));
   });
@@ -223,7 +223,7 @@ describe('MemoryManager — resolveIncludes', () => {
       path.join(dir, 'root.md'),
     );
     assert.ok(result.includes('TEXT_CONTENT'));
-    assert.ok(result.includes('[binary file skipped: archive.zip]'));
+    assert.ok(result.includes('[non-text file skipped: archive.zip]'));
   });
 
   it('still detects true cycles after diamond fix', async () => {

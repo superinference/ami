@@ -13,16 +13,77 @@ import { log as coreLog } from './logger';
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
 
-const BINARY_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.tif',
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-  '.zip', '.gz', '.tar', '.bz2', '.xz', '.7z', '.rar', '.zst',
-  '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a', '.lib',
-  '.wasm', '.pyc', '.class', '.jar',
-  '.mp3', '.mp4', '.wav', '.avi', '.mkv', '.mov', '.flac', '.ogg',
-  '.ttf', '.otf', '.woff', '.woff2', '.eot',
-  '.sqlite', '.db', '.lock',
+/**
+ * Deny-by-default allowlist of file extensions that `@include` / `@path` imports
+ * are permitted to inline into instructions/memory. Parity with Claude Code's
+ * `TEXT_FILE_EXTENSIONS` (utils/claudemd.ts `parseMemoryFileContent`): a crafted
+ * CLAUDE.md/AGENTS.md could otherwise slurp a binary blob (an image, PDF, archive,
+ * shared object, `.so.1`, `.dat`, or any novel binary format) into the system
+ * prompt. An allowlist is strictly safer than a finite binary DENYlist, which any
+ * unlisted or multi-dotted extension silently defeats. See {@link isTextImportPath}.
+ */
+const TEXT_FILE_EXTENSIONS = new Set([
+  // Markdown and text
+  '.md', '.txt', '.text',
+  // Data formats
+  '.json', '.yaml', '.yml', '.toml', '.xml', '.csv',
+  // Web
+  '.html', '.htm', '.css', '.scss', '.sass', '.less',
+  // JavaScript/TypeScript
+  '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
+  // Python
+  '.py', '.pyi', '.pyw',
+  // Ruby
+  '.rb', '.erb', '.rake',
+  // Go
+  '.go',
+  // Rust
+  '.rs',
+  // Java/Kotlin/Scala
+  '.java', '.kt', '.kts', '.scala',
+  // C/C++
+  '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx',
+  // C#
+  '.cs',
+  // Swift
+  '.swift',
+  // Shell
+  '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
+  // Config
+  '.env', '.ini', '.cfg', '.conf', '.config', '.properties',
+  // Database / query
+  '.sql', '.graphql', '.gql',
+  // Protocol
+  '.proto',
+  // Frontend frameworks
+  '.vue', '.svelte', '.astro',
+  // Templating
+  '.ejs', '.hbs', '.pug', '.jade',
+  // Other languages
+  '.php', '.pl', '.pm', '.lua', '.r', '.dart', '.ex', '.exs', '.erl', '.hrl',
+  '.clj', '.cljs', '.cljc', '.edn', '.hs', '.lhs', '.elm', '.ml', '.mli',
+  '.f', '.f90', '.f95', '.for',
+  // Build files
+  '.cmake', '.make', '.makefile', '.gradle', '.sbt',
+  // Documentation
+  '.rst', '.adoc', '.asciidoc', '.org', '.tex', '.latex',
+  // Lock files (often text-based)
+  '.lock',
+  // Misc
+  '.log', '.diff', '.patch',
 ]);
+
+/**
+ * Whether an `@include`/`@path` target may be inlined, by extension. Deny by
+ * default: an EXTENSIONLESS file (`Dockerfile`, `Makefile`, `LICENSE`) is allowed,
+ * but a file carrying an extension that is NOT a known text type is skipped.
+ * Mirrors Claude Code's `if (ext && !TEXT_FILE_EXTENSIONS.has(ext))` gate, so a
+ * multi-dotted binary like `libatomic.so.1` (extname `.1`) is correctly refused.
+ */
+export function isTextImportPath(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return ext === '' || TEXT_FILE_EXTENSIONS.has(ext);
+}
 
 // eslint-disable-next-line security/detect-bidi-characters -- intentional: regex must contain the bidi chars it strips
 const INVISIBLE_CHARS_RE = /[­͏؜᠎​-‏⁠-⁤⁪-⁯﻿]/g;
@@ -766,6 +827,12 @@ export class MemoryManager {
         if (seen.has(real)) return `${pre}[circular import: ${path.basename(resolved)}]`;
         try {
           if (!fs.statSync(real).isFile()) return full;
+          // Deny-by-default extension gate (parity with @include + Claude Code):
+          // never inline a binary blob (image/PDF/archive/.so.1) into instructions
+          // via `@logo.png` / `@dump.bin`. Extensionless files stay allowed.
+          if (!isTextImportPath(real)) {
+            return `${pre}[non-text file skipped: ${path.basename(resolved)}]`;
+          }
           seen.add(real);
           let imported = sanitizeContent(fs.readFileSync(real, 'utf-8').trim(), real);
           imported = this.resolveAtImports(imported, real, depth + 1, seen);
@@ -1577,9 +1644,11 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
       }
       seen.add(includePath);
       try {
-        const ext = path.extname(includePath).toLowerCase();
-        if (BINARY_EXTENSIONS.has(ext)) {
-          const replacement = `[binary file skipped: ${path.basename(includePath)}]`;
+        // Deny-by-default: only inline recognized text extensions (extensionless
+        // files allowed). An allowlist can't be defeated by a novel/multi-dotted
+        // binary extension the way the old binary DENYlist could.
+        if (!isTextImportPath(includePath)) {
+          const replacement = `[non-text file skipped: ${path.basename(includePath)}]`;
           result = result.slice(0, pos) + replacement + result.slice(pos + fullMatch.length);
           searchFrom = pos + replacement.length;
           seen.delete(includePath);
