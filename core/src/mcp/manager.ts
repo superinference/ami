@@ -797,6 +797,10 @@ export class McpManager extends EventEmitter {
       coreLog('mcp', `Pagination cap hit for ${name} on ${method} (${count} items)`);
       this.emit('pagination-capped', name, method, count);
     });
+    client.on('notification-error', (method: string, err: Error) => {
+      coreLog('mcp', `Notification handler error for ${name} on ${method}: ${err.message}`);
+      this.emit('notification-error', name, method, err);
+    });
 
     // Server→client request resolvers. Read the manager handler at call-time so
     // a handler wired after the server was added still applies.

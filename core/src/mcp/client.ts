@@ -306,6 +306,21 @@ const SHUTDOWN_POLL_MS = 50;
 const HTTP_STREAM_RECONNECT_BASE_MS = 1000;
 const HTTP_STREAM_RECONNECT_MAX_MS = 30000;
 
+/**
+ * ±25% proportional jitter applied to the capped exponential reconnect delay so
+ * many clients dropped by a shared outage do not retry in lockstep (thundering
+ * herd). Matches the fraction Claude Code's transports use.
+ */
+const RECONNECT_JITTER_FRAC = 0.25;
+
+/**
+ * How many trailing stderr lines a stdio MCP server's output is retained for. On
+ * an abnormal exit the tail is appended to the failure message so a consumer can
+ * see WHY the child died (e.g. a stack trace it printed right before exiting)
+ * instead of only a bare exit code. Bounded so a chatty server can't grow it.
+ */
+export const MCP_STDERR_TAIL_LINES = 10;
+
 export class McpClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private processPid: number | null = null;
@@ -344,6 +359,8 @@ export class McpClient extends EventEmitter {
   private maxReconnectAttempts = 5;
   private hasTriggeredClose = false;
   private connectionStartTime: number | null = null;
+  /** Rolling tail of the last {@link MCP_STDERR_TAIL_LINES} stdio-server stderr lines. */
+  private _stderrTail: string[] = [];
 
   private progressCallbacks = new Map<string, (progress: { percent?: number; message?: string }) => void>();
   /** URIs this client has an active resources/subscribe for. */
@@ -408,6 +425,8 @@ export class McpClient extends EventEmitter {
   get uptime(): number | null {
     return this.connectionStartTime ? Date.now() - this.connectionStartTime : null;
   }
+  /** The retained tail of the stdio server's stderr (most recent lines last). */
+  get stderrTail(): string[] { return [...this._stderrTail]; }
 
   /**
    * Resolve how the stdio server process is launched. When
@@ -453,7 +472,9 @@ export class McpClient extends EventEmitter {
     });
 
     this.process.stderr!.on('data', (chunk: Buffer) => {
-      this.emit('stderr', chunk.toString());
+      const text = chunk.toString();
+      this.appendStderrTail(text);
+      this.emit('stderr', text);
     });
 
     this.process.on('error', (err) => {
@@ -464,12 +485,12 @@ export class McpClient extends EventEmitter {
       this.emit('terminal-error', classified);
     });
 
-    this.process.on('close', (code) => {
+    this.process.on('close', (code, signal) => {
       if (this.hasTriggeredClose) return;
       this.hasTriggeredClose = true;
       const uptimeMs = this.uptime;
       this._state = 'disconnected';
-      this.rejectAllPending(new Error(`MCP server exited with code ${code}`));
+      this.rejectAllPending(new Error(this.formatExitMessage(code, signal)));
       this.emit('close', code, uptimeMs);
     });
 
@@ -776,9 +797,7 @@ export class McpClient extends EventEmitter {
   async reconnect(): Promise<void> {
     this.disconnect();
     while (this.reconnectAttempts < this.maxReconnectAttempts) {
-      const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-      const jitter = Math.floor(Math.random() * delay * 0.3);
-      await new Promise(r => setTimeout(r, delay + jitter));
+      await new Promise(r => setTimeout(r, this.reconnectDelay(this.reconnectAttempts)));
       try {
         if (this.transport === 'sse' && this.sseUrl) {
           await this.connectSSE(this.sseUrl);
@@ -1164,7 +1183,7 @@ export class McpClient extends EventEmitter {
       return;
     }
     const attempt = this.httpStreamReconnectAttempts++;
-    const delay = Math.min(HTTP_STREAM_RECONNECT_BASE_MS * Math.pow(2, attempt), HTTP_STREAM_RECONNECT_MAX_MS);
+    const delay = this.reconnectDelay(attempt);
     const timer = setTimeout(() => {
       if (this.httpStreamClosed || this._state !== 'ready') return;
       this.openHttpStream().catch(() => { /* a later close retries, bounded */ });
@@ -1210,6 +1229,46 @@ export class McpClient extends EventEmitter {
       return `MCP server "${server}" tool "${tool}" timed out after ${Math.max(1, Math.floor(timeoutMs / 1000))}s`;
     }
     return `MCP request '${method}' timed out after ${timeoutMs}ms`;
+  }
+
+  /** Retain the last {@link MCP_STDERR_TAIL_LINES} non-empty stderr lines. */
+  private appendStderrTail(text: string): void {
+    for (const line of text.split('\n')) {
+      if (line.length === 0) continue;
+      this._stderrTail.push(line);
+    }
+    if (this._stderrTail.length > MCP_STDERR_TAIL_LINES) {
+      this._stderrTail = this._stderrTail.slice(-MCP_STDERR_TAIL_LINES);
+    }
+  }
+
+  /**
+   * Human-facing message for a stdio server exit. When the process was killed by
+   * a signal the exit code is null, so fall back to naming the signal
+   * (`signal SIGKILL`) instead of a confusing `code null`. On an ABNORMAL exit
+   * (non-zero code, or any signal) the retained stderr tail is appended so the
+   * reason the child died is visible, not just the bare exit status.
+   */
+  private formatExitMessage(code: number | null, signal: NodeJS.Signals | null): string {
+    const cause = code !== null ? `code ${code}` : `signal ${signal}`;
+    let msg = `MCP server exited with ${cause}`;
+    const failed = code !== 0; // non-zero exit, or killed by signal (code === null)
+    if (failed && this._stderrTail.length > 0) {
+      msg += `\nServer stderr (${cause}):\n${this._stderrTail.join('\n')}`;
+    }
+    return msg;
+  }
+
+  /**
+   * Capped exponential reconnect delay (ms) with ±25% jitter. Single source of
+   * truth for BOTH reconnect paths — the client-level {@link reconnect} and the
+   * Streamable-HTTP GET-stream {@link scheduleHttpStreamReconnect} — so a shared
+   * outage does not make every client retry in lockstep (thundering herd).
+   */
+  private reconnectDelay(attempt: number): number {
+    const base = Math.min(HTTP_STREAM_RECONNECT_BASE_MS * Math.pow(2, attempt), HTTP_STREAM_RECONNECT_MAX_MS);
+    const jitter = base * RECONNECT_JITTER_FRAC * (2 * Math.random() - 1);
+    return Math.max(0, Math.round(base + jitter));
   }
 
   private sendRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs?: number): Promise<unknown> {
@@ -1363,6 +1422,19 @@ export class McpClient extends EventEmitter {
   }
 
   private handleNotification(notification: JsonRpcNotification): void {
+    try {
+      this.dispatchNotification(notification);
+    } catch (err) {
+      // Per-notification error boundary: a single malformed notification or a
+      // throwing 'notification' listener must not crash or stall the shared read
+      // loop that processes every subsequent message. Isolate and surface it as a
+      // dedicated diagnostic (NOT the EventEmitter 'error' event, which would
+      // rethrow when unhandled).
+      this.emit('notification-error', notification.method, err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  private dispatchNotification(notification: JsonRpcNotification): void {
     const id = (notification as JsonRpcNotification & { id?: number }).id;
 
     // --- Server→client REQUESTS (carry an id; MUST be answered) -------------
