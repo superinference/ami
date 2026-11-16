@@ -122,7 +122,7 @@ export type { PermissionRuleSource } from './permissions';
 export { detectProvider, listModels, validateModel, MODEL_ALIASES, MODEL_FAMILY_ALIASES, MODEL_SHORT_KEYS, isModelAlias, isModelFamilyAlias, isModelShortKey, resolveModelAlias, getModelDisplayName, getModelDescription, getModelMetadata } from './model-registry';
 export type { ValidateModelResult, ModelAlias } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS } from './config';
-export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue } from './config';
+export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue, ConfigSource } from './config';
 export { STRATEGY_NAMES } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
 export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, matchesKeepGoingKeyword, matchesNegativeKeyword, getQuerySourceForAgent, getQuerySourceForREPL } from './prompt-categorizer';

@@ -43,6 +43,13 @@ export interface ProjectConfig {
   safeMode?: boolean;
   /** Session-wide cap on web_search tool calls. */
   maxWebSearchesPerSession?: number;
+  /**
+   * Retention window (days) for persisted session transcripts. On startup, sessions
+   * whose last on-disk activity is older than this are deleted
+   * ({@link SessionManager.cleanupOldSessions}). A missing/0/non-positive value DISABLES
+   * cleanup (keep everything). Parity: Claude Code's `cleanupPeriodDays`.
+   */
+  cleanupPeriodDays?: number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on. */
@@ -191,6 +198,82 @@ export function stripJsoncComments(input: string): string {
   return result;
 }
 
+/**
+ * Remove a JSON5/JSONC-style TRAILING comma — a `,` that directly precedes a
+ * closing `}` or `]` (ignoring intervening whitespace) — so a hand-edited config
+ * with `{ "a": 1, }` or `["x", ]` parses instead of throwing a cryptic
+ * "Unexpected token" on the dangling comma. String-aware (a comma inside a JSON
+ * string literal is never touched), so it composes safely with
+ * {@link stripJsoncComments}. Parity: Claude Code's JSONC parser
+ * (`safeParseJSONC` / `parseJsonc`) tolerates trailing commas; AMI previously only
+ * stripped comments + BOM, so a trailing comma still read the whole file as corrupt.
+ */
+export function stripJsoncTrailingCommas(input: string): string {
+  let result = '';
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]!;
+    if (escape) { result += ch; escape = false; continue; }
+    if (inString) {
+      if (ch === '\\') { escape = true; result += ch; continue; }
+      if (ch === '"') inString = false;
+      result += ch; continue;
+    }
+    if (ch === '"') { inString = true; result += ch; continue; }
+    if (ch === ',') {
+      let j = i + 1;
+      while (j < input.length && /\s/.test(input[j]!)) j++;
+      if (j < input.length && (input[j] === '}' || input[j] === ']')) {
+        // Drop the trailing comma; the whitespace up to the bracket is re-emitted
+        // as those characters are copied on subsequent iterations.
+        continue;
+      }
+    }
+    result += ch;
+  }
+  return result;
+}
+
+/** LRU cap (entries) on {@link parseJsonc}'s content-keyed parse memo. Parity: Claude's safeParseJSON LRU(50). */
+const JSONC_PARSE_CACHE_MAX_ENTRIES = 50;
+/** Only memoize small payloads — a huge config is cheaper to re-parse than to retain + clone. */
+const JSONC_PARSE_CACHE_MAX_BYTES = 100_000;
+/** prepared-JSONC-string → the parsed value (pristine; callers get a clone). */
+const jsoncParseCache = new Map<string, unknown>();
+
+/**
+ * Canonical JSONC parse used by EVERY AMI config loader: strip a leading BOM, strip
+ * `//` + block comments, tolerate a trailing comma, then `JSON.parse`. The parse is
+ * MEMOIZED by the prepared content (bounded LRU, small inputs only) so re-reading an
+ * unchanged file across the project/local/global waterfall (and repeated `/doctor`
+ * diagnostic sweeps) parses it once instead of on every pass. The cache always holds
+ * the pristine parsed tree and every caller receives a `structuredClone`, so a caller
+ * mutating its config (e.g. {@link salvageManagedConfig}) can never corrupt a shared
+ * cached value. Routes through {@link jsonHooks.parse} so the test parse-seam still
+ * applies. Parity: Claude Code's `parseJsonc` + `safeParseJSON` LRU memoization.
+ */
+export function parseJsonc(raw: string): unknown {
+  const prepared = stripJsoncTrailingCommas(stripJsoncComments(stripBom(raw)));
+  if (prepared.length > JSONC_PARSE_CACHE_MAX_BYTES) {
+    return jsonHooks.parse(prepared);
+  }
+  if (jsoncParseCache.has(prepared)) {
+    const cached = jsoncParseCache.get(prepared);
+    // LRU bump: re-insert so the most-recently-used key is evicted last.
+    jsoncParseCache.delete(prepared);
+    jsoncParseCache.set(prepared, cached);
+    return structuredClone(cached);
+  }
+  const parsed = jsonHooks.parse(prepared);
+  jsoncParseCache.set(prepared, parsed);
+  if (jsoncParseCache.size > JSONC_PARSE_CACHE_MAX_ENTRIES) {
+    const oldest = jsoncParseCache.keys().next().value as string;
+    jsoncParseCache.delete(oldest);
+  }
+  return structuredClone(parsed);
+}
+
 // ---------------------------------------------------------------------------
 // Loaders
 // ---------------------------------------------------------------------------
@@ -317,7 +400,7 @@ function parseManagedFile(configPath: string): ProjectConfig {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripJsoncComments(stripBom(raw)));
+    parsed = parseJsonc(raw);
   } catch (err) {
     // A broken enterprise policy must fail closed, with the SAME actionable JSON
     // syntax-recovery hint AMI surfaces for user/project config (one shared source)
@@ -400,11 +483,44 @@ function describeJsonType(value: unknown): string {
 export const JSON_SYNTAX_RECOVERY_HINT =
   'Check for missing commas, unmatched brackets, or trailing commas. Use a JSON validator to identify the exact syntax error.';
 
+/**
+ * The config LAYER a value/diagnostic originates from, in merge-priority order
+ * (`cli` highest, `managed` lowest). Mirrors the {@link mergeConfigs} layer stack and
+ * the {@link CONFIG_ENV_TIERS} env-trust tiers, so every provenance-aware surface names
+ * the same set of sources. Parity: Claude Code's `SettingSource` enum.
+ */
+export type ConfigSource = 'cli' | 'env' | 'local' | 'project' | 'global' | 'managed';
+
+/**
+ * Human-readable provenance name for each {@link ConfigSource}, so a diagnostic / `/doctor`
+ * line reads "Invalid project config …" or "Invalid managed config …" instead of leaving
+ * the user to infer which file a bare path belongs to (`.ami/config.local.json` vs
+ * `~/.ami/config.json` vs `/etc/...`). An introspection surface over the config waterfall.
+ * Parity: Claude Code's `getSettingSourceName` (e.g. `localSettings` → "project, gitignored").
+ */
+export const CONFIG_SOURCE_NAMES: Readonly<Record<ConfigSource, string>> = {
+  cli: 'command-line flag',
+  env: 'environment variable',
+  local: 'project, gitignored',
+  project: 'project',
+  global: 'user',
+  managed: 'managed',
+};
+
+/** Resolve the human-readable provenance name for a {@link ConfigSource}. */
+export function getConfigSourceName(source: ConfigSource): string {
+  return CONFIG_SOURCE_NAMES[source];
+}
+
 /** A problem found while loading a config file (distinct from "file absent"). */
 export interface ConfigDiagnostic {
   path: string;
   kind: 'parse-error' | 'not-object' | 'invalid-value' | 'unknown-key' | 'unreadable';
   message: string;
+  /** Which config layer this file belongs to (merge-priority order). */
+  source?: ConfigSource;
+  /** Human-readable provenance name for {@link source} ({@link getConfigSourceName}). */
+  sourceName?: string;
   /** Where the corrupt file was backed up, or the most recent known-good backup. */
   backupPath?: string;
   /** For `invalid-value`: the per-field issues (grouped by this file). */
@@ -438,6 +554,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['maxTurns', 'number'], ['tokenBudget', 'number'], ['maxBudgetUsd', 'number'],
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
   ['maxWebSearchesPerSession', 'number'], ['migrationVersion', 'number'],
+  ['cleanupPeriodDays', 'number'],
   ['safeMode', 'boolean'], ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
   ['composerHintsEnabled', 'boolean'], ['disableBypassPermissionsMode', 'boolean'],
   ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
@@ -691,6 +808,29 @@ export function findMostRecentBackup(configPath: string): string | null {
 }
 
 /**
+ * True for a Windows UNC path (`\\server\share` or `//server/share`). Reading such a
+ * path triggers a network (DNS/SMB) round-trip during what should be a cheap local
+ * config probe — a hang/SSRF-adjacent hazard for an attacker-influenced path. A config
+ * file is always expected on the local filesystem, so a UNC source is treated as
+ * "no config here". Parity: Claude Code's `safeResolvePath` blocks UNC before any I/O.
+ */
+export function isUncConfigPath(configPath: string): boolean {
+  return configPath.startsWith('//') || configPath.startsWith('\\\\');
+}
+
+/**
+ * True when `stats` describes a non-regular SPECIAL file — a FIFO/named pipe, a
+ * socket, or a character/block device. `readFileSync` on a FIFO BLOCKS indefinitely
+ * waiting for a writer (a trivial DoS if a config path can be pointed at one), and a
+ * device/socket is never a valid config file. The loader skips such a source as
+ * "absent" rather than hanging on it. Parity: Claude Code's `safeResolvePath`
+ * special-file guard before `realpathSync`.
+ */
+export function isSpecialFileStats(stats: fs.Stats): boolean {
+  return stats.isFIFO() || stats.isSocket() || stats.isCharacterDevice() || stats.isBlockDevice();
+}
+
+/**
  * Load a config file, distinguishing three outcomes:
  *  - file absent / unreadable → `{ config: null }` (no diagnostic);
  *  - present but corrupt (bad JSON / not an object) → `{ config: null, diagnostic }`,
@@ -699,6 +839,18 @@ export function findMostRecentBackup(configPath: string): string | null {
  */
 export function loadConfigFileChecked(configPath: string): { config: ProjectConfig | null; diagnostic?: ConfigDiagnostic } {
   let raw: string;
+  // Path-safety guard (parity: Claude's safeResolvePath): refuse a UNC path before any
+  // filesystem access (it would force a network round-trip), and skip a special file
+  // (FIFO/socket/device) whose `readFileSync` could BLOCK forever on a FIFO. Both are
+  // treated as "no config here" — a config is always a regular local file.
+  if (isUncConfigPath(configPath)) return { config: null };
+  try {
+    const st = fsHooks.statSync(configPath);
+    if (isSpecialFileStats(st)) return { config: null };
+  } catch {
+    // Absent / broken symlink / not inspectable — fall through to the normal
+    // existsSync+read path below, which resolves it to a plain absent/unreadable result.
+  }
   try {
     if (!fsHooks.existsSync(configPath)) return { config: null };
     raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
@@ -717,13 +869,12 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     coreLog('config', `unreadable config at ${configPath}: ${message}`);
     return { config: null, diagnostic: { path: configPath, kind: 'unreadable', message } };
   }
-  // Strip a leading UTF-8 BOM (e.g. config.json written by PowerShell 5.x or some
-  // editors) before parsing — JSON.parse rejects a leading U+FEFF, which would
-  // otherwise misreport an otherwise-valid file as corrupt.
-  raw = stripBom(raw);
+  // Parse via the canonical JSONC pipeline (BOM strip + comment strip + trailing-comma
+  // tolerance + memoized JSON.parse). The ORIGINAL bytes are retained in `raw` so a
+  // corrupt-file backup preserves exactly what was on disk.
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripJsoncComments(raw));
+    parsed = parseJsonc(raw);
   } catch (err) {
     const backupPath = backupCorruptConfig(configPath, raw) ?? undefined;
     // Append actionable recovery guidance so the user learns HOW to fix the malformed
@@ -780,16 +931,19 @@ function loadConfigFile(configPath: string): ProjectConfig | null {
  */
 export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
   const home = process.env.HOME || process.env.USERPROFILE || '';
-  const paths = [
-    path.join(cwd, '.ami', 'config.json'),
-    path.join(cwd, '.ami', 'config.local.json'),
-    ...(home ? [path.join(home, '.ami', 'config.json')] : []),
+  // Each probed path is tagged with its config LAYER so a diagnostic names its
+  // provenance ("project" / "project, gitignored" / "user") rather than leaving the
+  // user to infer it from a bare path. Parity: Claude's per-source settings validation.
+  const paths: Array<{ path: string; source: ConfigSource }> = [
+    { path: path.join(cwd, '.ami', 'config.json'), source: 'project' },
+    { path: path.join(cwd, '.ami', 'config.local.json'), source: 'local' },
+    ...(home ? [{ path: path.join(home, '.ami', 'config.json'), source: 'global' as const }] : []),
   ];
   const diagnostics: ConfigDiagnostic[] = [];
-  for (const p of paths) {
+  for (const { path: p, source } of paths) {
     const { diagnostic } = loadConfigFileChecked(p);
     if (diagnostic) {
-      diagnostics.push({ ...diagnostic, backupPath: diagnostic.backupPath ?? findMostRecentBackup(p) ?? undefined });
+      diagnostics.push({ ...diagnostic, source, sourceName: getConfigSourceName(source), backupPath: diagnostic.backupPath ?? findMostRecentBackup(p) ?? undefined });
     }
   }
   // Managed/enterprise tier (fail-open VISIBILITY): a broken managed policy fails
@@ -804,7 +958,7 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
     loadManagedConfig();
   } catch (err) {
     if (err instanceof ManagedConfigError) {
-      diagnostics.push({ path: getManagedConfigPath(), kind: 'unreadable', message: err.message });
+      diagnostics.push({ path: getManagedConfigPath(), kind: 'unreadable', message: err.message, source: 'managed', sourceName: getConfigSourceName('managed') });
     }
   }
   return diagnostics;
@@ -862,6 +1016,43 @@ export function consumeInternalWrite(
  */
 function mergeConfigArray(existing: string[] | undefined, incoming: string[]): string[] {
   return [...new Set([...(existing ?? []), ...incoming])];
+}
+
+/** A plain (non-null, non-array) object — the shape a nested config block always has. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Deep-merge one config layer's nested object over the accumulated lower-layer one so
+ * a higher layer AUGMENTS rather than CLOBBERS a nested block: a global
+ * `superinference: { enforcing: true }` plus a project `superinference: { useLLMCritic:
+ * true }` yields BOTH flags, instead of the project wiping the global's `enforcing`.
+ * Recurses into nested objects; string arrays accumulate (concat + dedupe, like
+ * {@link mergeConfigArray}); any other scalar/array is replaced (higher wins). Parity:
+ * Claude Code's `settingsMergeCustomizer` / lodash `mergeWith` deep-merge of nested
+ * settings objects across layers (AMI previously replaced each nested block wholesale).
+ */
+function deepMergeConfigObjects(
+  base: Record<string, unknown> | undefined,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  if (base === undefined) return { ...next };
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(next)) {
+    const prev = out[key];
+    if (
+      Array.isArray(value) && Array.isArray(prev) &&
+      value.every(x => typeof x === 'string') && prev.every(x => typeof x === 'string')
+    ) {
+      out[key] = [...new Set([...(prev as string[]), ...(value as string[])])];
+    } else if (isPlainObject(value) && isPlainObject(prev)) {
+      out[key] = deepMergeConfigObjects(prev, value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,13 +1228,14 @@ export function mergeConfigs(
     if (layer.maxTurns !== undefined) merged.maxTurns = layer.maxTurns;
     if (layer.tokenBudget !== undefined) merged.tokenBudget = layer.tokenBudget;
     if (layer.maxBudgetUsd !== undefined) merged.maxBudgetUsd = layer.maxBudgetUsd;
-    if (layer.superinference !== undefined) merged.superinference = layer.superinference;
+    if (layer.superinference !== undefined) merged.superinference = deepMergeConfigObjects(merged.superinference as Record<string, unknown> | undefined, layer.superinference as Record<string, unknown>) as ProjectConfig['superinference'];
     if (layer.skill !== undefined) merged.skill = layer.skill;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
     if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
     if (layer.safeMode !== undefined) merged.safeMode = layer.safeMode;
     if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
+    if (layer.cleanupPeriodDays !== undefined) merged.cleanupPeriodDays = layer.cleanupPeriodDays;
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
     // Array-valued settings ACCUMULATE across layers (concat + dedupe), so a
     // higher layer augments rather than clobbers a lower one — parity with
@@ -1063,9 +1255,9 @@ export function mergeConfigs(
     // keys rather than replacing the whole block).
     if (layer.env !== undefined) merged.env = { ...merged.env, ...layer.env };
     if (layer.tipsEnabled !== undefined) merged.tipsEnabled = layer.tipsEnabled;
-    if (layer.tipsOverride !== undefined) merged.tipsOverride = layer.tipsOverride;
+    if (layer.tipsOverride !== undefined) merged.tipsOverride = deepMergeConfigObjects(merged.tipsOverride as Record<string, unknown> | undefined, layer.tipsOverride as Record<string, unknown>) as ProjectConfig['tipsOverride'];
     if (layer.composerHintsEnabled !== undefined) merged.composerHintsEnabled = layer.composerHintsEnabled;
-    if (layer.composerHintsOverride !== undefined) merged.composerHintsOverride = layer.composerHintsOverride;
+    if (layer.composerHintsOverride !== undefined) merged.composerHintsOverride = deepMergeConfigObjects(merged.composerHintsOverride as Record<string, unknown> | undefined, layer.composerHintsOverride as Record<string, unknown>) as ProjectConfig['composerHintsOverride'];
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -1309,7 +1501,9 @@ export const jsonHooks = { parse: JSON.parse as (text: string) => unknown };
 export function validateConfigJson(content: string): { valid: boolean; error?: string } {
   let parsed: unknown;
   try {
-    parsed = jsonHooks.parse(content);
+    // Same JSONC tolerance as the loader (BOM / comments / trailing comma) so a
+    // stale `.tmp` written as JSONC is not needlessly discarded as "invalid".
+    parsed = parseJsonc(content);
   } catch (err) {
     // Attach actionable recovery guidance (one shared source with the loader) so a
     // malformed config/stale-tmp payload tells the user how to fix it, not just that
