@@ -195,6 +195,20 @@ export interface PluginBundle {
    */
   mcpServersFile?: string;
   /**
+   * Additional command directories/files declared by the manifest `commandsPaths`
+   * (Claude parity: loadPluginCommands's `plugin.commandsPaths`), resolved relative
+   * to the plugin root and hardened against `..`/symlink escape. Each entry may be a
+   * directory (recursively walked) or a single command file. `undefined` when the
+   * manifest declares none.
+   */
+  commandsPaths?: string[];
+  /**
+   * Additional skill directories/files declared by the manifest `skillsPaths`
+   * (Claude parity: loadPluginCommands's `plugin.skillsPaths`), resolved + hardened
+   * exactly like {@link commandsPaths}. `undefined` when the manifest declares none.
+   */
+  skillsPaths?: string[];
+  /**
    * Manifest `defaultEnabled` (Claude parity: a plugin may ship disabled-by-default).
    * Drives the tri-state enablement fallback (managed policy > explicit user marker >
    * `defaultEnabled` > true). `undefined` when the manifest omits it (treated as true).
@@ -685,11 +699,37 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
  * namespaced by its sub-path with `:` separators (e.g. `commands/git/commit.toml`
  * → `git:commit`). When `pluginName` is given, it is prepended as the first
  * segment so command names are unique across plugins (`pluginName:git:commit`).
+ *
+ * `extraPaths` (Claude parity: a manifest's `commandsPaths`) are ADDITIONAL command
+ * locations outside the primary `commands/` dir — each entry may be a directory
+ * (walked recursively) or a single command file (`.toml`/`.md`), discovered under
+ * the same namespacing rules. They are loaded AFTER `dir` so a duplicate name from
+ * an extra path does not shadow the canonical command (callers dedup by name).
  */
-export function loadCommands(dir: string, pluginName?: string): CommandDefinition[] {
+export function loadCommands(dir: string, pluginName?: string, extraPaths?: string[]): CommandDefinition[] {
   const commands: CommandDefinition[] = [];
   const plugin = pluginName && pluginName.trim() !== '' ? pluginName.trim() : undefined;
   walkCommandDir(dir, [], plugin, commands);
+  for (const extra of extraPaths ?? []) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(extra);
+    } catch {
+      continue; // missing/unreadable extra path — skip (Claude parity: logged + skipped)
+    }
+    if (stat.isDirectory()) {
+      walkCommandDir(extra, [], plugin, commands);
+    } else if (stat.isFile() && commandBaseName(path.basename(extra)) !== null) {
+      const base = commandBaseName(path.basename(extra))!;
+      const name = [...(plugin ? [plugin] : []), base].join(':');
+      const cmd = parseCommandFile(extra, name);
+      if (cmd) {
+        cmd.namespace = [];
+        if (plugin && cmd.source === undefined) cmd.source = 'plugin';
+        commands.push(cmd);
+      }
+    }
+  }
   return commands;
 }
 
@@ -1130,10 +1170,77 @@ export function validatePlugin(pluginDir: string): PluginValidationResult {
   return { valid: false, errors: [{ path: pluginDir, message: 'No plugin manifest (.ami-plugin/plugin.json, .claude-plugin/plugin.json, or root plugin.json).' }], warnings: [] };
 }
 
-/** A plugin directory that failed to load, with an actionable reason. */
+/**
+ * The kinds of component a plugin can contribute (Claude parity: PluginComponent,
+ * types/plugin.ts). Used to tag a {@link PluginError} with the component it concerns.
+ */
+export const PLUGIN_COMPONENTS = ['commands', 'agents', 'skills', 'hooks', 'output-styles'] as const;
+export type PluginComponent = (typeof PLUGIN_COMPONENTS)[number];
+
+/**
+ * Typed, discriminated plugin error (Claude parity: types/plugin.ts `PluginError`).
+ * Each variant carries the CONTEXTUAL data its kind needs so a consumer can render
+ * precise, actionable guidance WITHOUT string-matching an opaque message (which
+ * breaks the instant the wording changes). Every variant carries `source` (the
+ * plugin/marketplace/path the error came from) and most carry `plugin` (the bundle
+ * name). This is the type-safe replacement for the previous free-form string reason.
+ */
+export type PluginError =
+  | { type: 'manifest-parse-error'; source: string; plugin?: string; manifestPath: string; parseError: string }
+  | { type: 'manifest-validation-error'; source: string; plugin?: string; manifestPath: string; validationErrors: string[] }
+  | { type: 'path-not-found'; source: string; plugin?: string; path: string; component: PluginComponent }
+  | { type: 'component-load-failed'; source: string; plugin: string; component: PluginComponent; path: string; reason: string }
+  | { type: 'lsp-config-invalid'; source: string; plugin: string; serverName: string; validationError: string }
+  | { type: 'mcp-config-invalid'; source: string; plugin: string; serverName: string; validationError: string }
+  | { type: 'mcp-server-suppressed-duplicate'; source: string; plugin: string; serverName: string; duplicateOf: string }
+  | { type: 'hook-load-failed'; source: string; plugin: string; hookPath: string; reason: string }
+  | { type: 'generic-error'; source: string; plugin?: string; error: string };
+
+/**
+ * Render a {@link PluginError} to a single display string (Claude parity:
+ * getPluginErrorMessage). Exhaustive over the union — adding a variant without a
+ * case is a compile error — so the message set can never drift out of sync with the
+ * type. The SINGLE canonical formatter for every plugin-error surface (installer,
+ * `/plugin`, diagnostics).
+ */
+export function getPluginErrorMessage(error: PluginError): string {
+  switch (error.type) {
+    case 'manifest-parse-error':
+      return `Manifest parse error: ${error.parseError}`;
+    case 'manifest-validation-error':
+      return `Manifest validation failed: ${error.validationErrors.join(', ')}`;
+    case 'path-not-found':
+      return `Path not found: ${error.path} (${error.component})`;
+    case 'component-load-failed':
+      return `${error.component} load failed from ${error.path}: ${error.reason}`;
+    case 'lsp-config-invalid':
+      return `Plugin "${error.plugin}" has invalid LSP server config for "${error.serverName}": ${error.validationError}`;
+    case 'mcp-config-invalid':
+      return `Plugin "${error.plugin}" has invalid MCP server config for "${error.serverName}": ${error.validationError}`;
+    case 'mcp-server-suppressed-duplicate': {
+      const dup = error.duplicateOf.startsWith('plugin:')
+        ? `server provided by plugin "${error.duplicateOf.slice('plugin:'.length)}"`
+        : `already-configured "${error.duplicateOf}"`;
+      return `MCP server "${error.serverName}" skipped — same command/URL as ${dup}`;
+    }
+    case 'hook-load-failed':
+      return `Hook load failed: ${error.reason}`;
+    case 'generic-error':
+      return error.error;
+  }
+}
+
+/**
+ * A plugin directory that failed to load, with an actionable reason. `error`
+ * carries the TYPED {@link PluginError} (Claude parity) so a consumer can branch on
+ * the failure kind instead of string-matching `reason`; `reason` is its
+ * human-readable rendering (via {@link getPluginErrorMessage} for typed failures)
+ * and remains the display fallback.
+ */
 export interface PluginLoadFailure {
   root: string;
   reason: string;
+  error?: PluginError;
 }
 
 /** Matches any non-ASCII (potential homograph) character — a plugin name used for
@@ -1216,6 +1323,82 @@ function manifestAuthorName(author: unknown): string | undefined {
 }
 
 /**
+ * A plugin-contributed MCP server declaration keyed by name. The dedup key is its
+ * launch target — a stdio `command` (+ args) or a `url` — so two plugins shipping
+ * the same server (or one duplicating an already-configured server) collapse to one.
+ */
+export interface PluginMcpServer {
+  command?: string;
+  args?: string[];
+  url?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Canonical dedup key for an MCP server: its stdio `command` + `args`, or its
+ * `url`. Two servers with the same key launch the same thing and are duplicates.
+ */
+function mcpServerKey(server: PluginMcpServer): string {
+  if (typeof server.url === 'string' && server.url.trim() !== '') return `url:${server.url.trim()}`;
+  const cmd = typeof server.command === 'string' ? server.command.trim() : '';
+  const args = Array.isArray(server.args) ? server.args.map(a => String(a)).join(' ') : '';
+  return `cmd:${cmd} ${args}`.trim();
+}
+
+/**
+ * Merge plugin-contributed MCP servers across bundles, SUPPRESSING duplicates by
+ * launch target (Claude parity: types/plugin.ts `mcp-server-suppressed-duplicate`).
+ * `existing` names already-configured servers (name → config) that a plugin server
+ * must not shadow. Entries are merged in order; the first occurrence of a given
+ * {@link mcpServerKey} wins and every later same-target server is dropped with a
+ * typed {@link PluginError} naming what it duplicated. Returns the deduped map plus
+ * the suppression errors so a consumer can surface the transparency message.
+ */
+export function mergePluginMcpServers(
+  contributions: Array<{ plugin: string; source: string; servers: Record<string, PluginMcpServer> }>,
+  existing: Record<string, PluginMcpServer> = {},
+): { servers: Record<string, PluginMcpServer>; errors: PluginError[] } {
+  const servers: Record<string, PluginMcpServer> = {};
+  const errors: PluginError[] = [];
+  const keyOwner = new Map<string, string>();
+  for (const [name, cfg] of Object.entries(existing)) {
+    servers[name] = cfg;
+    keyOwner.set(mcpServerKey(cfg), name);
+  }
+  for (const { plugin, source, servers: contributed } of contributions) {
+    for (const [serverName, cfg] of Object.entries(contributed)) {
+      const key = mcpServerKey(cfg);
+      const owner = keyOwner.get(key);
+      if (owner !== undefined) {
+        errors.push({ type: 'mcp-server-suppressed-duplicate', source, plugin, serverName, duplicateOf: owner === serverName ? `plugin:${plugin}` : owner });
+        continue;
+      }
+      keyOwner.set(key, serverName);
+      servers[serverName] = cfg;
+    }
+  }
+  return { servers, errors };
+}
+
+/**
+ * Resolve a manifest field declaring ADDITIONAL component locations (Claude parity:
+ * `commandsPaths` / `skillsPaths`): a string, or an array of strings, each a
+ * relative path hardened against `..`/symlink escape. Returns the existing,
+ * contained absolute paths, or undefined when none are declared/survive.
+ */
+function resolveManifestPathList(root: string, manifest: Record<string, unknown>, field: string): string[] | undefined {
+  const raw = manifest[field];
+  const entries = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
+  const out: string[] = [];
+  for (const e of entries) {
+    if (typeof e !== 'string' || e.trim() === '') continue;
+    const resolved = hardenedResolve(root, e);
+    if (resolved !== undefined) out.push(resolved);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
  * Discover local plugin bundles under `dir`, ALSO returning structured load
  * failures (invalid JSON / failed manifest validation) so callers can surface
  * actionable guidance instead of silently dropping a broken plugin. A directory
@@ -1255,14 +1438,14 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
     try {
       const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as unknown;
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        failures.push({ root, reason: `Invalid plugin.json: manifest must be a JSON object. Check ${manifestPath}.` });
+        failures.push({ root, reason: `Invalid plugin.json: manifest must be a JSON object. Check ${manifestPath}.`, error: { type: 'manifest-validation-error', source: root, manifestPath, validationErrors: ['Manifest must be a JSON object.'] } });
         continue;
       }
       manifest = parsed as Record<string, unknown>;
     } catch (err) {
       // CORRUPT (unparseable JSON) is reported distinctly from INVALID (parses but
       // fails the schema) so a front-end can guide the author appropriately.
-      failures.push({ root, reason: `Corrupt plugin.json (JSON parse failed): ${err instanceof Error ? err.message : String(err)}. Fix the JSON syntax in ${manifestPath}.` });
+      failures.push({ root, reason: `Corrupt plugin.json (JSON parse failed): ${errMessage(err)}. Fix the JSON syntax in ${manifestPath}.`, error: { type: 'manifest-parse-error', source: root, manifestPath, parseError: errMessage(err) } });
       continue;
     }
     // Security-relevant manifest errors (unsafe name, '..'/absolute component path)
@@ -1272,7 +1455,7 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       /Unsafe plugin name|contains "\.\."|must be relative/.test(e.message),
     );
     if (hardErrors.length > 0) {
-      failures.push({ root, reason: `Invalid plugin.json: ${hardErrors.map(e => `${e.path}: ${e.message}`).join('; ')}` });
+      failures.push({ root, reason: `Invalid plugin.json: ${hardErrors.map(e => `${e.path}: ${e.message}`).join('; ')}`, error: { type: 'manifest-validation-error', source: root, plugin: typeof manifest.name === 'string' ? manifest.name : undefined, manifestPath, validationErrors: hardErrors.map(e => `${e.path}: ${e.message}`) } });
       continue;
     }
     // Discovery is lenient on optional fields (name/version fall back below); the
@@ -1309,6 +1492,10 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       // MCP servers: a manifest-declared `mcpServers` file path overrides the
       // <root>/.mcp.json convention (Claude Code layout). Hardened like the rest.
       mcpServersFile: resolveComponentDir(root, manifest, 'mcpServers', '.mcp.json'),
+      // Additional command/skill directories declared by the manifest, resolved +
+      // hardened (Claude parity: commandsPaths / skillsPaths).
+      commandsPaths: resolveManifestPathList(root, manifest, 'commandsPaths'),
+      skillsPaths: resolveManifestPathList(root, manifest, 'skillsPaths'),
     });
   }
   return { bundles, failures };
