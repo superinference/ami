@@ -195,7 +195,7 @@ export { AdmissionLog, ADMISSION_ACTIONS, ADMISSION_OUTCOMES, ADMISSION_SUBJECTS
 export type { AdmissionEntry, AdmissionAction, AdmissionOutcome, AdmissionSubject } from './admission-log';
 export { isPinnedVariable, getPinCategory, getAllPinnedVariables, EnvProtectionGuard, PIN_CATEGORIES } from './env-protection';
 export type { PinCategory, EnvSetAttempt, EnvCheckResult } from './env-protection';
-export { SAFE_ENV_VARS, isSafeEnvVar, PROVIDER_MANAGED_ENV_VARS, isProviderManagedEnvVar, ENV_REJECT_REASONS, ENV_TRUST_TIERS, filterSettingsEnv, isHostManagedProvider, NETWORK_TRUST_VARS, isNetworkTrustEnvVar, classifyUntrustedEnvVar, CODE_LOADING_PREFIXES } from './env-protection';
+export { SAFE_ENV_VARS, isSafeEnvVar, isDangerousSettingsEnvVar, PROVIDER_MANAGED_ENV_VARS, isProviderManagedEnvVar, ENV_REJECT_REASONS, ENV_TRUST_TIERS, filterSettingsEnv, isHostManagedProvider, NETWORK_TRUST_VARS, isNetworkTrustEnvVar, classifyUntrustedEnvVar, CODE_LOADING_PREFIXES } from './env-protection';
 export type { EnvRejectReason, EnvTrustTier, SettingsEnvFilterResult } from './env-protection';
 export { isProtectedEvent, canHookEvent, PROTECTED_EVENTS, PASSTHROUGH_EVENTS, HOOK_TIERS, sortHooksByTier, isStricterVerdict, HookChainGuard } from './hook-protection';
 export type { HookTier, HookRegistration } from './hook-protection';

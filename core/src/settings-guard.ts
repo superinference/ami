@@ -1,4 +1,4 @@
-import { SAFE_ENV_VARS } from './env-protection';
+import { isDangerousSettingsEnvVar } from './env-protection';
 
 export const SETTINGS_TIERS = ['managed', 'global', 'project', 'local', 'env', 'cli'] as const;
 export type SettingsTier = (typeof SETTINGS_TIERS)[number];
@@ -67,7 +67,7 @@ export function extractDangerousSettings(
   const envVars: Record<string, string> = {};
   if (settings.env && typeof settings.env === 'object') {
     for (const [key, value] of Object.entries(settings.env)) {
-      if (typeof value === 'string' && value.length > 0 && !SAFE_ENV_VARS.has(key.toUpperCase())) {
+      if (typeof value === 'string' && value.length > 0 && isDangerousSettingsEnvVar(key)) {
         envVars[key] = value;
       }
     }

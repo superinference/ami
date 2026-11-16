@@ -10,6 +10,7 @@ import {
   EnvProtectionGuard,
   SAFE_ENV_VARS,
   isSafeEnvVar,
+  isDangerousSettingsEnvVar,
   PROVIDER_MANAGED_ENV_VARS,
   isProviderManagedEnvVar,
   ENV_REJECT_REASONS,
@@ -224,6 +225,34 @@ describe('SAFE_ENV_VARS / isSafeEnvVar', () => {
     assert.equal(isSafeEnvVar('OPENAI_API_KEY'), false);
     assert.equal(isSafeEnvVar('NODE_TLS_REJECT_UNAUTHORIZED'), false);
     assert.equal(isSafeEnvVar('LD_PRELOAD'), false);
+  });
+});
+
+describe('isDangerousSettingsEnvVar', () => {
+  it('is the strict inverse of isSafeEnvVar (default-deny)', () => {
+    // Allowlisted → safe → not dangerous.
+    assert.equal(isDangerousSettingsEnvVar('BASH_MAX_TIMEOUT_MS'), false);
+    assert.equal(isDangerousSettingsEnvVar('DISABLE_COST_WARNINGS'), false);
+    // Not in the allowlist → dangerous by default.
+    assert.equal(isDangerousSettingsEnvVar('ANTHROPIC_BASE_URL'), true);
+    assert.equal(isDangerousSettingsEnvVar('NODE_TLS_REJECT_UNAUTHORIZED'), true);
+    assert.equal(isDangerousSettingsEnvVar('LD_PRELOAD'), true);
+    assert.equal(isDangerousSettingsEnvVar('HTTP_PROXY'), true);
+    // A totally unknown var is dangerous (default-deny, not default-allow).
+    assert.equal(isDangerousSettingsEnvVar('TOTALLY_UNKNOWN_VAR'), true);
+  });
+  it('is case-insensitive (mirrors the allowlist lookup)', () => {
+    assert.equal(isDangerousSettingsEnvVar('bash_max_timeout_ms'), false);
+    assert.equal(isDangerousSettingsEnvVar('anthropic_base_url'), true);
+  });
+  it('agrees with isSafeEnvVar for every allowlist member and known-dangerous var', () => {
+    for (const safe of SAFE_ENV_VARS) {
+      assert.equal(isDangerousSettingsEnvVar(safe), false, `${safe} should not be dangerous`);
+    }
+    for (const dangerous of ['OPENAI_API_KEY', 'NODE_EXTRA_CA_CERTS', 'OTEL_EXPORTER_OTLP_ENDPOINT']) {
+      assert.equal(isDangerousSettingsEnvVar(dangerous), true, `${dangerous} should be dangerous`);
+      assert.equal(isSafeEnvVar(dangerous), false);
+    }
   });
 });
 

@@ -138,6 +138,25 @@ export function isSafeEnvVar(name: string): boolean {
 }
 
 /**
+ * Default-deny classifier for a settings-sourced env var: true when `name` is
+ * NOT in the {@link SAFE_ENV_VARS} allowlist (case-insensitive) and is therefore
+ * dangerous to apply from a managed/remote/project-scoped settings `env` block
+ * (it may redirect traffic to an attacker, trust an attacker CA, swap
+ * credentials, or load code).
+ *
+ * This is the canonical "is this settings env var dangerous?" test — the strict
+ * inverse of {@link isSafeEnvVar}. Every settings-danger site (the
+ * managed-settings review gate in settings-guard.ts, project-tier `.env`
+ * filtering) composes it rather than re-deriving `!SAFE_ENV_VARS.has(upper)`
+ * inline, so the allowlist stays the single source of truth. Parity: Claude's
+ * ManagedSettingsSecurityDialog/utils.ts, which flags any env var not in
+ * SAFE_ENV_VARS as dangerous.
+ */
+export function isDangerousSettingsEnvVar(name: string): boolean {
+  return !isSafeEnvVar(name);
+}
+
+/**
  * Env vars that control inference routing — which provider, which endpoint,
  * which credentials. When the host owns routing (it sets
  * SUPERINFERENCE_PROVIDER_MANAGED_BY_HOST in the spawn env), these are stripped

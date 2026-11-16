@@ -15,6 +15,7 @@ import {
   isAllHooksDisabled,
   isManagedHooksOnly,
 } from '../src/settings-guard';
+import { isDangerousSettingsEnvVar } from '../src/env-protection';
 
 describe('MANAGED_ONLY_KEYS', () => {
   it('contains allowManagedModsOnly', () => {
@@ -295,6 +296,23 @@ describe('extractDangerousSettings', () => {
     const d = extractDangerousSettings({ hooks: { preToolUse: [{ run: 'x' }] } });
     assert.equal(d.hasHooks, true);
     assert.deepEqual(d.hooks, { preToolUse: [{ run: 'x' }] });
+  });
+
+  it('classifies env vars via the canonical isDangerousSettingsEnvVar (default-deny, case-insensitive)', () => {
+    // Every key below is classified by the shared env-protection classifier, not
+    // a local re-derivation: allowlisted (any case) is dropped, everything else
+    // is surfaced as dangerous.
+    const d = extractDangerousSettings({
+      env: {
+        bash_max_timeout_ms: '1000', // safe, lowercase → not surfaced
+        LD_PRELOAD: '/evil.so', // code-loading → dangerous
+        TOTALLY_UNKNOWN: 'x', // unknown → default-deny dangerous
+      },
+    });
+    assert.deepEqual(d.envVars, { LD_PRELOAD: '/evil.so', TOTALLY_UNKNOWN: 'x' });
+    for (const key of Object.keys(d.envVars)) {
+      assert.equal(isDangerousSettingsEnvVar(key), true);
+    }
   });
 });
 
