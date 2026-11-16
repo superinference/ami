@@ -800,6 +800,32 @@ export function extractHookBlockingError(result: string): string | undefined {
 }
 
 /**
+ * Strict validation of a hook's decision fields (Claude Code parseHookOutput: an
+ * unrecognized `decision` or `permissionDecision` value is an ERROR, not a silent
+ * no-op). Returns a human-readable validation message when the parsed output
+ * carries a `decision`/`permissionDecision` field whose value is outside the
+ * allowed set, else undefined. Reused by the permissionRequest parser so a typo'd
+ * decision fails CLOSED (deny with the reason) instead of being ignored — which
+ * would let an intended block silently fall through to the default permission
+ * flow. Valid sets match AMI's HookDecisionOutput: decision ∈
+ * {approve,deny,ask,block}, permissionDecision ∈ {allow,deny,ask}.
+ */
+export function unknownHookDecisionError(
+  parsed: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!parsed) return undefined;
+  const dec = parsed.decision;
+  if (dec !== undefined && dec !== 'approve' && dec !== 'deny' && dec !== 'ask' && dec !== 'block') {
+    return `Unknown hook decision type: ${String(dec)}. Valid types are: approve, block`;
+  }
+  const pdec = parsed.permissionDecision;
+  if (pdec !== undefined && pdec !== 'allow' && pdec !== 'deny' && pdec !== 'ask') {
+    return `Unknown hook permissionDecision type: ${String(pdec)}. Valid types are: allow, deny, ask`;
+  }
+  return undefined;
+}
+
+/**
  * Canonical best-effort JSON decode of a hook's raw stdout. Returns the parsed
  * object (for reading structured fields like watchPaths / additionalContexts /
  * newCustomInstructions / elicitation action) or undefined when the output is
@@ -1726,6 +1752,15 @@ export class HookManager extends EventEmitter {
               const out: PostToolUseHookResult = {};
               if (typeof parsed.additionalContext === 'string') out.additionalContext = parsed.additionalContext;
               if (typeof parsed.updatedToolOutput === 'string') out.updatedToolOutput = parsed.updatedToolOutput;
+              // Claude Code's PostToolUse hooks rewrite MCP tool output via the
+              // `updatedMCPToolOutput` key (typed `unknown`). Accept it as an alias
+              // of updatedToolOutput — updatedToolOutput wins if both are present;
+              // a non-string value is JSON-serialized into the string channel.
+              else if (parsed.updatedMCPToolOutput !== undefined) {
+                out.updatedToolOutput = typeof parsed.updatedMCPToolOutput === 'string'
+                  ? parsed.updatedMCPToolOutput
+                  : JSON.stringify(parsed.updatedMCPToolOutput);
+              }
               if (parsed.continue === false) { out.preventContinuation = true; if (typeof parsed.stopReason === 'string') out.stopReason = parsed.stopReason; }
               if (out.additionalContext || out.updatedToolOutput || out.preventContinuation) return out;
             }
@@ -1859,6 +1894,11 @@ export class HookManager extends EventEmitter {
               const parsed: HookDecisionOutput = JSON.parse(result);
               if (parsed.permissionDecision === 'allow' || parsed.decision === 'approve') return { action: 'allow' as const };
               if (parsed.permissionDecision === 'deny' || parsed.decision === 'deny' || parsed.decision === 'block') return { action: 'deny' as const, reason: parsed.reason ?? 'Hook denied' };
+              // Strict rejection (Claude Code parseHookOutput): an unrecognized
+              // decision/permissionDecision value is a validation error, not a
+              // silent no-op. Fail CLOSED so a typo can't let a tool through.
+              const invalid = unknownHookDecisionError(parsed as Record<string, unknown>);
+              if (invalid) { coreLog('hooks', invalid); return { action: 'deny' as const, reason: invalid }; }
             } catch {}
             return undefined;
           };
@@ -2179,22 +2219,29 @@ export class HookManager extends EventEmitter {
    */
   async executePostToolUse(ctx: PostToolUseContext): Promise<PostToolUseHookResult | void> {
     return this.withConcurrencyGate('postToolUse', async (): Promise<PostToolUseHookResult | void> => {
-      let additionalContext: string | undefined;
+      // Aggregate ALL contributions across every matching hook (Claude Code's
+      // AggregatedHookResult collects additionalContexts[]/blockingErrors[]),
+      // not last-wins: a later hook must not silently drop an earlier hook's
+      // context or block reason. updatedToolOutput stays last-wins (a single
+      // canonical rewrite of the tool output).
+      const additionalContexts: string[] = [];
+      const blockingErrors: string[] = [];
       let updatedToolOutput: string | undefined;
-      let blockingError: string | undefined;
       let preventContinuation = false;
       let stopReason: string | undefined;
       for (const hook of this.postToolUseHooks) {
         try {
           const result = await hook(ctx);
-          if (result?.additionalContext) additionalContext = result.additionalContext;
+          if (result?.additionalContext) additionalContexts.push(result.additionalContext);
           if (result?.updatedToolOutput) updatedToolOutput = result.updatedToolOutput;
-          if (result?.blockingError) blockingError = result.blockingError;
+          if (result?.blockingError) blockingErrors.push(result.blockingError);
           if (result?.preventContinuation) { preventContinuation = true; if (result.stopReason) stopReason = result.stopReason; }
         } catch (err) {
           coreLog('hooks', 'Hook error', { error: String(err) });
         }
       }
+      const additionalContext = additionalContexts.length ? additionalContexts.join('\n\n') : undefined;
+      const blockingError = blockingErrors.length ? blockingErrors.join('\n') : undefined;
       if (additionalContext || updatedToolOutput || blockingError || preventContinuation) {
         return { additionalContext, updatedToolOutput, blockingError, preventContinuation: preventContinuation || undefined, stopReason };
       }
@@ -2336,18 +2383,22 @@ export class HookManager extends EventEmitter {
    */
   async executeUserPromptSubmit(ctx: UserPromptContext): Promise<UserPromptSubmitHookResult | void> {
     return this.withConcurrencyGate('userPromptSubmit', async (): Promise<UserPromptSubmitHookResult | void> => {
-      let additionalContext: string | undefined;
-      let blockingError: string | undefined;
+      // Aggregate ALL contributions (Claude Code AggregatedHookResult), not
+      // last-wins: every UserPromptSubmit hook's context + block reason is kept.
+      const additionalContexts: string[] = [];
+      const blockingErrors: string[] = [];
       let preventContinuation = false;
       let stopReason: string | undefined;
       for (const hook of this.userPromptSubmitHooks) {
         try {
           const result = await hook(ctx);
-          if (result?.additionalContext) additionalContext = result.additionalContext;
-          if (result?.blockingError) blockingError = result.blockingError;
+          if (result?.additionalContext) additionalContexts.push(result.additionalContext);
+          if (result?.blockingError) blockingErrors.push(result.blockingError);
           if (result?.preventContinuation) { preventContinuation = true; if (result.stopReason) stopReason = result.stopReason; }
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      const additionalContext = additionalContexts.length ? additionalContexts.join('\n\n') : undefined;
+      const blockingError = blockingErrors.length ? blockingErrors.join('\n') : undefined;
       if (additionalContext || blockingError || preventContinuation) {
         // Bound hook-contributed context so a UserPromptSubmit hook that emits a
         // huge blob cannot blow out the context window (Claude Code's
