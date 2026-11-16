@@ -699,6 +699,15 @@ export interface ProviderConfig {
    */
   toolChoice?: 'auto' | 'required' | 'none' | { type: 'tool'; toolName: string };
   /**
+   * Stable user/session identifier forwarded to the provider as the request
+   * metadata user id — Anthropic `metadata.user_id`, OpenAI `user`. A non-lock-in
+   * input parameter that drives abuse detection and can influence rate-limit
+   * bucketing. Mirrors Claude Code's `getAPIMetadata().user_id` (services/api/claude.ts).
+   * Populated from this field or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID
+   * env knob ({@link resolveMetadataUserId}); unset ⇒ no metadata is sent.
+   */
+  metadata?: { userId?: string };
+  /**
    * Suppress prompt-cache WRITES for this one request. Set on fire-and-forget /
    * one-off auxiliary model calls (compaction summaries, insight extraction) whose
    * prefix no future turn will ever read back — writing a fresh cache entry for them

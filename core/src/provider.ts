@@ -800,6 +800,97 @@ export function openAIPromptCacheBody(
 }
 
 /**
+ * Env vars carrying a JSON object that is deep-merged into every OpenAI-compatible
+ * request body (parity: Claude Code's `CLAUDE_CODE_EXTRA_BODY` / `getExtraBodyParams`).
+ * `AMI_EXTRA_BODY` is AMI's native spelling; the Claude name is honored for drop-in
+ * compatibility. A zero-code, deploy-time override for gateways/proxies that must
+ * inject an extra body field fleet-wide without a CLI flag or config file.
+ */
+export const EXTRA_BODY_ENV_VARS = ['AMI_EXTRA_BODY', 'CLAUDE_CODE_EXTRA_BODY'] as const;
+
+/**
+ * Parse the extra-body env var into a plain object, or `undefined` when unset,
+ * malformed, or not a JSON object. The first env var that parses to an object wins;
+ * malformed / non-object values are logged (mirroring Claude's `getExtraBodyParams`
+ * error log) and skipped rather than thrown, so a bad env never aborts a request.
+ */
+export function resolveExtraBodyFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> | undefined {
+  for (const name of EXTRA_BODY_ENV_VARS) {
+    const raw = env[name];
+    if (!raw || raw.trim() === '') continue;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (isPlainRecord(parsed)) return { ...parsed };
+      log('provider', `${name} must be a JSON object; ignoring`, { value: raw }, 'error');
+    } catch (err) {
+      log('provider', `failed to parse ${name} as JSON; ignoring`, { error: err instanceof Error ? err.message : String(err) }, 'error');
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Env vars carrying a stable user/session identifier forwarded to the provider as
+ * the request metadata user id (Anthropic `metadata.user_id` / OpenAI `user`).
+ * Parity: Claude Code's `getAPIMetadata().user_id` (services/api/claude.ts). The
+ * AMI-native spelling takes precedence; the Claude name is accepted for parity.
+ */
+export const METADATA_USER_ID_ENV_VARS = ['AMI_METADATA_USER_ID', 'CLAUDE_CODE_METADATA_USER_ID'] as const;
+
+/**
+ * Resolve the request metadata user id: an explicit `config.metadata.userId` wins,
+ * otherwise the first non-empty env knob. `undefined` ⇒ no metadata is attached.
+ */
+export function resolveMetadataUserId(
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const explicit = config.metadata?.userId;
+  if (typeof explicit === 'string' && explicit.trim() !== '') return explicit;
+  for (const name of METADATA_USER_ID_ENV_VARS) {
+    const raw = env[name];
+    if (raw && raw.trim() !== '') return raw;
+  }
+  return undefined;
+}
+
+/**
+ * Build the AI SDK `providerOptions` fragment that forwards the metadata user id to
+ * the active provider: Anthropic expects `providerOptions.anthropic.metadata.userId`,
+ * every OpenAI-compatible provider expects `providerOptions.openai.user`. Returns an
+ * empty object when there is no id, so it spreads to nothing.
+ */
+export function buildMetadataProviderOptions(
+  userId: string | undefined,
+  isAnthropic: boolean,
+): Record<string, unknown> {
+  if (!userId) return {};
+  return isAnthropic
+    ? { providerOptions: { anthropic: { metadata: { userId } } } }
+    : { providerOptions: { openai: { user: userId } } };
+}
+
+/**
+ * Deep-merge the `providerOptions` of several call-option fragments into a single
+ * `{ providerOptions }` object (or `{}` when none contribute). Prevents a later
+ * spread from clobbering an earlier `providerOptions` key — e.g. the prompt-cache,
+ * metadata, and thinking fragments can all target `providerOptions.{anthropic|openai}`
+ * and must COMBINE, not overwrite.
+ */
+export function mergeProviderOptionFragments(
+  ...fragments: Array<Record<string, unknown>>
+): Record<string, unknown> {
+  let merged: Record<string, unknown> = {};
+  for (const frag of fragments) {
+    const po = frag.providerOptions;
+    if (isPlainRecord(po)) merged = deepMergeRecords(merged, po);
+  }
+  return Object.keys(merged).length > 0 ? { providerOptions: merged } : {};
+}
+
+/**
  * Inject Anthropic prompt-cache breakpoints into a RAW Anthropic Messages request
  * body (the wire format the Vertex endpoint receives). The @ai-sdk/google-vertex
  * provider does NOT forward providerOptions.cacheControl to the wire (measured:
@@ -1419,6 +1510,14 @@ export function getVertexRegionForModel(model: string | undefined): string {
 }
 
 export function resolveModel(config: ProviderConfig) {
+  // Env-var extra-body override (AMI_EXTRA_BODY / CLAUDE_CODE_EXTRA_BODY): deep-merge
+  // the deploy-time JSON into config.extraBody BEFORE withExtraBody is composed, so it
+  // rides every OpenAI-compatible request. Explicit config.extraBody (CLI flag / config
+  // file) wins over the env default. No-op when the env is unset.
+  const envExtraBody = resolveExtraBodyFromEnv();
+  if (envExtraBody) {
+    config = { ...config, extraBody: deepMergeRecords(envExtraBody, config.extraBody ?? {}) };
+  }
   const { apiKey } = config;
   const fromKey = inferProviderFromApiKey(apiKey);
   const fromUrl = config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null;
@@ -2204,6 +2303,17 @@ export async function* streamChatCompletion(
       ? { toolChoice: config.toolChoice }
       : {};
 
+    // Request metadata user id (Anthropic metadata.user_id / OpenAI user) from
+    // config or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID env knob.
+    // Combine the prompt-cache, metadata, and thinking fragments into ONE
+    // providerOptions object so later spreads cannot clobber an earlier one (all
+    // three can target providerOptions.{anthropic|openai}).
+    const providerOptionsOpt = mergeProviderOptionFragments(
+      openAICacheOpts,
+      buildMetadataProviderOptions(resolveMetadataUserId(config), isAnthropic),
+      buildThinkingOptions(modelId, options?.thinking),
+    );
+
     const result = streamTextFn({
       model,
       instructions: systemPrompt,
@@ -2221,14 +2331,13 @@ export async function* streamChatCompletion(
       ),
       ...(effectiveTemperature !== undefined ? { temperature: effectiveTemperature } : {}),
       ...(options?.repairToolCall ? { repairToolCall: options.repairToolCall } : {}),
-      ...openAICacheOpts,
       abortSignal,
       maxRetries: 0,
       onError: ({ error }) => {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.includes('MissingToolResults')) return;
       },
-      ...buildThinkingOptions(modelId, options?.thinking),
+      ...providerOptionsOpt,
     });
 
     // Track tool call indices so engine.ts can accumulate them by index
@@ -2379,8 +2488,12 @@ function jitteredDelay(delayMs: number): number {
 // ---------------------------------------------------------------------------
 
 // 408 (request timeout) and 409 (lock timeout/conflict) are transient and worth
-// a retry, matching Claude's shouldRetry (parity gap).
-const RETRYABLE_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 529]);
+// a retry, matching Claude's shouldRetry (parity gap). Claude retries all 5xx
+// generically; AMI enumerates the transient server/gateway codes it actually
+// sees — 500/502/503 plus 504 (gateway timeout) and 507 (insufficient storage) —
+// and the Anthropic-overload 529, while deliberately NOT retrying genuinely
+// terminal 5xx like 501 (not implemented) / 505 (version not supported).
+const RETRYABLE_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 504, 507, 529]);
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 1000;
 
@@ -2420,6 +2533,56 @@ function extractStatusCode(errorText: string): number | null {
 const OVERLOADED_ERROR_STATUS = 529;
 function isOverloadedError(errorText: string): boolean {
   return /"type"\s*:\s*"overloaded_error"/i.test(errorText);
+}
+
+// Context-overflow 400 auto-recovery (parity: Claude Code's withRetry.ts
+// parseMaxTokensContextOverflowError + maxTokensOverride). When the server reports
+// `input length and max_tokens exceed context limit: A + B > C`, recompute a smaller
+// max_tokens from its numbers and retry the SAME request instead of failing the turn
+// — AMI preempts this with fitOutputTokens, but when the provider's token accounting
+// disagrees (tool schemas, system-prompt growth, different counting) the request can
+// still 400 with no recovery.
+/** Safety margin (tokens) left below the context limit when recomputing max_tokens. */
+export const CONTEXT_OVERFLOW_SAFETY_BUFFER = 1000;
+/** Absolute floor for the recomputed output-token budget. */
+export const FLOOR_OUTPUT_TOKENS = 3000;
+
+/**
+ * Parse an Anthropic context-overflow 400 body into its {input, max, limit} token
+ * counts, or `null` when the error is not that specific overflow. The caller gates
+ * on `statusCode === 400`; the message substring + numeric triple are matched here.
+ */
+export function parseMaxTokensContextOverflowError(
+  errorText: string | undefined,
+): { inputTokens: number; maxTokens: number; contextLimit: number } | null {
+  if (!errorText || !errorText.includes('input length and `max_tokens` exceed context limit')) return null;
+  const match = errorText.match(/input length and `max_tokens` exceed context limit:\s*(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
+  if (!match) return null;
+  const inputTokens = parseInt(match[1], 10);
+  const maxTokens = parseInt(match[2], 10);
+  const contextLimit = parseInt(match[3], 10);
+  if (Number.isNaN(inputTokens) || Number.isNaN(maxTokens) || Number.isNaN(contextLimit)) return null;
+  return { inputTokens, maxTokens, contextLimit };
+}
+
+/**
+ * Recompute a reduced max_tokens after a context-overflow 400, or `null` when even
+ * the FLOOR won't fit (unrecoverable ⇒ surface the error). availableContext =
+ * contextLimit − inputTokens − safetyBuffer, clamped up to {@link FLOOR_OUTPUT_TOKENS}
+ * and the thinking-budget floor (+1 output token). Mirrors Claude's maxTokensOverride.
+ */
+export function recoverMaxTokensFromContextOverflow(
+  overflow: { inputTokens: number; contextLimit: number },
+  thinking?: ThinkingConfig,
+  modelId?: string,
+): number | null {
+  const availableContext = Math.max(0, overflow.contextLimit - overflow.inputTokens - CONTEXT_OVERFLOW_SAFETY_BUFFER);
+  if (availableContext < FLOOR_OUTPUT_TOKENS) return null;
+  const thinkingBudget = thinking?.enabled
+    ? (thinking.budgetTokens ?? resolveThinkingBudget(thinking.level, modelId))
+    : 0;
+  const minRequired = thinkingBudget + 1;
+  return Math.max(FLOOR_OUTPUT_TOKENS, availableContext, minRequired);
 }
 
 const NETWORK_ERROR_CODES = new Set([
@@ -2567,6 +2730,25 @@ export async function* streamChatCompletionWithRetry(
         if (statusCode === 400 && attempt < maxRetries && isGatewayRejection((chunk.error ?? '').toLowerCase())) {
           config = { ...config, cacheTtl: undefined, disableBetas: true };
           break; // retry without ANY beta headers
+        }
+
+        // Context-overflow 400 auto-recovery: the server reports input + max_tokens
+        // exceed the context limit (its accounting disagreed with our preemptive
+        // fitOutputTokens). Recompute a SMALLER max_tokens from the server's numbers
+        // and retry the SAME request instead of failing the turn, mirroring Claude
+        // Code's parseMaxTokensContextOverflowError + maxTokensOverride recovery.
+        if (statusCode === 400 && attempt < maxRetries) {
+          const overflow = parseMaxTokensContextOverflowError(chunk.error);
+          if (overflow) {
+            const adjusted = recoverMaxTokensFromContextOverflow(overflow, options?.thinking, config.model);
+            // Only retry when the recomputed budget makes real progress (is strictly
+            // smaller than what overflowed); otherwise the retry would overflow again.
+            if (adjusted !== null && adjusted < overflow.maxTokens) {
+              config = { ...config, maxTokens: adjusted };
+              if (options?.onRetry) options.onRetry(attempt + 1, maxRetries, 0, 400);
+              break; // retry with the reduced max_tokens
+            }
+          }
         }
 
         // Honor the API's x-should-retry hint (the SDK retry layer is disabled
