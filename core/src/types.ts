@@ -605,6 +605,31 @@ export interface ProviderConfig {
    * same poisoned pooled socket. Not user-facing; off by default (pooling stays on).
    */
   forceFreshConnection?: boolean;
+  /**
+   * Force or constrain the model's tool selection for this request. `'auto'` lets
+   * the model decide (the API default), `'required'` forces it to call SOME tool,
+   * `'none'` forbids tool calls, and `{ type: 'tool', toolName }` pins one specific
+   * tool. Mirrors Claude Code's `tool_choice` request parameter (services/api/claude.ts).
+   * Threaded into the AI SDK `toolChoice` option; omitted (model default) when unset.
+   */
+  toolChoice?: 'auto' | 'required' | 'none' | { type: 'tool'; toolName: string };
+  /**
+   * Suppress prompt-cache WRITES for this one request. Set on fire-and-forget /
+   * one-off auxiliary model calls (compaction summaries, insight extraction) whose
+   * prefix no future turn will ever read back — writing a fresh cache entry for them
+   * is pure cost with no hit. The read path is unaffected; only the Anthropic
+   * `cache_control` write markers are dropped. Mirrors Claude Code's `skipCacheWrite`.
+   */
+  skipCacheWrite?: boolean;
+  /**
+   * Strip ALL `anthropic-beta` tokens from the outgoing request. Set internally by
+   * {@link streamChatCompletionWithRetry} after a gateway/proxy rejects the beta
+   * header with a 400 — the first retry drops the ENTIRE beta set (not just the
+   * extended-cache token), since a strict proxy that rejects one unknown beta
+   * typically rejects every one. Mirrors Claude Code's gateway beta-rejection
+   * fallback covering all beta headers. Not user-facing; off by default.
+   */
+  disableBetas?: boolean;
 }
 
 export const STREAM_CHUNK_TYPES = ['content_delta', 'tool_call_delta', 'thinking_delta', 'done', 'error'] as const;

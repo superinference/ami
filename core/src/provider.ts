@@ -62,10 +62,31 @@ interface OpenAIToolFunction {
     /** Structured-result schema, emitted only for tools whose outputSchema has an
      *  object root (parity: Claude's MCP tool outputSchema exposure guard). */
     outputSchema?: ToolInputSchema;
+    /** API-enforced structured outputs: when true the provider constrains generated
+     *  arguments to exactly match `parameters`. Emitted only for a tool that opts in
+     *  (`ToolDefinition.strict`) on a model that supports it. Parity: Claude's
+     *  per-tool `strict` field (utils/api.ts). */
+    strict?: boolean;
   };
 }
 
-export function toolDefinitionsToOpenAI(tools: ToolDefinition[]): OpenAIToolFunction[] {
+/**
+ * Convert AMI tool definitions to the OpenAI function-tool wire shape, applying
+ * the per-tool structured-output `strict` flag and the experimental-betas kill
+ * switch exactly as Claude Code does at its tool-schema choke point (utils/api.ts).
+ *
+ * - `strict: true` is emitted ONLY when the tool opts in (`ToolDefinition.strict`),
+ *   a `model` is supplied, AND {@link modelSupportsStructuredOutputs} accepts it —
+ *   no model, or an unsupported model, means strict is dropped (a wrong `strict`
+ *   makes the API reject the request). Mirrors Claude's three-part gate.
+ * - When {@link experimentalBetasDisabled} is set, every field not in the base
+ *   allowlist (`name`/`description`/`parameters`/`outputSchema`) is stripped at this
+ *   single choke point, so a proxy/gateway that 400s on experimental tool-schema
+ *   fields (e.g. `strict`) never sees them — including fields added in the future.
+ */
+export function toolDefinitionsToOpenAI(tools: ToolDefinition[], model?: string): OpenAIToolFunction[] {
+  const stripExperimental = experimentalBetasDisabled();
+  const strictAllowed = !stripExperimental && !!model && modelSupportsStructuredOutputs(model);
   return tools.map((tool) => {
     const fn: OpenAIToolFunction['function'] = {
       name: tool.name,
@@ -79,8 +100,36 @@ export function toolDefinitionsToOpenAI(tools: ToolDefinition[]): OpenAIToolFunc
     if (tool.outputSchema && tool.outputSchema.type === 'object') {
       fn.outputSchema = tool.outputSchema;
     }
+    // Per-tool strict / structured-outputs flag — model-capability gated, and
+    // suppressed entirely by the experimental-betas kill switch above.
+    if (strictAllowed && tool.strict === true) {
+      fn.strict = true;
+    }
     return { type: 'function' as const, function: fn };
   });
+}
+
+/**
+ * Validate an UNTRUSTED `tool_choice` value (e.g. from an API request body) into
+ * the {@link ProviderConfig.toolChoice} shape, returning `undefined` for any
+ * unrecognized value so the caller falls back to the model default. Accepts the
+ * string modes `'auto' | 'required' | 'none'` and the pinned-tool object
+ * `{ type: 'tool', toolName: <string> }` (with the OpenAI-wire `function.name`
+ * form also normalized). Parity: Claude Code's `tool_choice` request parameter.
+ */
+export function normalizeToolChoice(value: unknown): ProviderConfig['toolChoice'] | undefined {
+  if (value === 'auto' || value === 'required' || value === 'none') return value;
+  if (isPlainRecord(value)) {
+    // OpenAI wire form: { type: 'function', function: { name } }.
+    if (value.type === 'function' && isPlainRecord(value.function) && typeof value.function.name === 'string' && value.function.name) {
+      return { type: 'tool', toolName: value.function.name };
+    }
+    // Anthropic/native form: { type: 'tool', toolName }.
+    if (value.type === 'tool' && typeof value.toolName === 'string' && value.toolName) {
+      return { type: 'tool', toolName: value.toolName };
+    }
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -892,6 +941,15 @@ export const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
 export const TOKEN_EFFICIENT_TOOLS_BETA = 'token-efficient-tools-2026-03-28';
 
 /**
+ * Anthropic beta token that turns on API-enforced structured outputs — the model
+ * is constrained to produce arguments that exactly match a tool's `strict` JSON
+ * schema (and enables the native response-format path). Mirrors Claude Code's
+ * `STRUCTURED_OUTPUTS_BETA_HEADER` (constants/betas.ts). Experimental: gated by
+ * {@link structuredOutputsEnabled} and model capability, stripped by the kill switch.
+ */
+export const STRUCTURED_OUTPUTS_BETA = 'structured-outputs-2025-12-15';
+
+/**
  * Interleaved thinking is served on the Claude 4+ Opus/Sonnet families. Mirrors
  * Claude Code's `modelSupportsISP` (which gates on the opus-4/sonnet-4 canonical
  * families); AMI applies the same family match, open-ended for future 4x/5x+ ids.
@@ -899,6 +957,37 @@ export const TOKEN_EFFICIENT_TOOLS_BETA = 'token-efficient-tools-2026-03-28';
 export function supportsInterleavedThinking(modelId: string): boolean {
   if (typeof modelId !== 'string' || !modelId) return false;
   return /claude-(?:opus|sonnet)-(?:[4-9]|\d{2,})/i.test(modelId);
+}
+
+/**
+ * Whether a model supports API-enforced structured outputs (the `strict` tool
+ * flag + {@link STRUCTURED_OUTPUTS_BETA}). Mirrors Claude Code's
+ * `modelSupportsStructuredOutputs` (utils/betas.ts): only the Claude 4.1+ Opus and
+ * 4.5+ Sonnet/Haiku generations support it — Claude 4.0 Sonnet and all 3.x models
+ * do NOT. The match is version-aware so a bare `claude-sonnet-4` (4.0) is excluded
+ * while `claude-sonnet-4-5`/`-4-6` and `claude-opus-4-1`/`-4-5`/`-4-6` qualify.
+ */
+export function modelSupportsStructuredOutputs(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  const m = modelId.toLowerCase();
+  return (
+    /claude-sonnet-4-(?:[5-9]|\d{2,})/.test(m) ||
+    /claude-haiku-4-(?:[5-9]|\d{2,})/.test(m) ||
+    /claude-opus-4-(?:[1-9]|\d{2,})/.test(m)
+  );
+}
+
+/**
+ * Structured-outputs opt-in (experimental; stripped by {@link experimentalBetasDisabled}).
+ * Off by default because it changes tool-call argument encoding; a user opts in via
+ * `SUPERINFERENCE_STRUCTURED_OUTPUTS` (or the Claude-compatible
+ * `CLAUDE_CODE_STRUCTURED_OUTPUTS`).
+ */
+export function structuredOutputsEnabled(): boolean {
+  return (
+    isEnvTruthy(process.env.SUPERINFERENCE_STRUCTURED_OUTPUTS) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_STRUCTURED_OUTPUTS)
+  );
 }
 
 /**
@@ -944,11 +1033,18 @@ function tokenEfficientToolsEnabled(): boolean {
  *   (explicit opt-in).
  * - **User escape hatch**: `ANTHROPIC_BETAS` tokens, appended unconditionally
  *   (bypasses the kill switch, mirroring Claude Code).
+ *
+ * When `opts.disableBetas` is set — the gateway-rejection recovery path — the
+ * ENTIRE set is dropped (returns `[]`), since a strict proxy that 400s on one
+ * unknown `anthropic-beta` token typically rejects every one, not just the
+ * extended-cache token. This is the full-coverage complement to the per-token
+ * kill switch.
  */
 export function computeAnthropicBetas(
   modelId: string,
-  opts: { cacheTtl?: '5m' | '1h'; includeCacheTtlBeta?: boolean } = {},
+  opts: { cacheTtl?: '5m' | '1h'; includeCacheTtlBeta?: boolean; disableBetas?: boolean } = {},
 ): string[] {
+  if (opts.disableBetas) return [];
   const betas: string[] = [];
   if (opts.includeCacheTtlBeta && opts.cacheTtl === '1h') betas.push(EXTENDED_CACHE_TTL_BETA);
   if (supportsOneMillionContextBeta(modelId)) betas.push(ONE_MILLION_CONTEXT_BETA);
@@ -957,6 +1053,11 @@ export function computeAnthropicBetas(
       betas.push(INTERLEAVED_THINKING_BETA);
     }
     if (tokenEfficientToolsEnabled()) betas.push(TOKEN_EFFICIENT_TOOLS_BETA);
+    // API-enforced structured outputs: model-gated + explicit opt-in. Experimental,
+    // so it rides inside the kill-switch guard (stripped when betas are disabled).
+    if (modelSupportsStructuredOutputs(modelId) && structuredOutputsEnabled()) {
+      betas.push(STRUCTURED_OUTPUTS_BETA);
+    }
   }
   betas.push(...getExtraAnthropicBetas());
   return [...new Set(betas)];
@@ -1387,7 +1488,7 @@ export function resolveModel(config: ProviderConfig) {
     // Beta headers must also ride on the vertex path, where they cannot be passed to
     // the SDK constructor — inject them at the fetch layer. Same canonical source as the
     // native path, minus extended-cache (withVertexAnthropicCache injects that separately).
-    const vertexBetas = computeAnthropicBetas(model, { includeCacheTtlBeta: false });
+    const vertexBetas = computeAnthropicBetas(model, { includeCacheTtlBeta: false, disableBetas: config.disableBetas });
     const hasVertexBetas = vertexBetas.length > 0;
     const vertexBase = hasVertexBetas
       ? withAnthropicBetaHeader(headerFetch ?? proxyFetch, vertexBetas)
@@ -1407,7 +1508,7 @@ export function resolveModel(config: ProviderConfig) {
     // Beta tokens for the native path, from the single canonical source: extended-cache
     // (1h TTL) + 1M-context + interleaved-thinking / token-efficient-tools (experimental,
     // kill-switchable) + any ANTHROPIC_BETAS. All ride one comma-separated header; deduped.
-    const uniqueBetas = computeAnthropicBetas(model, { cacheTtl: config.cacheTtl, includeCacheTtlBeta: true });
+    const uniqueBetas = computeAnthropicBetas(model, { cacheTtl: config.cacheTtl, includeCacheTtlBeta: true, disableBetas: config.disableBetas });
     return createAnthropic({
       apiKey,
       baseURL: baseUrl || undefined,
@@ -1885,6 +1986,30 @@ export function resolveCacheTtl(
   return raw === '5m' || raw === '1h' ? raw : undefined;
 }
 
+/** Env var that selects the global Anthropic prompt-cache marker strategy. */
+export const PROMPT_CACHE_STRATEGY_ENV = 'AMI_PROMPT_CACHE_STRATEGY';
+
+/**
+ * Selectable global prompt-cache strategy — mirrors Claude Code's `tool_based` /
+ * `system_prompt` / `none` cache-strategy knob (services/api/logging.ts). It
+ * decides WHICH prefix blocks get an Anthropic `cache_control` marker:
+ *
+ * - `'tool_based'` (DEFAULT) — mark BOTH the tools block and the conversation
+ *   breakpoints (the current/established AMI behavior; largest cached prefix).
+ * - `'system_prompt'` — mark only the message/system breakpoints, NOT the tools
+ *   block (for setups whose tool set churns every turn and would bust a tool cache).
+ * - `'none'` — write no cache markers at all (equivalent to a per-request
+ *   {@link ProviderConfig.skipCacheWrite}, applied globally via env).
+ *
+ * Any unrecognized / unset value resolves to `'tool_based'`, so behavior is
+ * unchanged unless the operator opts in. Read at call time (toggleable per process).
+ */
+export type PromptCacheStrategy = 'tool_based' | 'system_prompt' | 'none';
+export function resolvePromptCacheStrategy(env: NodeJS.ProcessEnv = process.env): PromptCacheStrategy {
+  const raw = env[PROMPT_CACHE_STRATEGY_ENV]?.trim().toLowerCase();
+  return raw === 'system_prompt' || raw === 'none' ? raw : 'tool_based';
+}
+
 // ---------------------------------------------------------------------------
 // repairToolCall — fix hallucinated tool names at the stream level
 // ---------------------------------------------------------------------------
@@ -1983,7 +2108,12 @@ export async function* streamChatCompletion(
   const isVertexAnthropic = config.provider === 'anthropic-vertex';
   // Honor the DISABLE_PROMPT_CACHING global/per-model kill-switches (getPromptCachingEnabled).
   const promptCachingEnabled = getPromptCachingEnabled(modelId);
-  const useSdkCacheMarkers = isAnthropic && !isVertexAnthropic && promptCachingEnabled;
+  // Global cache-marker strategy (tool_based | system_prompt | none) + the
+  // per-request skipCacheWrite one-off suppressor. Both can turn off cache writes;
+  // the strategy additionally selects which prefix blocks are marked.
+  const cacheStrategy = resolvePromptCacheStrategy();
+  const useSdkCacheMarkers = isAnthropic && !isVertexAnthropic && promptCachingEnabled
+    && !config.skipCacheWrite && cacheStrategy !== 'none';
 
   const healed = healOrphanedToolCalls(nonSystemMessages);
   const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
@@ -2034,8 +2164,10 @@ export async function* streamChatCompletion(
     }
     // Cache the TOOLS block via a marker on the last tool (tools precede the
     // messages in Anthropic's cache hierarchy). Additive; does not change which
-    // tools are sent.
-    if (sdkTools) toolsForModel = markLastToolCacheControl(sdkTools, cacheControl);
+    // tools are sent. The `system_prompt` strategy deliberately omits this marker
+    // (it caches only the system/message prefix), e.g. for setups whose tool set
+    // churns every turn and would otherwise bust a tool-block cache every time.
+    if (sdkTools && cacheStrategy === 'tool_based') toolsForModel = markLastToolCacheControl(sdkTools, cacheControl);
   }
 
   try {
@@ -2059,11 +2191,20 @@ export async function* streamChatCompletion(
       },
     } : {};
 
+    // Forced/constrained tool selection (parity: Claude Code's `tool_choice`
+    // request parameter). Only meaningful when tools are advertised; the AI SDK
+    // rejects a toolChoice with no tools, so it is omitted otherwise. The shape
+    // ('auto'|'required'|'none'|{type:'tool',toolName}) maps 1:1 to the SDK option.
+    const toolChoiceOpt = (toolsForModel && config.toolChoice)
+      ? { toolChoice: config.toolChoice }
+      : {};
+
     const result = streamTextFn({
       model,
       instructions: systemPrompt,
       messages: coreMessages,
       tools: toolsForModel,
+      ...toolChoiceOpt,
       maxOutputTokens: fitOutputTokens(
         // When the caller omits maxTokens, use the model's conservative DEFAULT
         // budget (Claude's getModelMaxOutputTokens().default) rather than a flat
@@ -2412,11 +2553,15 @@ export async function* streamChatCompletionWithRetry(
           return;
         }
 
-        // Gateway rejection: a proxy rejected the anthropic-beta header.
-        // Strip cacheTtl (which controls the beta header) and retry immediately.
+        // Gateway rejection: a proxy rejected the anthropic-beta header. Drop the
+        // ENTIRE beta set on the retry, not just the extended-cache token — a strict
+        // proxy that 400s on one unknown beta typically rejects all of them (1M-context,
+        // interleaved-thinking, structured-outputs, …). Clearing cacheTtl alone left the
+        // other betas on the wire, so the retry 400'd again; `disableBetas` makes
+        // computeAnthropicBetas return [] so the next attempt carries no beta header.
         if (statusCode === 400 && attempt < maxRetries && isGatewayRejection((chunk.error ?? '').toLowerCase())) {
-          config = { ...config, cacheTtl: undefined };
-          break; // retry without beta headers
+          config = { ...config, cacheTtl: undefined, disableBetas: true };
+          break; // retry without ANY beta headers
         }
 
         // Honor the API's x-should-retry hint (the SDK retry layer is disabled
