@@ -357,10 +357,21 @@ function describeJsonType(value: unknown): string {
   return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
 }
 
+/**
+ * Recovery guidance appended to every JSON syntax-error message AMI surfaces for a
+ * config file, so the user is told HOW to fix a malformed file rather than just that
+ * it is malformed. One source, reused by {@link loadConfigFileChecked} (the loader
+ * diagnostic) and {@link validateConfigJson} (the stale-tmp / config-tool writer path)
+ * so the wording never drifts. Parity: Claude Code's root-level JSON syntax-error tip
+ * ("Check for missing commas, unmatched brackets, or trailing commas…").
+ */
+export const JSON_SYNTAX_RECOVERY_HINT =
+  'Check for missing commas, unmatched brackets, or trailing commas. Use a JSON validator to identify the exact syntax error.';
+
 /** A problem found while loading a config file (distinct from "file absent"). */
 export interface ConfigDiagnostic {
   path: string;
-  kind: 'parse-error' | 'not-object' | 'invalid-value' | 'unknown-key';
+  kind: 'parse-error' | 'not-object' | 'invalid-value' | 'unknown-key' | 'unreadable';
   message: string;
   /** Where the corrupt file was backed up, or the most recent known-good backup. */
   backupPath?: string;
@@ -582,9 +593,20 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
   try {
     if (!fsHooks.existsSync(configPath)) return { config: null };
     raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
-  } catch {
-    // Unreadable (permissions, race) — treat as absent rather than corrupt.
-    return { config: null };
+  } catch (err) {
+    // ENOENT (missing file / broken symlink) and ENOTDIR (a path component is not a
+    // directory) genuinely mean "no config here" — expected, not a problem, so they
+    // resolve to a plain absent result with no diagnostic. Any OTHER read error
+    // (EACCES permissions, EIO) means the file is PRESENT but could not be read;
+    // surfacing that as an `unreadable` diagnostic stops a real-but-unreadable config
+    // from being silently mistaken for "no config" (which would let a lower/empty
+    // layer quietly take effect). Parity: Claude's handleFileSystemError — ENOENT is
+    // a debug-level non-event, every other code is a tracked error.
+    const code = err && typeof err === 'object' && 'code' in err ? String((err as NodeJS.ErrnoException).code) : '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { config: null };
+    const message = err instanceof Error ? err.message : String(err);
+    coreLog('config', `unreadable config at ${configPath}: ${message}`);
+    return { config: null, diagnostic: { path: configPath, kind: 'unreadable', message } };
   }
   // Strip a leading UTF-8 BOM (e.g. config.json written by PowerShell 5.x or some
   // editors) before parsing — JSON.parse rejects a leading U+FEFF, which would
@@ -595,7 +617,9 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     parsed = JSON.parse(stripJsoncComments(raw));
   } catch (err) {
     const backupPath = backupCorruptConfig(configPath, raw) ?? undefined;
-    const message = err instanceof Error ? err.message : String(err);
+    // Append actionable recovery guidance so the user learns HOW to fix the malformed
+    // file, not merely that the parse failed (parity: Claude's JSON syntax-error tip).
+    const message = `${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`;
     coreLog('config', `corrupt config at ${configPath}: ${message}${backupPath ? ` (backed up to ${backupPath})` : ''}`);
     return { config: null, diagnostic: { path: configPath, kind: 'parse-error', message, backupPath } };
   }
@@ -1019,7 +1043,19 @@ export const fsHooks = {
   readdirSync: fs.readdirSync as typeof fs.readdirSync,
   lstatSync: fs.lstatSync as typeof fs.lstatSync,
   readlinkSync: fs.readlinkSync as typeof fs.readlinkSync,
+  statSync: fs.statSync as typeof fs.statSync,
+  chmodSync: fs.chmodSync as typeof fs.chmodSync,
 };
+
+/**
+ * Default POSIX mode for a NEWLY-created config file: owner read/write only (0o600).
+ * A config file can hold a provider base-URL override, an `env` block, MCP/credential-
+ * adjacent knobs; an unprivileged co-user on the same host must not be able to read it.
+ * An EXISTING file's mode is preserved on rewrite (only new files get this default), so
+ * a user who deliberately widened permissions is not fought. Parity: Claude Code writes
+ * its config with `mode: 0o600`.
+ */
+export const CONFIG_FILE_MODE = 0o600;
 
 /**
  * Mockable JSON seam (ESM-safe). Tests swap `jsonHooks.parse` via `mock.method`
@@ -1032,7 +1068,10 @@ export function validateConfigJson(content: string): { valid: boolean; error?: s
   try {
     parsed = jsonHooks.parse(content);
   } catch (err) {
-    return { valid: false, error: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}` };
+    // Attach actionable recovery guidance (one shared source with the loader) so a
+    // malformed config/stale-tmp payload tells the user how to fix it, not just that
+    // it is broken. Parity: Claude's root-level JSON syntax-error tip.
+    return { valid: false, error: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}` };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { valid: false, error: `Expected a JSON object, got ${describeJsonType(parsed)}` };
@@ -1139,6 +1178,38 @@ export function backupConfigBeforeWrite(filePath: string, now: number = Date.now
   }
 }
 
+/**
+ * Mode (lowest 12 permission bits) of an existing file, or null when it is absent /
+ * cannot be stat'd (a brand-new config). Used to PRESERVE a user's deliberately-widened
+ * (or tightened) permissions across a rewrite instead of resetting them every save.
+ */
+function existingFileMode(filePath: string): number | null {
+  try {
+    return fsHooks.statSync(filePath).mode & 0o7777;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write `content` to `filePath` durably and with the right permissions:
+ *  - `flush: true` fsyncs the file descriptor before the call returns, so a power loss
+ *    or OS crash immediately after the subsequent rename cannot leave a zero-length or
+ *    half-flushed config even though the rename "succeeded" (parity: Claude Code's
+ *    writeFileSyncAndFlush);
+ *  - a NEW file is created `mode` (0o600 — owner-only); an EXISTING file's `preserveMode`
+ *    is re-applied after the write so a rewrite never widens/narrows what the user chose.
+ *
+ * Node applies the `mode` option only when it CREATES the file, so the explicit chmod is
+ * what carries an existing file's preserved mode onto the freshly-written temp file.
+ */
+function writeFileDurable(filePath: string, content: string, mode: number, preserveMode: number | null): void {
+  fsHooks.writeFileSync(filePath, content, { encoding: 'utf-8', flush: true, mode });
+  if (preserveMode !== null) {
+    try { fsHooks.chmodSync(filePath, preserveMode); } catch { /* best effort — the write already succeeded */ }
+  }
+}
+
 export function safeWriteConfig(filePath: string, data: Record<string, unknown>): void {
   // Write THROUGH a symlinked config path to its target so a dotfile-managed
   // settings symlink is updated in place rather than clobbered by a regular file
@@ -1154,16 +1225,19 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
   // both the logical path and the resolved target (symlink case).
   markInternalWrite(filePath);
   if (target !== filePath) markInternalWrite(target);
+  // Preserve an existing config's permissions across the rewrite; a brand-new file
+  // is created owner-only (0o600) so it is never world/group-readable.
+  const preserveMode = existingFileMode(target);
   try {
     const dir = path.dirname(target);
     if (!fsHooks.existsSync(dir)) {
       fsHooks.mkdirSync(dir, { recursive: true });
     }
-    fsHooks.writeFileSync(tmpPath, json, 'utf-8');
+    writeFileDurable(tmpPath, json, CONFIG_FILE_MODE, preserveMode);
     try {
       fsHooks.renameSync(tmpPath, target);
     } catch {
-      fsHooks.writeFileSync(target, json, 'utf-8');
+      writeFileDurable(target, json, CONFIG_FILE_MODE, preserveMode);
       try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     }
   } catch (err) {
