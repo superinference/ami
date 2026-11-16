@@ -7,6 +7,16 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { glob } from 'tinyglobby';
 import { isGeneratedFile } from './generated-files';
+import {
+  SCORE_MATCH,
+  BONUS_CONSECUTIVE,
+  BONUS_FIRST_CHAR,
+  PENALTY_GAP_START,
+  PENALTY_GAP_EXTENSION,
+  FUZZY_MAX_QUERY_LEN,
+  boundaryBonus,
+} from './fuzzy-score';
+import { FileIndex, type SearchResult } from './file-index';
 
 const execFileAsync = promisify(execFile);
 
@@ -56,13 +66,10 @@ export const indexBuildConfig: { chunkMs: number; chunkCheckInterval: number } =
 // of the old case-insensitive substring test + coarse 3-tier alpha sort.
 // ---------------------------------------------------------------------------
 
-const SCORE_MATCH = 16;
-const BONUS_BOUNDARY = 8;
-const BONUS_CAMEL = 6;
-const BONUS_CONSECUTIVE = 4;
-const BONUS_FIRST_CHAR = 8;
-const PENALTY_GAP_START = 3;
-const PENALTY_GAP_EXTENSION = 1;
+// Nucleo/fzf-v2 scoring constants + the boundary/camel classifier are shared
+// with the file-path index via ./fuzzy-score (one canonical match-quality
+// definition — see No-Duplication Rule). This module layers tier bonuses +
+// a test-path penalty on top for symbol-name ranking.
 
 // Tier bonuses layered on the fuzzy score so the historical
 // exact > starts-with > subsequence ordering is preserved while still ranking
@@ -75,7 +82,7 @@ const BONUS_PREFIX = 10_000;
  * pathological / oversized query cannot blow up scoring cost (DoS / resource
  * guard). Mirrors Claude Code's MAX_QUERY_LEN=64.
  */
-export const MAX_SYMBOL_QUERY_LEN = 64;
+export const MAX_SYMBOL_QUERY_LEN = FUZZY_MAX_QUERY_LEN;
 
 /**
  * Deliberate down-rank of test / spec / fixture paths so a test file's symbol
@@ -86,28 +93,6 @@ export const MAX_SYMBOL_QUERY_LEN = 64;
 const TEST_PATH_PENALTY = 2;
 const TEST_PATH_RE =
   /(^|[\\/])(__tests__|__mocks__|tests?|spec|fixtures?)([\\/]|$)|\.(test|spec)\./i;
-
-function isBoundary(code: number): boolean {
-  // / \ - _ . space
-  return code === 47 || code === 92 || code === 45 || code === 95 || code === 46 || code === 32;
-}
-function isLower(code: number): boolean {
-  return code >= 97 && code <= 122;
-}
-function isUpper(code: number): boolean {
-  return code >= 65 && code <= 90;
-}
-
-/**
- * Boundary / camelCase bonus for a match at position `pos` (`pos >= 1`) in the
- * original-case `name`. The first-char bonus is handled by the caller.
- */
-function boundaryBonus(name: string, pos: number): number {
-  const prevCh = name.charCodeAt(pos - 1);
-  if (isBoundary(prevCh)) return BONUS_BOUNDARY;
-  if (isLower(prevCh) && isUpper(name.charCodeAt(pos))) return BONUS_CAMEL;
-  return 0;
-}
 
 /**
  * Score how well `needle` (already length-clamped) fuzzy-matches `name`.
@@ -904,6 +889,24 @@ export class WorkspaceIndexer {
     );
 
     return scored.slice(0, limit).map(x => x.entry);
+  }
+
+  // -------------------------------------------------------------------------
+  // Fuzzy file-PATH search (scalable nucleo/fzf-v2 index)
+  //
+  // Where searchSymbols ranks symbol NAMES, this ranks whole file PATHS via the
+  // typed-array/bitmap/top-k FileIndex (./file-index). The indexer already holds
+  // the workspace file set, so a `@`/`/files`-style path finder reuses it rather
+  // than re-walking the tree. Built from the live relative paths on each call
+  // (the same recompute-per-call contract as searchSymbols), so results never go
+  // stale after incremental add/remove.
+  // -------------------------------------------------------------------------
+
+  searchFiles(query: string, limit: number = 20): SearchResult[] {
+    if (limit <= 0) return [];
+    const index = new FileIndex();
+    index.loadFromFileList(Array.from(this.files.values(), f => f.relativePath));
+    return index.search(query, limit);
   }
 
   // -------------------------------------------------------------------------

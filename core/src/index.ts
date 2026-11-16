@@ -333,3 +333,21 @@ export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE
 // --- batch #11 additive parity exports ---
 export { cronListTool, isActiveJob, sortJobsForDisplay, CRON_LIST_STATUSES } from './tools/cron-list';
 export type { CronListStatus } from './tools/cron-list';
+
+// --- scalable fuzzy file-path index (nucleo/fzf-v2 port) ---
+export { FileIndex, fileIndexBuildConfig, yieldToEventLoop as fileIndexYieldToEventLoop } from './file-index';
+export type { SearchResult as FileSearchResult } from './file-index';
+export {
+  SCORE_MATCH,
+  BONUS_BOUNDARY,
+  BONUS_CAMEL,
+  BONUS_CONSECUTIVE,
+  BONUS_FIRST_CHAR,
+  PENALTY_GAP_START,
+  PENALTY_GAP_EXTENSION,
+  FUZZY_MAX_QUERY_LEN,
+  isBoundary,
+  isLower,
+  isUpper,
+  boundaryBonus,
+} from './fuzzy-score';
