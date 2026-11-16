@@ -223,6 +223,123 @@ describe('planModeTool — parity enhancements', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Slug cache + configurable/memoized plans directory (parity: plans.ts)
+// ---------------------------------------------------------------------------
+
+describe('planModeTool — session slug cache + word-slug filenames', () => {
+  const os = require('os');
+  const fs = require('fs');
+  const path = require('path');
+  const {
+    allocatePlanFile,
+    getPlanSlug,
+    clearPlanSlug,
+    clearAllPlanSlugs,
+  } = require('../src/tools/plan-mode');
+
+  it('allocatePlanFile uses a memorable word slug (not a raw timestamp)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plandir-'));
+    const file = allocatePlanFile(dir);
+    const name = path.basename(file);
+    // Word-slug form: plan-<adjective>-<verb>-<noun>.md — not plan-<digits>.md
+    assert.match(name, /^plan-[a-z]+-[a-z]+-[a-z]+\.md$/);
+    assert.doesNotMatch(name, /^plan-\d+\.md$/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns a STABLE per-session filename across repeated allocations', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plandir-'));
+    clearAllPlanSlugs();
+    const a = allocatePlanFile(dir, { sessionId: 'sess-A' });
+    const b = allocatePlanFile(dir, { sessionId: 'sess-A' });
+    assert.equal(a, b, 'same session should reuse the same plan file');
+    // The session filename is <slug>.md (no plan- prefix), per Claude parity.
+    assert.match(path.basename(a), /^[a-z]+-[a-z]+-[a-z]+\.md$/);
+    clearAllPlanSlugs();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('distinct sessions get distinct plan files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plandir-'));
+    clearAllPlanSlugs();
+    const a = allocatePlanFile(dir, { sessionId: 'sess-1' });
+    const b = allocatePlanFile(dir, { sessionId: 'sess-2' });
+    assert.notEqual(a, b);
+    clearAllPlanSlugs();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('getPlanSlug retries past an on-disk collision', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plandir-'));
+    clearAllPlanSlugs();
+    const first = getPlanSlug('sess-X', dir);
+    // Write the slug file so a sibling session must pick a different one.
+    fs.writeFileSync(path.join(dir, `${first}.md`), 'x');
+    clearPlanSlug('sess-Y'); // ensure fresh
+    const second = getPlanSlug('sess-Y', dir);
+    assert.notEqual(second, first, 'should avoid the occupied slug');
+    clearAllPlanSlugs();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('clearPlanSlug forgets one session; clearAllPlanSlugs forgets all', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plandir-'));
+    clearAllPlanSlugs();
+    const a1 = allocatePlanFile(dir, { sessionId: 'sess-c' });
+    clearPlanSlug('sess-c');
+    // A new slug may differ; at minimum the cache was cleared and re-populated.
+    const a2 = allocatePlanFile(dir, { sessionId: 'sess-c' });
+    assert.ok(typeof a2 === 'string');
+    void a1;
+    clearAllPlanSlugs();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('planModeTool — configurable + memoized plans directory', () => {
+  const os = require('os');
+  const fs = require('fs');
+  const path = require('path');
+  const { getPlansDirectory, clearPlansDirectoryCache } = require('../src/tools/plan-mode');
+
+  it('AMI_PLANS_DIR relocates the plans dir within the project root', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+    clearPlansDirectoryCache();
+    const dir = getPlansDirectory(cwd, { AMI_PLANS_DIR: 'docs/plans' });
+    assert.equal(dir, path.join(cwd, 'docs', 'plans'));
+    clearPlansDirectoryCache();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('rejects a traversal override and falls back to the default state dir', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+    clearPlansDirectoryCache();
+    const dir = getPlansDirectory(cwd, { AMI_PLANS_DIR: '../../etc/evil' });
+    assert.doesNotMatch(dir, /etc[\\/]evil/, 'must not honor the traversal path');
+    assert.ok(dir.endsWith('plans'), 'falls back to the default plans dir');
+    clearPlansDirectoryCache();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('memoizes resolution per (cwd, override)', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+    clearPlansDirectoryCache();
+    const a = getPlansDirectory(cwd, { AMI_PLANS_DIR: 'p' });
+    const b = getPlansDirectory(cwd, { AMI_PLANS_DIR: 'p' });
+    assert.equal(a, b);
+    const c = getPlansDirectory(cwd, {}); // different override → different entry
+    assert.notEqual(a, c);
+    clearPlansDirectoryCache();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('defaults to the per-project state plans dir when unset', () => {
+    const dir = getPlansDirectory(process.cwd(), {});
+    assert.ok(dir.endsWith('plans'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration — tool registry
 // ---------------------------------------------------------------------------
 

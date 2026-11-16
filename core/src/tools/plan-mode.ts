@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { generateWordSlug, generateShortWordSlug } from '../words';
 
 let _planModeActive = false;
 let _planFilePath: string | null = null;
@@ -23,12 +24,13 @@ export function getPlanFilePath(): string | null { return _planFilePath; }
 /** Recover the last submitted plan content (fallback on rejection). */
 export function getPlan(): string | null { return _lastPlan; }
 
-/**
- * Resolve (and create) the plans directory for a cwd, rejecting any path that
- * escapes the per-project state dir (defense against traversal via a poisoned
- * cwd). Returns the validated absolute directory.
- */
-export function getPlansDirectory(cwd: string): string {
+/** Memoized resolution of the plans directory, keyed by cwd + override, so the
+ *  repeated enter/write/boundary-check callers don't re-resolve each time. */
+const _plansDirCache = new Map<string, string>();
+
+/** Default plans directory: the validated per-project state dir, rejecting any
+ *  path that escapes it (defense against traversal via a poisoned cwd). */
+function defaultPlansDirectory(cwd: string): string {
   const base = projectStateDir(cwd, 'plans');
   const resolved = path.resolve(base);
   const root = path.resolve(projectStateDir(cwd, ''));
@@ -38,17 +40,96 @@ export function getPlansDirectory(cwd: string): string {
   return resolved;
 }
 
-const SLUG_WORDS = ['amber', 'basalt', 'cobalt', 'cedar', 'delta', 'ember', 'flint', 'garnet', 'harbor', 'ivory'];
+/**
+ * Resolve the plans directory for a cwd.
+ *
+ * - Default: the validated per-project state dir (`<state>/plans`).
+ * - Configurable: when `AMI_PLANS_DIR` is set it relocates plan `.md` files,
+ *   resolved RELATIVE TO the project root (`cwd`). The resolved path is
+ *   validated to stay within `cwd` (path-traversal defense); on a violation it
+ *   falls back to the default dir rather than writing outside the project.
+ *
+ * Result is memoized per (cwd, override) so render/permission-path callers do
+ * not re-resolve on every call.
+ */
+export function getPlansDirectory(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.AMI_PLANS_DIR;
+  const key = `${cwd}\0${override ?? ''}`;
+  const cached = _plansDirCache.get(key);
+  if (cached !== undefined) return cached;
 
-/** Pick a collision-free, human-recognizable plan filename within planDir. */
-export function allocatePlanFile(planDir: string): string {
+  let resolved: string;
+  if (override) {
+    const candidate = path.resolve(cwd, override);
+    const root = path.resolve(cwd);
+    if (candidate === root || candidate.startsWith(root + path.sep)) {
+      resolved = candidate;
+    } else {
+      // Traversal attempt — refuse the configured dir, use the safe default.
+      resolved = defaultPlansDirectory(cwd);
+    }
+  } else {
+    resolved = defaultPlansDirectory(cwd);
+  }
+  _plansDirCache.set(key, resolved);
+  return resolved;
+}
+
+/** Test/reset seam: clear the memoized plans-directory resolutions. */
+export function clearPlansDirectoryCache(): void {
+  _plansDirCache.clear();
+}
+
+/** Per-session plan slug cache (SessionId -> word slug). A session reuses one
+ *  stable, human-readable slug so repeated enter/exit cycles and the plan
+ *  file name line up, mirroring Claude's getPlanSlugCache. */
+const _planSlugCache = new Map<string, string>();
+
+/**
+ * Get (lazily generating) the stable word slug for a session's plan, retrying
+ * up to {@link MAX_SLUG_RETRIES} to avoid colliding with an existing
+ * `<slug>.md` in `planDir` before caching the result for the whole session.
+ */
+export function getPlanSlug(sessionId: string, planDir: string): string {
+  const existing = _planSlugCache.get(sessionId);
+  if (existing !== undefined) return existing;
+  let slug = generateWordSlug();
   for (let i = 0; i < MAX_SLUG_RETRIES; i++) {
-    const word = SLUG_WORDS[Math.floor(Math.random() * SLUG_WORDS.length)];
-    const candidate = path.join(planDir, `plan-${word}-${Date.now().toString(36)}.md`);
+    slug = generateWordSlug();
+    if (!fs.existsSync(path.join(planDir, `${slug}.md`))) break;
+  }
+  _planSlugCache.set(sessionId, slug);
+  return slug;
+}
+
+/** Forget a session's cached plan slug (e.g. on session end / fork). */
+export function clearPlanSlug(sessionId: string): void {
+  _planSlugCache.delete(sessionId);
+}
+
+/** Forget every cached plan slug (e.g. on /clear). */
+export function clearAllPlanSlugs(): void {
+  _planSlugCache.clear();
+}
+
+/**
+ * Pick a collision-free, human-recognizable plan filename within `planDir`.
+ *
+ * - With a `sessionId`, the file is `<session-slug>.md`, stable for the whole
+ *   session (so re-entering plan mode in one session reuses the same file).
+ * - Without one (bare/test contexts), a fresh unique `plan-<word-slug>.md` is
+ *   allocated, retrying to dodge an on-disk collision.
+ */
+export function allocatePlanFile(planDir: string, opts: { sessionId?: string } = {}): string {
+  if (opts.sessionId) {
+    return path.join(planDir, `${getPlanSlug(opts.sessionId, planDir)}.md`);
+  }
+  for (let i = 0; i < MAX_SLUG_RETRIES; i++) {
+    const candidate = path.join(planDir, `plan-${generateWordSlug()}.md`);
     if (!fs.existsSync(candidate)) return candidate;
   }
-  // Fallback: a timestamp+random name is effectively collision-proof.
-  return path.join(planDir, `plan-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.md`);
+  // Fallback: a short-slug + timestamp name is effectively collision-proof.
+  return path.join(planDir, `plan-${generateShortWordSlug()}-${Date.now().toString(36)}.md`);
 }
 
 export const planModeTool: ToolDefinition = {
@@ -119,7 +200,7 @@ export const planModeTool: ToolDefinition = {
       } catch {
         planDir = projectStateDir(cwd, 'plans');
       }
-      _planFilePath = allocatePlanFile(planDir);
+      _planFilePath = allocatePlanFile(planDir, { sessionId: context?.sessionId });
       return {
         output:
           `Entered plan mode. Plan file: ${_planFilePath}\n` +
