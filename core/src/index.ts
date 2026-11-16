@@ -65,8 +65,8 @@ export {
 export { PRIVACY_LEVELS } from './analytics';
 export type { PrivacyLevel, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';
-export { Profiler, FpsTracker } from './profiler';
-export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming } from './profiler';
+export { Profiler, FpsTracker, slowWarning } from './profiler';
+export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts } from './profiler';
 export { WorkspaceIndexer, findProjectRoot } from './workspace-indexer';
 export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';

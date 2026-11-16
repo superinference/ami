@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { Profiler, FpsTracker } from '../src/profiler';
+import { Profiler, FpsTracker, slowWarning } from '../src/profiler';
 
 describe('Profiler.timeAsync', () => {
   it('records duration and returns the result on success', async () => {
@@ -201,5 +201,64 @@ describe('FpsTracker', () => {
     assert.ok(f.getMetrics().averageFps > 0);
     f.reset();
     assert.deepEqual(f.getMetrics(), { averageFps: 0, low1PctFps: 0 });
+  });
+});
+
+describe('slowWarning (bottleneck affordance hints — queryProfiler parity)', () => {
+  it('classifies very-slow / slow / none by the default thresholds', () => {
+    assert.deepEqual(slowWarning(1500, 'api_call'), { severity: 'very-slow', text: 'VERY SLOW' });
+    assert.deepEqual(slowWarning(250, 'tool_bash'), { severity: 'slow', text: 'SLOW' });
+    assert.deepEqual(slowWarning(10, 'fast'), { severity: 'none', text: '' });
+    // Exactly at a boundary is NOT flagged (strict >, matching the reference).
+    assert.equal(slowWarning(100, 'edge').severity, 'none');
+    assert.equal(slowWarning(1000, 'edge').severity, 'slow');
+  });
+
+  it('never flags the first-checkpoint mark (process-start measurement)', () => {
+    assert.deepEqual(slowWarning(99_999, 'query_user_input_received'), { severity: 'none', text: '' });
+  });
+
+  it('special-cases known bottlenecks below the generic slow threshold', () => {
+    assert.deepEqual(slowWarning(60, 'git_status'), { severity: 'bottleneck', text: 'git status' });
+    assert.deepEqual(slowWarning(60, 'tool_schema_build'), { severity: 'bottleneck', text: 'tool schemas' });
+    // Under the bottleneck sensitivity → not flagged.
+    assert.equal(slowWarning(40, 'git_status').severity, 'none');
+  });
+
+  it('honours caller-supplied thresholds', () => {
+    assert.equal(slowWarning(30, 'x', { slowMs: 20 }).severity, 'slow');
+    assert.equal(slowWarning(30, 'x', { slowMs: 20, verySlowMs: 25 }).severity, 'very-slow');
+    assert.equal(slowWarning(55, 'git_status', { bottleneckMs: 60 }).severity, 'none');
+  });
+});
+
+describe('Profiler.closeOpenTurns (finalize in-flight/aborted turns)', () => {
+  it('records a begun-but-never-ended turn as incomplete with elapsed duration', () => {
+    const p = new Profiler();
+    p.beginTurn(0);
+    const closed = p.closeOpenTurns();
+    assert.equal(closed, 1);
+    const t = p.getTurn(0)!;
+    assert.equal(t.incomplete, true);
+    assert.ok(t.duration >= 0);
+    assert.equal(t.endTime >= t.startTime, true);
+  });
+
+  it('leaves properly-bracketed turns untouched and finalizes only the pending one', () => {
+    const p = new Profiler();
+    p.beginTurn(0);
+    p.endTurn(0, { apiLatency: 10, toolExecutionTime: 0, compactionTime: 0, tokensProduced: 1, tokensConsumed: 1, ttftMs: 1 });
+    p.beginTurn(1); // in-flight
+    const closed = p.closeOpenTurns();
+    assert.equal(closed, 1);
+    assert.equal(p.getTurn(0)!.incomplete, false);
+    assert.equal(p.getTurn(1)!.incomplete, true);
+  });
+
+  it('is idempotent and clears the pending-start map (no leak across queries)', () => {
+    const p = new Profiler();
+    p.beginTurn(5);
+    assert.equal(p.closeOpenTurns(), 1);
+    assert.equal(p.closeOpenTurns(), 0); // nothing pending the second time
   });
 });

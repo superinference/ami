@@ -41,6 +41,48 @@ export interface SlowOperation {
   thresholdMs: number;
 }
 
+/** Severity of a per-operation bottleneck affordance hint. */
+export type SlowSeverity = 'none' | 'slow' | 'very-slow' | 'bottleneck';
+
+/** A UI-agnostic bottleneck affordance hint for one measured operation. */
+export interface SlowWarning {
+  severity: SlowSeverity;
+  /** Short reason label ('' when severity is 'none'); the frontend adds its own glyph/colour. */
+  text: string;
+}
+
+/** Thresholds for {@link slowWarning}; omitted fields use Claude-parity defaults. */
+export interface SlowWarningOpts {
+  /** delta over this (ms) is "slow" (default 100). */
+  slowMs?: number;
+  /** delta over this (ms) is "very-slow" (default 1000). */
+  verySlowMs?: number;
+  /** sensitivity for known-bottleneck special-casing (default 50). */
+  bottleneckMs?: number;
+}
+
+/**
+ * Classify one operation's elapsed time into a bottleneck affordance severity,
+ * mirroring Claude's queryProfiler getSlowWarning. UI-agnostic: returns a severity
+ * + short label the frontend maps to its own glyph/colour, so the threshold policy
+ * lives in ONE place (core) instead of being re-encoded at each render site.
+ *
+ * The first-checkpoint mark (`query_user_input_received`) measures time from process
+ * start, not real overhead, so it is never flagged — matching the reference.
+ */
+export function slowWarning(deltaMs: number, name = '', opts?: SlowWarningOpts): SlowWarning {
+  if (name === 'query_user_input_received') return { severity: 'none', text: '' };
+  const slowMs = opts?.slowMs ?? 100;
+  const verySlowMs = opts?.verySlowMs ?? 1000;
+  const bottleneckMs = opts?.bottleneckMs ?? 50;
+  if (deltaMs > verySlowMs) return { severity: 'very-slow', text: 'VERY SLOW' };
+  if (deltaMs > slowMs) return { severity: 'slow', text: 'SLOW' };
+  // Known-bottleneck special-casing: lower sensitivity than the generic slow line.
+  if (name.includes('git_status') && deltaMs > bottleneckMs) return { severity: 'bottleneck', text: 'git status' };
+  if (name.includes('tool_schema') && deltaMs > bottleneckMs) return { severity: 'bottleneck', text: 'tool schemas' };
+  return { severity: 'none', text: '' };
+}
+
 /** Render-performance metrics derived from frame durations. */
 export interface FpsMetrics {
   averageFps: number;
@@ -410,12 +452,54 @@ export class Profiler {
       inputTokensPerSec,
       incomplete,
     });
-    // Bound retained turns for long-running (cron) sessions: evict the oldest.
+    this._evictOldTurns();
+  }
+
+  /** Bound retained turns for long-running (cron) sessions: evict the oldest. */
+  private _evictOldTurns(): void {
     while (this.turns.size > this._maxTurns) {
       const oldest = this.turns.keys().next().value;
       if (oldest === undefined) break;
       this.turns.delete(oldest);
     }
+  }
+
+  /**
+   * Finalize any turn that called beginTurn() but never endTurn() — an engine abort,
+   * crash, or teardown. Each pending turn is recorded as an `incomplete` turn with its
+   * elapsed-so-far duration (mirrors Claude's closeOpenSpans), so an aborted run's
+   * partial turn still appears in the report instead of vanishing, and the
+   * turnStartTimes map can't leak start entries that never get an endTurn(). Clears
+   * the pending-start map and returns the number of turns finalized.
+   */
+  closeOpenTurns(): number {
+    const now = Date.now();
+    let closed = 0;
+    for (const [turnIndex, startTime] of this.turnStartTimes) {
+      if (this.turns.has(turnIndex)) continue; // already ended normally
+      this.turns.set(turnIndex, {
+        turnIndex,
+        startTime,
+        endTime: now,
+        duration: Math.max(0, now - startTime),
+        apiLatency: 0,
+        toolExecutionTime: 0,
+        compactionTime: 0,
+        tokensProduced: 0,
+        tokensConsumed: 0,
+        ttftMs: 0,
+        outputTokensPerSec: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        cacheHitRate: 0,
+        inputTokensPerSec: 0,
+        incomplete: true,
+      });
+      closed++;
+    }
+    this.turnStartTimes.clear();
+    this._evictOldTurns();
+    return closed;
   }
 
   /** Get a summary of all recorded timings. */
