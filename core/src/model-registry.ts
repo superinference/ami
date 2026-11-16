@@ -443,6 +443,114 @@ export async function validateModel(
   return { valid: false, available: ids, suggestion, errorKind: 'none' };
 }
 
+// ---------------------------------------------------------------------------
+// Human-readable model metadata — friendly display names + one-line
+// descriptions for the /model picker and status line. Mirrors Claude Code's
+// getPublicModelDisplayName (utils/model/model.ts:L344-L415) + the per-option
+// label/description copy in utils/model/modelOptions.ts (L96-L209, L431-L459).
+// AMI resolves these from the RAW provider model id with pattern matching (no
+// provider-specific model-string table) so a dated snapshot
+// ("claude-sonnet-4-5-20251022"), a gateway-prefixed id
+// ("openrouter/anthropic/claude-sonnet-4.6"), the `[1m]` long-context suffix, or
+// a bare family id all resolve to the SAME friendly label. Unknown ids fall back
+// to the raw id itself — Claude's renderModelName default branch (a marketing
+// label for a raw model id that is always a usable string).
+// ---------------------------------------------------------------------------
+
+/** Family tier → one-line picker description (Claude's modelOptions copy). */
+const MODEL_FAMILY_DESCRIPTION = {
+  opus: 'Most capable — best for complex, multi-step work',
+  sonnet: 'Balanced — best for everyday coding tasks',
+  haiku: 'Fastest and lowest cost — best for quick answers',
+  gpt: 'OpenAI frontier model',
+  gemini: 'Google Gemini model',
+} as const;
+
+type ModelFamily = keyof typeof MODEL_FAMILY_DESCRIPTION;
+
+/**
+ * Ordered display-name patterns, most-specific (versioned) first so a precise
+ * version wins over the bare family. Each entry also carries the family tier its
+ * description comes from.
+ */
+const MODEL_DISPLAY_PATTERNS: ReadonlyArray<{ pattern: RegExp; name: string; family: ModelFamily }> = [
+  // Claude — Opus
+  { pattern: /opus-?4[._-]?6/i, name: 'Opus 4.6', family: 'opus' },
+  { pattern: /opus-?4[._-]?5/i, name: 'Opus 4.5', family: 'opus' },
+  { pattern: /opus-?4[._-]?1/i, name: 'Opus 4.1', family: 'opus' },
+  { pattern: /claude-?3[._-]?opus/i, name: 'Claude 3 Opus', family: 'opus' },
+  { pattern: /opus-?4/i, name: 'Opus 4', family: 'opus' },
+  { pattern: /\bopus\b/i, name: 'Opus', family: 'opus' },
+  // Claude — Sonnet
+  { pattern: /sonnet-?4[._-]?6/i, name: 'Sonnet 4.6', family: 'sonnet' },
+  { pattern: /sonnet-?4[._-]?5/i, name: 'Sonnet 4.5', family: 'sonnet' },
+  { pattern: /3[._-]?7[._-]?sonnet/i, name: 'Sonnet 3.7', family: 'sonnet' },
+  { pattern: /3[._-]?5[._-]?sonnet/i, name: 'Sonnet 3.5', family: 'sonnet' },
+  { pattern: /sonnet-?4/i, name: 'Sonnet 4', family: 'sonnet' },
+  { pattern: /\bsonnet\b/i, name: 'Sonnet', family: 'sonnet' },
+  // Claude — Haiku
+  { pattern: /haiku-?4[._-]?5/i, name: 'Haiku 4.5', family: 'haiku' },
+  { pattern: /3[._-]?5[._-]?haiku/i, name: 'Haiku 3.5', family: 'haiku' },
+  { pattern: /\bhaiku\b/i, name: 'Haiku', family: 'haiku' },
+  // OpenAI
+  { pattern: /gpt-?6/i, name: 'GPT-6', family: 'gpt' },
+  { pattern: /gpt-?5/i, name: 'GPT-5', family: 'gpt' },
+  { pattern: /gpt-?4o-?mini/i, name: 'GPT-4o mini', family: 'gpt' },
+  { pattern: /gpt-?4o/i, name: 'GPT-4o', family: 'gpt' },
+  { pattern: /gpt-?4/i, name: 'GPT-4', family: 'gpt' },
+  // Google Gemini
+  { pattern: /gemini-?3/i, name: 'Gemini 3', family: 'gemini' },
+  { pattern: /gemini-?2[._-]?5[._-]?pro/i, name: 'Gemini 2.5 Pro', family: 'gemini' },
+  { pattern: /gemini-?2[._-]?5[._-]?flash/i, name: 'Gemini 2.5 Flash', family: 'gemini' },
+];
+
+/** Strip the optional `[1m]` long-context suffix; report whether it was present. */
+function splitOneMillionSuffix(id: string): { base: string; is1m: boolean } {
+  const is1m = /\[1m\]$/i.test(id);
+  return { base: is1m ? id.replace(/\[1m\]$/i, '') : id, is1m };
+}
+
+function matchModelPattern(id: string): { name: string; family: ModelFamily } | undefined {
+  return MODEL_DISPLAY_PATTERNS.find(e => e.pattern.test(id));
+}
+
+/**
+ * Friendly, human-readable display name for a model id ("Sonnet 4.6",
+ * "GPT-4o"). Recognizes dated snapshots, gateway prefixes, and the `[1m]`
+ * long-context suffix (rendered as " (1M context)"). Falls back to the raw id so
+ * the return value is ALWAYS a non-empty, user-presentable string for any known
+ * OR custom model — the marketing-label-for-a-raw-id affordance.
+ */
+export function getModelDisplayName(modelId: string): string {
+  const id = (modelId ?? '').trim();
+  if (id === '') return '';
+  const { base, is1m } = splitOneMillionSuffix(id);
+  const hit = matchModelPattern(base);
+  if (!hit) return id;
+  return is1m ? `${hit.name} (1M context)` : hit.name;
+}
+
+/**
+ * One-line, human-readable description for the /model picker, or undefined when
+ * the model id is not recognized as a known family (an unknown/custom id has no
+ * canned marketing copy). Mirrors Claude's per-option `description` field.
+ */
+export function getModelDescription(modelId: string): string | undefined {
+  const { base } = splitOneMillionSuffix((modelId ?? '').trim());
+  const hit = matchModelPattern(base);
+  return hit ? MODEL_FAMILY_DESCRIPTION[hit.family] : undefined;
+}
+
+/**
+ * Combined picker annotation for a model id: a friendly `displayName` (always a
+ * usable string) plus an optional `description`. Mirrors Claude's ModelOption
+ * `{ label, description }` so a picker row can show a human label + sub-line
+ * instead of a bare id.
+ */
+export function getModelMetadata(modelId: string): { displayName: string; description?: string } {
+  return { displayName: getModelDisplayName(modelId), description: getModelDescription(modelId) };
+}
+
 export function formatModelList(models: string[], provider: string): string {
   if (models.length === 0) return 'Could not retrieve model list from provider.';
 

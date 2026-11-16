@@ -1210,33 +1210,76 @@ export function getModelSwitchWarning(
 }
 
 /**
- * Deprecated / retiring models and their retirement dates. Keys are matched as
- * case-insensitive substrings of the model id (so a dated snapshot or a gateway
- * prefix still matches), newest-retiring handled by first-match. Add an entry
- * here to warn users off a model before the endpoint starts rejecting it.
- * Mirrors Claude's DEPRECATED_MODELS registry + getModelDeprecationWarning
- * (utils/model/deprecation.ts:L28-L101).
+ * Coarse hosting class a retirement date is keyed by. The SAME logical model
+ * retires on DIFFERENT dates depending on where it is served (Anthropic first
+ * party vs Bedrock vs Vertex vs Foundry), so a single flat date would be wrong
+ * for 3P users. Mirrors Claude's APIProvider union (utils/model/providers.ts).
  */
-const DEPRECATED_MODELS: Record<string, { modelName: string; retirementDate: string }> = {
-  'claude-3-opus': { modelName: 'Claude 3 Opus', retirementDate: 'January 5, 2026' },
-  'claude-3-7-sonnet': { modelName: 'Claude 3.7 Sonnet', retirementDate: 'February 19, 2026' },
-  'claude-3-5-haiku': { modelName: 'Claude 3.5 Haiku', retirementDate: 'February 19, 2026' },
-  'claude-3-5-sonnet': { modelName: 'Claude 3.5 Sonnet', retirementDate: 'October 22, 2025' },
+export type ApiProviderClass = 'firstParty' | 'bedrock' | 'vertex' | 'foundry';
+
+/**
+ * Map an AMI provider id (as returned by detectProvider) to the coarse hosting
+ * class the retirement-date table is keyed by. Anything that is not a recognized
+ * Bedrock/Vertex/Foundry route is treated as first party (the default).
+ */
+export function toApiProviderClass(provider: string | null | undefined): ApiProviderClass {
+  switch (provider) {
+    case 'amazon-bedrock': return 'bedrock';
+    case 'anthropic-vertex':
+    case 'google-vertex': return 'vertex';
+    case 'azure-openai': return 'foundry';
+    default: return 'firstParty';
+  }
+}
+
+/**
+ * Deprecated / retiring models and their retirement dates, PER hosting class.
+ * Keys are matched as case-insensitive substrings of the model id (so a dated
+ * snapshot or a gateway prefix still matches), newest-retiring handled by
+ * first-match. A `null` date means the model is NOT retiring on that host, so no
+ * warning fires there. Add an entry here to warn users off a model before the
+ * endpoint starts rejecting it. Mirrors Claude's DEPRECATED_MODELS registry with
+ * per-provider retirement dates (utils/model/deprecation.ts:L21-L101).
+ */
+const DEPRECATED_MODELS: Record<string, { modelName: string; retirementDates: Record<ApiProviderClass, string | null> }> = {
+  'claude-3-opus': {
+    modelName: 'Claude 3 Opus',
+    retirementDates: { firstParty: 'January 5, 2026', bedrock: 'January 15, 2026', vertex: 'January 5, 2026', foundry: 'January 5, 2026' },
+  },
+  'claude-3-7-sonnet': {
+    modelName: 'Claude 3.7 Sonnet',
+    retirementDates: { firstParty: 'February 19, 2026', bedrock: 'April 28, 2026', vertex: 'May 11, 2026', foundry: 'February 19, 2026' },
+  },
+  'claude-3-5-haiku': {
+    modelName: 'Claude 3.5 Haiku',
+    retirementDates: { firstParty: 'February 19, 2026', bedrock: null, vertex: null, foundry: null },
+  },
+  'claude-3-5-sonnet': {
+    modelName: 'Claude 3.5 Sonnet',
+    retirementDates: { firstParty: 'October 22, 2025', bedrock: null, vertex: null, foundry: null },
+  },
 };
 
 /**
  * A warning that the given model is deprecated and will be retired, or null when
- * the model is current (or the id is empty/non-string). Returned verbatim by the
- * `/model` slash command so switching to — or viewing — a retiring model nudges
- * the user toward a newer one. Mirrors Claude's getModelDeprecationWarning.
+ * the model is current (or the id is empty/non-string, or not retiring on the
+ * resolved host). Returned verbatim by the `/model` slash command so switching
+ * to — or viewing — a retiring model nudges the user toward a newer one. The
+ * `provider` argument is an AMI provider id (defaults to first-party hosting);
+ * the retirement DATE varies by host. Mirrors Claude's getModelDeprecationWarning.
  */
-export function getModelDeprecationWarning(modelId: string | null | undefined): string | null {
+export function getModelDeprecationWarning(
+  modelId: string | null | undefined,
+  provider?: string | null,
+): string | null {
   if (typeof modelId !== 'string' || !modelId) return null;
+  const host = toApiProviderClass(provider);
   const lower = modelId.toLowerCase();
   for (const [key, info] of Object.entries(DEPRECATED_MODELS)) {
-    if (lower.includes(key)) {
-      return `${info.modelName} will be retired on ${info.retirementDate}. Consider switching to a newer model.`;
-    }
+    if (!lower.includes(key)) continue;
+    const date = info.retirementDates[host];
+    if (!date) continue;
+    return `${info.modelName} will be retired on ${date}. Consider switching to a newer model.`;
   }
   return null;
 }
